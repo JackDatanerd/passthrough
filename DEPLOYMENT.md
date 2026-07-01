@@ -180,7 +180,7 @@ Then redeploy: `npm run deploy`
    | Variable | Value |
    |----------|-------|
    | `VITE_API_URL` | `https://api.passthrough.dev` |
-
+https://passthrough-api.deeptec.workers.dev/api
 5. Save and Deploy.
 
 Every push to `main` triggers an automatic rebuild and deploy.
