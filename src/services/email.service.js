@@ -1,0 +1,98 @@
+// Replaces Nodemailer (config/email.js -> sendViaResend) and Prisma's
+// emailLog.create (-> supabase.from('email_logs').insert). The templates/
+// fs.readFileSync mechanism is replaced by src/templates/emails.js's render().
+//
+// Every public function now takes (env, supabase, ...args) as its first two
+// params, since there's no module-level transporter/prisma singleton to close
+// over — Workers don't have one. Patch 1 from the v8 history (FRONTEND_URL
+// auto-injected into every send so the base.html header link is never broken)
+// is preserved here exactly, just sourced from `env.FRONTEND_URL` instead of
+// `process.env.FRONTEND_URL`.
+
+const { sendViaResend } = require('../config/email')
+const { render } = require('../templates/emails')
+const c = require('../config/constants')
+
+// PATCH 1 (carried over): FRONTEND_URL injected automatically so base.html's
+// header link is always correct. Individual send calls do not need to pass it.
+async function send(env, supabase, to, subject, template, vars) {
+  const html = render(template, {
+    FRONTEND_URL: env.FRONTEND_URL,  // injected globally
+    ...vars                          // caller vars override if needed
+  })
+  let status = 'sent', error = null
+  try {
+    await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html })
+  } catch (err) {
+    status = 'failed'
+    error  = err.message
+    console.error(`Email [${template}] to ${to}:`, err.message)
+  }
+  supabase.from('email_logs')
+    .insert({ to, subject, template, status, error })
+    .then(() => {}, () => {})
+  return status === 'sent'
+}
+
+// Email links use FRONTEND_URL — NOT the API URL.
+// VerifyEmail.jsx and ResetPassword.jsx read token from URL and call the API.
+
+async function sendWelcome(env, supabase, email, name) {
+  return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name })
+}
+
+async function sendVerification(env, supabase, email, name, rawToken) {
+  return send(env, supabase, email, 'Verify your Passthrough email', 'email_verification', {
+    NAME:       name,
+    VERIFY_URL: `${env.FRONTEND_URL}/verify-email?token=${rawToken}`
+  })
+}
+
+async function sendPasswordReset(env, supabase, email, name, rawToken) {
+  return send(env, supabase, email, 'Reset your Passthrough password', 'password_reset', {
+    NAME:      name,
+    RESET_URL: `${env.FRONTEND_URL}/reset-password?token=${rawToken}`
+  })
+}
+
+async function sendScanFail(env, supabase, email, name, score, cats) {
+  return send(env, supabase, email, `Your resume scored ${score}/100`, 'scan_fail', {
+    NAME:           name,
+    SCORE:          String(score),
+    KEYWORD_SCORE:  String(cats.keywordScore  || 0),
+    FORMAT_SCORE:   String(cats.formatScore   || 0),
+    SECTIONS_SCORE: String(cats.sectionsScore || 0),
+    CONTENT_SCORE:  String(cats.contentScore  || 0),
+    SCAN_URL:       `${env.FRONTEND_URL}/dashboard`
+  })
+}
+
+async function sendScanPass(env, supabase, email, name, score) {
+  const tpl = score >= c.ATS_BADGE_THRESHOLD ? 'scan_pass_badge' : 'scan_pass_standard'
+  const sub = score >= c.ATS_BADGE_THRESHOLD
+    ? `✓ Your resume passed — ${score}/100. Verified-eligible.`
+    : `Your resume passed — score: ${score}/100`
+  return send(env, supabase, email, sub, tpl, {
+    NAME:     name,
+    SCORE:    String(score),
+    SCAN_URL: `${env.FRONTEND_URL}/dashboard`
+  })
+}
+
+async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
+  return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
+    NAME:              name,
+    VERIFICATION_CODE: code,
+    VERIFICATION_URL:  verificationUrl,
+    DOWNLOAD_URL:      `${env.FRONTEND_URL}/dashboard`
+  })
+}
+
+async function sendFixFailed(env, supabase, email, name) {
+  return send(env, supabase, email, "We hit a snag — we're on it", 'fix_failed', { NAME: name })
+}
+
+module.exports = {
+  sendWelcome, sendVerification, sendPasswordReset,
+  sendScanFail, sendScanPass, sendFixDelivered, sendFixFailed
+}

@@ -1,0 +1,41 @@
+name = "passthrough-api"
+main = "src/index.js"
+compatibility_date = "2024-09-23"
+compatibility_flags = ["nodejs_compat"]
+
+# ── R2: resume uploads + generated files ──────────────────────────────
+[[r2_buckets]]
+binding     = "RESUMES_BUCKET"
+bucket_name = "passthrough-resumes"
+
+# ── KV: rate limiting (best-effort fixed window, see middleware/rateLimiter.js) ──
+[[kv_namespaces]]
+binding = "RATE_LIMIT_KV"
+id      = "REPLACE_WITH_OUTPUT_OF: wrangler kv namespace create passthrough-ratelimit"
+
+# ── Browser Rendering: replaces local Puppeteer / the entire VPS requirement ──
+[browser]
+binding = "BROWSER"
+
+# ── Cron: hourly anonymous-scan cleanup (replaces the old setInterval in server.js) ──
+[triggers]
+crons = ["0 * * * *"]
+
+# ── Non-secret config (mirrors backend/config/constants.js + safe env vars) ──
+# Secrets (API keys, DB keys, JWT secret, SMTP/Resend key, Paystack key) are
+# NEVER placed here — they go through `wrangler secret put` (prod) or
+# `.dev.vars` (local, gitignored). See .dev.vars.example for the full list.
+[vars]
+NODE_ENV               = "production"
+FRONTEND_URL            = "https://passthrough.dev"
+PAYSTACK_CURRENCY       = "USD"
+PAYSTACK_CALLBACK_URL   = "https://passthrough.dev/payment/success"
+ANTHROPIC_MODEL         = "claude-sonnet-4-6"
+EMAIL_FROM              = "Passthrough <hello@passthrough.dev>"
+JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"
+
+# ── Local dev overrides ──────────────────────────────────────────────
+# `wrangler dev` reads [vars] above + .dev.vars (gitignored) for secrets.
+# For local FRONTEND_URL/callback URLs pointing at localhost, override
+# in a separate `wrangler.dev.toml` or just edit [vars] locally before
+# running `wrangler dev` — do not commit localhost values to this file.

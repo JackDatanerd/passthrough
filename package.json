@@ -1,0 +1,24 @@
+{
+  "name": "passthrough-worker",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev":   "wrangler dev --port 4000",
+    "deploy": "wrangler deploy",
+    "seed":   "node supabase/seed.js",
+    "cf-typegen": "wrangler types"
+  },
+  "dependencies": {
+    "@cloudflare/puppeteer": "^0.0.35",
+    "@supabase/supabase-js":  "^2.39.0",
+    "bcryptjs":               "^2.4.3",
+    "docx":                   "8.5.0",
+    "hono":                   "^4.3.0",
+    "mammoth":                "^1.6.0",
+    "pdf-parse":              "^1.1.1",
+    "zod":                    "^3.22.0"
+  },
+  "devDependencies": {
+    "wrangler": "^3.50.0"
+  }
+}

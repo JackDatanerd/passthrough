@@ -1,0 +1,154 @@
+const constants = require('../config/constants')
+
+const STOP_WORDS = new Set([
+  'a','an','the','and','or','but','in','on','at','to','for','of','with',
+  'by','from','is','was','are','were','be','been','have','has','had',
+  'will','would','could','should','may','might','this','that','these',
+  'those','it','its','we','you','they','them','their','our','do','does',
+  'did','not','as','so','if','about','than','into','over','also'
+])
+
+const ACTION_VERBS = new Set([
+  'achieved','managed','led','built','created','improved','reduced','increased',
+  'developed','designed','delivered','implemented','launched','streamlined',
+  'coordinated','negotiated','trained','mentored','analyzed','generated',
+  'drove','exceeded','established','spearheaded','executed','maintained',
+  'resolved','collaborated','facilitated','administered','optimized',
+  'transformed','secured','expanded','accelerated','automated','directed',
+  'oversaw','produced','shaped','grew','owned','shipped','deployed','migrated'
+])
+
+function extractKeywords(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
+    .filter(w => w.length >= 3 && !STOP_WORDS.has(w))
+}
+
+function scoreKeywords(resumeText, jdText) {
+  const words = extractKeywords(jdText)
+  const freq  = {}
+  for (const w of words) freq[w] = (freq[w] || 0) + 1
+  const top25 = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([w]) => w)
+  const lower = resumeText.toLowerCase()
+  const matched = top25.filter(kw =>
+    new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lower)
+  )
+  const missing = top25.filter(kw => !matched.includes(kw))
+  return {
+    score: top25.length ? Math.round((matched.length / top25.length) * 100) : 100,
+    detail: { matched, missing, matchRate: top25.length ? matched.length / top25.length : 1 }
+  }
+}
+
+function scoreFormat(resumeText) {
+  if (!resumeText || resumeText.trim().length < 100)
+    return { score: 0, detail: { issues: ['Resume could not be parsed'] } }
+  let score = 100; const issues = []
+  if ((resumeText.match(/\|/g) || []).length > 5)
+    { score -= 15; issues.push('Tables detected — ATS may fail to parse') }
+  const bTypes = new Set((resumeText.match(/^[\s]*[•\-\*◦]/mg) || []).map(b => b.trim()[0]))
+  if (bTypes.size > 2)
+    { score -= 15; issues.push('Inconsistent bullet style') }
+  if (resumeText.split('\n').filter(l => l.length > 200).length > 3)
+    { score -= 15; issues.push('Possible multi-column layout') }
+  return { score: Math.max(0, score), detail: { issues } }
+}
+
+function scoreSections(resumeText) {
+  const lower = resumeText.toLowerCase()
+  const required = [
+    { name: 'Experience', patterns: ['experience','work history','employment history'] },
+    { name: 'Education',  patterns: ['education','academic background'] },
+    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise'] },
+    { name: 'Contact',    patterns: null },
+  ]
+  const optional = [
+    { name: 'Summary',        patterns: ['summary','objective','profile'] },
+    { name: 'Certifications', patterns: ['certification','licenses','awards'] },
+  ]
+  const lines10  = lower.split('\n').slice(0, 10).join(' ')
+  const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines10)
+  const foundReq = required.filter(s => s.patterns ? s.patterns.some(p => lower.includes(p)) : hasEmail)
+  const foundOpt = optional.filter(s => s.patterns.some(p => lower.includes(p)))
+  return {
+    score: Math.min(100, Math.round((foundReq.length / 4) * 70 + (foundOpt.length / 2) * 30)),
+    detail: {
+      found:   foundReq.map(s => s.name),
+      missing: required.filter(s => !foundReq.includes(s)).map(s => s.name)
+    }
+  }
+}
+
+function scoreContent(resumeText) {
+  const bullets = resumeText.split('\n').filter(l => /^\s*[•\-\*◦\d]+[.)]\s/.test(l))
+  const total   = bullets.length || 1
+  const actionCount = bullets.filter(b => {
+    const words = b.trim().replace(/^[•\-\*◦\d]+[.)]\s*/, '').toLowerCase().split(/\s+/)
+    return words.length > 0 && ACTION_VERBS.has(words[0])
+  }).length
+  let score = Math.round((actionCount / total) * 100)
+  const quantifiedCount = (resumeText.match(/\d+\s*(%|\$|k\b|m\b|million|thousand)/gi) || []).length
+  if (quantifiedCount >= 2) score = Math.min(100, score + 10)
+  const wordCount = resumeText.split(/\s+/).filter(Boolean).length
+  if (wordCount < 200) score = Math.max(0, score - 20)
+  if (/references available/i.test(resumeText)) score = Math.max(0, score - 10)
+  return {
+    score,
+    detail: { actionVerbRate: actionCount / total, quantifiedCount, issues: [] }
+  }
+}
+
+function detectRoleCategory(jdText) {
+  const lower = jdText.toLowerCase()
+  const map = {
+    software_engineering: ['engineer','developer','programmer','software','backend','frontend','devops'],
+    product_management:   ['product manager','product owner','roadmap','sprint'],
+    design:               ['designer','ui/ux','figma','user experience'],
+    data_science:         ['data scientist','machine learning','data analyst'],
+    marketing:            ['marketing','growth','seo','content','brand'],
+    sales:                ['sales','account executive','business development','revenue'],
+    operations:           ['operations','ops','supply chain','logistics','project manager'],
+    finance:              ['finance','accounting','financial analyst','audit'],
+    healthcare:           ['nurse','doctor','clinical','medical','patient'],
+    legal:                ['lawyer','attorney','legal','compliance'],
+    education:            ['teacher','professor','instructor','curriculum'],
+  }
+  for (const [cat, kws] of Object.entries(map))
+    if (kws.some(k => lower.includes(k))) return cat
+  return 'other'
+}
+
+function detectSeniority(jdText) {
+  const lower = jdText.toLowerCase()
+  if (/\b(vp|vice president|cto|ceo|coo|chief)\b/.test(lower)) return 'executive'
+  if (/\b(head of|director|principal|staff engineer)\b/.test(lower)) return 'lead'
+  if (/\b(senior|sr\.)\b/.test(lower)) return 'senior'
+  if (/\b(junior|jr\.|entry.?level|associate|intern)\b/.test(lower)) return 'junior'
+  return 'mid'
+}
+
+function scoreResume(resumeText, jdText) {
+  const kw  = scoreKeywords(resumeText, jdText)
+  const fmt = scoreFormat(resumeText)
+  const sec = scoreSections(resumeText)
+  const cnt = scoreContent(resumeText)
+  const score = Math.max(0, Math.min(100, Math.round(
+    kw.score * 0.35 + fmt.score * 0.25 + sec.score * 0.20 + cnt.score * 0.20
+  )))
+  return {
+    score,
+    passed:        score >= constants.ATS_PASS_THRESHOLD,
+    badgeEligible: score >= constants.ATS_BADGE_THRESHOLD,
+    keywordScore:  kw.score,
+    formatScore:   fmt.score,
+    sectionsScore: sec.score,
+    contentScore:  cnt.score,
+    detail: {
+      keywords: kw.detail,
+      format:   fmt.detail,
+      sections: sec.detail,
+      content:  cnt.detail
+    }
+  }
+}
+
+module.exports = { scoreResume, detectRoleCategory, detectSeniority }
