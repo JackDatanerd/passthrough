@@ -1,22 +1,23 @@
-// Replaces the disk-based version. R2 has no filesystem — callers fetch the
-// object body as an ArrayBuffer (env.RESUMES_BUCKET.get(key) -> .arrayBuffer())
-// and pass the raw bytes here instead of a path. pdf-parse already accepted a
-// Buffer directly in v8 (fs.readFileSync returns one) — only mammoth's call
-// signature changes, from { path } to { buffer }. `Buffer` is available globally
-// thanks to the `nodejs_compat` compatibility flag in wrangler.toml.
+// pdf-parse uses String.fromCharCode.apply(null, largeTypedArray) internally,
+// which overflows the Cloudflare Workers call stack for any non-trivial PDF.
+// Replaced with `unpdf`, which uses pdfjs-dist's edge-compatible build and
+// is specifically designed for Worker/edge runtimes. mammoth is unchanged.
 //
-// lib path import unchanged — avoids the same pdf-parse ENOENT test-file bug.
-const pdfParse = require('pdf-parse/lib/pdf-parse')
-const mammoth   = require('mammoth')
-const c         = require('../config/constants')
+// unpdf is ESM-only, so it's loaded via dynamic import() — esbuild (wrangler's
+// bundler) handles the CJS/ESM mix at bundle time without any issues.
 
-// Used by runAtsScan — no Claude, no cost on free scans
+const mammoth = require('mammoth')
+const c        = require('../config/constants')
+
 async function extractText(bytes, mimeType) {
   try {
     const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)
     if (mimeType === 'application/pdf') {
-      const data = await pdfParse(buffer)
-      return data.text || ''
+      const { extractText: pdfExtract } = await import('unpdf')
+      // unpdf expects a Uint8Array
+      const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+      const { text } = await pdfExtract(uint8)
+      return text || ''
     }
     const r = await mammoth.extractRawText({ buffer })
     return r.value || ''
