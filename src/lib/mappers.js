@@ -25,6 +25,7 @@ function userRowToCamel(row) {
     scansDayReset:         row.scans_day_reset,
     paystackCustomerCode:  row.paystack_customer_code,
     paystackAuthCode:      row.paystack_auth_code,
+    savedProfile:          row.saved_profile,
     createdAt:             row.created_at,
     updatedAt:             row.updated_at
   }
@@ -66,6 +67,11 @@ function scanRowToCamel(row) {
     userId:              row.user_id,
     anonToken:           row.anon_token,
     anonExpiresAt:       row.anon_expires_at,
+    inputMode:              row.input_mode,
+    rawBrainDumpText:       row.raw_brain_dump_text,
+    originalResumeData:     row.original_resume_data,
+    rewrittenResumeData:    row.rewritten_resume_data,
+    quantificationPrompts:  row.quantification_prompts,
     createdAt:           row.created_at,
     updatedAt:           row.updated_at
   }
@@ -104,7 +110,8 @@ const USER_FIELD_MAP = {
   emailVerifyToken: 'email_verify_token', emailVerifyExpiry: 'email_verify_expiry',
   resetToken: 'reset_token', resetTokenExpiry: 'reset_token_expiry', deletedAt: 'deleted_at',
   scansToday: 'scans_today', scansDayReset: 'scans_day_reset',
-  paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code'
+  paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code',
+  savedProfile: 'saved_profile'
 }
 
 const SCAN_FIELD_MAP = {
@@ -119,7 +126,10 @@ const SCAN_FIELD_MAP = {
   verificationUrl: 'verification_url', verificationViews: 'verification_views',
   resumeHash: 'resume_hash', verifiedAt: 'verified_at', roleCategory: 'role_category',
   seniorityLevel: 'seniority_level', integrityScore: 'integrity_score', userId: 'user_id',
-  anonToken: 'anon_token', anonExpiresAt: 'anon_expires_at'
+  anonToken: 'anon_token', anonExpiresAt: 'anon_expires_at',
+  inputMode: 'input_mode', rawBrainDumpText: 'raw_brain_dump_text',
+  originalResumeData: 'original_resume_data', rewrittenResumeData: 'rewritten_resume_data',
+  quantificationPrompts: 'quantification_prompts'
 }
 
 const PAYMENT_FIELD_MAP = {

@@ -22,7 +22,7 @@ async function optionalAuth(c, next) {
     if (!user || user.deletedAt || user.status === 'BANNED') return next()
     if (user.tokenVersion !== decoded.tokenVersion) return next()
 
-    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, emailVerifyToken, ...safe } = user
+    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, emailVerifyToken, savedProfile, ...safe } = user
     c.set('user', safe)
   } catch (_) {}
   return next()

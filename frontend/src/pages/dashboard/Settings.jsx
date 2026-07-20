@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import api from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
@@ -6,6 +6,7 @@ import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
+import { formatDate } from '../../lib/utils'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -18,6 +19,39 @@ export default function Settings() {
   const [pwLoading, setPwLoading] = useState(false)
   const [pwError,   setPwError  ] = useState('')
   const [pwSuccess, setPwSuccess] = useState(false)
+
+  // PHASE 4 — saved profile management. Closes the consent loop: saving a
+  // profile (ScanResult.jsx / SaveProfilePrompt) is an explicit opt-in, so
+  // removing it needs to be just as easy, without going all the way to
+  // deleting the whole account.
+  const [profileLoading, setProfileLoading] = useState(true)
+  const [hasSavedProfile, setHasSavedProfile] = useState(false)
+  const [savedAt,         setSavedAt        ] = useState(null)
+  const [removing,        setRemoving       ] = useState(false)
+  const [removeError,     setRemoveError    ] = useState('')
+
+  useEffect(() => {
+    api.get('/profile')
+      .then(res => {
+        setHasSavedProfile(!!res.data.data.hasSavedProfile)
+        setSavedAt(res.data.data.savedAt)
+      })
+      .catch(() => {})
+      .finally(() => setProfileLoading(false))
+  }, [])
+
+  async function handleRemoveProfile() {
+    setRemoving(true); setRemoveError('')
+    try {
+      await api.delete('/profile')
+      setHasSavedProfile(false)
+      setSavedAt(null)
+    } catch (err) {
+      setRemoveError(err.response?.data?.message || 'Failed to remove saved profile.')
+    } finally {
+      setRemoving(false)
+    }
+  }
 
   // Delete account
   const [deleteOpen,    setDeleteOpen   ] = useState(false)
@@ -92,6 +126,32 @@ export default function Settings() {
               Update password
             </Button>
           </div>
+        </div>
+
+        {/* Saved profile */}
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-900 mb-1">Saved profile</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Used to translate your background against a new job description in one step,
+            without re-uploading a resume.
+          </p>
+          {profileLoading ? (
+            <p className="text-sm text-gray-400">Loading…</p>
+          ) : hasSavedProfile ? (
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-sm text-gray-600">
+                Saved {savedAt ? formatDate(savedAt) : ''}
+              </p>
+              <Button variant="secondary" onClick={handleRemoveProfile} loading={removing} size="sm">
+                Remove saved profile
+              </Button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-400">
+              No saved profile yet — you can save one from any completed scan.
+            </p>
+          )}
+          {removeError && <p className="text-sm text-red-600 mt-2">{removeError}</p>}
         </div>
 
         {/* Danger zone */}

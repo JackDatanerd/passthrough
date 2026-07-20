@@ -13,7 +13,7 @@
 // since payments.controller.js and webhooks.controller.js call them from a
 // different request context than the one that created the scan.
 //
-// Both bugs found and fixed in the previous session are preserved exactly:
+// Both bugs found and fixed in a previous session are preserved exactly:
 //   - PDF generation is wrapped in its own try/catch in both generateFix and
 //     generateBadge, so a Browser Rendering failure delivers the DOCX alone
 //     instead of erroring out a fix the user already paid for.
@@ -21,6 +21,18 @@
 //     insert after being incremented (the "Patch 5" rollback) — and this port
 //     extends the same rollback to the R2 object, which didn't exist as a
 //     concept in the original disk-based version.
+//
+// PHASE 1 (brain-dump entry path) additions, all clearly marked below:
+//   - createScan now accepts EITHER an uploaded file OR pasted brain-dump
+//     text — exactly one of the two, never both, never neither.
+//   - runAtsScan branches on scan.inputMode: file-mode extracts text from
+//     R2 as before; brain-dump mode structures the raw text via Claude and
+//     deterministically serializes it back to plain text so the same
+//     rule-based ats.service.js scorer runs unchanged against both.
+//   - generateFix/generateBadge branch the same way when sourcing resumeData:
+//     file-mode re-parses from R2 (unchanged); brain-dump mode reuses the
+//     structured data already persisted by runAtsScan rather than paying for
+//     a second, potentially-inconsistent structuring call.
 
 const { z } = require('zod')
 const c             = require('../config/constants')
@@ -48,20 +60,46 @@ function extOf(filename) {
 async function createScan(c) {
   const file   = c.get('uploadedFile')
   const fields = c.get('formFields') || {}
-  if (!file) return c.json({ success: false, message: 'Resume file is required.' }, 400)
+  const brainDumpText = (fields.brainDumpText || '').trim()
+  // PHASE 4: third entry mode — reuse a previously saved profile instead of
+  // uploading a file or pasting a fresh brain dump. Only meaningful for a
+  // logged-in user (anonymous visitors have no account to have saved a
+  // profile to), enforced explicitly below rather than left to fail
+  // confusingly further down.
+  const useSavedProfile = fields.useSavedProfile === 'true'
+
+  const user = c.get('user')
+
+  // PHASE 1 (extended in PHASE 4): exactly one of the three input modes
+  // must be present. More than one present is rejected explicitly rather
+  // than silently preferring one, so a frontend bug that sends two never
+  // produces surprising behavior.
+  const modesPresent = [!!file, !!brainDumpText, useSavedProfile].filter(Boolean).length
+  if (modesPresent === 0)
+    return c.json({ success: false,
+      message: 'Upload a resume, tell us about your background, or use your saved profile.' }, 400)
+  if (modesPresent > 1)
+    return c.json({ success: false,
+      message: 'Choose one: a resume file, your background, or your saved profile — not more than one.' }, 400)
+  if (useSavedProfile && !user)
+    return c.json({ success: false, message: 'Sign in to use a saved profile.' }, 401)
 
   const supabase = getSupabase(c.env)
-  const user = c.get('user')
 
   // R2 object key generated up front since the R2 key embeds the scan ID,
   // and we need that ID before the DB row exists. Generated client-side
   // with crypto.randomUUID() and inserted explicitly as the row's `id` —
   // not left to the DB's gen_random_uuid() default.
   const scanId = cryptoLib.uuid()
-  const resumeKey = storage.resumeKey(scanId, extOf(file.originalname))
+
+  // PHASE 1: only file-mode has an R2 key at all — brain-dump text and
+  // saved-profile data are stored directly on the scans row, never R2.
+  const resumeKey = file ? storage.resumeKey(scanId, extOf(file.originalname)) : null
 
   // PATCH 2 (carried over): clean up the R2 object on every validation
-  // failure that fires after the file has already been written.
+  // failure that fires after the file has already been written. Naturally
+  // a no-op in brain-dump / saved-profile mode since `uploaded` never
+  // flips true there.
   let uploaded = false
   async function cleanupFile() {
     if (uploaded) await c.env.RESUMES_BUCKET.delete(resumeKey).catch(() => {})
@@ -85,6 +123,71 @@ async function createScan(c) {
     return c.json({ success: false, message: 'Job description too short (min 50 chars).' }, 400)
   }
 
+  // PHASE 1: brain-dump minimum length, mirrors the JD length gate above.
+  // File-mode has no equivalent check here — file content length is
+  // validated later, after extraction, inside runAtsScan (same as before
+  // this phase — that check hasn't moved).
+  if (brainDumpText && brainDumpText.length < c.MIN_BRAIN_DUMP_CHARS) {
+    return c.json({ success: false,
+      message: `Tell us a bit more about your background (min ${c.MIN_BRAIN_DUMP_CHARS} chars).` }, 400)
+  }
+
+  // PHASE 4: fetch the saved profile fresh from the DB — never trust a
+  // client-supplied resumeData payload here, even implicitly. This is the
+  // only place saved-profile data enters a new scan, and it always comes
+  // from the user's own previously-saved (server-validated) record.
+  let savedProfileData = null
+  if (useSavedProfile) {
+    const { data: userRow, error: profErr } = await supabase
+      .from('users').select('saved_profile').eq('id', user.id).single()
+    if (profErr) throw profErr
+    savedProfileData = userRow.saved_profile?.resumeData || null
+    if (!savedProfileData)
+      return c.json({ success: false,
+        message: 'No saved profile found. Upload a resume or paste your background instead.' }, 400)
+  }
+
+  // Fields shared by both input modes.
+  function baseInsertFields() {
+    return {
+      id: scanId,
+      job_description_text: jdText,
+      job_description_url:  fields.jobDescriptionUrl || null,
+    }
+  }
+
+  // Fields that differ by input mode, isolated here so both the logged-in
+  // and anonymous branches below build an identical row shape.
+  function modeInsertFields() {
+    if (file) {
+      return {
+        input_mode:            'file',
+        resume_path:           resumeKey,
+        resume_original_name:  file.originalname,
+        resume_mime_type:      file.mimetype
+      }
+    }
+    if (useSavedProfile) {
+      // Structured data is already available — no file, no structuring
+      // Claude call needed at all. Populated immediately at creation time
+      // so runAtsScan can skip straight to serialization + scoring.
+      return {
+        input_mode:            'saved_profile',
+        original_resume_data:  savedProfileData
+      }
+    }
+    return {
+      input_mode:           'brain_dump',
+      raw_brain_dump_text:  brainDumpText.slice(0, c.MAX_RESUME_CHARS)
+    }
+  }
+
+  async function putFileIfNeeded() {
+    if (!file) return
+    await c.env.RESUMES_BUCKET.put(resumeKey, file.bytes, { httpMetadata: { contentType: file.mimetype } })
+    uploaded = true
+  }
+
   if (user) {
     const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0)
     const { data: freshRow, error: freshErr } = await supabase
@@ -104,19 +207,14 @@ async function createScan(c) {
     await supabase.from('users').update({ scans_today: scansToday + 1 }).eq('id', user.id)
 
     try {
-      await c.env.RESUMES_BUCKET.put(resumeKey, file.bytes, { httpMetadata: { contentType: file.mimetype } })
-      uploaded = true
+      await putFileIfNeeded()
 
       const { error: insertErr } = await supabase.from('scans').insert({
-        id: scanId,
-        resume_path:          resumeKey,
-        resume_original_name: file.originalname,
-        resume_mime_type:     file.mimetype,
-        job_description_text: jdText,
-        job_description_url:  fields.jobDescriptionUrl || null,
-        user_id:               user.id,
-        anon_token:             null,
-        anon_expires_at:        null
+        ...baseInsertFields(),
+        ...modeInsertFields(),
+        user_id:         user.id,
+        anon_token:      null,
+        anon_expires_at: null
       })
       if (insertErr) throw insertErr
     } catch (createErr) {
@@ -135,19 +233,14 @@ async function createScan(c) {
   // Anonymous scan
   const anonToken = cryptoLib.uuid()
   try {
-    await c.env.RESUMES_BUCKET.put(resumeKey, file.bytes, { httpMetadata: { contentType: file.mimetype } })
-    uploaded = true
+    await putFileIfNeeded()
 
     const { error: insertErr } = await supabase.from('scans').insert({
-      id: scanId,
-      resume_path:          resumeKey,
-      resume_original_name: file.originalname,
-      resume_mime_type:     file.mimetype,
-      job_description_text: jdText,
-      job_description_url:  fields.jobDescriptionUrl || null,
-      user_id:                null,
-      anon_token:              anonToken,
-      anon_expires_at:         new Date(Date.now() + c.ANON_SCAN_TTL_HOURS * 3600000).toISOString()
+      ...baseInsertFields(),
+      ...modeInsertFields(),
+      user_id:          null,
+      anon_token:        anonToken,
+      anon_expires_at:   new Date(Date.now() + c.ANON_SCAN_TTL_HOURS * 3600000).toISOString()
     })
     if (insertErr) throw insertErr
   } catch (createErr) {
@@ -271,7 +364,7 @@ async function getScanHistory(c) {
   const supabase = getSupabase(c.env)
   const { data: rows, error } = await supabase
     .from('scans')
-    .select('id, status, ats_score, passed, resume_original_name, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score')
+    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
     .range(from, to)
@@ -279,7 +372,7 @@ async function getScanHistory(c) {
 
   const scans = rows.map(r => ({
     id: r.id, status: r.status, atsScore: r.ats_score, passed: r.passed,
-    resumeOriginalName: r.resume_original_name, createdAt: r.created_at,
+    resumeOriginalName: r.resume_original_name, inputMode: r.input_mode, createdAt: r.created_at,
     fixPurchased: r.fix_purchased, fixTier: r.fix_tier, verificationCode: r.verification_code,
     keywordScore: r.keyword_score, formatScore: r.format_score,
     sectionsScore: r.sections_score, contentScore: r.content_score
@@ -306,7 +399,10 @@ async function getScanWithUser(supabase, scanId) {
   return { scan, user: userRowToCamel(userRow) }
 }
 
-// ─── runAtsScan — uses extractText ONLY, no Claude, no cost on free scans ────
+// ─── runAtsScan — file-mode: extractText only, no Claude, no cost on free
+//     scans. brain-dump mode: structuring IS a Claude call (unavoidable —
+//     there's no file to extract text from), still no cost on top of that
+//     for scoring itself. ──────────────────────────────────────────────────
 
 async function runAtsScan(env, supabase, scanId) {
   try {
@@ -315,19 +411,62 @@ async function runAtsScan(env, supabase, scanId) {
     if (error) throw error
     const scan = scanRowToCamel(row)
 
-    const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
-    if (!obj) throw new Error('Resume file missing from storage')
-    const bytes = new Uint8Array(await obj.arrayBuffer())
+    let rawResumeText
 
-    const text = await resumeParser.extractText(bytes, scan.resumeMimeType)
-    if (!text || text.trim().length < 100) {
+    if (scan.inputMode === 'brain_dump') {
+      // PHASE 1: no file to extract from — structure the raw pasted text
+      // into the same resumeData shape parseResumeStructure produces for
+      // uploaded resumes, then deterministically render it back to plain
+      // text so ats.service.js's rule-based scorer runs unchanged.
+      const { resumeData, parseError, parseErrorMessage } =
+        await resumeParser.structureBrainDump(env, scan.rawBrainDumpText)
+      if (parseError || !resumeData) {
+        await supabase.from('scans').update({
+          status: 'ERROR',
+          full_ats_report: { error: parseErrorMessage || 'Could not structure background.' }
+        }).eq('id', scanId)
+        return
+      }
+      rawResumeText = resumeParser.serializeResumeData(resumeData)
+
+      // Persist the structured data now. This is a functional requirement
+      // for brain-dump mode specifically — generateFix/generateBadge need
+      // this exact structured object later, and unlike file-mode there is
+      // no R2 object to re-derive it from a second time. (Phase 2 will
+      // additionally persist rewrittenResumeData, and do the equivalent
+      // capture for file-mode scans, purely for the diff-view feature —
+      // this write here is separate from that and would exist even if
+      // Phase 2 never shipped.)
+      await supabase.from('scans').update({ original_resume_data: resumeData }).eq('id', scanId)
+    } else if (scan.inputMode === 'saved_profile') {
+      // PHASE 4: structured data was already populated at scan-creation
+      // time directly from users.saved_profile (see createScan) — no file,
+      // no structuring Claude call needed at all here. Just serialize
+      // straight to text for scoring, reusing the same deterministic
+      // serializer brain-dump mode uses after its own structuring step.
+      if (!scan.originalResumeData) {
+        await supabase.from('scans').update({
+          status: 'ERROR',
+          full_ats_report: { error: 'Saved profile data missing.' }
+        }).eq('id', scanId)
+        return
+      }
+      rawResumeText = resumeParser.serializeResumeData(scan.originalResumeData)
+    } else {
+      const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
+      if (!obj) throw new Error('Resume file missing from storage')
+      const bytes = new Uint8Array(await obj.arrayBuffer())
+      rawResumeText = await resumeParser.extractText(bytes, scan.resumeMimeType)
+    }
+
+    if (!rawResumeText || rawResumeText.trim().length < 100) {
       await supabase.from('scans').update({
         status: 'ERROR', full_ats_report: { error: 'Resume could not be parsed.' }
       }).eq('id', scanId)
       return
     }
 
-    const resumeText = text.slice(0, c.MAX_RESUME_CHARS)
+    const resumeText = rawResumeText.slice(0, c.MAX_RESUME_CHARS)
     const jdText     = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const ruleResult = atsService.scoreResume(resumeText, jdText)
 
@@ -385,18 +524,39 @@ async function generateFix(env, supabase, scanId) {
     await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
     const { scan, user } = await getScanWithUser(supabase, scanId)
 
-    const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
-    if (!obj) throw new Error('Resume file missing from storage')
-    const resumeBytes = new Uint8Array(await obj.arrayBuffer())
+    let resumeData
 
-    const { resumeData, parseError, parseErrorMessage } =
-      await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
-    if (parseError || !resumeData) throw new Error(parseErrorMessage || 'Parse failed')
+    if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
+      // PHASE 1 (brain_dump) / PHASE 4 (saved_profile): both non-file modes
+      // reuse structured data already persisted on the scan row rather
+      // than re-deriving it — cheaper, and guarantees the fix rewrites
+      // from the exact same structured object that was scored. The two
+      // modes differ only in HOW that data got there (a structuring Claude
+      // call vs a direct copy from users.saved_profile); by this point the
+      // sourcing logic is identical either way.
+      resumeData = scan.originalResumeData
+      if (!resumeData)
+        throw new Error(`${scan.inputMode} scan has no structured data — runAtsScan did not complete successfully`)
+    } else {
+      const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
+      if (!obj) throw new Error('Resume file missing from storage')
+      const resumeBytes = new Uint8Array(await obj.arrayBuffer())
+
+      const parsed = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
+      if (parsed.parseError || !parsed.resumeData) throw new Error(parsed.parseErrorMessage || 'Parse failed')
+      resumeData = parsed.resumeData
+    }
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
     const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText)
     const finalData = rewriteResult.success ? rewriteResult.data : resumeData
+    // PHASE 3: only meaningful if the rewrite actually succeeded — a failed
+    // rewrite falls back to the original content, and there's nothing to
+    // suggest strengthening in text that was never rewritten.
+    const quantificationPrompts = rewriteResult.success
+      ? (rewriteResult.quantificationOpportunities || [])
+      : []
 
     const code            = await badgeService.generateShortCode(supabase)
     const verificationUrl = badgeService.buildVerificationUrl(env, code)
@@ -433,6 +593,20 @@ async function generateFix(env, supabase, scanId) {
       verification_url:     verificationUrl,
       resume_hash:           resumeHash,
       verified_at:            new Date().toISOString(),
+      // PHASE 2: persist both structured objects for the diff view.
+      // resumeData is what the resume WAS (already parsed above, from R2 for
+      // file-mode or scan.originalResumeData for brain-dump mode) — writing
+      // it here is a no-op for brain-dump mode (already persisted by
+      // runAtsScan) and the first persistence for file-mode. finalData is
+      // what the AI rewrite produced, OR equals resumeData unchanged if the
+      // rewrite failed and generateFix fell back to the original content —
+      // in that fallback case the two objects are identical and the diff
+      // view will correctly render "no changes," which is the honest signal.
+      original_resume_data:  resumeData,
+      rewritten_resume_data: finalData,
+      // PHASE 3: static suggestions only — no regeneration loop in v1. See
+      // QuantificationPrompts.jsx for how these render.
+      quantification_prompts: quantificationPrompts,
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
 
@@ -456,25 +630,42 @@ async function generateBadge(env, supabase, scanId) {
     await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
     const { scan, user } = await getScanWithUser(supabase, scanId)
 
-    const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
-    if (!obj) throw new Error('Resume file missing from storage')
-    const resumeBytes = new Uint8Array(await obj.arrayBuffer())
-
-    const { resumeData, parseError } = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
-
-    // Parse fallback — badge cannot crash if Claude parse fails
     let finalData
-    if (parseError || !resumeData) {
-      const rawText = await resumeParser.extractText(resumeBytes, scan.resumeMimeType)
-      finalData = {
-        name: 'Candidate', email: '', phone: null, location: null, summary: null,
-        experience: [], education: [],
-        skills: rawText.slice(0, 500).split(/\s+/).slice(0, 20),
-        certifications: []
+
+    if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
+      // PHASE 1 (brain_dump) / PHASE 4 (saved_profile): same source as
+      // generateFix above. Falls back to an empty shell rather than
+      // throwing if something upstream went wrong — badge generation must
+      // never crash, same guarantee file-mode has via its parse-fallback
+      // branch below.
+      finalData = scan.originalResumeData
+      if (!finalData) {
+        finalData = {
+          name: 'Candidate', email: '', phone: null, location: null, summary: null,
+          experience: [], education: [], skills: [], certifications: []
+        }
+        console.warn(`generateBadge: missing originalResumeData for ${scan.inputMode} scan ${scanId}`)
       }
-      console.warn(`generateBadge: parse fallback for ${scanId}`)
     } else {
-      finalData = resumeData
+      const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
+      if (!obj) throw new Error('Resume file missing from storage')
+      const resumeBytes = new Uint8Array(await obj.arrayBuffer())
+
+      const { resumeData, parseError } = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
+
+      // Parse fallback — badge cannot crash if Claude parse fails
+      if (parseError || !resumeData) {
+        const rawText = await resumeParser.extractText(resumeBytes, scan.resumeMimeType)
+        finalData = {
+          name: 'Candidate', email: '', phone: null, location: null, summary: null,
+          experience: [], education: [],
+          skills: rawText.slice(0, 500).split(/\s+/).slice(0, 20),
+          certifications: []
+        }
+        console.warn(`generateBadge: parse fallback for ${scanId}`)
+      } else {
+        finalData = resumeData
+      }
     }
 
     // Use finalData.name — correct source after fallback
@@ -514,6 +705,15 @@ async function generateBadge(env, supabase, scanId) {
       verification_url:     verificationUrl,
       resume_hash:           resumeHash,
       verified_at:            new Date().toISOString(),
+      // PHASE 2: persist the structured content for the diff view. Note the
+      // naming here — `finalData` in this function is the ORIGINAL content
+      // (possibly the parse-fallback shell), never a rewrite: generateBadge
+      // never calls rewriteResumeContent, by design, since badge-only
+      // purchases don't include the AI rewrite. rewritten_resume_data is
+      // deliberately left untouched (stays null) — DiffView.jsx uses that
+      // null to render "credential only, no content changes" instead of a
+      // diff that would misleadingly imply a rewrite happened.
+      original_resume_data:  finalData,
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
 

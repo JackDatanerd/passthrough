@@ -27,13 +27,21 @@ async function uploadResume(ctx, next) {
   const file = formData.get('resume')
   const fields = {
     jobDescriptionText: formData.get('jobDescriptionText') || '',
-    jobDescriptionUrl:  formData.get('jobDescriptionUrl')  || ''
+    jobDescriptionUrl:  formData.get('jobDescriptionUrl')  || '',
+    // Phase 1 — brain-dump entry path. Only one of `file` / `brainDumpText`
+    // is expected per request; scan.controller.js's createScan is the single
+    // place that decides which mode applies (and rejects if both or neither
+    // are present) — this middleware only extracts and validates the file
+    // if one was sent, same as before.
+    brainDumpText:      formData.get('brainDumpText')      || ''
   }
   ctx.set('formFields', fields)
 
   if (!file || typeof file === 'string') {
     ctx.set('uploadedFile', null)
-    return next() // controller returns 400 "Resume file is required." — same as v8
+    // No 400 here anymore — a missing file is valid when brainDumpText is
+    // present. createScan is where "neither provided" actually gets rejected.
+    return next()
   }
 
   if (!ALLOWED_MIME.includes(file.type)) {

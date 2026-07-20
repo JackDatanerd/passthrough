@@ -3,13 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
-    "dev":   "wrangler dev --port 4000",
-    "deploy": "wrangler deploy",
-    "seed":   "node supabase/seed.js",
+    "dev":        "wrangler dev --port 4000",
+    "deploy":     "wrangler deploy",
+    "seed":       "node supabase/seed.js",
     "cf-typegen": "wrangler types"
   },
   "dependencies": {
-    "@cloudflare/puppeteer": "^0.0.35",
     "@supabase/supabase-js":  "^2.39.0",
     "bcryptjs":               "^2.4.3",
     "docx":                   "8.5.0",
@@ -19,6 +18,7 @@
     "zod":                    "^3.22.0"
   },
   "devDependencies": {
-    "wrangler": "^3.50.0"
+    "@cloudflare/puppeteer":  "^1.1.0",
+    "wrangler":               "^3.50.0"
   }
 }

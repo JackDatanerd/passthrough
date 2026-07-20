@@ -33,7 +33,8 @@ async function issueJWT(env, user) {
 function safeUser(user) {
   const {
     passwordHash, paystackAuthCode, paystackCustomerCode,
-    resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry, ...safe
+    resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry,
+    savedProfile, ...safe
   } = user
   return safe
 }

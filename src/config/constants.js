@@ -17,6 +17,7 @@ module.exports = {
   ATS_AI_WEIGHT:   0.30,
   MAX_JD_CHARS:     5000,
   MAX_RESUME_CHARS: 8000,
+  MIN_BRAIN_DUMP_CHARS: 100,   // Phase 1 — brain-dump entry path minimum length
   MAX_UPLOAD_MB:    5,
   FREE_SCANS_PER_DAY:  3,
   ANON_SCAN_TTL_HOURS: 24,

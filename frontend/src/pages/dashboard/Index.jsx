@@ -16,6 +16,16 @@ function scanBadgeVariant(status) {
   return 'gray'
 }
 
+// PHASE 1/4 — a scan's list label depends on how it was created; there's no
+// resumeOriginalName for brain-dump or saved-profile scans since neither
+// involves an uploaded file.
+function scanLabel(scan) {
+  if (scan.resumeOriginalName) return scan.resumeOriginalName
+  if (scan.inputMode === 'brain_dump') return 'Built from scratch'
+  if (scan.inputMode === 'saved_profile') return 'From saved profile'
+  return 'Resume'
+}
+
 export default function DashboardIndex() {
   const { user } = useAuth()
   const [scans,    setScans   ] = useState([])
@@ -23,10 +33,18 @@ export default function DashboardIndex() {
   const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
 
+  // PHASE 4 — retention hook: once a profile is saved, offer a one-click
+  // path back into the scan form with that profile pre-selected.
+  const [hasSavedProfile, setHasSavedProfile] = useState(false)
+
   useEffect(() => {
     api.get('/scan/history?page=1&limit=20')
       .then(res => { setScans(res.data.data.scans); setLoading(false) })
       .catch(() => setLoading(false))
+
+    api.get('/profile')
+      .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
+      .catch(() => {})
   }, [])
 
   async function resendVerification() {
@@ -41,12 +59,20 @@ export default function DashboardIndex() {
   return (
     <DashboardLayout>
       <div className="flex flex-col gap-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between flex-wrap gap-3">
           <h1 className="text-xl font-bold text-gray-900">Your scans</h1>
-          <Link to="/"
-            className="text-sm bg-blue-700 text-white px-4 py-2 rounded-md hover:bg-blue-800 transition-colors">
-            New scan →
-          </Link>
+          <div className="flex items-center gap-3">
+            {hasSavedProfile && (
+              <Link to="/?mode=savedProfile"
+                className="text-sm bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-50 transition-colors">
+                Rescan with new JD
+              </Link>
+            )}
+            <Link to="/"
+              className="text-sm bg-blue-700 text-white px-4 py-2 rounded-md hover:bg-blue-800 transition-colors">
+              New scan →
+            </Link>
+          </div>
         </div>
 
         {/* Email verification banner */}
@@ -92,7 +118,7 @@ export default function DashboardIndex() {
               >
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-900 truncate">
-                    {scan.resumeOriginalName || 'Resume'}
+                    {scanLabel(scan)}
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5">{formatDate(scan.createdAt)}</p>
                 </div>

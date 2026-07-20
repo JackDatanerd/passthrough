@@ -54,24 +54,80 @@ async function parseResumeStructure(env, rawText) {
   catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
 }
 
+// Structuring pass for the brain-dump entry path (Phase 1). Distinct from
+// parseResumeStructure above: that function expects input that already
+// looks like a resume (extracted from an uploaded PDF/DOCX) and is mostly
+// doing format normalization. This function expects genuinely messy input —
+// stream-of-consciousness paragraphs, a pasted old resume with broken
+// formatting, half-sentences, whatever the user typed into a brain-dump box.
+//
+// Same output schema as parseResumeStructure (so callers downstream — the
+// diff view, generateFix, generateBadge — never need to know which entry
+// path produced the data). The system prompt is the only real difference:
+// explicit permission to work from loose, conversational, incomplete text,
+// combined with the same non-negotiable conservatism the rest of the app
+// requires — leave a field null/empty rather than guess a company name,
+// date, or title that isn't clearly stated.
+async function structureFreeformText(env, rawText) {
+  const result = await callClaude(
+    env,
+    `Career counselor structuring a messy, informal work history into resume
+     data. The input may be stream-of-consciousness, incomplete sentences,
+     a pasted old resume with broken formatting, or a mix of all three.
+     Extract only what is clearly stated. If a company name, job title,
+     date, or institution is ambiguous or not clearly stated, use null or
+     omit it — NEVER guess or invent a plausible-sounding value to fill a
+     gap. Convert loose descriptions of work into resume-style bullet
+     points, but every bullet must be traceable to something the user
+     actually described — do not add responsibilities, scope, or outcomes
+     the user did not mention. Return ONLY valid JSON.`,
+    `Structure this into resume data:\n${rawText}\nReturn: {"name":"","email":"","phone":null,"location":null,"summary":null,` +
+    `"experience":[{"company":"","title":"","dates":"","bullets":[]}],` +
+    `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[]}`,
+    2500
+  )
+  if (!result.success) return result
+  try { return { success: true, data: JSON.parse(result.data), error: null } }
+  catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
+}
+
 async function rewriteResumeContent(env, resumeData, jdText) {
   const result = await callClaude(
     env,
     `ATS resume writer. Incorporate JD keywords naturally.
      NEVER fabricate employers, institutions, credentials, or dates not in input.
+     NEVER invent a number, percentage, or metric the user did not provide —
+     if a bullet describes an outcome or improvement that would be stronger
+     with a number and none was given, leave the bullet as an honest
+     qualitative statement and instead flag it in quantificationOpportunities.
      Optimize for US and UK employer expectations. Use standard US resume conventions — avoid regional formatting, idioms, or terminology that may be unfamiliar to North American or European hiring managers.
-     Return ONLY valid JSON matching exact input schema.`,
-    `Resume:\n${JSON.stringify(resumeData)}\n\nJD:\n${jdText}\nReturn same JSON structure.`,
-    4000
+     Return ONLY valid JSON with this exact shape:
+     {"resume": <the resume object, same schema as the input resume>,
+      "quantificationOpportunities": [{"bullet": "the exact rewritten bullet text", "suggestion": "brief guidance on what number or metric would strengthen it"}]}`,
+    `Resume:\n${JSON.stringify(resumeData)}\n\nJD:\n${jdText}\nReturn the JSON envelope described above — "resume" must follow the exact same schema as the input resume object.`,
+    4500
   )
   if (!result.success) return result
   // CRITICAL: result.data is a raw string — must parse before use as object
-  let rewritten
-  try { rewritten = JSON.parse(result.data) }
+  let envelope
+  try { envelope = JSON.parse(result.data) }
   catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
+
+  const rewritten = envelope?.resume
+  if (!rewritten || typeof rewritten !== 'object')
+    return { success: false, data: null, error: 'PARSE_FAIL' }
   if (detectFabrication(resumeData, rewritten))
     return { success: false, data: null, error: 'FABRICATION_DETECTED' }
-  return { success: true, data: rewritten, error: null }
+
+  // Defensive filter — malformed entries from the model (missing/wrong-typed
+  // fields) are dropped rather than allowed to crash the frontend list render.
+  const quantificationOpportunities = Array.isArray(envelope.quantificationOpportunities)
+    ? envelope.quantificationOpportunities.filter(
+        q => q && typeof q.bullet === 'string' && typeof q.suggestion === 'string'
+      )
+    : []
+
+  return { success: true, data: rewritten, quantificationOpportunities, error: null }
 }
 
 function detectFabrication(orig, rewritten) {
@@ -114,4 +170,4 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
   return { success: true, data: result.data.replace(/<script[\s\S]*?<\/script>/gi, ''), error: null }
 }
 
-module.exports = { scoreResumeWithAI, parseResumeStructure, rewriteResumeContent, generateBeautifulResumeHTML }
+module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML }

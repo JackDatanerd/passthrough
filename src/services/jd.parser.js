@@ -5,6 +5,7 @@
 
 const BLOCKED = ['linkedin.com', 'www.linkedin.com', 'facebook.com', 'instagram.com']
 const MAX_BYTES = 500_000
+const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
 
 async function fetchJobDescriptionFromUrl(url) {
   let parsed
@@ -38,7 +39,14 @@ async function fetchJobDescriptionFromUrl(url) {
     }
     const html = new TextDecoder().decode(buf)
 
-    const text = (html || '')
+    // PHASE 5: generic flatten first (unchanged from before this phase),
+    // then platform-specific boilerplate removal — which must run BEFORE
+    // the length check and the 5000-char slice below. Stripping after
+    // slicing risks either cutting off real content that was pushed past
+    // 5000 chars by boilerplate ahead of it, or leaving a truncated
+    // boilerplate fragment behind. Doing it here, on the full flattened
+    // text, avoids both.
+    let text = (html || '')
       .replace(/<script[\s\S]*?<\/script>/gi, '')
       .replace(/<style[\s\S]*?<\/style>/gi, '')
       .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, '')
@@ -46,9 +54,27 @@ async function fetchJobDescriptionFromUrl(url) {
       .replace(/\s+/g, ' ')
       .trim()
 
-    if (!text || text.length < 100)
+    text = stripPlatformBoilerplate(parsed.hostname, text)
+
+    if (!text || text.length < 100) {
+      // PHASE 5: Workday renders job content client-side — a plain fetch()
+      // typically gets back a near-empty shell, which is architecturally
+      // different from every other site hitting this same length check for
+      // an unrelated reason (a genuinely thin page, a fetch that succeeded
+      // but returned junk, etc.). Attribute the failure correctly instead
+      // of returning the same generic message for a fundamentally
+      // different cause. blocked:true is reused deliberately here — the
+      // frontend already switches back to paste-mode on that flag (same
+      // handling LinkedIn's outright block uses), which is exactly the
+      // right UX for "please paste this one manually" even though the
+      // underlying reason (client-side rendering, not hostility) differs
+      // from LinkedIn's.
+      if (isKnownUnreliablePlatform(parsed.hostname))
+        return { success: false, blocked: true, text: null,
+          message: "This looks like a Workday job posting — these often load content dynamically and can't be read automatically. Paste the job description text instead." }
       return { success: false, blocked: false, text: null,
         message: 'Could not extract text. Paste manually.' }
+    }
     return { success: true, blocked: false, text: text.slice(0, 5000) }
   } catch (_) {
     clearTimeout(timeout)

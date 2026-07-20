@@ -33,7 +33,7 @@ async function auth(c, next) {
     if (user.tokenVersion !== decoded.tokenVersion)
       return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
 
-    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, emailVerifyToken, ...safe } = user
+    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, emailVerifyToken, savedProfile, ...safe } = user
     c.set('user', safe)
     await next()
   } catch (err) {

@@ -7,6 +7,9 @@ import Footer from '../components/layout/Footer'
 import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
 import FixBanner from '../components/scan/FixBanner'
+import DiffView from '../components/scan/DiffView'
+import QuantificationPrompts from '../components/scan/QuantificationPrompts'
+import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
@@ -119,7 +122,11 @@ export default function ScanResult() {
       <main className="max-w-3xl mx-auto px-4 py-10 w-full">
         <div className="mb-6">
           <h1 className="text-2xl font-bold text-gray-900">
-            {scan.resumeOriginalName || 'Resume scan'}
+            {scan.resumeOriginalName || (
+              scan.inputMode === 'brain_dump'   ? 'Resume from scratch' :
+              scan.inputMode === 'saved_profile' ? 'Resume from saved profile' :
+              'Resume scan'
+            )}
           </h1>
           <p className="text-sm text-gray-500 mt-1">
             {formatDate(scan.createdAt)} · {statusLabel(scan.status)}
@@ -139,7 +146,11 @@ export default function ScanResult() {
         {scan.status === 'ERROR' && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
             <p className="font-medium text-red-800 mb-1">Scan failed</p>
-            <p className="text-sm text-red-600">We couldn't parse your resume. Try uploading a text-based PDF or .docx.</p>
+            <p className="text-sm text-red-600">
+              {scan.inputMode === 'brain_dump'
+                ? "We couldn't structure your background. Try adding more detail — company names, roles, and what you did."
+                : "We couldn't parse your resume. Try uploading a text-based PDF or .docx."}
+            </p>
             <Link to="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>
           </div>
         )}
@@ -198,6 +209,28 @@ export default function ScanResult() {
                   </Button>
                 </div>
               </div>
+            )}
+
+            {/* Diff view — only meaningful once a fix/badge has been delivered */}
+            {scan.status === 'FIX_DELIVERED' && (
+              <DiffView
+                originalResumeData={scan.originalResumeData}
+                rewrittenResumeData={scan.rewrittenResumeData}
+                fixTier={scan.fixTier}
+              />
+            )}
+
+            {/* Quantification prompts — renders nothing if the array is empty/null,
+                which is always true for badge-only purchases (no AI rewrite ran) */}
+            {scan.status === 'FIX_DELIVERED' && (
+              <QuantificationPrompts prompts={scan.quantificationPrompts} />
+            )}
+
+            {/* Save profile for reuse — logged-in users only (anonymous visitors
+                have no account to save to), and only if there's structured data
+                to actually save */}
+            {scan.status === 'FIX_DELIVERED' && user && scan.originalResumeData && (
+              <SaveProfilePrompt scanId={scan.id} />
             )}
 
             {/* Fix banner — only when not yet purchased */}
