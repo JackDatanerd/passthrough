@@ -12,12 +12,33 @@
 // a Durable Object counter instead — KV is not the right primitive for that.
 //
 // Each limiter returns Hono middleware: async (c, next) => {...}.
+//
+// ── Testing bypass ────────────────────────────────────────────────────────
+// RATE_LIMIT_BYPASS_IPS is an OPTIONAL secret — a comma-separated list of IPs
+// that skip every limiter entirely. Unset in production by default (no
+// secret = no bypass = normal behavior, fails safe). To use it while testing:
+//   wrangler secret put RATE_LIMIT_BYPASS_IPS
+//   (paste your IP, or multiple comma-separated: "1.2.3.4,5.6.7.8")
+// To turn it back off before shipping to real users:
+//   wrangler secret delete RATE_LIMIT_BYPASS_IPS
+// This intentionally is NOT a wrangler.toml [vars] entry — it must go through
+// `wrangler secret put`, same as every other credential-adjacent value, so it
+// never gets committed to the repo or left on accidentally in a config file.
+
+function isBypassed(c, ip) {
+  const raw = c.env.RATE_LIMIT_BYPASS_IPS
+  if (!raw) return false
+  return raw.split(',').map(s => s.trim()).filter(Boolean).includes(ip)
+}
 
 function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
   return async (c, next) => {
     if (skip && skip(c)) return next()
 
     const ip  = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
+
+    if (isBypassed(c, ip)) return next()
+
     const key = `${keyPrefix}:${ip}`
 
     const kv = c.env.RATE_LIMIT_KV
