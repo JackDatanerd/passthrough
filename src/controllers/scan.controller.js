@@ -626,6 +626,7 @@ async function generateFix(env, supabase, scanId) {
     if (user)
       emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
         .catch(e => console.error('Fix email:', e.message))
+    return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateFix ${scanId}:`, err.message)
     // supabase-js query builders are thenable but not real Promises — .catch()
@@ -637,6 +638,10 @@ async function generateFix(env, supabase, scanId) {
       const { user } = await getScanWithUser(supabase, scanId)
       if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
     } catch (_) {}
+    // Explicit failure signal — without this, the function resolves either
+    // way (success or internally-handled failure), and a caller like the
+    // queue consumer can't tell the difference from the promise alone.
+    return { success: false, error: err.message }
   }
 }
 
@@ -737,6 +742,7 @@ async function generateBadge(env, supabase, scanId) {
     if (user)
       emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
         .catch(e => console.error('Badge email:', e.message))
+    return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateBadge ${scanId}:`, err.message)
     // supabase-js query builders are thenable but not real Promises — .catch()
@@ -748,6 +754,7 @@ async function generateBadge(env, supabase, scanId) {
       const { user } = await getScanWithUser(supabase, scanId)
       if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
     } catch (_) {}
+    return { success: false, error: err.message }
   }
 }
 

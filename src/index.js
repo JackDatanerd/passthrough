@@ -148,7 +148,15 @@ async function queue(batch, env, ctx) {
     }
     try {
       const generator = type === 'generateBadge' ? generateBadge : generateFix
-      await generator(env, supabase, scanId)
+      const outcome = await generator(env, supabase, scanId)
+      if (outcome?.success) {
+        console.log(`Queue job succeeded: ${type} ${scanId}`)
+      } else {
+        // generateFix/generateBadge already marked status='ERROR' on the scan
+        // row themselves — this is purely so wrangler tail shows the real
+        // outcome instead of a misleading blanket "Ok" on every invocation.
+        console.error(`Queue job completed but reported failure: ${type} ${scanId} — ${outcome?.error || 'no error detail returned'}`)
+      }
       message.ack()
     } catch (err) {
       // Should be rare — generateFix/generateBadge handle their own errors —
