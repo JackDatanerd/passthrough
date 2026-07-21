@@ -16,7 +16,10 @@ async function extractText(bytes, mimeType) {
       const { extractText: pdfExtract } = await import('unpdf')
       // unpdf expects a Uint8Array
       const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
-      const { text } = await pdfExtract(uint8)
+      // mergePages: true is required — without it, unpdf returns `text` as an
+      // array of per-page strings (string[]) instead of one merged string,
+      // which crashes every caller that does rawResumeText.trim() downstream.
+      const { text } = await pdfExtract(uint8, { mergePages: true })
       return text || ''
     }
     const r = await mammoth.extractRawText({ buffer })

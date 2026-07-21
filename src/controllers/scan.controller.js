@@ -219,7 +219,12 @@ async function createScan(ctx) {
       if (insertErr) throw insertErr
     } catch (createErr) {
       // Return the slot — scan was not created
-      await supabase.from('users').update({ scans_today: scansToday }).eq('id', user.id).catch(() => {})
+      // NOTE: supabase-js query builders are thenable (have .then) but are not
+      // real Promise instances, so .catch() doesn't exist on them directly —
+      // must go through a real try/catch (or await) instead.
+      try {
+        await supabase.from('users').update({ scans_today: scansToday }).eq('id', user.id)
+      } catch (_) {}
       await cleanupFile()
       throw createErr
     }
@@ -513,7 +518,11 @@ async function runAtsScan(env, supabase, scanId) {
     }
   } catch (err) {
     console.error('runAtsScan error:', err.message)
-    await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId).catch(() => {})
+    // supabase-js query builders are thenable but not real Promises — .catch()
+    // doesn't exist on them directly, must use a real try/catch instead.
+    try {
+      await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
+    } catch (_) {}
   }
 }
 
@@ -615,7 +624,11 @@ async function generateFix(env, supabase, scanId) {
         .catch(e => console.error('Fix email:', e.message))
   } catch (err) {
     console.error(`[CRITICAL] generateFix ${scanId}:`, err.message)
-    await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId).catch(() => {})
+    // supabase-js query builders are thenable but not real Promises — .catch()
+    // doesn't exist on them directly, must use a real try/catch instead.
+    try {
+      await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
+    } catch (_) {}
     try {
       const { user } = await getScanWithUser(supabase, scanId)
       if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
@@ -722,7 +735,11 @@ async function generateBadge(env, supabase, scanId) {
         .catch(e => console.error('Badge email:', e.message))
   } catch (err) {
     console.error(`[CRITICAL] generateBadge ${scanId}:`, err.message)
-    await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId).catch(() => {})
+    // supabase-js query builders are thenable but not real Promises — .catch()
+    // doesn't exist on them directly, must use a real try/catch instead.
+    try {
+      await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
+    } catch (_) {}
     try {
       const { user } = await getScanWithUser(supabase, scanId)
       if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
