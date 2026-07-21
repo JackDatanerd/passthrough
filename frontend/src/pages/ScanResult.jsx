@@ -14,7 +14,23 @@ import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
 
-const TERMINAL = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
+// These used to be a single `TERMINAL` array serving two different jobs at
+// once: "when should we stop polling" and "which statuses render the
+// results section". FIX_GENERATING belonged in the second list but not the
+// first — including it in a single shared array meant polling stopped the
+// instant a fix started generating, before the backend (which can take a
+// minute or two: two Claude calls + a PDF render) had actually finished.
+// The UI would then sit on "Generating your fixed resume…" forever, even
+// after the backend completed successfully.
+//
+// POLLING_STOP: true terminal states — nothing will change without the user
+// taking an action (paying) or starting a new scan. Deliberately excludes
+// FIX_PURCHASED and FIX_GENERATING, which the backend transitions through
+// automatically without any user input.
+const POLLING_STOP = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_DELIVERED', 'ERROR']
+// RESULTS_READY: statuses where the score/results section should render at
+// all (as opposed to the plain "Scanning your resume…" placeholder).
+const RESULTS_READY = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']
 const POLL_MS  = 2500
 
 export default function ScanResult() {
@@ -37,7 +53,7 @@ export default function ScanResult() {
       const data   = res.data.data
       setScan(data)
       setLoading(false)
-      if (TERMINAL.includes(data.status)) {
+      if (POLLING_STOP.includes(data.status)) {
         clearInterval(pollRef.current)
       }
     } catch (err) {
@@ -114,7 +130,11 @@ export default function ScanResult() {
     )
   }
 
-  const scanning = !TERMINAL.includes(scan.status) || scan.status === 'PENDING'
+  // Explicit allowlist rather than a negation against another list — the
+  // previous double-negative (!TERMINAL.includes(...)) was exactly the kind
+  // of indirection that let FIX_GENERATING's dual meaning slip through
+  // unnoticed. PENDING/SCANNING are the only states with no results yet.
+  const scanning = ['PENDING', 'SCANNING'].includes(scan.status)
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -156,7 +176,7 @@ export default function ScanResult() {
         )}
 
         {/* Results */}
-        {['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status) && (
+        {RESULTS_READY.includes(scan.status) && (
           <div className="flex flex-col gap-6">
             {/* Score card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
