@@ -512,12 +512,20 @@ async function runAtsScan(env, supabase, scanId) {
       const user = userRowToCamel(userRow)
       if (user) {
         const fn = finalScore >= c.ATS_PASS_THRESHOLD ? emailService.sendScanPass : emailService.sendScanFail
-        fn(env, supabase, user.email, user.name, finalScore, {
-          keywordScore:  ruleResult.keywordScore,
-          formatScore:   ruleResult.formatScore,
-          sectionsScore: ruleResult.sectionsScore,
-          contentScore:  ruleResult.contentScore
-        }).catch(e => console.error('Scan email:', e.message))
+        // Awaited rather than fire-and-forget: this whole function already
+        // runs inside a background waitUntil() call from createScan (the
+        // HTTP response already returned), so there's no response to delay
+        // — but an un-awaited promise here can still get silently cancelled
+        // when runAtsScan itself resolves, since waitUntil only protects
+        // the promise passed to it, not promises nested further inside.
+        try {
+          await fn(env, supabase, user.email, user.name, finalScore, {
+            keywordScore:  ruleResult.keywordScore,
+            formatScore:   ruleResult.formatScore,
+            sectionsScore: ruleResult.sectionsScore,
+            contentScore:  ruleResult.contentScore
+          })
+        } catch (e) { console.error('Scan email:', e.message) }
       }
     }
   } catch (err) {
@@ -623,9 +631,11 @@ async function generateFix(env, supabase, scanId) {
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
 
-    if (user)
-      emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
-        .catch(e => console.error('Fix email:', e.message))
+    if (user) {
+      try {
+        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
+      } catch (e) { console.error('Fix email:', e.message) }
+    }
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateFix ${scanId}:`, err.message)
@@ -636,7 +646,7 @@ async function generateFix(env, supabase, scanId) {
     } catch (_) {}
     try {
       const { user } = await getScanWithUser(supabase, scanId)
-      if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
+      if (user) await emailService.sendFixFailed(env, supabase, user.email, user.name)
     } catch (_) {}
     // Explicit failure signal — without this, the function resolves either
     // way (success or internally-handled failure), and a caller like the
@@ -739,9 +749,11 @@ async function generateBadge(env, supabase, scanId) {
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
 
-    if (user)
-      emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
-        .catch(e => console.error('Badge email:', e.message))
+    if (user) {
+      try {
+        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
+      } catch (e) { console.error('Badge email:', e.message) }
+    }
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateBadge ${scanId}:`, err.message)
@@ -752,7 +764,7 @@ async function generateBadge(env, supabase, scanId) {
     } catch (_) {}
     try {
       const { user } = await getScanWithUser(supabase, scanId)
-      if (user) emailService.sendFixFailed(env, supabase, user.email, user.name).catch(() => {})
+      if (user) await emailService.sendFixFailed(env, supabase, user.email, user.name)
     } catch (_) {}
     return { success: false, error: err.message }
   }

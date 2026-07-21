@@ -65,9 +65,18 @@ async function register(c) {
   if (error) throw error
   const user = userRowToCamel(row)
 
-  // Send both emails — don't await, don't fail registration if email fails
-  emailService.sendWelcome(c.env, supabase, email, name).catch(e => console.error('Welcome email:', e.message))
-  emailService.sendVerification(c.env, supabase, email, name, raw).catch(e => console.error('Verify email:', e.message))
+  // Send both emails without delaying the response — but MUST be wrapped in
+  // waitUntil(), not truly fire-and-forget. Once this function returns its
+  // Response, Workers can terminate the execution context; any promise not
+  // explicitly protected by waitUntil() (or awaited beforehand) can be
+  // silently cancelled mid-flight, with no error and no log — which is
+  // exactly what was happening here before this fix.
+  c.executionCtx.waitUntil(
+    emailService.sendWelcome(c.env, supabase, email, name).catch(e => console.error('Welcome email:', e.message))
+  )
+  c.executionCtx.waitUntil(
+    emailService.sendVerification(c.env, supabase, email, name, raw).catch(e => console.error('Verify email:', e.message))
+  )
 
   return c.json({ success: true,
     data: { token: await issueJWT(c.env, user), user: safeUser(user) } }, 201)
@@ -118,8 +127,11 @@ async function forgotPassword(c) {
     const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
 
     await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id)
-    emailService.sendPasswordReset(c.env, supabase, email, user.name, raw)
-      .catch(e => console.error('Reset email:', e.message))
+    // waitUntil, not fire-and-forget — see register()'s comment for why.
+    c.executionCtx.waitUntil(
+      emailService.sendPasswordReset(c.env, supabase, email, user.name, raw)
+        .catch(e => console.error('Reset email:', e.message))
+    )
   }
 
   // Always return same message — don't reveal if email is registered
@@ -185,8 +197,14 @@ async function resendVerification(c) {
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
 
   await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id)
-  emailService.sendVerification(c.env, supabase, user.email, user.name, raw)
-    .catch(e => console.error('Resend verify:', e.message))
+  // waitUntil, not fire-and-forget — see register()'s comment for why. This
+  // was the exact cause of "resend verification never arrives": the request
+  // returned successfully, but the actual Resend API call was getting
+  // silently cancelled before it completed, since nothing protected it.
+  c.executionCtx.waitUntil(
+    emailService.sendVerification(c.env, supabase, user.email, user.name, raw)
+      .catch(e => console.error('Resend verify:', e.message))
+  )
 
   return c.json({ success: true, message: 'Verification email sent.' })
 }

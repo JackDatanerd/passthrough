@@ -91,11 +91,28 @@ export default function ScanResult() {
       a.click()
       URL.revokeObjectURL(url)
     } catch (err) {
-      const code = err.response?.data?.code
+      // With responseType: 'blob', axios applies that same responseType to
+      // ERROR responses too — err.response.data is a Blob, not parsed JSON,
+      // even though the server sent a normal JSON error body. Reading
+      // err.response.data.code directly always returns undefined here,
+      // which silently masked the EMAIL_NOT_VERIFIED case behind the
+      // generic "Download failed." message. Parse the Blob's text instead.
+      let code, message
+      const data = err.response?.data
+      if (data instanceof Blob) {
+        try {
+          const parsed = JSON.parse(await data.text())
+          code = parsed.code
+          message = parsed.message
+        } catch (_) { /* not JSON — fall through to generic message */ }
+      } else {
+        code = data?.code
+        message = data?.message
+      }
       if (code === 'EMAIL_NOT_VERIFIED') {
         setDlError('Please verify your email before downloading. Check your inbox.')
       } else {
-        setDlError(err.response?.data?.message || 'Download failed.')
+        setDlError(message || 'Download failed.')
       }
     }
   }
