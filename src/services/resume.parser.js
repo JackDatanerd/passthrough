@@ -48,7 +48,11 @@ async function parse(env, bytes, mimeType) {
       text: truncated,
       resumeData: null,
       parseError: true,
-      parseErrorMessage: 'Could not extract resume structure.'
+      // Preserve the real reason (RESPONSE_TRUNCATED / PARSE_FAIL / an
+      // Anthropic API error message) instead of masking it with a generic
+      // string — this is what showed up as "Could not extract resume
+      // structure" with no further detail in production logs.
+      parseErrorMessage: `Could not extract resume structure (${result.error || 'unknown'}).`
     }
   return { text: truncated, resumeData: result.data, parseError: false }
 }
@@ -74,7 +78,7 @@ async function structureBrainDump(env, rawText) {
       text: truncated,
       resumeData: null,
       parseError: true,
-      parseErrorMessage: 'Could not structure your background. Try adding more detail — company names, roles, and what you did.'
+      parseErrorMessage: `Could not structure your background (${result.error || 'unknown'}). Try adding more detail — company names, roles, and what you did.`
     }
   return { text: truncated, resumeData: result.data, parseError: false }
 }

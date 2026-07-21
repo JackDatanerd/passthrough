@@ -480,12 +480,16 @@ async function runAtsScan(env, supabase, scanId) {
     const aiResult = await claudeService.scoreResumeWithAI(env, resumeText, jdText)
     if (aiResult.success) {
       try {
-        const parsed = JSON.parse(aiResult.data)
+        const parsed = claudeService.extractJson(aiResult.data)
         if (typeof parsed.aiScore === 'number')
           finalScore = Math.round(
             (ruleResult.score * c.ATS_RULE_WEIGHT) + (parsed.aiScore * c.ATS_AI_WEIGHT)
           )
-      } catch (_) {}
+      } catch (parseErr) {
+        // Non-fatal by design — falls back to rule-only score — but log it
+        // so a silent AI-scoring degradation is at least visible in tail.
+        console.error('AI score parse failed, using rule-only score:', parseErr.message)
+      }
     }
     finalScore = Math.max(0, Math.min(100, finalScore))
 

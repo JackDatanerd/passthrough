@@ -24,10 +24,51 @@ async function callClaude(env, system, userMsg, maxTokens) {
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error?.message || 'Claude API error')
-    return { success: true, data: json.content[0].text, error: null }
+    // stop_reason 'max_tokens' means the response was cut off mid-output —
+    // if that happens on a JSON-generating call, JSON.parse will fail on
+    // truncated output, and the real cause (maxTokens too low for this
+    // input) would otherwise be indistinguishable from a genuine malformed
+    // response. Surface it so callers/logs can tell the difference.
+    return { success: true, data: json.content[0].text, error: null, stopReason: json.stop_reason }
   } catch (err) {
     console.error('Claude error:', err.message)
-    return { success: false, data: null, error: err.message }
+    return { success: false, data: null, error: err.message, stopReason: null }
+  }
+}
+
+// Claude frequently wraps JSON output in markdown code fences (```json ... ```)
+// or adds a stray leading/trailing sentence despite explicit "ONLY valid JSON"
+// instructions. Strip that defensively before parsing rather than letting a
+// well-formatted-but-fenced response get discarded as a hard parse failure.
+function extractJson(raw) {
+  if (typeof raw !== 'string') throw new Error('Claude response was not a string')
+  let s = raw.trim()
+  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
+  if (fenced) s = fenced[1].trim()
+  return JSON.parse(s)
+}
+
+// Parses `result.data` as JSON with fence-stripping, and on failure logs
+// enough context (label, stop_reason, a truncated snippet of the raw output)
+// to diagnose the cause from wrangler tail without needing to reproduce —
+// distinguishes "Claude got cut off before finishing the JSON" (raise
+// maxTokens) from "Claude returned genuinely malformed JSON" (prompt issue).
+function parseJsonResult(result, label) {
+  if (!result.success) return result
+  try {
+    return { success: true, data: extractJson(result.data), error: null }
+  } catch (parseErr) {
+    const truncated = result.stopReason === 'max_tokens'
+    console.error(
+      `${label} JSON parse failed${truncated ? ' (response was TRUNCATED — maxTokens too low for this input)' : ''}:`,
+      parseErr.message,
+      '| raw (first 500 chars):', (result.data || '').slice(0, 500)
+    )
+    return {
+      success: false,
+      data: null,
+      error: truncated ? 'RESPONSE_TRUNCATED' : 'PARSE_FAIL'
+    }
   }
 }
 
@@ -49,9 +90,7 @@ async function parseResumeStructure(env, rawText) {
     `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[]}`,
     2000
   )
-  if (!result.success) return result
-  try { return { success: true, data: JSON.parse(result.data), error: null } }
-  catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
+  return parseJsonResult(result, 'parseResumeStructure')
 }
 
 // Structuring pass for the brain-dump entry path (Phase 1). Distinct from
@@ -86,9 +125,7 @@ async function structureFreeformText(env, rawText) {
     `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[]}`,
     2500
   )
-  if (!result.success) return result
-  try { return { success: true, data: JSON.parse(result.data), error: null } }
-  catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
+  return parseJsonResult(result, 'structureFreeformText')
 }
 
 async function rewriteResumeContent(env, resumeData, jdText) {
@@ -110,8 +147,17 @@ async function rewriteResumeContent(env, resumeData, jdText) {
   if (!result.success) return result
   // CRITICAL: result.data is a raw string — must parse before use as object
   let envelope
-  try { envelope = JSON.parse(result.data) }
-  catch (_) { return { success: false, data: null, error: 'PARSE_FAIL' } }
+  try {
+    envelope = extractJson(result.data)
+  } catch (parseErr) {
+    const truncated = result.stopReason === 'max_tokens'
+    console.error(
+      `rewriteResumeContent JSON parse failed${truncated ? ' (response was TRUNCATED — maxTokens too low for this input)' : ''}:`,
+      parseErr.message,
+      '| raw (first 500 chars):', (result.data || '').slice(0, 500)
+    )
+    return { success: false, data: null, error: truncated ? 'RESPONSE_TRUNCATED' : 'PARSE_FAIL' }
+  }
 
   const rewritten = envelope?.resume
   if (!rewritten || typeof rewritten !== 'object')
@@ -170,4 +216,4 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
   return { success: true, data: result.data.replace(/<script[\s\S]*?<\/script>/gi, ''), error: null }
 }
 
-module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML }
+module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson }
