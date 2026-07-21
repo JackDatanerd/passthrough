@@ -57,9 +57,9 @@ function extOf(filename) {
 
 // POST /api/scan  — body already parsed by middleware/upload.js into
 // c.get('uploadedFile') and c.get('formFields')
-async function createScan(c) {
-  const file   = c.get('uploadedFile')
-  const fields = c.get('formFields') || {}
+async function createScan(ctx) {
+  const file   = ctx.get('uploadedFile')
+  const fields = ctx.get('formFields') || {}
   const brainDumpText = (fields.brainDumpText || '').trim()
   // PHASE 4: third entry mode — reuse a previously saved profile instead of
   // uploading a file or pasting a fresh brain dump. Only meaningful for a
@@ -68,7 +68,7 @@ async function createScan(c) {
   // confusingly further down.
   const useSavedProfile = fields.useSavedProfile === 'true'
 
-  const user = c.get('user')
+  const user = ctx.get('user')
 
   // PHASE 1 (extended in PHASE 4): exactly one of the three input modes
   // must be present. More than one present is rejected explicitly rather
@@ -76,15 +76,15 @@ async function createScan(c) {
   // produces surprising behavior.
   const modesPresent = [!!file, !!brainDumpText, useSavedProfile].filter(Boolean).length
   if (modesPresent === 0)
-    return c.json({ success: false,
+    return ctx.json({ success: false,
       message: 'Upload a resume, tell us about your background, or use your saved profile.' }, 400)
   if (modesPresent > 1)
-    return c.json({ success: false,
+    return ctx.json({ success: false,
       message: 'Choose one: a resume file, your background, or your saved profile — not more than one.' }, 400)
   if (useSavedProfile && !user)
-    return c.json({ success: false, message: 'Sign in to use a saved profile.' }, 401)
+    return ctx.json({ success: false, message: 'Sign in to use a saved profile.' }, 401)
 
-  const supabase = getSupabase(c.env)
+  const supabase = getSupabase(ctx.env)
 
   // R2 object key generated up front since the R2 key embeds the scan ID,
   // and we need that ID before the DB row exists. Generated client-side
@@ -102,7 +102,7 @@ async function createScan(c) {
   // flips true there.
   let uploaded = false
   async function cleanupFile() {
-    if (uploaded) await c.env.RESUMES_BUCKET.delete(resumeKey).catch(() => {})
+    if (uploaded) await ctx.env.RESUMES_BUCKET.delete(resumeKey).catch(() => {})
   }
 
   let jdText = (fields.jobDescriptionText || '').trim()
@@ -110,17 +110,17 @@ async function createScan(c) {
   if (fields.jobDescriptionUrl) {
     const fetched = await jdParser.fetchJobDescriptionFromUrl(fields.jobDescriptionUrl)
     if (fetched.blocked) {
-      return c.json({ success: false, blocked: true, message: fetched.message }, 400)
+      return ctx.json({ success: false, blocked: true, message: fetched.message }, 400)
     }
     if (fetched.success) jdText = fetched.text
     else if (!jdText) {
-      return c.json({ success: false, message: fetched.message }, 400)
+      return ctx.json({ success: false, message: fetched.message }, 400)
     }
   }
 
   jdText = jdText.slice(0, c.MAX_JD_CHARS)
   if (jdText.length < 50) {
-    return c.json({ success: false, message: 'Job description too short (min 50 chars).' }, 400)
+    return ctx.json({ success: false, message: 'Job description too short (min 50 chars).' }, 400)
   }
 
   // PHASE 1: brain-dump minimum length, mirrors the JD length gate above.
@@ -128,7 +128,7 @@ async function createScan(c) {
   // validated later, after extraction, inside runAtsScan (same as before
   // this phase — that check hasn't moved).
   if (brainDumpText && brainDumpText.length < c.MIN_BRAIN_DUMP_CHARS) {
-    return c.json({ success: false,
+    return ctx.json({ success: false,
       message: `Tell us a bit more about your background (min ${c.MIN_BRAIN_DUMP_CHARS} chars).` }, 400)
   }
 
@@ -143,7 +143,7 @@ async function createScan(c) {
     if (profErr) throw profErr
     savedProfileData = userRow.saved_profile?.resumeData || null
     if (!savedProfileData)
-      return c.json({ success: false,
+      return ctx.json({ success: false,
         message: 'No saved profile found. Upload a resume or paste your background instead.' }, 400)
   }
 
@@ -184,7 +184,7 @@ async function createScan(c) {
 
   async function putFileIfNeeded() {
     if (!file) return
-    await c.env.RESUMES_BUCKET.put(resumeKey, file.bytes, { httpMetadata: { contentType: file.mimetype } })
+    await ctx.env.RESUMES_BUCKET.put(resumeKey, file.bytes, { httpMetadata: { contentType: file.mimetype } })
     uploaded = true
   }
 
@@ -200,7 +200,7 @@ async function createScan(c) {
       scansToday = 0
     }
     if (scansToday >= c.FREE_SCANS_PER_DAY) {
-      return c.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
+      return ctx.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
     }
 
     // PATCH 5 (carried over): increment optimistically, roll back on failure.
@@ -224,10 +224,10 @@ async function createScan(c) {
       throw createErr
     }
 
-    c.executionCtx?.waitUntil(
-      runAtsScan(c.env, supabase, scanId).catch(err => console.error('Unhandled runAtsScan:', err.message))
+    ctx.executionCtx?.waitUntil(
+      runAtsScan(ctx.env, supabase, scanId).catch(err => console.error('Unhandled runAtsScan:', err.message))
     )
-    return c.json({ success: true, data: { scanId, anonToken: null } })
+    return ctx.json({ success: true, data: { scanId, anonToken: null } })
   }
 
   // Anonymous scan
@@ -248,28 +248,28 @@ async function createScan(c) {
     throw createErr
   }
 
-  c.executionCtx?.waitUntil(
-    runAtsScan(c.env, supabase, scanId).catch(err => console.error('Unhandled runAtsScan:', err.message))
+  ctx.executionCtx?.waitUntil(
+    runAtsScan(ctx.env, supabase, scanId).catch(err => console.error('Unhandled runAtsScan:', err.message))
   )
-  return c.json({ success: true, data: { scanId, anonToken } })
+  return ctx.json({ success: true, data: { scanId, anonToken } })
 }
 
 // GET /api/scan/status/:id
-async function getScanStatus(c) {
-  const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('scans').select('*').eq('id', c.req.param('id')).maybeSingle()
+async function getScanStatus(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
-  if (!scan) return c.json({ success: false, message: 'Not found.' }, 404)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
 
-  const user = c.get('user')
+  const user = ctx.get('user')
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && scan.anonToken === c.req.query('token'))
-  if (!isOwner) return c.json({ success: false, message: 'Access denied.' }, 403)
+                  (scan.anonToken && scan.anonToken === ctx.req.query('token'))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   // badgeEligible computed — NOT stored
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
-  return c.json({ success: true, data: {
+  return ctx.json({ success: true, data: {
     status:        scan.status,
     atsScore:      scan.atsScore,
     passed:        scan.passed,
@@ -282,86 +282,86 @@ async function getScanStatus(c) {
 }
 
 // GET /api/scan/:id
-async function getScan(c) {
-  const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('scans').select('*').eq('id', c.req.param('id')).maybeSingle()
+async function getScan(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
-  if (!scan) return c.json({ success: false, message: 'Not found.' }, 404)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
 
-  const user = c.get('user')
+  const user = ctx.get('user')
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && scan.anonToken === c.req.query('token'))
-  if (!isOwner) return c.json({ success: false, message: 'Access denied.' }, 403)
+                  (scan.anonToken && scan.anonToken === ctx.req.query('token'))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
-  return c.json({ success: true, data: { ...safe, badgeEligible } })
+  return ctx.json({ success: true, data: { ...safe, badgeEligible } })
 }
 
 // POST /api/scan/:id/initiate-fix
-async function initiateFix(c) {
-  const user = c.get('user')
-  const body = await c.req.json()
+async function initiateFix(ctx) {
+  const user = ctx.get('user')
+  const body = await ctx.req.json()
   const { fixTier } = z.object({ fixTier: z.enum(['FIX', 'BADGE']) }).parse(body)
 
-  const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('scans').select('*').eq('id', c.req.param('id')).maybeSingle()
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
 
   if (!scan || scan.userId !== user.id)
-    return c.json({ success: false, message: 'Access denied.' }, 403)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
   if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
-    return c.json({ success: false, message: 'Scan must be complete.' }, 400)
+    return ctx.json({ success: false, message: 'Scan must be complete.' }, 400)
   if (scan.fixPurchased)
-    return c.json({ success: false, message: 'Already purchased.' }, 400)
+    return ctx.json({ success: false, message: 'Already purchased.' }, 400)
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
-    return c.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
+    return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
   const amount = fixTier === 'BADGE' ? c.PRICE_BADGE : c.PRICE_FIX
-  return c.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
+  return ctx.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
 }
 
 // GET /api/scan/:id/download?type=ats|pdf
-async function downloadFile(c) {
-  const user = c.get('user')
-  const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('scans').select('*').eq('id', c.req.param('id')).maybeSingle()
+async function downloadFile(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
 
   if (!scan || scan.userId !== user.id)
-    return c.json({ success: false, message: 'Access denied.' }, 403)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
   if (!scan.fixPurchased)
-    return c.json({ success: false, message: 'Fix not purchased.' }, 403)
+    return ctx.json({ success: false, message: 'Fix not purchased.' }, 403)
   if (!user.emailVerified)
-    return c.json({ success: false, message: 'Verify your email to download.', code: 'EMAIL_NOT_VERIFIED' }, 403)
+    return ctx.json({ success: false, message: 'Verify your email to download.', code: 'EMAIL_NOT_VERIFIED' }, 403)
 
-  const type     = c.req.query('type')
+  const type     = ctx.req.query('type')
   const fileKey  = type === 'ats' ? scan.resumeAtsPath : scan.resumePdfPath
   const filename = type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf'
-  if (!fileKey) return c.json({ success: false, message: 'File not ready yet.' }, 404)
+  if (!fileKey) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
 
-  const obj = await c.env.RESUMES_BUCKET.get(fileKey)
-  if (!obj) return c.json({ success: false, message: 'File not ready yet.' }, 404)
+  const obj = await ctx.env.RESUMES_BUCKET.get(fileKey)
+  if (!obj) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
 
-  c.header('Content-Disposition', `attachment; filename="${filename}"`)
-  c.header('Content-Type', type === 'ats'
+  ctx.header('Content-Disposition', `attachment; filename="${filename}"`)
+  ctx.header('Content-Type', type === 'ats'
     ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     : 'application/pdf')
-  return c.body(obj.body)
+  return ctx.body(obj.body)
 }
 
 // GET /api/scan/history?page=&limit=
-async function getScanHistory(c) {
-  const user = c.get('user')
-  const page  = parseInt(c.req.query('page'))  || 1
-  const limit = parseInt(c.req.query('limit')) || 10
+async function getScanHistory(ctx) {
+  const user = ctx.get('user')
+  const page  = parseInt(ctx.req.query('page'))  || 1
+  const limit = parseInt(ctx.req.query('limit')) || 10
   const from = (page - 1) * limit
   const to   = from + limit - 1
 
-  const supabase = getSupabase(c.env)
+  const supabase = getSupabase(ctx.env)
   const { data: rows, error } = await supabase
     .from('scans')
     .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score')
@@ -378,7 +378,7 @@ async function getScanHistory(c) {
     sectionsScore: r.sections_score, contentScore: r.content_score
   }))
 
-  return c.json({ success: true, data: { scans, page, limit } })
+  return ctx.json({ success: true, data: { scans, page, limit } })
 }
 
 // ─── helper: replaces Prisma's `include: { user: true }` ─────────────────
