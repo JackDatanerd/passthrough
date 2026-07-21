@@ -17,6 +17,23 @@ id      = "489f1b7c413744efb066df3335bff8c2"
 [browser]
 binding = "BROWSER"
 
+# ── Queue: background processing for generateFix/generateBadge — these do
+# two Claude calls + a Browser Rendering PDF render (~20-45s), which exceeds
+# ctx.waitUntil()'s hard 30s wall-clock cap. Queue consumers have no such
+# cap. max_batch_size = 1 because each job is already heavy on its own.
+# Run once before first deploy: `wrangler queues create passthrough-fix-jobs`
+# and `wrangler queues create passthrough-fix-jobs-dlq`.
+[[queues.producers]]
+queue   = "passthrough-fix-jobs"
+binding = "FIX_QUEUE"
+
+[[queues.consumers]]
+queue              = "passthrough-fix-jobs"
+max_batch_size     = 1
+max_batch_timeout  = 5
+max_retries        = 3
+dead_letter_queue  = "passthrough-fix-jobs-dlq"
+
 # ── Cron: hourly anonymous-scan cleanup (replaces the old setInterval in server.js) ──
 [triggers]
 crons = ["0 * * * *"]
