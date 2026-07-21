@@ -8,16 +8,16 @@
 // UPDATE...RETURNING will see status='PENDING' and get a row back; the other
 // gets an empty array. `updatedRows.length` replaces `count`.
 //
-// generateFix/generateBadge calls now take (env, supabase, scanId) and are
-// wrapped in c.executionCtx.waitUntil() per the migration patch's Section 3 —
-// this endpoint is one of the three places that pattern is mandatory.
+// generateFix/generateBadge calls are dispatched via FIX_QUEUE (see
+// index.js's queue() handler) rather than run inline — see that handler's
+// comment block for why waitUntil() isn't viable here (30s wall-clock cap,
+// non-catchable kill on timeout).
 
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
-const { generateFix, generateBadge } = require('./scan.controller')
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
@@ -100,11 +100,13 @@ async function verifyPayment(c2) {
   const { data: scanRow } = await supabase.from('scans').select('fix_tier').eq('id', payment.scan_id).maybeSingle()
   const fixTier = scanRow?.fix_tier || 'FIX'
 
-  const generator = fixTier === 'BADGE' ? generateBadge : generateFix
-  c2.executionCtx?.waitUntil(
-    generator(c2.env, supabase, payment.scan_id)
-      .catch(err => console.error(`[CRITICAL] ${fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'} verify:`, err.message))
-  )
+  const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
+  // Enqueue instead of running inline via waitUntil() — generateFix/
+  // generateBadge (two Claude calls + a Browser Rendering PDF render) can
+  // easily exceed the 30-second waitUntil wall-clock cap, which silently
+  // kills the task with no catchable error. The queue consumer (index.js)
+  // has no such cap. See index.js's queue() handler for the full rationale.
+  await c2.env.FIX_QUEUE.send({ type: generatorType, scanId: payment.scan_id })
 
   return c2.json({ success: true, data: { scanId: payment.scan_id } })
 }

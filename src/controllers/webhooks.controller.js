@@ -20,7 +20,6 @@
 
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
-const { generateFix, generateBadge } = require('./scan.controller')
 
 async function handlePaystack(c) {
   const bodyText = await c.req.text()
@@ -61,8 +60,11 @@ async function handlePaystack(c) {
           status:        'FIX_PURCHASED'
         }).eq('id', scanId)
 
-        const generator = fixTier === 'BADGE' ? generateBadge : generateFix
-        await generator(c.env, supabase, scanId)
+        const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
+        // Enqueue instead of calling generateFix/generateBadge inline — see
+        // index.js's queue() handler for why (30s waitUntil wall-clock cap
+        // vs. the ~20-45s these functions realistically take).
+        await c.env.FIX_QUEUE.send({ type: generatorType, scanId })
       } catch (err) {
         console.error('Webhook error:', err.message)
       }

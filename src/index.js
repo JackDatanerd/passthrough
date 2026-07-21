@@ -109,10 +109,63 @@ async function scheduled(event, env, ctx) {
   )
 }
 
+// ── QUEUE CONSUMER (replaces the old waitUntil(generateFix(...)) pattern) ────
+// generateFix/generateBadge do two sequential Claude calls plus a Browser
+// Rendering PDF render — realistically 20-45+ seconds. ctx.waitUntil() has a
+// hard, non-configurable 30-second wall-clock cap after the HTTP response is
+// sent (shared across all waitUntil work in that request), and when the
+// platform kills a waitUntil task mid-flight it is NOT a catchable JS
+// exception — the function just stops, including its own error-handling
+// catch block, leaving the scan stuck at FIX_GENERATING forever.
+//
+// A queue consumer invocation has no such wall-clock cap — only the normal
+// CPU-time limit (default 30s of ACTIVE processing, not wall time; network
+// waits on Claude/Browser Rendering don't count against it, and it can be
+// raised via limits.cpu_ms in wrangler.toml if ever needed). This is
+// Cloudflare's own documented recommendation for exactly this situation:
+// https://developers.cloudflare.com/workers/runtime-apis/context/
+//
+// max_batch_size = 1 in wrangler.toml — each job is heavy enough (two Claude
+// calls + a browser render) that batching several per invocation would just
+// reintroduce the same time-pressure problem one level up.
+//
+// generateFix/generateBadge already catch their own errors internally and
+// mark the scan status='ERROR' rather than rejecting (see scan.controller.js)
+// — so under normal operation this promise never rejects, and message.ack()
+// is the common path. message.retry() only fires for something the functions'
+// own error handling didn't catch (a genuine platform-level failure), which
+// is the correct place for the queue's built-in retry/DLQ behavior to apply.
+async function queue(batch, env, ctx) {
+  const { generateFix, generateBadge } = require('./controllers/scan.controller')
+  const supabase = getSupabase(env)
+
+  for (const message of batch.messages) {
+    const { type, scanId } = message.body || {}
+    if (!scanId || (type !== 'generateFix' && type !== 'generateBadge')) {
+      console.error('Queue message malformed, dropping:', JSON.stringify(message.body))
+      message.ack()  // not retryable — will never become valid
+      continue
+    }
+    try {
+      const generator = type === 'generateBadge' ? generateBadge : generateFix
+      await generator(env, supabase, scanId)
+      message.ack()
+    } catch (err) {
+      // Should be rare — generateFix/generateBadge handle their own errors —
+      // but if something truly unexpected escapes, let the queue's
+      // max_retries/dead_letter_queue config (wrangler.toml) handle it.
+      console.error(`Queue job failed (${type} ${scanId}):`, err.message)
+      message.retry()
+    }
+  }
+}
+
 // ── EXPORT ────────────────────────────────────────────────────────────────────
-// Both `fetch` (HTTP requests) and `scheduled` (cron) must be on the same
-// default export for Wrangler to wire them up correctly.
+// fetch (HTTP requests), scheduled (cron), and queue (background job
+// processing) must all be on the same default export for Wrangler to wire
+// them up correctly.
 export default {
   fetch: app.fetch,
   scheduled,
+  queue,
 }
