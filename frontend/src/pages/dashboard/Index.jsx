@@ -27,7 +27,7 @@ function scanLabel(scan) {
 }
 
 export default function DashboardIndex() {
-  const { user } = useAuth()
+  const { user, refreshUser } = useAuth()
   const [scans,    setScans   ] = useState([])
   const [loading,  setLoading ] = useState(true)
   const [resending, setResending] = useState(false)
@@ -52,6 +52,11 @@ export default function DashboardIndex() {
     try {
       await api.post('/auth/resend-verification')
       setResentOk(true)
+      // Also re-sync user state — covers the case where the account was
+      // already verified elsewhere (another device/session) and the local
+      // cache just hadn't caught up, which previously looked identical to
+      // "resend isn't working" since the banner never went away either way.
+      refreshUser()
     } catch (_) {}
     setResending(false)
   }
