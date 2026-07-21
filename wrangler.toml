@@ -11,7 +11,7 @@ bucket_name = "passthrough-resumes"
 # ── KV: rate limiting (best-effort fixed window, see middleware/rateLimiter.js) ──
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
-id      = "REPLACE_WITH_OUTPUT_OF: wrangler kv namespace create passthrough-ratelimit"
+id      = "489f1b7c413744efb066df3335bff8c2"
 
 # ── Browser Rendering: replaces local Puppeteer / the entire VPS requirement ──
 [browser]
