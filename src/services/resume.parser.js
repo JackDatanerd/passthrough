@@ -23,6 +23,18 @@ async function extractText(bytes, mimeType) {
     // (accepts Uint8Array/ArrayBuffer/Buffer interchangeably) work fine
     // with the raw bytes directly, so this removes an unnecessary and
     // apparently-unreliable dependency on the Buffer polyfill.
+    // DIAGNOSTIC — the Buffer.from() removal (previous fix) didn't resolve
+    // this for at least one real case, meaning `bytes` itself may be
+    // arriving here in an unexpected shape rather than the conversion being
+    // at fault. Logging exact type/constructor/length rather than guessing
+    // again.
+    console.log('extractText debug:', {
+      mimeType,
+      bytesType: typeof bytes,
+      bytesCtor: bytes?.constructor?.name,
+      bytesLength: bytes?.length,
+      isUint8Array: bytes instanceof Uint8Array
+    })
     if (mimeType === 'application/pdf') {
       const { extractText: pdfExtract } = await import('unpdf')
       // mergePages: true is required — without it, unpdf returns `text` as an
