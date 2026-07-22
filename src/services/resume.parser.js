@@ -1,40 +1,74 @@
 // pdf-parse uses String.fromCharCode.apply(null, largeTypedArray) internally,
 // which overflows the Cloudflare Workers call stack for any non-trivial PDF.
 // Replaced with `unpdf`, which uses pdfjs-dist's edge-compatible build and
-// is specifically designed for Worker/edge runtimes. mammoth is unchanged.
+// is specifically designed for Worker/edge runtimes.
+//
+// .docx extraction uses jszip + native Promises directly (see extractDocxText
+// below) rather than mammoth — see that function's comment for why.
 //
 // unpdf is ESM-only, so it's loaded via dynamic import() — esbuild (wrangler's
 // bundler) handles the CJS/ESM mix at bundle time without any issues.
 
-const mammoth = require('mammoth')
+const JSZip   = require('jszip')
 const c        = require('../config/constants')
+
+// Direct .docx text extraction via JSZip + native Promises, bypassing
+// mammoth's extractRawText entirely for this specific call.
+//
+// Context: mammoth's extractRawText was consistently throwing "Could not
+// find file in options" in production — but a live diagnostic log
+// (console.log of typeof/constructor/length right before the call)
+// confirmed the input was a genuine, correctly-shaped, non-empty
+// Uint8Array every single time. A local Node reproduction with the same
+// mammoth version confirmed that error can ONLY happen when mammoth's
+// `buffer` option is truly undefined — never for a valid Uint8Array. Since
+// the input was proven valid but the failure was 100% reproducible in
+// production and 0% reproducible locally, the remaining difference is the
+// execution environment itself: mammoth uses `bluebird` (a full third-party
+// Promise library with its own internal object pooling for performance)
+// instead of native Promises for all of its internal async plumbing, and
+// bluebird was never built with Cloudflare Workers' isolate-reuse-across-
+// requests execution model in mind — unlike a fresh Node process per
+// request, a Workers isolate can retain module-level state across many
+// requests, which is exactly the kind of thing a pooling-optimized promise
+// library can behave unpredictably under.
+//
+// Rather than keep debugging a third-party library's internal scheduling
+// inside an environment it wasn't designed for, this extracts only what's
+// actually needed (plain text from the document body) directly via jszip
+// (which mammoth itself depends on, so this doesn't add a new dependency)
+// and native Promises throughout. This intentionally doesn't replicate
+// every OOXML edge case mammoth's full HTML conversion handles (tables,
+// headers/footers, text boxes) — it targets standard resume body text,
+// which is what actually needs to reach the ATS scorer and Claude.
+async function extractDocxText(bytes) {
+  const zip = await JSZip.loadAsync(bytes)
+  const docXml = zip.file('word/document.xml')
+  if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
+  const xml = await docXml.async('string')
+
+  const paragraphs = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || []
+  const lines = paragraphs.map(p => {
+    // Convert tabs/line-breaks within a paragraph before stripping tags, so
+    // cell/line structure isn't just silently collapsed into one run. These
+    // get matched alongside <w:t> content below (not separately extracted
+    // afterward) since a separate extraction pass would only look inside
+    // <w:t>...</w:t> tags and silently drop any inserted \t/\n sitting
+    // outside them.
+    const withBreaks = p.replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:(br|cr)\b[^>]*\/>/g, '\n')
+    const parts = []
+    for (const m of withBreaks.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|[\t\n]/g)) {
+      parts.push(m[1] !== undefined ? m[1] : m[0])
+    }
+    return parts.join('')
+      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+  })
+  return lines.filter(Boolean).join('\n')
+}
 
 async function extractText(bytes, mimeType) {
   try {
-    // No Buffer conversion — pass the Uint8Array straight through to both
-    // libraries. Previously this went through
-    // `Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)` first, but
-    // Buffer.from() under the Workers nodejs_compat polyfill was
-    // intermittently producing `undefined` here (confirmed by local
-    // reproduction: mammoth's "Could not find file in options" error is
-    // ONLY produced when its `buffer` option is literally undefined — a
-    // real or empty Buffer/Uint8Array produces a different error entirely).
-    // Both unpdf (expects Uint8Array) and mammoth's JSZip-based zip reader
-    // (accepts Uint8Array/ArrayBuffer/Buffer interchangeably) work fine
-    // with the raw bytes directly, so this removes an unnecessary and
-    // apparently-unreliable dependency on the Buffer polyfill.
-    // DIAGNOSTIC — the Buffer.from() removal (previous fix) didn't resolve
-    // this for at least one real case, meaning `bytes` itself may be
-    // arriving here in an unexpected shape rather than the conversion being
-    // at fault. Logging exact type/constructor/length rather than guessing
-    // again.
-    console.log('extractText debug:', {
-      mimeType,
-      bytesType: typeof bytes,
-      bytesCtor: bytes?.constructor?.name,
-      bytesLength: bytes?.length,
-      isUint8Array: bytes instanceof Uint8Array
-    })
     if (mimeType === 'application/pdf') {
       const { extractText: pdfExtract } = await import('unpdf')
       // mergePages: true is required — without it, unpdf returns `text` as an
@@ -43,8 +77,7 @@ async function extractText(bytes, mimeType) {
       const { text } = await pdfExtract(bytes, { mergePages: true })
       return text || ''
     }
-    const r = await mammoth.extractRawText({ buffer: bytes })
-    return r.value || ''
+    return await extractDocxText(bytes)
   } catch (err) {
     console.error('extractText:', err.message)
     return ''
