@@ -11,18 +11,27 @@ const c        = require('../config/constants')
 
 async function extractText(bytes, mimeType) {
   try {
-    const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)
+    // No Buffer conversion — pass the Uint8Array straight through to both
+    // libraries. Previously this went through
+    // `Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes)` first, but
+    // Buffer.from() under the Workers nodejs_compat polyfill was
+    // intermittently producing `undefined` here (confirmed by local
+    // reproduction: mammoth's "Could not find file in options" error is
+    // ONLY produced when its `buffer` option is literally undefined — a
+    // real or empty Buffer/Uint8Array produces a different error entirely).
+    // Both unpdf (expects Uint8Array) and mammoth's JSZip-based zip reader
+    // (accepts Uint8Array/ArrayBuffer/Buffer interchangeably) work fine
+    // with the raw bytes directly, so this removes an unnecessary and
+    // apparently-unreliable dependency on the Buffer polyfill.
     if (mimeType === 'application/pdf') {
       const { extractText: pdfExtract } = await import('unpdf')
-      // unpdf expects a Uint8Array
-      const uint8 = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
       // mergePages: true is required — without it, unpdf returns `text` as an
       // array of per-page strings (string[]) instead of one merged string,
       // which crashes every caller that does rawResumeText.trim() downstream.
-      const { text } = await pdfExtract(uint8, { mergePages: true })
+      const { text } = await pdfExtract(bytes, { mergePages: true })
       return text || ''
     }
-    const r = await mammoth.extractRawText({ buffer })
+    const r = await mammoth.extractRawText({ buffer: bytes })
     return r.value || ''
   } catch (err) {
     console.error('extractText:', err.message)
