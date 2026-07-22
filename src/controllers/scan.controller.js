@@ -49,6 +49,7 @@ const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
+const rateLimiter          = require('../middleware/rateLimiter')
 
 function extOf(filename) {
   const i = filename.lastIndexOf('.')
@@ -200,7 +201,13 @@ async function createScan(ctx) {
       scansToday = 0
     }
     if (scansToday >= c.FREE_SCANS_PER_DAY) {
-      return ctx.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
+      const ip = ctx.req.header('cf-connecting-ip') || ctx.req.header('x-forwarded-for') || 'unknown'
+      // Same RATE_LIMIT_BYPASS_IPS secret used by middleware/rateLimiter.js —
+      // this is a separate DB-tracked limit (not KV-based), but reuses the
+      // same testing toggle so there's one bypass to turn on/off, not two.
+      if (!rateLimiter.isBypassed(ctx.env, ip)) {
+        return ctx.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
+      }
     }
 
     // PATCH 5 (carried over): increment optimistically, roll back on failure.

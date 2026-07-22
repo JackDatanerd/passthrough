@@ -25,8 +25,13 @@
 // `wrangler secret put`, same as every other credential-adjacent value, so it
 // never gets committed to the repo or left on accidentally in a config file.
 
-function isBypassed(c, ip) {
-  const raw = c.env.RATE_LIMIT_BYPASS_IPS
+// Takes `env` directly (not the full Hono context) so this can be reused
+// anywhere a bypass check is needed — not just inside rate-limiter
+// middleware. Currently also used by createScan's daily-scan-quota check in
+// scan.controller.js, which is a separate DB-tracked limit, not a KV one,
+// but conceptually the same "skip this during testing" toggle.
+function isBypassed(env, ip) {
+  const raw = env.RATE_LIMIT_BYPASS_IPS
   if (!raw) return false
   return raw.split(',').map(s => s.trim()).filter(Boolean).includes(ip)
 }
@@ -37,7 +42,7 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
 
     const ip  = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
 
-    if (isBypassed(c, ip)) return next()
+    if (isBypassed(c.env, ip)) return next()
 
     const key = `${keyPrefix}:${ip}`
 
@@ -85,4 +90,4 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
-module.exports = { general, anonScan, auth, payment, employerLead }
+module.exports = { general, anonScan, auth, payment, employerLead, isBypassed }
