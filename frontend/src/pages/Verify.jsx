@@ -71,19 +71,35 @@ export default function Verify() {
           <div className="flex flex-col gap-6">
             {/* Verification card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
-              <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
-                <span className="text-green-600 text-3xl">✓</span>
-              </div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-1">
-                Passthrough Verified
-              </h1>
+              {data.passed ? (
+                <>
+                  <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
+                    <span className="text-green-600 text-3xl">✓</span>
+                  </div>
+                  <h1 className="text-2xl font-bold text-gray-900 mb-1">
+                    Passthrough Verified
+                  </h1>
+                </>
+              ) : (
+                <>
+                  <div className="w-16 h-16 rounded-full bg-amber-100 flex items-center justify-center mx-auto mb-4">
+                    <span className="text-amber-600 text-3xl">○</span>
+                  </div>
+                  <h1 className="text-2xl font-bold text-gray-900 mb-1">
+                    Passthrough Scan Report
+                  </h1>
+                  <p className="text-sm text-amber-700 mb-1">
+                    Below the Passthrough Verified threshold (80+)
+                  </p>
+                </>
+              )}
               {data.candidateFirstName && (
                 <p className="text-gray-500 text-lg mb-4">{data.candidateFirstName}</p>
               )}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-1">ATS Score</p>
-                  <p className={`font-bold text-xl ${data.atsScore >= 75 ? 'text-green-700' : 'text-red-600'}`}>
+                  <p className={`font-bold text-xl ${data.passed ? 'text-green-700' : 'text-red-600'}`}>
                     {data.atsScore}
                   </p>
                 </div>
@@ -105,7 +121,9 @@ export default function Verify() {
                 </div>
               </div>
               <p className="text-xs text-gray-400 mt-6">
-                This resume was scanned by Passthrough's ATS engine and has not been modified since verification.
+                {data.passed
+                  ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
+                  : "This resume was scanned by Passthrough's ATS engine. It has not been modified since this scan, but did not reach the score threshold required for Passthrough Verified status."}
               </p>
             </div>
 

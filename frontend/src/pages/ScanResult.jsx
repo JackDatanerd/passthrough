@@ -221,9 +221,19 @@ export default function ScanResult() {
 
             {/* Delivered */}
             {scan.status === 'FIX_DELIVERED' && (
-              <div className="bg-green-50 border border-green-200 rounded-xl p-6">
-                <p className="font-semibold text-green-900 mb-1">✓ Your Passthrough Verified resume is ready</p>
-                {scan.verificationUrl && (
+              <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= 80 ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+                {scan.fixAtsScore >= 80 ? (
+                  <p className="font-semibold text-green-900 mb-1">✓ Your Passthrough Verified resume is ready</p>
+                ) : (
+                  <>
+                    <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
+                    <p className="text-sm text-amber-800 mb-3">
+                      New ATS score: {scan.fixAtsScore ?? '—'}/100 — below the 80+ threshold for Passthrough Verified status.
+                      {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
+                    </p>
+                  </>
+                )}
+                {scan.fixAtsScore >= 80 && scan.verificationUrl && (
                   <p className="text-sm text-green-800 mb-4">
                     Verification URL:{' '}
                     <a href={scan.verificationUrl} target="_blank" rel="noreferrer"
