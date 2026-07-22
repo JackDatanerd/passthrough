@@ -79,10 +79,23 @@ function scoreSections(resumeText) {
 }
 
 function scoreContent(resumeText) {
-  const bullets = resumeText.split('\n').filter(l => /^\s*[•\-\*◦\d]+[.)]\s/.test(l))
+  // Symbolic bullets (•, -, *, ◦, etc.) need no trailing punctuation — the
+  // bullet character followed by a space IS the complete marker. Only
+  // alphanumeric markers (numbered/lettered lists) need a trailing "." or
+  // ")" to distinguish "1. Did X" from an unrelated sentence starting with
+  // a digit or letter (e.g. "3D printing", "A great year").
+  //
+  // The previous regex required [.)] after EVERY character in the class,
+  // including the symbolic ones — which meant it only ever matched numbered
+  // lists ("1. ", "1) ") and silently failed to recognize plain "• "/"- "/
+  // "* " bullets, by far the most common resume bullet style. That made
+  // Content scoring collapse to near-zero on most normally-formatted
+  // resumes, independent of extraction method or file type.
+  const BULLET_LINE = /^\s*(?:[•\-\*◦▪‣·]|[0-9A-Za-z]+[.)])\s/
+  const bullets = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
   const total   = bullets.length || 1
   const actionCount = bullets.filter(b => {
-    const words = b.trim().replace(/^[•\-\*◦\d]+[.)]\s*/, '').toLowerCase().split(/\s+/)
+    const words = b.trim().replace(BULLET_LINE, '').trim().toLowerCase().split(/\s+/)
     return words.length > 0 && ACTION_VERBS.has(words[0])
   }).length
   let score = Math.round((actionCount / total) * 100)

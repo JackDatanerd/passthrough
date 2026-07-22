@@ -40,7 +40,10 @@ async function generateAtsDocx(resumeData, verificationUrl) {
         ]
       }))
       for (const b of (job.bullets || []))
-        children.push(new Paragraph({ text: b, style: 'ListParagraph', bullet: { level: 0 } }))
+        children.push(new Paragraph({
+          style: 'ListParagraph',
+          children: [new TextRun({ text: `•  ${b}`, font: 'Calibri', size: 22 })]
+        }))
       children.push(new Paragraph({ text: '' }))
     }
   }
@@ -74,7 +77,14 @@ async function generateAtsDocx(resumeData, verificationUrl) {
       }))
   }
 
-  // REQUIRED: ListParagraph style — without it, bullets do not render in Word
+  // ListParagraph style is used purely for left-indentation on bullet lines
+  // now — bullets themselves are a literal "•" text character (see above),
+  // not Word's native numbering/list feature. That's a deliberate choice:
+  // native list formatting is a well-documented real-world ATS-parsing risk
+  // (many employer ATS engines mis-parse or drop it entirely), and it also
+  // means the bullet marker never exists as extractable plain text, which
+  // silently broke our own content scorer's bullet/action-verb detection on
+  // any resume we generated ourselves.
   const doc = new Document({
     styles: {
       paragraphStyles: [{
