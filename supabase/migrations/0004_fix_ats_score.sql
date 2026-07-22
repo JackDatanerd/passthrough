@@ -1,0 +1,14 @@
+-- Tracks the ATS score of the resume actually delivered to the user (the
+-- rewritten/fixed version for FIX tier, or the original for BADGE tier —
+-- since BADGE issues no rewrite, its "fix" score is just its original
+-- score). This is distinct from `ats_score`, which is always the score of
+-- the ORIGINAL uploaded/entered resume and never changes after the fix.
+--
+-- Why this matters: the public verification page and the "Passthrough
+-- Verified" badge were previously reading `ats_score` — the pre-fix score —
+-- even though what's actually being verified/shown to an employer is the
+-- POST-fix resume. A resume that started at 56 and got rewritten to 84
+-- would show "56" on its own verification page. This column lets every
+-- badge/verification surface show the score of the resume people actually
+-- received, not the one they uploaded.
+alter table scans add column fix_ats_score int;

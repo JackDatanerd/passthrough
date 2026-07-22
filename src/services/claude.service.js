@@ -128,7 +128,10 @@ async function structureFreeformText(env, rawText) {
   return parseJsonResult(result, 'structureFreeformText')
 }
 
-async function rewriteResumeContent(env, resumeData, jdText) {
+async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = null) {
+  const feedbackBlock = scoreFeedback
+    ? `\n\nIMPORTANT — this is a retry. The previous attempt scored ${scoreFeedback.score}/100 and fell short of the ${scoreFeedback.threshold} target. Specifically weak areas: ${scoreFeedback.weakAreas.join('; ')}. Address these directly in this revision — don't just lightly rephrase, meaningfully strengthen the specific weak areas called out.`
+    : ''
   const result = await callClaude(
     env,
     `ATS resume writer. Incorporate JD keywords naturally.
@@ -141,7 +144,7 @@ async function rewriteResumeContent(env, resumeData, jdText) {
      Return ONLY valid JSON with this exact shape:
      {"resume": <the resume object, same schema as the input resume>,
       "quantificationOpportunities": [{"bullet": "the exact rewritten bullet text", "suggestion": "brief guidance on what number or metric would strengthen it"}]}`,
-    `Resume:\n${JSON.stringify(resumeData)}\n\nJD:\n${jdText}\nReturn the JSON envelope described above — "resume" must follow the exact same schema as the input resume object.`,
+    `Resume:\n${JSON.stringify(resumeData)}\n\nJD:\n${jdText}${feedbackBlock}\nReturn the JSON envelope described above — "resume" must follow the exact same schema as the input resume object.`,
     4500
   )
   if (!result.success) return result

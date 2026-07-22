@@ -577,14 +577,56 @@ async function generateFix(env, supabase, scanId) {
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
-    const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText)
-    const finalData = rewriteResult.success ? rewriteResult.data : resumeData
-    // PHASE 3: only meaningful if the rewrite actually succeeded — a failed
-    // rewrite falls back to the original content, and there's nothing to
-    // suggest strengthening in text that was never rewritten.
-    const quantificationPrompts = rewriteResult.success
-      ? (rewriteResult.quantificationOpportunities || [])
-      : []
+
+    // Rewrite → score → retry-with-feedback loop. A rewrite that "succeeds"
+    // (valid JSON, no fabrication) isn't the same as a rewrite that's
+    // actually good — this was previously trusted blindly, which is how a
+    // resume could come out of "Fix My Resume" scoring worse than it went
+    // in. Score the ACTUAL rewritten text the same way runAtsScan scores an
+    // upload, and only stop early once it clears the badge threshold (or
+    // attempts run out — in which case the best attempt wins, not the last).
+    let finalData = resumeData
+    let quantificationPrompts = []
+    let bestScore = -1
+    let bestData = resumeData
+    let bestQuantificationPrompts = []
+    let lastFeedback = null
+
+    for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
+      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback)
+      if (!rewriteResult.success) break  // API/parse failure — nothing to score, stop retrying
+
+      const candidateData = rewriteResult.data
+      const candidateQuantificationPrompts = rewriteResult.quantificationOpportunities || []
+      const candidateText = resumeParser.serializeResumeData(candidateData)
+      const candidateScore = atsService.scoreResume(candidateText, jdText)
+
+      if (candidateScore.score > bestScore) {
+        bestScore = candidateScore.score
+        bestData = candidateData
+        bestQuantificationPrompts = candidateQuantificationPrompts
+      }
+
+      if (candidateScore.score >= c.ATS_BADGE_THRESHOLD) break  // good enough — stop here
+
+      if (attempt < c.MAX_FIX_ATTEMPTS) {
+        lastFeedback = {
+          score: candidateScore.score,
+          threshold: c.ATS_BADGE_THRESHOLD,
+          weakAreas: atsService.describeWeakAreas(candidateScore)
+        }
+      }
+    }
+
+    finalData = bestData
+    quantificationPrompts = bestQuantificationPrompts
+    // bestScore stays -1 only if every attempt failed at the API/parse level
+    // (never even produced a scoreable candidate) — fall back to scoring the
+    // untouched original so fix_ats_score is never left null on a delivered
+    // scan.
+    const fixAtsScore = bestScore >= 0
+      ? bestScore
+      : atsService.scoreResume(resumeParser.serializeResumeData(resumeData), jdText).score
 
     const code            = await badgeService.generateShortCode(supabase)
     const verificationUrl = badgeService.buildVerificationUrl(env, code)
@@ -616,6 +658,7 @@ async function generateFix(env, supabase, scanId) {
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      pdfKey,
+      fix_ats_score:        fixAtsScore,
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
       verification_url:     verificationUrl,
@@ -739,6 +782,7 @@ async function generateBadge(env, supabase, scanId) {
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      pdfKey,
+      fix_ats_score:        scan.atsScore,
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
       verification_url:     verificationUrl,

@@ -164,4 +164,28 @@ function scoreResume(resumeText, jdText) {
   }
 }
 
-module.exports = { scoreResume, detectRoleCategory, detectSeniority }
+// Translates a scoreResume() result into concrete, human-readable notes for
+// a rewrite retry prompt — "your score was low" gives Claude nothing to act
+// on, but "keyword match is 40%, missing: kubernetes, terraform" does.
+function describeWeakAreas(scoreResult) {
+  const notes = []
+  if (scoreResult.keywordScore < 70) {
+    const missing = (scoreResult.detail?.keywords?.missing || []).slice(0, 8)
+    notes.push(`keyword match is only ${scoreResult.keywordScore}% — work in these JD terms naturally where truthful: ${missing.join(', ') || '(see JD)'}`)
+  }
+  if (scoreResult.contentScore < 70) {
+    const rate = scoreResult.detail?.content?.actionVerbRate
+    notes.push(`content score is ${scoreResult.contentScore} — ${rate < 0.7 ? 'more bullets need to open with a strong action verb' : 'bullets need more specific, concrete detail'}; add quantification wherever the user actually gave you a number to work with`)
+  }
+  if (scoreResult.sectionsScore < 90) {
+    const missing = scoreResult.detail?.sections?.missing || []
+    if (missing.length) notes.push(`missing expected section(s): ${missing.join(', ')}`)
+  }
+  if (scoreResult.formatScore < 90) {
+    const issues = scoreResult.detail?.format?.issues || []
+    if (issues.length) notes.push(`formatting issues: ${issues.join('; ')}`)
+  }
+  return notes.length ? notes : ['overall score below target — strengthen keyword alignment and bullet specificity throughout']
+}
+
+module.exports = { scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas }

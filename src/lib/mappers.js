@@ -42,6 +42,7 @@ function scanRowToCamel(row) {
     jobDescriptionText:  row.job_description_text,
     jobDescriptionUrl:   row.job_description_url,
     atsScore:            row.ats_score,
+    fixAtsScore:         row.fix_ats_score,
     passed:              row.passed,
     keywordScore:        row.keyword_score,
     formatScore:         row.format_score,
@@ -117,7 +118,7 @@ const USER_FIELD_MAP = {
 const SCAN_FIELD_MAP = {
   status: 'status', resumePath: 'resume_path', resumeOriginalName: 'resume_original_name',
   resumeMimeType: 'resume_mime_type', jobDescriptionText: 'job_description_text',
-  jobDescriptionUrl: 'job_description_url', atsScore: 'ats_score', passed: 'passed',
+  jobDescriptionUrl: 'job_description_url', atsScore: 'ats_score', fixAtsScore: 'fix_ats_score', passed: 'passed',
   keywordScore: 'keyword_score', formatScore: 'format_score', sectionsScore: 'sections_score',
   contentScore: 'content_score', fullAtsReport: 'full_ats_report', scanCompletedAt: 'scan_completed_at',
   candidateFirstName: 'candidate_first_name', fixPurchased: 'fix_purchased', fixTier: 'fix_tier',

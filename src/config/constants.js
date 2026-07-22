@@ -15,6 +15,11 @@ module.exports = {
   // < 75: FAIL → $49 | 75-79: PASS no badge → $49 | 80+: PASS → $39 or $49
   ATS_RULE_WEIGHT: 0.70,
   ATS_AI_WEIGHT:   0.30,
+  // Rewrite retry loop (generateFix): if the first rewrite scores below
+  // ATS_BADGE_THRESHOLD, retry with specific feedback about what's weak,
+  // up to this many total attempts. The best-scoring attempt is always
+  // what gets delivered, even if none reach the threshold — see generateFix.
+  MAX_FIX_ATTEMPTS: 3,
   MAX_JD_CHARS:     5000,
   MAX_RESUME_CHARS: 8000,
   MIN_BRAIN_DUMP_CHARS: 100,   // Phase 1 — brain-dump entry path minimum length
