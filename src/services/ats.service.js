@@ -101,15 +101,86 @@ function scoreKeywords(resumeText, jdText) {
   }
 }
 
+// Grounded in standard published resume-writing action-verb categories
+// (leadership, achievement/results, communication, analysis, technical,
+// financial, creative, organizational, research, training) rather than an
+// arbitrary short list. The previous 44-word set meant any bullet using a
+// perfectly legitimate, strong verb that simply wasn't on that short list
+// — "Wrote", "Authored", "Conducted", "Tested", "Reviewed", "Supervised",
+// "Engineered", dozens of others — got zero credit, which is very likely
+// the dominant reason Content scores were landing in the 30s-40s even on
+// genuinely well-written resumes.
 const ACTION_VERBS = new Set([
-  'achieved','managed','led','built','created','improved','reduced','increased',
-  'developed','designed','delivered','implemented','launched','streamlined',
-  'coordinated','negotiated','trained','mentored','analyzed','generated',
-  'drove','exceeded','established','spearheaded','executed','maintained',
-  'resolved','collaborated','facilitated','administered','optimized',
-  'transformed','secured','expanded','accelerated','automated','directed',
-  'oversaw','produced','shaped','grew','owned','shipped','deployed','migrated'
+  // Leadership / management
+  'led','lead','managed','directed','supervised','oversaw','coordinated','headed',
+  'chaired','spearheaded','orchestrated','guided','mentored','coached',
+  'delegated','empowered','championed','cultivated','fostered','governed',
+  'steered','piloted','captained','commanded','administered',
+  // Achievement / results
+  'achieved','exceeded','surpassed','attained','delivered','accomplished',
+  'completed','secured','won','earned','generated','realized','fulfilled',
+  'outperformed',
+  // Communication
+  'communicated','presented','negotiated','persuaded','authored','wrote',
+  'drafted','edited','published','briefed','liaised','consulted','advised',
+  'counseled','articulated','conveyed','pitched','reported','documented',
+  'summarized','translated',
+  // Creation / building
+  'built','created','developed','designed','engineered','constructed',
+  'established','founded','formulated','devised','invented','architected',
+  'launched','initiated','pioneered','introduced','crafted','composed',
+  'produced','shaped','conceived',
+  // Improvement / optimization
+  'improved','enhanced','streamlined','optimized','upgraded','refined',
+  'revamped','modernized','simplified','accelerated','boosted',
+  'strengthened','elevated','transformed','overhauled','restructured',
+  // Reduction / efficiency
+  'reduced','cut','decreased','minimized','eliminated','consolidated',
+  'downsized','saved','trimmed',
+  // Analysis / research
+  'analyzed','evaluated','assessed','audited','investigated','researched',
+  'examined','diagnosed','identified','interpreted','modeled','forecasted',
+  'calculated','quantified','measured','benchmarked','synthesized',
+  'validated','verified',
+  // Operations / process
+  'implemented','executed','operated','maintained','monitored','tracked',
+  'processed','facilitated','standardized','automated','integrated',
+  'deployed','migrated','configured','managed','scheduled','planned',
+  'organized','prioritized',
+  // Financial
+  'budgeted','allocated','funded','financed','invested','forecasted',
+  'audited','reconciled',
+  // Training / teaching
+  'trained','taught','educated','instructed','onboarded','tutored',
+  'coached',
+  // Team / collaboration
+  'collaborated','partnered','contributed','supported','assisted',
+  'volunteered',
+  // Technical
+  'programmed','coded','tested','debugged','architected','automated',
+  'provisioned','deployed',
+  // Growth / sales / business
+  'grew','expanded','scaled','drove','closed','converted','acquired',
+  'negotiated','onboarded','retained',
+  // Recognition
+  'awarded','recognized','honored','selected',
+  // Restored from the original list (accidentally dropped when this set
+  // was reorganized by category) + a few other very common resume verbs
+  // that were missing from any category above
+  'increased','resolved','owned','shipped','handled','performed',
+  'conducted','reviewed','hired','recruited',
+  // Common irregular past-tense forms (stemming can't bridge these to their
+  // base form, so they're listed explicitly rather than relying on -ed)
+  'sold','brought','taught','sought','bought','caught','chose','dealt',
+  'felt','knew','spent','stood','understood','went','met','sat','spoke',
+  'wrote','drove','ran','began','held','kept','set','cut','grew'
 ])
+
+// Precomputed once at module load, not per-bullet-check — stemmed lookup
+// lets tense/inflection variants of a listed verb (e.g. "Leading" for
+// "Led", "Manages" for "Managed") get credit too, not just an exact string
+// match against the past-tense form.
+const ACTION_VERB_STEMS = new Set([...ACTION_VERBS].map(stem))
 
 function scoreFormat(resumeText) {
   if (!resumeText || resumeText.trim().length < 100)
@@ -168,7 +239,7 @@ function scoreContent(resumeText) {
   const total   = bullets.length || 1
   const actionCount = bullets.filter(b => {
     const words = b.trim().replace(BULLET_LINE, '').trim().toLowerCase().split(/\s+/)
-    return words.length > 0 && ACTION_VERBS.has(words[0])
+    return words.length > 0 && ACTION_VERB_STEMS.has(stem(words[0]))
   }).length
   let score = Math.round((actionCount / total) * 100)
   const quantifiedCount = (resumeText.match(/\d+\s*(%|\$|k\b|m\b|million|thousand)/gi) || []).length
