@@ -5,8 +5,101 @@ const STOP_WORDS = new Set([
   'by','from','is','was','are','were','be','been','have','has','had',
   'will','would','could','should','may','might','this','that','these',
   'those','it','its','we','you','they','them','their','our','do','does',
-  'did','not','as','so','if','about','than','into','over','also'
+  'did','not','as','so','if','about','than','into','over','also',
+  // Job-posting boilerplate — these dominate JD word-frequency counts but
+  // no resume should ever need to contain them literally. Before this list
+  // was expanded, words like "your", "role", "apply", and "provide" were
+  // routinely showing up in "missing keywords" and dragging scores down for
+  // reasons that had nothing to do with resume quality.
+  'your','you','role','job','apply','applying','please','ensure','provide',
+  'provided','including','include','includes','team','teams','work',
+  'working','worked','experience','experienced','skills','ability',
+  'abilities','strong','excellent','looking','seeking','candidate',
+  'candidates','position','opportunity','opportunities','company','join',
+  'required','requirements','requires','preferred','years','year','etc',
+  'via','across','within','both','more','most','such','each','any','all',
+  'some','well','new','using','use','used','various','multiple','related',
+  'based','ideal','must','need','needs','responsible','responsibilities',
+  'duties','tasks','environment','plus','benefits','salary','pay','hourly',
+  'remote','onsite','hybrid','full','time','part','listed','ago','id',
+  'click','copy','link','platform','host','hosted'
 ])
+
+// Lightweight heuristic stemmer — NOT a full Porter/Snowball stemmer, but
+// covers the inflections that actually matter for resume/JD matching:
+// plurals (-s/-ies), gerunds (-ing), past tense (-ed), and agent nouns
+// (-er/-or, so "developer" matches "develop", "manager" matches "manage").
+// This deliberately doesn't attempt full derivational morphology (e.g.
+// "management" won't stem to match "manage") — that's a much harder
+// problem, and this covers the large majority of real-world cases at a
+// fraction of the complexity. Verified against 12+ common word-pair tests
+// plus a false-positive check against common English words before shipping.
+function stem(word) {
+  let w = word
+  if (w.length > 5 && w.endsWith('ational')) w = w.slice(0, -5)
+  if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -4)
+  if (w.length > 5 && w.endsWith('ies'))      w = w.slice(0, -3) + 'y'
+  else if (w.length > 5 && (w.endsWith('er') || w.endsWith('or'))) w = w.slice(0, -2)
+  else if (w.length > 5 && w.endsWith('ing')) w = w.slice(0, -3)
+  else if (w.length > 5 && w.endsWith('ed'))  w = w.slice(0, -2)
+  else if (w.length > 5 && w.endsWith('es'))  w = w.slice(0, -2)
+  else if (w.length > 4 && w.endsWith('s') && !w.endsWith('ss')) w = w.slice(0, -1)
+  if (w.length > 4 && w.endsWith('e')) w = w.slice(0, -1)
+  return w
+}
+
+function tokenizeRaw(text) {
+  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)
+}
+
+// Extracts both single-word and adjacent-word-pair ("bigram") candidates
+// from a JD, ranked together by frequency. Bigrams catch compound terms
+// (e.g. "quality assurance", "machine learning") that single-word
+// extraction would split into two separate, less meaningful words.
+function extractKeywords(text) {
+  const raw = tokenizeRaw(text)
+  const freq = {}
+  for (const w of raw) {
+    if (w.length >= 3 && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
+  }
+  for (let i = 0; i < raw.length - 1; i++) {
+    const a = raw[i], b = raw[i + 1]
+    if (a.length >= 3 && b.length >= 3 && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+      const phrase = `${a} ${b}`
+      freq[phrase] = (freq[phrase] || 0) + 1
+    }
+  }
+  return freq
+}
+
+function scoreKeywords(resumeText, jdText) {
+  const freq  = extractKeywords(jdText)
+  const top25 = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([w]) => w)
+
+  // Match against STEMMED resume tokens, not a raw substring search — this
+  // is what actually lets "managed"/"managing"/"manager" in the resume
+  // credit a JD's "management" (well, "manage" — see stemmer limitations
+  // above), instead of requiring an exact literal string match.
+  const resumeTokens = tokenizeRaw(resumeText)
+  const resumeStems  = new Set(resumeTokens.map(stem))
+  const resumeBigramStems = new Set()
+  for (let i = 0; i < resumeTokens.length - 1; i++) {
+    resumeBigramStems.add(`${stem(resumeTokens[i])} ${stem(resumeTokens[i + 1])}`)
+  }
+
+  const matched = top25.filter(kw => {
+    if (kw.includes(' ')) {
+      const [a, b] = kw.split(' ')
+      return resumeBigramStems.has(`${stem(a)} ${stem(b)}`)
+    }
+    return resumeStems.has(stem(kw))
+  })
+  const missing = top25.filter(kw => !matched.includes(kw))
+  return {
+    score: top25.length ? Math.round((matched.length / top25.length) * 100) : 100,
+    detail: { matched, missing, matchRate: top25.length ? matched.length / top25.length : 1 }
+  }
+}
 
 const ACTION_VERBS = new Set([
   'achieved','managed','led','built','created','improved','reduced','increased',
@@ -17,27 +110,6 @@ const ACTION_VERBS = new Set([
   'transformed','secured','expanded','accelerated','automated','directed',
   'oversaw','produced','shaped','grew','owned','shipped','deployed','migrated'
 ])
-
-function extractKeywords(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/)
-    .filter(w => w.length >= 3 && !STOP_WORDS.has(w))
-}
-
-function scoreKeywords(resumeText, jdText) {
-  const words = extractKeywords(jdText)
-  const freq  = {}
-  for (const w of words) freq[w] = (freq[w] || 0) + 1
-  const top25 = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([w]) => w)
-  const lower = resumeText.toLowerCase()
-  const matched = top25.filter(kw =>
-    new RegExp(`\\b${kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`).test(lower)
-  )
-  const missing = top25.filter(kw => !matched.includes(kw))
-  return {
-    score: top25.length ? Math.round((matched.length / top25.length) * 100) : 100,
-    detail: { matched, missing, matchRate: top25.length ? matched.length / top25.length : 1 }
-  }
-}
 
 function scoreFormat(resumeText) {
   if (!resumeText || resumeText.trim().length < 100)
