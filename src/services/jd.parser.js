@@ -7,6 +7,30 @@ const BLOCKED = ['linkedin.com', 'www.linkedin.com', 'facebook.com', 'instagram.
 const MAX_BYTES = 500_000
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
 
+// Detects job-board CATEGORY/LISTING pages (e.g. "Physics Jobs" showing 35
+// different postings) as opposed to a single job's description page. This
+// matters because nothing else in this pipeline catches it: a listing page
+// has real, substantial text content — it's not blocked, not too short,
+// not client-side-rendered — it's just the WRONG kind of content. Scraping
+// it as "the JD" silently feeds keyword extraction a mix of navigation,
+// filter UI, ad copy, and a dozen unrelated job blurbs, which produces a
+// keyword score that reflects nothing real about resume/JD fit.
+//
+// Requires 2+ independent signals to fire, specifically to avoid false-
+// positiving on a real single JD that happens to mention a pay range more
+// than once (e.g. different seniority tiers) — verified against both a
+// real listing page (4 signals fired) and a real single job posting (0
+// signals fired) before shipping.
+function looksLikeListingPage(text) {
+  const signals = []
+  if (/\b\d{1,4}\s+jobs?\s+(available|found|listed|open|results)\b/i.test(text)) signals.push('job-count phrase')
+  if (/page\s+\d+\s+of\s+\d+/i.test(text)) signals.push('pagination')
+  const payRangeMatches = text.match(/\$\d{1,4}[\s-]*(?:–|-|to)\s*\$?\d{1,4}\s*\/?\s*(?:hr|hour|task)?/gi) || []
+  if (payRangeMatches.length >= 4) signals.push(`${payRangeMatches.length} pay-range mentions`)
+  if (/sort\s+by\s*:?\s*(featured|newest|highest pay)/i.test(text)) signals.push('sort-by UI')
+  return signals.length >= 2
+}
+
 async function fetchJobDescriptionFromUrl(url) {
   let parsed
   try { parsed = new URL(url) } catch (_) {
@@ -75,6 +99,12 @@ async function fetchJobDescriptionFromUrl(url) {
       return { success: false, blocked: false, text: null,
         message: 'Could not extract text. Paste manually.' }
     }
+
+    if (looksLikeListingPage(text)) {
+      return { success: false, blocked: true, text: null,
+        message: 'This looks like a job listing/category page with multiple postings, not a single job description. Please paste the URL of the specific job, or paste its description text directly.' }
+    }
+
     return { success: true, blocked: false, text: text.slice(0, 5000) }
   } catch (_) {
     clearTimeout(timeout)
