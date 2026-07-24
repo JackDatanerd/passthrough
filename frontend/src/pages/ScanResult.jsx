@@ -44,6 +44,8 @@ export default function ScanResult() {
   const [payLoading,  setPayLoading] = useState(false)
   const [payError,    setPayError  ] = useState('')
   const [dlError,     setDlError   ] = useState('')
+  const [retryLoading, setRetryLoading] = useState(false)
+  const [retryError,   setRetryError  ] = useState('')
   const pollRef = useRef(null)
 
   async function fetchScan() {
@@ -60,6 +62,23 @@ export default function ScanResult() {
       setLoading(false)
       clearInterval(pollRef.current)
     }
+  }
+
+  async function handleRetryFix() {
+    setRetryError('')
+    setRetryLoading(true)
+    try {
+      await api.post(`/scan/${id}/retry-fix`)
+      // Status just went back to FIX_GENERATING server-side, but polling
+      // already stopped once FIX_DELIVERED was reached (POLLING_STOP) —
+      // has to be explicitly restarted, not just re-fetched once.
+      await fetchScan()
+      clearInterval(pollRef.current)
+      pollRef.current = setInterval(fetchScan, POLL_MS)
+    } catch (err) {
+      setRetryError(err.response?.data?.message || 'Could not start a retry — try again in a moment.')
+    }
+    setRetryLoading(false)
   }
 
   useEffect(() => {
@@ -231,6 +250,23 @@ export default function ScanResult() {
                       New ATS score: {scan.fixAtsScore ?? '—'}/100 — below the 80+ threshold for Passthrough Verified status.
                       {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
                     </p>
+                    {scan.fixRetryCount < 2 ? (
+                      <div className="mb-3">
+                        {retryError && (
+                          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-2">
+                            {retryError}
+                          </p>
+                        )}
+                        <Button onClick={handleRetryFix} loading={retryLoading} variant="secondary">
+                          Try Again — Free ({2 - scan.fixRetryCount} left)
+                        </Button>
+                      </div>
+                    ) : (
+                      <p className="text-sm text-amber-800 mb-3">
+                        We tried a few times but couldn't get this one past 80. We've added a free fix credit to your
+                        account for your next resume — no charge next time.
+                      </p>
+                    )}
                   </>
                 )}
                 {scan.fixAtsScore >= 80 && scan.verificationUrl && (

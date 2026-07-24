@@ -20,6 +20,12 @@ module.exports = {
   // up to this many total attempts. The best-scoring attempt is always
   // what gets delivered, even if none reach the threshold — see generateFix.
   MAX_FIX_ATTEMPTS: 3,
+  // User-facing "Try Again" retries after the initial 3-attempt process
+  // still falls short of ATS_BADGE_THRESHOLD. Each press re-runs the same
+  // 3-attempt process, building on the latest rewrite rather than starting
+  // over. If retries are exhausted and still below threshold, the user gets
+  // 1 free fix credit (see generateFix / retryFix in scan.controller.js).
+  MAX_FIX_RETRIES: 2,
   MAX_JD_CHARS:     5000,
   MAX_RESUME_CHARS: 8000,
   MIN_BRAIN_DUMP_CHARS: 100,   // Phase 1 — brain-dump entry path minimum length

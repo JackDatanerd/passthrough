@@ -335,6 +335,38 @@ async function initiateFix(ctx) {
   return ctx.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
 }
 
+// POST /api/scan/:id/retry-fix — user-facing "Try Again" when a delivered
+// fix fell short of ATS_BADGE_THRESHOLD. Re-runs generateFix, which (via
+// the isRetry check inside it) builds on the latest rewrite rather than
+// starting over, and carries forward feedback about what was weak.
+async function retryFix(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+
+  if (!scan || scan.userId !== user.id)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (scan.fixTier !== 'FIX')
+    return ctx.json({ success: false, message: 'Retries are only available for the Fix tier — Badge issues no rewrite, so there is nothing a retry would change.' }, 400)
+  if (scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'This fix must finish generating before it can be retried.' }, 400)
+  if (typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD)
+    return ctx.json({ success: false, message: 'This fix already reached the target score — nothing to retry.' }, 400)
+  if (scan.fixRetryCount >= c.MAX_FIX_RETRIES)
+    return ctx.json({ success: false, message: 'No retries remaining for this fix.' }, 400)
+
+  await supabase.from('scans').update({
+    fix_retry_count: scan.fixRetryCount + 1,
+    status: 'FIX_GENERATING'
+  }).eq('id', scan.id)
+
+  await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+
+  return ctx.json({ success: true, data: { retriesRemaining: c.MAX_FIX_RETRIES - (scan.fixRetryCount + 1) } })
+}
+
 // GET /api/scan/:id/download?type=ats|pdf
 async function downloadFile(ctx) {
   const user = ctx.get('user')
@@ -575,6 +607,14 @@ async function generateFix(env, supabase, scanId) {
       resumeData = parsed.resumeData
     }
 
+    // Retries build on the LATEST delivered rewrite, not the original
+    // upload — this is what "each retry uses the latest generated resume
+    // plus feedback" means in practice. isRetry is just "has this scan's
+    // retry counter already been incremented past 0" (see retryFix below,
+    // which increments it before enqueueing).
+    const isRetry = scan.fixRetryCount > 0
+    if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
+
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
 
@@ -587,10 +627,29 @@ async function generateFix(env, supabase, scanId) {
     // attempts run out — in which case the best attempt wins, not the last).
     let finalData = resumeData
     let quantificationPrompts = []
-    let bestScore = -1
+    // On a retry round, seed the "best so far" with what was ALREADY
+    // delivered (scan.fixAtsScore) rather than -1 — without this, a retry
+    // round where every new attempt happens to score worse than the
+    // previous round's result would still overwrite it, silently
+    // regressing a score the user already has. A retry should only ever
+    // replace the delivered resume with something strictly better.
+    let bestScore = isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : -1
     let bestData = resumeData
-    let bestQuantificationPrompts = []
+    let bestQuantificationPrompts = isRetry ? (scan.quantificationPrompts || []) : []
+    // On a retry round, the first attempt should already know WHY the
+    // previous round's best result fell short, instead of blindly
+    // re-attempting from a cold start. Re-score the starting point fresh
+    // here (cheap, pure JS) purely to regenerate that weak-areas detail —
+    // fix_ats_score alone doesn't carry enough information to build it.
     let lastFeedback = null
+    if (isRetry && typeof scan.fixAtsScore === 'number') {
+      const startingScore = atsService.scoreResume(resumeParser.serializeResumeData(resumeData), jdText)
+      lastFeedback = {
+        score: scan.fixAtsScore,
+        threshold: c.ATS_BADGE_THRESHOLD,
+        weakAreas: atsService.describeWeakAreas(startingScore)
+      }
+    }
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
       const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback)
@@ -628,8 +687,22 @@ async function generateFix(env, supabase, scanId) {
       ? bestScore
       : atsService.scoreResume(resumeParser.serializeResumeData(resumeData), jdText).score
 
-    const code            = await badgeService.generateShortCode(supabase)
-    const verificationUrl = badgeService.buildVerificationUrl(env, code)
+    // Retries are exhausted (this was the last one allowed) and still
+    // short of the badge threshold — grant a free credit for next time
+    // rather than leaving the user with nothing to show for it.
+    if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
+      try {
+        await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId })
+      } catch (creditErr) {
+        console.error(`Failed to grant fix credit to ${scan.userId}:`, creditErr.message)
+      }
+    }
+
+    // Reuse the existing verification code/URL on a retry — regenerating a
+    // new one every retry would silently orphan a link that may already
+    // have been shared, and waste short-code allocations for no reason.
+    const code            = isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase)
+    const verificationUrl = isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code)
 
     // Pass verificationUrl to docxService — no hardcoded domain
     const docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl)
@@ -822,6 +895,6 @@ async function generateBadge(env, supabase, scanId) {
 }
 
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, downloadFile, getScanHistory,
+  createScan, getScanStatus, getScan, initiateFix, retryFix, downloadFile, getScanHistory,
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }
