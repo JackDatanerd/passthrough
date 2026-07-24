@@ -15,6 +15,7 @@ router.get( '/history',          auth,        c.getScanHistory)
 router.get( '/status/:id',                    c.getScanStatus)
 router.get( '/:id',                           c.getScan)
 router.post('/:id/initiate-fix', auth,        c.initiateFix)
+router.post('/:id/redeem-credit', auth, rl.payment, c.redeemCredit)
 router.post('/:id/retry-fix',    auth, rl.payment, c.retryFix)
 router.get( '/:id/download',     auth,        c.downloadFile)
 

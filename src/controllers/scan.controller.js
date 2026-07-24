@@ -335,6 +335,53 @@ async function initiateFix(ctx) {
   return ctx.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
 }
 
+// POST /api/scan/:id/redeem-credit — use a free fix credit instead of
+// paying. Mirrors the exact end-state payments.controller.js's
+// verifyPayment produces (fix_purchased, status, fix_tier, enqueued job) so
+// nothing downstream needs to know or care whether this fix was paid for
+// or redeemed with a credit.
+async function redeemCredit(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+
+  if (!scan || scan.userId !== user.id)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (scan.fixPurchased)
+    return ctx.json({ success: false, message: 'Already purchased.' }, 400)
+  if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
+    return ctx.json({ success: false, message: 'Scan must be complete.' }, 400)
+
+  // Atomic conditional decrement (see 0006_redeem_fix_credit.sql) — avoids
+  // a race between two concurrent redeem requests both seeing a stale
+  // credit count > 0 and double-spending a single credit.
+  const { data: redeemed, error: rpcErr } = await supabase.rpc('redeem_free_fix_credit', { p_user_id: user.id })
+  if (rpcErr) throw rpcErr
+  if (!redeemed)
+    return ctx.json({ success: false, message: 'No free fix credits available.' }, 400)
+
+  // Recorded as a $0 payment so payment history stays complete and
+  // consistent — same shape as a real transaction, just free.
+  await supabase.from('payments').insert({
+    amount_cents: 0,
+    currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    status:       'SUCCESS',
+    paystack_ref: `credit:${scan.id}:${Date.now()}`,
+    user_id:      user.id,
+    scan_id:      scan.id
+  })
+
+  await supabase.from('scans').update({
+    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX'
+  }).eq('id', scan.id)
+
+  await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+
+  return ctx.json({ success: true, data: { scanId: scan.id } })
+}
+
 // POST /api/scan/:id/retry-fix — user-facing "Try Again" when a delivered
 // fix fell short of ATS_BADGE_THRESHOLD. Re-runs generateFix, which (via
 // the isRetry check inside it) builds on the latest rewrite rather than
@@ -895,6 +942,6 @@ async function generateBadge(env, supabase, scanId) {
 }
 
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, retryFix, downloadFile, getScanHistory,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, downloadFile, getScanHistory,
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

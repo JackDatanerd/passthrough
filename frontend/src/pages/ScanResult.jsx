@@ -37,7 +37,7 @@ export default function ScanResult() {
   const { id }        = useParams()
   const [params]      = useSearchParams()
   const navigate      = useNavigate()
-  const { user }      = useAuth()
+  const { user, refreshUser } = useAuth()
   const anonToken     = params.get('token') || localStorage.getItem('passthrough_anon_token')
   const [scan,        setScan      ] = useState(null)
   const [loading,     setLoading   ] = useState(true)
@@ -97,6 +97,25 @@ export default function ScanResult() {
       setPayError(err.response?.data?.message || 'Payment failed to initialize.')
       setPayLoading(false)
     }
+  }
+
+  async function handleRedeemCredit() {
+    if (!user) return navigate(`/register`)
+    setPayLoading(true); setPayError('')
+    try {
+      await api.post(`/scan/${id}/redeem-credit`)
+      // Unlike handlePay, there's no Paystack redirect/page-reload to
+      // naturally restart polling — COMPLETE_PASS/COMPLETE_FAIL are in
+      // POLLING_STOP, so it already stopped by the time this button was
+      // even visible. Has to be explicitly restarted, same as handleRetryFix.
+      await fetchScan()
+      clearInterval(pollRef.current)
+      pollRef.current = setInterval(fetchScan, POLL_MS)
+      refreshUser()  // freeFixCredits just decremented server-side
+    } catch (err) {
+      setPayError(err.response?.data?.message || 'Could not redeem credit.')
+    }
+    setPayLoading(false)
   }
 
   async function handleDownload(type) {
@@ -322,7 +341,7 @@ export default function ScanResult() {
                 {payError && (
                   <p className="text-sm text-red-600">{payError}</p>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} />
+                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} />
               </>
             )}
 
