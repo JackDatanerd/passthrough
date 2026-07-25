@@ -9,7 +9,7 @@ export default function Pricing() {
       <main className="flex-1 max-w-3xl mx-auto px-4 py-16">
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold text-gray-900 mb-3">Pricing</h1>
-          <p className="text-gray-500">Scan free. Pay once. No subscriptions.</p>
+          <p className="text-gray-500">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
         </div>
 
         <div className="grid sm:grid-cols-3 gap-6">
@@ -19,7 +19,7 @@ export default function Pricing() {
             <div className="text-4xl font-bold text-gray-900 mb-1">$0</div>
             <p className="text-sm text-gray-500 mb-6">3 scans per day</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score'].map(f => (
+              {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score','No account required'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -37,7 +37,7 @@ export default function Pricing() {
             <div className="text-4xl font-bold text-gray-900 mb-1">$39</div>
             <p className="text-sm text-gray-500 mb-6">Score 80+ required</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Passthrough Verified credential','Employer-checkable verification','ATS-optimised .docx','Beautiful PDF'].map(f => (
+              {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -58,7 +58,7 @@ export default function Pricing() {
             <div className="text-4xl font-bold text-gray-900 mb-1">$49</div>
             <p className="text-sm text-gray-500 mb-6">Any score</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Passthrough Verified credential','Employer-checkable verification'].map(f => (
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -71,9 +71,28 @@ export default function Pricing() {
           </div>
         </div>
 
-        <p className="text-center text-sm text-gray-400 mt-10">
+        {/* Retry guarantee callout */}
+        <div className="mt-10 bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
+          <p className="font-semibold text-blue-900 mb-1">
+            Included with every fix: we don't stop until you pass.
+          </p>
+          <p className="text-sm text-blue-700 leading-relaxed max-w-xl mx-auto">
+            Multiple AI rewrite attempts, two free manual retries, and if we still can't
+            get you past the verification threshold, a free credit for your next resume.
+          </p>
+        </div>
+
+        <p className="text-center text-sm text-gray-400 mt-8">
           Payments processed by Paystack. One-time charge — no subscriptions, no surprise fees.
         </p>
+
+        {/* Employer link */}
+        <div className="mt-12 pt-8 border-t border-gray-100 text-center">
+          <p className="text-sm text-gray-500 mb-1">Hiring, not job hunting?</p>
+          <Link to="/#employers" className="text-sm font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2">
+            See how employers verify candidates →
+          </Link>
+        </div>
       </main>
       <Footer />
     </div>

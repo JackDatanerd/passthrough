@@ -20,6 +20,10 @@ export default function Navbar() {
           <Link to="/pricing" className="text-gray-600 hover:text-gray-900 transition-colors">
             Pricing
           </Link>
+          {/* Anchor into the employer section on the homepage */}
+          <Link to="/#employers" className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
+            For employers
+          </Link>
           {user ? (
             <>
               <Link to="/dashboard" className="text-gray-600 hover:text-gray-900 transition-colors">

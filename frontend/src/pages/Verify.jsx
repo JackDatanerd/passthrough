@@ -127,6 +127,33 @@ export default function Verify() {
               </p>
             </div>
 
+            {/* Integrity check explainer — elevated from a stat box to its own
+                headline feature. The mechanism itself is unchanged (see
+                verify.controller.js — SHA-256 re-hash on every view), this
+                only changes how prominently it's explained. */}
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+              <div className="flex items-start gap-4">
+                <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
+                  <span className="text-blue-700 text-lg">🔒</span>
+                </div>
+                <div>
+                  <h2 className="font-semibold text-gray-900 mb-1">
+                    Cryptographically verified — not just a badge
+                  </h2>
+                  <p className="text-sm text-gray-500 leading-relaxed">
+                    Most "resume checker" badges are just an image — nothing stops a
+                    candidate from editing the file after the fact and keeping the badge.
+                    Passthrough hashes the exact document at verification time and
+                    re-checks it against that hash every time this page loads. If the
+                    file has changed in any way, this page will say{' '}
+                    <strong className="text-red-600">Modified</strong> instead of{' '}
+                    <strong className="text-green-700">Unmodified</strong> — automatically,
+                    with no way for the candidate to control it.
+                  </p>
+                </div>
+              </div>
+            </div>
+
             {/* Hiring manager soft opt-in — shown above the full form */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
               {leadSent ? (
