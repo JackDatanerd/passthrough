@@ -33,7 +33,12 @@ async function uploadResume(ctx, next) {
     // place that decides which mode applies (and rejects if both or neither
     // are present) — this middleware only extracts and validates the file
     // if one was sent, same as before.
-    brainDumpText:      formData.get('brainDumpText')      || ''
+    brainDumpText:      formData.get('brainDumpText')      || '',
+    // Discovered missing here entirely — the frontend correctly sent this
+    // field, but since it wasn't in this extraction list, createScan always
+    // saw fields.useSavedProfile as undefined and rejected every saved-
+    // profile submission as "no mode selected," 100% of the time.
+    useSavedProfile:    formData.get('useSavedProfile')     || ''
   }
   ctx.set('formFields', fields)
 

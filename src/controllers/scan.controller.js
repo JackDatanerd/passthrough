@@ -712,15 +712,33 @@ async function generateFix(env, supabase, scanId) {
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
+    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+    // Verification code/URL computed BEFORE the loop now (was previously
+    // computed after) — every candidate's scoring docx and the final
+    // delivered docx need to embed the exact same URL, both so scoring is
+    // consistent with what's actually delivered, and so retries continue
+    // reusing the existing link (see comment below) rather than orphaning
+    // it partway through a round.
+    const code            = isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase)
+    const verificationUrl = isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code)
 
     // Rewrite → score → retry-with-feedback loop. A rewrite that "succeeds"
     // (valid JSON, no fabrication) isn't the same as a rewrite that's
     // actually good — this was previously trusted blindly, which is how a
     // resume could come out of "Fix My Resume" scoring worse than it went
-    // in. Score the ACTUAL rewritten text the same way runAtsScan scores an
-    // upload, and only stop early once it clears the badge threshold (or
-    // attempts run out — in which case the best attempt wins, not the last).
+    // in.
+    //
+    // WYSIWYG scoring: each candidate is scored by generating the ACTUAL
+    // docx and extracting its real text — not resumeParser.serializeResumeData()'s
+    // synthetic approximation. That synthetic text was confirmed (by a real
+    // user report) to score measurably WORSE than the real generated file
+    // scored on a fresh re-upload — same content, different number, purely
+    // because of how the two paths render the same structured data. Scoring
+    // the real file eliminates that discrepancy at the source rather than
+    // leaving the retry loop chasing a distorted number.
     let finalData = resumeData
+    let finalDocxBytes = null
     let quantificationPrompts = []
     // On a retry round, seed the "best so far" with what was ALREADY
     // delivered (scan.fixAtsScore) rather than -1 — without this, a retry
@@ -730,15 +748,19 @@ async function generateFix(env, supabase, scanId) {
     // replace the delivered resume with something strictly better.
     let bestScore = isRetry && typeof scan.fixAtsScore === 'number' ? scan.fixAtsScore : -1
     let bestData = resumeData
+    let bestDocxBytes = null
     let bestQuantificationPrompts = isRetry ? (scan.quantificationPrompts || []) : []
     // On a retry round, the first attempt should already know WHY the
     // previous round's best result fell short, instead of blindly
     // re-attempting from a cold start. Re-score the starting point fresh
-    // here (cheap, pure JS) purely to regenerate that weak-areas detail —
-    // fix_ats_score alone doesn't carry enough information to build it.
+    // here (cheap — one docx generation + extraction, no Claude call) purely
+    // to regenerate that weak-areas detail — fix_ats_score alone doesn't
+    // carry enough information to build it.
     let lastFeedback = null
     if (isRetry && typeof scan.fixAtsScore === 'number') {
-      const startingScore = atsService.scoreResume(resumeParser.serializeResumeData(resumeData), jdText)
+      const startingDocxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
+      const startingText = await resumeParser.extractText(startingDocxBytes, DOCX_MIME)
+      const startingScore = atsService.scoreResume(startingText, jdText)
       lastFeedback = {
         score: scan.fixAtsScore,
         threshold: c.ATS_BADGE_THRESHOLD,
@@ -752,12 +774,16 @@ async function generateFix(env, supabase, scanId) {
 
       const candidateData = rewriteResult.data
       const candidateQuantificationPrompts = rewriteResult.quantificationOpportunities || []
-      const candidateText = resumeParser.serializeResumeData(candidateData)
+      // Score the REAL generated file, not a synthetic text approximation —
+      // see the WYSIWYG comment above.
+      const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl)
+      const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
       const candidateScore = atsService.scoreResume(candidateText, jdText)
 
       if (candidateScore.score > bestScore) {
         bestScore = candidateScore.score
         bestData = candidateData
+        bestDocxBytes = candidateDocxBytes
         bestQuantificationPrompts = candidateQuantificationPrompts
       }
 
@@ -777,10 +803,13 @@ async function generateFix(env, supabase, scanId) {
     // bestScore stays -1 only if every attempt failed at the API/parse level
     // (never even produced a scoreable candidate) — fall back to scoring the
     // untouched original so fix_ats_score is never left null on a delivered
-    // scan.
+    // scan. Uses the same WYSIWYG approach as the main loop for consistency.
     const fixAtsScore = bestScore >= 0
       ? bestScore
-      : atsService.scoreResume(resumeParser.serializeResumeData(resumeData), jdText).score
+      : atsService.scoreResume(
+          await resumeParser.extractText(await docxService.generateAtsDocx(resumeData, verificationUrl), DOCX_MIME),
+          jdText
+        ).score
 
     // Retries are exhausted (this was the last one allowed) and still
     // short of the badge threshold — grant a free credit for next time
@@ -793,17 +822,17 @@ async function generateFix(env, supabase, scanId) {
       }
     }
 
-    // Reuse the existing verification code/URL on a retry — regenerating a
-    // new one every retry would silently orphan a link that may already
-    // have been shared, and waste short-code allocations for no reason.
-    const code            = isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase)
-    const verificationUrl = isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code)
-
-    // Pass verificationUrl to docxService — no hardcoded domain
-    const docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl)
+    // Reuse the winning attempt's already-generated docx bytes instead of
+    // generating a 4th time — bestDocxBytes is set whenever a NEW attempt in
+    // THIS round beats the running best. The one case it's still null: a
+    // retry round where every new attempt scored worse than the carried-
+    // forward previous-round result, so bestData never changed from its
+    // initial value and there's nothing new to reuse — regenerate in that
+    // one case only.
+    const docxBytes = bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl)
     const docxKey   = storage.atsDocxKey(scanId)
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
-      httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
+      httpMetadata: { contentType: DOCX_MIME }
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
