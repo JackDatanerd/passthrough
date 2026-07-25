@@ -13,7 +13,8 @@ async function generateAtsDocx(resumeData, verificationUrl) {
     children: [new TextRun({ text: resumeData.name || '', bold: true, size: 32, font: 'Calibri Light' })]
   }))
 
-  const parts = [resumeData.email || '']
+  const parts = []
+  if (resumeData.email) parts.push(resumeData.email)
   if (resumeData.location) parts.push(resumeData.location)
   if (resumeData.phone)    parts.push(resumeData.phone)
   // Plain text URL — ATS ignores it, humans can click it in a document viewer

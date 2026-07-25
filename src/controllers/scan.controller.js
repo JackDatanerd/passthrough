@@ -518,6 +518,21 @@ async function runAtsScan(env, supabase, scanId) {
         }).eq('id', scanId)
         return
       }
+      // People describing their own career rarely think to state their own
+      // name or email — Claude is correctly instructed never to invent one
+      // (see structureFreeformText's prompt), which means it's frequently
+      // null. For a logged-in user, fall back to what's already on their
+      // account rather than shipping a resume with a blank name line.
+      // Doesn't help an ANONYMOUS brain-dump with no account to fall back
+      // to — that case still needs either explicit name/email form fields
+      // or clearer copy nudging the user to include them in the text.
+      if (scan.userId && (!resumeData.name || !resumeData.email)) {
+        const { data: userRow } = await supabase.from('users').select('name, email').eq('id', scan.userId).maybeSingle()
+        if (userRow) {
+          resumeData.name  = resumeData.name  || userRow.name
+          resumeData.email = resumeData.email || userRow.email
+        }
+      }
       rawResumeText = resumeParser.serializeResumeData(resumeData)
 
       // Persist the structured data now. This is a functional requirement
