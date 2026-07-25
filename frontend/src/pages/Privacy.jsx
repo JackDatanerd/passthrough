@@ -20,19 +20,9 @@ export default function Privacy() {
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Privacy Policy</h1>
         <p className="text-sm text-gray-400 mb-10">Last updated: {LAST_UPDATED}</p>
 
-        <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-10 text-sm text-amber-800">
-          This draft describes what Passthrough's systems actually do with your data today. Before
-          this goes live, replace [Legal Entity Name] / [jurisdiction] below with your real
-          registered details, and have a lawyer confirm what's required for your specific user base
-          — for example, GDPR gives EU/UK residents specific rights (access, deletion, portability,
-          objection), and other jurisdictions (Nigeria's NDPA, Kenya's DPA, the Philippines' Data
-          Privacy Act, US state laws like CCPA) impose their own requirements. This page states our
-          actual practices; it isn't legal certification of compliance with any specific law.
-        </div>
-
         <Section title="1. Who We Are">
           <p>
-            Passthrough is operated by [Legal Entity Name]. For any privacy question or request,
+            Passthrough is operated by Saltern Studio. For any privacy question or request,
             contact{' '}
             <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
               support@passthrough.dev

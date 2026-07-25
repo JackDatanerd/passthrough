@@ -21,11 +21,7 @@ export default function Terms() {
         <p className="text-sm text-gray-400 mb-10">Last updated: {LAST_UPDATED}</p>
 
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-10 text-sm text-amber-800">
-          Passthrough is operated by [Legal Entity Name], a [jurisdiction] [entity type — e.g. sole
-          proprietorship / LLC]. Replace this notice with your actual registered business details
-          before this page goes live, and have these terms reviewed by a lawyer licensed in your
-          jurisdiction — this draft reflects how the product actually works but is not a substitute
-          for legal advice.
+          Passthrough is operated by Saltern Studio.
         </div>
 
         <Section title="1. What Passthrough Is">
