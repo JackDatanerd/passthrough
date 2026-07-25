@@ -22,7 +22,7 @@ async function getVerification(c) {
 
   const { data: row, error } = await supabase
     .from('scans')
-    .select('candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, resume_ats_path, resume_hash')
+    .select('candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, resume_ats_path, resume_hash, verify_expose_docx, verify_expose_pdf, resume_pdf_path')
     .eq('verification_code', code)
     .maybeSingle()
   if (error) throw error
@@ -65,8 +65,51 @@ async function getVerification(c) {
     roleCategory:       row.role_category,
     seniorityLevel:     row.seniority_level,
     verifiedAt:         row.verified_at,
-    integrityStatus
+    integrityStatus,
+    // Owner-controlled — default OFF for both (see 0007_verify_document_visibility.sql).
+    // The frontend uses these to decide whether to show a download link at
+    // all; the actual download is separately re-checked server-side below,
+    // not trusted from this response alone.
+    exposeDocx:         !!row.verify_expose_docx,
+    exposePdf:           !!row.verify_expose_pdf
   }})
 }
 
-module.exports = { getVerification }
+// GET /api/verify/:code/download?type=docx|pdf — public, no auth. Only
+// serves a file if the resume owner has explicitly toggled that document
+// type visible on their verification page (see scan.controller.js's
+// updateVerifyVisibility for the toggle, off by default). Deliberately
+// re-checks the flag here rather than trusting the frontend to only call
+// this when getVerification said it was OK — the frontend check is a UX
+// convenience, this is the actual access control.
+async function downloadVerifiedFile(c) {
+  const code = c.req.param('code')
+  const type = c.req.query('type')
+  const supabase = getSupabase(c.env)
+
+  const { data: row, error } = await supabase
+    .from('scans')
+    .select('resume_ats_path, resume_pdf_path, verify_expose_docx, verify_expose_pdf')
+    .eq('verification_code', code)
+    .maybeSingle()
+  if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Verification not found.' }, 404)
+
+  const exposed = type === 'pdf' ? row.verify_expose_pdf : row.verify_expose_docx
+  if (!exposed) return c.json({ success: false, message: 'This document is not publicly available.' }, 403)
+
+  const fileKey  = type === 'pdf' ? row.resume_pdf_path : row.resume_ats_path
+  const filename = type === 'pdf' ? 'resume-verified.pdf' : 'resume-ats.docx'
+  if (!fileKey) return c.json({ success: false, message: 'File not available.' }, 404)
+
+  const obj = await c.env.RESUMES_BUCKET.get(fileKey)
+  if (!obj) return c.json({ success: false, message: 'File not available.' }, 404)
+
+  c.header('Content-Disposition', `inline; filename="${filename}"`)
+  c.header('Content-Type', type === 'pdf'
+    ? 'application/pdf'
+    : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  return c.body(obj.body)
+}
+
+module.exports = { getVerification, downloadVerifiedFile }

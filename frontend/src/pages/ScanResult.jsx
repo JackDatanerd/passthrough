@@ -44,6 +44,7 @@ export default function ScanResult() {
   const [payLoading,  setPayLoading] = useState(false)
   const [payError,    setPayError  ] = useState('')
   const [dlError,     setDlError   ] = useState('')
+  const [visibilityError, setVisibilityError] = useState('')
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const pollRef = useRef(null)
@@ -116,6 +117,19 @@ export default function ScanResult() {
       setPayError(err.response?.data?.message || 'Could not redeem credit.')
     }
     setPayLoading(false)
+  }
+
+  async function handleToggleExposure(stateField, apiField, value) {
+    setVisibilityError('')
+    // Optimistic update — toggles feel bad with a round-trip lag, and this
+    // is a low-stakes, easily-reversible action.
+    setScan(prev => ({ ...prev, [stateField]: value }))
+    try {
+      await api.patch(`/scan/${id}/verify-visibility`, { [apiField]: value })
+    } catch (err) {
+      setScan(prev => ({ ...prev, [stateField]: !value }))  // revert on failure
+      setVisibilityError(err.response?.data?.message || 'Could not update visibility.')
+    }
   }
 
   async function handleDownload(type) {
@@ -310,6 +324,44 @@ export default function ScanResult() {
                     Download PDF (beautiful)
                   </Button>
                 </div>
+
+                {/* Public document visibility — off by default (see
+                    0007_verify_document_visibility.sql). The verification
+                    page always shows the score; these two toggles
+                    separately control whether the actual files are
+                    downloadable from that same public page, e.g. so an
+                    employer can get a clean, malware-free copy via the link
+                    instead of an email attachment. */}
+                {scan.verificationUrl && (
+                  <div className="mt-4 pt-4 border-t border-green-200">
+                    <p className="text-xs font-medium text-green-900 mb-2">
+                      Let anyone with your verification link also download the file itself
+                    </p>
+                    {visibilityError && (
+                      <p className="text-xs text-red-600 mb-2">{visibilityError}</p>
+                    )}
+                    <div className="flex flex-col gap-2">
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!scan.verifyExposeDocx}
+                          onChange={e => handleToggleExposure('verifyExposeDocx', 'exposeDocx', e.target.checked)}
+                          className="rounded border-gray-300"
+                        />
+                        Allow public .docx download
+                      </label>
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!scan.verifyExposePdf}
+                          onChange={e => handleToggleExposure('verifyExposePdf', 'exposePdf', e.target.checked)}
+                          className="rounded border-gray-300"
+                        />
+                        Allow public PDF download
+                      </label>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 

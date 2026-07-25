@@ -120,6 +120,26 @@ export default function Verify() {
                   <p className="font-semibold text-gray-700 text-sm">{formatDate(data.verifiedAt)}</p>
                 </div>
               </div>
+
+              {(data.exposeDocx || data.exposePdf) && (
+                <div className="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
+                  {data.exposeDocx && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => { window.location.href = `${api.defaults.baseURL}/verify/${code}/download?type=docx` }}
+                    >
+                      Download .docx
+                    </Button>
+                  )}
+                  {data.exposePdf && (
+                    <Button
+                      onClick={() => window.open(`${api.defaults.baseURL}/verify/${code}/download?type=pdf`, '_blank')}
+                    >
+                      View / Download PDF
+                    </Button>
+                  )}
+                </div>
+              )}
               <p className="text-xs text-gray-400 mt-6">
                 {data.passed
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."

@@ -414,6 +414,39 @@ async function retryFix(ctx) {
   return ctx.json({ success: true, data: { retriesRemaining: c.MAX_FIX_RETRIES - (scan.fixRetryCount + 1) } })
 }
 
+// PATCH /api/scan/:id/verify-visibility — owner-only toggle for whether the
+// actual .docx/PDF are publicly downloadable from this scan's verification
+// page. Both default to false (0007_verify_document_visibility.sql) —
+// purchasing a Fix/Badge opts into a public score page, not automatically
+// into publishing the document content itself.
+async function updateVerifyVisibility(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+
+  if (!scan || scan.userId !== user.id)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.verificationCode)
+    return ctx.json({ success: false, message: 'This scan has no verification page yet.' }, 400)
+
+  const body = await ctx.req.json().catch(() => ({}))
+  const update = {}
+  if (typeof body.exposeDocx === 'boolean') update.verify_expose_docx = body.exposeDocx
+  if (typeof body.exposePdf  === 'boolean') update.verify_expose_pdf  = body.exposePdf
+  if (Object.keys(update).length === 0)
+    return ctx.json({ success: false, message: 'Nothing to update — expected exposeDocx and/or exposePdf as booleans.' }, 400)
+
+  const { error: updateErr } = await supabase.from('scans').update(update).eq('id', scan.id)
+  if (updateErr) throw updateErr
+
+  return ctx.json({ success: true, data: {
+    exposeDocx: update.verify_expose_docx ?? scan.verifyExposeDocx,
+    exposePdf:  update.verify_expose_pdf  ?? scan.verifyExposePdf
+  }})
+}
+
 // GET /api/scan/:id/download?type=ats|pdf
 async function downloadFile(ctx) {
   const user = ctx.get('user')
@@ -957,6 +990,6 @@ async function generateBadge(env, supabase, scanId) {
 }
 
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, downloadFile, getScanHistory,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, updateVerifyVisibility, downloadFile, getScanHistory,
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }
