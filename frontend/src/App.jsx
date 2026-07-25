@@ -12,6 +12,8 @@ import VerifyEmail    from './pages/VerifyEmail'
 import ScanResult     from './pages/ScanResult'
 import Verify         from './pages/Verify'
 import Pricing        from './pages/Pricing'
+import Terms          from './pages/Terms'
+import Privacy        from './pages/Privacy'
 import PaymentSuccess from './pages/PaymentSuccess'
 import DashboardIndex from './pages/dashboard/Index'
 import Settings       from './pages/dashboard/Settings'
@@ -40,6 +42,8 @@ export default function App() {
             <Route path="/reset-password"  element={<ResetPassword />} />
             <Route path="/verify-email"    element={<VerifyEmail />} />
             <Route path="/pricing"         element={<Pricing />} />
+            <Route path="/terms"           element={<Terms />} />
+            <Route path="/privacy"         element={<Privacy />} />
             <Route path="/payment/success" element={<PaymentSuccess />} />
 
             {/* Protected routes — redirect to /login if no token */}
