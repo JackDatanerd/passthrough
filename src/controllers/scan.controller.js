@@ -886,6 +886,12 @@ async function generateFix(env, supabase, scanId) {
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateFix ${scanId}:`, err.message)
+    try {
+      await emailService.sendOwnerAlert(env,
+        'generateFix crashed',
+        `scanId: ${scanId}\nerror: ${err.message}\nstack: ${err.stack || '(none)'}`
+      )
+    } catch (_) {}
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
     try {
@@ -1005,6 +1011,12 @@ async function generateBadge(env, supabase, scanId) {
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateBadge ${scanId}:`, err.message)
+    try {
+      await emailService.sendOwnerAlert(env,
+        'generateBadge crashed',
+        `scanId: ${scanId}\nerror: ${err.message}\nstack: ${err.stack || '(none)'}`
+      )
+    } catch (_) {}
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
     try {

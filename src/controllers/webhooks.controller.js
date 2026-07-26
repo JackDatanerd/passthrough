@@ -20,12 +20,24 @@
 
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
+const emailService = require('../services/email.service')
 
 async function handlePaystack(c) {
   const bodyText = await c.req.text()
   const expectedSig = await cryptoLib.hmacSha512Hex(c.env.PAYSTACK_SECRET_KEY, bodyText)
-  if (expectedSig !== c.req.header('x-paystack-signature'))
+  if (expectedSig !== c.req.header('x-paystack-signature')) {
+    // Worth an immediate alert, not just a log line — this is either a
+    // misconfigured PAYSTACK_SECRET_KEY (which would silently break every
+    // future payment) or a genuine spoofing attempt against the webhook.
+    // Deliberately doesn't include the actual signature/secret values.
+    try {
+      await emailService.sendOwnerAlert(c.env,
+        'Paystack webhook signature mismatch',
+        `A webhook request failed signature verification. This could mean\nPAYSTACK_SECRET_KEY is misconfigured (breaks all future payments) or\nsomeone is attempting to spoof a payment webhook.\n\nIP: ${c.req.header('cf-connecting-ip') || 'unknown'}\ntime: ${new Date().toISOString()}`
+      )
+    } catch (_) {}
     return c.text('Unauthorized', 401)
+  }
 
   // Parse JSON from the same string we already hashed — no second read needed
   let event

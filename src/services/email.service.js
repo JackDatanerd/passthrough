@@ -92,7 +92,43 @@ async function sendFixFailed(env, supabase, email, name) {
   return send(env, supabase, email, "We hit a snag — we're on it", 'fix_failed', { NAME: name })
 }
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+// Best-effort critical-failure notification to the site owner — added
+// specifically because there was previously zero error monitoring: a
+// production failure would only ever be discovered via wrangler tail (if
+// someone happened to be watching) or an angry customer email. This isn't
+// a replacement for real observability (Sentry, Logpush, etc.) — it's a
+// minimal stopgap that needed no new account/DSN/service to set up, since
+// Resend was already wired in.
+//
+// OWNER_ALERT_EMAIL is a plain [vars] entry in wrangler.toml, not a
+// secret — it's just an email address, not credential-like. If it's unset,
+// this silently no-ops rather than failing — alerting must never itself
+// become a reason something else breaks.
+async function sendOwnerAlert(env, subject, message) {
+  const to = env.OWNER_ALERT_EMAIL
+  if (!to) return false
+  try {
+    await sendViaResend(env, {
+      from: env.EMAIL_FROM,
+      to,
+      subject: `[Passthrough Alert] ${subject}`,
+      html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`
+    })
+    return true
+  } catch (err) {
+    console.error('Owner alert failed to send:', err.message)
+    return false
+  }
+}
+
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
-  sendScanFail, sendScanPass, sendFixDelivered, sendFixFailed
+  sendScanFail, sendScanPass, sendFixDelivered, sendFixFailed,
+  sendOwnerAlert
 }

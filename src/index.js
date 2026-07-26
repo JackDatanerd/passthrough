@@ -29,6 +29,7 @@ const profileRoutes      = require('./routes/profile.routes')
 
 const { getSupabase } = require('./config/supabase')
 const { scanRowToCamel } = require('./lib/mappers')
+const emailService = require('./services/email.service')
 
 const app = new Hono()
 
@@ -163,6 +164,15 @@ async function queue(batch, env, ctx) {
       // but if something truly unexpected escapes, let the queue's
       // max_retries/dead_letter_queue config (wrangler.toml) handle it.
       console.error(`Queue job failed (${type} ${scanId}):`, err.message)
+      // Awaited, not fire-and-forget — an unawaited promise here risks
+      // being silently cancelled once this function returns, the exact
+      // class of bug found and fixed elsewhere tonight.
+      try {
+        await emailService.sendOwnerAlert(env,
+          `Queue job failed: ${type}`,
+          `scanId: ${scanId}\ntype: ${type}\nerror: ${err.message}\nstack: ${err.stack || '(none)'}`
+        )
+      } catch (_) {}
       message.retry()
     }
   }

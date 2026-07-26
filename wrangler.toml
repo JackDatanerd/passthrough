@@ -50,6 +50,10 @@ PAYSTACK_CALLBACK_URL   = "https://passthrough.dev/payment/success"
 ANTHROPIC_MODEL         = "claude-sonnet-4-6"
 EMAIL_FROM              = "Passthrough <hello@passthrough.dev>"
 JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"
+# Critical-failure alert destination (queue job crashes, webhook signature
+# mismatches) — see services/email.service.js's sendOwnerAlert. Change this
+# if you want alerts going somewhere other than the support inbox.
+OWNER_ALERT_EMAIL       = "support@passthrough.dev"
 
 # ── Local dev overrides ──────────────────────────────────────────────
 # `wrangler dev` reads [vars] above + .dev.vars (gitignored) for secrets.
