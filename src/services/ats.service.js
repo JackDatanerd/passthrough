@@ -186,9 +186,20 @@ function scoreFormat(resumeText) {
   if (!resumeText || resumeText.trim().length < 100)
     return { score: 0, detail: { issues: ['Resume could not be parsed'] } }
   let score = 100; const issues = []
-  if ((resumeText.match(/\|/g) || []).length > 5)
-    { score -= 15; issues.push('Tables detected — ATS may fail to parse') }
-  const bTypes = new Set((resumeText.match(/^[\s]*[•\-\*◦]/mg) || []).map(b => b.trim()[0]))
+  // REMOVED: a "count | characters, flag if >5" table-detection check used
+  // to live here. Removed after direct testing proved it has no real
+  // detection value in either direction: a genuine DOCX table (<w:tbl>)
+  // produces ZERO pipe characters under our own jszip-based extractor —
+  // table cells just become separate lines, like any other paragraph — so
+  // this check could never actually catch a real table. Meanwhile it
+  // reliably false-positived on the extremely common, ATS-safe "Company |
+  // Location | Dates" formatting convention, silently costing otherwise
+  // well-formatted resumes 15 points for no real reason. A check that only
+  // ever fires incorrectly is worse than no check. Genuine table detection
+  // would need to inspect the raw DOCX XML for <w:tbl> presence before
+  // extraction discards that structure — a real future improvement, but a
+  // meaningfully different (and bigger) change than tuning this heuristic.
+  const bTypes = new Set((resumeText.match(/^[\s]*[•\-\*◦▪‣·]/mg) || []).map(b => b.trim()[0]))
   if (bTypes.size > 2)
     { score -= 15; issues.push('Inconsistent bullet style') }
   if (resumeText.split('\n').filter(l => l.length > 200).length > 3)
@@ -204,19 +215,34 @@ function scoreSections(resumeText) {
     { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise'] },
     { name: 'Contact',    patterns: null },
   ]
-  const optional = [
-    { name: 'Summary',        patterns: ['summary','objective','profile'] },
-    { name: 'Certifications', patterns: ['certification','licenses','awards'] },
-  ]
+  // Certifications was previously weighted equally with Summary as one of
+  // two "optional" sections worth 15 points each — but Certifications is
+  // genuinely field-dependent (most candidates legitimately have none),
+  // while Summary is near-universal in modern professional resumes. Equal
+  // weighting meant most complete, well-formatted resumes silently capped
+  // at 85/100 for lacking something most people don't have, with no
+  // indication why — `missing` only ever tracked required sections, so
+  // this 15-point loss wasn't even visible to the user. Certifications is
+  // still tracked below for informational purposes, just no longer
+  // penalized numerically.
+  const summaryPatterns = ['summary','objective','profile']
+  const certPatterns    = ['certification','licenses','awards']
+
   const lines10  = lower.split('\n').slice(0, 10).join(' ')
   const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines10)
   const foundReq = required.filter(s => s.patterns ? s.patterns.some(p => lower.includes(p)) : hasEmail)
-  const foundOpt = optional.filter(s => s.patterns.some(p => lower.includes(p)))
+  const hasSummary = summaryPatterns.some(p => lower.includes(p))
+  const hasCerts   = certPatterns.some(p => lower.includes(p))
+
   return {
-    score: Math.min(100, Math.round((foundReq.length / 4) * 70 + (foundOpt.length / 2) * 30)),
+    score: Math.min(100, Math.round((foundReq.length / 4) * 85 + (hasSummary ? 15 : 0))),
     detail: {
-      found:   foundReq.map(s => s.name),
-      missing: required.filter(s => !foundReq.includes(s)).map(s => s.name)
+      found:   foundReq.map(s => s.name).concat(hasSummary ? ['Summary'] : []),
+      missing: required.filter(s => !foundReq.includes(s)).map(s => s.name),
+      // Informational only — doesn't affect score. Present so the UI/
+      // rewrite feedback can still mention it as an optional improvement
+      // without implying its absence is a real problem.
+      hasCertifications: hasCerts
     }
   }
 }
