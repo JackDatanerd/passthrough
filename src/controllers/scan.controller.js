@@ -133,6 +133,20 @@ async function createScan(ctx) {
       message: `Tell us a bit more about your background (min ${c.MIN_BRAIN_DUMP_CHARS} chars).` }, 400)
   }
 
+  // Anonymous brain-dump submissions collect name/email as explicit form
+  // fields (logged-in users instead get a server-side fallback to their
+  // account name/email — see runAtsScan). Folding them in as an explicit,
+  // trivially-parseable preamble here — rather than adding new columns and
+  // overriding resumeData after the fact — means Claude's own extraction
+  // just reliably picks them up like any other stated fact, instead of
+  // depending on someone happening to mention their own name while
+  // describing their career (which people rarely do unprompted).
+  const contactName  = (fields.contactName  || '').trim()
+  const contactEmail = (fields.contactEmail || '').trim()
+  const brainDumpWithContact = (!user && brainDumpText && (contactName || contactEmail))
+    ? `Name: ${contactName}\nEmail: ${contactEmail}\n\n${brainDumpText}`
+    : brainDumpText
+
   // PHASE 4: fetch the saved profile fresh from the DB — never trust a
   // client-supplied resumeData payload here, even implicitly. This is the
   // only place saved-profile data enters a new scan, and it always comes
@@ -179,7 +193,7 @@ async function createScan(ctx) {
     }
     return {
       input_mode:           'brain_dump',
-      raw_brain_dump_text:  brainDumpText.slice(0, c.MAX_RESUME_CHARS)
+      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS)
     }
   }
 

@@ -26,6 +26,13 @@ export default function ScanForm() {
   const [file,          setFile         ] = useState(null)
   const [brainDumpText, setBrainDumpText] = useState('')
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
+  // Anonymous users describing their background in free text rarely think
+  // to state their own name — Claude is correctly instructed never to
+  // invent one, which means it's frequently left blank. Logged-in users
+  // already have a server-side fallback to their account name/email; this
+  // covers the case that fallback can't reach.
+  const [contactName,  setContactName ] = useState('')
+  const [contactEmail, setContactEmail] = useState('')
 
   const [useUrl,  setUseUrl ] = useState(false)
   const [jobUrl,  setJobUrl ] = useState('')
@@ -63,6 +70,12 @@ export default function ScanForm() {
       return setError('Please upload your resume.')
     if (entryMode === 'brainDump' && brainDumpText.trim().length < MIN_BRAIN_DUMP_CHARS)
       return setError(`Tell us a bit more about your background (min ${MIN_BRAIN_DUMP_CHARS} characters).`)
+    if (entryMode === 'brainDump' && !user) {
+      if (!contactName.trim())
+        return setError('Please enter your name.')
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(contactEmail.trim()))
+        return setError('Please enter a valid email address.')
+    }
     if (!useUrl && jdText.length < 50)
       return setError('Job description too short (min 50 characters).')
     if (useUrl  && !jobUrl.trim())
@@ -78,6 +91,10 @@ export default function ScanForm() {
         formData.append('useSavedProfile', 'true')
       } else {
         formData.append('brainDumpText', brainDumpText.trim())
+        if (!user) {
+          formData.append('contactName', contactName.trim())
+          formData.append('contactEmail', contactEmail.trim())
+        }
       }
       if (useUrl && jobUrl.trim())
         formData.append('jobDescriptionUrl', jobUrl.trim())
@@ -152,6 +169,29 @@ export default function ScanForm() {
               No resume yet? Paste a brain dump, an old resume, or just describe your background —
               we'll turn it into a structured, JD-matched resume.
             </p>
+            {!user && (
+              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <Input
+                    placeholder="Your full name"
+                    value={contactName}
+                    onChange={e => setContactName(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <Input
+                    type="email"
+                    placeholder="Your email"
+                    value={contactEmail}
+                    onChange={e => setContactEmail(e.target.value)}
+                  />
+                </div>
+                <p className="col-span-full text-xs text-gray-500">
+                  People describing their own career rarely think to mention their own name —
+                  we ask separately so your resume header isn't blank.
+                </p>
+              </div>
+            )}
           </div>
         )}
 

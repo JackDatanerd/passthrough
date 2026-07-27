@@ -38,7 +38,11 @@ async function uploadResume(ctx, next) {
     // field, but since it wasn't in this extraction list, createScan always
     // saw fields.useSavedProfile as undefined and rejected every saved-
     // profile submission as "no mode selected," 100% of the time.
-    useSavedProfile:    formData.get('useSavedProfile')     || ''
+    useSavedProfile:    formData.get('useSavedProfile')     || '',
+    // Explicit name/email for anonymous brain-dump submissions — see
+    // createScan for how these get folded into the brain-dump text itself.
+    contactName:        formData.get('contactName')         || '',
+    contactEmail:       formData.get('contactEmail')         || ''
   }
   ctx.set('formFields', fields)
 
