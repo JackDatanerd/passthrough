@@ -6,7 +6,9 @@
     "dev":        "wrangler dev --port 4000",
     "deploy":     "wrangler deploy",
     "seed":       "node supabase/seed.js",
-    "cf-typegen": "wrangler types"
+    "cf-typegen": "wrangler types",
+    "test":       "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@supabase/supabase-js":  "^2.39.0",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "@cloudflare/puppeteer":  "^1.1.0",
+    "vitest":                 "^4.1.10",
     "wrangler":               "^3.50.0"
   }
 }
