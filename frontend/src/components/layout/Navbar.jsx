@@ -16,8 +16,12 @@ export default function Navbar() {
         <Link to="/" className="font-bold text-blue-700 text-lg tracking-tight">
           Passthrough
         </Link>
-        <div className="flex items-center gap-4 text-sm">
-          <Link to="/pricing" className="text-gray-600 hover:text-gray-900 transition-colors">
+        <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm">
+          {/* Hidden for logged-in users on narrow screens — least essential
+              item once someone already has an account (still reachable via
+              the footer), and without it this row was right at the edge of
+              overflowing a 375px viewport alongside Dashboard/Sign out. */}
+          <Link to="/pricing" className={`text-gray-600 hover:text-gray-900 transition-colors ${user ? 'hidden sm:block' : ''}`}>
             Pricing
           </Link>
           {/* Anchor into the employer section on the homepage */}
