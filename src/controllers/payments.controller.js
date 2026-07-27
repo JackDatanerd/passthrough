@@ -64,7 +64,11 @@ async function initializePayment(c2) {
   // Store fixTier on scan for routing in verify/webhook
   await supabase.from('scans').update({ fix_tier: fixTier }).eq('id', scanId)
 
-  return c2.json({ success: true, data: { authorization_url: result.authorization_url, reference } })
+  return c2.json({ success: true, data: {
+    authorization_url: result.authorization_url,
+    access_code:        result.access_code,
+    reference
+  }})
 }
 
 // GET /api/payments/verify?reference=xxx

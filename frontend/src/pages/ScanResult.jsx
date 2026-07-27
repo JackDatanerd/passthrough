@@ -1,6 +1,7 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
+import PaystackPop from '@paystack/inline-js'
 import { useAuth } from '../hooks/useAuth'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -93,7 +94,36 @@ export default function ScanResult() {
     setPayLoading(true); setPayError('')
     try {
       const res = await api.post('/payments/initialize', { scanId: id, fixTier })
-      window.location.href = res.data.data.authorization_url
+      const { access_code, reference } = res.data.data
+
+      const popup = new PaystackPop()
+      popup.resumeTransaction(access_code, {
+        onSuccess: async () => {
+          try {
+            // Same verify endpoint the old redirect-based flow used — just
+            // called directly here instead of via a callback_url redirect.
+            // The webhook (webhooks.controller.js) still fires independently
+            // as a redundant confirmation path either way.
+            await api.get(`/payments/verify?reference=${reference}`)
+          } catch (_) {
+            // Swallow — the webhook will still confirm this independently
+            // even if this specific client-side call fails (e.g. the tab
+            // closing right after payment). Not worth blocking on.
+          }
+          // Status just moved past COMPLETE_PASS/COMPLETE_FAIL, which are
+          // in POLLING_STOP — no page reload here (unlike the old redirect
+          // flow) to naturally restart polling, so it has to be explicit.
+          await fetchScan()
+          clearInterval(pollRef.current)
+          pollRef.current = setInterval(fetchScan, POLL_MS)
+          setPayLoading(false)
+        },
+        onCancel: () => setPayLoading(false),
+        onError: () => {
+          setPayError('Payment failed. Please try again.')
+          setPayLoading(false)
+        }
+      })
     } catch (err) {
       setPayError(err.response?.data?.message || 'Payment failed to initialize.')
       setPayLoading(false)
