@@ -104,6 +104,17 @@ export default function DashboardIndex() {
           </div>
         )}
 
+        {/* Free fix credit balance — previously only surfaced on a specific
+            scan's FixBanner once you happened to land there; shown here too
+            so a granted credit is never invisible. */}
+        {user?.freeFixCredits > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 flex items-center gap-3">
+            <p className="text-sm text-blue-900">
+              You have <span className="font-semibold">{user.freeFixCredits} free fix credit{user.freeFixCredits > 1 ? 's' : ''}</span> — redeem it on any completed scan below, or a new one.
+            </p>
+          </div>
+        )}
+
         {loading && (
           <div className="flex justify-center py-12">
             <Spinner size="lg" />

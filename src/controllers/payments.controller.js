@@ -18,6 +18,7 @@ const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
+const emailService = require('../services/email.service')
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
@@ -45,9 +46,23 @@ async function initializePayment(c2) {
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 
   // Call Paystack FIRST — if it fails, no orphan record is created
-  const result = await paystackService.initializeTransaction(c2.env, {
-    email: user.email, amount, userId: user.id, scanId, fixTier, reference
-  })
+  let result
+  try {
+    result = await paystackService.initializeTransaction(c2.env, {
+      email: user.email, amount, userId: user.id, scanId, fixTier, reference
+    })
+  } catch (err) {
+    console.error(`[CRITICAL] Paystack initialize failed (scan ${scanId}):`, err.message)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Paystack initialize failed — payments may be blocked',
+        `Every payment attempt fails until this is resolved.\n\nuserId: ${user.id}\nscanId: ${scanId}\nfixTier: ${fixTier}\namount: ${amount}\nerror: ${err.message}`
+      )
+    } catch (_) {}
+    return c2.json({ success: false,
+      message: 'Payment could not be started right now. We\'ve been notified — please try again shortly.'
+    }, 502)
+  }
 
   // Paystack confirmed — now safe to create the DB record
   const { error: insertErr } = await supabase.from('payments').insert({
@@ -77,7 +92,19 @@ async function verifyPayment(c2) {
   if (!reference) return c2.json({ success: false, message: 'Missing reference.' }, 400)
 
   const supabase = getSupabase(c2.env)
-  const pResult = await paystackService.verifyTransaction(c2.env, reference)
+  let pResult
+  try {
+    pResult = await paystackService.verifyTransaction(c2.env, reference)
+  } catch (err) {
+    console.error(`[CRITICAL] Paystack verify failed (ref ${reference}):`, err.message)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Paystack verify failed — a payment may be stuck',
+        `reference: ${reference}\nerror: ${err.message}`
+      )
+    } catch (_) {}
+    return c2.json({ success: false, message: 'Payment verification failed.' }, 502)
+  }
   if (pResult.data?.status !== 'success' || pResult.data?.currency !== (c2.env.PAYSTACK_CURRENCY || c.CURRENCY))
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
 

@@ -86,16 +86,50 @@ function stripFormFieldNoise(text) {
   return out.replace(/\s+/g, ' ').trim()
 }
 
+// Cross-site noise that isn't platform-specific — this runs on EVERY
+// hostname, unlike stripPlatformBoilerplate below (Greenhouse/Lever only).
+// These are the phrases most job boards, aggregators, and reposting sites
+// (e.g. generic ATS wrappers, job aggregators) surround a posting with,
+// none of which is ever legitimate JD content to score keywords against.
+// Kept intentionally narrow/literal (like FORM_FIELD_PATTERNS below) rather
+// than attempting structural removal — there's no DOM here, only flattened
+// text (see the file-level comment above for why that's a deliberate
+// trade-off, not an oversight).
+const GENERIC_NOISE_PATTERNS = [
+  /\bsimilar jobs?\b/gi,
+  /\brelated jobs?\b/gi,
+  /\byou (?:might|may) also like\b/gi,
+  /\bmore jobs? (?:like this|from this employer)\b/gi,
+  /\bshare this job\b/gi,
+  /\bsave (?:this )?job\b/gi,
+  /\bapply (?:now|with linkedin|with indeed)\b/gi,
+  /\bback to (?:search results|job search|all jobs)\b/gi,
+  /\bcreate a job alert\b/gi,
+  /\bsign in\b/gi,
+  /\baccept (?:all )?cookies\b/gi,
+  /\bwe use cookies\b/gi,
+  /\bcookie policy\b/gi,
+  /\bprivacy policy\b/gi,
+]
+
+function stripGenericNoise(text) {
+  let out = text
+  for (const pattern of GENERIC_NOISE_PATTERNS) out = out.replace(pattern, ' ')
+  return out.replace(/\s+/g, ' ').trim()
+}
+
 /**
  * stripPlatformBoilerplate(hostname, text) -> cleaned text
- * No-op for any hostname that isn't Greenhouse or Lever — Workday is
- * handled separately via isKnownUnreliablePlatform() above, and every
- * other site keeps the existing generic-only stripping it already had.
+ * Generic noise stripping runs for every hostname. Greenhouse/Lever get the
+ * additional anchor-based truncation + form-field stripping on top of that
+ * — Workday is handled separately via isKnownUnreliablePlatform() above,
+ * and every other site gets generic-only stripping.
  */
 function stripPlatformBoilerplate(hostname, text) {
+  const generic = stripGenericNoise(text)
   if (!hostMatches(hostname, GREENHOUSE_HOSTS) && !hostMatches(hostname, LEVER_HOSTS))
-    return text
-  return stripFormFieldNoise(truncateAtFirstAnchor(text))
+    return generic
+  return stripFormFieldNoise(truncateAtFirstAnchor(generic))
 }
 
 module.exports = { stripPlatformBoilerplate, isKnownUnreliablePlatform }

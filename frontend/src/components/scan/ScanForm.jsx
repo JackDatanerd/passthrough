@@ -232,6 +232,8 @@ export default function ScanForm() {
             />
             <p className="mt-1 text-xs text-gray-500">
               LinkedIn URLs cannot be read automatically — paste the text instead.
+              For the most accurate score, use the employer's own posting link
+              rather than a job board aggregator or reposted listing.
             </p>
           </div>
         ) : (
