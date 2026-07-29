@@ -17,9 +17,9 @@ export default function Pricing() {
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Free forever</div>
             <div className="text-4xl font-bold text-gray-900 mb-1">$0</div>
-            <p className="text-sm text-gray-500 mb-6">3 scans per day</p>
+            <p className="text-sm text-gray-500 mb-6">1 scan/hour with no account, or 3/day with a free account</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score','No account required'].map(f => (
+              {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score','No account required to start'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>

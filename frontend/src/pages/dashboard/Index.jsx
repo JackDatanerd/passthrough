@@ -45,6 +45,13 @@ export default function DashboardIndex() {
     api.get('/profile')
       .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
       .catch(() => {})
+
+    // Re-sync cached user state (emailVerified in particular) every time the
+    // dashboard is visited — not just on app mount. Without this, verifying
+    // your email on a different device/tab leaves the "verify your email"
+    // banner showing here indefinitely, since this SPA session never
+    // otherwise re-fetches /auth/me until a full page reload.
+    refreshUser()
   }, [])
 
   async function resendVerification() {

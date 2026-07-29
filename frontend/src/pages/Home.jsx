@@ -95,8 +95,8 @@ export default function Home() {
         <section className="max-w-2xl mx-auto px-4 pb-16">
           <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-center">
             {[
-              '3 free scans every day',
-              'No credit card required',
+              'Free scan, no account needed',
+              'Create a free account for 3 scans/day',
               'Results in about 30 seconds',
             ].map((item) => (
               <div key={item} className="flex items-center gap-1.5 text-sm text-gray-500">
@@ -254,7 +254,7 @@ export default function Home() {
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Free forever</div>
                 <div className="text-3xl font-bold text-gray-900 mb-1">$0</div>
-                <p className="text-sm text-gray-500">3 scans a day. Full score breakdown. No account required.</p>
+                <p className="text-sm text-gray-500">1 scan/hour with no account, or 3/day with a free account. Full score breakdown.</p>
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Credential only</div>

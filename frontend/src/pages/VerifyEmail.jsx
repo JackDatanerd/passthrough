@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
+import { useAuth } from '../hooks/useAuth'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -9,13 +10,23 @@ import Footer from '../components/layout/Footer'
 // This page reads the token from the URL and calls the API
 export default function VerifyEmail() {
   const [params] = useSearchParams()
+  const { refreshUser } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
 
   useEffect(() => {
     const token = params.get('token')
     if (!token) { setStatus('error'); return }
     api.get(`/auth/verify-email?token=${token}`)
-      .then(() => setStatus('success'))
+      .then(() => {
+        setStatus('success')
+        // If this browser happens to already be logged in (e.g. the link
+        // was opened in a new tab on the same device), refresh the cached
+        // user object now — otherwise the emailVerified flag only updates
+        // on this page, and any already-open dashboard/settings tab keeps
+        // showing "unverified" until a full reload. refreshUser() no-ops
+        // silently if there's no token in this browser at all.
+        refreshUser()
+      })
       .catch(() => setStatus('error'))
   }, [])
 

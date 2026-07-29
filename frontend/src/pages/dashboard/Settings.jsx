@@ -10,7 +10,7 @@ import { formatDate } from '../../lib/utils'
 
 export default function Settings() {
   const navigate      = useNavigate()
-  const { user, logout } = useAuth()
+  const { user, logout, refreshUser } = useAuth()
 
   // Change password
   const [current,  setCurrent ] = useState('')
@@ -38,6 +38,9 @@ export default function Settings() {
       })
       .catch(() => {})
       .finally(() => setProfileLoading(false))
+
+    // Same stale-cache fix as Dashboard/Index.jsx — see that file's comment.
+    refreshUser()
   }, [])
 
   async function handleRemoveProfile() {

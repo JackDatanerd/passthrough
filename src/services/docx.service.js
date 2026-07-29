@@ -33,11 +33,17 @@ async function generateAtsDocx(resumeData, verificationUrl) {
   if (resumeData.experience?.length) {
     children.push(new Paragraph({ text: 'EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
     for (const job of resumeData.experience) {
+      // job.company/job.dates may legitimately be null — Claude is
+      // instructed (see claude.service.js) to leave ambiguous fields null
+      // rather than guess. Template-literal interpolation would otherwise
+      // stringify that as the literal text "null" in a paying customer's
+      // delivered resume. Build from filtered, joined parts instead — same
+      // pattern resume.parser.js's serializeResumeData already uses.
+      const titleLine = [job.title, job.company].filter(Boolean).join(' — ')
       children.push(new Paragraph({
         children: [
-          new TextRun({ text: job.title,            bold: true, font: 'Calibri', size: 22 }),
-          new TextRun({ text: ` — ${job.company}`,             font: 'Calibri', size: 22 }),
-          new TextRun({ text: `  ${job.dates}`,                font: 'Calibri', size: 22, color: '666666' })
+          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
+          ...(job.dates ? [new TextRun({ text: `  ${job.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
         ]
       }))
       for (const b of (job.bullets || []))
@@ -51,14 +57,16 @@ async function generateAtsDocx(resumeData, verificationUrl) {
 
   if (resumeData.education?.length) {
     children.push(new Paragraph({ text: 'EDUCATION', heading: HeadingLevel.HEADING_2 }))
-    for (const e of resumeData.education)
+    for (const e of resumeData.education) {
+      // Same null-safety as the experience block above.
+      const titleLine = [e.degree, e.institution].filter(Boolean).join(' — ')
       children.push(new Paragraph({
         children: [
-          new TextRun({ text: e.degree,               bold: true, font: 'Calibri', size: 22 }),
-          new TextRun({ text: ` — ${e.institution}`,             font: 'Calibri', size: 22 }),
-          new TextRun({ text: `  ${e.dates}`,                    font: 'Calibri', size: 22, color: '666666' })
+          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
+          ...(e.dates ? [new TextRun({ text: `  ${e.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
         ]
       }))
+    }
     children.push(new Paragraph({ text: '' }))
   }
 
