@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { ToastProvider } from './components/ui/Toast'
+import useScrollToHash from './hooks/useScrollToHash'
 
 // Pages
 import Home           from './pages/Home'
@@ -26,11 +27,19 @@ function ProtectedRoute({ children }) {
   return children
 }
 
+// Needs to render inside BrowserRouter (useLocation requires Router
+// context) — that's the only reason this isn't just called from App().
+function ScrollToHash() {
+  useScrollToHash()
+  return null
+}
+
 export default function App() {
   return (
     <AuthProvider>
       <ToastProvider>
         <BrowserRouter>
+          <ScrollToHash />
           <Routes>
             {/* Public routes */}
             <Route path="/"                element={<Home />} />
