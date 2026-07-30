@@ -10,7 +10,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
   const badgeEligible = score >= 80
   const hasCredit      = freeFixCredits > 0
 
-  // <75 or 75-79: only $49 fix available
+  // <75 or 75-79: full fix ($49), or just the rewrite with no credential ($39)
   if (!badgeEligible) {
     return (
       <div className="rounded-lg border border-blue-200 bg-blue-50 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -21,7 +21,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
               : 'Boost your score and unlock Verified status'}
           </p>
           <p className="text-sm text-blue-700 mt-1">
-            Full AI rewrite + ATS-optimised .docx + beautiful PDF + Passthrough Verified credential
+            Full AI rewrite + ATS-optimised .docx + beautiful PDF — with or without the Passthrough Verified credential
           </p>
           {hasCredit && (
             <p className="text-sm text-green-700 mt-1 font-medium">
@@ -35,22 +35,25 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
               Use Free Credit
             </Button>
           )}
+          <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
+            Fix My Resume — $39
+          </Button>
           <Button onClick={() => onPay('FIX')}>
-            Fix My Resume — $49
+            Fix + Verified Credential — $49
           </Button>
         </div>
       </div>
     )
   }
 
-  // 80+: badge ($15) or full fix ($49)
+  // 80+: badge only ($39), plain rewrite with no credential ($39), or full fix ($49)
   return (
     <div className="rounded-lg border border-green-200 bg-green-50 p-5">
       <p className="font-semibold text-green-900 mb-1">
         ✓ Your resume passed ATS — you're Verified-eligible
       </p>
       <p className="text-sm text-green-800 mb-1">
-        Get the Passthrough Verified credential employers can check, or upgrade to the full AI rewrite.
+        Get the Passthrough Verified credential employers can check, a plain rewrite with no credential, or both.
       </p>
       {hasCredit && (
         <p className="text-sm text-green-700 mb-3 font-medium">
@@ -60,6 +63,9 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary">
           Verified Credential only — $39
+        </Button>
+        <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
+          Fix My Resume, No Credential — $39
         </Button>
         {hasCredit && (
           <Button onClick={onRedeemCredit} variant="secondary">

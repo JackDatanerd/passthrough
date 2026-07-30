@@ -17,8 +17,10 @@ async function generateAtsDocx(resumeData, verificationUrl) {
   if (resumeData.email) parts.push(resumeData.email)
   if (resumeData.location) parts.push(resumeData.location)
   if (resumeData.phone)    parts.push(resumeData.phone)
-  // Plain text URL — ATS ignores it, humans can click it in a document viewer
-  parts.push(`Passthrough Verified: ${verificationUrl}`)
+  // Plain text URL — ATS ignores it, humans can click it in a document viewer.
+  // Omitted entirely (not just left blank) when there's no verification link
+  // for this tier — see FIX_PLAIN in scan.controller.js's generateFix.
+  if (verificationUrl) parts.push(`Passthrough Verified: ${verificationUrl}`)
   children.push(new Paragraph({
     children: [new TextRun({ text: parts.join(' | '), size: 18, font: 'Calibri' })]
   }))

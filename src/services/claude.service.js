@@ -198,16 +198,18 @@ function detectFabrication(orig, rewritten) {
 
 async function generateBeautifulResumeHTML(env, resumeData, designTokens, verificationUrl) {
   const { palette, fonts } = designTokens
+  const verificationInstruction = verificationUrl
+    ? `Header line 3 MUST be: <a href="${verificationUrl}" style="text-decoration:none">
+       <span style="color:${palette.primary};font-size:8pt;font-variant:small-caps">✓ Passthrough Verified</span>
+     </a> — URL hidden, only "✓ Passthrough Verified" visible as clickable link.`
+    : `Do NOT include any "Passthrough Verified" credential line, badge, or link anywhere — this resume has no verification credential attached. Header is just name + contact info.`
   const result = await callClaude(
     env,
     'Senior UI designer. Generate complete self-contained HTML resume. Raw HTML only, no markdown.',
     `CANDIDATE: ${JSON.stringify(resumeData)}
-     VERIFICATION URL: ${verificationUrl}
      Colors: bg=${palette.bg} primary=${palette.primary} accent=${palette.accent} text=${palette.text}
      Fonts: heading=${fonts.heading} body=${fonts.body} hPt=${fonts.hPt} bPt=${fonts.bPt}
-     Header line 3 MUST be: <a href="${verificationUrl}" style="text-decoration:none">
-       <span style="color:${palette.primary};font-size:8pt;font-variant:small-caps">✓ Passthrough Verified</span>
-     </a> — URL hidden, only "✓ Passthrough Verified" visible as clickable link.
+     ${verificationInstruction}
      Single column, left spine 4px solid ${palette.primary}, A4 size, @import fonts from Google.
      -webkit-print-color-adjust:exact. No JavaScript. No fabrication.
      OUTPUT: Raw HTML starting with <!DOCTYPE html>`,

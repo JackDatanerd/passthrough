@@ -7,12 +7,23 @@
 // into the ESM entry point without issue.
 
 module.exports = {
-  PRICE_FIX:   4900,    // $49.00 USD cents
-  PRICE_BADGE: 3900,    // $39.00 USD cents
+  PRICE_FIX:       4900,    // $49.00 USD cents — rewrite + Passthrough Verified credential
+  PRICE_BADGE:     3900,    // $39.00 USD cents — credential only, no rewrite (requires score >= ATS_BADGE_THRESHOLD)
+  PRICE_FIX_PLAIN: 3900,    // $39.00 USD cents — rewrite only, no credential/verification link
+  // Single source of truth for tier -> price, used by both
+  // scan.controller.js's initiateFix (price preview) and
+  // payments.controller.js's initializePayment (actual charge) — having
+  // two independently-maintained ternaries for the same mapping is exactly
+  // how they'd eventually drift and quote one price but charge another.
+  priceForTier(fixTier) {
+    if (fixTier === 'BADGE')     return this.PRICE_BADGE
+    if (fixTier === 'FIX_PLAIN') return this.PRICE_FIX_PLAIN
+    return this.PRICE_FIX
+  },
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,
   ATS_BADGE_THRESHOLD: 80,
-  // < 75: FAIL → $49 | 75-79: PASS no badge → $49 | 80+: PASS → $39 or $49
+  // < 75: FAIL → $49 or $39 (plain) | 75-79: PASS no badge → $49 or $39 (plain) | 80+: PASS → $39 badge, $39 plain, or $49 full
   ATS_RULE_WEIGHT: 0.70,
   ATS_AI_WEIGHT:   0.30,
   // Rewrite retry loop (generateFix): if the first rewrite scores below

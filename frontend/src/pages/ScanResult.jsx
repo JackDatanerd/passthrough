@@ -310,7 +310,11 @@ export default function ScanResult() {
               <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= 80 ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
                 {scan.fixAtsScore >= 80 ? (
                   <>
-                    <p className="font-semibold text-green-900 mb-1">✓ Your Passthrough Verified resume is ready</p>
+                    <p className="font-semibold text-green-900 mb-1">
+                      {scan.fixTier === 'FIX_PLAIN'
+                        ? '✓ Your fixed resume is ready'
+                        : '✓ Your Passthrough Verified resume is ready'}
+                    </p>
                     {scan.fixTier === 'BADGE' && (
                       <p className="text-sm text-green-800 mb-1">
                         Your score was already 80+, so nothing was rewritten — this verifies and formats your existing content as a Passthrough Verified document.
@@ -321,7 +325,9 @@ export default function ScanResult() {
                   <>
                     <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
                     <p className="text-sm text-amber-800 mb-3">
-                      New ATS score: {scan.fixAtsScore ?? '—'}/100 — below the 80+ threshold for Passthrough Verified status.
+                      New ATS score: {scan.fixAtsScore ?? '—'}/100{scan.fixTier === 'FIX_PLAIN'
+                        ? ' — below our target score of 80.'
+                        : ' — below the 80+ threshold for Passthrough Verified status.'}
                       {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
                     </p>
                     {scan.fixRetryCount < 2 ? (

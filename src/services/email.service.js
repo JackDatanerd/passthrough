@@ -88,6 +88,13 @@ async function sendFixDelivered(env, supabase, email, name, code, verificationUr
   })
 }
 
+async function sendFixDeliveredPlain(env, supabase, email, name) {
+  return send(env, supabase, email, '✓ Your fixed resume is ready', 'fix_delivered_plain', {
+    NAME:         name,
+    DOWNLOAD_URL: `${env.FRONTEND_URL}/dashboard`
+  })
+}
+
 async function sendFixFailed(env, supabase, email, name) {
   return send(env, supabase, email, "We hit a snag — we're on it", 'fix_failed', { NAME: name })
 }
@@ -129,6 +136,6 @@ async function sendOwnerAlert(env, subject, message) {
 
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
-  sendScanFail, sendScanPass, sendFixDelivered, sendFixFailed,
+  sendScanFail, sendScanPass, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert
 }

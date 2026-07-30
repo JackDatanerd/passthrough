@@ -12,7 +12,7 @@ export default function Pricing() {
           <p className="text-gray-500">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
         </div>
 
-        <div className="grid sm:grid-cols-3 gap-6">
+        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {/* Free */}
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Free forever</div>
@@ -35,9 +35,27 @@ export default function Pricing() {
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Credential only</div>
             <div className="text-4xl font-bold text-gray-900 mb-1">$39</div>
-            <p className="text-sm text-gray-500 mb-6">Score 80+ required</p>
+            <p className="text-sm text-gray-500 mb-6">Score 80+ required · no content changes</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF'].map(f => (
+                <li key={f} className="flex items-start gap-2">
+                  <span className="text-green-500 mt-0.5">✓</span>{f}
+                </li>
+              ))}
+            </ul>
+            <Link to="/"
+              className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+              Scan first →
+            </Link>
+          </div>
+
+          {/* Fix, no credential */}
+          <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
+            <div className="text-sm text-gray-500 mb-1">Fix only</div>
+            <div className="text-4xl font-bold text-gray-900 mb-1">$39</div>
+            <p className="text-sm text-gray-500 mb-6">Any score · no verification link</p>
+            <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Retry until it passes','No Passthrough Verified link — just your documents'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>

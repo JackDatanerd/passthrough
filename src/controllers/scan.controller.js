@@ -329,7 +329,7 @@ async function getScan(ctx) {
 async function initiateFix(ctx) {
   const user = ctx.get('user')
   const body = await ctx.req.json()
-  const { fixTier } = z.object({ fixTier: z.enum(['FIX', 'BADGE']) }).parse(body)
+  const { fixTier } = z.object({ fixTier: z.enum(['FIX', 'BADGE', 'FIX_PLAIN']) }).parse(body)
 
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
@@ -345,7 +345,7 @@ async function initiateFix(ctx) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount = fixTier === 'BADGE' ? c.PRICE_BADGE : c.PRICE_FIX
+  const amount = c.priceForTier(fixTier)
   return ctx.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
 }
 
@@ -409,8 +409,8 @@ async function retryFix(ctx) {
 
   if (!scan || scan.userId !== user.id)
     return ctx.json({ success: false, message: 'Access denied.' }, 403)
-  if (scan.fixTier !== 'FIX')
-    return ctx.json({ success: false, message: 'Retries are only available for the Fix tier — Badge issues no rewrite, so there is nothing a retry would change.' }, 400)
+  if (!['FIX', 'FIX_PLAIN'].includes(scan.fixTier))
+    return ctx.json({ success: false, message: 'Retries are only available for Fix tiers — Badge issues no rewrite, so there is nothing a retry would change.' }, 400)
   if (scan.status !== 'FIX_DELIVERED')
     return ctx.json({ success: false, message: 'This fix must finish generating before it can be retried.' }, 400)
   if (typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD)
@@ -734,8 +734,14 @@ async function generateFix(env, supabase, scanId) {
     // consistent with what's actually delivered, and so retries continue
     // reusing the existing link (see comment below) rather than orphaning
     // it partway through a round.
-    const code            = isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase)
-    const verificationUrl = isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code)
+    //
+    // FIX_PLAIN issues no credential at all — code/verificationUrl stay
+    // null, and docxService/generateBeautifulResumeHTML both know to omit
+    // the credential line entirely rather than render a broken one (see
+    // their null-verificationUrl handling).
+    const isPlain = scan.fixTier === 'FIX_PLAIN'
+    const code            = isPlain ? null : (isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase))
+    const verificationUrl = isPlain ? null : (isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code))
 
     // Rewrite → score → retry-with-feedback loop. A rewrite that "succeeds"
     // (valid JSON, no fabrication) isn't the same as a rewrite that's
@@ -848,7 +854,7 @@ async function generateFix(env, supabase, scanId) {
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
       httpMetadata: { contentType: DOCX_MIME }
     })
-    const resumeHash = await badgeService.hashBytes(docxBytes)
+    const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
     let pdfKey = null
@@ -874,7 +880,7 @@ async function generateFix(env, supabase, scanId) {
       verification_code:    code,
       verification_url:     verificationUrl,
       resume_hash:           resumeHash,
-      verified_at:            new Date().toISOString(),
+      verified_at:            isPlain ? null : new Date().toISOString(),
       // PHASE 2: persist both structured objects for the diff view.
       // resumeData is what the resume WAS (already parsed above, from R2 for
       // file-mode or scan.originalResumeData for brain-dump mode) — writing
@@ -894,7 +900,8 @@ async function generateFix(env, supabase, scanId) {
 
     if (user) {
       try {
-        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
+        if (isPlain) await emailService.sendFixDeliveredPlain(env, supabase, user.email, user.name)
+        else         await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
       } catch (e) { console.error('Fix email:', e.message) }
     }
     return { success: true }

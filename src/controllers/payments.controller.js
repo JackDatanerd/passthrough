@@ -25,7 +25,7 @@ async function initializePayment(c2) {
   const user = c2.get('user')
   const body = await c2.req.json()
   const { scanId, fixTier } = body
-  if (!scanId || !['FIX', 'BADGE'].includes(fixTier))
+  if (!scanId || !['FIX', 'BADGE', 'FIX_PLAIN'].includes(fixTier))
     return c2.json({ success: false, message: 'scanId and valid fixTier required.' }, 400)
 
   const supabase = getSupabase(c2.env)
@@ -42,7 +42,7 @@ async function initializePayment(c2) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount    = fixTier === 'BADGE' ? c.PRICE_BADGE : c.PRICE_FIX
+  const amount    = c.priceForTier(fixTier)
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 
   // Call Paystack FIRST — if it fails, no orphan record is created

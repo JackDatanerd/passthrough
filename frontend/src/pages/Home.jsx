@@ -250,7 +250,7 @@ export default function Home() {
           <div className="text-center">
             <h2 className="text-2xl font-bold text-gray-900 mb-3">Simple pricing</h2>
             <p className="text-gray-500 mb-8">Scan free, always. Pay once if you want the fix.</p>
-            <div className="inline-grid sm:grid-cols-3 gap-4 text-left">
+            <div className="inline-grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left">
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Free forever</div>
                 <div className="text-3xl font-bold text-gray-900 mb-1">$0</div>
@@ -260,6 +260,11 @@ export default function Home() {
                 <div className="text-sm text-gray-500 mb-1">Credential only</div>
                 <div className="text-3xl font-bold text-gray-900 mb-1">$39</div>
                 <p className="text-sm text-gray-500">Verified credential for resumes already scoring 80+.</p>
+              </div>
+              <div className="rounded-lg border border-gray-200 p-6">
+                <div className="text-sm text-gray-500 mb-1">Fix only</div>
+                <div className="text-3xl font-bold text-gray-900 mb-1">$39</div>
+                <p className="text-sm text-gray-500">AI rewrite + ATS .docx + PDF. No verification link, any score.</p>
               </div>
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
                 <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
