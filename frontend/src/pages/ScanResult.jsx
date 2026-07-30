@@ -295,7 +295,11 @@ export default function ScanResult() {
               <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 flex items-center gap-4">
                 <Spinner className="shrink-0" />
                 <div>
-                  <p className="font-medium text-blue-900">Generating your fixed resume…</p>
+                  <p className="font-medium text-blue-900">
+                    {scan.fixTier === 'BADGE'
+                      ? 'Verifying and formatting your resume…'
+                      : 'Generating your fixed resume…'}
+                  </p>
                   <p className="text-sm text-blue-700 mt-0.5">We'll email you when it's ready. Usually under 2 minutes.</p>
                 </div>
               </div>
@@ -305,7 +309,14 @@ export default function ScanResult() {
             {scan.status === 'FIX_DELIVERED' && (
               <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= 80 ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
                 {scan.fixAtsScore >= 80 ? (
-                  <p className="font-semibold text-green-900 mb-1">✓ Your Passthrough Verified resume is ready</p>
+                  <>
+                    <p className="font-semibold text-green-900 mb-1">✓ Your Passthrough Verified resume is ready</p>
+                    {scan.fixTier === 'BADGE' && (
+                      <p className="text-sm text-green-800 mb-1">
+                        Your score was already 80+, so nothing was rewritten — this verifies and formats your existing content as a Passthrough Verified document.
+                      </p>
+                    )}
+                  </>
                 ) : (
                   <>
                     <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
