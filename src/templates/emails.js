@@ -46,8 +46,16 @@ function render(templateKey, vars) {
   const template = TEMPLATES[templateKey]
   if (!template) throw new Error(`Unknown email template: ${templateKey}`)
   let html = BASE.replace('{{CONTENT}}', template)
-  for (const [k, v] of Object.entries(vars))
-    html = html.replace(new RegExp(`{{${k}}}`, 'g'), escapeHtml(v || ''))
+  for (const [k, v] of Object.entries(vars)) {
+    // Replacer must be a FUNCTION, not a string. String.replace() treats a
+    // string replacement as a pattern — $&, $`, $', $$, $1-$9 all have special
+    // meaning — so a user-controlled value (NAME, free text, no character
+    // restrictions) containing a literal "$" could corrupt the surrounding
+    // HTML or leak the raw {{PLACEHOLDER}} back into the output. A function
+    // return value is always inserted literally, sidestepping this entirely.
+    const escaped = escapeHtml(v || '')
+    html = html.replace(new RegExp(`{{${k}}}`, 'g'), () => escaped)
+  }
   return html
 }
 
