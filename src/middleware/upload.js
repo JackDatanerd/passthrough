@@ -16,6 +16,29 @@ const ALLOWED_MIME = [
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 ]
 
+// file.type is whatever the browser's File object reports — entirely
+// client-supplied and trivially spoofable (rename anything.exe to
+// resume.pdf and most browsers will still report it however the upload
+// code sets it). This checks the first few bytes actually match the
+// claimed format. Not a full content validator — resume.parser.js still
+// has to fail gracefully on genuinely malformed PDFs/DOCX — just closes
+// the gap where the allowlist above was trusting a label instead of the
+// file itself.
+function hasValidMagicBytes(bytes, mimetype) {
+  if (mimetype === 'application/pdf') {
+    // "%PDF-"
+    return bytes.length >= 5 &&
+      bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 &&
+      bytes[3] === 0x46 && bytes[4] === 0x2D
+  }
+  if (mimetype === 'application/vnd.openxmlformats-officedocument.wordprocessingml.document') {
+    // DOCX is a ZIP container — "PK\x03\x04" local file header
+    return bytes.length >= 4 &&
+      bytes[0] === 0x50 && bytes[1] === 0x4B && bytes[2] === 0x03 && bytes[3] === 0x04
+  }
+  return false
+}
+
 async function uploadResume(ctx, next) {
   let formData
   try {
@@ -65,6 +88,12 @@ async function uploadResume(ctx, next) {
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer())
+
+  if (!hasValidMagicBytes(bytes, file.type)) {
+    return ctx.json({ success: false,
+      message: 'File content does not match a valid PDF or DOCX.' }, 415)
+  }
+
   ctx.set('uploadedFile', {
     bytes,
     originalname: file.name,

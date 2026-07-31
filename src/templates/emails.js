@@ -19,6 +19,21 @@ const TEMPLATES = {
   fix_failed: "<h2>We hit a snag</h2>\n<p>Hi {{NAME}}, something went wrong generating your resume.</p>\n<p><strong>You have not been charged again.</strong> We're looking into it\nand will email you when your resume is ready.</p>\n<p>If you need help, email us at support@passthrough.dev</p>\n",
 }
 
+// Every var gets HTML-entity-escaped before substitution. NAME in
+// particular comes straight from user registration input (max length 100,
+// no character restrictions) and was previously substituted raw — a
+// crafted display name like `<img src=x onerror=...>` got injected as
+// live markup into every email that account subsequently received
+// (welcome, verify, reset, scan results). The URL vars (FRONTEND_URL,
+// VERIFY_URL, etc.) are server-constructed, not user text, but escaping
+// them too is correct regardless: a literal "&" in a URL query string
+// must be "&amp;" to be valid inside an href="..." attribute anyway.
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
 /**
  * render(templateKey, vars) -> full HTML string
  * Same two-pass substitution as v8: inject the template into {{CONTENT}} inside
@@ -32,7 +47,7 @@ function render(templateKey, vars) {
   if (!template) throw new Error(`Unknown email template: ${templateKey}`)
   let html = BASE.replace('{{CONTENT}}', template)
   for (const [k, v] of Object.entries(vars))
-    html = html.replace(new RegExp(`{{${k}}}`, 'g'), v || '')
+    html = html.replace(new RegExp(`{{${k}}}`, 'g'), escapeHtml(v || ''))
   return html
 }
 

@@ -5,9 +5,12 @@
 //
 // Security properties unchanged from v8: JWT verified via lib/jwt.js (Web
 // Crypto HS256), tokenVersion checked for session invalidation, deletedAt
-// and BANNED status checked, and the same five sensitive fields stripped
-// before attaching the user object — paystackAuthCode, paystackCustomerCode,
-// resetToken, emailVerifyToken, passwordHash.
+// and BANNED status checked, and sensitive fields stripped before attaching
+// the user object — paystackAuthCode, paystackCustomerCode, resetToken,
+// resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, passwordHash,
+// savedProfile. (resetTokenExpiry/emailVerifyExpiry were previously missed
+// here — low-severity since they're just timestamps, not secrets, but
+// GET /auth/me was leaking them regardless.)
 
 const jwtLib = require('../lib/jwt')
 const { getSupabase } = require('../config/supabase')
@@ -33,7 +36,7 @@ async function auth(c, next) {
     if (user.tokenVersion !== decoded.tokenVersion)
       return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
 
-    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, emailVerifyToken, savedProfile, ...safe } = user
+    const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, savedProfile, ...safe } = user
     c.set('user', safe)
     await next()
   } catch (err) {

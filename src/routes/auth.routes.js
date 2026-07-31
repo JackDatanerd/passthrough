@@ -12,8 +12,8 @@ router.post('/forgot-password',     rl.auth, c.forgotPassword)
 router.post('/reset-password',               c.resetPassword)
 router.get( '/verify-email',                 c.verifyEmail)
 router.post('/resend-verification', auth, rl.auth, c.resendVerification)
-router.patch('/password',           auth,    c.changePassword)
-router.delete('/account',           auth,    c.deleteAccount)
+router.patch('/password',           auth, rl.auth, c.changePassword)
+router.delete('/account',           auth, rl.auth, c.deleteAccount)
 router.post('/claim-scan',          auth,    c.claimScan)
 
 module.exports = router

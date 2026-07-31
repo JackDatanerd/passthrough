@@ -53,6 +53,27 @@ async function hmacSha512Hex(secret, bodyText) {
 }
 
 /**
+ * timingSafeEqual(a, b) -> boolean
+ * Constant-time string comparison — used for HMAC signature verification
+ * (Paystack webhook) so an attacker probing the signature byte-by-byte
+ * can't use response timing to learn how much of their guess is correct.
+ * A plain `a !== b` short-circuits on the first mismatched character,
+ * which is exactly what this avoids: every character is compared
+ * regardless of earlier mismatches, and only the final accumulated
+ * difference is checked. Length is checked up front (unequal-length
+ * inputs are never a valid signature match either way, and the length of
+ * an expected hex digest isn't secret), matching how Node's own
+ * crypto.timingSafeEqual behaves.
+ */
+function timingSafeEqual(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false
+  if (a.length !== b.length) return false
+  let diff = 0
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i)
+  return diff === 0
+}
+
+/**
  * randomShortCode(length, alphabet) -> string
  * Replaces: crypto.randomInt(0, alphabet.length) loop in badge.service.js
  */
@@ -72,4 +93,4 @@ function uuid() {
   return crypto.randomUUID()
 }
 
-module.exports = { randomToken, sha256, sha256Bytes, hmacSha512Hex, randomShortCode, uuid }
+module.exports = { randomToken, sha256, sha256Bytes, hmacSha512Hex, randomShortCode, uuid, timingSafeEqual }

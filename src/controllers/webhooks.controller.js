@@ -25,7 +25,7 @@ const emailService = require('../services/email.service')
 async function handlePaystack(c) {
   const bodyText = await c.req.text()
   const expectedSig = await cryptoLib.hmacSha512Hex(c.env.PAYSTACK_SECRET_KEY, bodyText)
-  if (expectedSig !== c.req.header('x-paystack-signature')) {
+  if (!cryptoLib.timingSafeEqual(expectedSig, c.req.header('x-paystack-signature') || '')) {
     // Worth an immediate alert, not just a log line — this is either a
     // misconfigured PAYSTACK_SECRET_KEY (which would silently break every
     // future payment) or a genuine spoofing attempt against the webhook.
