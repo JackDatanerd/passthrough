@@ -26,6 +26,16 @@ async function generateResumePDF(env, html) {
   try {
     const page = await browser.newPage()
     try {
+      // The HTML rendered here is AI-generated from user-supplied resume
+      // content (see claude.service.js's generateBeautifulResumeHTML) and
+      // only has <script> tags stripped before it gets here — that's a
+      // blocklist, not a sanitizer, and doesn't stop event-handler
+      // attributes (onerror=, onload=) or javascript: URIs. Since this is
+      // a real Chromium session (Cloudflare Browser Rendering), anything
+      // that slips through would actually execute. A static resume layout
+      // has no legitimate need for JS, so disabling it outright closes the
+      // whole class of issue rather than trying to out-regex it.
+      await page.setJavaScriptEnabled(false)
       await page.setDefaultNavigationTimeout(15000)
       await page.setContent(html, { waitUntil: 'networkidle0' })
       await page.emulateMediaType('print')

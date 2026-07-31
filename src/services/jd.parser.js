@@ -5,7 +5,29 @@
 
 const BLOCKED = ['linkedin.com', 'www.linkedin.com', 'facebook.com', 'instagram.com']
 const MAX_BYTES = 500_000
+const MAX_REDIRECTS = 3
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
+const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
+
+// SSRF-safe fetch: validates the target before every request AND before
+// following each redirect hop (redirect:'manual' so we control that).
+// A prior blocklist-only check validated the ORIGINAL url and then let
+// fetch() auto-follow redirects wherever they pointed — a public-looking
+// URL that 302s to a private/internal address sailed straight through.
+async function safeFetch(url, opts) {
+  let current = url
+  for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    const reason = checkUrlIsSafeToFetch(current)
+    if (reason) return { blocked: true, reason }
+
+    const res = await fetch(current, { ...opts, redirect: 'manual' })
+    const isRedirect = res.status >= 300 && res.status < 400 && res.headers.get('location')
+    if (!isRedirect) return { blocked: false, res }
+
+    current = new URL(res.headers.get('location'), current).toString()
+  }
+  return { blocked: true, reason: 'Too many redirects.' }
+}
 
 // Detects job-board CATEGORY/LISTING pages (e.g. "Physics Jobs" showing 35
 // different postings) as opposed to a single job's description page. This
@@ -46,11 +68,16 @@ async function fetchJobDescriptionFromUrl(url) {
   const timeout = setTimeout(() => controller.abort(), 5000)
 
   try {
-    const res = await fetch(url, {
+    const fetched = await safeFetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Passthrough/1.0)' },
       signal: controller.signal
     })
     clearTimeout(timeout)
+
+    if (fetched.blocked) {
+      return { success: false, blocked: false, text: null, message: 'Could not read that page. Paste instead.' }
+    }
+    const res = fetched.res
 
     if (!res.ok) {
       return { success: false, blocked: false, text: null, message: 'Could not read that page. Paste instead.' }

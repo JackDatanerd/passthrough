@@ -218,7 +218,25 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
   if (!result.success) return result
   if (!result.data?.trimStart().startsWith('<!DOCTYPE') && !result.data?.trimStart().startsWith('<html'))
     return { success: false, data: null, error: 'INVALID_HTML' }
-  return { success: true, data: result.data.replace(/<script[\s\S]*?<\/script>/gi, ''), error: null }
+  return { success: true, data: sanitizeGeneratedHtml(result.data), error: null }
+}
+
+// Belt-and-suspenders sanitization for AI-generated HTML that gets rendered
+// in a real browser (pdf.service.js). The primary defense is that Puppeteer
+// page has JS disabled entirely — this pass is a second, independent layer
+// in case that ever regresses, and also keeps the same output cleaner if
+// it's ever reused somewhere JS isn't disabled. Strips <script> tags,
+// on*="..." / on*='...' event-handler attributes, and javascript:/data:
+// URIs in href/src — the three ways markup alone can trigger script
+// execution in a browser context.
+function sanitizeGeneratedHtml(html) {
+  return html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/(href|src)\s*=\s*"(javascript|data):[^"]*"/gi, '$1="#"')
+    .replace(/(href|src)\s*=\s*'(javascript|data):[^']*'/gi, "$1='#'")
 }
 
 module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson }
