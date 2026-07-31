@@ -88,10 +88,29 @@ async function initializePayment(c2) {
 
 // GET /api/payments/verify?reference=xxx
 async function verifyPayment(c2) {
+  const user = c2.get('user')
   const reference = c2.req.query('reference') || c2.req.query('trxref')
   if (!reference) return c2.json({ success: false, message: 'Missing reference.' }, 400)
 
   const supabase = getSupabase(c2.env)
+
+  // Ownership check — every other payment/scan-mutating endpoint in this
+  // file (and payments.controller.js's sibling initializePayment) checks
+  // scan.userId / payment.userId === user.id before doing anything else.
+  // This endpoint was the one exception: any authenticated user who had
+  // *a* valid reference (their own or someone else's) could trigger
+  // fulfillment and read back the associated scanId. references are
+  // unguessable UUIDs, so exploitability was low, but this closes the gap
+  // the same way the rest of the app already does — checked BEFORE calling
+  // out to Paystack, and BEFORE revealing whether the reference exists at
+  // all. Also doubles as the "expected payment" row the amount check below
+  // needs, so there's no second query for the same row anymore.
+  const { data: paymentRow, error: paymentErr } = await supabase
+    .from('payments').select('user_id, amount_cents, scan_id').eq('paystack_ref', reference).maybeSingle()
+  if (paymentErr) throw paymentErr
+  if (!paymentRow || paymentRow.user_id !== user.id)
+    return c2.json({ success: false, message: 'Payment not found.' }, 404)
+
   let pResult
   try {
     pResult = await paystackService.verifyTransaction(c2.env, reference)
@@ -117,15 +136,12 @@ async function verifyPayment(c2) {
   // and the row stays PENDING for manual review rather than either
   // fulfilling on bad data or destructively marking it FAILED before a
   // human looks at it.
-  const { data: expectedPayment, error: expectedErr } = await supabase
-    .from('payments').select('amount_cents, scan_id').eq('paystack_ref', reference).maybeSingle()
-  if (expectedErr) throw expectedErr
-  if (expectedPayment && pResult.data?.amount !== expectedPayment.amount_cents) {
-    console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${expectedPayment.amount_cents}, Paystack reports ${pResult.data?.amount}`)
+  if (pResult.data?.amount !== paymentRow.amount_cents) {
+    console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${paymentRow.amount_cents}, Paystack reports ${pResult.data?.amount}`)
     try {
       await emailService.sendOwnerAlert(c2.env,
         'Payment amount mismatch — NOT fulfilled',
-        `reference: ${reference}\nscanId: ${expectedPayment.scan_id}\nexpected: ${expectedPayment.amount_cents}\nreceived: ${pResult.data?.amount}\n\nPayment left PENDING for manual review — no fix was generated.`
+        `reference: ${reference}\nscanId: ${paymentRow.scan_id}\nexpected: ${paymentRow.amount_cents}\nreceived: ${pResult.data?.amount}\n\nPayment left PENDING for manual review — no fix was generated.`
       )
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
@@ -144,8 +160,10 @@ async function verifyPayment(c2) {
   if (updErr) throw updErr
 
   if (updatedRows.length === 0) {
-    const { data: existing } = await supabase.from('payments').select('scan_id').eq('paystack_ref', reference).maybeSingle()
-    return c2.json({ success: true, data: { scanId: existing?.scan_id } })
+    // Already processed (webhook got there first, or this is a duplicate
+    // client call) — scan_id is already known from the ownership check
+    // above, no need to re-query it.
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
   }
 
   const payment = updatedRows[0]

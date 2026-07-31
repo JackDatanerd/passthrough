@@ -426,14 +426,24 @@ async function retryFix(ctx) {
   if (scan.fixRetryCount >= c.MAX_FIX_RETRIES)
     return ctx.json({ success: false, message: 'No retries remaining for this fix.' }, 400)
 
-  await supabase.from('scans').update({
-    fix_retry_count: scan.fixRetryCount + 1,
-    status: 'FIX_GENERATING'
-  }).eq('id', scan.id)
+  // Atomic gate (see 0009_atomic_fix_retry.sql) — the checks above give a
+  // fast, specific error for the common case, but a plain read-then-write
+  // here would let two concurrent retry requests (double-click, two tabs)
+  // both read the same stale fix_retry_count, both pass those checks, and
+  // both enqueue a generateFix job against the same scan. This RPC folds
+  // every gating condition into one UPDATE...WHERE, so only one concurrent
+  // request can ever win. Returns the new retry count, or -1 if nothing
+  // matched (lost the race, or state changed since the reads above).
+  const { data: newRetryCount, error: rpcErr } = await supabase.rpc('increment_fix_retry_if_available', {
+    p_scan_id: scan.id, p_max_retries: c.MAX_FIX_RETRIES, p_badge_threshold: c.ATS_BADGE_THRESHOLD
+  })
+  if (rpcErr) throw rpcErr
+  if (newRetryCount < 0)
+    return ctx.json({ success: false, message: 'Could not start a retry — it may already be in progress. Refresh and try again.' }, 400)
 
   await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
 
-  return ctx.json({ success: true, data: { retriesRemaining: c.MAX_FIX_RETRIES - (scan.fixRetryCount + 1) } })
+  return ctx.json({ success: true, data: { retriesRemaining: c.MAX_FIX_RETRIES - newRetryCount } })
 }
 
 // PATCH /api/scan/:id/verify-visibility — owner-only toggle for whether the
