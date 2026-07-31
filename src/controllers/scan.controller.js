@@ -205,16 +205,20 @@ async function createScan(ctx) {
 
   if (user) {
     const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0)
-    const { data: freshRow, error: freshErr } = await supabase
-      .from('users').select('scans_today, scans_day_reset').eq('id', user.id).single()
-    if (freshErr) throw freshErr
-    let scansToday = freshRow.scans_today
 
-    if (new Date(freshRow.scans_day_reset) < todayMidnight) {
-      await supabase.from('users').update({ scans_today: 0, scans_day_reset: new Date().toISOString() }).eq('id', user.id)
-      scansToday = 0
-    }
-    if (scansToday >= c.FREE_SCANS_PER_DAY) {
+    // Atomic conditional increment (see 0008_atomic_scan_quota.sql) — avoids
+    // a race between two concurrent createScan requests both seeing a
+    // stale scans_today under the limit and both getting let through,
+    // which the previous read-then-write here was exposed to (same class
+    // of race redeem_free_fix_credit's RPC was already written to avoid,
+    // just in this counter instead). Handles the daily reset inline too.
+    const { data: allowed, error: quotaErr } = await supabase.rpc(
+      'increment_scan_count_if_under_limit',
+      { p_user_id: user.id, p_limit: c.FREE_SCANS_PER_DAY, p_today_midnight: todayMidnight.toISOString() }
+    )
+    if (quotaErr) throw quotaErr
+
+    if (!allowed) {
       const ip = ctx.req.header('cf-connecting-ip') || ctx.req.header('x-forwarded-for') || 'unknown'
       // Same RATE_LIMIT_BYPASS_IPS secret used by middleware/rateLimiter.js —
       // this is a separate DB-tracked limit (not KV-based), but reuses the
@@ -222,10 +226,10 @@ async function createScan(ctx) {
       if (!rateLimiter.isBypassed(ctx.env, ip)) {
         return ctx.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
       }
+      // Bypassed — the RPC already declined to increment, so grant the
+      // slot manually for this request only (testing path, unmetered).
+      await supabase.from('users').update({ scans_today: c.FREE_SCANS_PER_DAY }).eq('id', user.id)
     }
-
-    // PATCH 5 (carried over): increment optimistically, roll back on failure.
-    await supabase.from('users').update({ scans_today: scansToday + 1 }).eq('id', user.id)
 
     try {
       await putFileIfNeeded()
@@ -239,13 +243,17 @@ async function createScan(ctx) {
       })
       if (insertErr) throw insertErr
     } catch (createErr) {
-      // Return the slot — scan was not created
+      // Return the slot — scan was not created. Only meaningful if the RPC
+      // actually incremented (allowed === true); the bypass path above
+      // didn't touch the counter via the RPC, so nothing to roll back there.
       // NOTE: supabase-js query builders are thenable (have .then) but are not
       // real Promise instances, so .catch() doesn't exist on them directly —
       // must go through a real try/catch (or await) instead.
-      try {
-        await supabase.from('users').update({ scans_today: scansToday }).eq('id', user.id)
-      } catch (_) {}
+      if (allowed) {
+        try {
+          await supabase.rpc('decrement_scan_count', { p_user_id: user.id })
+        } catch (_) {}
+      }
       await cleanupFile()
       throw createErr
     }

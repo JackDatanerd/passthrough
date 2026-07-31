@@ -108,6 +108,29 @@ async function verifyPayment(c2) {
   if (pResult.data?.status !== 'success' || pResult.data?.currency !== (c2.env.PAYSTACK_CURRENCY || c.CURRENCY))
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
 
+  // Amount check — defense in depth. Paystack's hosted checkout won't let a
+  // user pay a different amount than what initializePayment set, but we've
+  // never actually verified that here; this is the same class of "don't
+  // trust it just because it looks right" posture the rest of the codebase
+  // already applies (see profile.controller.js's SECURITY NOTE). A mismatch
+  // is treated as suspicious, not silently reconciled — no fix is generated
+  // and the row stays PENDING for manual review rather than either
+  // fulfilling on bad data or destructively marking it FAILED before a
+  // human looks at it.
+  const { data: expectedPayment, error: expectedErr } = await supabase
+    .from('payments').select('amount_cents, scan_id').eq('paystack_ref', reference).maybeSingle()
+  if (expectedErr) throw expectedErr
+  if (expectedPayment && pResult.data?.amount !== expectedPayment.amount_cents) {
+    console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${expectedPayment.amount_cents}, Paystack reports ${pResult.data?.amount}`)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Payment amount mismatch — NOT fulfilled',
+        `reference: ${reference}\nscanId: ${expectedPayment.scan_id}\nexpected: ${expectedPayment.amount_cents}\nreceived: ${pResult.data?.amount}\n\nPayment left PENDING for manual review — no fix was generated.`
+      )
+    } catch (_) {}
+    return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
+  }
+
   const authCode = pResult.data?.authorization?.authorization_code
 
   // Atomic idempotency — UPDATE...RETURNING only matches rows that were
