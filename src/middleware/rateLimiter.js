@@ -45,19 +45,61 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
     if (isBypassed(c.env, ip)) return next()
 
     const key = `${keyPrefix}:${ip}`
+    const kv  = c.env.RATE_LIMIT_KV
+    const now = Date.now()
 
-    const kv = c.env.RATE_LIMIT_KV
-    const current = await kv.get(key)
-    const count = current ? parseInt(current, 10) : 0
+    const raw = await kv.get(key)
+    let count = 0
+    let windowStart = now
+    if (raw) {
+      try {
+        const parsed = JSON.parse(raw)
+        if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number') {
+          count = parsed.count
+          windowStart = parsed.windowStart
+        }
+      } catch (_) {
+        // Pre-fix value (plain integer string) or corrupt data — treat as
+        // the start of a fresh window rather than throwing.
+      }
+    }
+
+    // Belt-and-suspenders against the 60s KV TTL floor below: if the window
+    // has actually elapsed already, start a new one here regardless of
+    // whether the key technically still exists in KV.
+    const elapsedSeconds = (now - windowStart) / 1000
+    if (elapsedSeconds >= windowSeconds) {
+      count = 0
+      windowStart = now
+    }
 
     if (count >= max) {
       return c.json({ success: false, message }, 429)
     }
 
-    // Fixed window: TTL resets the counter windowSeconds after the FIRST
-    // request in the window, not on every request — matches express-rate-limit's
-    // default fixed-window behavior.
-    await kv.put(key, String(count + 1), { expirationTtl: windowSeconds })
+    // FIX: true fixed window. windowStart is set once, on the first request
+    // of the window, and never moves after that — every subsequent request
+    // just increments count and re-derives the REMAINING ttl from that
+    // original windowStart, instead of resetting the clock.
+    //
+    // The previous version called `kv.put(key, ..., { expirationTtl:
+    // windowSeconds })` on every request, which means every request reset
+    // the key's expiry to windowSeconds from *that moment*. A client making
+    // requests faster than windowSeconds apart (e.g. this app's own 2.5s
+    // status-polling loop while a fix is generating) kept renewing the key
+    // forever — the counter never dropped back to 0 as long as traffic kept
+    // coming, so an active-but-under-the-cap client would eventually
+    // ratchet all the way up to max and then stay locked out until a full
+    // windowSeconds of total silence, instead of getting a fresh budget
+    // every window like a real fixed window is supposed to give it.
+    //
+    // Cloudflare KV requires expirationTtl >= 60s, so it's floored there.
+    // That can only ever extend a key's life by at most ~59s past its
+    // logical expiry (for a request landing in the final minute of a
+    // window) — the elapsedSeconds check above, not this floor, is what
+    // actually guarantees correctness in that case.
+    const remainingTtl = Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
+    await kv.put(key, JSON.stringify({ count: count + 1, windowStart }), { expirationTtl: remainingTtl })
     return next()
   }
 }

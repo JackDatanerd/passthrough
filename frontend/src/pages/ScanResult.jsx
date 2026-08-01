@@ -48,21 +48,57 @@ export default function ScanResult() {
   const [visibilityError, setVisibilityError] = useState('')
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
-  const pollRef = useRef(null)
+  const [pollError,    setPollError   ] = useState('')
+  const pollRef     = useRef(null)
+  // Plain ref, not state — fetchScan is captured once by the setInterval
+  // call in the mount effect below, so a `scan` state read inside it would
+  // always see the stale value from that render. This needs to reflect
+  // "have we EVER gotten a successful response", checked live, across every
+  // tick of that same long-lived interval closure.
+  const hasLoadedRef = useRef(false)
 
   async function fetchScan() {
     try {
       const url    = `/scan/${id}${anonToken ? `?token=${anonToken}` : ''}`
       const res    = await api.get(url)
       const data   = res.data.data
+      hasLoadedRef.current = true
       setScan(data)
       setLoading(false)
+      setPollError('')
       if (POLLING_STOP.includes(data.status)) {
         clearInterval(pollRef.current)
       }
     } catch (err) {
-      setLoading(false)
-      clearInterval(pollRef.current)
+      const status = err.response?.status
+      // Only stop polling for errors that genuinely mean "this will never
+      // succeed" — not found, or access revoked/denied.
+      const terminal = status === 404 || status === 403 || status === 401
+      if (terminal) {
+        clearInterval(pollRef.current)
+        setLoading(false)
+        return
+      }
+      // FIX: previously ANY error here — including a 429 — cleared the poll
+      // interval outright. This app's own status-polling loop (every 2.5s)
+      // can trip the general API rate limiter on its own during a slow fix
+      // generation (retries + a real PDF render can run past the window),
+      // and the UI would then silently freeze on "Generating your fixed
+      // resume…" forever with zero indication anything had gone wrong.
+      // Transient failures (429, network blips, 5xx) now just surface a
+      // small non-blocking notice and keep polling instead.
+      setPollError(
+        status === 429
+          ? "Checking status is temporarily rate-limited — we'll keep trying automatically."
+          : "Having trouble checking status — retrying automatically…"
+      )
+      // Don't drop into the loading-spinner-forever state OR the "Scan not
+      // found" branch (that's for real 404/403s) if this was a transient
+      // failure on the very first fetch — just let the next poll tick try
+      // again while the initial spinner stays up.
+      if (hasLoadedRef.current) {
+        setLoading(false)
+      }
     }
   }
 
@@ -207,6 +243,9 @@ export default function ScanResult() {
           <div className="text-center">
             <Spinner size="lg" className="mx-auto mb-4" />
             <p className="text-gray-500 text-sm">Loading scan…</p>
+            {pollError && (
+              <p className="text-xs text-amber-600 mt-2">{pollError}</p>
+            )}
           </div>
         </main>
         <Footer />
@@ -258,6 +297,9 @@ export default function ScanResult() {
             <Spinner size="lg" className="mx-auto mb-4" />
             <p className="font-medium text-gray-700">Scanning your resume…</p>
             <p className="text-sm text-gray-400 mt-1">This takes about 30 seconds</p>
+            {pollError && (
+              <p className="text-xs text-amber-600 mt-2">{pollError}</p>
+            )}
           </div>
         )}
 
@@ -301,6 +343,9 @@ export default function ScanResult() {
                       : 'Generating your fixed resume…'}
                   </p>
                   <p className="text-sm text-blue-700 mt-0.5">We'll email you when it's ready. Usually under 2 minutes.</p>
+                  {pollError && (
+                    <p className="text-xs text-amber-600 mt-1">{pollError}</p>
+                  )}
                 </div>
               </div>
             )}
