@@ -12,6 +12,20 @@
 const JSZip   = require('jszip')
 const c        = require('../config/constants')
 
+// HARDENING: the 5MB upload cap (middleware/upload.js) only bounds the
+// COMPRESSED size on the wire — it says nothing about how large the
+// decompressed word/document.xml can get. A crafted .docx with pathological
+// compression can expand far past its on-disk size once JSZip inflates it,
+// which then gets fed into the paragraph-matching regexes below. This isn't
+// a full zip-bomb defense (JSZip has already done the decompression work by
+// the time this check runs), but it stops a merely-oversized result from
+// being handed to the regex engine and from bloating the ~8000-char resume
+// text pipeline downstream. A legitimate resume's document.xml is reliably
+// well under 1MB; 20MB gives generous headroom for an unusually long/complex
+// real resume while still rejecting anything wildly out of proportion to a
+// 5MB input.
+const MAX_DOCX_XML_CHARS = 20 * 1024 * 1024
+
 // Direct .docx text extraction via JSZip + native Promises, bypassing
 // mammoth's extractRawText entirely for this specific call.
 //
@@ -46,6 +60,11 @@ async function extractDocxText(bytes) {
   const docXml = zip.file('word/document.xml')
   if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
   const xml = await docXml.async('string')
+
+  // HARDENING: reject before regex-parsing — see MAX_DOCX_XML_CHARS comment
+  // above for why this check exists and why the limit is set where it is.
+  if (xml.length > MAX_DOCX_XML_CHARS)
+    throw new Error('Document content too large after decompression — not a valid resume file')
 
   const paragraphs = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || []
   const lines = paragraphs.map(p => {

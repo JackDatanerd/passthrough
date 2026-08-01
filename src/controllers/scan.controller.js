@@ -384,22 +384,51 @@ async function redeemCredit(ctx) {
   if (!redeemed)
     return ctx.json({ success: false, message: 'No free fix credits available.' }, 400)
 
-  // Recorded as a $0 payment so payment history stays complete and
-  // consistent — same shape as a real transaction, just free.
-  await supabase.from('payments').insert({
-    amount_cents: 0,
-    currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
-    status:       'SUCCESS',
-    paystack_ref: `credit:${scan.id}:${Date.now()}`,
-    user_id:      user.id,
-    scan_id:      scan.id
-  })
+  // BUG FIX: everything from here on used to be unprotected — if the
+  // payment insert, the scan update, or the queue send threw, the credit
+  // was already gone (decremented above) but nothing was ever delivered.
+  // Wrap the rest in try/catch and refund the credit via
+  // increment_free_fix_credits (the same RPC retryFix's exhausted-retries
+  // path already uses to grant a credit) on any failure, so a transient
+  // DB/queue error costs the user nothing. Re-throw afterward so the
+  // request still surfaces as an error to the caller/errorHandler.
+  try {
+    // Recorded as a $0 payment so payment history stays complete and
+    // consistent — same shape as a real transaction, just free.
+    const { error: paymentErr } = await supabase.from('payments').insert({
+      amount_cents: 0,
+      currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+      status:       'SUCCESS',
+      paystack_ref: `credit:${scan.id}:${Date.now()}`,
+      user_id:      user.id,
+      scan_id:      scan.id
+    })
+    if (paymentErr) throw paymentErr
 
-  await supabase.from('scans').update({
-    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX'
-  }).eq('id', scan.id)
+    const { error: scanUpdateErr } = await supabase.from('scans').update({
+      fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX'
+    }).eq('id', scan.id)
+    if (scanUpdateErr) throw scanUpdateErr
 
-  await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+    await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+  } catch (err) {
+    console.error(`[CRITICAL] redeemCredit fulfillment failed after credit consumed (user ${user.id}, scan ${scan.id}):`, err.message)
+    try {
+      await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id })
+    } catch (refundErr) {
+      // Refund itself failed — this is the one case that genuinely needs a
+      // human, since the credit is stuck consumed with no automatic path
+      // back. Alert rather than silently swallow.
+      console.error(`[CRITICAL] redeemCredit credit refund ALSO failed (user ${user.id}, scan ${scan.id}):`, refundErr.message)
+      try {
+        await emailService.sendOwnerAlert(ctx.env,
+          'redeemCredit refund failed — credit stuck consumed',
+          `userId: ${user.id}\nscanId: ${scan.id}\noriginal error: ${err.message}\nrefund error: ${refundErr.message}\n\nManually restore this user's free_fix_credits by 1.`
+        )
+      } catch (_) {}
+    }
+    throw err
+  }
 
   return ctx.json({ success: true, data: { scanId: scan.id } })
 }

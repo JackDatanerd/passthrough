@@ -43,6 +43,16 @@ function expiry(hours) {
   return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString()
 }
 
+// HARDENING: precomputed at module load so login() can run a bcrypt.compare
+// of roughly the same cost against it when no matching user exists. Without
+// this, an unknown email short-circuits straight to the 401 while a known
+// email always pays the ~100ms+ bcrypt.compare cost first — same response
+// body either way ("Invalid credentials"), but the timing difference lets
+// an attacker enumerate registered emails by measuring response latency.
+// The hash itself is thrown away after use — it never gets compared against
+// real user data, it's purely there to burn a comparable amount of CPU time.
+const DUMMY_PASSWORD_HASH = bcrypt.hashSync('passthrough-timing-equalizer', 10)
+
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
@@ -96,8 +106,14 @@ async function login(c) {
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!user)
+  if (!user) {
+    // HARDENING: burn a comparable amount of time to the real-user path
+    // below (bcrypt.compare against a throwaway hash) before responding,
+    // so "no such email" and "wrong password" aren't distinguishable by
+    // response latency. See DUMMY_PASSWORD_HASH above.
+    await bcrypt.compare(password, DUMMY_PASSWORD_HASH)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
+  }
   if (user.status === 'BANNED')
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
   if (!await bcrypt.compare(password, user.passwordHash))

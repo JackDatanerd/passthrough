@@ -117,9 +117,29 @@ const anonScan = makeLimiter({
   skip: c => !!c.get('user')
 })
 
+// HARDENING: previously every auth-adjacent endpoint (register, login,
+// forgot-password, reset-password, verify-email, resend-verification,
+// change-password, delete-account) shared this ONE 10-per-15-min bucket per
+// IP. A normal signup flow — register, open the verification email, click
+// the link, maybe hit resend once, then log in again later — could burn
+// half that budget on its own, and anyone behind a shared/NAT'd IP (office,
+// campus, mobile carrier) compounds it further into false lockouts for
+// unrelated users. Split into two buckets:
+//   - `auth`: credential-guessing surface (register, login, forgot-password,
+//     reset-password, change-password, delete-account) — stays tight, this
+//     is exactly what rate limiting here is for.
+//   - `authVerify`: link-click / resend flows (verify-email,
+//     resend-verification) — same window, more headroom, since these aren't
+//     a credential-guessing vector and legitimately get triggered multiple
+//     times in a single signup.
 const auth = makeLimiter({
   windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
   message: msg('Too many attempts.')
+})
+
+const authVerify = makeLimiter({
+  windowSeconds: 15 * 60, max: 20, keyPrefix: 'rl:authverify',
+  message: msg('Too many attempts. Please wait a few minutes.')
 })
 
 const payment = makeLimiter({
@@ -132,4 +152,4 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
-module.exports = { general, anonScan, auth, payment, employerLead, isBypassed }
+module.exports = { general, anonScan, auth, authVerify, payment, employerLead, isBypassed }
