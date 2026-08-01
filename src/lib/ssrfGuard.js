@@ -54,9 +54,26 @@ function isPrivateIPv6(hostname) {
   if (h === '::') return true                            // unspecified
   if (h.startsWith('fc') || h.startsWith('fd')) return true   // unique local (fc00::/7)
   if (h.startsWith('fe80')) return true                  // link-local
-  // IPv4-mapped (::ffff:a.b.c.d) — check the embedded IPv4
-  const mapped = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
-  if (mapped) return isPrivateIPv4(mapped[1])
+  // IPv4-mapped (::ffff:a.b.c.d) — check the embedded IPv4. This is the
+  // literal dotted-decimal spelling, e.g. what a user types directly.
+  const mappedDotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (mappedDotted) return isPrivateIPv4(mappedDotted[1])
+  // BUG FIX: the WHATWG URL parser (what `new URL()` uses, both here and in
+  // jd.parser.js before this function ever sees the hostname) canonicalizes
+  // an IPv4-mapped address to compressed hex groups instead of preserving
+  // the dotted-decimal form — e.g. `[::ffff:127.0.0.1]` becomes hostname
+  // `[::ffff:7f00:1]`, and `[::ffff:169.254.169.254]` (cloud metadata)
+  // becomes `[::ffff:a9fe:a9fe]`. The dotted-decimal regex above never
+  // matches that canonical form, so every IPv4-mapped bypass sailed
+  // straight through this guard as "safe" — confirmed against both
+  // loopback and the 169.254.169.254 metadata address. Decode the two
+  // hex16 groups back into the embedded IPv4 and re-check it the same way.
+  const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (mappedHex) {
+    const hi = parseInt(mappedHex[1], 16), lo = parseInt(mappedHex[2], 16)
+    const ipv4 = [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.')
+    return isPrivateIPv4(ipv4)
+  }
   return false
 }
 
