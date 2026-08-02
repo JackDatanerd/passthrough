@@ -51,9 +51,23 @@ const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
 const rateLimiter          = require('../middleware/rateLimiter')
 
-function extOf(filename) {
-  const i = filename.lastIndexOf('.')
-  return i === -1 ? '' : filename.slice(i).toLowerCase()
+// Maps the magic-byte-validated mimetype (middleware/upload.js only ever
+// sets file.mimetype to one of these two, having already checked the bytes
+// themselves) to a storage extension. Previously this took the extension
+// straight from file.originalname — entirely client-supplied and never
+// checked against anything, even though the validated type was already
+// sitting right there on the same object. Not exploitable (R2 keys are
+// flat strings, not filesystem paths, so no traversal risk), but it meant
+// a file named "resume.docx" containing PDF bytes could get its PDF bytes
+// stored under a `.docx` R2 key — cosmetic today since resume.parser.js
+// correctly uses the validated mimetype (not this extension) to choose how
+// to parse, but worth closing rather than leaving a trust gap on the table.
+const EXT_BY_MIME = {
+  'application/pdf': '.pdf',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': '.docx'
+}
+function extForMimeType(mimetype) {
+  return EXT_BY_MIME[mimetype] || ''
 }
 
 // POST /api/scan  — body already parsed by middleware/upload.js into
@@ -95,7 +109,7 @@ async function createScan(ctx) {
 
   // PHASE 1: only file-mode has an R2 key at all — brain-dump text and
   // saved-profile data are stored directly on the scans row, never R2.
-  const resumeKey = file ? storage.resumeKey(scanId, extOf(file.originalname)) : null
+  const resumeKey = file ? storage.resumeKey(scanId, extForMimeType(file.mimetype)) : null
 
   // PATCH 2 (carried over): clean up the R2 object on every validation
   // failure that fires after the file has already been written. Naturally
@@ -297,8 +311,13 @@ async function getScanStatus(ctx) {
   if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
 
   const user = ctx.get('user')
+  // Timing-safe comparison — matches the convention already used for the
+  // Paystack webhook signature (cryptoLib.timingSafeEqual). The plain ===
+  // this replaces wasn't a realistic exploit path (a random UUID over the
+  // network), but it was an inconsistency against a gap this codebase
+  // otherwise closes deliberately everywhere else a secret token is checked.
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && scan.anonToken === ctx.req.query('token'))
+                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   // badgeEligible computed — NOT stored
@@ -324,8 +343,9 @@ async function getScan(ctx) {
   if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
 
   const user = ctx.get('user')
+  // Timing-safe comparison — see matching note in getScanStatus above.
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && scan.anonToken === ctx.req.query('token'))
+                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, ...safe } = scan
