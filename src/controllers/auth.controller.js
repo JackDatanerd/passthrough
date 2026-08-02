@@ -242,12 +242,27 @@ async function changePassword(c) {
   if (!await bcrypt.compare(currentPassword, user.passwordHash))
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
 
+  const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
   await supabase.from('users').update({
     password_hash: await bcrypt.hash(newPassword, 10),
-    token_version:  user.tokenVersion + 1  // signs out all other sessions
+    token_version:  newTokenVersion
   }).eq('id', user.id)
 
-  return c.json({ success: true, message: 'Password updated. Other sessions signed out.' })
+  // BUG FIX: token_version bump above invalidates ALL outstanding JWTs for
+  // this user — including the token this very request was authenticated
+  // with (auth.js's `user.tokenVersion !== decoded.tokenVersion` check has
+  // no notion of "this was the session that triggered the change, let it
+  // through"). Previously no new token was returned here, so the response
+  // said "Other sessions signed out" while silently killing the CURRENT
+  // session too — the frontend held onto the now-dead token, and the next
+  // authenticated request anywhere in the app 401'd with SESSION_INVALID,
+  // bouncing the user to /login with no indication why. Minting and
+  // returning a fresh token (same shape as issueJWT() used by register/
+  // login) keeps the current session alive across the change, which is
+  // what the message already claimed was happening.
+  const token = await issueJWT(c.env, { id: user.id, tokenVersion: newTokenVersion })
+
+  return c.json({ success: true, message: 'Password updated. Other sessions signed out.', data: { token } })
 }
 
 // DELETE /api/auth/account

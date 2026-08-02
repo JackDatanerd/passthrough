@@ -68,7 +68,15 @@ export default function Settings() {
     if (newPass !== confirm) return setPwError('Passwords do not match.')
     setPwLoading(true); setPwError(''); setPwSuccess(false)
     try {
-      await api.patch('/auth/password', { currentPassword: current, newPassword: newPass })
+      const res = await api.patch('/auth/password', { currentPassword: current, newPassword: newPass })
+      // BUG FIX: changePassword invalidates every existing token (including
+      // this tab's) and now returns a freshly-signed one — store it so this
+      // session survives, matching what the success message already says
+      // ("Other sessions signed out"). Without this, the very next request
+      // anywhere in the app 401'd and silently bounced to /login, right
+      // after this screen told the user everything was fine.
+      const token = res.data?.data?.token
+      if (token) localStorage.setItem('passthrough_token', token)
       setPwSuccess(true)
       setCurrent(''); setNewPass(''); setConfirm('')
     } catch (err) {
