@@ -7,18 +7,46 @@
 // into the ESM entry point without issue.
 
 module.exports = {
+  // Standard (post-promo) prices — these are what priceForTier() falls back
+  // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
+  // the anchor during the promo.
   PRICE_FIX:       4900,    // $49.00 USD cents — rewrite + Passthrough Verified credential
   PRICE_BADGE:     3900,    // $39.00 USD cents — credential only, no rewrite (requires score >= ATS_BADGE_THRESHOLD)
   PRICE_FIX_PLAIN: 3900,    // $39.00 USD cents — rewrite only, no credential/verification link
-  // Single source of truth for tier -> price, used by both
-  // scan.controller.js's initiateFix (price preview) and
-  // payments.controller.js's initializePayment (actual charge) — having
-  // two independently-maintained ternaries for the same mapping is exactly
-  // how they'd eventually drift and quote one price but charge another.
-  priceForTier(fixTier) {
-    if (fixTier === 'BADGE')     return this.PRICE_BADGE
-    if (fixTier === 'FIX_PLAIN') return this.PRICE_FIX_PLAIN
-    return this.PRICE_FIX
+
+  // Launch promo prices. Mapping: BADGE gets the deepest cut (cheapest tier
+  // to deliver — no Claude rewrite call, no PDF render), FIX_PLAIN a middle
+  // cut, FIX (the most expensive to deliver) the smallest cut. Flagging this
+  // mapping explicitly in case a different assignment was intended — easy to
+  // swap, just move the numbers.
+  PROMO_PRICE_FIX:       2900,   // $29.00
+  PROMO_PRICE_BADGE:     900,    // $9.00
+  PROMO_PRICE_FIX_PLAIN: 1900,   // $19.00
+
+  // Whether the promo price applies right now. This is what makes the
+  // frontend countdown honest: it counts down to env.PROMO_ENDS_AT, and this
+  // same check is what the backend uses to actually decide what to charge —
+  // there's no separate "fake" timer, the displayed deadline IS the
+  // enforced one. Extending the promo means redeploying with a later
+  // PROMO_ENDS_AT (see wrangler.toml), which is a real, visible decision
+  // each time rather than a timer that silently never expires.
+  isPromoActive(env) {
+    if (!env || env.PROMO_ACTIVE !== 'true' || !env.PROMO_ENDS_AT) return false
+    const endsAt = Date.parse(env.PROMO_ENDS_AT)
+    if (Number.isNaN(endsAt)) return false   // fails safe to standard pricing on bad config
+    return Date.now() < endsAt
+  },
+
+  // Single source of truth for tier -> price, used by scan.controller.js's
+  // initiateFix (price preview), payments.controller.js's initializePayment
+  // (actual charge), and pricing.controller.js (public pricing display) —
+  // having independently-maintained copies of this mapping is exactly how
+  // they'd eventually drift and quote one price but charge another.
+  priceForTier(fixTier, env) {
+    const promo = this.isPromoActive(env)
+    if (fixTier === 'BADGE')     return promo ? this.PROMO_PRICE_BADGE     : this.PRICE_BADGE
+    if (fixTier === 'FIX_PLAIN') return promo ? this.PROMO_PRICE_FIX_PLAIN : this.PRICE_FIX_PLAIN
+    return promo ? this.PROMO_PRICE_FIX : this.PRICE_FIX
   },
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,

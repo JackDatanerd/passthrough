@@ -9,6 +9,42 @@ const MAX_REDIRECTS = 3
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
 const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
 
+// Reads a Response body via its stream, aborting the moment the accumulated
+// byte count crosses maxBytes rather than buffering the entire thing first.
+// Returns the decoded text, or null if the cap was exceeded. Falls back to
+// the old buffer-then-check approach only if res.body isn't a stream for
+// some reason (shouldn't happen on Workers' fetch, but fails safe rather
+// than throwing).
+async function readCappedText(res, maxBytes) {
+  const reader = res.body?.getReader?.()
+  if (!reader) {
+    const buf = await res.arrayBuffer()
+    if (buf.byteLength > maxBytes) return null
+    return new TextDecoder().decode(buf)
+  }
+
+  const chunks = []
+  let total = 0
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    total += value.byteLength
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => {})
+      return null
+    }
+    chunks.push(value)
+  }
+
+  const merged = new Uint8Array(total)
+  let offset = 0
+  for (const chunk of chunks) {
+    merged.set(chunk, offset)
+    offset += chunk.byteLength
+  }
+  return new TextDecoder().decode(merged)
+}
+
 // SSRF-safe fetch: validates the target before every request AND before
 // following each redirect hop (redirect:'manual' so we control that).
 // A prior blocklist-only check validated the ORIGINAL url and then let
@@ -83,12 +119,17 @@ async function fetchJobDescriptionFromUrl(url) {
       return { success: false, blocked: false, text: null, message: 'Could not read that page. Paste instead.' }
     }
 
-    // Manual size cap — fetch has no maxContentLength option
-    const buf = await res.arrayBuffer()
-    if (buf.byteLength > MAX_BYTES) {
+    // Manual size cap — fetch has no maxContentLength option. This reads the
+    // body as a stream and aborts as soon as the cap is crossed, rather than
+    // buffering the whole response with res.arrayBuffer() first and checking
+    // afterward — the previous version paid the full memory/CPU cost of an
+    // oversized body from a malicious or compromised target before the check
+    // ever ran, which is a minor DoS surface on an endpoint anonymous users
+    // can hit.
+    const html = await readCappedText(res, MAX_BYTES)
+    if (html === null) {
       return { success: false, blocked: false, text: null, message: 'Page too large. Paste manually.' }
     }
-    const html = new TextDecoder().decode(buf)
 
     // PHASE 5: generic flatten first (unchanged from before this phase),
     // then platform-specific boilerplate removal — which must run BEFORE

@@ -25,6 +25,7 @@ const paymentsRoutes     = require('./routes/payments.routes')
 const webhooksRoutes     = require('./routes/webhooks.routes')
 const verifyRoutes       = require('./routes/verify.routes')
 const employerLeadRoutes = require('./routes/employer-leads.routes')
+const pricingRoutes = require('./routes/pricing.routes')
 const profileRoutes      = require('./routes/profile.routes')
 
 const { getSupabase } = require('./config/supabase')
@@ -58,6 +59,7 @@ app.route('/api/webhooks',       webhooksRoutes)  // normal route, not a stub
 app.route('/api/verify',         verifyRoutes)
 app.route('/api/employer-leads', employerLeadRoutes)
 app.route('/api/profile',        profileRoutes)
+app.route('/api/pricing',        pricingRoutes)
 
 // ── 5. Error handler ──────────────────────────────────────────────────────────
 app.onError(errorHandler)

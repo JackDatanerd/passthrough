@@ -66,16 +66,17 @@ async function handlePaystack(c) {
         if (updErr) { console.error('Webhook payment update:', updErr.message); return }
         if (updatedRows.length === 0) return  // already processed — idempotent skip
 
-        // fixTier is read from OUR OWN scans row (set by initializePayment),
-        // not from event.data.metadata.fixTier — same trust pattern
-        // verifyPayment already uses. The webhook payload is HMAC-verified
-        // so metadata isn't spoofable in the usual sense, but having two
-        // payment-completion paths trust two different origins for the same
-        // fact is exactly the kind of thing that quietly drifts the next
-        // time either path changes. One extra query keeps a single source
-        // of truth.
-        const { data: scanRow } = await supabase.from('scans').select('fix_tier').eq('id', scanId).maybeSingle()
-        const fixTier = scanRow?.fix_tier || 'FIX'
+        // fixTier comes from the PAYMENT row itself (bound at
+        // initializePayment, immutable per reference), not from
+        // event.data.metadata.fixTier and not from scans.fix_tier. Same fix
+        // as verifyPayment: scans.fix_tier used to be the source of truth
+        // here and is a mutable field that a later initializePayment() call
+        // (for a different tier, same scan) can overwrite before this
+        // reference gets redeemed — letting someone pay for the cheap tier
+        // and receive whatever tier was initialized last. The payment row is
+        // the only thing immutably tied to what THIS reference actually paid
+        // for, so it's the only thing fulfillment should trust.
+        const fixTier = updatedRows[0]?.fix_tier || 'FIX'
 
         await supabase.from('scans').update({
           fix_purchased: true,

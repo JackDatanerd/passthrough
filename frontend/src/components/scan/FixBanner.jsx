@@ -1,8 +1,25 @@
 import { useNavigate } from 'react-router-dom'
 import Button from '../ui/Button'
+import { usePricing, fmtPrice } from '../../hooks/usePricing'
+
+// PriceTag falls back to the hardcoded standard price if /api/pricing hasn't
+// loaded yet (fast first paint) or failed to load (fails safe to the correct
+// non-promo price rather than showing nothing or a wrong number).
+function PriceTag({ tier, fallbackCents, byTier }) {
+  const live = byTier(tier)
+  if (!live) return <>{fmtPrice(fallbackCents)}</>
+  const onPromo = live.amount !== live.originalAmount
+  return (
+    <>
+      {onPromo && <s className="opacity-60 mr-1">{fmtPrice(live.originalAmount)}</s>}
+      {fmtPrice(live.amount)}
+    </>
+  )
+}
 
 export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0 }) {
   const navigate = useNavigate()
+  const { byTier } = usePricing()
   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
   if (scan.fixPurchased) return null
 
@@ -11,6 +28,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
   const hasCredit      = freeFixCredits > 0
 
   // <75 or 75-79: full fix ($49), or just the rewrite with no credential ($39)
+  // (standard prices — see /api/pricing for live/promo amounts)
   if (!badgeEligible) {
     return (
       <div className="rounded-lg border border-blue-200 bg-blue-50 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
@@ -36,10 +54,10 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
             </Button>
           )}
           <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
-            Fix My Resume — $39
+            Fix My Resume — <PriceTag tier="FIX_PLAIN" fallbackCents={3900} byTier={byTier} />
           </Button>
           <Button onClick={() => onPay('FIX')}>
-            Fix + Verified Credential — $49
+            Fix + Verified Credential — <PriceTag tier="FIX" fallbackCents={4900} byTier={byTier} />
           </Button>
         </div>
       </div>
@@ -62,10 +80,10 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
       )}
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary">
-          Verified Credential only — $39
+          Verified Credential only — <PriceTag tier="BADGE" fallbackCents={3900} byTier={byTier} />
         </Button>
         <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
-          Fix My Resume, No Credential — $39
+          Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" fallbackCents={3900} byTier={byTier} />
         </Button>
         {hasCredit && (
           <Button onClick={onRedeemCredit} variant="secondary">
@@ -73,7 +91,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
           </Button>
         )}
         <Button onClick={() => onPay('FIX')}>
-          Full AI Fix + Credential — $49
+          Full AI Fix + Credential — <PriceTag tier="FIX" fallbackCents={4900} byTier={byTier} />
         </Button>
       </div>
     </div>

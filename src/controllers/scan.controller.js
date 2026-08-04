@@ -373,8 +373,16 @@ async function initiateFix(ctx) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount = c.priceForTier(fixTier)
-  return ctx.json({ success: true, data: { amount, currency: c.CURRENCY, scanId: scan.id, fixTier } })
+  const amount = c.priceForTier(fixTier, ctx.env)
+  const promoActive = c.isPromoActive(ctx.env)
+  return ctx.json({ success: true, data: {
+    amount, currency: c.CURRENCY, scanId: scan.id, fixTier,
+    // originalAmount/promoActive let the checkout UI show the same
+    // anchor+slash treatment as the public pricing page, without a second,
+    // independently-maintained price table on the frontend.
+    originalAmount: promoActive ? c.priceForTier(fixTier, null) : amount,
+    promoActive
+  } })
 }
 
 // POST /api/scan/:id/redeem-credit — use a free fix credit instead of

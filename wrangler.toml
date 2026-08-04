@@ -55,6 +55,24 @@ JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"
 # if you want alerts going somewhere other than the support inbox.
 OWNER_ALERT_EMAIL       = "passthrough672@gmail.com"
 
+# ── Launch promo ──────────────────────────────────────────────────────
+# This is the ONLY place the promo countdown/deadline lives. constants.js's
+# isPromoActive() reads these two vars, and BOTH the price actually charged
+# (initializePayment) and the price/countdown shown to the user (/api/pricing,
+# scan/:id/initiate-fix) read the same isPromoActive() — so whatever the
+# countdown on the site says is literally what will be enforced at checkout,
+# nothing separate to keep in sync.
+#
+# To end the promo on schedule: do nothing, it lapses automatically at
+# PROMO_ENDS_AT and priceForTier() reverts to standard pricing.
+# To extend it: change PROMO_ENDS_AT to a later time and redeploy. That's a
+# real, visible decision each time — the site will show the new true
+# deadline, not a fake one ticking down to a date that was never going to
+# matter. Set PROMO_ACTIVE = "false" to kill the promo immediately regardless
+# of the date.
+PROMO_ACTIVE            = "true"
+PROMO_ENDS_AT           = "2026-08-11T23:59:59Z"   # placeholder — set to your real launch-week end time before deploying
+
 # ── Local dev overrides ──────────────────────────────────────────────
 # `wrangler dev` reads [vars] above + .dev.vars (gitignored) for secrets.
 # For local FRONTEND_URL/callback URLs pointing at localhost, override

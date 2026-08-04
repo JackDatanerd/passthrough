@@ -42,7 +42,7 @@ async function initializePayment(c2) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount    = c.priceForTier(fixTier)
+  const amount    = c.priceForTier(fixTier, c2.env)
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 
   // Call Paystack FIRST — if it fails, no orphan record is created
@@ -65,6 +65,16 @@ async function initializePayment(c2) {
   }
 
   // Paystack confirmed — now safe to create the DB record
+  //
+  // fix_tier is stored HERE, on the payment row itself, and never touched
+  // again. This is the fix for a tier-smuggling bug: fulfillment (verifyPayment
+  // and the webhook) used to read scans.fix_tier at completion time, but that
+  // column is a single mutable field that got overwritten by every
+  // initializePayment call — so paying for a cheap reference while a later,
+  // pricier initialize() had run in between would deliver the pricier tier.
+  // Binding fix_tier to the immutable payment row closes that: whatever tier
+  // this specific reference was created for is what it will always fulfill,
+  // regardless of what any other in-flight initialize call does to the scan.
   const { error: insertErr } = await supabase.from('payments').insert({
     amount_cents:          amount,
     currency:              c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
@@ -72,12 +82,10 @@ async function initializePayment(c2) {
     paystack_ref:          reference,
     paystack_access_code:  result.access_code,
     user_id:               user.id,
-    scan_id:               scanId
+    scan_id:               scanId,
+    fix_tier:              fixTier
   })
   if (insertErr) throw insertErr
-
-  // Store fixTier on scan for routing in verify/webhook
-  await supabase.from('scans').update({ fix_tier: fixTier }).eq('id', scanId)
 
   return c2.json({ success: true, data: {
     authorization_url: result.authorization_url,
@@ -106,7 +114,7 @@ async function verifyPayment(c2) {
   // all. Also doubles as the "expected payment" row the amount check below
   // needs, so there's no second query for the same row anymore.
   const { data: paymentRow, error: paymentErr } = await supabase
-    .from('payments').select('user_id, amount_cents, scan_id').eq('paystack_ref', reference).maybeSingle()
+    .from('payments').select('user_id, amount_cents, scan_id, fix_tier').eq('paystack_ref', reference).maybeSingle()
   if (paymentErr) throw paymentErr
   if (!paymentRow || paymentRow.user_id !== user.id)
     return c2.json({ success: false, message: 'Payment not found.' }, 404)
@@ -167,10 +175,16 @@ async function verifyPayment(c2) {
   }
 
   const payment = updatedRows[0]
-  await supabase.from('scans').update({ fix_purchased: true, status: 'FIX_PURCHASED' }).eq('id', payment.scan_id)
 
-  const { data: scanRow } = await supabase.from('scans').select('fix_tier').eq('id', payment.scan_id).maybeSingle()
-  const fixTier = scanRow?.fix_tier || 'FIX'
+  // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
+  // per reference) — never from scans.fix_tier, which is just a downstream
+  // display/logic convenience field. This update is what makes scans.fix_tier
+  // trustworthy again: it's now only ever written here, at confirmed-paid
+  // time, from the tier that reference actually paid for.
+  const fixTier = payment.fix_tier || 'FIX'
+  await supabase.from('scans').update({
+    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
+  }).eq('id', payment.scan_id)
 
   const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
   // Enqueue instead of running inline via waitUntil() — generateFix/

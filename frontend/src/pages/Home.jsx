@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import ScanForm from '../components/scan/ScanForm'
+import PromoCountdown from '../components/ui/PromoCountdown'
+import { usePricing, fmtPrice } from '../hooks/usePricing'
 
 // ── Demo score mockup ─────────────────────────────────────────────────────────
 // Static illustration for the "How it works" section — matches the real
@@ -55,6 +57,7 @@ function DemoScoreCard() {
 }
 
 export default function Home() {
+  const { pricing, byTier } = usePricing()
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
@@ -249,7 +252,10 @@ export default function Home() {
         <section className="max-w-5xl mx-auto px-4 py-16 border-t border-gray-100">
           <div className="text-center">
             <h2 className="text-2xl font-bold text-gray-900 mb-3">Simple pricing</h2>
-            <p className="text-gray-500 mb-8">Scan free, always. Pay once if you want the fix.</p>
+            <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix.</p>
+            {pricing?.promoActive && pricing.promoEndsAt && (
+              <PromoCountdown endsAt={pricing.promoEndsAt} className="mb-8" />
+            )}
             <div className="inline-grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left">
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Free forever</div>
@@ -258,17 +264,32 @@ export default function Home() {
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Credential only</div>
-                <div className="text-3xl font-bold text-gray-900 mb-1">$39</div>
+                <div className="mb-1 flex items-baseline gap-2">
+                  {byTier('BADGE') && byTier('BADGE').amount !== byTier('BADGE').originalAmount && (
+                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('BADGE').originalAmount)}</span>
+                  )}
+                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('BADGE')?.amount ?? 3900)}</span>
+                </div>
                 <p className="text-sm text-gray-500">Verified credential for resumes already scoring 80+.</p>
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Fix only</div>
-                <div className="text-3xl font-bold text-gray-900 mb-1">$39</div>
+                <div className="mb-1 flex items-baseline gap-2">
+                  {byTier('FIX_PLAIN') && byTier('FIX_PLAIN').amount !== byTier('FIX_PLAIN').originalAmount && (
+                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('FIX_PLAIN').originalAmount)}</span>
+                  )}
+                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('FIX_PLAIN')?.amount ?? 3900)}</span>
+                </div>
                 <p className="text-sm text-gray-500">AI rewrite + ATS .docx + PDF. No verification link, any score.</p>
               </div>
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
                 <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
-                <div className="text-3xl font-bold text-gray-900 mb-1">$49</div>
+                <div className="mb-1 flex items-baseline gap-2">
+                  {byTier('FIX') && byTier('FIX').amount !== byTier('FIX').originalAmount && (
+                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('FIX').originalAmount)}</span>
+                  )}
+                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('FIX')?.amount ?? 4900)}</span>
+                </div>
                 <p className="text-sm text-gray-600">AI rewrite + ATS .docx + PDF + Verified credential. Any score.</p>
               </div>
             </div>
