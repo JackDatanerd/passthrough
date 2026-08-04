@@ -5,6 +5,20 @@ import ScanForm from '../components/scan/ScanForm'
 import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 
+// tier is always a usable object — byTier() falls back internally to the
+// correct standard price if /api/pricing hasn't loaded or failed.
+function TeaserPrice({ tier }) {
+  const onPromo = tier.amount !== tier.originalAmount
+  return (
+    <div className="mb-1 flex items-baseline gap-2">
+      {onPromo && (
+        <span className="text-lg text-gray-400 line-through">{fmtPrice(tier.originalAmount)}</span>
+      )}
+      <span className="text-3xl font-bold text-gray-900">{fmtPrice(tier.amount)}</span>
+    </div>
+  )
+}
+
 // ── Demo score mockup ─────────────────────────────────────────────────────────
 // Static illustration for the "How it works" section — matches the real
 // CategoryScores component's exact keys/labels so this never misrepresents
@@ -264,32 +278,17 @@ export default function Home() {
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Credential only</div>
-                <div className="mb-1 flex items-baseline gap-2">
-                  {byTier('BADGE') && byTier('BADGE').amount !== byTier('BADGE').originalAmount && (
-                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('BADGE').originalAmount)}</span>
-                  )}
-                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('BADGE')?.amount ?? 3900)}</span>
-                </div>
+                <TeaserPrice tier={byTier('BADGE')} />
                 <p className="text-sm text-gray-500">Verified credential for resumes already scoring 80+.</p>
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Fix only</div>
-                <div className="mb-1 flex items-baseline gap-2">
-                  {byTier('FIX_PLAIN') && byTier('FIX_PLAIN').amount !== byTier('FIX_PLAIN').originalAmount && (
-                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('FIX_PLAIN').originalAmount)}</span>
-                  )}
-                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('FIX_PLAIN')?.amount ?? 3900)}</span>
-                </div>
+                <TeaserPrice tier={byTier('FIX_PLAIN')} />
                 <p className="text-sm text-gray-500">AI rewrite + ATS .docx + PDF. No verification link, any score.</p>
               </div>
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
                 <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
-                <div className="mb-1 flex items-baseline gap-2">
-                  {byTier('FIX') && byTier('FIX').amount !== byTier('FIX').originalAmount && (
-                    <span className="text-lg text-gray-400 line-through">{fmtPrice(byTier('FIX').originalAmount)}</span>
-                  )}
-                  <span className="text-3xl font-bold text-gray-900">{fmtPrice(byTier('FIX')?.amount ?? 4900)}</span>
-                </div>
+                <TeaserPrice tier={byTier('FIX')} />
                 <p className="text-sm text-gray-600">AI rewrite + ATS .docx + PDF + Verified credential. Any score.</p>
               </div>
             </div>

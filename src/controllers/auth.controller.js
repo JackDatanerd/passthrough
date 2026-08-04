@@ -43,15 +43,30 @@ function expiry(hours) {
   return new Date(Date.now() + hours * 60 * 60 * 1000).toISOString()
 }
 
-// HARDENING: precomputed at module load so login() can run a bcrypt.compare
-// of roughly the same cost against it when no matching user exists. Without
-// this, an unknown email short-circuits straight to the 401 while a known
-// email always pays the ~100ms+ bcrypt.compare cost first — same response
-// body either way ("Invalid credentials"), but the timing difference lets
-// an attacker enumerate registered emails by measuring response latency.
-// The hash itself is thrown away after use — it never gets compared against
-// real user data, it's purely there to burn a comparable amount of CPU time.
-const DUMMY_PASSWORD_HASH = bcrypt.hashSync('passthrough-timing-equalizer', 10)
+// HARDENING: used so login() can run a bcrypt.compare of roughly the same
+// cost against it when no matching user exists. Without this, an unknown
+// email short-circuits straight to the 401 while a known email always pays
+// the ~100ms+ bcrypt.compare cost first — same response body either way
+// ("Invalid credentials"), but the timing difference lets an attacker
+// enumerate registered emails by measuring response latency. The hash
+// itself is thrown away after use — it never gets compared against real
+// user data, it's purely there to burn a comparable amount of CPU time.
+//
+// Computed lazily on first use (memoized in module scope, not module LOAD)
+// rather than as a top-level `const X = bcrypt.hashSync(...)` — Workers
+// forbids I/O/randomness-requiring operations at module top level, outside
+// a request context. A top-level hashSync() call passes local dev/`wrangler
+// dev` (which is more permissive) but hard-fails Cloudflare's deploy-time
+// startup validation, which is exactly what happened here: this is a real
+// bug that would otherwise have shipped fine locally and only broken in
+// production on the actual `wrangler deploy`.
+let dummyPasswordHash = null
+async function getDummyPasswordHash() {
+  if (!dummyPasswordHash) {
+    dummyPasswordHash = await bcrypt.hash('passthrough-timing-equalizer', 10)
+  }
+  return dummyPasswordHash
+}
 
 // POST /api/auth/register
 async function register(c) {
@@ -110,8 +125,8 @@ async function login(c) {
     // HARDENING: burn a comparable amount of time to the real-user path
     // below (bcrypt.compare against a throwaway hash) before responding,
     // so "no such email" and "wrong password" aren't distinguishable by
-    // response latency. See DUMMY_PASSWORD_HASH above.
-    await bcrypt.compare(password, DUMMY_PASSWORD_HASH)
+    // response latency. See getDummyPasswordHash() above.
+    await bcrypt.compare(password, await getDummyPasswordHash())
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
   if (user.status === 'BANNED')

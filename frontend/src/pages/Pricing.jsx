@@ -5,7 +5,6 @@ import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 
 function PriceBlock({ tier }) {
-  if (!tier) return <div className="text-4xl font-bold text-gray-900 mb-1">···</div>
   const onPromo = tier.amount !== tier.originalAmount
   return (
     <div className="mb-1 flex items-baseline gap-2">
