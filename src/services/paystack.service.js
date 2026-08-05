@@ -29,7 +29,7 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
 
 async function verifyTransaction(env, reference) {
   const res = await fetch(
-    `https://api.paystack.co/transaction/verify/${reference}`,
+    `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
     { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } }
   )
   return res.json()

@@ -56,6 +56,32 @@ async function handlePaystack(c) {
   c.executionCtx?.waitUntil(
     (async () => {
       try {
+        // Amount/currency check — defense in depth, same posture as
+        // verifyPayment's equivalent check. Signature verification above
+        // means this event genuinely came from Paystack, so this isn't
+        // about forgery — it's about not fulfilling on a legitimately-signed
+        // event whose amount/currency doesn't match what we expected for
+        // this reference (a future currency misconfig, a race between two
+        // initializePayment calls, etc). The webhook is the primary
+        // fulfillment path in practice — it fires regardless of whether the
+        // user's browser ever hits /verify — so it's the one that most
+        // needs this check, not the one that can skip it.
+        const { data: paymentRow, error: selErr } = await supabase
+          .from('payments').select('amount_cents, currency').eq('paystack_ref', reference).maybeSingle()
+        if (selErr) { console.error('Webhook payment lookup:', selErr.message); return }
+        if (!paymentRow) { console.error(`Webhook for unknown reference: ${reference}`); return }
+
+        if (event.data?.amount !== paymentRow.amount_cents || event.data?.currency !== paymentRow.currency) {
+          console.error(`[CRITICAL] Webhook amount/currency mismatch on ${reference}: expected ${paymentRow.amount_cents} ${paymentRow.currency}, received ${event.data?.amount} ${event.data?.currency}`)
+          try {
+            await emailService.sendOwnerAlert(c.env,
+              'Webhook amount/currency mismatch — NOT fulfilled',
+              `reference: ${reference}\nscanId: ${scanId}\nexpected: ${paymentRow.amount_cents} ${paymentRow.currency}\nreceived: ${event.data?.amount} ${event.data?.currency}\n\nPayment left PENDING for manual review — no fix was generated. The verify-payment fallback (if the user's browser hits /verify) will independently apply the same check.`
+            )
+          } catch (_) {}
+          return
+        }
+
         // Atomic idempotency — same pattern as payments.controller.js
         const { data: updatedRows, error: updErr } = await supabase
           .from('payments')
