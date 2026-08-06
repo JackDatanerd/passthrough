@@ -28,25 +28,33 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
 
   // <75 or 75-79: full fix ($49), or just the rewrite with no credential ($39)
   // (standard prices — see /api/pricing for live/promo amounts)
+  //
+  // Text and buttons are stacked (not sharing a flex row) deliberately —
+  // this used to be a single flex-row with text on the left and buttons
+  // shrink-0'd on the right, which worked when button labels were short
+  // (single price each). Once promo pricing added a second, crossed-out
+  // price to every button label, the buttons alone got wide enough to
+  // squeeze the text flex-item toward zero width, wrapping it one word per
+  // line. Stacking avoids that whole class of "which side loses the width
+  // fight" problem regardless of how long the button labels get, and
+  // matches the layout the score-80+ branch below already uses.
   if (!badgeEligible) {
     return (
-      <div className="rounded-lg border border-blue-200 bg-blue-50 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div className="flex-1 min-w-0">
-          <p className="font-semibold text-blue-900">
-            {score < 75
-              ? 'Your resume is being rejected by ATS filters'
-              : 'Boost your score and unlock Verified status'}
+      <div className="rounded-lg border border-blue-200 bg-blue-50 p-5">
+        <p className="font-semibold text-blue-900">
+          {score < 75
+            ? 'Your resume is being rejected by ATS filters'
+            : 'Boost your score and unlock Verified status'}
+        </p>
+        <p className="text-sm text-blue-700 mt-1 mb-1">
+          Full AI rewrite + ATS-optimised .docx + beautiful PDF — with or without the Passthrough Verified credential
+        </p>
+        {hasCredit && (
+          <p className="text-sm text-green-700 mt-1 mb-3 font-medium">
+            You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
           </p>
-          <p className="text-sm text-blue-700 mt-1">
-            Full AI rewrite + ATS-optimised .docx + beautiful PDF — with or without the Passthrough Verified credential
-          </p>
-          {hasCredit && (
-            <p className="text-sm text-green-700 mt-1 font-medium">
-              You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
-            </p>
-          )}
-        </div>
-        <div className="flex flex-col sm:flex-row gap-2 shrink-0">
+        )}
+        <div className="flex flex-wrap gap-2 mt-3">
           {hasCredit && (
             <Button onClick={onRedeemCredit} variant="secondary">
               Use Free Credit
