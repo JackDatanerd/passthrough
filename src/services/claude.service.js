@@ -6,7 +6,30 @@ function model(env) {
   return env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
 }
 
+// HARDENING: callClaude is the single gateway every AI call in the app goes
+// through (scoring, structuring, rewriting, HTML generation) — and until
+// this fix it had no timeout at all. That's not just slow-response
+// annoyance: createScan's runAtsScan runs via ctx.waitUntil(), which has a
+// hard, UNCATCHABLE 30-second wall-clock cap — the platform kills the task
+// mid-flight with no exception, not even reaching this function's own catch
+// block. A Claude response that merely took ~25-30s (rate-limit backpressure,
+// a slow day on Anthropic's end, no error at all) would silently leave the
+// scan stuck at status='SCANNING' with zero log output, recovered only by
+// the hourly cron's 30-minute-stuck-scan sweep (index.js's scheduled()).
+// Queue-consumer jobs (generateFix/generateBadge) aren't capped by
+// waitUntil's 30s wall clock, but CPU-time limits don't count time spent
+// waiting on a fetch either — so without this, a genuinely hung upstream
+// request could stall a queue job indefinitely instead of failing fast into
+// the existing retry/DLQ handling.
+//
+// 20s chosen to sit comfortably under the 30s waitUntil cap (leaving margin
+// for the rest of runAtsScan's own work after this returns) while still
+// being generous for a normal Claude response.
+const CLAUDE_TIMEOUT_MS = 20000
+
 async function callClaude(env, system, userMsg, maxTokens) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), CLAUDE_TIMEOUT_MS)
   try {
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -20,7 +43,8 @@ async function callClaude(env, system, userMsg, maxTokens) {
         max_tokens: maxTokens,
         system,
         messages: [{ role: 'user', content: userMsg }]
-      })
+      }),
+      signal: controller.signal
     })
     const json = await res.json()
     if (!res.ok) throw new Error(json.error?.message || 'Claude API error')
@@ -31,8 +55,16 @@ async function callClaude(env, system, userMsg, maxTokens) {
     // response. Surface it so callers/logs can tell the difference.
     return { success: true, data: json.content[0].text, error: null, stopReason: json.stop_reason }
   } catch (err) {
-    console.error('Claude error:', err.message)
-    return { success: false, data: null, error: err.message, stopReason: null }
+    // AbortError from our own timeout gets a clearer message than the raw
+    // "The operation was aborted" — callers/logs shouldn't have to guess
+    // whether this was a timeout or something else.
+    const message = err.name === 'AbortError'
+      ? `Claude API call timed out after ${CLAUDE_TIMEOUT_MS / 1000}s`
+      : err.message
+    console.error('Claude error:', message)
+    return { success: false, data: null, error: message, stopReason: null }
+  } finally {
+    clearTimeout(timeout)
   }
 }
 
@@ -221,22 +253,84 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
   return { success: true, data: sanitizeGeneratedHtml(result.data), error: null }
 }
 
-// Belt-and-suspenders sanitization for AI-generated HTML that gets rendered
-// in a real browser (pdf.service.js). The primary defense is that Puppeteer
-// page has JS disabled entirely — this pass is a second, independent layer
-// in case that ever regresses, and also keeps the same output cleaner if
-// it's ever reused somewhere JS isn't disabled. Strips <script> tags,
-// on*="..." / on*='...' event-handler attributes, and javascript:/data:
-// URIs in href/src — the three ways markup alone can trigger script
-// execution in a browser context.
+// Sanitization for AI-generated HTML that gets rendered in a real browser
+// (pdf.service.js's Cloudflare Browser Rendering session). Two independent
+// concerns are handled here:
+//
+//   1. Script execution — JS is disabled on the Puppeteer page itself
+//      (the primary defense), this is belt-and-suspenders in case that
+//      ever regresses: strips <script> tags, on*="..."/on*='...' event
+//      handlers, and javascript:/data: URIs in href/src.
+//
+//   2. SSRF / remote-resource loading — disabling JS does NOT stop plain
+//      markup from triggering a network request: <img src>, <link href>
+//      (stylesheets), <iframe>/<object>/<embed> src, CSS url()/@import,
+//      and <meta http-equiv="refresh"> can all fire a fetch or navigation
+//      with zero JavaScript involved. resumeData here ultimately derives
+//      from user-supplied resume/brain-dump text that passed through an
+//      earlier Claude structuring call — a successful prompt injection in
+//      that text could in principle get this generation call to emit a
+//      tag pointing at an internal address or an attacker-controlled
+//      endpoint, and Browser Rendering would actually fetch it. HARDENING:
+//      resource-loading tags with no legitimate use in a static resume
+//      layout (<img>, <iframe>, <object>, <embed>, <frame>, <video>,
+//      <audio>, <source>, <track>, <base>, meta-refresh) are stripped
+//      outright. <link>/CSS url()/@import are NOT stripped outright
+//      because the prompt legitimately asks for Google Fonts — those are
+//      allowlisted to fonts.googleapis.com/fonts.gstatic.com and every
+//      other target is neutralized.
+const ALLOWED_RESOURCE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com']
+
+function isAllowedResourceUrl(url) {
+  try {
+    const u = new URL(url, 'https://invalid.example/')
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false
+    return ALLOWED_RESOURCE_HOSTS.includes(u.hostname.toLowerCase())
+  } catch (_) {
+    return false
+  }
+}
+
 function sanitizeGeneratedHtml(html) {
-  return html
+  let out = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
     .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
     .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
     .replace(/(href|src)\s*=\s*"(javascript|data):[^"]*"/gi, '$1="#"')
     .replace(/(href|src)\s*=\s*'(javascript|data):[^']*'/gi, "$1='#'")
+
+  // Resource-loading tags with no legitimate role in a static resume PDF —
+  // removed entirely rather than trying to sanitize their src/content.
+  // Container tags (iframe/object/video/audio) have their closing tag and
+  // any content between stripped too, not just the opening tag.
+  out = out.replace(/<(iframe|object|video|audio)\b[^>]*>[\s\S]*?<\/\1>/gi, '')
+  out = out.replace(/<(img|iframe|object|embed|frame|video|audio|source|track|base)\b[^>]*\/?>/gi, '')
+  // <meta http-equiv="refresh" ...> can navigate the page with no JS at all.
+  out = out.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '')
+
+  // <link href="...">: keep only if it targets an allowlisted font host
+  // (the prompt legitimately requests @import fonts from Google) — strip
+  // everything else (favicons, arbitrary external stylesheets, etc.)
+  out = out.replace(/<link\b[^>]*>/gi, tag => {
+    const m = tag.match(/href\s*=\s*["']([^"']*)["']/i)
+    return (m && isAllowedResourceUrl(m[1])) ? tag : ''
+  })
+
+  // CSS url(...) — inside <style> blocks and inline style="" attributes
+  // alike (background-image, @font-face src, list-style-image, etc).
+  // Neutralize any target that isn't an allowlisted font host.
+  out = out.replace(/url\(\s*(['"]?)([^'")]+)\1\s*\)/gi, (full, _q, target) =>
+    isAllowedResourceUrl(target) ? full : 'url()'
+  )
+
+  // @import — same allowlist, whether written as @import url(...) or the
+  // bare-string form @import "...".
+  out = out.replace(/@import\s+(?:url\(\s*['"]?([^'")]+)['"]?\s*\)|['"]([^'"]+)['"])/gi,
+    (full, u1, u2) => isAllowedResourceUrl(u1 || u2) ? full : ''
+  )
+
+  return out
 }
 
 module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson }
