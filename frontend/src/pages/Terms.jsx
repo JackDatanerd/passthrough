@@ -19,10 +19,6 @@ export default function Terms() {
       <main className="flex-1 max-w-3xl mx-auto px-4 py-16 w-full">
         <h1 className="text-3xl font-bold text-gray-900 mb-2">Terms of Service</h1>
         <p className="text-sm text-gray-400 mb-10">Last updated: {LAST_UPDATED}</p>
-        
-          <div className="rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 mb-10 text-sm text-amber-800">
-          Passthrough is operated by Saltern Studio, Kenya.
-        </div>
         <Section title="1. What Passthrough Is">
           <p>
             Passthrough ("we," "us," "the Service") is an automated resume-scanning and rewriting

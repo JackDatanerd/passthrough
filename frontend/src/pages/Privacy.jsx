@@ -22,7 +22,7 @@ export default function Privacy() {
 
         <Section title="1. Who We Are">
           <p>
-            Passthrough is operated by Saltern Studio, Kenya. For any privacy question or request,
+            Passthrough is operated by Saltern Studio. For any privacy question or request,
             contact{' '}
             <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
               support@passthrough.dev
