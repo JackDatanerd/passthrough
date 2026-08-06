@@ -31,7 +31,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
   if (!badgeEligible) {
     return (
       <div className="rounded-lg border border-blue-200 bg-blue-50 p-5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-        <div>
+        <div className="flex-1 min-w-0">
           <p className="font-semibold text-blue-900">
             {score < 75
               ? 'Your resume is being rejected by ATS filters'
