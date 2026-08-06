@@ -1,0 +1,24 @@
+# Copy this file to .dev.vars (gitignored) for local `wrangler dev`.
+# In production, each of these is set via: wrangler secret put VAR_NAME
+# Workers do not load .env files — this is the only mechanism for secrets.
+
+# Supabase
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=eyJ...           # service_role key — server only, never the anon key
+
+# Auth
+JWT_SECRET=replace_with_minimum_32_char_random_string
+
+# Anthropic
+ANTHROPIC_API_KEY=sk-ant-...
+
+# Paystack
+PAYSTACK_SECRET_KEY=sk_test_...
+PAYSTACK_PUBLIC_KEY=pk_test_...
+
+# Resend (replaces SMTP/Nodemailer)
+RESEND_API_KEY=re_...
+
+# Local-only overrides (optional — leave unset to use wrangler.toml [vars])
+# FRONTEND_URL=http://localhost:3000
+# PAYSTACK_CALLBACK_URL=http://localhost:3000/payment/success
