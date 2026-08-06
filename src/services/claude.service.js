@@ -309,6 +309,26 @@ function sanitizeGeneratedHtml(html) {
   // <meta http-equiv="refresh" ...> can navigate the page with no JS at all.
   out = out.replace(/<meta\b[^>]*http-equiv\s*=\s*["']?refresh["']?[^>]*>/gi, '')
 
+  // HARDENING: the legacy HTML `background="..."` attribute (on <body>,
+  // <table>, <td>, <th>) is obsolete but still rendered by Chromium (the
+  // engine behind Cloudflare Browser Rendering) as a background-image
+  // fetch — a request-triggering attribute that the href/src-only stripping
+  // above never touched. Same threat as the resource tags above: a
+  // successful prompt injection in resumeData could get this generation
+  // call to emit `background="http://169.254.169.254/..."` and Browser
+  // Rendering would fetch it with zero JS involved. Stripped outright,
+  // same posture as the other legacy resource-loading vectors.
+  out = out.replace(/\sbackground\s*=\s*"[^"]*"/gi, '')
+  out = out.replace(/\sbackground\s*=\s*'[^']*'/gi, '')
+  out = out.replace(/\sbackground\s*=\s*[^\s>]+/gi, '')
+
+  // HARDENING: SVG's <image> element (distinct from HTML's <img>, so the
+  // resource-tag strip above — which matches the literal tag name "img" —
+  // never catches it) also fires a network fetch via xlink:href/href. The
+  // prompt only asks for a plain resume layout with no SVG, but this closes
+  // the gap defensively rather than relying on the model never emitting one.
+  out = out.replace(/<image\b[^>]*\/?>/gi, '')
+
   // <link href="...">: keep only if it targets an allowlisted font host
   // (the prompt legitimately requests @import fonts from Google) — strip
   // everything else (favicons, arbitrary external stylesheets, etc.)

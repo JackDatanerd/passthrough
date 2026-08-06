@@ -48,32 +48,65 @@ function isPrivateIPv4(hostname) {
   return false
 }
 
+// Decodes the two trailing hex16 groups of an IPv6 address's tail into a
+// dotted-decimal IPv4 string, e.g. "7f00:1" -> "127.0.0.1". Shared by every
+// IPv6 transition form below that embeds an IPv4 address in its low 32 bits.
+function decodeEmbeddedIPv4Hex(hi, lo) {
+  const hiN = parseInt(hi, 16), loN = parseInt(lo, 16)
+  return [(hiN >> 8) & 0xff, hiN & 0xff, (loN >> 8) & 0xff, loN & 0xff].join('.')
+}
+
 function isPrivateIPv6(hostname) {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (h === '::1') return true                          // loopback
   if (h === '::') return true                            // unspecified
   if (h.startsWith('fc') || h.startsWith('fd')) return true   // unique local (fc00::/7)
   if (h.startsWith('fe80')) return true                  // link-local
-  // IPv4-mapped (::ffff:a.b.c.d) — check the embedded IPv4. This is the
-  // literal dotted-decimal spelling, e.g. what a user types directly.
+
+  // IPv6 TRANSITION FORMS: multiple standardized encodings embed an IPv4
+  // address inside an IPv6 literal, and each is a documented, actively-used
+  // SSRF bypass technique when the embedded address is private/metadata and
+  // the requesting network's stack (or an intermediate NAT64/DNS64 gateway)
+  // actually resolves/routes the transition form to that embedded IPv4 —
+  // this exact class of bug has multiple 2026 CVEs across unrelated
+  // codebases. Rather than allowlist-checking each wrapper form's own
+  // "is this range private" table (easy to leave a gap, as the IPv4-mapped
+  // case below already did once), every form is normalized down to its
+  // embedded dotted-decimal IPv4 and re-checked through isPrivateIPv4 —
+  // one source of truth for "is this IP private," regardless of which IPv6
+  // wrapper it arrived in.
+
+  // 1. IPv4-mapped (::ffff:a.b.c.d) — literal dotted-decimal spelling, e.g.
+  //    what a user types directly.
   const mappedDotted = h.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
   if (mappedDotted) return isPrivateIPv4(mappedDotted[1])
-  // BUG FIX: the WHATWG URL parser (what `new URL()` uses, both here and in
-  // jd.parser.js before this function ever sees the hostname) canonicalizes
-  // an IPv4-mapped address to compressed hex groups instead of preserving
-  // the dotted-decimal form — e.g. `[::ffff:127.0.0.1]` becomes hostname
-  // `[::ffff:7f00:1]`, and `[::ffff:169.254.169.254]` (cloud metadata)
-  // becomes `[::ffff:a9fe:a9fe]`. The dotted-decimal regex above never
-  // matches that canonical form, so every IPv4-mapped bypass sailed
-  // straight through this guard as "safe" — confirmed against both
-  // loopback and the 169.254.169.254 metadata address. Decode the two
-  // hex16 groups back into the embedded IPv4 and re-check it the same way.
+
+  // 2. IPv4-mapped, canonical hex form. The WHATWG URL parser (what
+  //    `new URL()` uses, both here and in jd.parser.js before this function
+  //    ever sees the hostname) canonicalizes an IPv4-mapped address to
+  //    compressed hex groups instead of preserving the dotted-decimal form
+  //    — e.g. `[::ffff:127.0.0.1]` becomes hostname `[::ffff:7f00:1]`, and
+  //    `[::ffff:169.254.169.254]` (cloud metadata) becomes
+  //    `[::ffff:a9fe:a9fe]`. Confirmed against both loopback and the
+  //    169.254.169.254 metadata address.
   const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
-  if (mappedHex) {
-    const hi = parseInt(mappedHex[1], 16), lo = parseInt(mappedHex[2], 16)
-    const ipv4 = [(hi >> 8) & 0xff, hi & 0xff, (lo >> 8) & 0xff, lo & 0xff].join('.')
-    return isPrivateIPv4(ipv4)
-  }
+  if (mappedHex) return isPrivateIPv4(decodeEmbeddedIPv4Hex(mappedHex[1], mappedHex[2]))
+
+  // 3. IPv4-compatible (deprecated but still parsed) — ::a.b.c.d or its
+  //    canonical hex equivalent ::hi:lo, with no "ffff" marker group.
+  const compatDotted = h.match(/^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (compatDotted) return isPrivateIPv4(compatDotted[1])
+  const compatHex = h.match(/^::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (compatHex) return isPrivateIPv4(decodeEmbeddedIPv4Hex(compatHex[1], compatHex[2]))
+
+  // 4. NAT64 well-known prefix (RFC 6052, 64:ff9b::/96) and the RFC 8215
+  //    local-use prefix (64:ff9b:1::/48). On a network behind a NAT64/DNS64
+  //    gateway — including some IPv6-only Kubernetes/cloud setups — these
+  //    literally route to the embedded IPv4. `64:ff9b::a9fe:a9fe` and
+  //    `64:ff9b:1::a9fe:a9fe` both encode 169.254.169.254.
+  const nat64 = h.match(/^64:ff9b(?::1)?::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (nat64) return isPrivateIPv4(decodeEmbeddedIPv4Hex(nat64[1], nat64[2]))
+
   return false
 }
 
