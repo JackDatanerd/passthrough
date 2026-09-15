@@ -21,6 +21,7 @@
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
 const emailService = require('../services/email.service')
+const referralService = require('../services/referral.service')
 
 async function handlePaystack(c) {
   const bodyText = await c.req.text()
@@ -91,6 +92,12 @@ async function handlePaystack(c) {
           .select()
         if (updErr) { console.error('Webhook payment update:', updErr.message); return }
         if (updatedRows.length === 0) return  // already processed — idempotent skip
+
+        // Same attribution recording as payments.controller.js's verifyPayment
+        // — gated by the same atomic check above, so whichever of the two
+        // fulfillment paths (webhook or client verify) gets here first is the
+        // only one that ever records it.
+        await referralService.recordConversion(supabase, updatedRows[0])
 
         // fixTier comes from the PAYMENT row itself (bound at
         // initializePayment, immutable per reference), not from

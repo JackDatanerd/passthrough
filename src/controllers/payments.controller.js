@@ -19,12 +19,13 @@ const cryptoLib = require('../lib/crypto')
 const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
 const emailService = require('../services/email.service')
+const referralService = require('../services/referral.service')
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
   const user = c2.get('user')
   const body = await c2.req.json()
-  const { scanId, fixTier } = body
+  const { scanId, fixTier, referralCode } = body
   if (!scanId || !['FIX', 'BADGE', 'FIX_PLAIN'].includes(fixTier))
     return c2.json({ success: false, message: 'scanId and valid fixTier required.' }, 400)
 
@@ -42,7 +43,13 @@ async function initializePayment(c2) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount    = c.priceForTier(fixTier, c2.env)
+  // Single source of truth for the amount — same resolver the public
+  // /api/pricing quote goes through (pricing.controller.js), so whatever
+  // price the checkout screen showed is exactly what gets charged here.
+  // An invalid/expired/exhausted code silently falls through to normal
+  // promo/standard pricing rather than blocking the payment.
+  const priced   = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode)
+  const amount    = priced.amount
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 
   // Call Paystack FIRST — if it fails, no orphan record is created
@@ -75,6 +82,11 @@ async function initializePayment(c2) {
   // Binding fix_tier to the immutable payment row closes that: whatever tier
   // this specific reference was created for is what it will always fulfill,
   // regardless of what any other in-flight initialize call does to the scan.
+  //
+  // referral_code_id/referral_code are bound the same way, for the same
+  // reason — whatever code priced THIS reference is what its commission
+  // ledger entry (see referral.service.js's recordConversion) will reflect,
+  // regardless of what happens to the code afterward.
   const { error: insertErr } = await supabase.from('payments').insert({
     amount_cents:          amount,
     currency:              c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
@@ -83,7 +95,9 @@ async function initializePayment(c2) {
     paystack_access_code:  result.access_code,
     user_id:               user.id,
     scan_id:               scanId,
-    fix_tier:              fixTier
+    fix_tier:              fixTier,
+    referral_code_id:      priced.referralCode?.id || null,
+    referral_code:         priced.referralCode?.code || null
   })
   if (insertErr) throw insertErr
 
@@ -175,6 +189,12 @@ async function verifyPayment(c2) {
   }
 
   const payment = updatedRows[0]
+
+  // Referral attribution is bound to the payment row itself (referral_code_id,
+  // set once at initializePayment time — see that function's comment) — this
+  // runs exactly once, gated by the same atomic idempotency check above, so
+  // a partner is never double-credited for one sale.
+  await referralService.recordConversion(supabase, payment)
 
   // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
   // per reference) — never from scans.fix_tier, which is just a downstream

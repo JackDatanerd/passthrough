@@ -8,6 +8,7 @@ import Footer from '../components/layout/Footer'
 import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
 import FixBanner from '../components/scan/FixBanner'
+import { getStoredReferralCode } from '../hooks/useReferralCapture'
 import DiffView from '../components/scan/DiffView'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
@@ -129,7 +130,10 @@ export default function ScanResult() {
     if (!user) return navigate(`/register`)
     setPayLoading(true); setPayError('')
     try {
-      const res = await api.post('/payments/initialize', { scanId: id, fixTier })
+      const referralCode = getStoredReferralCode()
+      const res = await api.post('/payments/initialize', {
+        scanId: id, fixTier, referralCode: referralCode || undefined
+      })
       const { access_code, reference } = res.data.data
 
       const popup = new PaystackPop()
@@ -485,7 +489,7 @@ export default function ScanResult() {
                 {payError && (
                   <p className="text-sm text-red-600">{payError}</p>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} />
+                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={getStoredReferralCode()} />
               </>
             )}
 

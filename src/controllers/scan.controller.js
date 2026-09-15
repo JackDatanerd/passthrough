@@ -49,6 +49,7 @@ const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
+const referralService      = require('../services/referral.service')
 const rateLimiter          = require('../middleware/rateLimiter')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
@@ -357,7 +358,10 @@ async function getScan(ctx) {
 async function initiateFix(ctx) {
   const user = ctx.get('user')
   const body = await ctx.req.json()
-  const { fixTier } = z.object({ fixTier: z.enum(['FIX', 'BADGE', 'FIX_PLAIN']) }).parse(body)
+  const { fixTier, referralCode } = z.object({
+    fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
+    referralCode: z.string().max(50).optional()
+  }).parse(body)
 
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
@@ -373,15 +377,21 @@ async function initiateFix(ctx) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
-  const amount = c.priceForTier(fixTier, ctx.env)
+  // Same resolver /api/pricing and /api/payments/initialize use — see
+  // services/referral.service.js. Kept in sync here even though the current
+  // frontend checkout calls /api/payments/initialize directly rather than
+  // this endpoint, so this quote can never show a different number than
+  // what a payment would actually charge.
+  const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode)
   const promoActive = c.isPromoActive(ctx.env)
   return ctx.json({ success: true, data: {
-    amount, currency: c.CURRENCY, scanId: scan.id, fixTier,
+    amount: priced.amount, currency: priced.currency, scanId: scan.id, fixTier,
     // originalAmount/promoActive let the checkout UI show the same
     // anchor+slash treatment as the public pricing page, without a second,
     // independently-maintained price table on the frontend.
-    originalAmount: promoActive ? c.priceForTier(fixTier, null) : amount,
-    promoActive
+    originalAmount: priced.referralApplied ? c.priceForTier(fixTier, ctx.env) : (promoActive ? c.priceForTier(fixTier, null) : priced.amount),
+    promoActive,
+    referralApplied: priced.referralApplied
   } })
 }
 

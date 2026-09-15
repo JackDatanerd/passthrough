@@ -159,10 +159,13 @@ function partnerRowToCamel(row) {
     email:                     rest.email,
     referralCode:              rest.referral_code,
     status:                    rest.status,
+    commissionRate:            rest.commission_rate,
     payoutMethod:              rest.payout_method,
     payoutDetails:             rest.payout_details,
     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
+    referralCodes:             rest.referral_codes ? rest.referral_codes.map(referralCodeRowToCamel) : undefined,
+    commissionLedger:          rest.commission_ledger ? rest.commission_ledger.map(commissionLedgerRowToCamel) : undefined,
     createdAt:                 rest.created_at,
     updatedAt:                 rest.updated_at
   }
@@ -184,8 +187,39 @@ function payoutRowToCamel(row) {
   }
 }
 
+function referralCodeRowToCamel(row) {
+  if (!row) return row
+  return {
+    id:          row.id,
+    partnerId:   row.partner_id,
+    code:        row.code,
+    tierPrices:  row.tier_prices,
+    active:      row.active,
+    usageLimit:  row.usage_limit,
+    usesSoFar:   row.uses_so_far,
+    clicks:      row.clicks,
+    expiresAt:   row.expires_at,
+    createdAt:   row.created_at
+  }
+}
+
+function commissionLedgerRowToCamel(row) {
+  if (!row) return row
+  return {
+    id:                    row.id,
+    paymentId:             row.payment_id,
+    partnerId:             row.partner_id,
+    referralCodeId:        row.referral_code_id,
+    grossAmountCents:      row.gross_amount_cents,
+    commissionRate:        row.commission_rate,
+    commissionAmountCents: row.commission_amount_cents,
+    payoutId:              row.payout_id,
+    createdAt:             row.created_at
+  }
+}
+
 module.exports = {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
-  partnerRowToCamel, payoutRowToCamel,
+  partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
 }

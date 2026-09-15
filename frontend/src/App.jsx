@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { ToastProvider } from './components/ui/Toast'
 import useScrollToHash from './hooks/useScrollToHash'
+import { useReferralCapture } from './hooks/useReferralCapture'
 
 // Pages
 import Home           from './pages/Home'
@@ -20,6 +21,7 @@ import PaymentSuccess from './pages/PaymentSuccess'
 import DashboardIndex from './pages/dashboard/Index'
 import Settings       from './pages/dashboard/Settings'
 import PartnerPayoutDetails from './pages/PartnerPayoutDetails'
+import PartnerDashboard     from './pages/PartnerDashboard'
 import AdminPartners  from './pages/admin/AdminPartners'
 
 // ProtectedRoute — redirects to /login if no token
@@ -44,8 +46,11 @@ function AdminRoute({ children }) {
 
 // Needs to render inside BrowserRouter (useLocation requires Router
 // context) — that's the only reason this isn't just called from App().
-function ScrollToHash() {
+// Referral capture lives here too, for the same reason: it also needs
+// useLocation to see the current ?ref= query string on every navigation.
+function RouteEffects() {
   useScrollToHash()
+  useReferralCapture()
   return null
 }
 
@@ -54,7 +59,7 @@ export default function App() {
     <AuthProvider>
       <ToastProvider>
         <BrowserRouter>
-          <ScrollToHash />
+          <RouteEffects />
           <Routes>
             {/* Public routes */}
             <Route path="/"                element={<Home />} />
@@ -70,6 +75,7 @@ export default function App() {
             <Route path="/privacy"         element={<Privacy />} />
             <Route path="/payment/success" element={<PaymentSuccess />} />
             <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
+            <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
 
             {/* Protected routes — redirect to /login if no token */}
             <Route path="/dashboard"

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, Link } from 'react-router-dom'
 import api from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
@@ -89,10 +89,13 @@ export default function PartnerPayoutDetails() {
           ) : saved ? (
             <div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Details saved ✓</h1>
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-gray-600 mb-4">
                 Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
                 You can revisit this link anytime to update them.
               </p>
+              <Link to={`/partner/dashboard?token=${token}`} className="text-sm text-blue-600 hover:underline">
+                View your dashboard →
+              </Link>
             </div>
           ) : (
             <>

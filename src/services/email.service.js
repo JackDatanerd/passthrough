@@ -100,6 +100,14 @@ async function sendPayoutSent(env, supabase, email, name, amountCents, currency)
   })
 }
 
+async function sendReferralCodeCreated(env, supabase, email, name, code, dashboardUrl) {
+  return send(env, supabase, email, 'Your Passthrough referral code is ready', 'referral_code_created', {
+    NAME:          name,
+    CODE:          code,
+    DASHBOARD_URL: dashboardUrl
+  })
+}
+
 async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
     NAME:              name,
@@ -158,5 +166,6 @@ async function sendOwnerAlert(env, subject, message) {
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
   sendScanFail, sendScanPass, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
-  sendOwnerAlert
+  sendOwnerAlert,
+  sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated
 }

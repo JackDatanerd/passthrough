@@ -16,9 +16,18 @@ function PriceTag({ tier, byTier }) {
   )
 }
 
-export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0 }) {
+function ReferralBadge({ pricing }) {
+  if (!pricing?.referralApplied) return null
+  return (
+    <p className="text-sm font-medium text-emerald-700 mb-2">
+      ✓ Referral discount applied
+    </p>
+  )
+}
+
+export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0, referralCode = '' }) {
   const navigate = useNavigate()
-  const { byTier } = usePricing()
+  const { byTier, pricing } = usePricing(referralCode)
   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
   if (scan.fixPurchased) return null
 
@@ -54,6 +63,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
           </p>
         )}
+        <ReferralBadge pricing={pricing} />
         <div className="flex flex-wrap gap-2 mt-3">
           {hasCredit && (
             <Button onClick={onRedeemCredit} variant="secondary">
@@ -85,6 +95,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
         </p>
       )}
+      <ReferralBadge pricing={pricing} />
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary">
           Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />

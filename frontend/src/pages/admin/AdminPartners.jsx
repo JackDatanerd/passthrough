@@ -6,7 +6,7 @@ import Modal from '../../components/ui/Modal'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
 
-function fmtCents(cents, currency) {
+function fmtCents(cents, currency = 'USD') {
   return `${(cents / 100).toFixed(2)} ${currency}`
 }
 
@@ -31,9 +31,16 @@ function PayoutDetailsSummary({ partner }) {
   )
 }
 
+// amountCents defaults to the partner's pending commission balance
+// (computed server-side in adminListPartners) — admin normally just
+// confirms this number rather than typing it from scratch. Overriding it
+// is still allowed (partial payment, bonus, a payout with no ledger
+// backing it), see partners.controller.js's adminRecordPayout comment on
+// what happens to the ledger in that case.
 function RecordPayoutModal({ partner, onClose, onRecorded }) {
   const toast = useToast()
-  const [amount, setAmount] = useState('')
+  const prefill = partner.pendingCommissionCents > 0 ? (partner.pendingCommissionCents / 100).toFixed(2) : ''
+  const [amount, setAmount] = useState(prefill)
   const [note, setNote] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
@@ -72,11 +79,20 @@ function RecordPayoutModal({ partner, onClose, onRecorded }) {
           Only use this <strong>after</strong> you've actually sent the money via your bank
           or mobile money app. This just logs it and notifies {partner.name}.
         </p>
-        <div className="rounded-md bg-gray-50 p-3">
+        <div className="rounded-md bg-gray-50 p-3 flex flex-col gap-2">
           <PayoutDetailsSummary partner={partner} />
+          <div className="text-sm text-gray-600 border-t border-gray-200 pt-2">
+            Pending balance: <span className="font-semibold">{fmtCents(partner.pendingCommissionCents || 0)}</span>
+          </div>
         </div>
         <Input label="Amount sent (USD)" type="number" step="0.01" value={amount}
           onChange={e => setAmount(e.target.value)} placeholder="45.00" />
+        {partner.pendingCommissionCents > 0 && (
+          <p className="text-xs text-gray-400 -mt-2">
+            Recording this will mark all of {partner.name}'s outstanding commission as settled,
+            regardless of the exact amount entered above.
+          </p>
+        )}
         <Input label="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
           placeholder="e.g. September referrals" />
         {error && <p className="text-sm text-red-600">{error}</p>}
@@ -96,7 +112,6 @@ function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [referralCode, setReferralCode] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -105,7 +120,7 @@ function AddPartnerModal({ onClose, onCreated }) {
     if (!name || !email) return setError('Name and email are required.')
     setSaving(true)
     try {
-      await api.post('/partners', { name, email, referralCode: referralCode || undefined })
+      await api.post('/partners', { name, email })
       toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
       onCreated()
       onClose()
@@ -121,8 +136,6 @@ function AddPartnerModal({ onClose, onCreated }) {
       <div className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
-        <Input label="Referral code (optional)" value={referralCode}
-          onChange={e => setReferralCode(e.target.value)} placeholder="COACHNAME20" />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -133,11 +146,112 @@ function AddPartnerModal({ onClose, onCreated }) {
   )
 }
 
+// Referral-code pricing is entered in dollars per tier and converted to
+// cents on submit — leaving any tier blank means that tier simply isn't
+// discounted by this code (see referral.service.js: a tier absent from
+// tier_prices falls through to normal promo/standard pricing).
+function CreateReferralCodeModal({ partner, onClose, onCreated }) {
+  const toast = useToast()
+  const [code, setCode] = useState('')
+  const [fix, setFix] = useState('')
+  const [badge, setBadge] = useState('')
+  const [fixPlain, setFixPlain] = useState('')
+  const [usageLimit, setUsageLimit] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState('')
+
+  async function handleCreate() {
+    setError('')
+    if (!code) return setError('Code is required.')
+    const tierPrices = {}
+    if (fix)      tierPrices.FIX       = Math.round(Number(fix) * 100)
+    if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
+    if (fixPlain) tierPrices.FIX_PLAIN = Math.round(Number(fixPlain) * 100)
+    if (Object.keys(tierPrices).length === 0) return setError('Set at least one tier price.')
+
+    setSaving(true)
+    try {
+      await api.post(`/partners/${partner.id}/referral-codes`, {
+        code,
+        tierPrices,
+        usageLimit: usageLimit ? Number(usageLimit) : undefined
+      })
+      toast({ message: `Code ${code.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
+      onCreated()
+      onClose()
+    } catch (err) {
+      setError(err.response?.data?.message || 'Failed to create code.')
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`New referral code — ${partner.name}`}>
+      <div className="flex flex-col gap-4">
+        <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())}
+          placeholder="COACHNAME20" />
+        <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
+        <div className="grid grid-cols-3 gap-3">
+          <Input label="FIX ($)" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
+          <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
+          <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
+        </div>
+        <Input label="Usage limit (optional)" type="number" value={usageLimit}
+          onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleCreate} loading={saving}>Create & notify</Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
+function ReferralCodesList({ partner, onToggled }) {
+  const toast = useToast()
+
+  async function toggle(codeRow) {
+    try {
+      await api.patch(`/partners/referral-codes/${codeRow.id}`, { active: !codeRow.active })
+      onToggled()
+    } catch (_) {
+      toast({ message: 'Failed to update code.', type: 'error' })
+    }
+  }
+
+  if (!partner.referralCodes || partner.referralCodes.length === 0) {
+    return <span className="text-sm text-gray-400 italic">None yet</span>
+  }
+
+  return (
+    <ul className="flex flex-col gap-1">
+      {partner.referralCodes.map(code => (
+        <li key={code.id} className="text-sm flex items-center justify-between gap-2">
+          <span className="font-mono">
+            {code.code}
+            <span className="text-gray-400 ml-2">
+              {code.clicks || 0} clicks · {code.usesSoFar || 0} used
+            </span>
+          </span>
+          <button onClick={() => toggle(code)}
+            className={`text-xs px-2 py-0.5 rounded-full ${
+              code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+            {code.active ? 'Active' : 'Inactive'}
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 export default function AdminPartners() {
   const toast = useToast()
   const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
   const [payoutTarget, setPayoutTarget] = useState(null)
+  const [codeTarget, setCodeTarget] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
 
   async function load() {
@@ -185,22 +299,33 @@ export default function AdminPartners() {
                   <div>
                     <div className="font-semibold text-gray-900">{p.name}</div>
                     <div className="text-sm text-gray-500">{p.email}</div>
-                    {p.referralCode && (
-                      <div className="text-xs text-gray-400 mt-1">Code: {p.referralCode}</div>
-                    )}
                   </div>
-                  <div className="text-right">
-                    <div className="text-xs text-gray-400">Paid to date</div>
-                    <div className="font-semibold text-gray-900">{fmtCents(totalPaid, 'USD')}</div>
+                  <div className="flex gap-6 text-right">
+                    <div>
+                      <div className="text-xs text-gray-400">Pending</div>
+                      <div className={`font-semibold ${p.pendingCommissionCents > 0 ? 'text-amber-600' : 'text-gray-900'}`}>
+                        {fmtCents(p.pendingCommissionCents || 0)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-gray-400">Paid to date</div>
+                      <div className="font-semibold text-gray-900">{fmtCents(totalPaid)}</div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="mt-4 grid sm:grid-cols-2 gap-4">
+                <div className="mt-4 grid sm:grid-cols-3 gap-4">
                   <div>
                     <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
                       Payout details
                     </div>
                     <PayoutDetailsSummary partner={p} />
+                  </div>
+                  <div>
+                    <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
+                      Referral codes
+                    </div>
+                    <ReferralCodesList partner={p} onToggled={load} />
                   </div>
                   <div>
                     <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
@@ -222,9 +347,12 @@ export default function AdminPartners() {
                   </div>
                 </div>
 
-                <div className="mt-4 flex gap-2">
+                <div className="mt-4 flex gap-2 flex-wrap">
                   <Button size="sm" onClick={() => setPayoutTarget(p)}>
                     Record payout
+                  </Button>
+                  <Button size="sm" variant="secondary" onClick={() => setCodeTarget(p)}>
+                    New referral code
                   </Button>
                   <Button size="sm" variant="secondary" onClick={() => resendLink(p)}>
                     Resend payout-details link
@@ -241,6 +369,13 @@ export default function AdminPartners() {
           partner={payoutTarget}
           onClose={() => setPayoutTarget(null)}
           onRecorded={load}
+        />
+      )}
+      {codeTarget && (
+        <CreateReferralCodeModal
+          partner={codeTarget}
+          onClose={() => setCodeTarget(null)}
+          onCreated={load}
         />
       )}
       {showAdd && (
