@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '../ui/Button'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
@@ -16,16 +17,55 @@ function PriceTag({ tier, byTier }) {
   )
 }
 
-function ReferralBadge({ pricing }) {
-  if (!pricing?.referralApplied) return null
+// Two states: a code is already applied (show the confirmation + a way to
+// change it), or no code is applied yet (show the entry field). This is the
+// ONLY place a person can type a code by hand — a ?ref= link in the URL
+// pre-fills it via useReferralCapture, but plenty of real referral traffic
+// is a code heard on a podcast or read off a screenshot, not a clicked link.
+function ReferralCodeEntry({ referralCode, pricing, onApply }) {
+  const [value, setValue] = useState(referralCode || '')
+  const [editing, setEditing] = useState(!referralCode)
+
+  function handleApply() {
+    onApply(value)
+    setEditing(false)
+  }
+
+  if (referralCode && pricing?.referralApplied && !editing) {
+    return (
+      <p className="text-sm font-medium text-emerald-700 mb-3">
+        ✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}
+        <button type="button" onClick={() => setEditing(true)}
+          className="underline font-normal text-emerald-700/80 hover:text-emerald-900">
+          change
+        </button>
+      </p>
+    )
+  }
+
   return (
-    <p className="text-sm font-medium text-emerald-700 mb-2">
-      ✓ Referral discount applied
-    </p>
+    <div className="flex items-center gap-2 mb-3">
+      <input
+        type="text"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => e.key === 'Enter' && handleApply()}
+        placeholder="Have a referral code?"
+        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <button type="button" onClick={handleApply}
+        disabled={!value.trim()}
+        className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
+        Apply
+      </button>
+    </div>
   )
 }
 
-export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0, referralCode = '' }) {
+export default function FixBanner({
+  scan, onPay, onRedeemCredit, freeFixCredits = 0,
+  referralCode = '', onApplyReferralCode = () => {}
+}) {
   const navigate = useNavigate()
   const { byTier, pricing } = usePricing(referralCode)
   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
@@ -63,7 +103,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
           </p>
         )}
-        <ReferralBadge pricing={pricing} />
+        <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
         <div className="flex flex-wrap gap-2 mt-3">
           {hasCredit && (
             <Button onClick={onRedeemCredit} variant="secondary">
@@ -95,7 +135,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits 
           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
         </p>
       )}
-      <ReferralBadge pricing={pricing} />
+      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary">
           Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />

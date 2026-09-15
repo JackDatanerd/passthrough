@@ -221,6 +221,12 @@ function ReferralCodesList({ partner, onToggled }) {
     }
   }
 
+  function copyLink(codeRow) {
+    const url = `${window.location.origin}/?ref=${codeRow.code}`
+    navigator.clipboard.writeText(url)
+    toast({ message: 'Link copied.', type: 'success' })
+  }
+
   if (!partner.referralCodes || partner.referralCodes.length === 0) {
     return <span className="text-sm text-gray-400 italic">None yet</span>
   }
@@ -235,11 +241,16 @@ function ReferralCodesList({ partner, onToggled }) {
               {code.clicks || 0} clicks · {code.usesSoFar || 0} used
             </span>
           </span>
-          <button onClick={() => toggle(code)}
-            className={`text-xs px-2 py-0.5 rounded-full ${
-              code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-            {code.active ? 'Active' : 'Inactive'}
-          </button>
+          <span className="flex items-center gap-2">
+            <button onClick={() => copyLink(code)} className="text-xs text-blue-600 hover:underline">
+              Copy link
+            </button>
+            <button onClick={() => toggle(code)}
+              className={`text-xs px-2 py-0.5 rounded-full ${
+                code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+              {code.active ? 'Active' : 'Inactive'}
+            </button>
+          </span>
         </li>
       ))}
     </ul>

@@ -18,6 +18,34 @@ function StatCard({ label, value }) {
   )
 }
 
+// The link itself — built client-side from window.location.origin, since
+// this page is served from the same domain the link should point at. This
+// is the one thing that was missing entirely before: a code alone isn't
+// shareable, a URL is.
+function ShareLink({ code }) {
+  const [copied, setCopied] = useState(false)
+  const url = `${window.location.origin}/?ref=${code}`
+
+  function copy() {
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }
+
+  return (
+    <div className="flex items-center gap-2 mt-2">
+      <input readOnly value={url}
+        onFocus={e => e.target.select()}
+        className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
+      <button onClick={copy} type="button"
+        className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap">
+        {copied ? 'Copied ✓' : 'Copy link'}
+      </button>
+    </div>
+  )
+}
+
 function CodeCard({ code }) {
   const prices = Object.entries(code.tierPrices || {})
   return (
@@ -29,13 +57,19 @@ function CodeCard({ code }) {
           {code.active ? 'Active' : 'Inactive'}
         </span>
       </div>
-      <div className="text-sm text-gray-500 mt-2">
+      <ShareLink code={code.code} />
+      <div className="text-sm text-gray-500 mt-3">
         {prices.map(([tier, cents]) => `${tier}: $${(cents / 100).toFixed(0)}`).join(' · ')}
       </div>
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
       </div>
+      <p className="text-xs text-gray-400 mt-2">
+        Anyone who visits your link gets the discount automatically. They can also just tell
+        people the code <span className="font-mono">{code.code}</span> directly — there's a
+        "have a code?" box at checkout too.
+      </p>
     </div>
   )
 }

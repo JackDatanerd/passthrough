@@ -8,7 +8,7 @@ import Footer from '../components/layout/Footer'
 import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
 import FixBanner from '../components/scan/FixBanner'
-import { getStoredReferralCode } from '../hooks/useReferralCapture'
+import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import DiffView from '../components/scan/DiffView'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
@@ -50,6 +50,11 @@ export default function ScanResult() {
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const [pollError,    setPollError   ] = useState('')
+  // Initialized from storage (auto-captured ?ref= link), but this is now
+  // real state — not just a read at render time — so a code typed by hand
+  // in FixBanner's entry field (see handleApplyReferralCode below) updates
+  // the price shown immediately, not just on next page load.
+  const [referralCode, setReferralCode] = useState(getStoredReferralCode())
   const pollRef     = useRef(null)
   // Plain ref, not state — fetchScan is captured once by the setInterval
   // call in the mount effect below, so a `scan` state read inside it would
@@ -126,11 +131,19 @@ export default function ScanResult() {
     return () => clearInterval(pollRef.current)
   }, [id])
 
+  // Storage stays the source of truth ACROSS page loads/navigation;
+  // this state is the source of truth WITHIN this page's lifetime, so a
+  // manually-typed code (FixBanner's entry field) is reflected instantly
+  // without needing a reload to re-read storage.
+  function handleApplyReferralCode(code) {
+    setStoredReferralCode(code)
+    setReferralCode(getStoredReferralCode())  // re-read: normalizes casing/trim, empty string if cleared
+  }
+
   async function handlePay(fixTier) {
     if (!user) return navigate(`/register`)
     setPayLoading(true); setPayError('')
     try {
-      const referralCode = getStoredReferralCode()
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined
       })
@@ -489,7 +502,7 @@ export default function ScanResult() {
                 {payError && (
                   <p className="text-sm text-red-600">{payError}</p>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={getStoredReferralCode()} />
+                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} />
               </>
             )}
 

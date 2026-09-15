@@ -32,3 +32,13 @@ export function useReferralCapture() {
 export function getStoredReferralCode() {
   return localStorage.getItem(STORAGE_KEY) || ''
 }
+
+// Used by the manual "have a code?" entry field at checkout (FixBanner) —
+// same storage key as automatic URL capture above, so a code entered by
+// hand behaves identically to one picked up from a ?ref= link for the rest
+// of the session (survives navigation, applies at payment time).
+export function setStoredReferralCode(code) {
+  const trimmed = (code || '').trim().toUpperCase()
+  if (trimmed) localStorage.setItem(STORAGE_KEY, trimmed)
+  else localStorage.removeItem(STORAGE_KEY)
+}
