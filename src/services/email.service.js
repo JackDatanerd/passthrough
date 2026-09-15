@@ -79,6 +79,27 @@ async function sendScanPass(env, supabase, email, name, score) {
   })
 }
 
+// ── Partner payouts (manual) ────────────────────────────────────────────────
+
+async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
+  return send(env, supabase, email, 'Set up your Passthrough payout details', 'partner_payout_details_request', {
+    NAME:       name,
+    PAYOUT_URL: payoutUrl
+  })
+}
+
+// amountCents/currency formatted here (not left to the caller) so every
+// payout email uses the same "$45.00"-style formatting regardless of who
+// calls this — currently only partners.controller.js's adminRecordPayout,
+// but this shouldn't silently drift if a second caller is added later.
+async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
+  const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
+  return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
+    NAME:   name,
+    AMOUNT: amount
+  })
+}
+
 async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
     NAME:              name,

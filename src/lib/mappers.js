@@ -144,7 +144,48 @@ const PAYMENT_FIELD_MAP = {
   paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id'
 }
 
+// partners/payouts (see supabase/migrations/0011_partners_and_payouts.sql).
+// payout_details_token is intentionally NEVER included here — it's a bearer
+// secret (whoever has it can view/edit that partner's payout details), so
+// it must never round-trip into a JSON response. The only place it's ever
+// read is directly off the DB row inside partners.controller.js, right
+// before it's embedded in the emailed link.
+function partnerRowToCamel(row) {
+  if (!row) return row
+  const { payout_details_token, ...rest } = row
+  return {
+    id:                        rest.id,
+    name:                      rest.name,
+    email:                     rest.email,
+    referralCode:              rest.referral_code,
+    status:                    rest.status,
+    payoutMethod:              rest.payout_method,
+    payoutDetails:             rest.payout_details,
+    payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
+    payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
+    createdAt:                 rest.created_at,
+    updatedAt:                 rest.updated_at
+  }
+}
+
+function payoutRowToCamel(row) {
+  if (!row) return row
+  return {
+    id:                    row.id,
+    partnerId:             row.partner_id,
+    amountCents:           row.amount_cents,
+    currency:              row.currency,
+    payoutMethod:          row.payout_method,
+    payoutDetailsSnapshot: row.payout_details_snapshot,
+    note:                  row.note,
+    status:                row.status,
+    paidAt:                row.paid_at,
+    createdAt:             row.created_at
+  }
+}
+
 module.exports = {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
+  partnerRowToCamel, payoutRowToCamel,
   USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
 }
