@@ -1,0 +1,1669 @@
+From 9c80bb245df4c75697af70938d0d583fe391793e Mon Sep 17 00:00:00 2001
+From: Jack <jack@saltern.studio>
+Date: Tue, 15 Sep 2026 09:58:47 +0000
+Subject: [PATCH] Add referral-code pricing, commission ledger, and partner
+ dashboard
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- referral_codes + commission_ledger tables, partners.commission_rate
+  (supabase/migrations/0012_referral_pricing_and_commission_ledger.sql)
+- services/referral.service.js: single source of truth for referral
+  pricing, used by both the /api/pricing quote and the /api/payments/
+  initialize charge, so a shown price and a charged price can never
+  drift — 8 passing unit tests covering invalid/expired/exhausted/
+  wrong-tier codes all falling through safely
+- payments.controller.js + webhooks.controller.js: record a commission-
+  ledger entry exactly once, gated by the existing atomic idempotency
+  check that already guards fulfillment
+- partners.controller.js: referral-code create/deactivate, partner
+  dashboard endpoint (clicks/conversions/pending/paid), click tracking,
+  and payout recording that now auto-settles the commission ledger
+- fixed a bug from the previous commit: sendPartnerPayoutDetailsRequest
+  and sendPayoutSent were defined but never exported from
+  email.service.js — would have thrown at runtime on first use
+- frontend: referral-code capture (?ref=CODE) persisted and applied
+  through checkout (FixBanner/ScanResult/usePricing), a partner-facing
+  /partner/dashboard stats page, and admin UI for creating referral
+  codes and recording payouts prefilled from the pending ledger balance
+---
+ frontend/src/App.jsx                          |  10 +-
+ frontend/src/components/scan/FixBanner.jsx    |  15 +-
+ frontend/src/hooks/usePricing.js              |  56 +++--
+ frontend/src/hooks/useReferralCapture.js      |  34 +++
+ frontend/src/pages/PartnerDashboard.jsx       | 121 ++++++++++
+ frontend/src/pages/PartnerPayoutDetails.jsx   |   7 +-
+ frontend/src/pages/ScanResult.jsx             |   8 +-
+ frontend/src/pages/admin/AdminPartners.jsx    | 165 +++++++++++--
+ src/controllers/partners.controller.js        | 223 +++++++++++++++---
+ src/controllers/payments.controller.js        |  26 +-
+ src/controllers/pricing.controller.js         |  22 +-
+ src/controllers/scan.controller.js            |  20 +-
+ src/controllers/webhooks.controller.js        |   7 +
+ src/lib/mappers.js                            |  36 ++-
+ src/routes/partners.routes.js                 |  22 +-
+ src/services/email.service.js                 |  11 +-
+ src/services/referral.service.js              | 106 +++++++++
+ src/templates/emails.js                       |   1 +
+ ...referral_pricing_and_commission_ledger.sql |  79 +++++++
+ tests/referral.service.test.js                |  87 +++++++
+ 20 files changed, 955 insertions(+), 101 deletions(-)
+ create mode 100644 frontend/src/hooks/useReferralCapture.js
+ create mode 100644 frontend/src/pages/PartnerDashboard.jsx
+ create mode 100644 src/services/referral.service.js
+ create mode 100644 supabase/migrations/0012_referral_pricing_and_commission_ledger.sql
+ create mode 100644 tests/referral.service.test.js
+
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index 0587fe0..39da8c8 100644
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -3,6 +3,7 @@ import { AuthProvider } from './context/AuthContext'
+ import { useAuth } from './hooks/useAuth'
+ import { ToastProvider } from './components/ui/Toast'
+ import useScrollToHash from './hooks/useScrollToHash'
++import { useReferralCapture } from './hooks/useReferralCapture'
+ 
+ // Pages
+ import Home           from './pages/Home'
+@@ -20,6 +21,7 @@ import PaymentSuccess from './pages/PaymentSuccess'
+ import DashboardIndex from './pages/dashboard/Index'
+ import Settings       from './pages/dashboard/Settings'
+ import PartnerPayoutDetails from './pages/PartnerPayoutDetails'
++import PartnerDashboard     from './pages/PartnerDashboard'
+ import AdminPartners  from './pages/admin/AdminPartners'
+ 
+ // ProtectedRoute — redirects to /login if no token
+@@ -44,8 +46,11 @@ function AdminRoute({ children }) {
+ 
+ // Needs to render inside BrowserRouter (useLocation requires Router
+ // context) — that's the only reason this isn't just called from App().
+-function ScrollToHash() {
++// Referral capture lives here too, for the same reason: it also needs
++// useLocation to see the current ?ref= query string on every navigation.
++function RouteEffects() {
+   useScrollToHash()
++  useReferralCapture()
+   return null
+ }
+ 
+@@ -54,7 +59,7 @@ export default function App() {
+     <AuthProvider>
+       <ToastProvider>
+         <BrowserRouter>
+-          <ScrollToHash />
++          <RouteEffects />
+           <Routes>
+             {/* Public routes */}
+             <Route path="/"                element={<Home />} />
+@@ -70,6 +75,7 @@ export default function App() {
+             <Route path="/privacy"         element={<Privacy />} />
+             <Route path="/payment/success" element={<PaymentSuccess />} />
+             <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
++            <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
+ 
+             {/* Protected routes — redirect to /login if no token */}
+             <Route path="/dashboard"
+diff --git a/frontend/src/components/scan/FixBanner.jsx b/frontend/src/components/scan/FixBanner.jsx
+index 87d53b9..3787262 100644
+--- a/frontend/src/components/scan/FixBanner.jsx
++++ b/frontend/src/components/scan/FixBanner.jsx
+@@ -16,9 +16,18 @@ function PriceTag({ tier, byTier }) {
+   )
+ }
+ 
+-export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0 }) {
++function ReferralBadge({ pricing }) {
++  if (!pricing?.referralApplied) return null
++  return (
++    <p className="text-sm font-medium text-emerald-700 mb-2">
++      ✓ Referral discount applied
++    </p>
++  )
++}
++
++export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0, referralCode = '' }) {
+   const navigate = useNavigate()
+-  const { byTier } = usePricing()
++  const { byTier, pricing } = usePricing(referralCode)
+   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
+   if (scan.fixPurchased) return null
+ 
+@@ -54,6 +63,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits
+             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
+           </p>
+         )}
++        <ReferralBadge pricing={pricing} />
+         <div className="flex flex-wrap gap-2 mt-3">
+           {hasCredit && (
+             <Button onClick={onRedeemCredit} variant="secondary">
+@@ -85,6 +95,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits
+           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
+         </p>
+       )}
++      <ReferralBadge pricing={pricing} />
+       <div className="flex flex-col sm:flex-row gap-3">
+         <Button onClick={() => onPay('BADGE')} variant="secondary">
+           Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />
+diff --git a/frontend/src/hooks/usePricing.js b/frontend/src/hooks/usePricing.js
+index d02caed..2f3b725 100644
+--- a/frontend/src/hooks/usePricing.js
++++ b/frontend/src/hooks/usePricing.js
+@@ -1,53 +1,61 @@
+ import { useEffect, useState } from 'react'
+ import api from '../lib/api'
+ 
+-// Fetches /api/pricing once and shares it across every component that calls
+-// this hook. Backend is the single source of truth for amount/originalAmount/
+-// promoActive/promoEndsAt — nothing here invents a price or a deadline.
++// Fetches /api/pricing once per referral-code key and shares it across every
++// component using that same key. Backend is the single source of truth for
++// amount/originalAmount/promoActive/promoEndsAt/referralApplied — nothing
++// here invents a price or a deadline.
+ //
+ // STANDARD_PRICES is the one exception, and deliberately so: it's the
+ // last-resort fallback if the fetch fails (network blip, brief deploy
+ // mismatch, etc). It mirrors constants.js's PRICE_FIX/PRICE_BADGE/
+-// PRICE_FIX_PLAIN — the non-promo prices — so a failed fetch degrades to
+-// "correct standard price, no anchor/slash shown" rather than a bare
+-// placeholder that makes the page look broken. It never invents a promo
+-// price, since this is the one path where the frontend can't confirm what
+-// the backend would actually charge.
++// PRICE_FIX_PLAIN — the non-promo, non-referral prices — so a failed fetch
++// degrades to "correct standard price, no anchor/discount shown" rather
++// than a bare placeholder that makes the page look broken.
+ export const STANDARD_PRICES = { FIX: 4900, BADGE: 3900, FIX_PLAIN: 3900 }
+ 
+-let cache = null
+-let inflight = null
++// Keyed by referral code ('' = no code) — a code changes what /api/pricing
++// returns, so the no-code cache and a per-code cache can't share one slot.
++const cacheByKey = {}
++const inflightByKey = {}
+ let failedOnce = false
+ 
+-function fetchPricing() {
+-  if (cache) return Promise.resolve(cache)
+-  if (!inflight) {
+-    inflight = api.get('/pricing').then(res => {
+-      cache = res.data.data
++function fetchPricing(key) {
++  if (cacheByKey[key]) return Promise.resolve(cacheByKey[key])
++  if (!inflightByKey[key]) {
++    const qs = key ? `?ref=${encodeURIComponent(key)}` : ''
++    inflightByKey[key] = api.get(`/pricing${qs}`).then(res => {
++      cacheByKey[key] = res.data.data
+       failedOnce = false
+-      return cache
++      return cacheByKey[key]
+     }).catch(() => {
+       failedOnce = true
+-      inflight = null   // don't stick permanently — next mount retries
++      inflightByKey[key] = null   // don't stick permanently — next mount retries
+       return null
+     })
+   }
+-  return inflight
++  return inflightByKey[key]
+ }
+ 
+-export function usePricing() {
+-  const [pricing, setPricing] = useState(cache)
++// usePricing() — unchanged behavior for existing callers (e.g. Pricing.jsx).
++// usePricing(referralCode) — resolves discounted pricing for that code;
++// falls back to standard/promo pricing automatically if the code turns out
++// to be invalid (that's the backend's job, not this hook's).
++export function usePricing(referralCode = '') {
++  const key = referralCode ? referralCode.trim().toUpperCase() : ''
++  const [pricing, setPricing] = useState(cacheByKey[key] || null)
+ 
+   useEffect(() => {
+-    if (!cache) fetchPricing().then(setPricing)
+-  }, [])
++    if (cacheByKey[key]) { setPricing(cacheByKey[key]); return }
++    fetchPricing(key).then(setPricing)
++  }, [key])
+ 
+   const byTier = tier => {
+     const live = pricing?.tiers.find(t => t.tier === tier)
+     if (live) return live
+     // Fetch hasn't resolved yet, or failed — fall back to the correct
+-    // standard (non-promo) price rather than showing nothing.
+-    return { tier, amount: STANDARD_PRICES[tier], originalAmount: STANDARD_PRICES[tier] }
++    // standard (non-promo, non-referral) price rather than showing nothing.
++    return { tier, amount: STANDARD_PRICES[tier], originalAmount: STANDARD_PRICES[tier], referralApplied: false }
+   }
+ 
+   return { pricing, byTier, pricingFailed: failedOnce }
+diff --git a/frontend/src/hooks/useReferralCapture.js b/frontend/src/hooks/useReferralCapture.js
+new file mode 100644
+index 0000000..ef7f78c
+--- /dev/null
++++ b/frontend/src/hooks/useReferralCapture.js
+@@ -0,0 +1,34 @@
++import { useEffect } from 'react'
++import { useLocation } from 'react-router-dom'
++import api from '../lib/api'
++
++const STORAGE_KEY = 'passthrough_referral_code'
++
++// Mounted once, globally (see App.jsx), so a ?ref=CODE landing on ANY page
++// — not just the homepage — gets captured. Runs on every route change
++// (useLocation), but only re-fires the click-tracking call when the code
++// actually changes, so internal navigation with the same stale query string
++// doesn't spam the click counter.
++export function useReferralCapture() {
++  const location = useLocation()
++
++  useEffect(() => {
++    const params = new URLSearchParams(location.search)
++    const ref = params.get('ref')
++    if (!ref) return
++
++    const code = ref.trim().toUpperCase()
++    const previous = localStorage.getItem(STORAGE_KEY)
++    localStorage.setItem(STORAGE_KEY, code)
++
++    if (previous !== code) {
++      // Fire-and-forget — a failed click log should never block navigation
++      // or surface an error to the visitor.
++      api.post('/partners/track-click', { code }).catch(() => {})
++    }
++  }, [location.search])
++}
++
++export function getStoredReferralCode() {
++  return localStorage.getItem(STORAGE_KEY) || ''
++}
+diff --git a/frontend/src/pages/PartnerDashboard.jsx b/frontend/src/pages/PartnerDashboard.jsx
+new file mode 100644
+index 0000000..d5de219
+--- /dev/null
++++ b/frontend/src/pages/PartnerDashboard.jsx
+@@ -0,0 +1,121 @@
++import { useState, useEffect } from 'react'
++import { Link, useSearchParams } from 'react-router-dom'
++import api from '../lib/api'
++import Spinner from '../components/ui/Spinner'
++import Navbar from '../components/layout/Navbar'
++import Footer from '../components/layout/Footer'
++
++function fmtCents(cents, currency = 'USD') {
++  return `$${(cents / 100).toFixed(2)} ${currency === 'USD' ? '' : currency}`.trim()
++}
++
++function StatCard({ label, value }) {
++  return (
++    <div className="rounded-lg border border-gray-200 bg-white p-4">
++      <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">{label}</div>
++      <div className="text-2xl font-bold text-gray-900">{value}</div>
++    </div>
++  )
++}
++
++function CodeCard({ code }) {
++  const prices = Object.entries(code.tierPrices || {})
++  return (
++    <div className="border border-gray-200 rounded-lg p-4 bg-white">
++      <div className="flex items-center justify-between flex-wrap gap-2">
++        <div className="font-mono text-lg font-bold text-blue-700">{code.code}</div>
++        <span className={`text-xs px-2 py-0.5 rounded-full ${
++          code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
++          {code.active ? 'Active' : 'Inactive'}
++        </span>
++      </div>
++      <div className="text-sm text-gray-500 mt-2">
++        {prices.map(([tier, cents]) => `${tier}: $${(cents / 100).toFixed(0)}`).join(' · ')}
++      </div>
++      <div className="text-sm text-gray-500 mt-1">
++        {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
++        {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
++      </div>
++    </div>
++  )
++}
++
++export default function PartnerDashboard() {
++  const [params] = useSearchParams()
++  const token = params.get('token')
++
++  const [loading, setLoading] = useState(true)
++  const [invalid, setInvalid] = useState(false)
++  const [data, setData] = useState(null)
++
++  useEffect(() => {
++    if (!token) { setInvalid(true); setLoading(false); return }
++    api.get(`/partners/dashboard?token=${encodeURIComponent(token)}`)
++      .then(res => setData(res.data.data))
++      .catch(() => setInvalid(true))
++      .finally(() => setLoading(false))
++  }, [token])
++
++  return (
++    <div className="min-h-screen flex flex-col bg-gray-50">
++      <Navbar />
++      <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-10">
++        {loading ? (
++          <div className="flex justify-center py-16"><Spinner /></div>
++        ) : invalid ? (
++          <div className="bg-white rounded-lg border border-gray-200 p-8">
++            <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
++            <p className="text-sm text-gray-600">
++              This dashboard link is invalid or has expired. Ask us to resend it.
++            </p>
++          </div>
++        ) : (
++          <>
++            <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
++              <h1 className="text-2xl font-bold text-gray-900">
++                {data.name}'s Passthrough dashboard
++              </h1>
++              <Link to={`/partner/payout-details?token=${token}`}
++                className="text-sm text-blue-600 hover:underline">
++                Update payout details →
++              </Link>
++            </div>
++
++            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
++              <StatCard label="Clicks" value={data.stats.totalClicks} />
++              <StatCard label="Conversions" value={data.stats.totalConversions} />
++              <StatCard label="Pending" value={fmtCents(data.stats.pendingCents)} />
++              <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents)} />
++            </div>
++
++            <h2 className="text-lg font-semibold text-gray-900 mb-3">Your codes</h2>
++            {data.referralCodes.length === 0 ? (
++              <p className="text-sm text-gray-500 mb-8">
++                No referral code yet — we'll email you as soon as one is set up.
++              </p>
++            ) : (
++              <div className="flex flex-col gap-3 mb-8">
++                {data.referralCodes.map(code => <CodeCard key={code.id} code={code} />)}
++              </div>
++            )}
++
++            <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
++            {data.payouts.length === 0 ? (
++              <p className="text-sm text-gray-500">No payouts yet.</p>
++            ) : (
++              <ul className="flex flex-col gap-2">
++                {data.payouts.map(p => (
++                  <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex justify-between">
++                    <span>{new Date(p.paidAt).toLocaleDateString()}{p.note ? ` — ${p.note}` : ''}</span>
++                    <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
++                  </li>
++                ))}
++              </ul>
++            )}
++          </>
++        )}
++      </main>
++      <Footer />
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/PartnerPayoutDetails.jsx b/frontend/src/pages/PartnerPayoutDetails.jsx
+index a091a2d..f575c51 100644
+--- a/frontend/src/pages/PartnerPayoutDetails.jsx
++++ b/frontend/src/pages/PartnerPayoutDetails.jsx
+@@ -1,5 +1,5 @@
+ import { useState, useEffect } from 'react'
+-import { useSearchParams } from 'react-router-dom'
++import { useSearchParams, Link } from 'react-router-dom'
+ import api from '../lib/api'
+ import Button from '../components/ui/Button'
+ import Input from '../components/ui/Input'
+@@ -89,10 +89,13 @@ export default function PartnerPayoutDetails() {
+           ) : saved ? (
+             <div>
+               <h1 className="text-xl font-bold text-gray-900 mb-2">Details saved ✓</h1>
+-              <p className="text-sm text-gray-600">
++              <p className="text-sm text-gray-600 mb-4">
+                 Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
+                 You can revisit this link anytime to update them.
+               </p>
++              <Link to={`/partner/dashboard?token=${token}`} className="text-sm text-blue-600 hover:underline">
++                View your dashboard →
++              </Link>
+             </div>
+           ) : (
+             <>
+diff --git a/frontend/src/pages/ScanResult.jsx b/frontend/src/pages/ScanResult.jsx
+index 48d0ebe..ea4f0b0 100644
+--- a/frontend/src/pages/ScanResult.jsx
++++ b/frontend/src/pages/ScanResult.jsx
+@@ -8,6 +8,7 @@ import Footer from '../components/layout/Footer'
+ import ScoreGauge from '../components/scan/ScoreGauge'
+ import CategoryScores from '../components/scan/CategoryScores'
+ import FixBanner from '../components/scan/FixBanner'
++import { getStoredReferralCode } from '../hooks/useReferralCapture'
+ import DiffView from '../components/scan/DiffView'
+ import QuantificationPrompts from '../components/scan/QuantificationPrompts'
+ import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
+@@ -129,7 +130,10 @@ export default function ScanResult() {
+     if (!user) return navigate(`/register`)
+     setPayLoading(true); setPayError('')
+     try {
+-      const res = await api.post('/payments/initialize', { scanId: id, fixTier })
++      const referralCode = getStoredReferralCode()
++      const res = await api.post('/payments/initialize', {
++        scanId: id, fixTier, referralCode: referralCode || undefined
++      })
+       const { access_code, reference } = res.data.data
+ 
+       const popup = new PaystackPop()
+@@ -485,7 +489,7 @@ export default function ScanResult() {
+                 {payError && (
+                   <p className="text-sm text-red-600">{payError}</p>
+                 )}
+-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} />
++                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={getStoredReferralCode()} />
+               </>
+             )}
+ 
+diff --git a/frontend/src/pages/admin/AdminPartners.jsx b/frontend/src/pages/admin/AdminPartners.jsx
+index 5127d37..b8b393e 100644
+--- a/frontend/src/pages/admin/AdminPartners.jsx
++++ b/frontend/src/pages/admin/AdminPartners.jsx
+@@ -6,7 +6,7 @@ import Modal from '../../components/ui/Modal'
+ import Spinner from '../../components/ui/Spinner'
+ import { useToast } from '../../components/ui/Toast'
+ 
+-function fmtCents(cents, currency) {
++function fmtCents(cents, currency = 'USD') {
+   return `${(cents / 100).toFixed(2)} ${currency}`
+ }
+ 
+@@ -31,9 +31,16 @@ function PayoutDetailsSummary({ partner }) {
+   )
+ }
+ 
++// amountCents defaults to the partner's pending commission balance
++// (computed server-side in adminListPartners) — admin normally just
++// confirms this number rather than typing it from scratch. Overriding it
++// is still allowed (partial payment, bonus, a payout with no ledger
++// backing it), see partners.controller.js's adminRecordPayout comment on
++// what happens to the ledger in that case.
+ function RecordPayoutModal({ partner, onClose, onRecorded }) {
+   const toast = useToast()
+-  const [amount, setAmount] = useState('')
++  const prefill = partner.pendingCommissionCents > 0 ? (partner.pendingCommissionCents / 100).toFixed(2) : ''
++  const [amount, setAmount] = useState(prefill)
+   const [note, setNote] = useState('')
+   const [saving, setSaving] = useState(false)
+   const [error, setError] = useState('')
+@@ -72,11 +79,20 @@ function RecordPayoutModal({ partner, onClose, onRecorded }) {
+           Only use this <strong>after</strong> you've actually sent the money via your bank
+           or mobile money app. This just logs it and notifies {partner.name}.
+         </p>
+-        <div className="rounded-md bg-gray-50 p-3">
++        <div className="rounded-md bg-gray-50 p-3 flex flex-col gap-2">
+           <PayoutDetailsSummary partner={partner} />
++          <div className="text-sm text-gray-600 border-t border-gray-200 pt-2">
++            Pending balance: <span className="font-semibold">{fmtCents(partner.pendingCommissionCents || 0)}</span>
++          </div>
+         </div>
+         <Input label="Amount sent (USD)" type="number" step="0.01" value={amount}
+           onChange={e => setAmount(e.target.value)} placeholder="45.00" />
++        {partner.pendingCommissionCents > 0 && (
++          <p className="text-xs text-gray-400 -mt-2">
++            Recording this will mark all of {partner.name}'s outstanding commission as settled,
++            regardless of the exact amount entered above.
++          </p>
++        )}
+         <Input label="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
+           placeholder="e.g. September referrals" />
+         {error && <p className="text-sm text-red-600">{error}</p>}
+@@ -96,7 +112,6 @@ function AddPartnerModal({ onClose, onCreated }) {
+   const toast = useToast()
+   const [name, setName] = useState('')
+   const [email, setEmail] = useState('')
+-  const [referralCode, setReferralCode] = useState('')
+   const [saving, setSaving] = useState(false)
+   const [error, setError] = useState('')
+ 
+@@ -105,7 +120,7 @@ function AddPartnerModal({ onClose, onCreated }) {
+     if (!name || !email) return setError('Name and email are required.')
+     setSaving(true)
+     try {
+-      await api.post('/partners', { name, email, referralCode: referralCode || undefined })
++      await api.post('/partners', { name, email })
+       toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
+       onCreated()
+       onClose()
+@@ -121,8 +136,6 @@ function AddPartnerModal({ onClose, onCreated }) {
+       <div className="flex flex-col gap-4">
+         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
+         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+-        <Input label="Referral code (optional)" value={referralCode}
+-          onChange={e => setReferralCode(e.target.value)} placeholder="COACHNAME20" />
+         {error && <p className="text-sm text-red-600">{error}</p>}
+         <div className="flex gap-2 justify-end">
+           <Button variant="secondary" onClick={onClose}>Cancel</Button>
+@@ -133,11 +146,112 @@ function AddPartnerModal({ onClose, onCreated }) {
+   )
+ }
+ 
++// Referral-code pricing is entered in dollars per tier and converted to
++// cents on submit — leaving any tier blank means that tier simply isn't
++// discounted by this code (see referral.service.js: a tier absent from
++// tier_prices falls through to normal promo/standard pricing).
++function CreateReferralCodeModal({ partner, onClose, onCreated }) {
++  const toast = useToast()
++  const [code, setCode] = useState('')
++  const [fix, setFix] = useState('')
++  const [badge, setBadge] = useState('')
++  const [fixPlain, setFixPlain] = useState('')
++  const [usageLimit, setUsageLimit] = useState('')
++  const [saving, setSaving] = useState(false)
++  const [error, setError] = useState('')
++
++  async function handleCreate() {
++    setError('')
++    if (!code) return setError('Code is required.')
++    const tierPrices = {}
++    if (fix)      tierPrices.FIX       = Math.round(Number(fix) * 100)
++    if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
++    if (fixPlain) tierPrices.FIX_PLAIN = Math.round(Number(fixPlain) * 100)
++    if (Object.keys(tierPrices).length === 0) return setError('Set at least one tier price.')
++
++    setSaving(true)
++    try {
++      await api.post(`/partners/${partner.id}/referral-codes`, {
++        code,
++        tierPrices,
++        usageLimit: usageLimit ? Number(usageLimit) : undefined
++      })
++      toast({ message: `Code ${code.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
++      onCreated()
++      onClose()
++    } catch (err) {
++      setError(err.response?.data?.message || 'Failed to create code.')
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  return (
++    <Modal open onClose={onClose} title={`New referral code — ${partner.name}`}>
++      <div className="flex flex-col gap-4">
++        <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())}
++          placeholder="COACHNAME20" />
++        <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
++        <div className="grid grid-cols-3 gap-3">
++          <Input label="FIX ($)" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
++          <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
++          <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
++        </div>
++        <Input label="Usage limit (optional)" type="number" value={usageLimit}
++          onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
++        {error && <p className="text-sm text-red-600">{error}</p>}
++        <div className="flex gap-2 justify-end">
++          <Button variant="secondary" onClick={onClose}>Cancel</Button>
++          <Button onClick={handleCreate} loading={saving}>Create & notify</Button>
++        </div>
++      </div>
++    </Modal>
++  )
++}
++
++function ReferralCodesList({ partner, onToggled }) {
++  const toast = useToast()
++
++  async function toggle(codeRow) {
++    try {
++      await api.patch(`/partners/referral-codes/${codeRow.id}`, { active: !codeRow.active })
++      onToggled()
++    } catch (_) {
++      toast({ message: 'Failed to update code.', type: 'error' })
++    }
++  }
++
++  if (!partner.referralCodes || partner.referralCodes.length === 0) {
++    return <span className="text-sm text-gray-400 italic">None yet</span>
++  }
++
++  return (
++    <ul className="flex flex-col gap-1">
++      {partner.referralCodes.map(code => (
++        <li key={code.id} className="text-sm flex items-center justify-between gap-2">
++          <span className="font-mono">
++            {code.code}
++            <span className="text-gray-400 ml-2">
++              {code.clicks || 0} clicks · {code.usesSoFar || 0} used
++            </span>
++          </span>
++          <button onClick={() => toggle(code)}
++            className={`text-xs px-2 py-0.5 rounded-full ${
++              code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
++            {code.active ? 'Active' : 'Inactive'}
++          </button>
++        </li>
++      ))}
++    </ul>
++  )
++}
++
+ export default function AdminPartners() {
+   const toast = useToast()
+   const [partners, setPartners] = useState([])
+   const [loading, setLoading] = useState(true)
+   const [payoutTarget, setPayoutTarget] = useState(null)
++  const [codeTarget, setCodeTarget] = useState(null)
+   const [showAdd, setShowAdd] = useState(false)
+ 
+   async function load() {
+@@ -185,23 +299,34 @@ export default function AdminPartners() {
+                   <div>
+                     <div className="font-semibold text-gray-900">{p.name}</div>
+                     <div className="text-sm text-gray-500">{p.email}</div>
+-                    {p.referralCode && (
+-                      <div className="text-xs text-gray-400 mt-1">Code: {p.referralCode}</div>
+-                    )}
+                   </div>
+-                  <div className="text-right">
+-                    <div className="text-xs text-gray-400">Paid to date</div>
+-                    <div className="font-semibold text-gray-900">{fmtCents(totalPaid, 'USD')}</div>
++                  <div className="flex gap-6 text-right">
++                    <div>
++                      <div className="text-xs text-gray-400">Pending</div>
++                      <div className={`font-semibold ${p.pendingCommissionCents > 0 ? 'text-amber-600' : 'text-gray-900'}`}>
++                        {fmtCents(p.pendingCommissionCents || 0)}
++                      </div>
++                    </div>
++                    <div>
++                      <div className="text-xs text-gray-400">Paid to date</div>
++                      <div className="font-semibold text-gray-900">{fmtCents(totalPaid)}</div>
++                    </div>
+                   </div>
+                 </div>
+ 
+-                <div className="mt-4 grid sm:grid-cols-2 gap-4">
++                <div className="mt-4 grid sm:grid-cols-3 gap-4">
+                   <div>
+                     <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
+                       Payout details
+                     </div>
+                     <PayoutDetailsSummary partner={p} />
+                   </div>
++                  <div>
++                    <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
++                      Referral codes
++                    </div>
++                    <ReferralCodesList partner={p} onToggled={load} />
++                  </div>
+                   <div>
+                     <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
+                       Payout history
+@@ -222,10 +347,13 @@ export default function AdminPartners() {
+                   </div>
+                 </div>
+ 
+-                <div className="mt-4 flex gap-2">
++                <div className="mt-4 flex gap-2 flex-wrap">
+                   <Button size="sm" onClick={() => setPayoutTarget(p)}>
+                     Record payout
+                   </Button>
++                  <Button size="sm" variant="secondary" onClick={() => setCodeTarget(p)}>
++                    New referral code
++                  </Button>
+                   <Button size="sm" variant="secondary" onClick={() => resendLink(p)}>
+                     Resend payout-details link
+                   </Button>
+@@ -243,6 +371,13 @@ export default function AdminPartners() {
+           onRecorded={load}
+         />
+       )}
++      {codeTarget && (
++        <CreateReferralCodeModal
++          partner={codeTarget}
++          onClose={() => setCodeTarget(null)}
++          onCreated={load}
++        />
++      )}
+       {showAdd && (
+         <AddPartnerModal onClose={() => setShowAdd(false)} onCreated={load} />
+       )}
+diff --git a/src/controllers/partners.controller.js b/src/controllers/partners.controller.js
+index 10c7726..b6b1528 100644
+--- a/src/controllers/partners.controller.js
++++ b/src/controllers/partners.controller.js
+@@ -1,22 +1,31 @@
+-// Manual-payout partner tracking. No automated disbursement — an admin
+-// sends money themselves outside this system, then records what/where via
+-// adminRecordPayout, which stamps a PAID row and emails the partner.
++// Manual-payout partner tracking + referral-code commission ledger.
+ //
+-// Two audiences hit this controller:
++// Three audiences hit this controller:
+ //   - The ADMIN (Jack) — gated by middleware/adminOnly.js.
+-//   - The PARTNER — no login system for them yet; they're identified by a
+-//     long random token mailed to them (payout_details_token), passed as
+-//     ?token=... on the two public endpoints below.
++//   - The PARTNER — no login system for them yet; identified by a long
++//     random token mailed to them (payout_details_token), passed as
++//     ?token=... on every public endpoint below. The same token gates both
++//     their payout-details form and their stats dashboard.
++//   - ANYONE (public, unauthenticated) — trackClick, fired by the frontend
++//     whenever a ?ref=CODE link is visited. No sensitive data involved,
++//     just a counter increment.
+ 
+ const { z } = require('zod')
+ const { getSupabase } = require('../config/supabase')
+ const cryptoLib = require('../lib/crypto')
+ const emailService = require('../services/email.service')
+-const { partnerRowToCamel, payoutRowToCamel } = require('../lib/mappers')
++const {
++  partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel
++} = require('../lib/mappers')
++
++// Sum of commission_ledger rows not yet attached to a payout — the "owed"
++// number both adminListPartners and adminRecordPayout rely on. Kept as one
++// function so the two can never compute it differently.
++function pendingCents(ledgerRows) {
++  return (ledgerRows || []).filter(l => !l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
++}
+ 
+ // ── Admin: create a partner ────────────────────────────────────────────────
+-// Generates their payout-details token and emails them the self-serve link
+-// immediately — "a UI for submitting the details" starts here.
+ 
+ const createPartnerSchema = z.object({
+   name:         z.string().min(1).max(200),
+@@ -39,31 +48,40 @@ async function adminCreatePartner(ctx) {
+ 
+   const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${token}`
+   // Best-effort — the partner record should exist even if the email send
+-  // fails (e.g. transient Resend error); admin can resend the link manually
+-  // via adminGetPayoutLink below.
++  // fails (e.g. transient Resend error); admin can resend via adminResendPayoutLink.
+   await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, body.email, body.name, payoutUrl)
+     .catch(() => {})
+ 
+   return ctx.json({ success: true, data: partnerRowToCamel(data) })
+ }
+ 
+-// ── Admin: list all partners + their payout history ────────────────────────
++// ── Admin: list all partners + payout history + codes + pending balance ────
+ // This is "a way admin can reach the details" — payoutDetails comes back in
+-// full (bank/mobile money info) so Jack can actually go send the money.
++// full, and pendingCommissionCents tells Jack exactly what's owed before he
++// records a payout, rather than him having to compute it by hand.
+ 
+ async function adminListPartners(ctx) {
+   const supabase = getSupabase(ctx.env)
+   const { data, error } = await supabase
+     .from('partners')
+-    .select('*, payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at)')
++    .select(`
++      *,
++      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at),
++      referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
++      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at)
++    `)
+     .order('created_at', { ascending: false })
+   if (error) throw error
+-  return ctx.json({ success: true, data: data.map(partnerRowToCamel) })
++
++  const partners = data.map(row => {
++    const camel = partnerRowToCamel(row)
++    camel.pendingCommissionCents = pendingCents(row.commission_ledger)
++    return camel
++  })
++  return ctx.json({ success: true, data: partners })
+ }
+ 
+-// ── Admin: re-send / re-fetch a partner's payout-details link ──────────────
+-// For when the original email gets lost — regenerates nothing, just resends
+-// the existing token so old links a partner may have saved keep working.
++// ── Admin: re-send a partner's payout-details link ──────────────────────────
+ 
+ async function adminResendPayoutLink(ctx) {
+   const partnerId = ctx.req.param('id')
+@@ -78,17 +96,78 @@ async function adminResendPayoutLink(ctx) {
+   return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.' })
+ }
+ 
++// ── Admin: create a referral code for a partner ─────────────────────────────
++// Emails the partner their code + dashboard link immediately — this is the
++// moment their dashboard actually becomes useful, so it's the natural point
++// to send them there rather than at partner-creation time.
++
++const createReferralCodeSchema = z.object({
++  code:       z.string().min(2).max(50),
++  tierPrices: z.object({
++    FIX:       z.number().int().positive().optional(),
++    BADGE:     z.number().int().positive().optional(),
++    FIX_PLAIN: z.number().int().positive().optional()
++  }).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.'),
++  usageLimit: z.number().int().positive().optional(),
++  expiresAt:  z.string().datetime().optional()
++})
++
++async function adminCreateReferralCode(ctx) {
++  const partnerId = ctx.req.param('id')
++  const body = createReferralCodeSchema.parse(await ctx.req.json())
++  const supabase = getSupabase(ctx.env)
++
++  const { data: partner, error: pErr } = await supabase
++    .from('partners').select('name, email, payout_details_token').eq('id', partnerId).maybeSingle()
++  if (pErr) throw pErr
++  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
++
++  const { data: codeRow, error } = await supabase.from('referral_codes').insert({
++    partner_id:  partnerId,
++    code:        body.code.trim().toUpperCase(),
++    tier_prices: body.tierPrices,
++    usage_limit: body.usageLimit || null,
++    expires_at:  body.expiresAt || null
++  }).select('*').single()
++  if (error) throw error
++
++  const dashboardUrl = `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.payout_details_token}`
++  await emailService.sendReferralCodeCreated(ctx.env, supabase, partner.email, partner.name, codeRow.code, dashboardUrl)
++    .catch(() => {})
++
++  return ctx.json({ success: true, data: referralCodeRowToCamel(codeRow) })
++}
++
++// ── Admin: toggle a referral code active/inactive ───────────────────────────
++// Deliberately no DELETE — payments.referral_code_id references this row,
++// so codes get deactivated, never removed, to keep historical attribution intact.
++
++async function adminSetReferralCodeActive(ctx) {
++  const codeId = ctx.req.param('codeId')
++  const { active } = z.object({ active: z.boolean() }).parse(await ctx.req.json())
++  const supabase = getSupabase(ctx.env)
++
++  const { data, error } = await supabase.from('referral_codes')
++    .update({ active }).eq('id', codeId).select('*').maybeSingle()
++  if (error) throw error
++  if (!data) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
++
++  return ctx.json({ success: true, data: referralCodeRowToCamel(data) })
++}
++
+ // ── Admin: record a payout that has ALREADY been sent manually ─────────────
+-// This is the "button I mark, which also emails them" step. It captures the
+-// amount and payout method at the moment of recording — it does not compute
+-// anything automatically, since there's no automated commission ledger yet
+-// (see the growth-strategy build scope for that future piece).
++// Captures amount + payout method at the moment of recording, emails the
++// partner a confirmation, and settles every currently-unpaid commission_ledger
++// row for that partner against this payout (see the simplification note below).
+ 
+ const recordPayoutSchema = z.object({
+-  amountCents:  z.number().int().positive(),
++  // Optional — if omitted, defaults to the partner's full pending commission
++  // balance. Admin can override for a partial payment, a rounded-up manual
++  // transfer, or a payout with no ledger backing it at all (e.g. a one-off
++  // bonus) — any of those are legitimate reasons to send a different number
++  // than what the ledger currently shows.
++  amountCents:  z.number().int().positive().optional(),
+   currency:     z.string().length(3).default('USD'),
+-  // Defaults to whatever the partner has on file; only needed if paying
+-  // through a different method than what they submitted.
+   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
+   note:         z.string().max(500).optional()
+ })
+@@ -108,9 +187,17 @@ async function adminRecordPayout(ctx) {
+     return ctx.json({ success: false,
+       message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
+ 
++  const { data: unpaidLedger, error: ledgerErr } = await supabase
++    .from('commission_ledger').select('id, commission_amount_cents')
++    .eq('partner_id', partnerId).is('payout_id', null)
++  if (ledgerErr) throw ledgerErr
++
++  const owedCents  = unpaidLedger.reduce((sum, l) => sum + l.commission_amount_cents, 0)
++  const amountCents = body.amountCents ?? owedCents
++
+   const { data: payout, error } = await supabase.from('payouts').insert({
+     partner_id:              partnerId,
+-    amount_cents:            body.amountCents,
++    amount_cents:            amountCents,
+     currency:                body.currency,
+     payout_method:           payoutMethod,
+     payout_details_snapshot: partner.payout_details || {},
+@@ -118,17 +205,32 @@ async function adminRecordPayout(ctx) {
+   }).select('*').single()
+   if (error) throw error
+ 
++  // SIMPLIFICATION, flagged rather than silently assumed: every currently-
++  // unpaid ledger row is marked settled by THIS payout, regardless of
++  // whether amountCents was overridden to something other than the full
++  // pending balance. This is correct for the normal case (admin pays
++  // exactly what's owed) but means a deliberate partial payment still
++  // clears the ledger rather than leaving a remainder outstanding. Fine for
++  // a solo-admin, low-volume manual process; revisit if partial payouts
++  // become routine.
++  if (unpaidLedger.length > 0) {
++    const ledgerIds = unpaidLedger.map(l => l.id)
++    const { error: settleErr } = await supabase.from('commission_ledger')
++      .update({ payout_id: payout.id }).in('id', ledgerIds)
++    if (settleErr) console.error('adminRecordPayout ledger settlement:', settleErr.message)
++  }
++
+   // The payout already happened in real life (admin sent it before
+   // clicking this) — an email failure here must not roll back or hide the
+   // recorded payout, only the notification.
+   const emailed = await emailService.sendPayoutSent(
+-    ctx.env, supabase, partner.email, partner.name, body.amountCents, body.currency
++    ctx.env, supabase, partner.email, partner.name, amountCents, body.currency
+   ).catch(() => false)
+ 
+   return ctx.json({ success: true, data: payoutRowToCamel(payout), emailed })
+ }
+ 
+-// ── Public (token-gated): partner views their own current details ──────────
++// ── Public (token-gated): partner views their own current payout details ───
+ 
+ async function getPartnerByToken(ctx) {
+   const token = ctx.req.query('token')
+@@ -147,8 +249,6 @@ async function getPartnerByToken(ctx) {
+ }
+ 
+ // ── Public (token-gated): partner submits/updates their payout details ─────
+-// The two shapes are genuinely different (bank vs. mobile money), so this
+-// is a discriminated union on payoutMethod rather than one loose schema.
+ 
+ const bankDetailsSchema = z.object({
+   payoutMethod:  z.literal('BANK'),
+@@ -158,7 +258,7 @@ const bankDetailsSchema = z.object({
+ })
+ const mobileMoneyDetailsSchema = z.object({
+   payoutMethod: z.literal('MOBILE_MONEY'),
+-  provider:     z.string().min(1).max(100),  // e.g. M-Pesa, MTN MoMo
++  provider:     z.string().min(1).max(100),
+   accountName:  z.string().min(1).max(200),
+   phoneNumber:  z.string().min(1).max(30)
+ })
+@@ -190,7 +290,64 @@ async function submitPayoutDetails(ctx) {
+   return ctx.json({ success: true, message: 'Payout details saved.' })
+ }
+ 
++// ── Public (token-gated): partner's own stats dashboard ─────────────────────
++// Same token as the payout-details form — one link, two pages. Read-only:
++// a partner can see their codes/earnings but never edit pricing or rates.
++
++async function getPartnerDashboard(ctx) {
++  const token = ctx.req.query('token')
++  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
++
++  const supabase = getSupabase(ctx.env)
++  const { data: partner, error } = await supabase
++    .from('partners')
++    .select(`
++      name, commission_rate,
++      referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
++      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at),
++      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at)
++    `)
++    .eq('payout_details_token', token)
++    .maybeSingle()
++  if (error) throw error
++  if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
++
++  const ledger = partner.commission_ledger || []
++  const codes  = partner.referral_codes || []
++
++  return ctx.json({ success: true, data: {
++    name:           partner.name,
++    commissionRate: partner.commission_rate,
++    referralCodes:  codes.map(referralCodeRowToCamel),
++    commissionLedger: ledger.map(commissionLedgerRowToCamel),
++    payouts:        (partner.payouts || []).map(payoutRowToCamel),
++    stats: {
++      totalClicks:      codes.reduce((sum, code) => sum + (code.clicks || 0), 0),
++      totalConversions: ledger.length,
++      pendingCents:     pendingCents(ledger),
++      paidCents:        ledger.filter(l => l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
++    }
++  } })
++}
++
++// ── Public: click tracking ──────────────────────────────────────────────────
++// Fired by the frontend (useReferralCapture) whenever a ?ref=CODE link is
++// visited. Best-effort, high-volume, no sensitive data — an unknown or
++// malformed code is a silent no-op, never an error the frontend has to handle.
++
++async function trackClick(ctx) {
++  const body = await ctx.req.json().catch(() => ({}))
++  const code = String(body.code || '').trim().toUpperCase()
++  if (!code) return ctx.json({ success: true })
++
++  const supabase = getSupabase(ctx.env)
++  const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
++  if (error) console.error('trackClick:', error.message)
++  return ctx.json({ success: true })
++}
++
+ module.exports = {
+   adminCreatePartner, adminListPartners, adminResendPayoutLink, adminRecordPayout,
+-  getPartnerByToken, submitPayoutDetails
++  adminCreateReferralCode, adminSetReferralCodeActive,
++  getPartnerByToken, submitPayoutDetails, getPartnerDashboard, trackClick
+ }
+diff --git a/src/controllers/payments.controller.js b/src/controllers/payments.controller.js
+index 11a7ede..4b4fb15 100644
+--- a/src/controllers/payments.controller.js
++++ b/src/controllers/payments.controller.js
+@@ -19,12 +19,13 @@ const cryptoLib = require('../lib/crypto')
+ const { scanRowToCamel } = require('../lib/mappers')
+ const paystackService = require('../services/paystack.service')
+ const emailService = require('../services/email.service')
++const referralService = require('../services/referral.service')
+ 
+ // POST /api/payments/initialize
+ async function initializePayment(c2) {
+   const user = c2.get('user')
+   const body = await c2.req.json()
+-  const { scanId, fixTier } = body
++  const { scanId, fixTier, referralCode } = body
+   if (!scanId || !['FIX', 'BADGE', 'FIX_PLAIN'].includes(fixTier))
+     return c2.json({ success: false, message: 'scanId and valid fixTier required.' }, 400)
+ 
+@@ -42,7 +43,13 @@ async function initializePayment(c2) {
+   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
+     return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
+ 
+-  const amount    = c.priceForTier(fixTier, c2.env)
++  // Single source of truth for the amount — same resolver the public
++  // /api/pricing quote goes through (pricing.controller.js), so whatever
++  // price the checkout screen showed is exactly what gets charged here.
++  // An invalid/expired/exhausted code silently falls through to normal
++  // promo/standard pricing rather than blocking the payment.
++  const priced   = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode)
++  const amount    = priced.amount
+   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
+ 
+   // Call Paystack FIRST — if it fails, no orphan record is created
+@@ -75,6 +82,11 @@ async function initializePayment(c2) {
+   // Binding fix_tier to the immutable payment row closes that: whatever tier
+   // this specific reference was created for is what it will always fulfill,
+   // regardless of what any other in-flight initialize call does to the scan.
++  //
++  // referral_code_id/referral_code are bound the same way, for the same
++  // reason — whatever code priced THIS reference is what its commission
++  // ledger entry (see referral.service.js's recordConversion) will reflect,
++  // regardless of what happens to the code afterward.
+   const { error: insertErr } = await supabase.from('payments').insert({
+     amount_cents:          amount,
+     currency:              c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+@@ -83,7 +95,9 @@ async function initializePayment(c2) {
+     paystack_access_code:  result.access_code,
+     user_id:               user.id,
+     scan_id:               scanId,
+-    fix_tier:              fixTier
++    fix_tier:              fixTier,
++    referral_code_id:      priced.referralCode?.id || null,
++    referral_code:         priced.referralCode?.code || null
+   })
+   if (insertErr) throw insertErr
+ 
+@@ -176,6 +190,12 @@ async function verifyPayment(c2) {
+ 
+   const payment = updatedRows[0]
+ 
++  // Referral attribution is bound to the payment row itself (referral_code_id,
++  // set once at initializePayment time — see that function's comment) — this
++  // runs exactly once, gated by the same atomic idempotency check above, so
++  // a partner is never double-credited for one sale.
++  await referralService.recordConversion(supabase, payment)
++
+   // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
+   // per reference) — never from scans.fix_tier, which is just a downstream
+   // display/logic convenience field. This update is what makes scans.fix_tier
+diff --git a/src/controllers/pricing.controller.js b/src/controllers/pricing.controller.js
+index bd8e39d..3377501 100644
+--- a/src/controllers/pricing.controller.js
++++ b/src/controllers/pricing.controller.js
+@@ -1,4 +1,6 @@
+ const c = require('../config/constants')
++const { getSupabase } = require('../config/supabase')
++const referralService = require('../services/referral.service')
+ 
+ // GET /api/pricing — public, unauthenticated. Marketing/landing pages and
+ // the post-scan checkout screen both call this instead of hardcoding prices,
+@@ -6,12 +8,23 @@ const c = require('../config/constants')
+ // target can never drift out of sync with what initializePayment will
+ // actually charge. If PROMO_ACTIVE/PROMO_ENDS_AT aren't set, this quietly
+ // returns standard pricing with promoActive: false — safe default.
++//
++// ?ref=CODE (optional) — when present, each tier's price is resolved through
++// referral.service.js instead of c.priceForTier() directly. originalAmount
++// stays the pre-referral (promo/standard) price either way, so the frontend
++// can always show a consistent strikethrough regardless of which discount
++// (site-wide promo, referral code, or both layered) is actually in effect.
+ async function getPricing(ctx) {
+   const promoActive = c.isPromoActive(ctx.env)
+-  const tiers = ['FIX', 'BADGE', 'FIX_PLAIN'].map(tier => ({
+-    tier,
+-    amount:         c.priceForTier(tier, ctx.env),
+-    originalAmount: c.priceForTier(tier, null),
++  const referralCode = ctx.req.query('ref')
++  const supabase = referralCode ? getSupabase(ctx.env) : null
++
++  const tiers = await Promise.all(['FIX', 'BADGE', 'FIX_PLAIN'].map(async tier => {
++    const originalAmount = c.priceForTier(tier, ctx.env)
++    if (!referralCode) return { tier, amount: originalAmount, originalAmount, referralApplied: false }
++
++    const priced = await referralService.resolvePrice(supabase, tier, ctx.env, referralCode)
++    return { tier, amount: priced.amount, originalAmount, referralApplied: priced.referralApplied }
+   }))
+ 
+   return ctx.json({ success: true, data: {
+@@ -20,6 +33,7 @@ async function getPricing(ctx) {
+     // null when there's no active promo — frontend should not render a
+     // countdown in that case rather than showing a stale/zero timer.
+     promoEndsAt: promoActive ? ctx.env.PROMO_ENDS_AT : null,
++    referralApplied: tiers.some(t => t.referralApplied),
+     tiers
+   } })
+ }
+diff --git a/src/controllers/scan.controller.js b/src/controllers/scan.controller.js
+index fb9a50d..325ab43 100644
+--- a/src/controllers/scan.controller.js
++++ b/src/controllers/scan.controller.js
+@@ -49,6 +49,7 @@ const badgeService     = require('../services/badge.service')
+ const pdfService        = require('../services/pdf.service')
+ const docxService        = require('../services/docx.service')
+ const emailService        = require('../services/email.service')
++const referralService      = require('../services/referral.service')
+ const rateLimiter          = require('../middleware/rateLimiter')
+ 
+ // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
+@@ -357,7 +358,10 @@ async function getScan(ctx) {
+ async function initiateFix(ctx) {
+   const user = ctx.get('user')
+   const body = await ctx.req.json()
+-  const { fixTier } = z.object({ fixTier: z.enum(['FIX', 'BADGE', 'FIX_PLAIN']) }).parse(body)
++  const { fixTier, referralCode } = z.object({
++    fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
++    referralCode: z.string().max(50).optional()
++  }).parse(body)
+ 
+   const supabase = getSupabase(ctx.env)
+   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+@@ -373,15 +377,21 @@ async function initiateFix(ctx) {
+   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
+     return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
+ 
+-  const amount = c.priceForTier(fixTier, ctx.env)
++  // Same resolver /api/pricing and /api/payments/initialize use — see
++  // services/referral.service.js. Kept in sync here even though the current
++  // frontend checkout calls /api/payments/initialize directly rather than
++  // this endpoint, so this quote can never show a different number than
++  // what a payment would actually charge.
++  const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode)
+   const promoActive = c.isPromoActive(ctx.env)
+   return ctx.json({ success: true, data: {
+-    amount, currency: c.CURRENCY, scanId: scan.id, fixTier,
++    amount: priced.amount, currency: priced.currency, scanId: scan.id, fixTier,
+     // originalAmount/promoActive let the checkout UI show the same
+     // anchor+slash treatment as the public pricing page, without a second,
+     // independently-maintained price table on the frontend.
+-    originalAmount: promoActive ? c.priceForTier(fixTier, null) : amount,
+-    promoActive
++    originalAmount: priced.referralApplied ? c.priceForTier(fixTier, ctx.env) : (promoActive ? c.priceForTier(fixTier, null) : priced.amount),
++    promoActive,
++    referralApplied: priced.referralApplied
+   } })
+ }
+ 
+diff --git a/src/controllers/webhooks.controller.js b/src/controllers/webhooks.controller.js
+index 8e2bebc..97b96fa 100644
+--- a/src/controllers/webhooks.controller.js
++++ b/src/controllers/webhooks.controller.js
+@@ -21,6 +21,7 @@
+ const cryptoLib = require('../lib/crypto')
+ const { getSupabase } = require('../config/supabase')
+ const emailService = require('../services/email.service')
++const referralService = require('../services/referral.service')
+ 
+ async function handlePaystack(c) {
+   const bodyText = await c.req.text()
+@@ -92,6 +93,12 @@ async function handlePaystack(c) {
+         if (updErr) { console.error('Webhook payment update:', updErr.message); return }
+         if (updatedRows.length === 0) return  // already processed — idempotent skip
+ 
++        // Same attribution recording as payments.controller.js's verifyPayment
++        // — gated by the same atomic check above, so whichever of the two
++        // fulfillment paths (webhook or client verify) gets here first is the
++        // only one that ever records it.
++        await referralService.recordConversion(supabase, updatedRows[0])
++
+         // fixTier comes from the PAYMENT row itself (bound at
+         // initializePayment, immutable per reference), not from
+         // event.data.metadata.fixTier and not from scans.fix_tier. Same fix
+diff --git a/src/lib/mappers.js b/src/lib/mappers.js
+index 695f177..1bc9095 100644
+--- a/src/lib/mappers.js
++++ b/src/lib/mappers.js
+@@ -159,10 +159,13 @@ function partnerRowToCamel(row) {
+     email:                     rest.email,
+     referralCode:              rest.referral_code,
+     status:                    rest.status,
++    commissionRate:            rest.commission_rate,
+     payoutMethod:              rest.payout_method,
+     payoutDetails:             rest.payout_details,
+     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
+     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
++    referralCodes:             rest.referral_codes ? rest.referral_codes.map(referralCodeRowToCamel) : undefined,
++    commissionLedger:          rest.commission_ledger ? rest.commission_ledger.map(commissionLedgerRowToCamel) : undefined,
+     createdAt:                 rest.created_at,
+     updatedAt:                 rest.updated_at
+   }
+@@ -184,8 +187,39 @@ function payoutRowToCamel(row) {
+   }
+ }
+ 
++function referralCodeRowToCamel(row) {
++  if (!row) return row
++  return {
++    id:          row.id,
++    partnerId:   row.partner_id,
++    code:        row.code,
++    tierPrices:  row.tier_prices,
++    active:      row.active,
++    usageLimit:  row.usage_limit,
++    usesSoFar:   row.uses_so_far,
++    clicks:      row.clicks,
++    expiresAt:   row.expires_at,
++    createdAt:   row.created_at
++  }
++}
++
++function commissionLedgerRowToCamel(row) {
++  if (!row) return row
++  return {
++    id:                    row.id,
++    paymentId:             row.payment_id,
++    partnerId:             row.partner_id,
++    referralCodeId:        row.referral_code_id,
++    grossAmountCents:      row.gross_amount_cents,
++    commissionRate:        row.commission_rate,
++    commissionAmountCents: row.commission_amount_cents,
++    payoutId:              row.payout_id,
++    createdAt:             row.created_at
++  }
++}
++
+ module.exports = {
+   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
+-  partnerRowToCamel, payoutRowToCamel,
++  partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
+   USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
+ }
+diff --git a/src/routes/partners.routes.js b/src/routes/partners.routes.js
+index 63d4a40..5f126a0 100644
+--- a/src/routes/partners.routes.js
++++ b/src/routes/partners.routes.js
+@@ -1,19 +1,27 @@
+ const { Hono } = require('hono')
+ const admin = require('../middleware/adminOnly')
++const rl    = require('../middleware/rateLimiter')
+ const c     = require('../controllers/partners.controller')
+ 
+ const router = new Hono()
+ 
+-// Public — partner self-serve payout details, gated by the emailed token
+-// (not a route param, a query string — ?token=... — since the frontend
+-// pages that read it are plain pages, not :id-style resource routes).
++// Public — partner self-serve, gated by the emailed token (?token=...), not
++// a route param, since the pages that read it are plain pages, not
++// :id-style resource routes.
+ router.get( '/payout-details', c.getPartnerByToken)
+ router.post('/payout-details', c.submitPayoutDetails)
++router.get( '/dashboard',      c.getPartnerDashboard)
++
++// Public — click tracking. Rate-limited like the other public write
++// endpoint in this app (employer-leads) since it's unauthenticated.
++router.post('/track-click', rl.employerLead, c.trackClick)
+ 
+ // Admin only
+-router.post('/',                    admin, c.adminCreatePartner)
+-router.get( '/',                    admin, c.adminListPartners)
+-router.post('/:id/resend-link',     admin, c.adminResendPayoutLink)
+-router.post('/:id/payouts',         admin, c.adminRecordPayout)
++router.post('/',                          admin, c.adminCreatePartner)
++router.get( '/',                          admin, c.adminListPartners)
++router.post('/:id/resend-link',           admin, c.adminResendPayoutLink)
++router.post('/:id/payouts',               admin, c.adminRecordPayout)
++router.post('/:id/referral-codes',        admin, c.adminCreateReferralCode)
++router.patch('/referral-codes/:codeId',   admin, c.adminSetReferralCodeActive)
+ 
+ module.exports = router
+diff --git a/src/services/email.service.js b/src/services/email.service.js
+index 90caf18..abfe004 100644
+--- a/src/services/email.service.js
++++ b/src/services/email.service.js
+@@ -100,6 +100,14 @@ async function sendPayoutSent(env, supabase, email, name, amountCents, currency)
+   })
+ }
+ 
++async function sendReferralCodeCreated(env, supabase, email, name, code, dashboardUrl) {
++  return send(env, supabase, email, 'Your Passthrough referral code is ready', 'referral_code_created', {
++    NAME:          name,
++    CODE:          code,
++    DASHBOARD_URL: dashboardUrl
++  })
++}
++
+ async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
+   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
+     NAME:              name,
+@@ -158,5 +166,6 @@ async function sendOwnerAlert(env, subject, message) {
+ module.exports = {
+   sendWelcome, sendVerification, sendPasswordReset,
+   sendScanFail, sendScanPass, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
+-  sendOwnerAlert
++  sendOwnerAlert,
++  sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated
+ }
+diff --git a/src/services/referral.service.js b/src/services/referral.service.js
+new file mode 100644
+index 0000000..fa581d4
+--- /dev/null
++++ b/src/services/referral.service.js
+@@ -0,0 +1,106 @@
++// Referral/discount-code pricing. This is the piece that makes a referral
++// code actually change what gets charged, not just what gets displayed:
++// pricing.controller.js (the public quote) and payments.controller.js (the
++// actual Paystack charge) both call resolvePrice() with the same inputs, so
++// a shown price and a charged price can never independently drift — same
++// principle config/constants.js's priceForTier()/isPromoActive() already
++// apply to the site-wide promo.
++//
++// Usage-limit race, flagged the same way middleware/rateLimiter.js flags
++// its own: under a concurrent burst against the exact same code, two
++// redemptions could both pass the under-limit check before either's
++// increment lands, letting a couple of extra uses through right at the
++// boundary. Acceptable for a marketing usage cap; the uses_so_far COUNTER
++// itself stays exact regardless (see increment_referral_code_usage in the
++// migration) — only the pre-check has this benign race, not the bookkeeping.
++
++const c = require('../config/constants')
++
++async function lookupCode(supabase, rawCode) {
++  if (!rawCode) return null
++  const code = String(rawCode).trim().toUpperCase()
++  if (!code) return null
++  const { data, error } = await supabase
++    .from('referral_codes').select('*').eq('code', code).maybeSingle()
++  if (error) throw error
++  return data
++}
++
++function isCodeUsable(row) {
++  if (!row) return false
++  if (!row.active) return false
++  if (row.expires_at && Date.parse(row.expires_at) < Date.now()) return false
++  if (row.usage_limit != null && row.uses_so_far >= row.usage_limit) return false
++  return true
++}
++
++/**
++ * resolvePrice(supabase, fixTier, env, rawReferralCode)
++ *   -> { amount, currency, referralApplied, referralCode: row|null }
++ *
++ * Falls through to normal promo/standard pricing on ANY invalid, expired,
++ * exhausted, inactive, or tier-less code — silently. A bad or stale code in
++ * a URL or an old screenshot should never block checkout; it should just
++ * not apply, exactly like an expired promo would elsewhere in this app.
++ */
++async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
++  const standard = c.priceForTier(fixTier, env)
++
++  if (!rawReferralCode)
++    return { amount: standard, currency: c.CURRENCY, referralApplied: false, referralCode: null }
++
++  const codeRow = await lookupCode(supabase, rawReferralCode)
++  const tierPrice = codeRow?.tier_prices?.[fixTier]
++
++  if (!isCodeUsable(codeRow) || tierPrice == null)
++    return { amount: standard, currency: c.CURRENCY, referralApplied: false, referralCode: null }
++
++  return { amount: tierPrice, currency: c.CURRENCY, referralApplied: true, referralCode: codeRow }
++}
++
++/**
++ * recordConversion(supabase, payment)
++ *
++ * Call exactly once, from the single fulfillment path that wins the atomic
++ * idempotency race in payments.controller.js's verifyPayment or
++ * webhooks.controller.js's handlePaystack (both already guard fulfillment
++ * with an UPDATE...RETURNING that only one caller can ever see rows from
++ * for a given payment) — never call this speculatively or more than once
++ * per payment. The unique constraint on commission_ledger.payment_id is a
++ * backstop, not the primary guard.
++ */
++async function recordConversion(supabase, payment) {
++  if (!payment?.referral_code_id) return
++
++  const { data: codeRow, error: codeErr } = await supabase
++    .from('referral_codes').select('id, partner_id').eq('id', payment.referral_code_id).maybeSingle()
++  if (codeErr) { console.error('recordConversion code lookup:', codeErr.message); return }
++  if (!codeRow) return
++
++  const { data: partner, error: partnerErr } = await supabase
++    .from('partners').select('commission_rate').eq('id', codeRow.partner_id).maybeSingle()
++  if (partnerErr) { console.error('recordConversion partner lookup:', partnerErr.message); return }
++  if (!partner) return
++
++  const commissionRate = Number(partner.commission_rate)
++  const commissionAmountCents = Math.round(payment.amount_cents * commissionRate)
++
++  const { error: ledgerErr } = await supabase.from('commission_ledger').insert({
++    payment_id:              payment.id,
++    partner_id:              codeRow.partner_id,
++    referral_code_id:        codeRow.id,
++    gross_amount_cents:      payment.amount_cents,
++    commission_rate:         commissionRate,
++    commission_amount_cents: commissionAmountCents
++  })
++  if (ledgerErr) {
++    if (ledgerErr.code === '23505') return  // already recorded — harmless duplicate call
++    console.error('recordConversion ledger insert:', ledgerErr.message)
++    return
++  }
++
++  const { error: rpcErr } = await supabase.rpc('increment_referral_code_usage', { p_code_id: codeRow.id })
++  if (rpcErr) console.error('recordConversion usage increment:', rpcErr.message)
++}
++
++module.exports = { resolvePrice, recordConversion }
+diff --git a/src/templates/emails.js b/src/templates/emails.js
+index 96c43e0..9eff55a 100644
+--- a/src/templates/emails.js
++++ b/src/templates/emails.js
+@@ -19,6 +19,7 @@ const TEMPLATES = {
+   fix_failed: "<h2>We hit a snag</h2>\n<p>Hi {{NAME}}, something went wrong generating your resume.</p>\n<p><strong>You have not been charged again.</strong> We're looking into it\nand will email you when your resume is ready.</p>\n<p>If you need help, email us at support@passthrough.dev</p>\n",
+   partner_payout_details_request: "<h2>Set up your payout details</h2>\n<p>Hi {{NAME}}, welcome to the Passthrough partner program.</p>\n<p>Click below to tell us where to send your payouts \u2014 bank account or\nmobile money, whichever you prefer.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Add Payout Details \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link is unique to you \u2014 don't share it. You can come back and\nupdate these details anytime.</p>\n",
+   payout_sent: "<h2>Payout sent \u2713</h2>\n<p>Hi {{NAME}}, we've sent you a payout of {{AMOUNT}}.</p>\n<p>It should reflect in your account shortly, depending on your bank or\nmobile money provider's processing time.</p>\n<p>Thanks for partnering with Passthrough.</p>\n",
++  referral_code_created: "<h2>Your referral code is live</h2>\n<p>Hi {{NAME}}, your Passthrough referral code is ready to share:</p>\n<p style=\"font-size:28px;font-weight:700;letter-spacing:1px;color:#1E40AF\">{{CODE}}</p>\n<p>Anyone who uses it gets a discounted price, and you earn a commission on\nevery sale it brings in.</p>\n<a href=\"{{DASHBOARD_URL}}\" class=\"btn\">View Your Dashboard \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">Your dashboard shows clicks, conversions, and earnings for every code\nyou have \u2014 bookmark the link above.</p>\n",
+ }
+ 
+ // Every var gets HTML-entity-escaped before substitution. NAME in
+diff --git a/supabase/migrations/0012_referral_pricing_and_commission_ledger.sql b/supabase/migrations/0012_referral_pricing_and_commission_ledger.sql
+new file mode 100644
+index 0000000..eacb981
+--- /dev/null
++++ b/supabase/migrations/0012_referral_pricing_and_commission_ledger.sql
+@@ -0,0 +1,79 @@
++-- Referral-code discount pricing + commission ledger. Builds on
++-- 0011_partners_and_payouts.sql. This is the piece that makes a referral
++-- code actually change what gets charged, not just what gets displayed:
++-- pricing.controller.js (the quote) and payments.controller.js (the charge)
++-- both resolve price through services/referral.service.js, which is the
++-- only thing that ever reads this table — same single-source-of-truth
++-- discipline config/constants.js's promo pricing already follows.
++
++alter table partners add column commission_rate numeric(5,4) not null default 0.25;
++-- Fraction, not a percentage integer (0.25 = 25%) — avoids any ambiguity
++-- at the multiplication site in referral.service.js.
++
++create table referral_codes (
++  id           uuid primary key default gen_random_uuid(),
++  partner_id   uuid not null references partners(id),
++  code         text not null unique,     -- always stored upper-cased (see referral.service.js)
++  -- {"FIX": 1900, "BADGE": 900, "FIX_PLAIN": 900} — cents, per tier. A tier
++  -- absent from this object simply isn't discounted for this code; the
++  -- normal promo/standard price applies to it instead.
++  tier_prices  jsonb not null,
++  active       boolean not null default true,
++  usage_limit  int,                       -- null = unlimited
++  uses_so_far  int not null default 0,    -- successful REDEMPTIONS (paid), not clicks
++  clicks       int not null default 0,    -- link visits — see increment_referral_code_clicks below
++  expires_at   timestamptz,
++  created_at   timestamptz not null default now()
++);
++
++create index referral_codes_partner_idx on referral_codes(partner_id);
++
++-- Referral attribution, bound to the payment row exactly like fix_tier is
++-- (see payments.controller.js's tier-smuggling comment): whatever code
++-- priced THIS payment stays true for it forever, regardless of what
++-- happens to the code afterward (deactivated, edited, deleted).
++alter table payments add column referral_code_id uuid references referral_codes(id);
++alter table payments add column referral_code    text;  -- denormalized snapshot of the code string
++
++create table commission_ledger (
++  id                       uuid primary key default gen_random_uuid(),
++  payment_id               uuid not null unique references payments(id),
++  -- unique on payment_id: one ledger row per payment, ever. Also the
++  -- backstop against double-crediting if recordConversion() were ever
++  -- accidentally called twice for the same payment — see referral.service.js.
++  partner_id               uuid not null references partners(id),
++  referral_code_id         uuid not null references referral_codes(id),
++  gross_amount_cents       int not null,
++  commission_rate          numeric(5,4) not null,  -- snapshot of partner.commission_rate AT THE TIME
++  commission_amount_cents  int not null,
++  -- Set once this commission has been included in a recorded payout
++  -- (partners.controller.js's adminRecordPayout). Null = still owed.
++  payout_id                uuid references payouts(id),
++  created_at               timestamptz not null default now()
++);
++
++create index commission_ledger_partner_idx on commission_ledger(partner_id);
++create index commission_ledger_unpaid_idx  on commission_ledger(partner_id) where payout_id is null;
++
++-- Atomic increment for uses_so_far. A plain read-then-write from
++-- application code risks a lost update under concurrent redemptions of the
++-- same code; wrapping the arithmetic in one SQL statement makes the counter
++-- itself exact. (The usage_limit CHECK that happens beforehand in
++-- referral.service.js can still race in the same benign way
++-- middleware/rateLimiter.js's KV counter does — acceptable for a marketing
++-- usage cap, not something this counter's own correctness depends on.)
++create or replace function increment_referral_code_usage(p_code_id uuid)
++returns void
++language sql
++as $$
++  update referral_codes set uses_so_far = uses_so_far + 1 where id = p_code_id;
++$$;
++
++-- Same reasoning for click counts — best-effort, high-volume, no financial
++-- consequence if a couple of concurrent clicks land as one.
++create or replace function increment_referral_code_clicks(p_code text)
++returns void
++language sql
++as $$
++  update referral_codes set clicks = clicks + 1 where code = p_code;
++$$;
+diff --git a/tests/referral.service.test.js b/tests/referral.service.test.js
+new file mode 100644
+index 0000000..e7bc82c
+--- /dev/null
++++ b/tests/referral.service.test.js
+@@ -0,0 +1,87 @@
++import { describe, it, expect } from 'vitest'
++import { resolvePrice } from '../src/services/referral.service.js'
++
++// Minimal fake Supabase client — just enough of the .from().select().eq().maybeSingle()
++// chain that referral.service.js actually calls. Returns whatever row the
++// test wires up for the code being looked up.
++function fakeSupabase(codeRow) {
++  return {
++    from(table) {
++      if (table !== 'referral_codes') throw new Error(`unexpected table: ${table}`)
++      return {
++        select: () => ({
++          eq: (_col, _val) => ({
++            maybeSingle: async () => ({ data: codeRow, error: null })
++          })
++        })
++      }
++    }
++  }
++}
++
++const env = {}  // no PROMO_ACTIVE set — priceForTier falls back to standard prices
++
++describe('referral.service — resolvePrice', () => {
++  it('returns standard pricing with no discount when no code is given', async () => {
++    const result = await resolvePrice(fakeSupabase(null), 'FIX', env, undefined)
++    expect(result.referralApplied).toBe(false)
++    expect(result.amount).toBe(4900)  // PRICE_FIX standard
++  })
++
++  it('applies the code price when active and within limits', async () => {
++    const codeRow = {
++      id: 'code-1', active: true, expires_at: null,
++      usage_limit: null, uses_so_far: 0,
++      tier_prices: { FIX: 1900 }
++    }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
++    expect(result.referralApplied).toBe(true)
++    expect(result.amount).toBe(1900)
++    expect(result.referralCode.id).toBe('code-1')
++  })
++
++  it('is case-insensitive on the code string', async () => {
++    const codeRow = { id: 'code-1', active: true, tier_prices: { FIX: 1900 } }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'CoAcH20')
++    expect(result.referralApplied).toBe(true)
++  })
++
++  it('falls through to standard pricing for an inactive code — does not block checkout', async () => {
++    const codeRow = { id: 'code-1', active: false, tier_prices: { FIX: 1900 } }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
++    expect(result.referralApplied).toBe(false)
++    expect(result.amount).toBe(4900)
++  })
++
++  it('falls through to standard pricing for an expired code', async () => {
++    const codeRow = {
++      id: 'code-1', active: true, expires_at: '2020-01-01T00:00:00Z',
++      tier_prices: { FIX: 1900 }
++    }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
++    expect(result.referralApplied).toBe(false)
++  })
++
++  it('falls through to standard pricing once usage_limit is reached', async () => {
++    const codeRow = {
++      id: 'code-1', active: true, expires_at: null,
++      usage_limit: 10, uses_so_far: 10,
++      tier_prices: { FIX: 1900 }
++    }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
++    expect(result.referralApplied).toBe(false)
++  })
++
++  it('falls through to standard pricing for a tier the code does not discount', async () => {
++    const codeRow = { id: 'code-1', active: true, tier_prices: { BADGE: 900 } }
++    const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
++    expect(result.referralApplied).toBe(false)
++    expect(result.amount).toBe(4900)
++  })
++
++  it('falls through to standard pricing for an unknown code — never throws', async () => {
++    const result = await resolvePrice(fakeSupabase(null), 'FIX', env, 'DOES-NOT-EXIST')
++    expect(result.referralApplied).toBe(false)
++    expect(result.amount).toBe(4900)
++  })
++})
+-- 
+2.43.0
+

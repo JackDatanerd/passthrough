@@ -1,0 +1,944 @@
+From a8fbee2312fbce7b985084401968db17866e0747 Mon Sep 17 00:00:00 2001
+From: Jack <jack@saltern.studio>
+Date: Tue, 15 Sep 2026 08:24:57 +0000
+Subject: [PATCH] Add manual partner payout system
+
+- partners + payouts tables (supabase/migrations/0011_partners_and_payouts.sql)
+- adminOnly middleware, gated on existing users.role = 'ADMIN'
+- POST/GET /api/partners (admin): create partner (emails payout-details link),
+  list partners + payout history, resend link
+- POST /api/partners/:id/payouts (admin): records a manual payout after the
+  admin has already sent the money, emails the partner a confirmation
+- GET/POST /api/partners/payout-details?token=... (public, token-gated):
+  partner views/submits their own bank or mobile money details
+- frontend: /partner/payout-details (public form) and /admin/partners
+  (admin list + record-payout + add-partner UI)
+---
+ frontend/src/App.jsx                          |  18 ++
+ frontend/src/pages/PartnerPayoutDetails.jsx   | 151 +++++++++++
+ frontend/src/pages/admin/AdminPartners.jsx    | 251 ++++++++++++++++++
+ src/controllers/partners.controller.js        | 196 ++++++++++++++
+ src/index.js                                  |   2 +
+ src/lib/mappers.js                            |  41 +++
+ src/middleware/adminOnly.js                   |  19 ++
+ src/routes/partners.routes.js                 |  19 ++
+ src/services/email.service.js                 |  21 ++
+ src/templates/emails.js                       |   2 +
+ .../migrations/0011_partners_and_payouts.sql  |  61 +++++
+ 11 files changed, 781 insertions(+)
+ create mode 100644 frontend/src/pages/PartnerPayoutDetails.jsx
+ create mode 100644 frontend/src/pages/admin/AdminPartners.jsx
+ create mode 100644 src/controllers/partners.controller.js
+ create mode 100644 src/middleware/adminOnly.js
+ create mode 100644 src/routes/partners.routes.js
+ create mode 100644 supabase/migrations/0011_partners_and_payouts.sql
+
+diff --git a/frontend/src/App.jsx b/frontend/src/App.jsx
+index 9172f3b..0587fe0 100644
+--- a/frontend/src/App.jsx
++++ b/frontend/src/App.jsx
+@@ -1,5 +1,6 @@
+ import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+ import { AuthProvider } from './context/AuthContext'
++import { useAuth } from './hooks/useAuth'
+ import { ToastProvider } from './components/ui/Toast'
+ import useScrollToHash from './hooks/useScrollToHash'
+ 
+@@ -18,6 +19,8 @@ import Privacy        from './pages/Privacy'
+ import PaymentSuccess from './pages/PaymentSuccess'
+ import DashboardIndex from './pages/dashboard/Index'
+ import Settings       from './pages/dashboard/Settings'
++import PartnerPayoutDetails from './pages/PartnerPayoutDetails'
++import AdminPartners  from './pages/admin/AdminPartners'
+ 
+ // ProtectedRoute — redirects to /login if no token
+ // Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
+@@ -27,6 +30,18 @@ function ProtectedRoute({ children }) {
+   return children
+ }
+ 
++// AdminRoute — needs the actual user object (for role), not just a token,
++// so this one does use useAuth/AuthContext rather than a raw localStorage
++// check. AuthProvider already refreshes `user` from /auth/me on load (see
++// AuthContext.jsx), so `role` here reflects the server, not a stale cache.
++function AdminRoute({ children }) {
++  const token = localStorage.getItem('passthrough_token')
++  const { user } = useAuth()
++  if (!token) return <Navigate to="/login" replace />
++  if (user && user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
++  return children
++}
++
+ // Needs to render inside BrowserRouter (useLocation requires Router
+ // context) — that's the only reason this isn't just called from App().
+ function ScrollToHash() {
+@@ -54,12 +69,15 @@ export default function App() {
+             <Route path="/terms"           element={<Terms />} />
+             <Route path="/privacy"         element={<Privacy />} />
+             <Route path="/payment/success" element={<PaymentSuccess />} />
++            <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
+ 
+             {/* Protected routes — redirect to /login if no token */}
+             <Route path="/dashboard"
+               element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
+             <Route path="/dashboard/settings"
+               element={<ProtectedRoute><Settings /></ProtectedRoute>} />
++            <Route path="/admin/partners"
++              element={<AdminRoute><AdminPartners /></AdminRoute>} />
+ 
+             {/* Catch-all */}
+             <Route path="*" element={<Navigate to="/" replace />} />
+diff --git a/frontend/src/pages/PartnerPayoutDetails.jsx b/frontend/src/pages/PartnerPayoutDetails.jsx
+new file mode 100644
+index 0000000..a091a2d
+--- /dev/null
++++ b/frontend/src/pages/PartnerPayoutDetails.jsx
+@@ -0,0 +1,151 @@
++import { useState, useEffect } from 'react'
++import { useSearchParams } from 'react-router-dom'
++import api from '../lib/api'
++import Button from '../components/ui/Button'
++import Input from '../components/ui/Input'
++import Spinner from '../components/ui/Spinner'
++import Navbar from '../components/layout/Navbar'
++import Footer from '../components/layout/Footer'
++
++// Public page, reached via the link emailed by adminCreatePartner /
++// adminResendPayoutLink — identity is the ?token= in the URL, not a login.
++// No account system for partners exists yet; the token IS the auth.
++
++export default function PartnerPayoutDetails() {
++  const [params] = useSearchParams()
++  const token = params.get('token')
++
++  const [loading,  setLoading ] = useState(true)
++  const [invalid,  setInvalid ] = useState(false)
++  const [partnerName, setPartnerName] = useState('')
++  const [alreadySubmittedAt, setAlreadySubmittedAt] = useState(null)
++
++  const [method, setMethod] = useState('BANK')
++  const [bankName, setBankName] = useState('')
++  const [accountName, setAccountName] = useState('')
++  const [accountNumber, setAccountNumber] = useState('')
++  const [provider, setProvider] = useState('')
++  const [phoneNumber, setPhoneNumber] = useState('')
++
++  const [saving, setSaving] = useState(false)
++  const [saved,  setSaved ] = useState(false)
++  const [error,  setError ] = useState('')
++
++  useEffect(() => {
++    if (!token) { setInvalid(true); setLoading(false); return }
++    api.get(`/partners/payout-details?token=${encodeURIComponent(token)}`)
++      .then(res => {
++        const p = res.data.data
++        setPartnerName(p.name)
++        setAlreadySubmittedAt(p.payoutDetailsSubmittedAt)
++        if (p.payoutMethod) {
++          setMethod(p.payoutMethod)
++          const d = p.payoutDetails || {}
++          setBankName(d.bankName || '')
++          setAccountName(d.accountName || '')
++          setAccountNumber(d.accountNumber || '')
++          setProvider(d.provider || '')
++          setPhoneNumber(d.phoneNumber || '')
++        }
++      })
++      .catch(() => setInvalid(true))
++      .finally(() => setLoading(false))
++  }, [token])
++
++  async function handleSubmit() {
++    setError('')
++    const body = method === 'BANK'
++      ? { payoutMethod: 'BANK', bankName, accountName, accountNumber }
++      : { payoutMethod: 'MOBILE_MONEY', provider, accountName, phoneNumber }
++
++    const missing = Object.values(body).some(v => !v)
++    if (missing) return setError('Please fill in every field.')
++
++    setSaving(true)
++    try {
++      await api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body)
++      setSaved(true)
++    } catch (err) {
++      setError(err.response?.data?.message || 'Something went wrong — please try again.')
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  return (
++    <div className="min-h-screen flex flex-col bg-gray-50">
++      <Navbar />
++      <main className="flex-1 flex items-center justify-center px-4 py-12">
++        <div className="w-full max-w-md bg-white rounded-lg border border-gray-200 shadow-sm p-8">
++          {loading ? (
++            <div className="flex justify-center py-8"><Spinner /></div>
++          ) : invalid ? (
++            <div>
++              <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
++              <p className="text-sm text-gray-600">
++                This payout link is invalid or has expired. Ask us to resend it.
++              </p>
++            </div>
++          ) : saved ? (
++            <div>
++              <h1 className="text-xl font-bold text-gray-900 mb-2">Details saved ✓</h1>
++              <p className="text-sm text-gray-600">
++                Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
++                You can revisit this link anytime to update them.
++              </p>
++            </div>
++          ) : (
++            <>
++              <h1 className="text-xl font-bold text-gray-900 mb-1">
++                {partnerName ? `Hi ${partnerName} — set up your payout` : 'Set up your payout'}
++              </h1>
++              <p className="text-sm text-gray-500 mb-6">
++                {alreadySubmittedAt
++                  ? "You've already submitted these — update them below anytime."
++                  : "Tell us where to send your payouts. We'll email you every time one goes out."}
++              </p>
++
++              <div className="flex gap-2 mb-6">
++                <button type="button"
++                  onClick={() => setMethod('BANK')}
++                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
++                    method === 'BANK' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
++                  Bank account
++                </button>
++                <button type="button"
++                  onClick={() => setMethod('MOBILE_MONEY')}
++                  className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
++                    method === 'MOBILE_MONEY' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
++                  Mobile money
++                </button>
++              </div>
++
++              <div className="flex flex-col gap-4">
++                {method === 'BANK' ? (
++                  <>
++                    <Input label="Bank name" value={bankName} onChange={e => setBankName(e.target.value)} />
++                    <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
++                    <Input label="Account number" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} />
++                  </>
++                ) : (
++                  <>
++                    <Input label="Provider (e.g. M-Pesa, MTN MoMo)" value={provider} onChange={e => setProvider(e.target.value)} />
++                    <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
++                    <Input label="Phone number" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} />
++                  </>
++                )}
++
++                {error && <p className="text-sm text-red-600">{error}</p>}
++
++                <Button onClick={handleSubmit} loading={saving} className="w-full">
++                  Save payout details
++                </Button>
++              </div>
++            </>
++          )}
++        </div>
++      </main>
++      <Footer />
++    </div>
++  )
++}
+diff --git a/frontend/src/pages/admin/AdminPartners.jsx b/frontend/src/pages/admin/AdminPartners.jsx
+new file mode 100644
+index 0000000..5127d37
+--- /dev/null
++++ b/frontend/src/pages/admin/AdminPartners.jsx
+@@ -0,0 +1,251 @@
++import { useState, useEffect } from 'react'
++import api from '../../lib/api'
++import Button from '../../components/ui/Button'
++import Input from '../../components/ui/Input'
++import Modal from '../../components/ui/Modal'
++import Spinner from '../../components/ui/Spinner'
++import { useToast } from '../../components/ui/Toast'
++
++function fmtCents(cents, currency) {
++  return `${(cents / 100).toFixed(2)} ${currency}`
++}
++
++function PayoutDetailsSummary({ partner }) {
++  if (!partner.payoutMethod) {
++    return <span className="text-sm text-gray-400 italic">Not submitted yet</span>
++  }
++  const d = partner.payoutDetails || {}
++  if (partner.payoutMethod === 'BANK') {
++    return (
++      <div className="text-sm text-gray-700">
++        <div>{d.bankName}</div>
++        <div>{d.accountName} — {d.accountNumber}</div>
++      </div>
++    )
++  }
++  return (
++    <div className="text-sm text-gray-700">
++      <div>{d.provider}</div>
++      <div>{d.accountName} — {d.phoneNumber}</div>
++    </div>
++  )
++}
++
++function RecordPayoutModal({ partner, onClose, onRecorded }) {
++  const toast = useToast()
++  const [amount, setAmount] = useState('')
++  const [note, setNote] = useState('')
++  const [saving, setSaving] = useState(false)
++  const [error, setError] = useState('')
++
++  async function handleRecord() {
++    setError('')
++    const parsed = Number(amount)
++    if (!parsed || parsed <= 0) return setError('Enter a valid amount.')
++
++    setSaving(true)
++    try {
++      const res = await api.post(`/partners/${partner.id}/payouts`, {
++        amountCents: Math.round(parsed * 100),
++        currency: 'USD',
++        note: note || undefined
++      })
++      toast({
++        message: res.data.emailed
++          ? `Payout recorded — ${partner.name} has been emailed.`
++          : `Payout recorded, but the confirmation email failed to send.`,
++        type: res.data.emailed ? 'success' : 'warning'
++      })
++      onRecorded()
++      onClose()
++    } catch (err) {
++      setError(err.response?.data?.message || 'Failed to record payout.')
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  return (
++    <Modal open onClose={onClose} title={`Record payout — ${partner.name}`}>
++      <div className="flex flex-col gap-4">
++        <p className="text-sm text-gray-500">
++          Only use this <strong>after</strong> you've actually sent the money via your bank
++          or mobile money app. This just logs it and notifies {partner.name}.
++        </p>
++        <div className="rounded-md bg-gray-50 p-3">
++          <PayoutDetailsSummary partner={partner} />
++        </div>
++        <Input label="Amount sent (USD)" type="number" step="0.01" value={amount}
++          onChange={e => setAmount(e.target.value)} placeholder="45.00" />
++        <Input label="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
++          placeholder="e.g. September referrals" />
++        {error && <p className="text-sm text-red-600">{error}</p>}
++        <div className="flex gap-2 justify-end">
++          <Button variant="secondary" onClick={onClose}>Cancel</Button>
++          <Button onClick={handleRecord} loading={saving}
++            disabled={!partner.payoutMethod}>
++            Mark paid & notify
++          </Button>
++        </div>
++      </div>
++    </Modal>
++  )
++}
++
++function AddPartnerModal({ onClose, onCreated }) {
++  const toast = useToast()
++  const [name, setName] = useState('')
++  const [email, setEmail] = useState('')
++  const [referralCode, setReferralCode] = useState('')
++  const [saving, setSaving] = useState(false)
++  const [error, setError] = useState('')
++
++  async function handleCreate() {
++    setError('')
++    if (!name || !email) return setError('Name and email are required.')
++    setSaving(true)
++    try {
++      await api.post('/partners', { name, email, referralCode: referralCode || undefined })
++      toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
++      onCreated()
++      onClose()
++    } catch (err) {
++      setError(err.response?.data?.message || 'Failed to add partner.')
++    } finally {
++      setSaving(false)
++    }
++  }
++
++  return (
++    <Modal open onClose={onClose} title="Add partner">
++      <div className="flex flex-col gap-4">
++        <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
++        <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
++        <Input label="Referral code (optional)" value={referralCode}
++          onChange={e => setReferralCode(e.target.value)} placeholder="COACHNAME20" />
++        {error && <p className="text-sm text-red-600">{error}</p>}
++        <div className="flex gap-2 justify-end">
++          <Button variant="secondary" onClick={onClose}>Cancel</Button>
++          <Button onClick={handleCreate} loading={saving}>Add & send link</Button>
++        </div>
++      </div>
++    </Modal>
++  )
++}
++
++export default function AdminPartners() {
++  const toast = useToast()
++  const [partners, setPartners] = useState([])
++  const [loading, setLoading] = useState(true)
++  const [payoutTarget, setPayoutTarget] = useState(null)
++  const [showAdd, setShowAdd] = useState(false)
++
++  async function load() {
++    setLoading(true)
++    try {
++      const res = await api.get('/partners')
++      setPartners(res.data.data)
++    } catch (_) {
++      toast({ message: 'Failed to load partners.', type: 'error' })
++    } finally {
++      setLoading(false)
++    }
++  }
++
++  useEffect(() => { load() }, [])
++
++  async function resendLink(partner) {
++    try {
++      await api.post(`/partners/${partner.id}/resend-link`)
++      toast({ message: `Payout link re-sent to ${partner.name}.`, type: 'success' })
++    } catch (_) {
++      toast({ message: 'Failed to resend link.', type: 'error' })
++    }
++  }
++
++  return (
++    <div className="max-w-5xl mx-auto px-4 py-10">
++      <div className="flex items-center justify-between mb-6">
++        <h1 className="text-2xl font-bold text-gray-900">Partners</h1>
++        <Button onClick={() => setShowAdd(true)}>Add partner</Button>
++      </div>
++
++      {loading ? (
++        <div className="flex justify-center py-16"><Spinner /></div>
++      ) : partners.length === 0 ? (
++        <p className="text-sm text-gray-500">No partners yet.</p>
++      ) : (
++        <div className="flex flex-col gap-4">
++          {partners.map(p => {
++            const totalPaid = (p.payouts || [])
++              .reduce((sum, payout) => sum + payout.amountCents, 0)
++            return (
++              <div key={p.id} className="border border-gray-200 rounded-lg p-5 bg-white">
++                <div className="flex items-start justify-between gap-4 flex-wrap">
++                  <div>
++                    <div className="font-semibold text-gray-900">{p.name}</div>
++                    <div className="text-sm text-gray-500">{p.email}</div>
++                    {p.referralCode && (
++                      <div className="text-xs text-gray-400 mt-1">Code: {p.referralCode}</div>
++                    )}
++                  </div>
++                  <div className="text-right">
++                    <div className="text-xs text-gray-400">Paid to date</div>
++                    <div className="font-semibold text-gray-900">{fmtCents(totalPaid, 'USD')}</div>
++                  </div>
++                </div>
++
++                <div className="mt-4 grid sm:grid-cols-2 gap-4">
++                  <div>
++                    <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
++                      Payout details
++                    </div>
++                    <PayoutDetailsSummary partner={p} />
++                  </div>
++                  <div>
++                    <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
++                      Payout history
++                    </div>
++                    {(p.payouts || []).length === 0 ? (
++                      <span className="text-sm text-gray-400 italic">None yet</span>
++                    ) : (
++                      <ul className="text-sm text-gray-600 flex flex-col gap-1">
++                        {p.payouts.slice(0, 3).map(payout => (
++                          <li key={payout.id}>
++                            {fmtCents(payout.amountCents, payout.currency)} —{' '}
++                            {new Date(payout.paidAt).toLocaleDateString()}
++                            {payout.note ? ` (${payout.note})` : ''}
++                          </li>
++                        ))}
++                      </ul>
++                    )}
++                  </div>
++                </div>
++
++                <div className="mt-4 flex gap-2">
++                  <Button size="sm" onClick={() => setPayoutTarget(p)}>
++                    Record payout
++                  </Button>
++                  <Button size="sm" variant="secondary" onClick={() => resendLink(p)}>
++                    Resend payout-details link
++                  </Button>
++                </div>
++              </div>
++            )
++          })}
++        </div>
++      )}
++
++      {payoutTarget && (
++        <RecordPayoutModal
++          partner={payoutTarget}
++          onClose={() => setPayoutTarget(null)}
++          onRecorded={load}
++        />
++      )}
++      {showAdd && (
++        <AddPartnerModal onClose={() => setShowAdd(false)} onCreated={load} />
++      )}
++    </div>
++  )
++}
+diff --git a/src/controllers/partners.controller.js b/src/controllers/partners.controller.js
+new file mode 100644
+index 0000000..10c7726
+--- /dev/null
++++ b/src/controllers/partners.controller.js
+@@ -0,0 +1,196 @@
++// Manual-payout partner tracking. No automated disbursement — an admin
++// sends money themselves outside this system, then records what/where via
++// adminRecordPayout, which stamps a PAID row and emails the partner.
++//
++// Two audiences hit this controller:
++//   - The ADMIN (Jack) — gated by middleware/adminOnly.js.
++//   - The PARTNER — no login system for them yet; they're identified by a
++//     long random token mailed to them (payout_details_token), passed as
++//     ?token=... on the two public endpoints below.
++
++const { z } = require('zod')
++const { getSupabase } = require('../config/supabase')
++const cryptoLib = require('../lib/crypto')
++const emailService = require('../services/email.service')
++const { partnerRowToCamel, payoutRowToCamel } = require('../lib/mappers')
++
++// ── Admin: create a partner ────────────────────────────────────────────────
++// Generates their payout-details token and emails them the self-serve link
++// immediately — "a UI for submitting the details" starts here.
++
++const createPartnerSchema = z.object({
++  name:         z.string().min(1).max(200),
++  email:        z.string().email(),
++  referralCode: z.string().min(2).max(50).optional()
++})
++
++async function adminCreatePartner(ctx) {
++  const body = createPartnerSchema.parse(await ctx.req.json())
++  const supabase = getSupabase(ctx.env)
++  const token = cryptoLib.randomToken(32)
++
++  const { data, error } = await supabase.from('partners').insert({
++    name:                 body.name,
++    email:                body.email,
++    referral_code:        body.referralCode || null,
++    payout_details_token: token
++  }).select('*').single()
++  if (error) throw error
++
++  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${token}`
++  // Best-effort — the partner record should exist even if the email send
++  // fails (e.g. transient Resend error); admin can resend the link manually
++  // via adminGetPayoutLink below.
++  await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, body.email, body.name, payoutUrl)
++    .catch(() => {})
++
++  return ctx.json({ success: true, data: partnerRowToCamel(data) })
++}
++
++// ── Admin: list all partners + their payout history ────────────────────────
++// This is "a way admin can reach the details" — payoutDetails comes back in
++// full (bank/mobile money info) so Jack can actually go send the money.
++
++async function adminListPartners(ctx) {
++  const supabase = getSupabase(ctx.env)
++  const { data, error } = await supabase
++    .from('partners')
++    .select('*, payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at)')
++    .order('created_at', { ascending: false })
++  if (error) throw error
++  return ctx.json({ success: true, data: data.map(partnerRowToCamel) })
++}
++
++// ── Admin: re-send / re-fetch a partner's payout-details link ──────────────
++// For when the original email gets lost — regenerates nothing, just resends
++// the existing token so old links a partner may have saved keep working.
++
++async function adminResendPayoutLink(ctx) {
++  const partnerId = ctx.req.param('id')
++  const supabase = getSupabase(ctx.env)
++  const { data: partner, error } = await supabase
++    .from('partners').select('name, email, payout_details_token').eq('id', partnerId).maybeSingle()
++  if (error) throw error
++  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
++
++  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
++  const sent = await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl)
++  return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.' })
++}
++
++// ── Admin: record a payout that has ALREADY been sent manually ─────────────
++// This is the "button I mark, which also emails them" step. It captures the
++// amount and payout method at the moment of recording — it does not compute
++// anything automatically, since there's no automated commission ledger yet
++// (see the growth-strategy build scope for that future piece).
++
++const recordPayoutSchema = z.object({
++  amountCents:  z.number().int().positive(),
++  currency:     z.string().length(3).default('USD'),
++  // Defaults to whatever the partner has on file; only needed if paying
++  // through a different method than what they submitted.
++  payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
++  note:         z.string().max(500).optional()
++})
++
++async function adminRecordPayout(ctx) {
++  const partnerId = ctx.req.param('id')
++  const body = recordPayoutSchema.parse(await ctx.req.json())
++  const supabase = getSupabase(ctx.env)
++
++  const { data: partner, error: pErr } = await supabase
++    .from('partners').select('*').eq('id', partnerId).maybeSingle()
++  if (pErr) throw pErr
++  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
++
++  const payoutMethod = body.payoutMethod || partner.payout_method
++  if (!payoutMethod)
++    return ctx.json({ success: false,
++      message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
++
++  const { data: payout, error } = await supabase.from('payouts').insert({
++    partner_id:              partnerId,
++    amount_cents:            body.amountCents,
++    currency:                body.currency,
++    payout_method:           payoutMethod,
++    payout_details_snapshot: partner.payout_details || {},
++    note:                    body.note || null
++  }).select('*').single()
++  if (error) throw error
++
++  // The payout already happened in real life (admin sent it before
++  // clicking this) — an email failure here must not roll back or hide the
++  // recorded payout, only the notification.
++  const emailed = await emailService.sendPayoutSent(
++    ctx.env, supabase, partner.email, partner.name, body.amountCents, body.currency
++  ).catch(() => false)
++
++  return ctx.json({ success: true, data: payoutRowToCamel(payout), emailed })
++}
++
++// ── Public (token-gated): partner views their own current details ──────────
++
++async function getPartnerByToken(ctx) {
++  const token = ctx.req.query('token')
++  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
++
++  const supabase = getSupabase(ctx.env)
++  const { data: partner, error } = await supabase
++    .from('partners')
++    .select('name, payout_method, payout_details, payout_details_submitted_at')
++    .eq('payout_details_token', token)
++    .maybeSingle()
++  if (error) throw error
++  if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
++
++  return ctx.json({ success: true, data: partnerRowToCamel(partner) })
++}
++
++// ── Public (token-gated): partner submits/updates their payout details ─────
++// The two shapes are genuinely different (bank vs. mobile money), so this
++// is a discriminated union on payoutMethod rather than one loose schema.
++
++const bankDetailsSchema = z.object({
++  payoutMethod:  z.literal('BANK'),
++  bankName:      z.string().min(1).max(200),
++  accountName:   z.string().min(1).max(200),
++  accountNumber: z.string().min(1).max(50)
++})
++const mobileMoneyDetailsSchema = z.object({
++  payoutMethod: z.literal('MOBILE_MONEY'),
++  provider:     z.string().min(1).max(100),  // e.g. M-Pesa, MTN MoMo
++  accountName:  z.string().min(1).max(200),
++  phoneNumber:  z.string().min(1).max(30)
++})
++const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
++  bankDetailsSchema, mobileMoneyDetailsSchema
++])
++
++async function submitPayoutDetails(ctx) {
++  const token = ctx.req.query('token')
++  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
++
++  const body = payoutDetailsSchema.parse(await ctx.req.json())
++  const { payoutMethod, ...details } = body
++  const supabase = getSupabase(ctx.env)
++
++  const { data, error } = await supabase.from('partners')
++    .update({
++      payout_method:                payoutMethod,
++      payout_details:                details,
++      payout_details_submitted_at:  new Date().toISOString(),
++      updated_at:                    new Date().toISOString()
++    })
++    .eq('payout_details_token', token)
++    .select('name')
++    .maybeSingle()
++  if (error) throw error
++  if (!data) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
++
++  return ctx.json({ success: true, message: 'Payout details saved.' })
++}
++
++module.exports = {
++  adminCreatePartner, adminListPartners, adminResendPayoutLink, adminRecordPayout,
++  getPartnerByToken, submitPayoutDetails
++}
+diff --git a/src/index.js b/src/index.js
+index b5ff352..bb674a0 100644
+--- a/src/index.js
++++ b/src/index.js
+@@ -27,6 +27,7 @@ const verifyRoutes       = require('./routes/verify.routes')
+ const employerLeadRoutes = require('./routes/employer-leads.routes')
+ const pricingRoutes = require('./routes/pricing.routes')
+ const profileRoutes      = require('./routes/profile.routes')
++const partnersRoutes     = require('./routes/partners.routes')
+ 
+ const { getSupabase } = require('./config/supabase')
+ const { scanRowToCamel } = require('./lib/mappers')
+@@ -60,6 +61,7 @@ app.route('/api/verify',         verifyRoutes)
+ app.route('/api/employer-leads', employerLeadRoutes)
+ app.route('/api/profile',        profileRoutes)
+ app.route('/api/pricing',        pricingRoutes)
++app.route('/api/partners',       partnersRoutes)
+ 
+ // ── 5. Error handler ──────────────────────────────────────────────────────────
+ app.onError(errorHandler)
+diff --git a/src/lib/mappers.js b/src/lib/mappers.js
+index c184310..695f177 100644
+--- a/src/lib/mappers.js
++++ b/src/lib/mappers.js
+@@ -144,7 +144,48 @@ const PAYMENT_FIELD_MAP = {
+   paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id'
+ }
+ 
++// partners/payouts (see supabase/migrations/0011_partners_and_payouts.sql).
++// payout_details_token is intentionally NEVER included here — it's a bearer
++// secret (whoever has it can view/edit that partner's payout details), so
++// it must never round-trip into a JSON response. The only place it's ever
++// read is directly off the DB row inside partners.controller.js, right
++// before it's embedded in the emailed link.
++function partnerRowToCamel(row) {
++  if (!row) return row
++  const { payout_details_token, ...rest } = row
++  return {
++    id:                        rest.id,
++    name:                      rest.name,
++    email:                     rest.email,
++    referralCode:              rest.referral_code,
++    status:                    rest.status,
++    payoutMethod:              rest.payout_method,
++    payoutDetails:             rest.payout_details,
++    payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
++    payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
++    createdAt:                 rest.created_at,
++    updatedAt:                 rest.updated_at
++  }
++}
++
++function payoutRowToCamel(row) {
++  if (!row) return row
++  return {
++    id:                    row.id,
++    partnerId:             row.partner_id,
++    amountCents:           row.amount_cents,
++    currency:              row.currency,
++    payoutMethod:          row.payout_method,
++    payoutDetailsSnapshot: row.payout_details_snapshot,
++    note:                  row.note,
++    status:                row.status,
++    paidAt:                row.paid_at,
++    createdAt:             row.created_at
++  }
++}
++
+ module.exports = {
+   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
++  partnerRowToCamel, payoutRowToCamel,
+   USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
+ }
+diff --git a/src/middleware/adminOnly.js b/src/middleware/adminOnly.js
+new file mode 100644
+index 0000000..d7e1962
+--- /dev/null
++++ b/src/middleware/adminOnly.js
+@@ -0,0 +1,19 @@
++// Gates a route to users with role === 'ADMIN'. Does NOT verify the token
++// itself — optionalAuth already runs app-wide (see index.js) and populates
++// c.get('user') whenever a valid Bearer token is present, so this only adds
++// the role check on top rather than duplicating auth.js's JWT verification.
++//
++// To make an existing account an admin: update its role in the `users`
++// table directly (role_enum already has 'ADMIN' — see supabase/migrations/
++// 0001_init.sql) — there's no self-serve promotion endpoint, intentionally.
++
++async function adminOnly(c, next) {
++  const user = c.get('user')
++  if (!user)
++    return c.json({ success: false, message: 'Authentication required' }, 401)
++  if (user.role !== 'ADMIN')
++    return c.json({ success: false, message: 'Admin access required' }, 403)
++  await next()
++}
++
++module.exports = adminOnly
+diff --git a/src/routes/partners.routes.js b/src/routes/partners.routes.js
+new file mode 100644
+index 0000000..63d4a40
+--- /dev/null
++++ b/src/routes/partners.routes.js
+@@ -0,0 +1,19 @@
++const { Hono } = require('hono')
++const admin = require('../middleware/adminOnly')
++const c     = require('../controllers/partners.controller')
++
++const router = new Hono()
++
++// Public — partner self-serve payout details, gated by the emailed token
++// (not a route param, a query string — ?token=... — since the frontend
++// pages that read it are plain pages, not :id-style resource routes).
++router.get( '/payout-details', c.getPartnerByToken)
++router.post('/payout-details', c.submitPayoutDetails)
++
++// Admin only
++router.post('/',                    admin, c.adminCreatePartner)
++router.get( '/',                    admin, c.adminListPartners)
++router.post('/:id/resend-link',     admin, c.adminResendPayoutLink)
++router.post('/:id/payouts',         admin, c.adminRecordPayout)
++
++module.exports = router
+diff --git a/src/services/email.service.js b/src/services/email.service.js
+index cf5905d..90caf18 100644
+--- a/src/services/email.service.js
++++ b/src/services/email.service.js
+@@ -79,6 +79,27 @@ async function sendScanPass(env, supabase, email, name, score) {
+   })
+ }
+ 
++// ── Partner payouts (manual) ────────────────────────────────────────────────
++
++async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
++  return send(env, supabase, email, 'Set up your Passthrough payout details', 'partner_payout_details_request', {
++    NAME:       name,
++    PAYOUT_URL: payoutUrl
++  })
++}
++
++// amountCents/currency formatted here (not left to the caller) so every
++// payout email uses the same "$45.00"-style formatting regardless of who
++// calls this — currently only partners.controller.js's adminRecordPayout,
++// but this shouldn't silently drift if a second caller is added later.
++async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
++  const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
++  return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
++    NAME:   name,
++    AMOUNT: amount
++  })
++}
++
+ async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
+   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
+     NAME:              name,
+diff --git a/src/templates/emails.js b/src/templates/emails.js
+index 6159156..96c43e0 100644
+--- a/src/templates/emails.js
++++ b/src/templates/emails.js
+@@ -17,6 +17,8 @@ const TEMPLATES = {
+   fix_delivered: "<h2>\u2713 Your Passthrough Verified resume is ready</h2>\n<p>Hi {{NAME}}, your fixed resume is ready to download from your dashboard.</p>\n<a href=\"{{DOWNLOAD_URL}}\" class=\"btn\">Download Your Files \u2192</a>\n<p><strong>How to use your two files:</strong></p>\n<p>\ud83d\udcc4 <strong>.docx file</strong> \u2192 Upload to job portals, company websites,\nand any online application form.</p>\n<p>\ud83c\udfa8 <strong>PDF file</strong> \u2192 Email hiring managers directly,\nshare with recruiters, use on your portfolio.</p>\n<p><strong>Your Passthrough Verified credential:</strong><br>\nYour verification URL: <a href=\"{{VERIFICATION_URL}}\">{{VERIFICATION_URL}}</a></p>\n<p>Add this to your cover letters:<br>\n<em>\"My resume has been Passthrough Verified. Verify: {{VERIFICATION_URL}}\"</em></p>\n",
+   fix_delivered_plain: "<h2>\u2713 Your fixed resume is ready</h2>\n<p>Hi {{NAME}}, your rewritten resume is ready to download from your dashboard.</p>\n<a href=\"{{DOWNLOAD_URL}}\" class=\"btn\">Download Your Files \u2192</a>\n<p><strong>How to use your two files:</strong></p>\n<p>\ud83d\udcc4 <strong>.docx file</strong> \u2192 Upload to job portals, company websites,\nand any online application form.</p>\n<p>\ud83c\udfa8 <strong>PDF file</strong> \u2192 Email hiring managers directly,\nshare with recruiters, use on your portfolio.</p>\n",
+   fix_failed: "<h2>We hit a snag</h2>\n<p>Hi {{NAME}}, something went wrong generating your resume.</p>\n<p><strong>You have not been charged again.</strong> We're looking into it\nand will email you when your resume is ready.</p>\n<p>If you need help, email us at support@passthrough.dev</p>\n",
++  partner_payout_details_request: "<h2>Set up your payout details</h2>\n<p>Hi {{NAME}}, welcome to the Passthrough partner program.</p>\n<p>Click below to tell us where to send your payouts \u2014 bank account or\nmobile money, whichever you prefer.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Add Payout Details \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link is unique to you \u2014 don't share it. You can come back and\nupdate these details anytime.</p>\n",
++  payout_sent: "<h2>Payout sent \u2713</h2>\n<p>Hi {{NAME}}, we've sent you a payout of {{AMOUNT}}.</p>\n<p>It should reflect in your account shortly, depending on your bank or\nmobile money provider's processing time.</p>\n<p>Thanks for partnering with Passthrough.</p>\n",
+ }
+ 
+ // Every var gets HTML-entity-escaped before substitution. NAME in
+diff --git a/supabase/migrations/0011_partners_and_payouts.sql b/supabase/migrations/0011_partners_and_payouts.sql
+new file mode 100644
+index 0000000..d40838b
+--- /dev/null
++++ b/supabase/migrations/0011_partners_and_payouts.sql
+@@ -0,0 +1,61 @@
++-- Partners (affiliates) + manual payout tracking.
++--
++-- Scope, deliberately: this is the MANUAL-payout version. There is no
++-- automated disbursement here — an admin sends money themselves outside
++-- this system (bank app / mobile money app), then records what they sent
++-- via POST /api/partners/:id/payouts, which stamps a PAID row and emails
++-- the partner a confirmation. Referral-code discount PRICING (a separate,
++-- larger feature — see the growth-strategy build scope) is intentionally
++-- NOT part of this migration.
++
++create type partner_status_enum as enum ('ACTIVE', 'PAUSED');
++create type payout_method_enum  as enum ('BANK', 'MOBILE_MONEY');
++create type payout_status_enum  as enum ('PAID');
++-- Only PAID exists for now — a payout row is only ever created after the
++-- admin has already sent the money. If a "pending/approved" workflow is
++-- added later (see build scope), extend this enum then; don't pre-build
++-- states nothing in the app can produce yet.
++
++create table partners (
++  id                           uuid primary key default gen_random_uuid(),
++  name                         text not null,
++  email                        text not null,
++  referral_code                text unique,           -- optional label for now; not wired to pricing yet
++  status                       partner_status_enum not null default 'ACTIVE',
++  -- Long random token mailed to the partner as a link (?token=...) so they
++  -- can submit/update their own payout details without a full login system.
++  -- Not time-limited: they may need to update bank details later, and the
++  -- token is 32 random bytes (crypto.getRandomValues), not guessable.
++  payout_details_token         text unique not null,
++  payout_method                payout_method_enum,
++  -- Shape depends on payout_method — {bankName, accountName, accountNumber}
++  -- for BANK, {provider, accountName, phoneNumber} for MOBILE_MONEY. Kept
++  -- schemaless here (validated by zod at the API boundary in
++  -- partners.controller.js) since the two shapes genuinely differ and a
++  -- rigid column set would just be nullable-everything.
++  payout_details               jsonb,
++  payout_details_submitted_at  timestamptz,
++  created_at                   timestamptz not null default now(),
++  updated_at                   timestamptz not null default now()
++);
++
++create index partners_status_idx on partners(status);
++
++create table payouts (
++  id                       uuid primary key default gen_random_uuid(),
++  partner_id               uuid not null references partners(id),
++  amount_cents             int not null,
++  currency                 text not null default 'USD',
++  payout_method            payout_method_enum not null,
++  -- Snapshot of partner.payout_details AT THE MOMENT this payout was
++  -- recorded. Partner details can change later (they update their bank
++  -- account); the historical record of what was actually paid where must
++  -- not silently change retroactively when they do.
++  payout_details_snapshot  jsonb not null,
++  note                     text,
++  status                   payout_status_enum not null default 'PAID',
++  paid_at                  timestamptz not null default now(),
++  created_at               timestamptz not null default now()
++);
++
++create index payouts_partner_idx on payouts(partner_id);
+-- 
+2.43.0
+
