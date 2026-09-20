@@ -16,13 +16,22 @@ const { getSupabase } = require('../config/supabase')
 const { sha256Bytes } = require('../lib/crypto')
 const constants        = require('../config/constants')
 
+// Codes are generated exclusively from constants.SHORT_CODE_CHARS, an
+// uppercase-only alphabet chosen specifically to avoid characters that are
+// easy to confuse when read aloud or hand-typed (no I/O/0/1) — that choice
+// only pays off if lookups are actually tolerant of how a human retypes the
+// code, so normalize case here rather than doing an exact-case DB match.
+function normalizeCode(raw) {
+  return (raw || '').trim().toUpperCase()
+}
+
 async function getVerification(c) {
-  const code = c.req.param('code')
+  const code = normalizeCode(c.req.param('code'))
   const supabase = getSupabase(c.env)
 
   const { data: row, error } = await supabase
     .from('scans')
-    .select('candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, resume_ats_path, resume_hash, verify_expose_docx, verify_expose_pdf, resume_pdf_path')
+    .select('candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, resume_ats_path, resume_hash, verify_expose_docx, verify_expose_pdf, resume_pdf_path, verification_views')
     .eq('verification_code', code)
     .maybeSingle()
   if (error) throw error
@@ -36,8 +45,18 @@ async function getVerification(c) {
   supabase.rpc('increment_verification_views', { p_code: code })
     .then(() => {}, e => console.error('verificationViews increment:', e.message))
 
-  // Integrity check — re-hash the stored DOCX bytes from R2
-  let integrityStatus = 'verified'
+  // Integrity check — re-hash the stored DOCX bytes from R2.
+  //
+  // Starts (and, on any failure, stays) at 'unknown' rather than defaulting
+  // to 'verified' — this used to fail OPEN: if the R2 object was missing or
+  // the fetch/hash threw, the catch swallowed it and the default 'verified'
+  // value stood, so a storage hiccup would present as a confirmed-unmodified
+  // badge. The entire point of this page is "cryptographically verified —
+  // not just a badge" (see Verify.jsx's explainer card), so an
+  // unverifiable file must never render the same as a positively-confirmed
+  // one. 'unknown' is a distinct third state the frontend renders
+  // separately from both 'verified' and 'modified'.
+  let integrityStatus = 'unknown'
   if (row.resume_ats_path && row.resume_hash) {
     try {
       const obj = await c.env.RESUMES_BUCKET.get(row.resume_ats_path)
@@ -45,8 +64,12 @@ async function getVerification(c) {
         const bytes = await obj.arrayBuffer()
         const hash  = await sha256Bytes(bytes)
         integrityStatus = hash === row.resume_hash ? 'verified' : 'modified'
+      } else {
+        console.error(`Verify integrity check: R2 object missing at ${row.resume_ats_path} (code ${code})`)
       }
-    } catch (_) {}
+    } catch (e) {
+      console.error(`Verify integrity check failed for code ${code}:`, e.message)
+    }
   }
 
   // fix_ats_score is the score of the resume actually being verified here
@@ -66,6 +89,11 @@ async function getVerification(c) {
     seniorityLevel:     row.seniority_level,
     verifiedAt:         row.verified_at,
     integrityStatus,
+    // +1 — the increment above is fire-and-forget (not awaited), so `row`
+    // still reflects the count from before this view. Reporting it
+    // optimistically here means the count on screen matches "views
+    // including this one" instead of always looking one behind.
+    verificationViews: (row.verification_views || 0) + 1,
     // Owner-controlled — default OFF for both (see 0007_verify_document_visibility.sql).
     // The frontend uses these to decide whether to show a download link at
     // all; the actual download is separately re-checked server-side below,
@@ -83,7 +111,7 @@ async function getVerification(c) {
 // this when getVerification said it was OK — the frontend check is a UX
 // convenience, this is the actual access control.
 async function downloadVerifiedFile(c) {
-  const code = c.req.param('code')
+  const code = normalizeCode(c.req.param('code'))
   const type = c.req.query('type')
   const supabase = getSupabase(c.env)
 
@@ -105,7 +133,14 @@ async function downloadVerifiedFile(c) {
   const obj = await c.env.RESUMES_BUCKET.get(fileKey)
   if (!obj) return c.json({ success: false, message: 'File not available.' }, 404)
 
-  c.header('Content-Disposition', `inline; filename="${filename}"`)
+  // 'inline' only makes sense for PDF — browsers can display it directly,
+  // which is exactly what the frontend's window.open(..., '_blank') relies
+  // on. DOCX has no in-browser renderer, and the frontend navigates the
+  // SAME tab to this URL (window.location.href) — without 'attachment', a
+  // browser that doesn't know what to do with an inline docx byte stream
+  // can leave the user on a blank/broken page instead of downloading the
+  // file, which is what they actually asked for.
+  c.header('Content-Disposition', `${type === 'pdf' ? 'inline' : 'attachment'}; filename="${filename}"`)
   c.header('Content-Type', type === 'pdf'
     ? 'application/pdf'
     : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')

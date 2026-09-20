@@ -175,12 +175,23 @@ Then redeploy: `npm run deploy`
    | Build output directory | `frontend/dist` |
    | Root directory | `/` |
 
-4. Add environment variable:
+4. Add environment variables:
 
    | Variable | Value |
    |----------|-------|
    | `VITE_API_URL` | `https://api.passthrough.dev` |
-https://passthrough-api.deeptec.workers.dev/api
+   | `API_URL`      | `https://api.passthrough.dev` |
+
+   Both point at the same Worker. `VITE_API_URL` is baked into the client
+   bundle at build time and used by the React app in the browser.
+   `API_URL` is read server-side, at request time, by
+   `frontend/functions/v/[code].js` — the Pages Function that injects
+   per-candidate Open Graph/Twitter Card tags into `/v/:code` so a shared
+   verification link unfurls with the actual candidate/score instead of
+   the generic homepage preview. Without `API_URL` set, that Function
+   fails open and just serves the normal static page — nothing breaks,
+   the personalized share preview just won't appear.
+
 5. Save and Deploy.
 
 Every push to `main` triggers an automatic rebuild and deploy.

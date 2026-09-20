@@ -418,6 +418,11 @@ export default function ScanResult() {
                       className="underline break-all">
                       {scan.verificationUrl}
                     </a>
+                    {typeof scan.verificationViews === 'number' && scan.verificationViews > 0 && (
+                      <span className="text-green-700">
+                        {' '}— viewed {scan.verificationViews} time{scan.verificationViews === 1 ? '' : 's'}
+                      </span>
+                    )}
                   </p>
                 )}
                 {dlError && (

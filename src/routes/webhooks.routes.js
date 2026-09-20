@@ -6,10 +6,15 @@
 // of the migration patch for the full explanation.
 
 const { Hono } = require('hono')
-const c = require('../controllers/webhooks.controller')
+const rl = require('../middleware/rateLimiter')
+const c  = require('../controllers/webhooks.controller')
 
 const router = new Hono()
 
-router.post('/paystack', c.handlePaystack)
+// The generic `general` IP limiter (mounted app-wide on /api/* in index.js)
+// skips this path — see rateLimiter.js's `general` config — in favor of the
+// dedicated, more generous `webhook` limiter below, since this route is
+// already protected by HMAC signature verification inside the handler.
+router.post('/paystack', rl.webhook, c.handlePaystack)
 
 module.exports = router

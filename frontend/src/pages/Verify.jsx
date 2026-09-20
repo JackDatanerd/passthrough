@@ -13,6 +13,11 @@ export default function Verify() {
   const [data,    setData   ] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  // Generic failure state — separate from notFound. The old version only
+  // ever branched on a 404; anything else (500, timeout, offline) left
+  // loading/notFound/data all falsy, so the page silently rendered nothing
+  // but the Navbar/Footer with no explanation and no way to retry.
+  const [loadError, setLoadError] = useState(false)
 
   // Hiring manager soft opt-in
   const [hmExpanded,  setHmExpanded ] = useState(false)
@@ -24,14 +29,20 @@ export default function Verify() {
   const [leadErr,     setLeadErr    ] = useState('')
   const [leadLoading, setLeadLoading] = useState(false)
 
-  useEffect(() => {
+  const [linkCopied, setLinkCopied] = useState(false)
+
+  function load() {
+    setLoading(true); setNotFound(false); setLoadError(false)
     api.get(`/verify/${code}`)
       .then(res => { setData(res.data.data); setLoading(false) })
       .catch(err => {
         setLoading(false)
         if (err.response?.status === 404) setNotFound(true)
+        else setLoadError(true)
       })
-  }, [code])
+  }
+
+  useEffect(() => { load() }, [code])
 
   async function handleLead() {
     if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
@@ -51,6 +62,22 @@ export default function Verify() {
     }
   }
 
+  function handleCopyLink() {
+    navigator.clipboard?.writeText(window.location.href).then(() => {
+      setLinkCopied(true)
+      setTimeout(() => setLinkCopied(false), 2000)
+    })
+  }
+
+  const integrityLabel =
+    data?.integrityStatus === 'verified' ? 'Unmodified' :
+    data?.integrityStatus === 'modified' ? 'Modified'   :
+    'Unavailable'
+  const integrityClass =
+    data?.integrityStatus === 'verified' ? 'text-green-700' :
+    data?.integrityStatus === 'modified' ? 'text-red-600'   :
+    'text-amber-600'
+
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
       <Navbar />
@@ -64,6 +91,15 @@ export default function Verify() {
         {notFound && (
           <div className="text-center py-20">
             <p className="text-gray-600">Verification not found.</p>
+          </div>
+        )}
+
+        {loadError && (
+          <div className="text-center py-20">
+            <p className="text-gray-600 mb-4">
+              Something went wrong loading this verification page.
+            </p>
+            <Button variant="secondary" onClick={load}>Try again</Button>
           </div>
         )}
 
@@ -105,8 +141,8 @@ export default function Verify() {
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-1">Integrity</p>
-                  <p className={`font-bold text-sm ${data.integrityStatus === 'verified' ? 'text-green-700' : 'text-red-600'}`}>
-                    {data.integrityStatus === 'verified' ? 'Unmodified' : 'Modified'}
+                  <p className={`font-bold text-sm ${integrityClass}`}>
+                    {integrityLabel}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
@@ -145,6 +181,19 @@ export default function Verify() {
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
                   : "This resume was scanned by Passthrough's ATS engine. It has not been modified since this scan, but did not reach the score threshold required for Passthrough Verified status."}
               </p>
+              <div className="flex items-center justify-center gap-3 mt-4">
+                {typeof data.verificationViews === 'number' && (
+                  <p className="text-xs text-gray-400">
+                    Viewed {data.verificationViews} time{data.verificationViews === 1 ? '' : 's'}
+                  </p>
+                )}
+                <button
+                  onClick={handleCopyLink}
+                  className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors"
+                >
+                  {linkCopied ? 'Link copied' : 'Copy link'}
+                </button>
+              </div>
             </div>
 
             {/* Integrity check explainer — elevated from a stat box to its own
@@ -169,6 +218,13 @@ export default function Verify() {
                     <strong className="text-red-600">Modified</strong> instead of{' '}
                     <strong className="text-green-700">Unmodified</strong> — automatically,
                     with no way for the candidate to control it.
+                    {data.integrityStatus === 'unknown' && (
+                      <>
+                        {' '}The check couldn't run just now, so this page is showing{' '}
+                        <strong className="text-amber-600">Unavailable</strong> rather than
+                        guessing — refresh in a moment to re-check.
+                      </>
+                    )}
                   </p>
                 </div>
               </div>

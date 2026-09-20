@@ -1,0 +1,290 @@
+From fad695c2823f9a993152f8545fdaeaea274936ca Mon Sep 17 00:00:00 2001
+From: Jack <jack@saltern.studio>
+Date: Tue, 15 Sep 2026 15:26:32 +0000
+Subject: [PATCH] Add the actual shareable referral link + manual code entry at
+ checkout
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Two real gaps from the previous commit, not config issues:
+- Partner dashboard showed the raw code but never a shareable URL
+  (https://passthrough.dev/?ref=CODE) — added with a copy-to-clipboard
+  button, on both the partner dashboard and the admin panel.
+- There was no way to APPLY a code by typing it — only automatic ?ref=
+  URL capture worked. Added a 'have a referral code?' entry field to
+  FixBanner, wired through ScanResult as real state (not just a
+  storage read) so typing a code updates the displayed price
+  immediately and is what actually gets charged.
+---
+ frontend/src/components/scan/FixBanner.jsx | 56 ++++++++++++++++++----
+ frontend/src/hooks/useReferralCapture.js   | 10 ++++
+ frontend/src/pages/PartnerDashboard.jsx    | 36 +++++++++++++-
+ frontend/src/pages/ScanResult.jsx          | 19 ++++++--
+ frontend/src/pages/admin/AdminPartners.jsx | 21 ++++++--
+ 5 files changed, 125 insertions(+), 17 deletions(-)
+
+diff --git a/frontend/src/components/scan/FixBanner.jsx b/frontend/src/components/scan/FixBanner.jsx
+index 3787262..7df5dec 100644
+--- a/frontend/src/components/scan/FixBanner.jsx
++++ b/frontend/src/components/scan/FixBanner.jsx
+@@ -1,3 +1,4 @@
++import { useState } from 'react'
+ import { useNavigate } from 'react-router-dom'
+ import Button from '../ui/Button'
+ import { usePricing, fmtPrice } from '../../hooks/usePricing'
+@@ -16,16 +17,55 @@ function PriceTag({ tier, byTier }) {
+   )
+ }
+ 
+-function ReferralBadge({ pricing }) {
+-  if (!pricing?.referralApplied) return null
++// Two states: a code is already applied (show the confirmation + a way to
++// change it), or no code is applied yet (show the entry field). This is the
++// ONLY place a person can type a code by hand — a ?ref= link in the URL
++// pre-fills it via useReferralCapture, but plenty of real referral traffic
++// is a code heard on a podcast or read off a screenshot, not a clicked link.
++function ReferralCodeEntry({ referralCode, pricing, onApply }) {
++  const [value, setValue] = useState(referralCode || '')
++  const [editing, setEditing] = useState(!referralCode)
++
++  function handleApply() {
++    onApply(value)
++    setEditing(false)
++  }
++
++  if (referralCode && pricing?.referralApplied && !editing) {
++    return (
++      <p className="text-sm font-medium text-emerald-700 mb-3">
++        ✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}
++        <button type="button" onClick={() => setEditing(true)}
++          className="underline font-normal text-emerald-700/80 hover:text-emerald-900">
++          change
++        </button>
++      </p>
++    )
++  }
++
+   return (
+-    <p className="text-sm font-medium text-emerald-700 mb-2">
+-      ✓ Referral discount applied
+-    </p>
++    <div className="flex items-center gap-2 mb-3">
++      <input
++        type="text"
++        value={value}
++        onChange={e => setValue(e.target.value)}
++        onKeyDown={e => e.key === 'Enter' && handleApply()}
++        placeholder="Have a referral code?"
++        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500"
++      />
++      <button type="button" onClick={handleApply}
++        disabled={!value.trim()}
++        className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
++        Apply
++      </button>
++    </div>
+   )
+ }
+ 
+-export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits = 0, referralCode = '' }) {
++export default function FixBanner({
++  scan, onPay, onRedeemCredit, freeFixCredits = 0,
++  referralCode = '', onApplyReferralCode = () => {}
++}) {
+   const navigate = useNavigate()
+   const { byTier, pricing } = usePricing(referralCode)
+   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
+@@ -63,7 +103,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits
+             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
+           </p>
+         )}
+-        <ReferralBadge pricing={pricing} />
++        <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
+         <div className="flex flex-wrap gap-2 mt-3">
+           {hasCredit && (
+             <Button onClick={onRedeemCredit} variant="secondary">
+@@ -95,7 +135,7 @@ export default function FixBanner({ scan, onPay, onRedeemCredit, freeFixCredits
+           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
+         </p>
+       )}
+-      <ReferralBadge pricing={pricing} />
++      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
+       <div className="flex flex-col sm:flex-row gap-3">
+         <Button onClick={() => onPay('BADGE')} variant="secondary">
+           Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />
+diff --git a/frontend/src/hooks/useReferralCapture.js b/frontend/src/hooks/useReferralCapture.js
+index ef7f78c..0f3062b 100644
+--- a/frontend/src/hooks/useReferralCapture.js
++++ b/frontend/src/hooks/useReferralCapture.js
+@@ -32,3 +32,13 @@ export function useReferralCapture() {
+ export function getStoredReferralCode() {
+   return localStorage.getItem(STORAGE_KEY) || ''
+ }
++
++// Used by the manual "have a code?" entry field at checkout (FixBanner) —
++// same storage key as automatic URL capture above, so a code entered by
++// hand behaves identically to one picked up from a ?ref= link for the rest
++// of the session (survives navigation, applies at payment time).
++export function setStoredReferralCode(code) {
++  const trimmed = (code || '').trim().toUpperCase()
++  if (trimmed) localStorage.setItem(STORAGE_KEY, trimmed)
++  else localStorage.removeItem(STORAGE_KEY)
++}
+diff --git a/frontend/src/pages/PartnerDashboard.jsx b/frontend/src/pages/PartnerDashboard.jsx
+index d5de219..75f3381 100644
+--- a/frontend/src/pages/PartnerDashboard.jsx
++++ b/frontend/src/pages/PartnerDashboard.jsx
+@@ -18,6 +18,34 @@ function StatCard({ label, value }) {
+   )
+ }
+ 
++// The link itself — built client-side from window.location.origin, since
++// this page is served from the same domain the link should point at. This
++// is the one thing that was missing entirely before: a code alone isn't
++// shareable, a URL is.
++function ShareLink({ code }) {
++  const [copied, setCopied] = useState(false)
++  const url = `${window.location.origin}/?ref=${code}`
++
++  function copy() {
++    navigator.clipboard.writeText(url).then(() => {
++      setCopied(true)
++      setTimeout(() => setCopied(false), 2000)
++    })
++  }
++
++  return (
++    <div className="flex items-center gap-2 mt-2">
++      <input readOnly value={url}
++        onFocus={e => e.target.select()}
++        className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
++      <button onClick={copy} type="button"
++        className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap">
++        {copied ? 'Copied ✓' : 'Copy link'}
++      </button>
++    </div>
++  )
++}
++
+ function CodeCard({ code }) {
+   const prices = Object.entries(code.tierPrices || {})
+   return (
+@@ -29,13 +57,19 @@ function CodeCard({ code }) {
+           {code.active ? 'Active' : 'Inactive'}
+         </span>
+       </div>
+-      <div className="text-sm text-gray-500 mt-2">
++      <ShareLink code={code.code} />
++      <div className="text-sm text-gray-500 mt-3">
+         {prices.map(([tier, cents]) => `${tier}: $${(cents / 100).toFixed(0)}`).join(' · ')}
+       </div>
+       <div className="text-sm text-gray-500 mt-1">
+         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
+         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
+       </div>
++      <p className="text-xs text-gray-400 mt-2">
++        Anyone who visits your link gets the discount automatically. They can also just tell
++        people the code <span className="font-mono">{code.code}</span> directly — there's a
++        "have a code?" box at checkout too.
++      </p>
+     </div>
+   )
+ }
+diff --git a/frontend/src/pages/ScanResult.jsx b/frontend/src/pages/ScanResult.jsx
+index ea4f0b0..303d05e 100644
+--- a/frontend/src/pages/ScanResult.jsx
++++ b/frontend/src/pages/ScanResult.jsx
+@@ -8,7 +8,7 @@ import Footer from '../components/layout/Footer'
+ import ScoreGauge from '../components/scan/ScoreGauge'
+ import CategoryScores from '../components/scan/CategoryScores'
+ import FixBanner from '../components/scan/FixBanner'
+-import { getStoredReferralCode } from '../hooks/useReferralCapture'
++import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
+ import DiffView from '../components/scan/DiffView'
+ import QuantificationPrompts from '../components/scan/QuantificationPrompts'
+ import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
+@@ -50,6 +50,11 @@ export default function ScanResult() {
+   const [retryLoading, setRetryLoading] = useState(false)
+   const [retryError,   setRetryError  ] = useState('')
+   const [pollError,    setPollError   ] = useState('')
++  // Initialized from storage (auto-captured ?ref= link), but this is now
++  // real state — not just a read at render time — so a code typed by hand
++  // in FixBanner's entry field (see handleApplyReferralCode below) updates
++  // the price shown immediately, not just on next page load.
++  const [referralCode, setReferralCode] = useState(getStoredReferralCode())
+   const pollRef     = useRef(null)
+   // Plain ref, not state — fetchScan is captured once by the setInterval
+   // call in the mount effect below, so a `scan` state read inside it would
+@@ -126,11 +131,19 @@ export default function ScanResult() {
+     return () => clearInterval(pollRef.current)
+   }, [id])
+ 
++  // Storage stays the source of truth ACROSS page loads/navigation;
++  // this state is the source of truth WITHIN this page's lifetime, so a
++  // manually-typed code (FixBanner's entry field) is reflected instantly
++  // without needing a reload to re-read storage.
++  function handleApplyReferralCode(code) {
++    setStoredReferralCode(code)
++    setReferralCode(getStoredReferralCode())  // re-read: normalizes casing/trim, empty string if cleared
++  }
++
+   async function handlePay(fixTier) {
+     if (!user) return navigate(`/register`)
+     setPayLoading(true); setPayError('')
+     try {
+-      const referralCode = getStoredReferralCode()
+       const res = await api.post('/payments/initialize', {
+         scanId: id, fixTier, referralCode: referralCode || undefined
+       })
+@@ -489,7 +502,7 @@ export default function ScanResult() {
+                 {payError && (
+                   <p className="text-sm text-red-600">{payError}</p>
+                 )}
+-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={getStoredReferralCode()} />
++                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} />
+               </>
+             )}
+ 
+diff --git a/frontend/src/pages/admin/AdminPartners.jsx b/frontend/src/pages/admin/AdminPartners.jsx
+index b8b393e..3840fa5 100644
+--- a/frontend/src/pages/admin/AdminPartners.jsx
++++ b/frontend/src/pages/admin/AdminPartners.jsx
+@@ -221,6 +221,12 @@ function ReferralCodesList({ partner, onToggled }) {
+     }
+   }
+ 
++  function copyLink(codeRow) {
++    const url = `${window.location.origin}/?ref=${codeRow.code}`
++    navigator.clipboard.writeText(url)
++    toast({ message: 'Link copied.', type: 'success' })
++  }
++
+   if (!partner.referralCodes || partner.referralCodes.length === 0) {
+     return <span className="text-sm text-gray-400 italic">None yet</span>
+   }
+@@ -235,11 +241,16 @@ function ReferralCodesList({ partner, onToggled }) {
+               {code.clicks || 0} clicks · {code.usesSoFar || 0} used
+             </span>
+           </span>
+-          <button onClick={() => toggle(code)}
+-            className={`text-xs px-2 py-0.5 rounded-full ${
+-              code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+-            {code.active ? 'Active' : 'Inactive'}
+-          </button>
++          <span className="flex items-center gap-2">
++            <button onClick={() => copyLink(code)} className="text-xs text-blue-600 hover:underline">
++              Copy link
++            </button>
++            <button onClick={() => toggle(code)}
++              className={`text-xs px-2 py-0.5 rounded-full ${
++                code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
++              {code.active ? 'Active' : 'Inactive'}
++            </button>
++          </span>
+         </li>
+       ))}
+     </ul>
+-- 
+2.43.0
+

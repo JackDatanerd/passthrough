@@ -108,6 +108,25 @@ const msg = m => m
 
 const general = makeLimiter({
   windowSeconds: 15 * 60, max: 100, keyPrefix: 'rl:general',
+  message: msg('Too many requests.'),
+  // /api/webhooks/* gets its own limiter (see `webhook` below) instead of
+  // sharing this generic per-IP bucket. Paystack's webhook deliveries all
+  // come from the same account, so their volume tracks real payment
+  // volume — a launch-day/promo burst, or Paystack's own retry storm after
+  // a transient outage, could otherwise 429 legitimate payment webhooks
+  // with zero visibility (Paystack's retry logic doesn't surface a 429 to
+  // anyone). The route is already protected by HMAC signature verification
+  // inside the handler itself, which is a stronger gate than a generic IP
+  // counter anyway.
+  skip: c => c.req.path.startsWith('/api/webhooks')
+})
+
+// Dedicated webhook limiter — much higher ceiling than `general` since this
+// route's real protection is the HMAC signature check inside the handler,
+// not this counter. This exists purely as a backstop against a genuine
+// flood (not normal retry/burst traffic), still keyed by IP.
+const webhook = makeLimiter({
+  windowSeconds: 5 * 60, max: 300, keyPrefix: 'rl:webhook',
   message: msg('Too many requests.')
 })
 
@@ -152,4 +171,4 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
-module.exports = { general, anonScan, auth, authVerify, payment, employerLead, isBypassed }
+module.exports = { general, anonScan, auth, authVerify, payment, employerLead, webhook, isBypassed }

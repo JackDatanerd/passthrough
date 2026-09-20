@@ -193,7 +193,8 @@ async function verifyPayment(c2) {
   // Referral attribution is bound to the payment row itself (referral_code_id,
   // set once at initializePayment time — see that function's comment) — this
   // runs exactly once, gated by the same atomic idempotency check above, so
-  // a partner is never double-credited for one sale.
+  // a partner is never double-credited for one sale. recordConversion never
+  // throws (it swallows and logs its own errors internally).
   await referralService.recordConversion(supabase, payment)
 
   // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
@@ -202,19 +203,96 @@ async function verifyPayment(c2) {
   // trustworthy again: it's now only ever written here, at confirmed-paid
   // time, from the tier that reference actually paid for.
   const fixTier = payment.fix_tier || 'FIX'
-  await supabase.from('scans').update({
-    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
-  }).eq('id', payment.scan_id)
 
-  const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
-  // Enqueue instead of running inline via waitUntil() — generateFix/
-  // generateBadge (two Claude calls + a Browser Rendering PDF render) can
-  // easily exceed the 30-second waitUntil wall-clock cap, which silently
-  // kills the task with no catchable error. The queue consumer (index.js)
-  // has no such cap. See index.js's queue() handler for the full rationale.
-  await c2.env.FIX_QUEUE.send({ type: generatorType, scanId: payment.scan_id })
+  // HARDENING: the atomic UPDATE above is, by design, the only moment
+  // fulfillment will ever run for this reference — any future call to this
+  // endpoint (or the webhook, in webhooks.controller.js) sees status !==
+  // 'PENDING' and returns the early "already processed" success response
+  // below, with no retry. That's correct for avoiding double-fulfillment,
+  // but it means a failure in the two steps below previously had no path
+  // back: the scans.update's own error was never even checked, so a failed
+  // write could go unnoticed while this endpoint still reported success —
+  // and scan.fixPurchased staying false is exactly what downloadFile in
+  // scan.controller.js gates the paid file on, and what initiateFix's
+  // already-purchased check relies on to prevent a second charge. Isolated
+  // in its own try/catch so a failure here gets an owner alert pointing at
+  // the manual recovery path, instead of either an opaque 500 or a false
+  // "success" with fulfillment silently incomplete.
+  try {
+    const { error: scanUpdErr } = await supabase.from('scans').update({
+      fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
+    }).eq('id', payment.scan_id)
+    if (scanUpdErr) throw scanUpdErr
+
+    const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
+    // Enqueue instead of running inline via waitUntil() — generateFix/
+    // generateBadge (two Claude calls + a Browser Rendering PDF render) can
+    // easily exceed the 30-second waitUntil wall-clock cap, which silently
+    // kills the task with no catchable error. The queue consumer (index.js)
+    // has no such cap. See index.js's queue() handler for the full rationale.
+    await c2.env.FIX_QUEUE.send({ type: generatorType, scanId: payment.scan_id })
+  } catch (fulfillErr) {
+    console.error(`[CRITICAL] verifyPayment fulfillment failed after payment marked SUCCESS (ref ${reference}, scan ${payment.scan_id}):`, fulfillErr.message)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Payment succeeded but fulfillment failed — manual reconcile needed',
+        `source: verifyPayment\nreference: ${reference}\nscanId: ${payment.scan_id}\nfixTier: ${fixTier}\nerror: ${fulfillErr.message}\n\n` +
+        `This payment is marked SUCCESS and will NOT be automatically retried. Once ` +
+        `the underlying issue is fixed, call:\n\n  POST /api/payments/${reference}/reconcile  (admin-only)\n\n` +
+        `to re-run the scan update + fix-generation enqueue.`
+      )
+    } catch (_) {}
+    // The payment itself genuinely succeeded — Paystack was charged and
+    // verified above. Don't surface a scary error for something that isn't
+    // the payer's fault; fulfillment will be completed via the reconcile
+    // path once the owner is alerted.
+    return c2.json({ success: true, data: { scanId: payment.scan_id } })
+  }
 
   return c2.json({ success: true, data: { scanId: payment.scan_id } })
+}
+
+// POST /api/payments/:reference/reconcile — admin-only manual recovery.
+//
+// Exists because of the fulfillment sequencing above (and in
+// webhooks.controller.js's handlePaystack): once a payment is marked
+// SUCCESS, that is the only moment fulfillment (scans.update + a
+// FIX_QUEUE.send) will ever automatically run — every later call to either
+// fulfillment path sees status !== 'PENDING' and treats it as already
+// handled, with no retry. If fulfillment failed after the flip (the owner
+// alert those code paths send says exactly this happened), this endpoint
+// re-applies the same two steps by hand.
+async function reconcilePayment(ctx) {
+  const reference = ctx.req.param('reference')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: payment, error } = await supabase
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment) return ctx.json({ success: false, message: 'Payment not found.' }, 404)
+  if (payment.status !== 'SUCCESS')
+    return ctx.json({ success: false, message: `Payment status is ${payment.status}, not SUCCESS — nothing to reconcile.` }, 400)
+
+  const { data: scan, error: scanErr } = await supabase
+    .from('scans').select('id, status, fix_purchased').eq('id', payment.scan_id).maybeSingle()
+  if (scanErr) throw scanErr
+  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+
+  if (scan.fix_purchased && ['FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)) {
+    return ctx.json({ success: true, message: 'Already fulfilled — nothing to do.',
+      data: { scanId: scan.id, status: scan.status } })
+  }
+
+  const fixTier = payment.fix_tier || 'FIX'
+  const { error: updErr } = await supabase.from('scans').update({
+    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
+  }).eq('id', scan.id)
+  if (updErr) throw updErr
+
+  const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
+  await ctx.env.FIX_QUEUE.send({ type: generatorType, scanId: scan.id })
+
+  return ctx.json({ success: true, message: 'Re-enqueued.', data: { scanId: scan.id, fixTier } })
 }
 
 // GET /api/payments/history
@@ -236,4 +314,4 @@ async function getPaymentHistory(c2) {
   return c2.json({ success: true, data: { payments } })
 }
 
-module.exports = { initializePayment, verifyPayment, getPaymentHistory }
+module.exports = { initializePayment, verifyPayment, getPaymentHistory, reconcilePayment }
