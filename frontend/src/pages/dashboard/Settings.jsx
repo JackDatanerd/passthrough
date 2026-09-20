@@ -12,6 +12,52 @@ export default function Settings() {
   const navigate      = useNavigate()
   const { user, logout, refreshUser } = useAuth()
 
+  // AUDIT FIX (Section 6): Account previously showed name/email as static
+  // text with no way to ever change either — no endpoint existed for it.
+  const [name,        setName       ] = useState('')
+  const [nameLoading,  setNameLoading ] = useState(false)
+  const [nameError,    setNameError   ] = useState('')
+  const [nameSuccess,  setNameSuccess ] = useState(false)
+
+  const [newEmail,      setNewEmail     ] = useState('')
+  const [emailPassword, setEmailPassword] = useState('')
+  const [emailLoading,  setEmailLoading ] = useState(false)
+  const [emailError,    setEmailError   ] = useState('')
+  const [emailSuccess,  setEmailSuccess ] = useState(false)
+
+  useEffect(() => {
+    if (user?.name) setName(user.name)
+  }, [user?.name])
+
+  async function handleUpdateName() {
+    if (!name.trim()) return setNameError('Name is required.')
+    setNameLoading(true); setNameError(''); setNameSuccess(false)
+    try {
+      await api.patch('/auth/name', { name: name.trim() })
+      await refreshUser()
+      setNameSuccess(true)
+    } catch (err) {
+      setNameError(err.response?.data?.message || 'Failed to update name.')
+    } finally {
+      setNameLoading(false)
+    }
+  }
+
+  async function handleUpdateEmail() {
+    if (!newEmail || !emailPassword) return setEmailError('New email and password required.')
+    setEmailLoading(true); setEmailError(''); setEmailSuccess(false)
+    try {
+      await api.patch('/auth/email', { newEmail, password: emailPassword })
+      await refreshUser()
+      setEmailSuccess(true)
+      setNewEmail(''); setEmailPassword('')
+    } catch (err) {
+      setEmailError(err.response?.data?.message || 'Failed to update email.')
+    } finally {
+      setEmailLoading(false)
+    }
+  }
+
   // Change password
   const [current,  setCurrent ] = useState('')
   const [newPass,  setNewPass ] = useState('')
@@ -107,16 +153,39 @@ export default function Settings() {
         {/* Account info */}
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Account</h2>
-          <div className="flex flex-col gap-1 text-sm">
-            <p className="text-gray-600"><span className="font-medium">Name:</span> {user?.name}</p>
-            <p className="text-gray-600"><span className="font-medium">Email:</span> {user?.email}</p>
-            <p className="text-gray-600">
-              <span className="font-medium">Email verified:</span>{' '}
-              {user?.emailVerified
-                ? <span className="text-green-700">Yes</span>
-                : <span className="text-amber-600">No — check your inbox</span>
-              }
-            </p>
+          <div className="flex flex-col gap-3">
+            <div>
+              <p className="text-sm text-gray-600 mb-2">
+                <span className="font-medium">Email verified:</span>{' '}
+                {user?.emailVerified
+                  ? <span className="text-green-700">Yes</span>
+                  : <span className="text-amber-600">No — check your inbox</span>
+                }
+              </p>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
+              <Input label="Name" value={name} onChange={e => { setName(e.target.value); setNameSuccess(false) }} />
+              <Button onClick={handleUpdateName} loading={nameLoading} variant="secondary" size="sm">
+                Save
+              </Button>
+            </div>
+            {nameError   && <p className="text-sm text-red-600">{nameError}</p>}
+            {nameSuccess && <p className="text-sm text-green-700">Name updated.</p>}
+
+            <div className="flex flex-col gap-2 pt-2 border-t border-gray-100">
+              <p className="text-sm text-gray-600"><span className="font-medium">Current email:</span> {user?.email}</p>
+              <Input label="New email" type="email" value={newEmail}
+                onChange={e => { setNewEmail(e.target.value); setEmailSuccess(false) }} />
+              <Input label="Password" type="password" value={emailPassword}
+                onChange={e => { setEmailPassword(e.target.value); setEmailSuccess(false) }}
+                autoComplete="current-password" />
+              {emailError   && <p className="text-sm text-red-600">{emailError}</p>}
+              {emailSuccess && <p className="text-sm text-green-700">Email updated — check your inbox to verify it.</p>}
+              <Button onClick={handleUpdateEmail} loading={emailLoading} variant="secondary" size="sm" className="self-start">
+                Update email
+              </Button>
+            </div>
           </div>
         </div>
 

@@ -26,6 +26,8 @@ function scanLabel(scan) {
   return 'Resume'
 }
 
+const SCANS_PER_PAGE = 20
+
 export default function DashboardIndex() {
   const { user, refreshUser } = useAuth()
   const [scans,    setScans   ] = useState([])
@@ -33,15 +35,30 @@ export default function DashboardIndex() {
   const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
 
+  // AUDIT FIX (Section 6): this page used to hardcode page=1&limit=20 with
+  // no pagination at all — a user with more than 20 scans permanently lost
+  // access to anything older through this list (no "load more", no
+  // indication more existed, since the API didn't even return a total).
+  // getScanHistory now returns `total`, so this can page properly.
+  const [page,  setPage ] = useState(1)
+  const [total, setTotal] = useState(0)
+
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
   // path back into the scan form with that profile pre-selected.
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
 
   useEffect(() => {
-    api.get('/scan/history?page=1&limit=20')
-      .then(res => { setScans(res.data.data.scans); setLoading(false) })
+    setLoading(true)
+    api.get(`/scan/history?page=${page}&limit=${SCANS_PER_PAGE}`)
+      .then(res => {
+        setScans(res.data.data.scans)
+        setTotal(res.data.data.total ?? 0)
+        setLoading(false)
+      })
       .catch(() => setLoading(false))
+  }, [page])
 
+  useEffect(() => {
     api.get('/profile')
       .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
       .catch(() => {})
@@ -53,6 +70,8 @@ export default function DashboardIndex() {
     // otherwise re-fetches /auth/me until a full page reload.
     refreshUser()
   }, [])
+
+  const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
   async function resendVerification() {
     setResending(true)
@@ -162,6 +181,29 @@ export default function DashboardIndex() {
                 </div>
               </Link>
             ))}
+          </div>
+        )}
+
+        {/* AUDIT FIX (Section 6): pagination controls — only shown once
+            there's actually more than one page, so this stays invisible for
+            the common case of a user with a handful of scans. */}
+        {!loading && total > SCANS_PER_PAGE && (
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <Button
+              variant="secondary" size="sm"
+              disabled={page <= 1}
+              onClick={() => setPage(p => Math.max(p - 1, 1))}
+            >
+              ← Previous
+            </Button>
+            <p className="text-xs text-gray-400">Page {page} of {totalPages}</p>
+            <Button
+              variant="secondary" size="sm"
+              disabled={page >= totalPages}
+              onClick={() => setPage(p => Math.min(p + 1, totalPages))}
+            >
+              Next →
+            </Button>
           </div>
         )}
       </div>

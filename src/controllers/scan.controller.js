@@ -585,9 +585,15 @@ async function getScanHistory(ctx) {
   const to   = from + limit - 1
 
   const supabase = getSupabase(ctx.env)
-  const { data: rows, error } = await supabase
+  // AUDIT FIX (Section 6): this endpoint always accepted page/limit, but
+  // never returned a total — the dashboard had no way to know whether more
+  // scans existed beyond whatever page it happened to ask for, and (see
+  // Index.jsx) it never asked for more than page 1 anyway. `count: 'exact'`
+  // adds one extra index-only count against the same filtered query, not a
+  // second round trip.
+  const { data: rows, error, count } = await supabase
     .from('scans')
-    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score')
+    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
     .range(from, to)
@@ -601,7 +607,7 @@ async function getScanHistory(ctx) {
     sectionsScore: r.sections_score, contentScore: r.content_score
   }))
 
-  return ctx.json({ success: true, data: { scans, page, limit } })
+  return ctx.json({ success: true, data: { scans, page, limit, total: count } })
 }
 
 // ─── helper: replaces Prisma's `include: { user: true }` ─────────────────

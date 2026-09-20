@@ -218,8 +218,23 @@ function commissionLedgerRowToCamel(row) {
   }
 }
 
+function leadRowToCamel(row) {
+  if (!row) return row
+  return {
+    id:           row.id,
+    name:         row.name,
+    company:      row.company,
+    email:        row.email,
+    roleCategory: row.role_category,
+    source:       row.source,
+    createdAt:    row.created_at,
+    updatedAt:    row.updated_at
+  }
+}
+
 module.exports = {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
+  leadRowToCamel,
   USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
 }

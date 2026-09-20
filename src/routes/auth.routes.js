@@ -17,6 +17,13 @@ router.post('/reset-password',      rl.auth, c.resetPassword)
 router.get( '/verify-email',        rl.authVerify, c.verifyEmail)
 router.post('/resend-verification', auth, rl.authVerify, c.resendVerification)
 router.patch('/password',           auth, rl.auth, c.changePassword)
+// AUDIT FIX (Section 6): Settings had no way to change name or email —
+// no route existed for either. /email shares the tighter `rl.auth`
+// credential-adjacent bucket with /password and /account since it also
+// requires the current password; /name doesn't, so it stays on the
+// general per-route rate limit only.
+router.patch('/name',               auth,          c.updateName)
+router.patch('/email',              auth, rl.auth,  c.updateEmail)
 router.delete('/account',           auth, rl.auth, c.deleteAccount)
 router.post('/claim-scan',          auth,    c.claimScan)
 

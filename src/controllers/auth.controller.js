@@ -280,6 +280,77 @@ async function changePassword(c) {
   return c.json({ success: true, message: 'Password updated. Other sessions signed out.', data: { token } })
 }
 
+// PATCH /api/auth/name
+// AUDIT FIX (Section 6): Settings displayed Name as static text with no way
+// to ever change it — no endpoint existed anywhere in the app. Low-risk
+// field, no password confirmation or re-verification needed.
+async function updateName(c) {
+  const sessionUser = c.get('user')
+  const body = await c.req.json()
+  const { name } = z.object({ name: z.string().trim().min(1).max(100) }).parse(body)
+
+  const supabase = getSupabase(c.env)
+  const { data: row, error } = await supabase
+    .from('users').update({ name }).eq('id', sessionUser.id).select().single()
+  if (error) throw error
+
+  return c.json({ success: true, message: 'Name updated.', data: { user: safeUser(userRowToCamel(row)) } })
+}
+
+// PATCH /api/auth/email
+// AUDIT FIX (Section 6): same gap as updateName, but email is identity- and
+// security-adjacent, so this follows the pattern already established by
+// changePassword: current password required, and — since this reuses the
+// existing email-verification machinery rather than inventing a new one —
+// the account is marked unverified again and a fresh verification email
+// goes to the NEW address. token_version is deliberately left untouched;
+// unlike a password change, changing your email address doesn't invalidate
+// the credential that proves who's making other requests, so there's no
+// reason to sign out other sessions over it.
+async function updateEmail(c) {
+  const sessionUser = c.get('user')
+  const body = await c.req.json()
+  const { newEmail, password } = z.object({
+    newEmail: z.string().trim().toLowerCase().email(),
+    password: z.string()
+  }).parse(body)
+
+  const supabase = getSupabase(c.env)
+  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
+  if (error) throw error
+  const user = userRowToCamel(row)
+
+  if (!await bcrypt.compare(password, user.passwordHash))
+    return c.json({ success: false, message: 'Incorrect password.' }, 400)
+
+  if (newEmail === user.email)
+    return c.json({ success: false, message: 'That is already your email address.' }, 400)
+
+  const raw    = cryptoLib.randomToken(32)
+  const stored = await cryptoLib.sha256(raw)
+  const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
+
+  const { data: updatedRow, error: updateErr } = await supabase.from('users').update({
+    email:               newEmail,
+    email_verified:      false,
+    email_verify_token:  stored,
+    email_verify_expiry: exp
+  }).eq('id', user.id).select().single()
+  // Relies on the same email-unique constraint register() does — a
+  // duplicate here surfaces as the errorHandler's 23505 branch ("Already
+  // exists."), same as everywhere else in the app.
+  if (updateErr) throw updateErr
+  const updated = userRowToCamel(updatedRow)
+
+  c.executionCtx.waitUntil(
+    emailService.sendVerification(c.env, supabase, newEmail, updated.name, raw)
+      .catch(e => console.error('Email-change verify email:', e.message))
+  )
+
+  return c.json({ success: true, message: 'Email updated. Please verify your new address.',
+    data: { user: safeUser(updated) } })
+}
+
 // DELETE /api/auth/account
 async function deleteAccount(c) {
   const sessionUser = c.get('user')
@@ -294,11 +365,19 @@ async function deleteAccount(c) {
   if (!await bcrypt.compare(password, user.passwordHash))
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
 
+  // AUDIT FIX (Section 6, traced from profile.controller.js): this soft
+  // delete anonymized name/email but left saved_profile completely
+  // untouched — the full structured resume (work history, contact details,
+  // etc.) that profile.controller.js manages kept sitting in the DB
+  // indefinitely after "deletion", just no longer reachable through the API
+  // since auth.js's deletedAt check blocks it. "Delete account" should mean
+  // that data is actually gone, not merely unreachable.
   await supabase.from('users').update({
     deleted_at:    new Date().toISOString(),
     email:         `deleted-${user.id}@passthrough.dev`,
     name:          'Deleted User',
     password_hash: 'deleted',
+    saved_profile:  null,
     token_version:  user.tokenVersion + 1
   }).eq('id', user.id)
 
@@ -332,5 +411,6 @@ async function claimScan(c) {
 
 module.exports = {
   register, login, getMe, forgotPassword, resetPassword,
-  verifyEmail, resendVerification, changePassword, deleteAccount, claimScan
+  verifyEmail, resendVerification, changePassword, updateName, updateEmail,
+  deleteAccount, claimScan
 }
