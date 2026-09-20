@@ -48,6 +48,19 @@ module.exports = {
     if (fixTier === 'FIX_PLAIN') return promo ? this.PROMO_PRICE_FIX_PLAIN : this.PRICE_FIX_PLAIN
     return promo ? this.PROMO_PRICE_FIX : this.PRICE_FIX
   },
+
+  // The true pre-promo anchor price — never promo-adjusted, unlike
+  // priceForTier(). This is what pricing.controller.js now returns as
+  // originalAmount, so the frontend's crossed-out "was $X" price is always
+  // the real standard price, not (as it silently was before) just another
+  // copy of whatever priceForTier() currently returns — which made the
+  // strikethrough identical to the live price, and therefore invisible,
+  // for every visitor who didn't arrive with a referral code.
+  standardPriceForTier(fixTier) {
+    if (fixTier === 'BADGE')     return this.PRICE_BADGE
+    if (fixTier === 'FIX_PLAIN') return this.PRICE_FIX_PLAIN
+    return this.PRICE_FIX
+  },
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,
   ATS_BADGE_THRESHOLD: 80,

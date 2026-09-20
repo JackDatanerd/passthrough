@@ -43,6 +43,44 @@ async function initializePayment(c2) {
   if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
     return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
 
+  // BUGFIX: nothing previously stopped two initializePayment calls for the
+  // same scan from both succeeding (double-click, two tabs, retrying after
+  // a slow Paystack popup) — the only guard was scan.fixPurchased, which
+  // stays false until a payment actually completes. Two live checkouts
+  // could both get paid: double-charging the user, enqueueing generateFix
+  // twice, and (via referralService.recordConversion) double-crediting a
+  // partner's commission for one sale.
+  //
+  // Deliberately does NOT abandon/overwrite an existing PENDING row here —
+  // doing so could mark ABANDONED a checkout the user is mid-way through
+  // paying on Paystack's hosted page, which would defeat the atomic
+  // idempotency check in verifyPayment/webhooks.controller.js (neither
+  // would find a PENDING row left to flip to SUCCESS), leaving a
+  // genuinely-paid customer charged with no fix ever delivered. Instead:
+  //   - same tier, still fresh  -> resume the exact same checkout
+  //   - different tier, fresh   -> block with a clear message
+  //   - stale (access code has long since expired anyway) -> fall through,
+  //     the old row is harmless dead weight at that point
+  const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
+  const { data: existingPending, error: pendingErr } = await supabase
+    .from('payments')
+    .select('paystack_ref, paystack_access_code, fix_tier, created_at')
+    .eq('scan_id', scanId).eq('status', 'PENDING')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (pendingErr) throw pendingErr
+
+  if (existingPending && (Date.now() - Date.parse(existingPending.created_at)) < PENDING_REUSE_WINDOW_MS) {
+    if (existingPending.fix_tier === fixTier && existingPending.paystack_access_code) {
+      return c2.json({ success: true, data: {
+        access_code: existingPending.paystack_access_code,
+        reference:   existingPending.paystack_ref
+      }})
+    }
+    return c2.json({ success: false,
+      message: 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.'
+    }, 409)
+  }
+
   // Single source of truth for the amount — same resolver the public
   // /api/pricing quote goes through (pricing.controller.js), so whatever
   // price the checkout screen showed is exactly what gets charged here.
@@ -128,7 +166,7 @@ async function verifyPayment(c2) {
   // all. Also doubles as the "expected payment" row the amount check below
   // needs, so there's no second query for the same row anymore.
   const { data: paymentRow, error: paymentErr } = await supabase
-    .from('payments').select('user_id, amount_cents, scan_id, fix_tier').eq('paystack_ref', reference).maybeSingle()
+    .from('payments').select('user_id, amount_cents, currency, scan_id, fix_tier').eq('paystack_ref', reference).maybeSingle()
   if (paymentErr) throw paymentErr
   if (!paymentRow || paymentRow.user_id !== user.id)
     return c2.json({ success: false, message: 'Payment not found.' }, 404)
@@ -146,7 +184,15 @@ async function verifyPayment(c2) {
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 502)
   }
-  if (pResult.data?.status !== 'success' || pResult.data?.currency !== (c2.env.PAYSTACK_CURRENCY || c.CURRENCY))
+  // BUGFIX: previously compared against the CURRENT env config
+  // (c2.env.PAYSTACK_CURRENCY || c.CURRENCY) rather than what THIS payment
+  // was actually initialized with. webhooks.controller.js's handlePaystack
+  // already checks against paymentRow.currency — the two fulfillment paths
+  // could reach different verdicts on the exact same transaction if
+  // PAYSTACK_CURRENCY is ever changed between initialize and verify (a
+  // mid-flight config change or redeploy). Now both paths trust the same
+  // source of truth: what was actually stored on the payment row.
+  if (pResult.data?.status !== 'success' || pResult.data?.currency !== paymentRow.currency)
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
 
   // Amount check — defense in depth. Paystack's hosted checkout won't let a

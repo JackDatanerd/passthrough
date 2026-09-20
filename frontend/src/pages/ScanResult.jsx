@@ -44,6 +44,14 @@ export default function ScanResult() {
   const [scan,        setScan      ] = useState(null)
   const [loading,     setLoading   ] = useState(true)
   const [payLoading,  setPayLoading] = useState(false)
+  // BUGFIX: this used to exist alongside payLoading but neither was ever
+  // passed to FixBanner or its buttons — payLoading was set throughout
+  // handlePay but never actually consumed anywhere, so nothing stopped a
+  // double-click (or clicking a second tier) from firing handlePay again
+  // while a payment was already initializing, opening the door to the
+  // duplicate-payment scenario fixed server-side in payments.controller.js.
+  // payingTier additionally drives which specific button shows the spinner.
+  const [payingTier,  setPayingTier] = useState(null)
   const [payError,    setPayError  ] = useState('')
   const [dlError,     setDlError   ] = useState('')
   const [visibilityError, setVisibilityError] = useState('')
@@ -142,7 +150,12 @@ export default function ScanResult() {
 
   async function handlePay(fixTier) {
     if (!user) return navigate(`/register`)
-    setPayLoading(true); setPayError('')
+    // Re-entrancy guard — belt-and-suspenders alongside the buttons now
+    // being disabled while payLoading is true (see FixBanner). Without
+    // this, a click that lands between render and the disabled state
+    // taking effect could still double-fire.
+    if (payLoading) return
+    setPayLoading(true); setPayingTier(fixTier); setPayError('')
     try {
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined
@@ -169,22 +182,23 @@ export default function ScanResult() {
           await fetchScan()
           clearInterval(pollRef.current)
           pollRef.current = setInterval(fetchScan, POLL_MS)
-          setPayLoading(false)
+          setPayLoading(false); setPayingTier(null)
         },
-        onCancel: () => setPayLoading(false),
+        onCancel: () => { setPayLoading(false); setPayingTier(null) },
         onError: () => {
           setPayError('Payment failed. Please try again.')
-          setPayLoading(false)
+          setPayLoading(false); setPayingTier(null)
         }
       })
     } catch (err) {
       setPayError(err.response?.data?.message || 'Payment failed to initialize.')
-      setPayLoading(false)
+      setPayLoading(false); setPayingTier(null)
     }
   }
 
   async function handleRedeemCredit() {
     if (!user) return navigate(`/register`)
+    if (payLoading) return
     setPayLoading(true); setPayError('')
     try {
       await api.post(`/scan/${id}/redeem-credit`)
@@ -507,7 +521,7 @@ export default function ScanResult() {
                 {payError && (
                   <p className="text-sm text-red-600">{payError}</p>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} />
+                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} />
               </>
             )}
 

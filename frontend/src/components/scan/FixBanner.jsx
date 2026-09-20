@@ -22,7 +22,7 @@ function PriceTag({ tier, byTier }) {
 // ONLY place a person can type a code by hand — a ?ref= link in the URL
 // pre-fills it via useReferralCapture, but plenty of real referral traffic
 // is a code heard on a podcast or read off a screenshot, not a clicked link.
-function ReferralCodeEntry({ referralCode, pricing, onApply }) {
+function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
   const [value, setValue] = useState(referralCode || '')
   const [editing, setEditing] = useState(!referralCode)
 
@@ -35,8 +35,8 @@ function ReferralCodeEntry({ referralCode, pricing, onApply }) {
     return (
       <p className="text-sm font-medium text-emerald-700 mb-3">
         ✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}
-        <button type="button" onClick={() => setEditing(true)}
-          className="underline font-normal text-emerald-700/80 hover:text-emerald-900">
+        <button type="button" onClick={() => setEditing(true)} disabled={disabled}
+          className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
           change
         </button>
       </p>
@@ -51,10 +51,11 @@ function ReferralCodeEntry({ referralCode, pricing, onApply }) {
         onChange={e => setValue(e.target.value)}
         onKeyDown={e => e.key === 'Enter' && handleApply()}
         placeholder="Have a referral code?"
-        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        disabled={disabled}
+        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
       />
       <button type="button" onClick={handleApply}
-        disabled={!value.trim()}
+        disabled={!value.trim() || disabled}
         className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
         Apply
       </button>
@@ -64,7 +65,14 @@ function ReferralCodeEntry({ referralCode, pricing, onApply }) {
 
 export default function FixBanner({
   scan, onPay, onRedeemCredit, freeFixCredits = 0,
-  referralCode = '', onApplyReferralCode = () => {}
+  referralCode = '', onApplyReferralCode = () => {},
+  // BUGFIX: previously accepted no loading state at all — ScanResult.jsx
+  // tracked payLoading throughout handlePay but never passed it down, so
+  // nothing here disabled while a payment was already in flight. Buttons
+  // are disabled as soon as ANY pay-related action starts (payLoading),
+  // and the specific tier being paid for (payingTier) gets the visual
+  // spinner via Button's own `loading` prop.
+  payLoading = false, payingTier = null
 }) {
   const navigate = useNavigate()
   const { byTier, pricing } = usePricing(referralCode)
@@ -103,17 +111,17 @@ export default function FixBanner({
             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
           </p>
         )}
-        <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
+        <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
         <div className="flex flex-wrap gap-2 mt-3">
           {hasCredit && (
-            <Button onClick={onRedeemCredit} variant="secondary">
+            <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
               Use Free Credit
             </Button>
           )}
-          <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
+          <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
             Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} />
           </Button>
-          <Button onClick={() => onPay('FIX')}>
+          <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
             Fix + Verified Credential — <PriceTag tier="FIX" byTier={byTier} />
           </Button>
         </div>
@@ -135,20 +143,20 @@ export default function FixBanner({
           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
         </p>
       )}
-      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} />
+      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
       <div className="flex flex-col sm:flex-row gap-3">
-        <Button onClick={() => onPay('BADGE')} variant="secondary">
+        <Button onClick={() => onPay('BADGE')} variant="secondary" disabled={payLoading} loading={payingTier === 'BADGE'}>
           Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />
         </Button>
-        <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary">
+        <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
           Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} />
         </Button>
         {hasCredit && (
-          <Button onClick={onRedeemCredit} variant="secondary">
+          <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
             Full AI Fix — Free Credit
           </Button>
         )}
-        <Button onClick={() => onPay('FIX')}>
+        <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
           Full AI Fix + Credential — <PriceTag tier="FIX" byTier={byTier} />
         </Button>
       </div>

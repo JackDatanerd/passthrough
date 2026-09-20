@@ -55,7 +55,18 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
   if (!isCodeUsable(codeRow) || tierPrice == null)
     return { amount: standard, currency: c.CURRENCY, referralApplied: false, referralCode: null }
 
-  return { amount: tierPrice, currency: c.CURRENCY, referralApplied: true, referralCode: codeRow }
+  // BUGFIX: tier_prices on a referral code is a static, admin-set cents
+  // value with no awareness of an active site-wide promo (isPromoActive()).
+  // Charging tierPrice unconditionally meant a partner's own discount code
+  // could become WORSE than the public price the instant a promo undercut
+  // it (e.g. a code offering $39 vs a $29 promo) — a stranger with no code
+  // would then get a better deal than the partner's own referred customer.
+  // Taking the lower of the two means a referral code can only ever help,
+  // never hurt, and the code stays "applied" (referralApplied: true) either
+  // way — the partner is still attributed and credited via recordConversion
+  // on whatever amount actually gets charged, they just don't out-charge
+  // an active promo.
+  return { amount: Math.min(tierPrice, standard), currency: c.CURRENCY, referralApplied: true, referralCode: codeRow }
 }
 
 /**

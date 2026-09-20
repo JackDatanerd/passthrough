@@ -20,8 +20,17 @@ async function getPricing(ctx) {
   const supabase = referralCode ? getSupabase(ctx.env) : null
 
   const tiers = await Promise.all(['FIX', 'BADGE', 'FIX_PLAIN'].map(async tier => {
-    const originalAmount = c.priceForTier(tier, ctx.env)
-    if (!referralCode) return { tier, amount: originalAmount, originalAmount, referralApplied: false }
+    // BUGFIX: originalAmount used to be c.priceForTier(tier, ctx.env), which
+    // is ALREADY promo-adjusted — so without a referral code, amount and
+    // originalAmount were always identical and the frontend's `amount !==
+    // originalAmount` strikethrough check could never be true. That made the
+    // promo's anchor price invisible to every visitor except the ones who
+    // arrived with a ?ref= code (see referral.service.js's resolvePrice).
+    // standardPriceForTier() is never promo-adjusted, so this is now a real
+    // "was $X" anchor regardless of whether a referral code is present.
+    const originalAmount = c.standardPriceForTier(tier)
+    const currentAmount  = c.priceForTier(tier, ctx.env)
+    if (!referralCode) return { tier, amount: currentAmount, originalAmount, referralApplied: false }
 
     const priced = await referralService.resolvePrice(supabase, tier, ctx.env, referralCode)
     return { tier, amount: priced.amount, originalAmount, referralApplied: priced.referralApplied }

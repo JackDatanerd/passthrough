@@ -32,7 +32,23 @@ async function verifyTransaction(env, reference) {
     `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
     { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } }
   )
-  return res.json()
+  const json = await res.json()
+  // BUGFIX: this used to return json unconditionally, with no equivalent of
+  // initializeTransaction's `if (!json.status) throw`. A genuine Paystack-
+  // side failure (rotated/misconfigured secret key, an outage, a malformed
+  // response) surfaced identically to an ordinary "payment didn't succeed"
+  // outcome — both just fell through to payments.controller.js's generic
+  // 400 "Payment verification failed", with no [CRITICAL] owner alert for
+  // the case that's actually an operational problem.
+  //
+  // Checked via res.ok (HTTP status), not json.status: Paystack reports an
+  // ordinary "no such successful transaction" as json.status: false on a
+  // normal 200 — that's ClientVisible verification failure, not a system
+  // fault, and correctly stays on the existing data?.status !== 'success'
+  // path in payments.controller.js with no alert. Only a non-2xx HTTP
+  // response — auth failures, outages — throws here.
+  if (!res.ok) throw new Error(json?.message || `Paystack verify returned HTTP ${res.status}`)
+  return json
   // json.data.status — ONE level of .data (native fetch, not Axios)
 }
 
