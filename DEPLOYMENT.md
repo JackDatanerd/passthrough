@@ -37,11 +37,36 @@ backend runs as a Cloudflare Worker.
 
 1. Create a new Supabase project at supabase.com.
 
-2. In the SQL Editor, run **both** migration files in order:
+2. In the SQL Editor, run **every** file in `supabase/migrations/`, **in
+   filename order** (the leading number is the order — `0001_...` before
+   `0002_...` before `0003_...`, and so on). This list only ever grows, so
+   don't copy a fixed count from this doc — `ls supabase/migrations/` (or
+   just look at the folder) and run whatever's actually there, in order:
    ```sql
    -- paste contents of supabase/migrations/0001_init.sql
    -- paste contents of supabase/migrations/0002_helpers.sql
+   -- paste contents of supabase/migrations/0003_brain_dump_and_profiles.sql
+   -- paste contents of supabase/migrations/0004_fix_ats_score.sql
+   -- paste contents of supabase/migrations/0005_fix_retries_and_credits.sql
+   -- paste contents of supabase/migrations/0006_redeem_fix_credit.sql
+   -- paste contents of supabase/migrations/0007_verify_document_visibility.sql
+   -- paste contents of supabase/migrations/0008_atomic_scan_quota.sql
+   -- paste contents of supabase/migrations/0009_atomic_fix_retry.sql
+   -- paste contents of supabase/migrations/0010_payments_fix_tier.sql
+   -- paste contents of supabase/migrations/0011_partners_and_payouts.sql
+   -- paste contents of supabase/migrations/0012_referral_pricing_and_commission_ledger.sql
+   -- paste contents of supabase/migrations/0013_employer_leads_dedup.sql
+   -- paste contents of supabase/migrations/0014_enable_rls.sql
+   -- paste contents of supabase/migrations/0015_definer_hardening_and_score_checks.sql
+   -- ...and any files added after this doc was last updated
    ```
+   AUDIT FIX (Section 9): this used to say to run only `0001_init.sql` and
+   `0002_helpers.sql` — accurate when this doc was first written, silently
+   wrong from the moment `0003_...` shipped. A fresh deploy following the
+   old instructions literally would be missing brain-dump/profiles, fix
+   retries/credits, verification-visibility toggles, every atomic RPC after
+   0002, payment tier binding, partners/payouts, referral pricing, and RLS
+   — i.e. almost everything built after the MVP.
 
 3. Note your project's:
    - **Project URL** (`https://xxxx.supabase.co`)
@@ -307,8 +332,11 @@ see the try/catch in scan.controller.js's `generateFix`/`generateBadge`).
 
 ### Supabase "relation does not exist" error
 
-The migration SQL hasn't been run yet. Run both files in order via the
-Supabase SQL Editor: `0001_init.sql` then `0002_helpers.sql`.
+The migration SQL hasn't been run yet, or hasn't all been run — check
+that every file in `supabase/migrations/` was run, in filename order (see
+Section 2 above). A relation from a later migration (partners, payouts,
+referral_codes, commission_ledger, etc.) failing specifically usually means
+migrations were stopped partway through rather than skipped entirely.
 
 ### KV rate limiter letting requests through
 
@@ -327,7 +355,12 @@ to a Durable Object counter if precise enforcement is required.
 
 ### `increment_verification_views` function not found
 
-Run `supabase/migrations/0002_helpers.sql` in the Supabase SQL Editor.
+Run `supabase/migrations/0002_helpers.sql` in the Supabase SQL Editor. If
+other RPCs are also missing (`increment_free_fix_credits`,
+`redeem_free_fix_credit`, `increment_scan_count_if_under_limit`,
+`increment_fix_retry_if_available`, `increment_referral_code_usage`,
+`increment_referral_code_clicks`), you're missing more than one migration —
+go back to Section 2 and run everything in `supabase/migrations/`, in order.
 
 ---
 

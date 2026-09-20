@@ -15,7 +15,8 @@ const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const emailService = require('../services/email.service')
 const {
-  partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel
+  partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
+  camelToSnake, PARTNER_FIELD_MAP
 } = require('../lib/mappers')
 
 // Sum of commission_ledger rows not yet attached to a payout — the "owed"
@@ -79,6 +80,45 @@ async function adminListPartners(ctx) {
     return camel
   })
   return ctx.json({ success: true, data: partners })
+}
+
+// ── Admin: update a partner's status and/or commission rate ────────────────
+// AUDIT FIX (Section 10, feature gaps): closes two half-built pieces of
+// this table at once —
+//   - commission_rate (0012) had no write path anywhere; every partner was
+//     permanently stuck at the 0.25 column default with no way to
+//     negotiate a different rate.
+//   - status (0011's partner_status_enum, ACTIVE/PAUSED) had no write path
+//     AND, until referral.service.js's isCodeUsable() fix, wasn't even
+//     read anywhere — pausing a partner did literally nothing.
+// One combined PATCH-style endpoint (matches adminSetReferralCodeActive's
+// shape) rather than two, since both are simple partner-row field updates
+// with the same auth/lookup/response pattern.
+
+const updatePartnerSchema = z.object({
+  status:         z.enum(['ACTIVE', 'PAUSED']).optional(),
+  // Fraction, not a percentage integer — 0.25 = 25%, matching 0012's
+  // commission_rate comment. Bounded 0-1 here at the API boundary; the
+  // same bound also exists as a DB-level CHECK (see migration 0015) as a
+  // backstop for any future write path that doesn't go through this Zod
+  // schema.
+  commissionRate: z.number().min(0).max(1).optional()
+}).refine(obj => Object.keys(obj).length > 0, 'At least one of status or commissionRate is required.')
+
+async function adminUpdatePartner(ctx) {
+  const partnerId = ctx.req.param('id')
+  const body = updatePartnerSchema.parse(await ctx.req.json())
+  const supabase = getSupabase(ctx.env)
+
+  const { data, error } = await supabase.from('partners')
+    .update({ ...camelToSnake(body, PARTNER_FIELD_MAP), updated_at: new Date().toISOString() })
+    .eq('id', partnerId)
+    .select('*')
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+
+  return ctx.json({ success: true, data: partnerRowToCamel(data) })
 }
 
 // ── Admin: re-send a partner's payout-details link ──────────────────────────
@@ -347,7 +387,7 @@ async function trackClick(ctx) {
 }
 
 module.exports = {
-  adminCreatePartner, adminListPartners, adminResendPayoutLink, adminRecordPayout,
+  adminCreatePartner, adminListPartners, adminUpdatePartner, adminResendPayoutLink, adminRecordPayout,
   adminCreateReferralCode, adminSetReferralCodeActive,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, trackClick
 }

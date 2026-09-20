@@ -94,6 +94,18 @@ function paymentRowToCamel(row) {
     paystackAuthCode:    row.paystack_auth_code,
     userId:              row.user_id,
     scanId:              row.scan_id,
+    // AUDIT FIX (Section 9): fix_tier (added in migration 0010, specifically
+    // so fulfillment could trust one column instead of a client-supplied
+    // value) was missing here — every current caller happens to select
+    // fix_tier directly off the raw row instead of going through this
+    // mapper, so this was latent rather than live, but any future caller of
+    // paymentRowToCamel (e.g. a payment-history view) would have silently
+    // lost it. Same for referral_code/referral_code_id (0012) — added for
+    // the same reason: this mapper should reflect the full row, not a
+    // snapshot of it frozen at whichever migration last touched this file.
+    fixTier:             row.fix_tier,
+    referralCodeId:      row.referral_code_id,
+    referralCode:        row.referral_code,
     createdAt:           row.created_at,
     updatedAt:           row.updated_at
   }
@@ -115,6 +127,14 @@ const USER_FIELD_MAP = {
   emailVerifyToken: 'email_verify_token', emailVerifyExpiry: 'email_verify_expiry',
   resetToken: 'reset_token', resetTokenExpiry: 'reset_token_expiry', deletedAt: 'deleted_at',
   scansToday: 'scans_today', scansDayReset: 'scans_day_reset',
+  // AUDIT FIX (Section 9): freeFixCredits (users.free_fix_credits, added in
+  // migration 0005) was missing from this reverse map. Currently harmless —
+  // the only writer of this column is the increment_free_fix_credits/
+  // redeem_free_fix_credit RPCs, never a camelToSnake(USER_FIELD_MAP)
+  // update — but any future direct-update code path for it would have
+  // silently no-opped, since camelToSnake only emits keys present in the
+  // map.
+  freeFixCredits: 'free_fix_credits',
   paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code',
   savedProfile: 'saved_profile'
 }
@@ -141,7 +161,22 @@ const SCAN_FIELD_MAP = {
 const PAYMENT_FIELD_MAP = {
   amountCents: 'amount_cents', currency: 'currency', status: 'status',
   paystackRef: 'paystack_ref', paystackAccessCode: 'paystack_access_code',
-  paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id'
+  paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id',
+  fixTier: 'fix_tier', referralCodeId: 'referral_code_id', referralCode: 'referral_code'
+}
+
+// AUDIT FIX (Section 10 build-out): needed for the new admin
+// set-commission-rate / pause-partner endpoints in partners.controller.js —
+// previously there was no reverse map for partners at all, so those writes
+// had to go around camelToSnake with hand-built snake_case objects like the
+// rest of this controller already does elsewhere. Only the two fields that
+// are actually meant to be admin-editable after creation are included here
+// deliberately — payout_details_token, referral_code, email etc. all have
+// their own dedicated, more careful write paths elsewhere in
+// partners.controller.js and should not become reachable through a generic
+// partial-update helper.
+const PARTNER_FIELD_MAP = {
+  status: 'status', commissionRate: 'commission_rate'
 }
 
 // partners/payouts (see supabase/migrations/0011_partners_and_payouts.sql).
@@ -159,7 +194,15 @@ function partnerRowToCamel(row) {
     email:                     rest.email,
     referralCode:              rest.referral_code,
     status:                    rest.status,
-    commissionRate:            rest.commission_rate,
+    // AUDIT FIX (Section 10): PostgREST serializes Postgres `numeric`
+    // columns as JSON strings (to avoid float precision loss), so this came
+    // through as e.g. "0.2500" rather than 0.25 — the one column in this
+    // whole schema still using `numeric` instead of int cents, and the one
+    // place that convention's absence actually leaked into an API response.
+    // referral.service.js already does this same Number() conversion
+    // before using the value in arithmetic; this just makes the read side
+    // consistent with that.
+    commissionRate:            rest.commission_rate == null ? null : Number(rest.commission_rate),
     payoutMethod:              rest.payout_method,
     payoutDetails:             rest.payout_details,
     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
@@ -211,7 +254,8 @@ function commissionLedgerRowToCamel(row) {
     partnerId:             row.partner_id,
     referralCodeId:        row.referral_code_id,
     grossAmountCents:      row.gross_amount_cents,
-    commissionRate:        row.commission_rate,
+    // AUDIT FIX (Section 10): same numeric-as-string gotcha as partnerRowToCamel above.
+    commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
     commissionAmountCents: row.commission_amount_cents,
     payoutId:              row.payout_id,
     createdAt:             row.created_at
@@ -236,5 +280,5 @@ module.exports = {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   leadRowToCamel,
-  USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP
+  USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP, PARTNER_FIELD_MAP
 }

@@ -53,7 +53,7 @@ async function readCappedText(res, maxBytes) {
 async function safeFetch(url, opts) {
   let current = url
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
-    const reason = checkUrlIsSafeToFetch(current)
+    const reason = await checkUrlIsSafeToFetch(current)
     if (reason) return { blocked: true, reason }
 
     const res = await fetch(current, { ...opts, redirect: 'manual' })

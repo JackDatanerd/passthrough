@@ -19,7 +19,13 @@ function errorHandler(err, ctx) {
   if (err.code === '23505')
     return ctx.json({ success: false, message: 'Already exists.' }, 409)
 
-  console.error('Unhandled error:', err.message)
+  // AUDIT FIX (Section 9): used to log only err.message. `wrangler tail` is
+  // the only place a production incident can be root-caused from, and the
+  // stack trace is the one thing on `err` that actually points at where it
+  // happened — dropping it made every unhandled error here strictly less
+  // debuggable than the queue consumer in index.js, which already captures
+  // err.stack when it alerts the owner.
+  console.error('Unhandled error:', err.stack || err.message)
   return ctx.json({ success: false,
     message: ctx.env.NODE_ENV === 'production' ? 'An error occurred.' : err.message
   }, err.status || 500)

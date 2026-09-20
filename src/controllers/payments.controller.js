@@ -347,14 +347,19 @@ async function getPaymentHistory(c2) {
   const supabase = getSupabase(c2.env)
   const { data: rows, error } = await supabase
     .from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, created_at, scan_id')
+    .select('id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
   if (error) throw error
 
+  // AUDIT FIX (Section 9, feature gap): fix_tier was never selected or
+  // returned here, so a user's own payment history couldn't tell them
+  // which tier (FIX/BADGE/FIX_PLAIN) each past purchase actually was —
+  // despite that column existing specifically so downstream consumers
+  // could trust it (see migration 0010's comment).
   const payments = rows.map(r => ({
     id: r.id, amountCents: r.amount_cents, currency: r.currency, status: r.status,
-    paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id
+    paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id, fixTier: r.fix_tier
   }))
 
   return c2.json({ success: true, data: { payments } })

@@ -28,9 +28,21 @@ async function send(env, supabase, to, subject, template, vars) {
     error  = err.message
     console.error(`Email [${template}] to ${to}:`, err.message)
   }
-  supabase.from('email_logs')
-    .insert({ to, subject, template, status, error })
-    .then(() => {}, () => {})
+  // AUDIT FIX (Section 9): this insert used to be fire-and-forget
+  // (`.then(() => {}, () => {})`, never awaited, no ctx.waitUntil()). On
+  // Workers, a promise that's neither awaited nor handed to waitUntil()
+  // risks being cancelled the moment the response is returned — exactly
+  // the failure mode this codebase's own scheduled-handler/queue-consumer
+  // code elsewhere is careful to avoid. Unlike verify.controller.js's
+  // increment_verification_views counter (deliberately left fire-and-forget
+  // there, since it's just an analytics counter), email_logs is the one
+  // real audit trail this app has for "did this email actually go out" —
+  // worth the small added latency to guarantee it's written.
+  try {
+    await supabase.from('email_logs').insert({ to, subject, template, status, error })
+  } catch (logErr) {
+    console.error(`email_logs insert failed for [${template}] to ${to}:`, logErr.message)
+  }
   return status === 'sent'
 }
 

@@ -67,10 +67,23 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
     // Belt-and-suspenders against the 60s KV TTL floor below: if the window
     // has actually elapsed already, start a new one here regardless of
     // whether the key technically still exists in KV.
-    const elapsedSeconds = (now - windowStart) / 1000
+    let elapsedSeconds = (now - windowStart) / 1000
     if (elapsedSeconds >= windowSeconds) {
       count = 0
       windowStart = now
+      // AUDIT FIX (Section 9): elapsedSeconds must be recomputed from the
+      // just-reset windowStart before it's used below to derive the KV
+      // TTL. It used to stay at its stale, pre-reset value here (which is
+      // by definition >= windowSeconds, since that's the condition that
+      // got us into this branch), so `windowSeconds - elapsedSeconds` came
+      // out <= 0 and got floored to the 60s minimum — meaning every reset
+      // triggered by this branch persisted the fresh window for only 60s
+      // in KV instead of the intended full windowSeconds. Once a bucket
+      // hit this path once, it kept re-triggering it every ~60s instead of
+      // every windowSeconds, silently handing out a full fresh quota far
+      // more often than the limiter's own numbers promise (e.g. ~15x more
+      // often for the 15-minute `auth` bucket, ~60x for the 1-hour ones).
+      elapsedSeconds = 0
     }
 
     if (count >= max) {
@@ -171,4 +184,95 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
-module.exports = { general, anonScan, auth, authVerify, payment, employerLead, webhook, isBypassed }
+// AUDIT FIX (Section 9): partners.routes.js's POST /track-click used to
+// share this exact `employerLead` limiter instance — same KV bucket
+// (`rl:lead:<ip>`), not just the same numbers. Two problems: (1) 10/hr is
+// tuned for lead-form spam, not passive click analytics on a public
+// referral link — a single office/campus IP visiting even a mildly
+// successful referral link would blow through it and start silently
+// under-counting a partner's real traffic; (2) because it was the SAME
+// bucket, a burst of referral clicks from one IP could exhaust the quota
+// and block a legitimate employer-lead submission from that same IP, and
+// vice versa — two functionally unrelated features fate-sharing a rate
+// limit neither was designed around. Given its own dedicated bucket and a
+// ceiling sized for "passive link visits," not "a human filling out a form."
+const click = makeLimiter({
+  windowSeconds: 60 * 60, max: 120, keyPrefix: 'rl:click',
+  message: msg('Slow down.')
+})
+
+// AUDIT FIX (Section 9, feature gap): `auth` above is IP-only. A credential-
+// stuffing attempt spread across many IPs (a botnet, a rotating proxy pool)
+// against ONE specific account sails straight through it — each individual
+// IP stays comfortably under 10/15min while the account itself absorbs
+// unlimited guesses. This is a second, independent backstop keyed by the
+// *account* (normalized email) instead of the requester, so it catches
+// exactly the attack shape the IP limiter structurally cannot.
+//
+// Deliberately NOT the same primitive as makeLimiter()'s fixed window —
+// this tracks CONSECUTIVE failures (reset to zero on any successful login),
+// not a request count, and locks out for a cooldown once a threshold is
+// hit, rather than just re-arming on a timer. Deliberately applied to every
+// email attempted, real account or not: only ever gating on whether an
+// account exists (as opposed to gating identically either way) would let an
+// attacker fingerprint which emails are registered by noticing which ones
+// eventually start returning "too many failed attempts" instead of
+// "invalid credentials" — the same non-enumeration property login() already
+// protects with its dummy-hash timing match is preserved here the same way.
+const LOCKOUT_MAX_CONSECUTIVE_FAILURES = 8
+const LOCKOUT_MINUTES = 15
+const LOCKOUT_KEY_PREFIX = 'rl:lockout'
+
+function lockoutKey(email) {
+  return `${LOCKOUT_KEY_PREFIX}:${String(email).trim().toLowerCase()}`
+}
+
+// Returns { locked: boolean, retryAfterSeconds: number|null }. Call before
+// doing any real work (DB lookup, bcrypt) in the login handler — a locked
+// account should short-circuit as cheaply as possible, not just get denied
+// at the end of the usual path.
+async function checkAccountLockout(env, email) {
+  const kv = env.RATE_LIMIT_KV
+  const raw = await kv.get(lockoutKey(email))
+  if (!raw) return { locked: false, retryAfterSeconds: null }
+  let parsed
+  try { parsed = JSON.parse(raw) } catch (_) { return { locked: false, retryAfterSeconds: null } }
+  if (parsed.lockedUntil && parsed.lockedUntil > Date.now()) {
+    return { locked: true, retryAfterSeconds: Math.ceil((parsed.lockedUntil - Date.now()) / 1000) }
+  }
+  return { locked: false, retryAfterSeconds: null }
+}
+
+// Call on every failed login attempt (wrong password OR no such account —
+// see the non-enumeration note above). Locks the account once
+// LOCKOUT_MAX_CONSECUTIVE_FAILURES is reached.
+async function recordLoginFailure(env, email) {
+  const kv = env.RATE_LIMIT_KV
+  const key = lockoutKey(email)
+  const raw = await kv.get(key)
+  let failCount = 0
+  try { failCount = raw ? (JSON.parse(raw).failCount || 0) : 0 } catch (_) { failCount = 0 }
+  failCount += 1
+
+  const lockedUntil = failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES
+    ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
+    : null
+
+  await kv.put(key, JSON.stringify({ failCount, lockedUntil }), {
+    // KV's 60s TTL floor applies here same as makeLimiter() above; either
+    // way this key naturally ages out well before it'd matter.
+    expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
+  })
+}
+
+// Call on every successful login — clears the failure count so a real user
+// who mistypes their password a few times isn't left one mistake away from
+// a lockout on their next legitimate attempt days later.
+async function recordLoginSuccess(env, email) {
+  await env.RATE_LIMIT_KV.delete(lockoutKey(email)).catch(() => {})
+}
+
+module.exports = {
+  general, anonScan, auth, authVerify, payment, employerLead, webhook, click, isBypassed,
+  checkAccountLockout, recordLoginFailure, recordLoginSuccess
+}

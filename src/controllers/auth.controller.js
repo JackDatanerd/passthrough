@@ -24,6 +24,7 @@ const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel, camelToSnake, USER_FIELD_MAP, SCAN_FIELD_MAP } = require('../lib/mappers')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
+const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
 
 async function issueJWT(env, user) {
   const expiresIn = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
@@ -115,6 +116,20 @@ async function login(c) {
     password: z.string()
   }).parse(body)
 
+  // AUDIT FIX (Section 9, feature gap): account-level lockout, independent
+  // of and in addition to the IP-keyed `rl.auth` limiter on this route —
+  // see rateLimiter.js's checkAccountLockout comment for why the IP limiter
+  // alone doesn't cover a distributed attack against one account. Checked
+  // before any DB work, and checked identically for every email (real
+  // account or not) so a lockout response itself never reveals whether the
+  // account exists.
+  const lockout = await checkAccountLockout(c.env, email)
+  if (lockout.locked) {
+    return c.json({ success: false,
+      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
+    }, 429)
+  }
+
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase
     .from('users').select('*').eq('email', email).is('deleted_at', null).maybeSingle()
@@ -127,13 +142,17 @@ async function login(c) {
     // so "no such email" and "wrong password" aren't distinguishable by
     // response latency. See getDummyPasswordHash() above.
     await bcrypt.compare(password, await getDummyPasswordHash())
+    await recordLoginFailure(c.env, email)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
   if (user.status === 'BANNED')
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
-  if (!await bcrypt.compare(password, user.passwordHash))
+  if (!await bcrypt.compare(password, user.passwordHash)) {
+    await recordLoginFailure(c.env, email)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
+  }
 
+  await recordLoginSuccess(c.env, email)
   return c.json({ success: true, data: { token: await issueJWT(c.env, user), user: safeUser(user) } })
 }
 
@@ -372,6 +391,60 @@ async function deleteAccount(c) {
   // indefinitely after "deletion", just no longer reachable through the API
   // since auth.js's deletedAt check blocks it. "Delete account" should mean
   // that data is actually gone, not merely unreachable.
+  // AUDIT FIX (Section 10, feature gap — builds on the saved_profile fix
+  // above): that fix closed the saved_profile half of this gap but left the
+  // other half open — every `scans` row for this user (resume text, job
+  // description text, candidate's real first name, cover letter text, the
+  // actual resume/generated PDF/DOCX files sitting in R2) stayed completely
+  // untouched, still linked by user_id, forever. "Delete account" should
+  // mean that data is actually gone, same reasoning as above, just applied
+  // to the other place this user's content lives.
+  //
+  // What's scrubbed vs. kept, deliberately: all actual document/personal
+  // content is cleared and the R2 files deleted. The row itself, its
+  // scores, and fix_purchased/fix_tier are KEPT — payments.scan_id still
+  // references these rows, and financial/audit records need to survive
+  // account deletion even when the personal content behind them shouldn't.
+  // verification_code/url are cleared too: leaving them live would keep a
+  // now-content-less (or worse, broken, once the R2 files are gone) public
+  // verify page reachable for a scan whose owner asked for their data to be
+  // deleted.
+  const { data: scans, error: scansErr } = await supabase
+    .from('scans')
+    .select('id, resume_path, resume_ats_path, resume_pdf_path')
+    .eq('user_id', user.id)
+  if (scansErr) console.error('deleteAccount scan lookup:', scansErr.message)
+
+  if (scans?.length > 0) {
+    for (const s of scans) {
+      for (const key of [s.resume_path, s.resume_ats_path, s.resume_pdf_path]) {
+        if (key) await c.env.RESUMES_BUCKET.delete(key).catch(() => {})
+      }
+    }
+    const scanIds = scans.map(s => s.id)
+    const { error: scrubErr } = await supabase.from('scans').update({
+      resume_path:            null,
+      resume_ats_path:        null,
+      resume_pdf_path:        null,
+      resume_original_name:   null,
+      resume_hash:            null,
+      job_description_text:   null,
+      job_description_url:    null,
+      candidate_first_name:   null,
+      cover_letter_text:      null,
+      raw_brain_dump_text:    null,
+      original_resume_data:   null,
+      rewritten_resume_data:  null,
+      quantification_prompts: null,
+      full_ats_report:        null,
+      verification_code:      null,
+      verification_url:       null,
+      verify_expose_docx:     false,
+      verify_expose_pdf:      false
+    }).in('id', scanIds)
+    if (scrubErr) console.error('deleteAccount scan scrub:', scrubErr.message)
+  }
+
   await supabase.from('users').update({
     deleted_at:    new Date().toISOString(),
     email:         `deleted-${user.id}@passthrough.dev`,

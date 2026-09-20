@@ -14,11 +14,17 @@ router.get( '/dashboard',      c.getPartnerDashboard)
 
 // Public — click tracking. Rate-limited like the other public write
 // endpoint in this app (employer-leads) since it's unauthenticated.
-router.post('/track-click', rl.employerLead, c.trackClick)
+// AUDIT FIX (Section 9): was rl.employerLead — shared the lead-spam bucket
+// with POST /employer-leads. See rateLimiter.js's `click` comment.
+router.post('/track-click', rl.click, c.trackClick)
 
 // Admin only
 router.post('/',                          admin, c.adminCreatePartner)
 router.get( '/',                          admin, c.adminListPartners)
+// AUDIT FIX (Section 10, feature gap): commission_rate and status
+// (ACTIVE/PAUSED) had no write path at all until now — see
+// adminUpdatePartner's comment in partners.controller.js.
+router.patch('/:id',                      admin, c.adminUpdatePartner)
 router.post('/:id/resend-link',           admin, c.adminResendPayoutLink)
 router.post('/:id/payouts',               admin, c.adminRecordPayout)
 router.post('/:id/referral-codes',        admin, c.adminCreateReferralCode)

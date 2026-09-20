@@ -20,8 +20,16 @@ async function lookupCode(supabase, rawCode) {
   if (!rawCode) return null
   const code = String(rawCode).trim().toUpperCase()
   if (!code) return null
+  // AUDIT FIX (Section 10, feature gap): now also pulls the owning
+  // partner's status. partner_status_enum ('ACTIVE'/'PAUSED') existed on
+  // the partners table since 0011 with no endpoint that ever set it AND no
+  // check anywhere that ever read it — pausing a partner (even by hand,
+  // directly in the DB, the only way it could be set at all before this
+  // fix) had zero effect: their codes kept discounting checkout and kept
+  // crediting commission exactly as if nothing had changed. See
+  // isCodeUsable() below for where this actually gets enforced now.
   const { data, error } = await supabase
-    .from('referral_codes').select('*').eq('code', code).maybeSingle()
+    .from('referral_codes').select('*, partners(status)').eq('code', code).maybeSingle()
   if (error) throw error
   return data
 }
@@ -29,6 +37,13 @@ async function lookupCode(supabase, rawCode) {
 function isCodeUsable(row) {
   if (!row) return false
   if (!row.active) return false
+  // A paused partner's codes stop applying to NEW checkouts immediately.
+  // Deliberately NOT re-checked in recordConversion() below — a payment
+  // that already went through at the discounted price, under valid terms
+  // at the time, still owes its commission regardless of what happens to
+  // the partner's status afterward. "Paused" means "stop new referrals,"
+  // not "retroactively deny commission on completed sales."
+  if (row.partners?.status !== 'ACTIVE') return false
   if (row.expires_at && Date.parse(row.expires_at) < Date.now()) return false
   if (row.usage_limit != null && row.uses_so_far >= row.usage_limit) return false
   return true

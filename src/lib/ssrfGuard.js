@@ -16,15 +16,32 @@
 //     redirect:'manual' by the caller and each Location is re-validated
 //     here before being followed)
 //
-// What this DOES NOT protect against:
-//   - DNS rebinding, i.e. a public-looking hostname whose DNS record
-//     resolves to a private IP at request time. Closing that fully
-//     requires resolving DNS yourself and connecting to the resolved IP
-//     (not just the hostname), which stock Workers `fetch()` doesn't give
-//     you a hook for. If this ever becomes a real threat model concern,
-//     the fix is a DNS-over-HTTPS pre-resolve + IP allowlist check before
-//     the fetch, or moving this fetch behind a proxy that supports it.
-//     Flagging this honestly rather than claiming full coverage.
+// AUDIT FIX (Section 9): the above list used to stop at hostname-string
+// checks and call DNS rebinding an accepted, out-of-scope gap. That
+// undersold the actual exposure — rebinding (a hostname whose *answer
+// changes* between check-time and fetch-time) is one thing, but a hostname
+// with a completely ordinary, static A/AAAA record pointing straight at
+// 169.254.169.254 needs no rebinding trick at all. Free wildcard-DNS
+// services (nip.io, sslip.io — "169.254.169.254.nip.io" resolves to exactly
+// that IP, forever, no attacker infrastructure required) made this a
+// zero-effort bypass of every check above, since none of them ever looked
+// at what a non-literal hostname actually resolves to.
+//
+// resolveHostnameIsSafe() below closes this: any hostname that isn't
+// already a blocked literal is resolved via DNS-over-HTTPS (Cloudflare's
+// own resolver — a plain `fetch()` call, no new binding/dependency needed)
+// and every returned A/AAAA answer is run back through the exact same
+// isPrivateIPv4/isPrivateIPv6 checks used for literal IPs above. This still
+// doesn't close true TOCTOU rebinding (an answer that's public at
+// check-time and private by the time `fetch()` itself connects) — nothing
+// short of resolve-then-connect-to-the-resolved-IP does, and stock Workers
+// `fetch()` has no hook for that — but it closes the much larger, much
+// easier "just point a hostname at a private IP" class outright.
+//
+// Fails CLOSED: any DoH lookup failure (timeout, non-2xx, malformed
+// response, or a hostname with literally no A/AAAA records) is treated as
+// unsafe. This is a security check, not a best-effort feature — an
+// inconclusive answer must never be treated as a pass.
 
 const BLOCKED_HOSTNAME_SUFFIXES = ['.local', '.internal', '.localdomain', '.lan']
 const BLOCKED_HOSTNAMES = ['localhost']
@@ -110,8 +127,42 @@ function isPrivateIPv6(hostname) {
   return false
 }
 
+// DNS-over-HTTPS lookup via Cloudflare's own resolver — a plain fetch(),
+// nothing new to configure or bind. Returns an array of resolved IP address
+// strings (v4 and/or v6, whatever the record type returned), or throws on
+// any failure — callers must treat a throw as "unsafe," not "unknown."
+async function resolveHostname(hostname) {
+  const headers = { Accept: 'application/dns-json' }
+  const [aRes, aaaaRes] = await Promise.all([
+    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,    { headers }),
+    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=AAAA`, { headers })
+  ])
+  if (!aRes.ok || !aaaaRes.ok) throw new Error('DoH lookup failed')
+
+  const [aBody, aaaaBody] = await Promise.all([aRes.json(), aaaaRes.json()])
+  const answers = [...(aBody.Answer || []), ...(aaaaBody.Answer || [])]
+  // Answer.type 1 = A, 28 = AAAA — skip CNAME/other record types mixed into
+  // the same Answer array; .data on those two types is the address itself.
+  return answers.filter(a => a.type === 1 || a.type === 28).map(a => a.data)
+}
+
+// Resolves hostname and checks every returned address against the same
+// private-range logic used for literal IPs. Fails closed: any lookup error,
+// or a hostname that resolves to zero addresses, is treated as unsafe —
+// silently allowing an unresolvable check through would defeat the point.
+async function resolveHostnameIsSafe(hostname) {
+  let ips
+  try {
+    ips = await resolveHostname(hostname)
+  } catch (_) {
+    return false
+  }
+  if (ips.length === 0) return false
+  return ips.every(ip => (ip.includes(':') ? !isPrivateIPv6(ip) : !isPrivateIPv4(ip)))
+}
+
 // Returns null if the URL is safe to fetch, or a user-facing reason string if not.
-function checkUrlIsSafeToFetch(url) {
+async function checkUrlIsSafeToFetch(url) {
   let parsed
   try { parsed = new URL(url) } catch (_) { return 'Invalid URL.' }
 
@@ -124,6 +175,14 @@ function checkUrlIsSafeToFetch(url) {
   if (isIPv4(hostname) && isPrivateIPv4(hostname)) return 'That address cannot be fetched.'
   if (hostname.includes(':') && isPrivateIPv6(hostname)) return 'That address cannot be fetched.'
   if (hostname === '0') return 'That address cannot be fetched.'
+
+  // Hostname is already a literal IP (checked above, and either passed or
+  // this function already returned) — no DNS resolution needed/possible.
+  if (isIPv4(hostname) || hostname.includes(':')) return null
+
+  // Non-literal hostname: resolve it and check what it actually points at.
+  const safe = await resolveHostnameIsSafe(hostname)
+  if (!safe) return 'That address cannot be fetched.'
 
   return null
 }

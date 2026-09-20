@@ -46,6 +46,17 @@ app.use('*', async (c, next) => {
   return corsMiddleware(c, next)
 })
 
+// ── 1b. Health check ──────────────────────────────────────────────────────────
+// AUDIT FIX (Section 9, feature gap): nothing existed for an uptime monitor
+// to poll — every external check had to hit a real business route (and, for
+// anything under /api/*, burn into that IP's general rate-limit budget).
+// Deliberately outside /api/* (skips both the general limiter and any
+// future route-specific auth) and deliberately does NOT touch Supabase —
+// this only proves the Worker itself is up and routing requests; a DB-down
+// scenario should show up as real endpoints failing, not as this failing
+// too and paging on the same incident twice.
+app.get('/healthz', c => c.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }))
+
 // ── 2. General rate limit ─────────────────────────────────────────────────────
 app.use('/api/*', rateLimiter.general)
 

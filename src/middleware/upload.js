@@ -39,7 +39,26 @@ function hasValidMagicBytes(bytes, mimetype) {
   return false
 }
 
+// AUDIT FIX (Section 9): the MAX_UPLOAD_MB check below (`file.size >
+// c.MAX_UPLOAD_MB...`) ran AFTER `ctx.req.formData()` had already fully
+// consumed and buffered the request body — formData() has to read the
+// entire multipart stream to parse it, so by the time file.size was ever
+// checked, an oversized request had already cost the full CPU/memory hit of
+// parsing it. A Content-Length preflight rejects an oversized request
+// before any of that parsing work happens. Capped at MAX_UPLOAD_MB plus a
+// fixed allowance for the other multipart fields (job description text,
+// brain-dump text, multipart boundary overhead) — generous enough that no
+// legitimate submission is affected, tight enough to stop a multi-hundred-
+// -megabyte body from ever reaching formData() at all.
+const MAX_REQUEST_BYTES = (c.MAX_UPLOAD_MB * 1024 * 1024) + (1 * 1024 * 1024)
+
 async function uploadResume(ctx, next) {
+  const contentLength = ctx.req.header('content-length')
+  if (contentLength && Number(contentLength) > MAX_REQUEST_BYTES) {
+    return ctx.json({ success: false,
+      message: `File too large. Max ${c.MAX_UPLOAD_MB}MB.` }, 413)
+  }
+
   let formData
   try {
     formData = await ctx.req.formData()
