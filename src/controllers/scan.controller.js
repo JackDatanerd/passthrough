@@ -71,6 +71,45 @@ function extForMimeType(mimetype) {
   return EXT_BY_MIME[mimetype] || ''
 }
 
+// Hoisted to module scope — was previously declared locally inside
+// generateFix only; runAtsScan's WYSIWYG scoring fix below (see
+// renderStructuredResumeText) needs the same constant.
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+
+// AUDIT FIX (bug — section audit "generate a resume from scratch"): brain-dump
+// and saved-profile free scans previously scored resumeParser.serializeResumeData()'s
+// synthetic plain-text rendering directly (see the two branches below in
+// runAtsScan, before this fix). generateFix's own WYSIWYG-scoring comment
+// further down this file already documents, from a real user report, that
+// this exact synthetic text scores measurably differently than the real
+// generated .docx — which is why the paid retry loop scores real docx bytes
+// instead of trusting the synthetic serialization. That fix was never applied
+// to the upstream FREE score for these two input modes, so a brain-dump/
+// saved-profile user's very first score (and badgeEligible, which gates the
+// cheaper BADGE tier before any purchase) was being computed off text the
+// codebase's own audit history says is unreliable — while file-mode's free
+// score already used real extracted text from the real uploaded file, making
+// the two input-mode families' scores not apples-to-apples despite an
+// identical UI treating them as directly comparable numbers.
+//
+// This renders the actual ATS docx (no verification URL — this runs pre-
+// purchase, before any credential exists) and scores THAT, unifying every
+// input mode's free score on the same real-file basis generateFix's retry
+// loop already uses. Falls back to the synthetic text only if docx
+// generation/extraction itself throws or comes back too short, so a
+// rendering bug degrades scoring accuracy rather than failing the scan
+// outright.
+async function renderStructuredResumeText(resumeData) {
+  try {
+    const docxBytes = await docxService.generateAtsDocx(resumeData, null)
+    const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
+    if (text && text.trim().length >= 100) return text
+  } catch (err) {
+    console.error('renderStructuredResumeText: docx render/extract failed, falling back to synthetic text:', err.message)
+  }
+  return resumeParser.serializeResumeData(resumeData)
+}
+
 // POST /api/scan  — body already parsed by middleware/upload.js into
 // c.get('uploadedFile') and c.get('formFields')
 async function createScan(ctx) {
@@ -208,7 +247,18 @@ async function createScan(ctx) {
     }
     return {
       input_mode:           'brain_dump',
-      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS)
+      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS),
+      // AUDIT FIX (feature gap): contactName/contactEmail were previously
+      // ONLY folded into raw_brain_dump_text as a preamble for Claude to
+      // read — never persisted as their own values. That meant the one
+      // piece of infrastructure that could actually use a validated
+      // anonymous email address (sending the person a link back to their
+      // own scan once it's scored — see runAtsScan) had nothing durable to
+      // read; the email existed for exactly one turn, inside a prompt.
+      // Logged-in users don't need this (their account email is already the
+      // right place to send to), which is why this is conditioned on !user.
+      contact_name:   !user ? (contactName  || null) : null,
+      contact_email:  !user ? (contactEmail || null) : null
     }
   }
 
@@ -352,6 +402,189 @@ async function getScan(ctx) {
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   return ctx.json({ success: true, data: { ...safe, badgeEligible } })
+}
+
+// Loosely mirrors the shape claude.service.js's parseResumeStructure /
+// structureFreeformText produce — permissive (`.passthrough()`) rather than
+// strict, since this only needs to catch a genuinely malformed body, not
+// police every field. Shared between updateResumeData below and nowhere
+// else (the AI-generation call sites intentionally do NOT run their output
+// through this — that would just be a second, redundant thing to keep in
+// sync with the prompt's own schema).
+const resumeDataSchema = z.object({
+  name:      z.string().nullable().optional(),
+  email:     z.string().nullable().optional(),
+  phone:     z.string().nullable().optional(),
+  location:  z.string().nullable().optional(),
+  linkedin:  z.string().nullable().optional(),
+  portfolio: z.string().nullable().optional(),
+  summary:   z.string().nullable().optional(),
+  experience: z.array(z.object({
+    company: z.string().nullable().optional(),
+    title:   z.string().nullable().optional(),
+    dates:   z.string().nullable().optional(),
+    bullets: z.array(z.string()).optional()
+  })).optional(),
+  education: z.array(z.object({
+    institution: z.string().nullable().optional(),
+    degree:      z.string().nullable().optional(),
+    dates:       z.string().nullable().optional()
+  })).optional(),
+  skills:         z.array(z.string()).optional(),
+  certifications: z.array(z.string()).optional(),
+  projects: z.array(z.object({
+    name:         z.string().nullable().optional(),
+    description:  z.string().nullable().optional(),
+    technologies: z.array(z.string()).optional(),
+    link:         z.string().nullable().optional()
+  })).optional()
+}).passthrough()
+
+// PATCH /api/scan/:id/resume-data
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// previously there was no way for a brain-dump (or saved-profile) user to
+// see, let alone correct, what Claude actually extracted from their text
+// before it became the basis for their score and — if they went on to pay —
+// their delivered resume. getScan above already returned
+// originalResumeData to the owner from COMPLETE_PASS/COMPLETE_FAIL onward;
+// nothing in the frontend ever rendered it, and there was no endpoint to
+// write a correction back even if it had. This closes both halves: the
+// frontend can now show the extracted data (see ResumeDataEditor.jsx) and —
+// via this endpoint — save a correction and get an accurate rescore, all
+// before any money changes hands.
+//
+// Deliberately NOT gated behind the `auth` middleware (see scan.routes.js)
+// — an anonymous brain-dump submitter should be able to fix an extraction
+// error before they've even decided whether to register, same ownership
+// model as getScan/getScanStatus above (anon_token via query param).
+//
+// Scoped to brain_dump/saved_profile only: file-mode's structured data
+// doesn't exist yet at this stage (see generateFix, which is the first
+// place a file-mode resumeData object is ever produced) and correcting a
+// genuine uploaded file's content isn't this feature's job. Also scoped to
+// pre-purchase only — once a fix exists, retryFix's feedback loop is the
+// intended way to iterate on it, not silently rewriting the source data
+// underneath an in-flight or already-delivered fix.
+async function updateResumeData(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+
+  const user = ctx.get('user')
+  const isOwner = (scan.userId && scan.userId === user?.id) ||
+                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+
+  if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
+    return ctx.json({ success: false, message: 'Only available for brain-dump or saved-profile scans.' }, 400)
+  if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
+    return ctx.json({ success: false, message: 'Scan must be complete to edit.' }, 400)
+  if (scan.fixPurchased)
+    return ctx.json({ success: false, message: 'Already purchased — use "Try Again" on the delivered fix instead.' }, 400)
+
+  let body
+  try {
+    body = await ctx.req.json()
+  } catch (_) {
+    return ctx.json({ success: false, message: 'Invalid request body.' }, 400)
+  }
+  const parsedBody = resumeDataSchema.safeParse(body?.resumeData)
+  if (!parsedBody.success)
+    return ctx.json({ success: false, message: 'Resume data is not in the expected shape.' }, 400)
+  const resumeData = parsedBody.data
+
+  // Same WYSIWYG scoring basis as runAtsScan's own brain_dump/saved_profile
+  // branches (see renderStructuredResumeText above) and the same AI/rule
+  // blend the original free scan used — an edit-triggered rescore should
+  // land on a number computed the exact same way the first one was, not a
+  // cheaper approximation that could disagree with it for reasons that have
+  // nothing to do with the actual edit.
+  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+  const rawResumeText = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_CHARS)
+  const ruleResult = atsService.scoreResume(rawResumeText, jdText)
+
+  let finalScore = ruleResult.score
+  const aiResult = await claudeService.scoreResumeWithAI(ctx.env, rawResumeText, jdText)
+  if (aiResult.success) {
+    try {
+      const parsedAi = claudeService.extractJson(aiResult.data)
+      if (typeof parsedAi.aiScore === 'number')
+        finalScore = Math.round((ruleResult.score * c.ATS_RULE_WEIGHT) + (parsedAi.aiScore * c.ATS_AI_WEIGHT))
+    } catch (parseErr) {
+      console.error('updateResumeData AI score parse failed, using rule-only score:', parseErr.message)
+    }
+  }
+  finalScore = Math.max(0, Math.min(100, finalScore))
+  const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
+
+  const { error: updErr } = await supabase.from('scans').update({
+    original_resume_data: resumeData,
+    ats_score:       finalScore,
+    passed:          finalScore >= c.ATS_PASS_THRESHOLD,
+    keyword_score:   ruleResult.keywordScore,
+    format_score:    ruleResult.formatScore,
+    sections_score:  ruleResult.sectionsScore,
+    content_score:   ruleResult.contentScore,
+    full_ats_report: ruleResult.detail,
+    status
+  }).eq('id', scan.id)
+  if (updErr) throw updErr
+
+  return ctx.json({ success: true, data: {
+    originalResumeData: resumeData,
+    atsScore:      finalScore,
+    passed:        finalScore >= c.ATS_PASS_THRESHOLD,
+    badgeEligible: finalScore >= c.ATS_BADGE_THRESHOLD,
+    keywordScore:  ruleResult.keywordScore,
+    formatScore:   ruleResult.formatScore,
+    sectionsScore: ruleResult.sectionsScore,
+    contentScore:  ruleResult.contentScore,
+    status
+  }})
+}
+
+// GET /api/scan/:id/download-draft
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// previously a brain-dump/saved-profile user who chose not to purchase a
+// fix got NOTHING tangible back — not even the plain resume built from
+// their own text — despite ScanForm.jsx's CTA literally promising "Build &
+// Score My Resume — Free". Unlike a file-upload user (who always still has
+// their own original file regardless of what Passthrough does with it), a
+// brain-dump user's only representation of their work history lived
+// entirely inside this app, behind a paywall. This generates the same ATS-
+// formatted .docx docxService already produces for a paid fix — WITHOUT any
+// AI rewrite, credential, or verification link — on demand and free, from
+// whatever original_resume_data currently exists (including any correction
+// made via updateResumeData above). Deliberately NOT persisted to R2:
+// generation is cheap and deterministic (no Claude call), so there's no
+// reason to pay storage cost for a file that regenerates identically from
+// data already on the row. Same ownership model as getScan (anon_token via
+// query param) — an anonymous user shouldn't have to register just to get
+// back the resume they already built for free.
+async function downloadDraft(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+
+  const user = ctx.get('user')
+  const isOwner = (scan.userId && scan.userId === user?.id) ||
+                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+
+  if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
+    return ctx.json({ success: false,
+      message: 'A draft download is only available for brain-dump or saved-profile scans — file uploads already have your original file.' }, 400)
+  if (!scan.originalResumeData)
+    return ctx.json({ success: false, message: 'Not ready yet — the scan needs to finish first.' }, 404)
+
+  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null)
+  ctx.header('Content-Disposition', 'attachment; filename="resume-draft.docx"')
+  ctx.header('Content-Type', DOCX_MIME)
+  return ctx.body(docxBytes)
 }
 
 // POST /api/scan/:id/initiate-fix
@@ -671,7 +904,10 @@ async function runAtsScan(env, supabase, scanId) {
           resumeData.email = resumeData.email || userRow.email
         }
       }
-      rawResumeText = resumeParser.serializeResumeData(resumeData)
+      // AUDIT FIX (bug): see renderStructuredResumeText's comment above —
+      // this used to be a direct resumeParser.serializeResumeData(resumeData)
+      // call, scoring synthetic text instead of the real generated document.
+      rawResumeText = await renderStructuredResumeText(resumeData)
 
       // Persist the structured data now. This is a functional requirement
       // for brain-dump mode specifically — generateFix/generateBadge need
@@ -695,7 +931,9 @@ async function runAtsScan(env, supabase, scanId) {
         }).eq('id', scanId)
         return
       }
-      rawResumeText = resumeParser.serializeResumeData(scan.originalResumeData)
+      // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
+      // see renderStructuredResumeText's comment.
+      rawResumeText = await renderStructuredResumeText(scan.originalResumeData)
     } else {
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
@@ -766,6 +1004,26 @@ async function runAtsScan(env, supabase, scanId) {
           })
         } catch (e) { console.error('Scan email:', e.message) }
       }
+    } else if (scan.inputMode === 'brain_dump' && scan.contactEmail) {
+      // AUDIT FIX (feature gap — section audit "generate a resume from
+      // scratch"): an anonymous brain-dump submitter has no account, so the
+      // logged-in branch above never fires for them — they previously got
+      // NO email at all, despite ScanForm.jsx explicitly collecting an email
+      // address from them for exactly this kind of recovery scenario ("so
+      // your resume header isn't blank" undersold what it should also be
+      // used for). Without this, closing the tab / losing the localStorage
+      // anon_token means losing access to a resume they just spent real
+      // effort typing out, with a validated email sitting right there on
+      // the row unused. Embeds the scan's own anon_token as a magic link —
+      // this is not a third-party address, it's the address the person
+      // themselves just typed into this exact form, so it's the same trust
+      // boundary as any "here's your link" confirmation email.
+      try {
+        await emailService.sendAnonScanResult(
+          env, supabase, scan.contactEmail, scan.contactName || 'there',
+          scanId, scan.anonToken, finalScore, finalScore >= c.ATS_PASS_THRESHOLD
+        )
+      } catch (e) { console.error('Anon scan email:', e.message) }
     }
   } catch (err) {
     console.error('runAtsScan error:', err.message)
@@ -817,7 +1075,7 @@ async function generateFix(env, supabase, scanId) {
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
-    const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    // DOCX_MIME is now module-level — see top of file.
 
     // Verification code/URL computed BEFORE the loop now (was previously
     // computed after) — every candidate's scoring docx and the final
@@ -1169,5 +1427,6 @@ async function generateBadge(env, supabase, scanId) {
 
 module.exports = {
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, updateVerifyVisibility, downloadFile, getScanHistory,
+  updateResumeData, downloadDraft,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

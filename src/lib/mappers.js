@@ -72,6 +72,10 @@ function scanRowToCamel(row) {
     userId:              row.user_id,
     anonToken:           row.anon_token,
     anonExpiresAt:       row.anon_expires_at,
+    // Section audit ("generate a resume from scratch"): populated only for
+    // anonymous brain-dump submissions — see createScan / migration 0019.
+    contactName:            row.contact_name,
+    contactEmail:           row.contact_email,
     inputMode:              row.input_mode,
     rawBrainDumpText:       row.raw_brain_dump_text,
     originalResumeData:     row.original_resume_data,
@@ -153,6 +157,7 @@ const SCAN_FIELD_MAP = {
   resumeHash: 'resume_hash', verifiedAt: 'verified_at', roleCategory: 'role_category',
   seniorityLevel: 'seniority_level', integrityScore: 'integrity_score', userId: 'user_id',
   anonToken: 'anon_token', anonExpiresAt: 'anon_expires_at',
+  contactName: 'contact_name', contactEmail: 'contact_email',
   inputMode: 'input_mode', rawBrainDumpText: 'raw_brain_dump_text',
   originalResumeData: 'original_resume_data', rewrittenResumeData: 'rewritten_resume_data',
   quantificationPrompts: 'quantification_prompts'

@@ -13,6 +13,15 @@ import { addAnonScanToken } from '../../lib/anonScans'
 // the existing JD-length check below, which mirrors the backend's own
 // hardcoded 50-char minimum) — kept in sync manually, same as that one.
 const MIN_BRAIN_DUMP_CHARS = 100
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// mirrors backend/src/config/constants.js MAX_RESUME_CHARS. The backend has
+// always silently truncated brainDumpText past this length (createScan /
+// structureBrainDump) — there was previously no maxLength, no counter, and
+// no warning anywhere in this component, so a detailed multi-role career
+// narrative (naturally more verbose per fact than a bullet-formatted resume)
+// could lose an entire job or degree off the end with zero indication why
+// the AI "forgot" it.
+const MAX_RESUME_CHARS = 8000
 
 export default function ScanForm() {
   const navigate  = useNavigate()
@@ -169,13 +178,45 @@ export default function ScanForm() {
             <Textarea
               placeholder="Tell us about your work in your own words — companies, roles, what you actually did. Doesn't need to be tidy, we'll structure it for you."
               value={brainDumpText}
-              onChange={e => setBrainDumpText(e.target.value)}
+              onChange={e => setBrainDumpText(e.target.value.slice(0, MAX_RESUME_CHARS))}
               rows={8}
             />
-            <p className="mt-1 text-xs text-gray-500">
-              No resume yet? Paste a brain dump, an old resume, or just describe your background —
-              we'll turn it into a structured, JD-matched resume.
-            </p>
+            <div className="mt-1 flex items-start justify-between gap-3">
+              <p className="text-xs text-gray-500">
+                No resume yet? Paste a brain dump, an old resume, or just describe your background —
+                we'll turn it into a structured, JD-matched resume.
+              </p>
+              {/* AUDIT FIX (feature gap): see MAX_RESUME_CHARS comment above —
+                  this counter is the only thing standing between a long,
+                  detailed background and silent backend truncation. */}
+              <span className={`shrink-0 text-xs tabular-nums ${
+                brainDumpText.length >= MAX_RESUME_CHARS ? 'text-red-600 font-medium' :
+                brainDumpText.length >= MAX_RESUME_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
+              }`}>
+                {brainDumpText.length.toLocaleString()} / {MAX_RESUME_CHARS.toLocaleString()}
+              </span>
+            </div>
+            {brainDumpText.length >= MAX_RESUME_CHARS && (
+              <p className="mt-1 text-xs text-red-600">
+                You've hit the length limit — anything past this point won't be included.
+                If you have more to add, trim less-relevant details above to make room.
+              </p>
+            )}
+            {/* AUDIT FIX (feature gap): previously the only guidance was one
+                generic placeholder sentence — everything the free-text
+                extraction can't see (a metric never mentioned, a project
+                never described, a link never pasted in) simply doesn't make
+                it into the resume, with no hint beforehand about what to
+                include. */}
+            <div className="mt-3 rounded-lg border border-blue-100 bg-blue-50 px-4 py-3">
+              <p className="text-xs font-medium text-blue-900 mb-1">For a stronger resume, mention:</p>
+              <ul className="text-xs text-blue-800 list-disc list-inside space-y-0.5">
+                <li>Company/organization names and your exact job title at each</li>
+                <li>Specific numbers — team size, budget, % improved, users served, revenue</li>
+                <li>Projects you built or contributed to, even personal or class ones — not just skills you know</li>
+                <li>Links: LinkedIn, portfolio, GitHub, or a personal site, if you have one</li>
+              </ul>
+            </div>
             {!user && (
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>

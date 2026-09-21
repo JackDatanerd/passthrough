@@ -201,6 +201,19 @@ const payment = makeLimiter({
   message: msg('Payment in progress. Wait.')
 })
 
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// backs the new PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
+// endpoints (scan.controller.js's updateResumeData/downloadDraft). Both are
+// cheap (no Claude call — a rule-based rescore and/or a docx render) but
+// reachable by anonymous visitors too (ownership is enforced via anon_token,
+// not the `auth` middleware — see those routes), so they still need a real
+// ceiling rather than riding on `general`'s shared 100/15min IP bucket
+// alongside every other unrelated anonymous request that IP makes.
+const resumeEdit = makeLimiter({
+  windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:resumeedit',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 const employerLead = makeLimiter({
   windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:lead',
   message: msg('Slow down.')
@@ -295,6 +308,6 @@ async function recordLoginSuccess(env, email) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, employerLead, webhook, click, isBypassed,
+  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess
 }

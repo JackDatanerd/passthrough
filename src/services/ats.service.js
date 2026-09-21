@@ -328,8 +328,16 @@ function scoreSections(resumeText) {
   // this 15-point loss wasn't even visible to the user. Certifications is
   // still tracked below for informational purposes, just no longer
   // penalized numerically.
-  const summaryPatterns = ['summary','objective','profile']
-  const certPatterns    = ['certification','licenses','awards']
+  const summaryPatterns  = ['summary','objective','profile']
+  const certPatterns     = ['certification','licenses','awards']
+  // AUDIT FIX (section audit — "generate a resume from scratch"): Projects
+  // is new to the schema (see claude.service.js) and, like Certifications,
+  // genuinely field-dependent — most candidates with solid formal Experience
+  // won't have one, while it's often the strongest section for exactly the
+  // brain-dump users this section serves (students, career-changers,
+  // self-taught candidates). Tracked for informational purposes only, same
+  // non-penalizing treatment as hasCertifications below.
+  const projectPatterns = ['projects','personal projects','side projects']
 
   // AUDIT FIX: was slice(0, 10) — a header with name/phone/LinkedIn/
   // portfolio/GitHub each on their own line (common) can push the email
@@ -339,8 +347,9 @@ function scoreSections(resumeText) {
   const lines20  = lower.split('\n').slice(0, 20).join(' ')
   const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines20)
   const foundReq = required.filter(s => s.patterns ? s.patterns.some(p => lower.includes(p)) : hasEmail)
-  const hasSummary = summaryPatterns.some(p => lower.includes(p))
-  const hasCerts   = certPatterns.some(p => lower.includes(p))
+  const hasSummary  = summaryPatterns.some(p => lower.includes(p))
+  const hasCerts    = certPatterns.some(p => lower.includes(p))
+  const hasProjects = projectPatterns.some(p => lower.includes(p))
 
   return {
     score: Math.min(100, Math.round((foundReq.length / 4) * 85 + (hasSummary ? 15 : 0))),
@@ -350,7 +359,8 @@ function scoreSections(resumeText) {
       // Informational only — doesn't affect score. Present so the UI/
       // rewrite feedback can still mention it as an optional improvement
       // without implying its absence is a real problem.
-      hasCertifications: hasCerts
+      hasCertifications: hasCerts,
+      hasProjects
     }
   }
 }

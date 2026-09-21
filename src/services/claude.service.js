@@ -113,13 +113,24 @@ async function scoreResumeWithAI(env, resumeText, jdText) {
   )
 }
 
+// SCHEMA NOTE (section audit — "generate a resume from scratch"): linkedin/
+// portfolio and projects were previously entirely absent from this schema —
+// not just unpopulated, structurally impossible to capture, since nothing
+// downstream (serializeResumeData, docx.service.js, this very prompt) had
+// anywhere to put them even if a resume/brain-dump plainly stated them.
+// ats.service.js's scoreSections already anticipated a header with
+// "LinkedIn/portfolio/GitHub each on their own line" in its own comments —
+// this closes that gap rather than opening a new one. rewriteResumeContent
+// below is intentionally left schema-agnostic ("same schema as the input
+// resume") so these fields survive a paid rewrite unchanged in shape.
 async function parseResumeStructure(env, rawText) {
   const result = await callClaude(
     env,
     'Extract resume data. Return ONLY valid JSON.',
-    `Extract from:\n${rawText}\nReturn: {"name":"","email":"","phone":null,"location":null,"summary":null,` +
+    `Extract from:\n${rawText}\nReturn: {"name":"","email":"","phone":null,"location":null,"linkedin":null,"portfolio":null,"summary":null,` +
     `"experience":[{"company":"","title":"","dates":"","bullets":[]}],` +
-    `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[]}`,
+    `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[],` +
+    `"projects":[{"name":"","description":"","technologies":[],"link":null}]}`,
     2000
   )
   return parseJsonResult(result, 'parseResumeStructure')
@@ -151,10 +162,17 @@ async function structureFreeformText(env, rawText) {
      gap. Convert loose descriptions of work into resume-style bullet
      points, but every bullet must be traceable to something the user
      actually described — do not add responsibilities, scope, or outcomes
-     the user did not mention. Return ONLY valid JSON.`,
-    `Structure this into resume data:\n${rawText}\nReturn: {"name":"","email":"","phone":null,"location":null,"summary":null,` +
+     the user did not mention. The same conservatism applies to projects
+     and links: only capture a project if the user actually describes
+     something they built/contributed to (a class project, a side build, an
+     open-source contribution — not just a technology they know), and only
+     capture a LinkedIn/portfolio/GitHub URL if one is literally present in
+     the text — never construct or guess one from a name or company. Return
+     ONLY valid JSON.`,
+    `Structure this into resume data:\n${rawText}\nReturn: {"name":"","email":"","phone":null,"location":null,"linkedin":null,"portfolio":null,"summary":null,` +
     `"experience":[{"company":"","title":"","dates":"","bullets":[]}],` +
-    `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[]}`,
+    `"education":[{"institution":"","degree":"","dates":""}],"skills":[],"certifications":[],` +
+    `"projects":[{"name":"","description":"","technologies":[],"link":null}]}`,
     2500
   )
   return parseJsonResult(result, 'structureFreeformText')
@@ -222,13 +240,23 @@ function detectFabrication(orig, rewritten) {
   const norm = s => (s || '').toLowerCase()
     .replace(/\b(inc|llc|ltd|corp|university|institute|college|group)\b/g, '')
     .replace(/[.,]/g, '').trim()
+  // AUDIT FIX (section audit — "generate a resume from scratch"): projects
+  // are new to this schema (see parseResumeStructure/structureFreeformText
+  // above) and just as fabricatable as an employer or institution — a
+  // rewrite that invents a project the user never mentioned is the same
+  // class of trust violation this function already exists to catch for
+  // companies/schools. Folded into the same origAll/newAll comparison
+  // rather than a separate check, so one violation of either kind trips
+  // the same FABRICATION_DETECTED path in rewriteResumeContent below.
   const origAll = [
     ...(orig.experience || []).map(e => norm(e.company)),
-    ...(orig.education  || []).map(e => norm(e.institution))
+    ...(orig.education  || []).map(e => norm(e.institution)),
+    ...(orig.projects   || []).map(p => norm(p.name))
   ].filter(Boolean)
   const newAll = [
     ...(rewritten.experience || []).map(e => norm(e.company)),
-    ...(rewritten.education  || []).map(e => norm(e.institution))
+    ...(rewritten.education  || []).map(e => norm(e.institution)),
+    ...(rewritten.projects   || []).map(p => norm(p.name))
   ].filter(Boolean)
   for (const n of newAll)
     if (!origAll.some(o => o.includes(n) || n.includes(o))) return true
@@ -249,6 +277,13 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
      Colors: bg=${palette.bg} primary=${palette.primary} accent=${palette.accent} text=${palette.text}
      Fonts: heading=${fonts.heading} body=${fonts.body} hPt=${fonts.hPt} bPt=${fonts.bPt}
      ${verificationInstruction}
+     If CANDIDATE.linkedin or CANDIDATE.portfolio is present, include it in the
+     header contact line alongside email/phone/location. If CANDIDATE.projects
+     is a non-empty array, include a PROJECTS section (name, technologies,
+     description, and a link if present) — position it after Experience,
+     before Education, unless the candidate has little/no Experience, in
+     which case place Projects before Experience since it's likely the
+     stronger section for this candidate.
      Single column, left spine 4px solid ${palette.primary}, A4 size, @import fonts from Google.
      -webkit-print-color-adjust:exact. No JavaScript. No fabrication.
      OUTPUT: Raw HTML starting with <!DOCTYPE html>`,

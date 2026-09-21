@@ -168,7 +168,13 @@ async function structureBrainDump(env, rawText) {
 function serializeResumeData(resumeData) {
   const lines = []
   if (resumeData.name) lines.push(resumeData.name)
-  const contactParts = [resumeData.email, resumeData.phone, resumeData.location].filter(Boolean)
+  // AUDIT FIX (section audit — "generate a resume from scratch"): linkedin/
+  // portfolio didn't exist anywhere in this schema before — see
+  // claude.service.js's parseResumeStructure/structureFreeformText. Included
+  // here on the same contact line as email/phone/location so the rule-based
+  // scorer (ats.service.js) sees them in the same header region it already
+  // scans for a Contact section, same as a human-written resume would have them.
+  const contactParts = [resumeData.email, resumeData.phone, resumeData.location, resumeData.linkedin, resumeData.portfolio].filter(Boolean)
   if (contactParts.length) lines.push(contactParts.join(' | '))
   lines.push('')
 
@@ -206,6 +212,23 @@ function serializeResumeData(resumeData) {
   if (resumeData.certifications?.length) {
     lines.push('CERTIFICATIONS')
     for (const cert of resumeData.certifications) lines.push(`- ${cert}`)
+    lines.push('')
+  }
+
+  // AUDIT FIX (section audit — "generate a resume from scratch"): a Projects
+  // section didn't exist anywhere in this pipeline before — see the schema
+  // comment on claude.service.js's parseResumeStructure. Specifically
+  // significant for brain-dump users with thin formal work history (students,
+  // career-changers, self-taught candidates), who often have more to show in
+  // projects than in Experience.
+  if (resumeData.projects?.length) {
+    lines.push('PROJECTS')
+    for (const p of resumeData.projects) {
+      const header = [p.name, p.technologies?.length ? p.technologies.join(', ') : null].filter(Boolean).join(' — ')
+      if (header) lines.push(header)
+      if (p.description) lines.push(`- ${p.description}`)
+      if (p.link) lines.push(p.link)
+    }
   }
 
   return lines.join('\n')

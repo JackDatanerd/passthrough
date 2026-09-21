@@ -23,5 +23,12 @@ router.post('/:id/redeem-credit', auth, rl.payment, validateUuidParam(), c.redee
 router.post('/:id/retry-fix',    auth, rl.payment, validateUuidParam(), c.retryFix)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// deliberately NOT behind `auth` — ownership is enforced inside the
+// controllers via anon_token (same model as GET /:id above), since an
+// anonymous brain-dump submitter should be able to review/correct their
+// extracted data and get their free draft back without registering first.
+router.patch('/:id/resume-data',   rl.resumeEdit, validateUuidParam(), c.updateResumeData)
+router.get( '/:id/download-draft', rl.resumeEdit, validateUuidParam(), c.downloadDraft)
 
 module.exports = router

@@ -17,6 +17,12 @@ async function generateAtsDocx(resumeData, verificationUrl) {
   if (resumeData.email) parts.push(resumeData.email)
   if (resumeData.location) parts.push(resumeData.location)
   if (resumeData.phone)    parts.push(resumeData.phone)
+  // AUDIT FIX (section audit — "generate a resume from scratch"): linkedin/
+  // portfolio previously had no schema field at all, so there was nothing to
+  // render here even when a candidate provided one — see the schema note on
+  // claude.service.js's parseResumeStructure.
+  if (resumeData.linkedin)  parts.push(resumeData.linkedin)
+  if (resumeData.portfolio) parts.push(resumeData.portfolio)
   // Plain text URL — ATS ignores it, humans can click it in a document viewer.
   // Omitted entirely (not just left blank) when there's no verification link
   // for this tier — see FIX_PLAIN in scan.controller.js's generateFix.
@@ -86,6 +92,33 @@ async function generateAtsDocx(resumeData, verificationUrl) {
       children.push(new Paragraph({
         children: [new TextRun({ text: `✓ ${cert}`, font: 'Calibri', size: 22 })]
       }))
+    children.push(new Paragraph({ text: '' }))
+  }
+
+  // AUDIT FIX (section audit — "generate a resume from scratch"): see
+  // resume.parser.js's serializeResumeData for why this section exists now
+  // (it didn't before) and who it matters most for.
+  if (resumeData.projects?.length) {
+    children.push(new Paragraph({ text: 'PROJECTS', heading: HeadingLevel.HEADING_2 }))
+    for (const p of resumeData.projects) {
+      const techLine = p.technologies?.length ? p.technologies.join(', ') : null
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: p.name || '', bold: true, font: 'Calibri', size: 22 }),
+          ...(techLine ? [new TextRun({ text: `  ${techLine}`, font: 'Calibri', size: 22, color: '666666' })] : [])
+        ]
+      }))
+      if (p.description)
+        children.push(new Paragraph({
+          style: 'ListParagraph',
+          children: [new TextRun({ text: `•  ${p.description}`, font: 'Calibri', size: 22 })]
+        }))
+      if (p.link)
+        children.push(new Paragraph({
+          children: [new TextRun({ text: p.link, font: 'Calibri', size: 20, color: '666666' })]
+        }))
+      children.push(new Paragraph({ text: '' }))
+    }
   }
 
   // ListParagraph style is used purely for left-indentation on bullet lines

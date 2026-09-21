@@ -95,6 +95,26 @@ async function sendScanPass(env, supabase, email, name, score) {
   })
 }
 
+// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
+// the only email path for a completed scan (sendScanFail/sendScanPass above)
+// requires scan.userId — an anonymous brain-dump submitter has no account,
+// so they previously got nothing at all, even though ScanForm.jsx already
+// collects a contactEmail from exactly this population. This is the anon
+// equivalent: same score info, but the link is a magic link (scanId +
+// anonToken) rather than a dashboard link, since there's no login to send
+// them to. See runAtsScan in scan.controller.js for the call site and the
+// reasoning on why embedding anonToken in this specific email is safe (it's
+// the person's own address, just submitted).
+async function sendAnonScanResult(env, supabase, email, name, scanId, anonToken, score, passed) {
+  const scanUrl = `${env.FRONTEND_URL}/scan/${scanId}?token=${anonToken}`
+  return send(env, supabase, email, `Your resume scored ${score}/100`, 'anon_scan_result', {
+    NAME:     name,
+    SCORE:    String(score),
+    PASSED:   passed ? 'passed' : 'is failing',
+    SCAN_URL: scanUrl
+  })
+}
+
 // ── Partner payouts (manual) ────────────────────────────────────────────────
 
 async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
@@ -219,7 +239,7 @@ async function sendOwnerAlert(env, subject, message) {
 
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
-  sendScanFail, sendScanPass, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
+  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated

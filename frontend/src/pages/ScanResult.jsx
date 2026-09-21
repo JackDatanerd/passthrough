@@ -12,6 +12,7 @@ import CategoryScores from '../components/scan/CategoryScores'
 import FixBanner from '../components/scan/FixBanner'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import DiffView from '../components/scan/DiffView'
+import ResumeDataEditor from '../components/scan/ResumeDataEditor'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
@@ -373,6 +374,25 @@ export default function ScanResult() {
                 </div>
               </div>
             </div>
+
+            {/* AUDIT FIX (feature gap — section audit "generate a resume from
+                scratch"): previously nothing on this page ever showed a
+                brain-dump/saved-profile user what was actually extracted
+                from their text, and there was no way to correct it or get a
+                free copy of it — see ResumeDataEditor.jsx for the full
+                reasoning. Scoped to before a fix is purchased: once a fix
+                exists, retryFix's feedback loop is the intended way to
+                iterate, and the backend endpoints this drives
+                (resume-data / download-draft) enforce the same gate. */}
+            {['brain_dump', 'saved_profile'].includes(scan.inputMode) &&
+              scan.originalResumeData && !scan.fixPurchased &&
+              ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
+                <ResumeDataEditor
+                  scan={scan}
+                  anonToken={anonToken}
+                  onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
+                />
+            )}
 
             {/* Fix generating */}
             {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
