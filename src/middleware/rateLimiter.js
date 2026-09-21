@@ -266,6 +266,14 @@ function lockoutKey(email) {
 // doing any real work (DB lookup, bcrypt) in the login handler — a locked
 // account should short-circuit as cheaply as possible, not just get denied
 // at the end of the usual path.
+//
+// FEATURE: also called (with the session's own email) by changePassword/
+// updateEmail/deleteAccount in auth.controller.js — those three also run a
+// live bcrypt.compare against attacker-supplied input, which makes each of
+// them the same kind of password-guessing oracle login() is, for anyone
+// holding a stolen/leaked JWT who doesn't know the real password. Sharing
+// this same email-keyed counter means guesses against one account are
+// tallied together across every endpoint that can prove its password.
 async function checkAccountLockout(env, email) {
   const kv = env.RATE_LIMIT_KV
   const raw = await kv.get(lockoutKey(email))

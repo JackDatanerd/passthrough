@@ -386,6 +386,79 @@ async function getScanStatus(ctx) {
 }
 
 // GET /api/scan/:id
+// FEATURE (feature gap): ats.service.js's scoreResume() has always computed
+// real, actionable detail for every scan — which JD keywords are missing,
+// which sections are absent, which format issues fired — and runAtsScan
+// persists all of it to full_ats_report. Until now getScan() unconditionally
+// stripped that field before it ever reached the frontend, and the frontend
+// had no UI for it even if it hadn't: CategoryScores.jsx renders four bare
+// numbers with no explanation of WHY. This is the exact detail
+// describeWeakAreas() already feeds Claude to drive the paid rewrite retry
+// loop — the app has always "known" what's wrong with a scan, it just never
+// told the person who scanned it.
+//
+// Reshaped into a small, stable, presentational subset rather than passing
+// the raw internal report straight through — full_ats_report is an
+// implementation detail (its exact shape is free to change inside
+// ats.service.js) and this is the public contract built on top of it.
+// aiMissingKeywords is the other half of this same gap — see blendAiScore
+// below.
+function buildAtsDetail(fullAtsReport) {
+  if (!fullAtsReport || fullAtsReport.error) return null
+  return {
+    keywords: {
+      matched: fullAtsReport.keywords?.matched || [],
+      missing: fullAtsReport.keywords?.missing || []
+    },
+    sections: {
+      found:   fullAtsReport.sections?.found   || [],
+      missing: fullAtsReport.sections?.missing || [],
+      // Informational-only flags from ats.service.js (don't affect score) —
+      // surfaced so the UI can suggest them as optional improvements rather
+      // than silently computing and discarding them like the rest of this
+      // report used to be.
+      hasCertifications: fullAtsReport.sections?.hasCertifications ?? null,
+      hasProjects:       fullAtsReport.sections?.hasProjects ?? null
+    },
+    format: {
+      issues: fullAtsReport.format?.issues || []
+    },
+    content: {
+      actionVerbRate:  fullAtsReport.content?.actionVerbRate ?? null,
+      quantifiedCount: fullAtsReport.content?.quantifiedCount ?? null
+    },
+    aiMissingKeywords: fullAtsReport.aiMissingKeywords || []
+  }
+}
+
+// Shared by runAtsScan and updateResumeData: both call scoreResumeWithAI and
+// blend its aiScore into the rule-based score. FEATURE: scoreResumeWithAI's
+// prompt has always asked Claude for missingKeywords alongside aiScore, but
+// both call sites only ever read aiScore back out — the AI's own view of
+// what's missing (semantically aware, catches synonyms/related terms the
+// rule-based stemmer can't) was computed and paid for, then silently
+// discarded, at both call sites. Blends the score exactly as before and
+// also returns whatever missing-keyword list Claude provided, for the
+// caller to persist onto full_ats_report.aiMissingKeywords.
+function blendAiScore(ruleScore, aiResult, logLabel) {
+  let finalScore = ruleScore
+  let aiMissingKeywords = []
+  if (aiResult.success) {
+    try {
+      const parsed = claudeService.extractJson(aiResult.data)
+      if (typeof parsed.aiScore === 'number')
+        finalScore = Math.round((ruleScore * c.ATS_RULE_WEIGHT) + (parsed.aiScore * c.ATS_AI_WEIGHT))
+      if (Array.isArray(parsed.missingKeywords))
+        aiMissingKeywords = parsed.missingKeywords.filter(k => typeof k === 'string' && k.trim()).slice(0, 15)
+    } catch (parseErr) {
+      // Non-fatal by design — falls back to rule-only score — but log it
+      // so a silent AI-scoring degradation is at least visible in tail.
+      console.error(`${logLabel} AI score parse failed, using rule-only score:`, parseErr.message)
+    }
+  }
+  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords }
+}
+
 async function getScan(ctx) {
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
@@ -401,7 +474,8 @@ async function getScan(ctx) {
 
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
-  return ctx.json({ success: true, data: { ...safe, badgeEligible } })
+  const atsDetail = buildAtsDetail(fullAtsReport)
+  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail } })
 }
 
 // Loosely mirrors the shape claude.service.js's parseResumeStructure /
@@ -505,18 +579,8 @@ async function updateResumeData(ctx) {
   const rawResumeText = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_CHARS)
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
-  let finalScore = ruleResult.score
   const aiResult = await claudeService.scoreResumeWithAI(ctx.env, rawResumeText, jdText)
-  if (aiResult.success) {
-    try {
-      const parsedAi = claudeService.extractJson(aiResult.data)
-      if (typeof parsedAi.aiScore === 'number')
-        finalScore = Math.round((ruleResult.score * c.ATS_RULE_WEIGHT) + (parsedAi.aiScore * c.ATS_AI_WEIGHT))
-    } catch (parseErr) {
-      console.error('updateResumeData AI score parse failed, using rule-only score:', parseErr.message)
-    }
-  }
-  finalScore = Math.max(0, Math.min(100, finalScore))
+  const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
   const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
 
   const { error: updErr } = await supabase.from('scans').update({
@@ -527,7 +591,7 @@ async function updateResumeData(ctx) {
     format_score:    ruleResult.formatScore,
     sections_score:  ruleResult.sectionsScore,
     content_score:   ruleResult.contentScore,
-    full_ats_report: ruleResult.detail,
+    full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
     status
   }).eq('id', scan.id)
   if (updErr) throw updErr
@@ -865,6 +929,17 @@ async function getScanWithUser(supabase, scanId) {
 //     scans. brain-dump mode: structuring IS a Claude call (unavoidable —
 //     there's no file to extract text from), still no cost on top of that
 //     for scoring itself. ──────────────────────────────────────────────────
+// BUG (comment corrected, behavior unchanged): the paragraph above describes
+// an architecture this function doesn't actually implement — the AI-blend
+// scoring call a few lines below (scoreResumeWithAI) runs unconditionally,
+// for every scan regardless of inputMode, including file-mode. Every
+// anonymous scan (1/hr) and every free logged-in scan (3/day) makes a real
+// Claude API call today; there is no free-scan path that avoids it. Left
+// uncorrected, anyone doing cost/capacity planning off this comment would
+// be working from a materially wrong assumption. Not changing the scoring
+// behavior itself here — whether free scans SHOULD skip the AI blend is a
+// product/cost tradeoff, not something to decide unilaterally while fixing
+// a stale comment.
 
 async function runAtsScan(env, supabase, scanId) {
   try {
@@ -953,22 +1028,8 @@ async function runAtsScan(env, supabase, scanId) {
     const ruleResult = atsService.scoreResume(resumeText, jdText)
 
     // AI blend — 70% rule + 30% AI, never fail scan if AI unavailable
-    let finalScore = ruleResult.score
     const aiResult = await claudeService.scoreResumeWithAI(env, resumeText, jdText)
-    if (aiResult.success) {
-      try {
-        const parsed = claudeService.extractJson(aiResult.data)
-        if (typeof parsed.aiScore === 'number')
-          finalScore = Math.round(
-            (ruleResult.score * c.ATS_RULE_WEIGHT) + (parsed.aiScore * c.ATS_AI_WEIGHT)
-          )
-      } catch (parseErr) {
-        // Non-fatal by design — falls back to rule-only score — but log it
-        // so a silent AI-scoring degradation is at least visible in tail.
-        console.error('AI score parse failed, using rule-only score:', parseErr.message)
-      }
-    }
-    finalScore = Math.max(0, Math.min(100, finalScore))
+    const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
 
     await supabase.from('scans').update({
       ats_score:       finalScore,
@@ -977,7 +1038,7 @@ async function runAtsScan(env, supabase, scanId) {
       format_score:    ruleResult.formatScore,
       sections_score:  ruleResult.sectionsScore,
       content_score:   ruleResult.contentScore,
-      full_ats_report: ruleResult.detail,
+      full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
       role_category:   atsService.detectRoleCategory(jdText),
       seniority_level: atsService.detectSeniority(jdText),
       scan_completed_at: new Date().toISOString(),
@@ -1107,7 +1168,6 @@ async function generateFix(env, supabase, scanId) {
     // the real file eliminates that discrepancy at the source rather than
     // leaving the retry loop chasing a distorted number.
     let finalData = resumeData
-    let finalDocxBytes = null
     let quantificationPrompts = []
     // On a retry round, seed the "best so far" with what was ALREADY
     // delivered (scan.fixAtsScore) rather than -1 — without this, a retry

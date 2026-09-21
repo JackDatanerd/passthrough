@@ -9,6 +9,7 @@ import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
+import AtsDetailPanel from '../components/scan/AtsDetailPanel'
 import FixBanner from '../components/scan/FixBanner'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import DiffView from '../components/scan/DiffView'
@@ -363,6 +364,13 @@ export default function ScanResult() {
                 </div>
               </div>
             </div>
+
+            {/* FEATURE (feature gap — Scan/ATS section audit): see
+                AtsDetailPanel.jsx for the full reasoning. Placed right after
+                the score card and before the resume editor below — explains
+                the number the person just saw before offering to let them
+                act on it. */}
+            <AtsDetailPanel scan={scan} />
 
             {/* AUDIT FIX (feature gap — section audit "generate a resume from
                 scratch"): previously nothing on this page ever showed a

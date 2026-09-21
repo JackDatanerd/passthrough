@@ -74,7 +74,13 @@ async function setup(opts = {}) {
   }
   const c = (over = {}) => ({
     env,
-    get: k => ({ user: opts.sessionUser ?? { id: 'u1', tokenVersion: 1, emailVerified: true }, tokenExp: opts.tokenExp }[k]),
+    // email included here to match production: auth.js's real "safe" user
+    // object (what c.get('user') actually is) only strips passwordHash and
+    // the other explicitly-sensitive fields — email is never one of them.
+    // changePassword/updateEmail/deleteAccount's account-lockout calls key
+    // off sessionUser.email, so a mock missing it would silently pass
+    // `undefined` through instead of catching a real wiring mistake.
+    get: k => ({ user: opts.sessionUser ?? { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp }[k]),
     req: {
       json: async () => (over.body ?? {}),
       query: k => (over.query ?? {})[k],
@@ -251,6 +257,30 @@ describe('changePassword', () => {
     expect(update.patch.token_version).toBe(6)
     expect(res.body.data.token).toBeTypeOf('string')
   })
+  // FEATURE FIX being locked in: currentPassword is a live bcrypt.compare
+  // against attacker-supplied input — the same password-guessing-oracle
+  // shape login() already guards with account lockout. Anyone holding a
+  // stolen/leaked JWT could otherwise grind guesses here, bounded only by
+  // the generic per-IP rate limiter.
+  it('a locked-out account is rejected with 429 before any DB read', async () => {
+    t = await setup({ locked: { locked: true, retryAfterSeconds: 125 } })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'whatever', newPassword: 'longenough' } }))
+    expect(res.status).toBe(429)
+    expect(res.body.message).toMatch(/3 minute/)
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('records a failure on an incorrect current password, keyed by the session user\'s own email', async () => {
+    t = await setup()
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
+    expect(t.state.failures).toEqual(['user@example.com'])
+    expect(t.state.successes).toHaveLength(0)
+  })
+  it('records a success on a correct current password', async () => {
+    t = await setup()
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'longenough' } }))
+    expect(t.state.successes).toEqual(['user@example.com'])
+    expect(t.state.failures).toHaveLength(0)
+  })
 })
 
 describe('updateEmail', () => {
@@ -271,6 +301,20 @@ describe('updateEmail', () => {
     const update = t.state.updates.find(u => u.table === 'users')
     expect(update.patch.email_verified).toBe(false)
     expect(t.state.emails).toEqual([{ type: 'verify', to: 'new@example.com', raw: expect.any(String) }])
+  })
+  // FEATURE FIX being locked in — same password-guessing-oracle shape as
+  // changePassword above: `password` here is a live bcrypt.compare too.
+  it('a locked-out account is rejected with 429 before any DB read', async () => {
+    t = await setup({ locked: { locked: true, retryAfterSeconds: 65 } })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'whatever' } }))
+    expect(res.status).toBe(429)
+    expect(res.body.message).toMatch(/2 minute/)
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('records a failure on an incorrect password', async () => {
+    t = await setup()
+    await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
+    expect(t.state.failures).toEqual(['user@example.com'])
   })
 })
 
@@ -298,6 +342,20 @@ describe('deleteAccount', () => {
     expect(userUpdate.patch.deleted_at).toBeTypeOf('string')
     expect(userUpdate.patch.saved_profile).toBeNull()
     expect(userUpdate.patch.token_version).toBe(2)
+  })
+  // FEATURE FIX being locked in — same password-guessing-oracle shape as
+  // changePassword/updateEmail above.
+  it('a locked-out account is rejected with 429 before any DB read', async () => {
+    t = await setup({ locked: { locked: true, retryAfterSeconds: 65 } })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'whatever' } }))
+    expect(res.status).toBe(429)
+    expect(res.body.message).toMatch(/2 minute/)
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('records a failure on an incorrect password', async () => {
+    t = await setup()
+    await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
+    expect(t.state.failures).toEqual(['user@example.com'])
   })
 })
 

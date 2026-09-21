@@ -86,9 +86,18 @@ const emailSchema = z.string().trim().toLowerCase().email()
 async function register(c) {
   const body = await c.req.json()
   const { name, email, password } = z.object({
-    name:     z.string().min(1).max(100),
+    // BUG FIX: unlike updateName's schema (below), this never trimmed —
+    // a name of pure whitespace passed `min(1)` (whitespace still counts
+    // toward length) and got stored/emailed verbatim as a blank-looking
+    // name. updateName rejects that same input; register let it through.
+    name:     z.string().trim().min(1).max(100),
     email:    emailSchema,
-    password: z.string().min(8, 'Password must be at least 8 characters')
+    // BUG FIX: no upper bound anywhere a password is set (here, reset,
+    // change) — bcryptjs silently truncates at 72 bytes, so anything past
+    // that is quietly ignored with no error, giving false confidence in
+    // extra length that does nothing. max(72) turns that into an explicit,
+    // honest validation error instead of a silent no-op.
+    password: z.string().min(8, 'Password must be at least 8 characters').max(72, 'Password must be at most 72 characters')
   }).parse(body)
 
   const supabase = getSupabase(c.env)
@@ -211,8 +220,17 @@ async function forgotPassword(c) {
   const { email } = z.object({ email: emailSchema }).parse(body)
   const supabase = getSupabase(c.env)
 
-  const { data: row } = await supabase
+  // BUG FIX: this was the one query in the file that didn't capture/check
+  // `error` — every sibling lookup (login, resetPassword, verifyEmail, ...)
+  // does `if (error) throw error`. A transient DB failure here took the
+  // exact same path as "no such email": `row` stayed undefined, `user`
+  // came out null, and the handler returned its normal 200 success message
+  // with nothing logged anywhere — a real outage on this endpoint was
+  // completely invisible, both to the user (told to check an inbox that
+  // was never going to get an email) and to us (no error surfaced at all).
+  const { data: row, error } = await supabase
     .from('users').select('*').eq('email', email).is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
+  if (error) throw error
   const user = userRowToCamel(row)
 
   if (user) {
@@ -237,7 +255,9 @@ async function resetPassword(c) {
   const body = await c.req.json()
   const { token, newPassword } = z.object({
     token:       z.string(),
-    newPassword: z.string().min(8)
+    // BUG FIX: see register()'s matching comment — bcryptjs silently
+    // truncates past 72 bytes with no error, so this caps it explicitly.
+    newPassword: z.string().min(8).max(72, 'Password must be at most 72 characters')
   }).parse(body)
 
   const supabase = getSupabase(c.env)
@@ -326,16 +346,42 @@ async function changePassword(c) {
   const body = await c.req.json()
   const { currentPassword, newPassword } = z.object({
     currentPassword: z.string(),
-    newPassword:     z.string().min(8)
+    // BUG FIX: see register()'s matching comment — bcryptjs silently
+    // truncates past 72 bytes with no error, so this caps it explicitly.
+    newPassword:     z.string().min(8).max(72, 'Password must be at most 72 characters')
   }).parse(body)
+
+  // FEATURE (account lockout applied here too): checkAccountLockout/
+  // recordLoginFailure were built for login() specifically to catch a
+  // distributed/rotating-IP credential-stuffing attack that the IP-only
+  // `rl.auth` limiter structurally can't — see rateLimiter.js's comment.
+  // But login() isn't the only place a request proves a password: this
+  // handler runs `bcrypt.compare(currentPassword, ...)` against
+  // attacker-supplied input too, and so do updateEmail/deleteAccount below.
+  // Anyone holding a stolen/leaked JWT (XSS, a shared computer, a leaked
+  // token) who doesn't know the real password can use any of the three as
+  // a password-guessing oracle, currently bounded only by the generic
+  // per-IP `rl.auth` (10/15min) — exactly the gap account-level lockout
+  // exists to close for login. Reusing the same email-keyed lockout here
+  // means guesses against this account are counted together regardless of
+  // which endpoint they came through.
+  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  if (lockout.locked) {
+    return c.json({ success: false,
+      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
+    }, 429)
+  }
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(currentPassword, user.passwordHash))
+  if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
+    await recordLoginFailure(c.env, sessionUser.email)
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
+  }
+  await recordLoginSuccess(c.env, sessionUser.email)
 
   const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
   await supabase.from('users').update({
@@ -395,13 +441,25 @@ async function updateEmail(c) {
     password: z.string()
   }).parse(body)
 
+  // FEATURE: same password-guessing-oracle gap as changePassword — see its
+  // comment above for why this reuses the login lockout mechanism.
+  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  if (lockout.locked) {
+    return c.json({ success: false,
+      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
+    }, 429)
+  }
+
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(password, user.passwordHash))
+  if (!await bcrypt.compare(password, user.passwordHash)) {
+    await recordLoginFailure(c.env, sessionUser.email)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
+  }
+  await recordLoginSuccess(c.env, sessionUser.email)
 
   if (newEmail === user.email)
     return c.json({ success: false, message: 'That is already your email address.' }, 400)
@@ -437,13 +495,25 @@ async function deleteAccount(c) {
   const body = await c.req.json()
   const { password } = z.object({ password: z.string() }).parse(body)
 
+  // FEATURE: same password-guessing-oracle gap as changePassword — see its
+  // comment above for why this reuses the login lockout mechanism.
+  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  if (lockout.locked) {
+    return c.json({ success: false,
+      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
+    }, 429)
+  }
+
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(password, user.passwordHash))
+  if (!await bcrypt.compare(password, user.passwordHash)) {
+    await recordLoginFailure(c.env, sessionUser.email)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
+  }
+  await recordLoginSuccess(c.env, sessionUser.email)
 
   // AUDIT FIX (Section 6, traced from profile.controller.js): this soft
   // delete anonymized name/email but left saved_profile completely
