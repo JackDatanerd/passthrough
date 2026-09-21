@@ -15,6 +15,7 @@
 // migration) — only the pre-check has this benign race, not the bookkeeping.
 
 const c = require('../config/constants')
+const emailService = require('./email.service')
 
 async function lookupCode(supabase, rawCode) {
   if (!rawCode) return null
@@ -85,7 +86,7 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
 }
 
 /**
- * recordConversion(supabase, payment)
+ * recordConversion(supabase, payment, env)
  *
  * Call exactly once, from the single fulfillment path that wins the atomic
  * idempotency race in payments.controller.js's verifyPayment or
@@ -94,8 +95,19 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
  * for a given payment) — never call this speculatively or more than once
  * per payment. The unique constraint on commission_ledger.payment_id is a
  * backstop, not the primary guard.
+ *
+ * `env` is used ONLY to alert on failure (AUDIT FIX, Admin panel pass —
+ * see the ledger-insert branch below). Every other payment-critical
+ * failure in this codebase (Paystack init/verify, webhook signature/amount
+ * mismatches) pages the owner via sendOwnerAlert; this function's two
+ * failure points previously only logged to console, which nobody sees in
+ * production unless they're actively running `wrangler tail`. A failure
+ * here means a completed, already-charged sale silently fails to generate
+ * (or count) its commission — the partner is underpaid and the admin
+ * panel's own "pending commission" figure is quietly wrong, with no signal
+ * that either thing happened.
  */
-async function recordConversion(supabase, payment) {
+async function recordConversion(supabase, payment, env) {
   if (!payment?.referral_code_id) return
 
   const { data: codeRow, error: codeErr } = await supabase
@@ -122,11 +134,25 @@ async function recordConversion(supabase, payment) {
   if (ledgerErr) {
     if (ledgerErr.code === '23505') return  // already recorded — harmless duplicate call
     console.error('recordConversion ledger insert:', ledgerErr.message)
+    if (env) {
+      await emailService.sendOwnerAlert(env,
+        'Commission ledger write failed — partner will be underpaid unless fixed manually',
+        `paymentId: ${payment.id}\npartnerId: ${codeRow.partner_id}\nreferralCodeId: ${codeRow.id}\ngrossAmountCents: ${payment.amount_cents}\nerror: ${ledgerErr.message}\n\nThis payment charged successfully but no commission_ledger row was created. The partner's pending balance will not reflect this sale until a row is inserted manually.`
+      ).catch(() => {})
+    }
     return
   }
 
   const { error: rpcErr } = await supabase.rpc('increment_referral_code_usage', { p_code_id: codeRow.id })
-  if (rpcErr) console.error('recordConversion usage increment:', rpcErr.message)
+  if (rpcErr) {
+    console.error('recordConversion usage increment:', rpcErr.message)
+    if (env) {
+      await emailService.sendOwnerAlert(env,
+        'Referral code usage counter failed to increment',
+        `referralCodeId: ${codeRow.id}\npaymentId: ${payment.id}\nerror: ${rpcErr.message}\n\nThe commission was still recorded correctly. Only uses_so_far (the usage-limit counter) under-counted this redemption — check whether the code's usage_limit needs manual adjustment.`
+      ).catch(() => {})
+    }
+  }
 }
 
 module.exports = { resolvePrice, recordConversion }

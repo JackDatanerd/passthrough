@@ -27,6 +27,17 @@ api.interceptors.response.use(
       localStorage.removeItem('passthrough_user')
       window.location.href = '/login?banned=true'
     }
+    // AUDIT FIX (Admin panel): a 403 from an admin-gated endpoint (server-
+    // side role check failed — see middleware/adminOnly.js) previously had
+    // no handling here at all. A non-admin who reached an /admin/* route —
+    // even just during AuthContext's refresh race — got a generic "failed
+    // to load" toast and stayed parked on the admin URL with nothing to
+    // load, instead of being sent somewhere useful. Scoped to /admin paths
+    // only: a 403 elsewhere (e.g. a partner-token endpoint rejecting a bad
+    // token) means something different and shouldn't redirect the page.
+    if (status === 403 && window.location.pathname.startsWith('/admin')) {
+      window.location.href = '/dashboard'
+    }
     return Promise.reject(err)
   }
 )

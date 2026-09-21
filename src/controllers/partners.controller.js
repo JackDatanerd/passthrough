@@ -1,6 +1,8 @@
-// Manual-payout partner tracking + referral-code commission ledger.
+// Manual-payout partner tracking + referral-code commission ledger, plus
+// the admin-facing surface around both (partner CRUD, cycle-based payout
+// reporting, referral-code editing, payout-link rotation).
 //
-// Three audiences hit this controller:
+// Four audiences hit this controller:
 //   - The ADMIN (Jack) — gated by middleware/adminOnly.js.
 //   - The PARTNER — no login system for them yet; identified by a long
 //     random token mailed to them (payout_details_token), passed as
@@ -14,6 +16,7 @@ const { z } = require('zod')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const emailService = require('../services/email.service')
+const { recentCycles, cycleKey } = require('../lib/cycles')
 const {
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   camelToSnake, PARTNER_FIELD_MAP
@@ -26,12 +29,58 @@ function pendingCents(ledgerRows) {
   return (ledgerRows || []).filter(l => !l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 }
 
+// Buckets raw commission_ledger rows into the last `count` twice-monthly
+// cycles (see lib/cycles.js) — gross/commission/paid/unpaid totals per
+// cycle, so "how much is owed for a specific cycle" is an actual number
+// instead of something Jack would have to reconstruct from raw rows.
+// Cycles with zero activity still appear (so the current, still-accruing
+// cycle always shows even before its first conversion).
+function buildCyclesSummary(ledgerRows, count) {
+  const cycles = recentCycles(count)
+  const byKey = new Map(cycles.map(c => [c.key, {
+    grossCents: 0, commissionCents: 0, unpaidCents: 0, paidCents: 0,
+    ledgerCount: 0, payoutIds: new Set()
+  }]))
+
+  for (const row of ledgerRows || []) {
+    const bucket = byKey.get(cycleKey(row.created_at))
+    if (!bucket) continue  // older than the window being summarized
+    bucket.grossCents      += row.gross_amount_cents
+    bucket.commissionCents += row.commission_amount_cents
+    bucket.ledgerCount     += 1
+    if (row.payout_id) {
+      bucket.paidCents += row.commission_amount_cents
+      bucket.payoutIds.add(row.payout_id)
+    } else {
+      bucket.unpaidCents += row.commission_amount_cents
+    }
+  }
+
+  return cycles.map(c => {
+    const b = byKey.get(c.key)
+    return { ...c, grossCents: b.grossCents, commissionCents: b.commissionCents,
+      unpaidCents: b.unpaidCents, paidCents: b.paidCents,
+      ledgerCount: b.ledgerCount, payoutIds: [...b.payoutIds] }
+  })
+}
+
 // ── Admin: create a partner ────────────────────────────────────────────────
+//
+// AUDIT FIX (Admin panel pass): dropped the optional `referralCode` field
+// this endpoint used to accept and write to partners.referral_code. That
+// column (0011) predates the real pricing/attribution mechanism built in
+// 0012 (the separate referral_codes table, used everywhere else in this
+// file) — 0012's own comment already flagged it as "an optional label for
+// now; not wired to pricing yet." It had no input field anywhere in the
+// admin UI and was never displayed anywhere either: a schema-supported
+// column with a completely dead write path AND a completely dead read
+// path, confusable with the real, different "referral code" concept. The
+// column itself is left in place (not this file's to drop), just no
+// longer written here.
 
 const createPartnerSchema = z.object({
-  name:         z.string().min(1).max(200),
-  email:        z.string().email(),
-  referralCode: z.string().min(2).max(50).optional()
+  name:  z.string().min(1).max(200),
+  email: z.string().email()
 })
 
 async function adminCreatePartner(ctx) {
@@ -42,7 +91,6 @@ async function adminCreatePartner(ctx) {
   const { data, error } = await supabase.from('partners').insert({
     name:                 body.name,
     email:                body.email,
-    referral_code:        body.referralCode || null,
     payout_details_token: token
   }).select('*').single()
   if (error) throw error
@@ -56,46 +104,30 @@ async function adminCreatePartner(ctx) {
   return ctx.json({ success: true, data: partnerRowToCamel(data) })
 }
 
-// ── Admin: list all partners + payout history + codes + pending balance ────
-// This is "a way admin can reach the details" — payoutDetails comes back in
-// full, and pendingCommissionCents tells Jack exactly what's owed before he
-// records a payout, rather than him having to compute it by hand.
-
-async function adminListPartners(ctx) {
-  const supabase = getSupabase(ctx.env)
-  const { data, error } = await supabase
-    .from('partners')
-    .select(`
-      *,
-      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at),
-      referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at)
-    `)
-    .order('created_at', { ascending: false })
-  if (error) throw error
-
-  const partners = data.map(row => {
-    const camel = partnerRowToCamel(row)
-    camel.pendingCommissionCents = pendingCents(row.commission_ledger)
-    return camel
-  })
-  return ctx.json({ success: true, data: partners })
-}
-
-// ── Admin: update a partner's status and/or commission rate ────────────────
-// AUDIT FIX (Section 10, feature gaps): closes two half-built pieces of
-// this table at once —
+// ── Admin: update a partner ─────────────────────────────────────────────────
+// status/commissionRate close the two gaps flagged in Section 10's audit:
 //   - commission_rate (0012) had no write path anywhere; every partner was
 //     permanently stuck at the 0.25 column default with no way to
-//     negotiate a different rate.
+//     negotiate a different rate. Going-forward only — every existing
+//     commission_ledger row already carries its own commission_rate
+//     snapshot taken at conversion time (see referral.service.js's
+//     recordConversion), so changing it here never retroactively changes
+//     what's already been earned or owed.
 //   - status (0011's partner_status_enum, ACTIVE/PAUSED) had no write path
 //     AND, until referral.service.js's isCodeUsable() fix, wasn't even
 //     read anywhere — pausing a partner did literally nothing.
-// One combined PATCH-style endpoint (matches adminSetReferralCodeActive's
-// shape) rather than two, since both are simple partner-row field updates
-// with the same auth/lookup/response pattern.
+// name/email are a further gap closed in the same pass (Admin panel):
+// there was no way to fix a typo'd email or name short of a direct DB
+// edit. Handled as explicit fields here rather than folded into
+// PARTNER_FIELD_MAP/camelToSnake — mappers.js's own comment on that map
+// deliberately keeps it to the two simplest, lowest-stakes fields; email
+// in particular is how a partner receives every payout-link and
+// notification email in this file, so it stays a distinct, visible branch
+// here rather than blending into the generic partial-update helper.
 
 const updatePartnerSchema = z.object({
+  name:           z.string().min(1).max(200).optional(),
+  email:          z.string().email().optional(),
   status:         z.enum(['ACTIVE', 'PAUSED']).optional(),
   // Fraction, not a percentage integer — 0.25 = 25%, matching 0012's
   // commission_rate comment. Bounded 0-1 here at the API boundary; the
@@ -103,25 +135,99 @@ const updatePartnerSchema = z.object({
   // backstop for any future write path that doesn't go through this Zod
   // schema.
   commissionRate: z.number().min(0).max(1).optional()
-}).refine(obj => Object.keys(obj).length > 0, 'At least one of status or commissionRate is required.')
+}).refine(obj => Object.keys(obj).length > 0, 'At least one field is required.')
 
 async function adminUpdatePartner(ctx) {
   const partnerId = ctx.req.param('id')
   const body = updatePartnerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
+  const patch = camelToSnake(body, PARTNER_FIELD_MAP)  // status, commissionRate
+  if (body.name !== undefined)  patch.name = body.name
+  if (body.email !== undefined) patch.email = body.email
+  patch.updated_at = new Date().toISOString()
+
   const { data, error } = await supabase.from('partners')
-    .update({ ...camelToSnake(body, PARTNER_FIELD_MAP), updated_at: new Date().toISOString() })
-    .eq('id', partnerId)
-    .select('*')
-    .maybeSingle()
+    .update(patch).eq('id', partnerId).select('*').maybeSingle()
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
 
   return ctx.json({ success: true, data: partnerRowToCamel(data) })
 }
 
-// ── Admin: re-send a partner's payout-details link ──────────────────────────
+// ── Admin: list all partners + a light cycle summary + pending balance ─────
+// Deliberately does NOT ship the full commission_ledger to the browser here
+// (it used to — fetched on every list load and never rendered anywhere).
+// The list view only needs enough to answer "who's owed something and how
+// much is actually ready to pay right now" — the full ledger (for the
+// Conversions tab) lives behind adminGetPartner, fetched only when someone
+// opens that partner's detail page.
+
+async function adminListPartners(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data, error } = await supabase
+    .from('partners')
+    .select(`
+      *,
+      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at),
+      referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
+      commission_ledger(id, partner_id, gross_amount_cents, commission_amount_cents, payout_id, created_at)
+    `)
+    .order('created_at', { ascending: false })
+  if (error) throw error
+
+  const partners = data.map(row => {
+    const camel = partnerRowToCamel(row)
+    const ledger = row.commission_ledger || []
+    const cycles = buildCyclesSummary(ledger, 2)  // [current, previous]
+    const currentCycle = cycles.find(c => c.isCurrent)
+
+    camel.pendingCommissionCents  = pendingCents(ledger)
+    // "Ready to pay" excludes the current, still-accruing cycle — that
+    // matches the twice-a-month rhythm: a cycle isn't payable until it's
+    // over. Anything unpaid from BEFORE the current cycle (including any
+    // older, un-summarized cycles beyond this 2-cycle window) is ready now.
+    camel.currentCycleAccruedCents = currentCycle ? currentCycle.unpaidCents : 0
+    camel.readyToPayCents          = camel.pendingCommissionCents - camel.currentCycleAccruedCents
+    camel.currentCycleLabel        = currentCycle ? currentCycle.label : null
+    delete camel.commissionLedger  // never present here — see the select() above; defensive only
+    return camel
+  })
+  return ctx.json({ success: true, data: partners })
+}
+
+// ── Admin: single partner detail — full ledger, full payout history, and a
+// deeper (12-cycle, ~6 month) rolling cycle breakdown for the drill-down page.
+
+async function adminGetPartner(ctx) {
+  const partnerId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase
+    .from('partners')
+    .select(`
+      *,
+      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at),
+      referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at)
+    `)
+    .eq('id', partnerId)
+    .order('paid_at',    { foreignTable: 'payouts',         ascending: false })
+    .order('created_at', { foreignTable: 'referral_codes',  ascending: false })
+    .order('created_at', { foreignTable: 'commission_ledger', ascending: false })
+    .maybeSingle()
+  if (error) throw error
+  if (!row) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+
+  const ledger = row.commission_ledger || []
+  const camel = partnerRowToCamel(row)
+  camel.pendingCommissionCents = pendingCents(ledger)
+  camel.commissionLedger = ledger.map(commissionLedgerRowToCamel)
+  camel.cyclesSummary = buildCyclesSummary(ledger, 12)
+
+  return ctx.json({ success: true, data: camel })
+}
+
+// ── Admin: re-send a partner's payout-details link (same token) ────────────
 
 async function adminResendPayoutLink(ctx) {
   const partnerId = ctx.req.param('id')
@@ -136,18 +242,49 @@ async function adminResendPayoutLink(ctx) {
   return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.' })
 }
 
+// ── Admin: ROTATE a partner's payout-details link ───────────────────────────
+// Issues a brand-new token and overwrites the old one, so the previous link
+// stops working the instant this runs. There was previously no way to
+// invalidate a payout link short of a direct DB edit — this link is the
+// only thing standing between an email compromise and someone redirecting
+// a real future payout, and it never expired or rotated on its own.
+
+async function adminRegeneratePayoutLink(ctx) {
+  const partnerId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+  const newToken = cryptoLib.randomToken(32)
+
+  const { data: partner, error } = await supabase
+    .from('partners')
+    .update({ payout_details_token: newToken })
+    .eq('id', partnerId)
+    .select('name, email')
+    .maybeSingle()
+  if (error) throw error
+  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+
+  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${newToken}`
+  const emailed = await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, partner.email, partner.name, payoutUrl)
+    .catch(() => false)
+
+  return ctx.json({ success: true, emailed,
+    message: emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed to send.' })
+}
+
 // ── Admin: create a referral code for a partner ─────────────────────────────
 // Emails the partner their code + dashboard link immediately — this is the
 // moment their dashboard actually becomes useful, so it's the natural point
 // to send them there rather than at partner-creation time.
 
+const tierPricesSchema = z.object({
+  FIX:       z.number().int().positive().optional(),
+  BADGE:     z.number().int().positive().optional(),
+  FIX_PLAIN: z.number().int().positive().optional()
+}).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.')
+
 const createReferralCodeSchema = z.object({
   code:       z.string().min(2).max(50),
-  tierPrices: z.object({
-    FIX:       z.number().int().positive().optional(),
-    BADGE:     z.number().int().positive().optional(),
-    FIX_PLAIN: z.number().int().positive().optional()
-  }).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.'),
+  tierPrices: tierPricesSchema,
   usageLimit: z.number().int().positive().optional(),
   expiresAt:  z.string().datetime().optional()
 })
@@ -178,17 +315,36 @@ async function adminCreateReferralCode(ctx) {
   return ctx.json({ success: true, data: referralCodeRowToCamel(codeRow) })
 }
 
-// ── Admin: toggle a referral code active/inactive ───────────────────────────
-// Deliberately no DELETE — payments.referral_code_id references this row,
-// so codes get deactivated, never removed, to keep historical attribution intact.
+// ── Admin: update a referral code — active flag AND/OR its pricing/limits ──
+// AUDIT FIX (Admin panel pass): previously this endpoint (adminSetReferral-
+// CodeActive) could only toggle `active`; changing a tier price or usage
+// limit meant deactivating the code and creating an entirely new one —
+// losing the original code string (already handed out on flyers, bios,
+// etc.) along with its accumulated clicks/uses history. This now edits the
+// same row in place. Still deliberately no DELETE and no way to change the
+// code string itself — payments.referral_code_id references this row, so
+// the identity of a code must stay stable for historical attribution.
 
-async function adminSetReferralCodeActive(ctx) {
+const updateReferralCodeSchema = z.object({
+  active:      z.boolean().optional(),
+  tierPrices:  tierPricesSchema.optional(),
+  usageLimit:  z.number().int().positive().nullable().optional(),
+  expiresAt:   z.string().datetime().nullable().optional()
+}).refine(obj => Object.keys(obj).length > 0, 'At least one field is required.')
+
+async function adminUpdateReferralCode(ctx) {
   const codeId = ctx.req.param('codeId')
-  const { active } = z.object({ active: z.boolean() }).parse(await ctx.req.json())
+  const body = updateReferralCodeSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
+  const patch = {}
+  if (body.active !== undefined)      patch.active = body.active
+  if (body.tierPrices !== undefined)  patch.tier_prices = body.tierPrices
+  if (body.usageLimit !== undefined)  patch.usage_limit = body.usageLimit
+  if (body.expiresAt !== undefined)   patch.expires_at = body.expiresAt
+
   const { data, error } = await supabase.from('referral_codes')
-    .update({ active }).eq('id', codeId).select('*').maybeSingle()
+    .update(patch).eq('id', codeId).select('*').maybeSingle()
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
 
@@ -196,21 +352,34 @@ async function adminSetReferralCodeActive(ctx) {
 }
 
 // ── Admin: record a payout that has ALREADY been sent manually ─────────────
-// Captures amount + payout method at the moment of recording, emails the
-// partner a confirmation, and settles every currently-unpaid commission_ledger
-// row for that partner against this payout (see the simplification note below).
+// Two modes:
+//   1. CYCLE-SCOPED (periodStart + periodEnd given) — the normal, twice-a-
+//      month case. Only unpaid commission_ledger rows earned inside that
+//      window are settled; amountCents defaults to just their sum. This is
+//      what "how much do I owe for the Sep 1-15 cycle" resolves to.
+//   2. AD HOC (no period given) — the original "pay everything currently
+//      owed" behavior, preserved for a bonus, a catch-up payment covering
+//      multiple stale cycles at once, or any payout with no ledger backing
+//      it at all.
+// In both modes, amountCents can still be overridden manually (a rounded-up
+// transfer, a partial payment) — but note the ledger settlement always marks
+// every ledger row IN SCOPE (the whole cycle, or the whole unpaid balance)
+// as settled by this payout, regardless of the amount actually entered.
+// That's correct for the normal case (admin pays exactly what's shown) but
+// means a deliberate partial payment still clears the in-scope rows rather
+// than leaving a remainder outstanding — same acknowledged simplification
+// as before, just now scoped per-cycle instead of across the partner's
+// entire history.
 
 const recordPayoutSchema = z.object({
-  // Optional — if omitted, defaults to the partner's full pending commission
-  // balance. Admin can override for a partial payment, a rounded-up manual
-  // transfer, or a payout with no ledger backing it at all (e.g. a one-off
-  // bonus) — any of those are legitimate reasons to send a different number
-  // than what the ledger currently shows.
   amountCents:  z.number().int().positive().optional(),
   currency:     z.string().length(3).default('USD'),
   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
-  note:         z.string().max(500).optional()
-})
+  note:         z.string().max(500).optional(),
+  periodStart:  z.string().datetime().optional(),
+  periodEnd:    z.string().datetime().optional()
+}).refine(b => Boolean(b.periodStart) === Boolean(b.periodEnd),
+  'periodStart and periodEnd must be provided together.')
 
 async function adminRecordPayout(ctx) {
   const partnerId = ctx.req.param('id')
@@ -227,12 +396,13 @@ async function adminRecordPayout(ctx) {
     return ctx.json({ success: false,
       message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
 
-  const { data: unpaidLedger, error: ledgerErr } = await supabase
-    .from('commission_ledger').select('id, commission_amount_cents')
+  let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents')
     .eq('partner_id', partnerId).is('payout_id', null)
+  if (body.periodStart) ledgerQuery = ledgerQuery.gte('created_at', body.periodStart).lte('created_at', body.periodEnd)
+  const { data: unpaidLedger, error: ledgerErr } = await ledgerQuery
   if (ledgerErr) throw ledgerErr
 
-  const owedCents  = unpaidLedger.reduce((sum, l) => sum + l.commission_amount_cents, 0)
+  const owedCents   = unpaidLedger.reduce((sum, l) => sum + l.commission_amount_cents, 0)
   const amountCents = body.amountCents ?? owedCents
 
   const { data: payout, error } = await supabase.from('payouts').insert({
@@ -241,18 +411,12 @@ async function adminRecordPayout(ctx) {
     currency:                body.currency,
     payout_method:           payoutMethod,
     payout_details_snapshot: partner.payout_details || {},
-    note:                    body.note || null
+    note:                    body.note || null,
+    period_start:            body.periodStart ? body.periodStart.slice(0, 10) : null,
+    period_end:              body.periodEnd   ? body.periodEnd.slice(0, 10)   : null
   }).select('*').single()
   if (error) throw error
 
-  // SIMPLIFICATION, flagged rather than silently assumed: every currently-
-  // unpaid ledger row is marked settled by THIS payout, regardless of
-  // whether amountCents was overridden to something other than the full
-  // pending balance. This is correct for the normal case (admin pays
-  // exactly what's owed) but means a deliberate partial payment still
-  // clears the ledger rather than leaving a remainder outstanding. Fine for
-  // a solo-admin, low-volume manual process; revisit if partial payouts
-  // become routine.
   if (unpaidLedger.length > 0) {
     const ledgerIds = unpaidLedger.map(l => l.id)
     const { error: settleErr } = await supabase.from('commission_ledger')
@@ -322,10 +486,23 @@ async function submitPayoutDetails(ctx) {
       updated_at:                    new Date().toISOString()
     })
     .eq('payout_details_token', token)
-    .select('name')
+    .select('name, email')
     .maybeSingle()
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+
+  // AUDIT FIX (Admin panel pass): a change here decides where real money
+  // goes next, and previously triggered no notification to anyone — not
+  // the admin, not even the partner whose own details these are. Both are
+  // the tripwire for an unauthorized change (compromised link/inbox);
+  // neither blocks the save.
+  await Promise.all([
+    emailService.sendPayoutDetailsChanged(ctx.env, supabase, data.email, data.name, payoutMethod).catch(() => {}),
+    emailService.sendOwnerAlert(ctx.env,
+      'Partner payout details changed',
+      `partner: ${data.name} <${data.email}>\nmethod: ${payoutMethod}\ntime: ${new Date().toISOString()}\n\nIf this wasn't expected, verify with the partner directly before their next payout.`
+    ).catch(() => {})
+  ])
 
   return ctx.json({ success: true, message: 'Payout details saved.' })
 }
@@ -345,7 +522,7 @@ async function getPartnerDashboard(ctx) {
       name, commission_rate,
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
       commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at),
-      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, paid_at, created_at)
+      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at)
     `)
     .eq('payout_details_token', token)
     .maybeSingle()
@@ -361,6 +538,10 @@ async function getPartnerDashboard(ctx) {
     referralCodes:  codes.map(referralCodeRowToCamel),
     commissionLedger: ledger.map(commissionLedgerRowToCamel),
     payouts:        (partner.payouts || []).map(payoutRowToCamel),
+    // Last 3 cycles (current + 2 prior) — enough for a partner to see
+    // "here's what's still accruing" vs. "here's what's queued for the
+    // next payout run" without exposing Jack's full 6-month admin view.
+    cyclesSummary: buildCyclesSummary(ledger, 3),
     stats: {
       totalClicks:      codes.reduce((sum, code) => sum + (code.clicks || 0), 0),
       totalConversions: ledger.length,
@@ -387,7 +568,8 @@ async function trackClick(ctx) {
 }
 
 module.exports = {
-  adminCreatePartner, adminListPartners, adminUpdatePartner, adminResendPayoutLink, adminRecordPayout,
-  adminCreateReferralCode, adminSetReferralCodeActive,
+  adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
+  adminResendPayoutLink, adminRegeneratePayoutLink, adminRecordPayout,
+  adminCreateReferralCode, adminUpdateReferralCode,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, trackClick
 }

@@ -20,6 +20,14 @@ const TEMPLATES = {
   partner_payout_details_request: "<h2>Set up your payout details</h2>\n<p>Hi {{NAME}}, welcome to the Passthrough partner program.</p>\n<p>Click below to tell us where to send your payouts \u2014 bank account or\nmobile money, whichever you prefer.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Add Payout Details \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link is unique to you \u2014 don't share it. You can come back and\nupdate these details anytime.</p>\n",
   payout_sent: "<h2>Payout sent \u2713</h2>\n<p>Hi {{NAME}}, we've sent you a payout of {{AMOUNT}}.</p>\n<p>It should reflect in your account shortly, depending on your bank or\nmobile money provider's processing time.</p>\n<p>Thanks for partnering with Passthrough.</p>\n",
   referral_code_created: "<h2>Your referral code is live</h2>\n<p>Hi {{NAME}}, your Passthrough referral code is ready to share:</p>\n<p style=\"font-size:28px;font-weight:700;letter-spacing:1px;color:#1E40AF\">{{CODE}}</p>\n<p>Anyone who uses it gets a discounted price, and you earn a commission on\nevery sale it brings in.</p>\n<a href=\"{{DASHBOARD_URL}}\" class=\"btn\">View Your Dashboard \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">Your dashboard shows clicks, conversions, and earnings for every code\nyou have \u2014 bookmark the link above.</p>\n",
+  // Sent to the PARTNER whenever their payout method/details are
+  // added or changed via the token-gated form, so a change to where their
+  // money goes is never silent to them either \u2014 if they didn't make this
+  // change, this email is the tripwire that tells them so.
+  partner_payout_details_changed: "<h2>Your payout details were updated</h2>\n<p>Hi {{NAME}}, this confirms your Passthrough payout details (method: {{METHOD}}) were just added or changed.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't make this change, reply to this email immediately \u2014\nyour payout link may have been shared or compromised.</p>\n",
+  // Sent when an admin regenerates a partner's payout-details link \u2014
+  // the OLD link stops working the moment this is sent.
+  partner_link_regenerated: "<h2>Your payout link has been reset</h2>\n<p>Hi {{NAME}}, for security your Passthrough payout-details link has been reset.</p>\n<p>Your previous link no longer works. Use the new one below \u2014 it's unique to you, so don't share it.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Open Your Payout Details \u2192</a>\n",
 }
 
 // Every var gets HTML-entity-escaped before substitution. NAME in

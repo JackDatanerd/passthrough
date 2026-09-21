@@ -28,6 +28,7 @@ const employerLeadRoutes = require('./routes/employer-leads.routes')
 const pricingRoutes = require('./routes/pricing.routes')
 const profileRoutes      = require('./routes/profile.routes')
 const partnersRoutes     = require('./routes/partners.routes')
+const adminRoutes        = require('./routes/admin.routes')
 
 const { getSupabase } = require('./config/supabase')
 const { scanRowToCamel } = require('./lib/mappers')
@@ -73,6 +74,7 @@ app.route('/api/employer-leads', employerLeadRoutes)
 app.route('/api/profile',        profileRoutes)
 app.route('/api/pricing',        pricingRoutes)
 app.route('/api/partners',       partnersRoutes)
+app.route('/api/admin',          adminRoutes)
 
 // ── 5. Error handler ──────────────────────────────────────────────────────────
 app.onError(errorHandler)

@@ -10,6 +10,18 @@ export function AuthProvider({ children }) {
     catch (_) { return null }
   })
 
+  // AUDIT FIX (Admin panel): exposed so route guards (see AdminRoute in
+  // App.jsx) can tell "we don't know yet" apart from "there's no user".
+  // Previously AdminRoute treated a null/not-yet-loaded `user` as "not
+  // gated" and rendered the admin page's shell immediately — a real,
+  // if narrow, gap: clear localStorage's cached user (or load the app for
+  // the first time with only a token present) and a non-admin briefly saw
+  // admin page chrome before refreshUser() resolved and redirected them
+  // away. The actual data was always safe (adminOnly.js re-checks role from
+  // the DB on every request), but the UI shouldn't render as if a role is
+  // known when it isn't yet.
+  const [authLoading, setAuthLoading] = useState(() => !!localStorage.getItem('passthrough_token'))
+
   // `user` was previously populated once at login/register and cached in
   // localStorage — nothing ever re-synced it with the server afterward. Any
   // change made server-side (e.g. verifying email via a link opened on a
@@ -34,7 +46,8 @@ export function AuthProvider({ children }) {
   // after opening/reloading the app reflects current server state rather
   // than whatever was cached at the last login.
   useEffect(() => {
-    if (localStorage.getItem('passthrough_token')) refreshUser()
+    if (localStorage.getItem('passthrough_token')) refreshUser().finally(() => setAuthLoading(false))
+    else setAuthLoading(false)
   }, [])
 
   async function postRegisterActions(token, newUser) {
@@ -63,7 +76,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, postRegisterActions, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, setUser, postRegisterActions, logout, refreshUser, authLoading }}>
       {children}
     </AuthContext.Provider>
   )

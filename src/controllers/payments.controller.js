@@ -241,7 +241,7 @@ async function verifyPayment(c2) {
   // runs exactly once, gated by the same atomic idempotency check above, so
   // a partner is never double-credited for one sale. recordConversion never
   // throws (it swallows and logs its own errors internally).
-  await referralService.recordConversion(supabase, payment)
+  await referralService.recordConversion(supabase, payment, c2.env)
 
   // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
   // per reference) — never from scans.fix_tier, which is just a downstream

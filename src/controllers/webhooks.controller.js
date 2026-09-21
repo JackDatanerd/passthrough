@@ -215,7 +215,7 @@ async function handlePaystack(c) {
         // only one that ever records it. recordConversion never throws (it
         // swallows and logs its own errors internally), so it can't take
         // down the fulfillment below.
-        await referralService.recordConversion(supabase, updatedRows[0])
+        await referralService.recordConversion(supabase, updatedRows[0], c.env)
 
         // fixTier comes from the PAYMENT row itself (bound at
         // initializePayment, immutable per reference), not from

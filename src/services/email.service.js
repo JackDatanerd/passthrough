@@ -12,6 +12,10 @@
 const { sendViaResend } = require('../config/email')
 const { render } = require('../templates/emails')
 const c = require('../config/constants')
+// Used only to persist alert_logs rows from sendOwnerAlert — every other
+// function here already receives `supabase` from its caller, but
+// sendOwnerAlert historically didn't take one (see its own comment below).
+const { getSupabase } = require('../config/supabase')
 
 // PATCH 1 (carried over): FRONTEND_URL injected automatically so base.html's
 // header link is always correct. Individual send calls do not need to pass it.
@@ -120,6 +124,25 @@ async function sendReferralCodeCreated(env, supabase, email, name, code, dashboa
   })
 }
 
+// Confirms a change to a partner's payout destination BACK TO the partner
+// themselves — see partners.controller.js's submitPayoutDetails, which
+// previously sent no notification to anyone when this happened. This is
+// the partner-facing half of that fix; sendOwnerAlert (called from the same
+// place) is the admin-facing half.
+async function sendPayoutDetailsChanged(env, supabase, email, name, method) {
+  return send(env, supabase, email, 'Your Passthrough payout details were updated', 'partner_payout_details_changed', {
+    NAME:   name,
+    METHOD: method === 'BANK' ? 'Bank transfer' : 'Mobile money'
+  })
+}
+
+async function sendPartnerLinkRegenerated(env, supabase, email, name, payoutUrl) {
+  return send(env, supabase, email, 'Your Passthrough payout link has been reset', 'partner_link_regenerated', {
+    NAME:       name,
+    PAYOUT_URL: payoutUrl
+  })
+}
+
 async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
     NAME:              name,
@@ -156,28 +179,48 @@ function escapeHtml(str) {
 //
 // OWNER_ALERT_EMAIL is a plain [vars] entry in wrangler.toml, not a
 // secret — it's just an email address, not credential-like. If it's unset,
-// this silently no-ops rather than failing — alerting must never itself
-// become a reason something else breaks.
+// the email leg silently no-ops rather than failing — alerting must never
+// itself become a reason something else breaks. The alert_logs write below
+// happens regardless of whether OWNER_ALERT_EMAIL is set, for the same
+// reason it happens regardless of whether the email send succeeds: this is
+// meant to be the durable record that survives even if the email leg is
+// broken, missed, or filtered — previously an alert existed ONLY as an
+// email, with zero trace in the app or DB if that email never reached
+// anyone. The admin panel's System Health view reads this table. Awaited
+// for the same Workers-cancellation reason the email_logs insert above
+// was just changed to be awaited (see send()'s comment).
 async function sendOwnerAlert(env, subject, message) {
   const to = env.OWNER_ALERT_EMAIL
-  if (!to) return false
-  try {
-    await sendViaResend(env, {
-      from: env.EMAIL_FROM,
-      to,
-      subject: `[Passthrough Alert] ${subject}`,
-      html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`
-    })
-    return true
-  } catch (err) {
-    console.error('Owner alert failed to send:', err.message)
-    return false
+  let emailed = false
+  if (to) {
+    try {
+      await sendViaResend(env, {
+        from: env.EMAIL_FROM,
+        to,
+        subject: `[Passthrough Alert] ${subject}`,
+        html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`
+      })
+      emailed = true
+    } catch (err) {
+      console.error('Owner alert failed to send:', err.message)
+    }
   }
+  try {
+    const supabase = getSupabase(env)
+    await supabase.from('alert_logs').insert({ subject, message, emailed })
+  } catch (err) {
+    // Logging the alert must never throw past this function — a broken
+    // alert_logs write is exactly the kind of secondary failure that
+    // shouldn't take down whatever critical path called sendOwnerAlert.
+    console.error('alert_logs write failed:', err.message)
+  }
+  return emailed
 }
 
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
   sendScanFail, sendScanPass, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert,
-  sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated
+  sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
+  sendPayoutDetailsChanged, sendPartnerLinkRegenerated
 }

@@ -225,6 +225,13 @@ function payoutRowToCamel(row) {
     payoutDetailsSnapshot: row.payout_details_snapshot,
     note:                  row.note,
     status:                row.status,
+    // AUDIT FIX (Admin panel — twice-monthly payout cycles): added by
+    // migration 0016 (payouts.period_start/period_end) so a recorded
+    // payout remembers which cycle it settled, if any — null for an ad hoc
+    // payout (a bonus, a catch-up covering multiple stale cycles) that
+    // wasn't scoped to one specific cycle. See lib/cycles.js.
+    periodStart:           row.period_start,
+    periodEnd:             row.period_end,
     paidAt:                row.paid_at,
     createdAt:             row.created_at
   }

@@ -22,7 +22,15 @@ import DashboardIndex from './pages/dashboard/Index'
 import Settings       from './pages/dashboard/Settings'
 import PartnerPayoutDetails from './pages/PartnerPayoutDetails'
 import PartnerDashboard     from './pages/PartnerDashboard'
-import AdminPartners  from './pages/admin/AdminPartners'
+import AdminLayout        from './pages/admin/AdminLayout'
+import AdminDashboard     from './pages/admin/AdminDashboard'
+import AdminPartners      from './pages/admin/AdminPartners'
+import PartnerDetail      from './pages/admin/PartnerDetail'
+import AdminUsers         from './pages/admin/AdminUsers'
+import AdminScans         from './pages/admin/AdminScans'
+import AdminPayments      from './pages/admin/AdminPayments'
+import AdminLeads         from './pages/admin/AdminLeads'
+import AdminSystemHealth  from './pages/admin/AdminSystemHealth'
 
 // ProtectedRoute — redirects to /login if no token
 // Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
@@ -36,11 +44,23 @@ function ProtectedRoute({ children }) {
 // so this one does use useAuth/AuthContext rather than a raw localStorage
 // check. AuthProvider already refreshes `user` from /auth/me on load (see
 // AuthContext.jsx), so `role` here reflects the server, not a stale cache.
+//
+// AUDIT FIX (Admin panel): previously rendered `children` immediately
+// whenever `user` was falsy (only redirecting when a user object WAS
+// present and its role wasn't ADMIN) — so a null/not-yet-loaded `user`
+// (cleared localStorage cache, or the very first paint after opening the
+// app with only a token present) briefly rendered the admin page's client
+// shell before refreshUser() resolved. The actual data was always safe
+// (adminOnly.js re-checks role from the DB on every request — see
+// api.js's new 403 handler too), but the UI shouldn't render as admin
+// before a role is actually confirmed. Now waits for authLoading to clear
+// before deciding either way.
 function AdminRoute({ children }) {
   const token = localStorage.getItem('passthrough_token')
-  const { user } = useAuth()
+  const { user, authLoading } = useAuth()
   if (!token) return <Navigate to="/login" replace />
-  if (user && user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
+  if (authLoading) return null
+  if (!user || user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
   return children
 }
 
@@ -82,8 +102,18 @@ export default function App() {
               element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
             <Route path="/dashboard/settings"
               element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            <Route path="/admin/partners"
-              element={<AdminRoute><AdminPartners /></AdminRoute>} />
+            <Route path="/admin"
+              element={<AdminRoute><AdminLayout /></AdminRoute>}>
+              <Route index element={<Navigate to="dashboard" replace />} />
+              <Route path="dashboard"     element={<AdminDashboard />} />
+              <Route path="partners"      element={<AdminPartners />} />
+              <Route path="partners/:id"  element={<PartnerDetail />} />
+              <Route path="users"         element={<AdminUsers />} />
+              <Route path="scans"         element={<AdminScans />} />
+              <Route path="payments"      element={<AdminPayments />} />
+              <Route path="leads"         element={<AdminLeads />} />
+              <Route path="health"        element={<AdminSystemHealth />} />
+            </Route>
 
             {/* Catch-all */}
             <Route path="*" element={<Navigate to="/" replace />} />

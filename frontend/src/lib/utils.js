@@ -5,8 +5,16 @@ export function formatDate(dateStr) {
   })
 }
 
-export function formatCents(cents) {
-  return `$${(cents / 100).toFixed(2)}`
+// AUDIT FIX (Admin panel): accepts an optional currency, defaulting to
+// 'USD' so every existing call site (which never passed one) renders
+// byte-identical output to before. Needed because payouts/payments can
+// carry a non-USD currency (recordPayoutSchema accepts any 3-letter code)
+// — a bare `$${cents}` here would silently mislabel a KES or other
+// non-USD amount as dollars, the same currency-mislabeling bug already
+// fixed server-side for the partner list's roll-up totals.
+export function formatCents(cents, currency = 'USD') {
+  const amount = (cents / 100).toFixed(2)
+  return currency === 'USD' ? `$${amount}` : `${amount} ${currency}`
 }
 
 export function scoreColor(score) {
