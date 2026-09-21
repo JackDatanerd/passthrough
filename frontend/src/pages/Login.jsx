@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import { safeNext } from '../lib/session'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
@@ -15,8 +16,7 @@ export default function Login() {
   const { postAuthActions } = useAuth()
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
-  const [loading,  setLoading ] = useState(false)
-  const [error,    setError   ] = useState('')
+  const { loading, error, execute } = useApi()
 
   const expired = params.get('expired') === 'true'
   const banned  = params.get('banned')  === 'true'
@@ -25,19 +25,21 @@ export default function Login() {
   const next    = safeNext(params.get('next'))
 
   async function handleSubmit() {
-    if (!email || !password) return setError('Email and password required.')
-    setLoading(true); setError('')
-    try {
-      const res = await api.post('/auth/login', { email: email.trim(), password })
-      const { token, user } = res.data.data
-      // Also claims a pending anonymous scan, exactly like registering does.
-      const claimedScanId = await postAuthActions(token, user)
-      navigate(next || (claimedScanId ? `/scan/${claimedScanId}` : '/dashboard'))
-    } catch (err) {
-      setError(getErrorMessage(err, 'Login failed.'))
-    } finally {
-      setLoading(false)
+    if (!email || !password) {
+      await execute(() => Promise.reject(new Error('Email and password required.')),
+        { fallback: 'Email and password required.' }).catch(() => {})
+      return
     }
+    try {
+      await execute(async () => {
+        const res = await api.post('/auth/login', { email: email.trim(), password })
+        const { token, user } = res.data.data
+        // Also claims a pending anonymous scan, exactly like registering does.
+        const claimedScanId = await postAuthActions(token, user)
+        navigate(next || (claimedScanId ? `/scan/${claimedScanId}` : '/dashboard'))
+        return res
+      }, { fallback: 'Login failed.' })
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

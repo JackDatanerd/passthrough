@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
@@ -27,9 +28,8 @@ export default function PartnerPayoutDetails() {
   const [provider, setProvider] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
 
-  const [saving, setSaving] = useState(false)
   const [saved,  setSaved ] = useState(false)
-  const [error,  setError ] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
@@ -53,23 +53,22 @@ export default function PartnerPayoutDetails() {
   }, [token])
 
   async function handleSubmit() {
-    setError('')
     const body = method === 'BANK'
       ? { payoutMethod: 'BANK', bankName, accountName, accountNumber }
       : { payoutMethod: 'MOBILE_MONEY', provider, accountName, phoneNumber }
 
     const missing = Object.values(body).some(v => !v)
-    if (missing) return setError('Please fill in every field.')
-
-    setSaving(true)
-    try {
-      await api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body)
-      setSaved(true)
-    } catch (err) {
-      setError(getErrorMessage(err, 'Something went wrong — please try again.'))
-    } finally {
-      setSaving(false)
+    if (missing) {
+      await execute(() => Promise.reject(new Error('Please fill in every field.')),
+        { fallback: 'Please fill in every field.' }).catch(() => {})
+      return
     }
+
+    try {
+      await execute(() => api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body),
+        { fallback: 'Something went wrong — please try again.' })
+      setSaved(true)
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

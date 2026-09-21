@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
@@ -13,9 +14,8 @@ export default function ResetPassword() {
   const token     = params.get('token')
   const [newPassword, setNewPassword] = useState('')
   const [confirm,     setConfirm    ] = useState('')
-  const [loading,     setLoading    ] = useState(false)
-  const [error,       setError      ] = useState('')
   const [success,     setSuccess    ] = useState(false)
+  const { loading, error, execute } = useApi()
 
   if (!token) {
     return (
@@ -34,20 +34,20 @@ export default function ResetPassword() {
     )
   }
 
+  function fail(message) {
+    return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+  }
+
   async function handleSubmit() {
-    if (!newPassword) return setError('Password required.')
-    if (newPassword.length < 8) return setError('Password must be at least 8 characters.')
-    if (newPassword !== confirm) return setError('Passwords do not match.')
-    setLoading(true); setError('')
+    if (!newPassword) return fail('Password required.')
+    if (newPassword.length < 8) return fail('Password must be at least 8 characters.')
+    if (newPassword !== confirm) return fail('Passwords do not match.')
     try {
-      await api.post('/auth/reset-password', { token, newPassword })
+      await execute(() => api.post('/auth/reset-password', { token, newPassword }),
+        { fallback: 'Reset failed. Link may have expired.' })
       setSuccess(true)
       setTimeout(() => navigate('/login'), 2000)
-    } catch (err) {
-      setError(getErrorMessage(err, 'Reset failed. Link may have expired.'))
-    } finally {
-      setLoading(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

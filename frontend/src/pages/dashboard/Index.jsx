@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import api, { getErrorMessage } from '../../lib/api'
+import api from '../../lib/api'
+import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../hooks/useAuth'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Badge from '../../components/ui/Badge'
@@ -31,8 +32,8 @@ const SCANS_PER_PAGE = 20
 export default function DashboardIndex() {
   const { user, refreshUser } = useAuth()
   const [scans,    setScans   ] = useState([])
-  const [loading,  setLoading ] = useState(true)
-  const [resending, setResending] = useState(false)
+  const { loading, error: loadError, execute } = useApi()
+  const { loading: resending, execute: executeResend } = useApi()
   const [resentOk, setResentOk] = useState(false)
 
   // AUDIT FIX (Section 6): this page used to hardcode page=1&limit=20 with
@@ -44,7 +45,6 @@ export default function DashboardIndex() {
   const [total, setTotal] = useState(0)
   // A failed history request used to fall into the same branch as "no scans"
   // and told a user with 50 scans "No scans yet — scan your first resume".
-  const [loadError, setLoadError] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
 
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
@@ -52,17 +52,13 @@ export default function DashboardIndex() {
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
 
   useEffect(() => {
-    setLoading(true); setLoadError('')
-    api.get(`/scan/history?page=${page}&limit=${SCANS_PER_PAGE}`)
-      .then(res => {
-        setScans(res.data.data.scans)
-        setTotal(res.data.data.total ?? 0)
-        setLoading(false)
+    execute(() => api.get(`/scan/history?page=${page}&limit=${SCANS_PER_PAGE}`),
+      { fallback: "Couldn't load your scans." })
+      .then(payload => {
+        setScans(payload.data.scans)
+        setTotal(payload.data.total ?? 0)
       })
-      .catch(err => {
-        setLoadError(getErrorMessage(err, "Couldn't load your scans."))
-        setLoading(false)
-      })
+      .catch(() => {})
   }, [page, reloadTick])
 
   useEffect(() => {
@@ -81,17 +77,15 @@ export default function DashboardIndex() {
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
   async function resendVerification() {
-    setResending(true)
     try {
-      await api.post('/auth/resend-verification')
+      await executeResend(() => api.post('/auth/resend-verification'))
       setResentOk(true)
       // Also re-sync user state — covers the case where the account was
       // already verified elsewhere (another device/session) and the local
       // cache just hadn't caught up, which previously looked identical to
       // "resend isn't working" since the banner never went away either way.
       refreshUser()
-    } catch (_) {}
-    setResending(false)
+    } catch (_) { /* silently ignored, same as before — no error UI for this action */ }
   }
 
   return (

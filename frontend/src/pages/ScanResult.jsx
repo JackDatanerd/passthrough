@@ -252,28 +252,17 @@ export default function ScanResult() {
       const res = await api.get(`/scan/${id}/download?type=${type}`, { responseType: 'blob' })
       downloadBlob(res.data, type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf')
     } catch (err) {
-      // With responseType: 'blob', axios applies that same responseType to
-      // ERROR responses too — err.response.data is a Blob, not parsed JSON,
-      // even though the server sent a normal JSON error body. Reading
-      // err.response.data.code directly always returns undefined here,
-      // which silently masked the EMAIL_NOT_VERIFIED case behind the
-      // generic "Download failed." message. Parse the Blob's text instead.
-      let code, message
+      // With responseType: 'blob', axios would normally hand back error bodies
+      // as an unparsed Blob (see normalizeBlobError in lib/errors.js) instead
+      // of the JSON the server actually sent. That's already fixed centrally:
+      // the shared axios instance in lib/api.js runs every failed response
+      // through normalizeBlobError before it reaches here, so err.response.data
+      // is a plain object by the time this catch block sees it.
       const data = err.response?.data
-      if (data instanceof Blob) {
-        try {
-          const parsed = JSON.parse(await data.text())
-          code = parsed.code
-          message = parsed.message
-        } catch (_) { /* not JSON — fall through to generic message */ }
-      } else {
-        code = data?.code
-        message = data?.message
-      }
-      if (code === 'EMAIL_NOT_VERIFIED') {
+      if (data?.code === 'EMAIL_NOT_VERIFIED') {
         setDlError('Please verify your email before downloading. Check your inbox.')
       } else {
-        setDlError(message || 'Download failed.')
+        setDlError(data?.message || 'Download failed.')
       }
     }
   }

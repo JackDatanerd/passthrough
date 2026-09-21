@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
@@ -8,27 +9,25 @@ import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
 export default function ForgotPassword() {
-  const [email,   setEmail  ] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [sent,    setSent   ] = useState(false)
-  const [error,   setError  ] = useState('')
+  const [email, setEmail] = useState('')
+  const [sent,  setSent ] = useState(false)
+  const { loading, error, execute } = useApi()
 
   async function handleSubmit() {
-    if (!email) return setError('Email required.')
-    setLoading(true); setError('')
+    if (!email) {
+      await execute(() => Promise.reject(new Error('Email required.')), { fallback: 'Email required.' }).catch(() => {})
+      return
+    }
     try {
-      await api.post('/auth/forgot-password', { email: email.trim() })
-      setSent(true)
-    } catch (err) {
       // The server answers 200 whether or not the email is registered (so
       // this can't be used to probe for accounts) — which means an ERROR here
       // is never "unknown email". It's a rate limit, a bad address, an outage
       // or a dead network, and claiming "check your inbox" for those left
       // people waiting on an email that was never sent.
-      setError(getErrorMessage(err, "Couldn't send the reset link. Please try again."))
-    } finally {
-      setLoading(false)
-    }
+      await execute(() => api.post('/auth/forgot-password', { email: email.trim() }),
+        { fallback: "Couldn't send the reset link. Please try again." })
+      setSent(true)
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

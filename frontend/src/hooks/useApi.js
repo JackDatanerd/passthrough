@@ -25,7 +25,11 @@ export function useApi() {
     if (mounted.current) { setPending(n => n + 1); setError(null) }
     try {
       const res = await apiCall()
-      return res.data
+      // apiCall is usually `() => api.post(...)`, but callers sometimes do more
+      // work in there (claim a resource, navigate) and don't care about the
+      // return value — don't crash on `res.data` if apiCall didn't resolve to
+      // an axios response.
+      return res?.data
     } catch (err) {
       if (mounted.current) setError(getErrorMessage(err, fallback))
       throw err

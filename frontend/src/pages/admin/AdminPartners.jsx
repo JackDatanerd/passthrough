@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../../lib/api'
+import { useApi } from '../../hooks/useApi'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
@@ -13,23 +14,20 @@ function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   async function handleCreate() {
-    setError('')
-    if (!name || !email) return setError('Name and email are required.')
-    setSaving(true)
+    if (!name || !email) {
+      await execute(() => Promise.reject(new Error('Name and email are required.')),
+        { fallback: 'Name and email are required.' }).catch(() => {})
+      return
+    }
     try {
-      await api.post('/partners', { name, email })
+      await execute(() => api.post('/partners', { name, email }), { fallback: 'Failed to add partner.' })
       toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
       onCreated()
       onClose()
-    } catch (err) {
-      setError(err.response?.data?.message || 'Failed to add partner.')
-    } finally {
-      setSaving(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

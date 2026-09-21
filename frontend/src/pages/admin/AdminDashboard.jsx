@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../../lib/api'
+import { useApi } from '../../hooks/useApi'
 import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
 import { formatCents, formatDate, cn } from '../../lib/utils'
@@ -17,15 +18,15 @@ function StatCard({ label, value, sub }) {
 
 export default function AdminDashboard() {
   const [data, setData] = useState(null)
-  const [error, setError] = useState(false)
+  const { error, execute } = useApi()
 
   useEffect(() => {
-    api.get('/admin/dashboard')
-      .then(res => setData(res.data.data))
-      .catch(() => setError(true))
+    execute(() => api.get('/admin/dashboard'), { fallback: 'Failed to load dashboard.' })
+      .then(payload => setData(payload.data))
+      .catch(() => {})
   }, [])
 
-  if (error) return <p className="text-sm text-red-600">Failed to load dashboard.</p>
+  if (error) return <p className="text-sm text-red-600">{error}</p>
   if (!data) return <div className="flex justify-center py-16"><Spinner /></div>
 
   const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts } = data

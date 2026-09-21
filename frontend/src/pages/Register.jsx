@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
@@ -15,25 +16,26 @@ export default function Register() {
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
   const [confirm,  setConfirm ] = useState('')
-  const [loading,  setLoading ] = useState(false)
-  const [error,    setError   ] = useState('')
+  const { loading, error, execute } = useApi()
+
+  function fail(message) {
+    return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+  }
 
   async function handleSubmit() {
-    if (!name || !email || !password) return setError('All fields required.')
-    if (password.length < 8) return setError('Password must be at least 8 characters.')
-    if (password !== confirm) return setError('Passwords do not match.')
-    setLoading(true); setError('')
+    if (!name || !email || !password) return fail('All fields required.')
+    if (password.length < 8) return fail('Password must be at least 8 characters.')
+    if (password !== confirm) return fail('Passwords do not match.')
     try {
-      const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password })
-      const { token, user } = res.data.data
-      const scanId = await postRegisterActions(token, user)
-      // If there was a pending anon scan, go to it — otherwise dashboard
-      navigate(scanId ? `/scan/${scanId}` : '/dashboard')
-    } catch (err) {
-      setError(getErrorMessage(err, 'Registration failed.'))
-    } finally {
-      setLoading(false)
-    }
+      await execute(async () => {
+        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password })
+        const { token, user } = res.data.data
+        const scanId = await postRegisterActions(token, user)
+        // If there was a pending anon scan, go to it — otherwise dashboard
+        navigate(scanId ? `/scan/${scanId}` : '/dashboard')
+        return res
+      }, { fallback: 'Registration failed.' })
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

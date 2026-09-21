@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import api, { getErrorMessage } from '../../lib/api'
+import api from '../../lib/api'
+import { useApi } from '../../hooks/useApi'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
@@ -62,32 +63,29 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   const [email, setEmail] = useState(partner.email)
   const [rate, setRate] = useState(String(Math.round(partner.commissionRate * 100)))
   const [status, setStatus] = useState(partner.status)
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   async function handleSave() {
-    setError('')
+    function fail(message) {
+      return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    }
     // AUDIT FIX (Admin panel re-audit): `!rateNum` rejected an intentional
     // 0% rate — the backend/DB both explicitly allow commissionRate === 0
     // (see partners.controller.js's updatePartnerSchema, min(0)), so this
     // was stricter than what the system actually supports. Check for a
     // genuinely empty/invalid field instead of falsy-zero.
-    if (rate.trim() === '') return setError('Enter a commission rate.')
+    if (rate.trim() === '') return fail('Enter a commission rate.')
     const rateNum = Number(rate) / 100
-    if (!name || !email) return setError('Name and email are required.')
-    if (Number.isNaN(rateNum) || rateNum < 0 || rateNum > 1) return setError('Commission rate must be between 0 and 100%.')
+    if (!name || !email) return fail('Name and email are required.')
+    if (Number.isNaN(rateNum) || rateNum < 0 || rateNum > 1) return fail('Commission rate must be between 0 and 100%.')
 
-    setSaving(true)
     try {
-      await api.patch(`/partners/${partner.id}`, { name, email, commissionRate: rateNum, status })
+      await execute(() => api.patch(`/partners/${partner.id}`, { name, email, commissionRate: rateNum, status }),
+        { fallback: 'Failed to update partner.' })
       toast({ message: 'Partner updated.', type: 'success' })
       onSaved()
       onClose()
-    } catch (err) {
-      setError(getErrorMessage(err, 'Failed to update partner.'))
-    } finally {
-      setSaving(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (
@@ -131,35 +129,32 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   const defaultCents = cycle ? cycle.unpaidCents : partner.pendingCommissionCents
   const [amount, setAmount] = useState(defaultCents > 0 ? (defaultCents / 100).toFixed(2) : '')
   const [note, setNote] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   async function handleRecord() {
-    setError('')
     const parsed = Number(amount)
-    if (!parsed || parsed <= 0) return setError('Enter a valid amount.')
+    if (!parsed || parsed <= 0) {
+      await execute(() => Promise.reject(new Error('Enter a valid amount.')),
+        { fallback: 'Enter a valid amount.' }).catch(() => {})
+      return
+    }
 
-    setSaving(true)
     try {
-      const res = await api.post(`/partners/${partner.id}/payouts`, {
+      const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
         currency: 'USD',
         note: note || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
-      })
+      }), { fallback: 'Failed to record payout.' })
       toast({
-        message: res.data.emailed
+        message: data.emailed
           ? `Payout recorded — ${partner.name} has been emailed.`
           : `Payout recorded, but the confirmation email failed to send.`,
-        type: res.data.emailed ? 'success' : 'warning'
+        type: data.emailed ? 'success' : 'warning'
       })
       onRecorded()
       onClose()
-    } catch (err) {
-      setError(getErrorMessage(err, 'Failed to record payout.'))
-    } finally {
-      setSaving(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (
@@ -205,35 +200,31 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
   const [fixPlain, setFixPlain] = useState('')
   const [usageLimit, setUsageLimit] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   async function handleCreate() {
-    setError('')
-    if (!code) return setError('Code is required.')
+    function fail(message) {
+      return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    }
+    if (!code) return fail('Code is required.')
     const tierPrices = {}
     if (fix)      tierPrices.FIX       = Math.round(Number(fix) * 100)
     if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
     if (fixPlain) tierPrices.FIX_PLAIN = Math.round(Number(fixPlain) * 100)
-    if (Object.keys(tierPrices).length === 0) return setError('Set at least one tier price.')
+    if (Object.keys(tierPrices).length === 0) return fail('Set at least one tier price.')
 
-    setSaving(true)
     try {
-      await api.post(`/partners/${partner.id}/referral-codes`, {
+      await execute(() => api.post(`/partners/${partner.id}/referral-codes`, {
         code, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined,
         // createReferralCodeSchema's expiresAt is optional but NOT
         // nullable — omit the key entirely rather than send null when no
         // date was picked.
         ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {})
-      })
+      }), { fallback: 'Failed to create code.' })
       toast({ message: `Code ${code.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
       onCreated()
       onClose()
-    } catch (err) {
-      setError(getErrorMessage(err, 'Failed to create code.'))
-    } finally {
-      setSaving(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (
@@ -274,35 +265,32 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
   const [fixPlain, setFixPlain] = useState(tp.FIX_PLAIN != null ? (tp.FIX_PLAIN / 100).toFixed(2) : '')
   const [usageLimit, setUsageLimit] = useState(codeRow.usageLimit != null ? String(codeRow.usageLimit) : '')
   const [expiresAt, setExpiresAt] = useState(expiresAtToDateInput(codeRow.expiresAt))
-  const [saving, setSaving] = useState(false)
-  const [error, setError] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
   async function handleSave() {
-    setError('')
     const tierPrices = {}
     if (fix)      tierPrices.FIX       = Math.round(Number(fix) * 100)
     if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
     if (fixPlain) tierPrices.FIX_PLAIN = Math.round(Number(fixPlain) * 100)
-    if (Object.keys(tierPrices).length === 0) return setError('Set at least one tier price.')
+    if (Object.keys(tierPrices).length === 0) {
+      await execute(() => Promise.reject(new Error('Set at least one tier price.')),
+        { fallback: 'Set at least one tier price.' }).catch(() => {})
+      return
+    }
 
-    setSaving(true)
     try {
-      await api.patch(`/partners/referral-codes/${codeRow.id}`, {
+      await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
         tierPrices,
         usageLimit: usageLimit ? Number(usageLimit) : null,
         // updateReferralCodeSchema's expiresAt is nullable — unlike create,
         // an explicit null here is how an admin clears an existing
         // expiration, same convention as usageLimit right above.
         expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null
-      })
+      }), { fallback: 'Failed to update code.' })
       toast({ message: `Code ${codeRow.code} updated.`, type: 'success' })
       onSaved()
       onClose()
-    } catch (err) {
-      setError(getErrorMessage(err, 'Failed to update code.'))
-    } finally {
-      setSaving(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   return (

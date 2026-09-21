@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import api, { getErrorMessage } from '../lib/api'
+import api from '../lib/api'
+import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
@@ -26,8 +27,7 @@ export default function Verify() {
   const [role,        setRole       ] = useState('')
   const [email,       setEmail      ] = useState('')
   const [leadSent,    setLeadSent   ] = useState(false)
-  const [leadErr,     setLeadErr    ] = useState('')
-  const [leadLoading, setLeadLoading] = useState(false)
+  const { loading: leadLoading, error: leadErr, execute: executeLead } = useApi()
 
   const [linkCopied, setLinkCopied] = useState(false)
 
@@ -45,21 +45,20 @@ export default function Verify() {
   useEffect(() => { load() }, [code])
 
   async function handleLead() {
-    if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
-    setLeadLoading(true); setLeadErr('')
+    if (!name || !company || !email) {
+      const msg = 'Name, company, and email required.'
+      await executeLead(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+      return
+    }
     try {
-      await api.post('/employer-leads', {
+      await executeLead(() => api.post('/employer-leads', {
         name,
         company,
         email,
         roleCategory: role || undefined
-      })
+      }), { fallback: 'Something went wrong.' })
       setLeadSent(true)
-    } catch (err) {
-      setLeadErr(getErrorMessage(err, 'Something went wrong.'))
-    } finally {
-      setLeadLoading(false)
-    }
+    } catch (_) { /* error already captured by useApi */ }
   }
 
   async function handleCopyLink() {
