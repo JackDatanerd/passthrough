@@ -55,6 +55,23 @@ export default function AdminLeads() {
     }
   }
 
+  // FEATURE GAP CLOSED (Section 5, fixing-time pass): status alone can't
+  // record why a lead ended up there. Saves on blur rather than per-
+  // keystroke, same reasoning as everywhere else in the admin panel that
+  // edits free text next to a live list.
+  async function saveNotes(lead, newNotes) {
+    if ((lead.notes || '') === newNotes) return
+    setBusyId(lead.id)
+    try {
+      await api.patch(`/employer-leads/${lead.id}`, { notes: newNotes })
+      setLeads(prev => prev.map(l => l.id === lead.id ? { ...l, notes: newNotes } : l))
+    } catch (err) {
+      toast({ message: err.response?.data?.message || 'Failed to save note.', type: 'error' })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function removeLead(lead) {
     if (!window.confirm(`Delete the lead from ${lead.email}? This can't be undone.`)) return
     setBusyId(lead.id)
@@ -101,6 +118,7 @@ export default function AdminLeads() {
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">Received</th>
                 <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3">Notes</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -127,6 +145,17 @@ export default function AdminLeads() {
                         {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                       </select>
                     </div>
+                  </td>
+                  <td className="px-4 py-3">
+                    <textarea
+                      key={`${l.id}:${l.notes || ''}`}
+                      defaultValue={l.notes || ''}
+                      disabled={busyId === l.id}
+                      onBlur={e => saveNotes(l, e.target.value.trim())}
+                      placeholder="Add a note…"
+                      rows={1}
+                      className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs resize-y"
+                    />
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Button size="sm" variant="danger" disabled={busyId === l.id} onClick={() => removeLead(l)}>

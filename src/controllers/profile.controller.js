@@ -18,6 +18,15 @@ const { scanRowToCamel } = require('../lib/mappers')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 
 // GET /api/profile
+// FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used to
+// be a total black box — Settings.jsx could show only a save date. There
+// was no stored reference to which scan it came from, so a bad or stale
+// save could only be fixed by deleting it and starting over from a fresh
+// scan. Now returns sourceScanId (so the UI can link back to the original
+// scan) plus a small summary pulled from the stored resumeData itself
+// (candidate's own name and the role category of the scan it came from) so
+// the settings page can show more than just a bare timestamp without
+// exposing the full structured resume data over this endpoint.
 async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
@@ -25,9 +34,16 @@ async function getProfile(c) {
   if (error) throw error
 
   const saved = data.saved_profile
+  const summary = saved?.resumeData ? {
+    name:         saved.resumeData.name || null,
+    roleCategory: saved.roleCategory || null
+  } : null
+
   return c.json({ success: true, data: {
     hasSavedProfile: !!saved?.resumeData,
-    savedAt:         saved?.savedAt || null
+    savedAt:         saved?.savedAt || null,
+    sourceScanId:    saved?.sourceScanId || null,
+    summary
   }})
 }
 
@@ -54,9 +70,15 @@ async function saveProfile(c) {
   if (!scan.originalResumeData)
     return c.json({ success: false, message: 'This scan has no structured resume data to save yet.' }, 400)
 
-  // Wrapped with savedAt inside the single jsonb column — avoids a schema
-  // change for what's otherwise just one extra timestamp.
-  const savedProfile = { resumeData: scan.originalResumeData, savedAt: new Date().toISOString() }
+  // Wrapped with savedAt (and now sourceScanId/roleCategory — see
+  // getProfile's comment above) inside the single jsonb column — avoids a
+  // schema change for what's otherwise a handful of small extra fields.
+  const savedProfile = {
+    resumeData:   scan.originalResumeData,
+    savedAt:      new Date().toISOString(),
+    sourceScanId: scan.id,
+    roleCategory: scan.roleCategory || null
+  }
   const { error: updErr } = await supabase.from('users').update({ saved_profile: savedProfile }).eq('id', user.id)
   if (updErr) throw updErr
 

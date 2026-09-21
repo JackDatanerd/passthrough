@@ -289,6 +289,7 @@ function leadRowToCamel(row) {
     roleCategory: row.role_category,
     source:       row.source,
     status:       row.status,
+    notes:        row.notes,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }

@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react'
-import { Link } from 'react-router-dom'
-import api from '../../lib/api'
-import { useApi } from '../../hooks/useApi'
+import { Link, useSearchParams } from 'react-router-dom'
+import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
+import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
 import { formatDate, statusLabel } from '../../lib/utils'
+
+// FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
+// .js's SCAN_STATUSES allowlist, for the filter dropdown below.
+const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
 
 function scanBadgeVariant(status) {
   if (['COMPLETE_PASS', 'FIX_DELIVERED'].includes(status)) return 'green'
@@ -32,34 +36,87 @@ const SCANS_PER_PAGE = 20
 export default function DashboardIndex() {
   const { user, refreshUser } = useAuth()
   const [scans,    setScans   ] = useState([])
-  const { loading, error: loadError, execute } = useApi()
-  const { loading: resending, execute: executeResend } = useApi()
+  const [loading,  setLoading ] = useState(true)
+  const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
 
-  // AUDIT FIX (Section 6): this page used to hardcode page=1&limit=20 with
-  // no pagination at all — a user with more than 20 scans permanently lost
-  // access to anything older through this list (no "load more", no
-  // indication more existed, since the API didn't even return a total).
-  // getScanHistory now returns `total`, so this can page properly.
-  const [page,  setPage ] = useState(1)
+  // FEATURE GAP CLOSED (Section 6, fixing-time pass): page/search/status now
+  // live in the URL instead of plain component state — refreshing or
+  // sharing a link to "page 3, status FIX_DELIVERED" used to always drop
+  // you back to page 1 with no filters, since none of it survived a
+  // remount.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const page   = Math.max(parseInt(searchParams.get('page')) || 1, 1)
+  const status = searchParams.get('status') || ''
+  // Search box needs its own local state so typing doesn't refetch on every
+  // keystroke — committed to the URL (and therefore the API call) debounced,
+  // same reasoning as AdminUsers.jsx / AdminLeads.jsx's search boxes, which
+  // don't debounce because admins type into a small, already-loaded list;
+  // this list can be considerably larger, so debouncing avoids a network
+  // request per keystroke.
+  const [searchInput, setSearchInput] = useState(searchParams.get('search') || '')
   const [total, setTotal] = useState(0)
   // A failed history request used to fall into the same branch as "no scans"
   // and told a user with 50 scans "No scans yet — scan your first resume".
+  const [loadError, setLoadError] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
 
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
   // path back into the scan form with that profile pre-selected.
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
 
+  const search = searchParams.get('search') || ''
+
+  // Keeps the search box in sync with the URL when it changes from outside
+  // typing (back/forward navigation, "Clear filters" below) — without this
+  // the box could keep showing stale text while the actual results (driven
+  // off `search`, not `searchInput`) had already moved on.
+  useEffect(() => { setSearchInput(search) }, [search])
+
   useEffect(() => {
-    execute(() => api.get(`/scan/history?page=${page}&limit=${SCANS_PER_PAGE}`),
-      { fallback: "Couldn't load your scans." })
-      .then(payload => {
-        setScans(payload.data.scans)
-        setTotal(payload.data.total ?? 0)
+    const handle = setTimeout(() => {
+      if (searchInput === search) return
+      setSearchParams(prev => {
+        const next = new URLSearchParams(prev)
+        if (searchInput) next.set('search', searchInput); else next.delete('search')
+        next.delete('page') // a new search always starts back at page 1
+        return next
       })
-      .catch(() => {})
-  }, [page, reloadTick])
+    }, 350)
+    return () => clearTimeout(handle)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchInput])
+
+  function setStatus(newStatus) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (newStatus) next.set('status', newStatus); else next.delete('status')
+      next.delete('page')
+      return next
+    })
+  }
+
+  function setPage(newPage) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (newPage > 1) next.set('page', String(newPage)); else next.delete('page')
+      return next
+    })
+  }
+
+  useEffect(() => {
+    setLoading(true); setLoadError('')
+    api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: search || undefined, status: status || undefined } })
+      .then(res => {
+        setScans(res.data.data.scans)
+        setTotal(res.data.data.total ?? 0)
+        setLoading(false)
+      })
+      .catch(err => {
+        setLoadError(getErrorMessage(err, "Couldn't load your scans."))
+        setLoading(false)
+      })
+  }, [page, search, status, reloadTick])
 
   useEffect(() => {
     api.get('/profile')
@@ -77,16 +134,20 @@ export default function DashboardIndex() {
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
   async function resendVerification() {
+    setResending(true)
     try {
-      await executeResend(() => api.post('/auth/resend-verification'))
+      await api.post('/auth/resend-verification')
       setResentOk(true)
       // Also re-sync user state — covers the case where the account was
       // already verified elsewhere (another device/session) and the local
       // cache just hadn't caught up, which previously looked identical to
       // "resend isn't working" since the banner never went away either way.
       refreshUser()
-    } catch (_) { /* silently ignored, same as before — no error UI for this action */ }
+    } catch (_) {}
+    setResending(false)
   }
+
+  const hasFilters = !!(search || status)
 
   return (
     <DashboardLayout>
@@ -135,6 +196,28 @@ export default function DashboardIndex() {
           </div>
         )}
 
+        {/* FEATURE GAP CLOSED (Section 6, fixing-time pass): search + status
+            filter — the list got real pagination in the previous pass with
+            nothing to actually find an older scan once there's more than a
+            page of them. Mirrors AdminUsers.jsx / AdminLeads.jsx's pattern.
+            Hidden entirely for a user with a single page and no scans yet,
+            same "invisible for the common case" reasoning as the pagination
+            controls below. */}
+        {(total > 0 || hasFilters) && (
+          <div className="flex gap-3 flex-wrap items-end">
+            <Input placeholder="Search by filename or name" value={searchInput}
+              onChange={e => setSearchInput(e.target.value)} className="w-64" />
+            <div className="flex flex-col gap-1">
+              <label className="text-xs font-medium text-gray-500">Status</label>
+              <select value={status} onChange={e => setStatus(e.target.value)}
+                className="rounded-md border border-gray-300 px-3 py-2 text-sm">
+                <option value="">All</option>
+                {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
+
         {loading && (
           <div className="flex justify-center py-12">
             <Spinner size="lg" />
@@ -148,13 +231,31 @@ export default function DashboardIndex() {
           </div>
         )}
 
+        {/* BUG FIX (Section 6, fixing-time pass): this used to say "No scans
+            yet — scan your first resume" unconditionally whenever the
+            current page came back empty — including a page/filter combo
+            past the actual results, which would have wrongly told someone
+            with real scan history that they had none. Not reachable today
+            (nothing currently shrinks a user's scan count or invalidates a
+            page mid-session), but became reachable the moment search/status
+            filtering was added just above, since a filtered result set can
+            legitimately be empty while unfiltered history isn't. */}
         {!loading && !loadError && scans.length === 0 && (
           <div className="text-center py-16 border border-dashed border-gray-200 rounded-xl">
-            <p className="text-gray-500 mb-4">No scans yet.</p>
-            <Link to="/"
-              className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
-              Scan your first resume →
-            </Link>
+            {hasFilters || page > 1 ? (
+              <>
+                <p className="text-gray-500 mb-4">No scans match your search.</p>
+                <Button size="sm" variant="secondary" onClick={() => setSearchParams({})}>Clear filters</Button>
+              </>
+            ) : (
+              <>
+                <p className="text-gray-500 mb-4">No scans yet.</p>
+                <Link to="/"
+                  className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+                  Scan your first resume →
+                </Link>
+              </>
+            )}
           </div>
         )}
 
@@ -200,7 +301,7 @@ export default function DashboardIndex() {
             <Button
               variant="secondary" size="sm"
               disabled={page <= 1}
-              onClick={() => setPage(p => Math.max(p - 1, 1))}
+              onClick={() => setPage(Math.max(page - 1, 1))}
             >
               ← Previous
             </Button>
@@ -208,7 +309,7 @@ export default function DashboardIndex() {
             <Button
               variant="secondary" size="sm"
               disabled={page >= totalPages}
-              onClick={() => setPage(p => Math.min(p + 1, totalPages))}
+              onClick={() => setPage(Math.min(page + 1, totalPages))}
             >
               Next →
             </Button>

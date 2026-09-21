@@ -874,12 +874,30 @@ async function downloadFile(ctx) {
 }
 
 // GET /api/scan/history?page=&limit=
+// Allowlist for the ?status= filter below — mirrors the same
+// allowlist-rather-than-validate-and-error pattern used by
+// employer-leads.controller.js's LEAD_STATUSES (an unrecognized value is
+// silently ignored rather than filtered on, since this is a narrowing
+// convenience, not a security boundary).
+const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
+
 async function getScanHistory(ctx) {
   const user = ctx.get('user')
-  const page  = parseInt(ctx.req.query('page'))  || 1
+  // Clamped to at least 1 — a page of 0 or negative previously reached
+  // Supabase's `.range()` with a negative offset untouched.
+  const page  = Math.max(parseInt(ctx.req.query('page')) || 1, 1)
   const limit = parseInt(ctx.req.query('limit')) || 10
   const from = (page - 1) * limit
   const to   = from + limit - 1
+
+  // FEATURE GAP CLOSED (Section 6, fixing-time pass): dashboard/Index.jsx
+  // got real pagination in the previous pass, but nothing to actually FIND
+  // an older scan once there's more than a page of them — no search, no
+  // status filter, even though every comparable admin list (AdminUsers,
+  // AdminLeads) already has both. Same sanitize-then-ilike / allowlisted-
+  // status pattern as those.
+  const search = String(ctx.req.query('search') || '').trim().replace(/[,()]/g, '')
+  const status = ctx.req.query('status')
 
   const supabase = getSupabase(ctx.env)
   // AUDIT FIX (Section 6): this endpoint always accepted page/limit, but
@@ -888,10 +906,19 @@ async function getScanHistory(ctx) {
   // Index.jsx) it never asked for more than page 1 anyway. `count: 'exact'`
   // adds one extra index-only count against the same filtered query, not a
   // second round trip.
-  const { data: rows, error, count } = await supabase
+  let query = supabase
     .from('scans')
     .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
     .eq('user_id', user.id)
+  // candidate_first_name is populated at scoring time for every scan (see
+  // runAtsScan), not just brain-dump/anonymous ones — searching it too
+  // means brain-dump and saved-profile scans (which have no
+  // resume_original_name at all, see Index.jsx's scanLabel()) are still
+  // findable by name instead of being permanently unsearchable.
+  if (search) query = query.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
+  if (status && SCAN_STATUSES.includes(status)) query = query.eq('status', status)
+
+  const { data: rows, error, count } = await query
     .order('created_at', { ascending: false })
     .range(from, to)
   if (error) throw error

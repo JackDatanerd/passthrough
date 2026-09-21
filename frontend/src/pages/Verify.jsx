@@ -1,13 +1,25 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import api from '../lib/api'
-import { useApi } from '../hooks/useApi'
+import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { formatDate, copyToClipboard } from '../lib/utils'
+
+// FEATURE GAP CLOSED (Section 5): the "role you're hiring for" field used
+// to always start blank, even though this page already fetches and shows
+// data.roleCategory for the exact candidate being viewed — asking a hiring
+// manager to retype what's already on the screen was pure friction.
+// Mirrors the `.replace(/_/g, ' ')` humanization already used to display
+// this same field elsewhere on this page, with title-casing since this
+// value becomes actual submitted (and editable) input text rather than a
+// CSS-`capitalize`'d label.
+function humanizeRoleCategory(cat) {
+  if (!cat) return ''
+  return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase())
+}
 
 export default function Verify() {
   const { code } = useParams()
@@ -27,14 +39,20 @@ export default function Verify() {
   const [role,        setRole       ] = useState('')
   const [email,       setEmail      ] = useState('')
   const [leadSent,    setLeadSent   ] = useState(false)
-  const { loading: leadLoading, error: leadErr, execute: executeLead } = useApi()
+  const [leadErr,     setLeadErr    ] = useState('')
+  const [leadLoading, setLeadLoading] = useState(false)
 
   const [linkCopied, setLinkCopied] = useState(false)
 
   function load() {
     setLoading(true); setNotFound(false); setLoadError(false)
     api.get(`/verify/${code}`)
-      .then(res => { setData(res.data.data); setLoading(false) })
+      .then(res => {
+        setData(res.data.data)
+        setLoading(false)
+        // Pre-fill only — never clobber something the visitor already typed.
+        setRole(prev => prev || humanizeRoleCategory(res.data.data.roleCategory))
+      })
       .catch(err => {
         setLoading(false)
         if (err.response?.status === 404) setNotFound(true)
@@ -45,20 +63,22 @@ export default function Verify() {
   useEffect(() => { load() }, [code])
 
   async function handleLead() {
-    if (!name || !company || !email) {
-      const msg = 'Name, company, and email required.'
-      await executeLead(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
-      return
-    }
+    if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
+    setLeadLoading(true); setLeadErr('')
     try {
-      await executeLead(() => api.post('/employer-leads', {
+      await api.post('/employer-leads', {
         name,
         company,
         email,
-        roleCategory: role || undefined
-      }), { fallback: 'Something went wrong.' })
+        roleCategory: role || undefined,
+        source: 'verification_page'
+      })
       setLeadSent(true)
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      setLeadErr(getErrorMessage(err, 'Something went wrong.'))
+    } finally {
+      setLeadLoading(false)
+    }
   }
 
   async function handleCopyLink() {

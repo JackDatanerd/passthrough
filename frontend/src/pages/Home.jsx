@@ -1,8 +1,12 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import ScanForm from '../components/scan/ScanForm'
 import PromoCountdown from '../components/ui/PromoCountdown'
+import Button from '../components/ui/Button'
+import Input from '../components/ui/Input'
+import api, { getErrorMessage } from '../lib/api'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 
 // tier is always a usable object — byTier() falls back internally to the
@@ -66,6 +70,59 @@ function DemoScoreCard() {
       <p className="text-xs text-gray-400 mt-5 pt-5 border-t border-gray-100">
         Illustrative example — your actual score and breakdown appear after a real scan.
       </p>
+    </div>
+  )
+}
+
+// FEATURE GAP CLOSED (Section 5 — Employer leads): the only place a hiring
+// manager could ever actually submit a lead was buried at the bottom of an
+// individual candidate's Verify.jsx page — reachable only if they already
+// had a specific verification link. This homepage section is the actual
+// top-of-funnel pitch ("For employers & hiring managers", linked from the
+// Navbar and Footer as "For employers"), and until now it was pure copy
+// with no way to act on it at all. Mirrors Verify.jsx's lead form (same
+// fields, same endpoint) — source is 'homepage' so admin can tell the two
+// entry points apart in the leads list.
+function EmployerLeadForm() {
+  const [name,    setName   ] = useState('')
+  const [company, setCompany] = useState('')
+  const [email,   setEmail  ] = useState('')
+  const [sent,    setSent   ] = useState(false)
+  const [err,     setErr    ] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  async function handleSubmit() {
+    if (!name || !company || !email) return setErr('Name, company, and email required.')
+    setLoading(true); setErr('')
+    try {
+      await api.post('/employer-leads', { name, company, email, source: 'homepage' })
+      setSent(true)
+    } catch (e) {
+      setErr(getErrorMessage(e, 'Something went wrong.'))
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  if (sent) {
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8 text-center">
+        <p className="text-sm text-green-700 font-medium">You're on the list — we'll reach out when we have candidates matching your needs.</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
+      <h3 className="font-semibold text-gray-900 mb-1">Get early access to Verified candidates</h3>
+      <p className="text-sm text-gray-500 mb-4">We'll reach out when we have candidates matching your needs.</p>
+      <div className="flex flex-col gap-3">
+        <Input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
+        <Input placeholder="Company" value={company} onChange={e => setCompany(e.target.value)} />
+        <Input type="email" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
+        {err && <p className="text-xs text-red-600">{err}</p>}
+        <Button onClick={handleSubmit} loading={loading}>Get early access</Button>
+      </div>
     </div>
   )
 }
@@ -258,6 +315,9 @@ export default function Home() {
                   candidate's verification link.
                 </p>
               </div>
+            </div>
+            <div className="mt-10 max-w-md mx-auto lg:mx-0 lg:ml-auto">
+              <EmployerLeadForm />
             </div>
           </div>
         </section>

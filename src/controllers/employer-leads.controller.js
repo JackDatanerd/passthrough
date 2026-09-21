@@ -30,11 +30,21 @@ function sanitizeSearchTerm(term) {
 // validation and landing in the DB as blank-looking junk. Email is also
 // lowercased so the new uniqueness constraint below (and any future manual
 // lookup by email) isn't defeated by casing differences.
+// FEATURE GAP CLOSED (Section 5): `source` used to be hardcoded, because
+// the public form on Verify.jsx's individual candidate pages was the only
+// entry point that existed. Now the homepage's "For employers" section
+// (Home.jsx) has its own lead-capture form too, so this needs to tell the
+// two apart in the admin list — whitelisted rather than accepting any
+// client string, since this only exists for internal reporting and isn't
+// something a submitter should be able to set to anything.
+const LEAD_SOURCES = ['verification_page', 'homepage']
+
 const schema = z.object({
   name:         z.string().trim().min(1).max(100),
   company:      z.string().trim().min(1).max(200),
   email:        z.string().trim().toLowerCase().email(),
-  roleCategory: z.string().trim().max(100).optional()
+  roleCategory: z.string().trim().max(100).optional(),
+  source:       z.enum(LEAD_SOURCES).optional()
 })
 
 // POST /api/employer-leads — public, rate-limited.
@@ -48,7 +58,7 @@ async function createLead(c) {
     company:       data.company,
     email:         data.email,
     role_category: data.roleCategory || null,
-    source:        'verification_page'
+    source:        data.source || 'verification_page'
   }
 
   const { error: insertErr } = await supabase.from('employer_leads').insert(row)
@@ -117,17 +127,36 @@ async function adminListLeads(c) {
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): the missing lifecycle-
 // tracking half of the leads gap. Lets an admin mark a lead CONTACTED /
 // CONVERTED / ARCHIVED so the list can actually be worked, not just viewed.
+//
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): also accepts an
+// optional free-text `notes` field (migration 0020) — status alone can't
+// record WHY a lead is CONTACTED or ARCHIVED ("left voicemail", "wrong
+// industry, not a fit"), and every sibling admin list that tracks lifecycle
+// state can carry more context than a bare enum. Either field can be sent
+// alone (AdminLeads.jsx's status dropdown and notes field save
+// independently) or both together; at least one is required.
+const updateSchema = z.object({
+  status: z.enum(LEAD_STATUSES).optional(),
+  notes:  z.string().trim().max(2000).optional()
+}).refine(d => d.status !== undefined || d.notes !== undefined, {
+  message: 'status or notes required.'
+})
+
 async function adminUpdateLeadStatus(c) {
   const id = c.req.param('id')
   if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
 
   const body = await c.req.json()
-  const { status } = z.object({ status: z.enum(LEAD_STATUSES) }).parse(body)
+  const { status, notes } = updateSchema.parse(body)
+
+  const patch = { updated_at: new Date().toISOString() }
+  if (status !== undefined) patch.status = status
+  if (notes  !== undefined) patch.notes  = notes || null
 
   const supabase = getSupabase(c.env)
   const { data, error } = await supabase
     .from('employer_leads')
-    .update({ status, updated_at: new Date().toISOString() })
+    .update(patch)
     .eq('id', id)
     .select()
     .maybeSingle()

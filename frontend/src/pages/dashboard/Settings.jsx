@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
-import api from '../../lib/api'
-import { useApi } from '../../hooks/useApi'
+import { useNavigate, Link } from 'react-router-dom'
+import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
@@ -17,27 +16,34 @@ export default function Settings() {
   // AUDIT FIX (Section 6): Account previously showed name/email as static
   // text with no way to ever change either — no endpoint existed for it.
   const [name,        setName       ] = useState('')
+  const [nameLoading,  setNameLoading ] = useState(false)
+  const [nameError,    setNameError   ] = useState('')
   const [nameSuccess,  setNameSuccess ] = useState(false)
-  const { loading: nameLoading, error: nameError, execute: executeName } = useApi()
 
   const [newEmail,      setNewEmail     ] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
+  const [emailLoading,  setEmailLoading ] = useState(false)
+  const [emailError,    setEmailError   ] = useState('')
   const [emailSuccess,  setEmailSuccess ] = useState(false)
-  const { loading: emailLoading, error: emailError, execute: executeEmail } = useApi()
 
   // AUDIT FIX: the "Email verified: No" status here was inert text with no
   // way to act on it — the actual resend-verification button only existed
   // on dashboard/Index.jsx. Same request/refresh pattern as that one.
+  const [resending, setResending] = useState(false)
   const [resentOk,  setResentOk ] = useState(false)
-  const { loading: resending, error: resendError, execute: executeResend, reset: resetResend } = useApi()
+  const [resendError, setResendError] = useState('')
 
   async function handleResendVerification() {
+    setResending(true); setResendError('')
     try {
-      await executeResend(() => api.post('/auth/resend-verification'),
-        { fallback: 'Could not resend verification email.' })
+      await api.post('/auth/resend-verification')
       setResentOk(true)
       refreshUser()
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      setResendError(err.response?.data?.message || 'Could not resend verification email.')
+    } finally {
+      setResending(false)
+    }
   }
 
   useEffect(() => {
@@ -45,30 +51,24 @@ export default function Settings() {
   }, [user?.name])
 
   async function handleUpdateName() {
-    if (!name.trim()) {
-      await executeName(() => Promise.reject(new Error('Name is required.')),
-        { fallback: 'Name is required.' }).catch(() => {})
-      return
-    }
-    setNameSuccess(false)
+    if (!name.trim()) return setNameError('Name is required.')
+    setNameLoading(true); setNameError(''); setNameSuccess(false)
     try {
-      await executeName(() => api.patch('/auth/name', { name: name.trim() }),
-        { fallback: 'Failed to update name.' })
+      await api.patch('/auth/name', { name: name.trim() })
       await refreshUser()
       setNameSuccess(true)
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      setNameError(getErrorMessage(err, 'Failed to update name.'))
+    } finally {
+      setNameLoading(false)
+    }
   }
 
   async function handleUpdateEmail() {
-    if (!newEmail || !emailPassword) {
-      await executeEmail(() => Promise.reject(new Error('New email and password required.')),
-        { fallback: 'New email and password required.' }).catch(() => {})
-      return
-    }
-    setEmailSuccess(false)
+    if (!newEmail || !emailPassword) return setEmailError('New email and password required.')
+    setEmailLoading(true); setEmailError(''); setEmailSuccess(false)
     try {
-      await executeEmail(() => api.patch('/auth/email', { newEmail, password: emailPassword }),
-        { fallback: 'Failed to update email.' })
+      await api.patch('/auth/email', { newEmail, password: emailPassword })
       await refreshUser()
       setEmailSuccess(true)
       setNewEmail(''); setEmailPassword('')
@@ -80,16 +80,21 @@ export default function Settings() {
       // clicked "Resend" earlier for their OLD address would keep seeing
       // the stale "Sent!" badge here instead of a live resend button, for
       // an address that never actually had a resend click of its own.
-      setResentOk(false); resetResend()
-    } catch (_) { /* error already captured by useApi */ }
+      setResentOk(false); setResendError('')
+    } catch (err) {
+      setEmailError(getErrorMessage(err, 'Failed to update email.'))
+    } finally {
+      setEmailLoading(false)
+    }
   }
 
   // Change password
   const [current,  setCurrent ] = useState('')
   const [newPass,  setNewPass ] = useState('')
   const [confirm,  setConfirm ] = useState('')
+  const [pwLoading, setPwLoading] = useState(false)
+  const [pwError,   setPwError  ] = useState('')
   const [pwSuccess, setPwSuccess] = useState(false)
-  const { loading: pwLoading, error: pwError, execute: executePw } = useApi()
 
   // PHASE 4 — saved profile management. Closes the consent loop: saving a
   // profile (ScanResult.jsx / SaveProfilePrompt) is an explicit opt-in, so
@@ -98,13 +103,23 @@ export default function Settings() {
   const [profileLoading, setProfileLoading] = useState(true)
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
   const [savedAt,         setSavedAt        ] = useState(null)
-  const { loading: removing, error: removeError, execute: executeRemove } = useApi()
+  // FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used
+  // to be a bare save-date with no way to see what's actually in it or
+  // where it came from — the only "fix" for a bad save was delete-and-
+  // rescan-from-scratch. getProfile now also returns sourceScanId (so this
+  // page can link back to the original scan) and a small summary.
+  const [sourceScanId,   setSourceScanId   ] = useState(null)
+  const [profileSummary, setProfileSummary ] = useState(null)
+  const [removing,        setRemoving       ] = useState(false)
+  const [removeError,     setRemoveError    ] = useState('')
 
   useEffect(() => {
     api.get('/profile')
       .then(res => {
         setHasSavedProfile(!!res.data.data.hasSavedProfile)
         setSavedAt(res.data.data.savedAt)
+        setSourceScanId(res.data.data.sourceScanId)
+        setProfileSummary(res.data.data.summary)
       })
       .catch(() => {})
       .finally(() => setProfileLoading(false))
@@ -114,70 +129,68 @@ export default function Settings() {
   }, [])
 
   async function handleRemoveProfile() {
+    setRemoving(true); setRemoveError('')
     try {
-      await executeRemove(() => api.delete('/profile'), { fallback: 'Failed to remove saved profile.' })
+      await api.delete('/profile')
       setHasSavedProfile(false)
       setSavedAt(null)
-    } catch (_) { /* error already captured by useApi */ }
+      setSourceScanId(null)
+      setProfileSummary(null)
+    } catch (err) {
+      setRemoveError(getErrorMessage(err, 'Failed to remove saved profile.'))
+    } finally {
+      setRemoving(false)
+    }
   }
 
   // Delete account
   const [deleteOpen,    setDeleteOpen   ] = useState(false)
   const [deletePass,    setDeletePass   ] = useState('')
-  const { loading: deleteLoading, error: deleteError, execute: executeDelete, reset: resetDelete } = useApi()
+  const [deleteLoading, setDeleteLoading] = useState(false)
+  const [deleteError,   setDeleteError  ] = useState('')
 
   async function handleChangePassword() {
-    if (!current || !newPass) {
-      await executePw(() => Promise.reject(new Error('All fields required.')),
-        { fallback: 'All fields required.' }).catch(() => {})
-      return
-    }
-    if (newPass.length < 8) {
-      await executePw(() => Promise.reject(new Error('New password must be at least 8 characters.')),
-        { fallback: 'New password must be at least 8 characters.' }).catch(() => {})
-      return
-    }
-    if (newPass !== confirm) {
-      await executePw(() => Promise.reject(new Error('Passwords do not match.')),
-        { fallback: 'Passwords do not match.' }).catch(() => {})
-      return
-    }
-    setPwSuccess(false)
+    if (!current || !newPass) return setPwError('All fields required.')
+    if (newPass.length < 8) return setPwError('New password must be at least 8 characters.')
+    if (newPass !== confirm) return setPwError('Passwords do not match.')
+    setPwLoading(true); setPwError(''); setPwSuccess(false)
     try {
-      const data = await executePw(() => api.patch('/auth/password', { currentPassword: current, newPassword: newPass }),
-        { fallback: 'Failed to update password.' })
+      const res = await api.patch('/auth/password', { currentPassword: current, newPassword: newPass })
       // BUG FIX: changePassword invalidates every existing token (including
       // this tab's) and now returns a freshly-signed one — store it so this
       // session survives, matching what the success message already says
       // ("Other sessions signed out"). Without this, the very next request
       // anywhere in the app 401'd and silently bounced to /login, right
       // after this screen told the user everything was fine.
-      const token = data?.data?.token
+      const token = res.data?.data?.token
       if (token) localStorage.setItem('passthrough_token', token)
       setPwSuccess(true)
       setCurrent(''); setNewPass(''); setConfirm('')
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      setPwError(getErrorMessage(err, 'Failed to update password.'))
+    } finally {
+      setPwLoading(false)
+    }
   }
 
   // Closing the dialog must also clear what was typed into it — the password
   // and any error used to linger in state and reappear on the next open.
   function closeDelete() {
     if (deleteLoading) return
-    setDeleteOpen(false); setDeletePass(''); resetDelete()
+    setDeleteOpen(false); setDeletePass(''); setDeleteError('')
   }
 
   async function handleDeleteAccount() {
-    if (!deletePass) {
-      await executeDelete(() => Promise.reject(new Error('Password required.')),
-        { fallback: 'Password required.' }).catch(() => {})
-      return
-    }
+    if (!deletePass) return setDeleteError('Password required.')
+    setDeleteLoading(true); setDeleteError('')
     try {
-      await executeDelete(() => api.delete('/auth/account', { data: { password: deletePass } }),
-        { fallback: 'Failed to delete account.' })
+      await api.delete('/auth/account', { data: { password: deletePass } })
       logout()
       navigate('/')
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      setDeleteError(getErrorMessage(err, 'Failed to delete account.'))
+      setDeleteLoading(false)
+    }
   }
 
   return (
@@ -266,9 +279,20 @@ export default function Settings() {
             <p className="text-sm text-gray-400">Loading…</p>
           ) : hasSavedProfile ? (
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <p className="text-sm text-gray-600">
-                Saved {savedAt ? formatDate(savedAt) : ''}
-              </p>
+              <div>
+                <p className="text-sm text-gray-600">
+                  Saved {savedAt ? formatDate(savedAt) : ''}
+                  {profileSummary?.name && <> — <span className="font-medium">{profileSummary.name}</span></>}
+                  {profileSummary?.roleCategory && (
+                    <span className="text-gray-400"> ({profileSummary.roleCategory.replace(/_/g, ' ').toLowerCase()})</span>
+                  )}
+                </p>
+                {sourceScanId && (
+                  <Link to={`/scan/${sourceScanId}`} className="text-xs text-blue-600 hover:underline">
+                    View source scan
+                  </Link>
+                )}
+              </div>
               <Button variant="secondary" onClick={handleRemoveProfile} loading={removing} size="sm">
                 Remove saved profile
               </Button>

@@ -515,75 +515,49 @@ async function deleteAccount(c) {
   }
   await recordLoginSuccess(c.env, sessionUser.email)
 
-  // AUDIT FIX (Section 6, traced from profile.controller.js): this soft
-  // delete anonymized name/email but left saved_profile completely
-  // untouched — the full structured resume (work history, contact details,
-  // etc.) that profile.controller.js manages kept sitting in the DB
-  // indefinitely after "deletion", just no longer reachable through the API
-  // since auth.js's deletedAt check blocks it. "Delete account" should mean
-  // that data is actually gone, not merely unreachable.
-  // AUDIT FIX (Section 10, feature gap — builds on the saved_profile fix
-  // above): that fix closed the saved_profile half of this gap but left the
-  // other half open — every `scans` row for this user (resume text, job
-  // description text, candidate's real first name, cover letter text, the
-  // actual resume/generated PDF/DOCX files sitting in R2) stayed completely
-  // untouched, still linked by user_id, forever. "Delete account" should
-  // mean that data is actually gone, same reasoning as above, just applied
-  // to the other place this user's content lives.
+  // BUG FIX (Section 6, fixing-time pass): the scan-content scrub and the
+  // user soft-delete used to run as two separate best-effort UPDATEs whose
+  // failures were only console.error'd, never surfaced — this fell through
+  // to "Account deleted." regardless of whether the scrub actually
+  // succeeded. Since deleted_at blocks all future login, that failure mode
+  // was unrecoverable: the account was locked, and the user was told their
+  // data was gone when it silently wasn't, directly contradicting the
+  // Settings.jsx confirmation copy ("...all associated data. This cannot be
+  // undone."). scrub_account_data (migration 0022) now runs both updates as
+  // one atomic DB transaction; a failure here throws, surfaces as a real
+  // error to the caller, and leaves the account untouched so the user can
+  // retry instead of being locked out of a half-done deletion.
   //
-  // What's scrubbed vs. kept, deliberately: all actual document/personal
-  // content is cleared and the R2 files deleted. The row itself, its
-  // scores, and fix_purchased/fix_tier are KEPT — payments.scan_id still
-  // references these rows, and financial/audit records need to survive
-  // account deletion even when the personal content behind them shouldn't.
-  // verification_code/url are cleared too: leaving them live would keep a
-  // now-content-less (or worse, broken, once the R2 files are gone) public
-  // verify page reachable for a scan whose owner asked for their data to be
-  // deleted.
+  // Storage keys are read BEFORE the scrub runs, since the scrub is what
+  // nulls the columns that hold them — this is a plain read and, if it
+  // fails, aborts loudly (throw) rather than silently skipping R2 cleanup
+  // the way the two old error-swallowing branches used to.
   const { data: scans, error: scansErr } = await supabase
     .from('scans')
     .select('id, resume_path, resume_ats_path, resume_pdf_path')
     .eq('user_id', user.id)
-  if (scansErr) console.error('deleteAccount scan lookup:', scansErr.message)
+  if (scansErr) throw scansErr
 
+  const { error: scrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
+  if (scrubErr) throw scrubErr
+
+  // R2 cleanup happens only after the DB side has durably committed.
+  // Object storage isn't part of that (or any) Postgres transaction, so
+  // this half necessarily stays best-effort — but failures are now logged
+  // loudly instead of swallowed in an empty catch, so an orphaned file is
+  // at least visible to us instead of vanishing with zero trace.
   if (scans?.length > 0) {
     for (const s of scans) {
       for (const key of [s.resume_path, s.resume_ats_path, s.resume_pdf_path]) {
-        if (key) await c.env.RESUMES_BUCKET.delete(key).catch(() => {})
+        if (!key) continue
+        try {
+          await c.env.RESUMES_BUCKET.delete(key)
+        } catch (e) {
+          console.error(`deleteAccount: failed to delete R2 object ${key} for user ${user.id}:`, e.message)
+        }
       }
     }
-    const scanIds = scans.map(s => s.id)
-    const { error: scrubErr } = await supabase.from('scans').update({
-      resume_path:            null,
-      resume_ats_path:        null,
-      resume_pdf_path:        null,
-      resume_original_name:   null,
-      resume_hash:            null,
-      job_description_text:   null,
-      job_description_url:    null,
-      candidate_first_name:   null,
-      cover_letter_text:      null,
-      raw_brain_dump_text:    null,
-      original_resume_data:   null,
-      rewritten_resume_data:  null,
-      quantification_prompts: null,
-      full_ats_report:        null,
-      verification_code:      null,
-      verification_url:       null,
-      verify_expose_docx:     false,
-      verify_expose_pdf:      false
-    }).in('id', scanIds)
-    if (scrubErr) console.error('deleteAccount scan scrub:', scrubErr.message)
   }
-
-  await supabase.from('users').update({
-    deleted_at:    new Date().toISOString(),
-    email:         `deleted-${user.id}@passthrough.dev`,
-    name:          'Deleted User',
-    password_hash: 'deleted',
-    saved_profile:  null,
-    token_version:  user.tokenVersion + 1
-  }).eq('id', user.id)
 
   return c.json({ success: true, message: 'Account deleted.' })
 }
