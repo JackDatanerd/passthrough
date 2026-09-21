@@ -389,6 +389,31 @@ async function adminUpdateReferralCode(ctx) {
 // than leaving a remainder outstanding — same acknowledged simplification
 // as before, just now scoped per-cycle instead of across the partner's
 // entire history.
+//
+// AUDIT FIX (bug — concurrent double-record): the ledger settlement below
+// used to be `.update({payout_id}).in('id', ledgerIds)` with NO guard on the
+// row's CURRENT payout_id. ledgerIds came from a SELECT taken moments
+// earlier, so two overlapping calls for the same partner (a double-click
+// before the UI's own `saving` guard kicks in, or two admin tabs/sessions)
+// would both read the same unpaid rows and both then unconditionally
+// overwrite payout_id on them — the second call's UPDATE silently STEALS
+// those ledger rows from the first payout, corrupting which payout actually
+// settled what, not just creating a cosmetic duplicate. Every other
+// money-moving write in this codebase (payments.controller.js's verify/
+// webhook flip, reconcile.service.js's sweep claim) uses an atomic
+// UPDATE...WHERE-still-unclaimed...RETURNING specifically to make this
+// structurally impossible; this was the one write that didn't. Supabase-js
+// has no cross-table transaction here, so a payout row is still inserted
+// optimistically (same as before — an admin recording a payout that already
+// happened in real life shouldn't get silently rolled back), but the
+// settlement itself is now the same atomic claim pattern: `.is('payout_id',
+// null)` in the WHERE clause, `.select()` to see exactly which rows this
+// call actually won. If a concurrent payout claimed some of them first
+// (rare, but no longer silently wrong), and the amount wasn't explicitly
+// typed by the admin, the payout's amount_cents is corrected down to what
+// it actually settled — so the books never show a payout for commissions
+// it didn't really claim — and the owner is alerted, since that only
+// happens when two payout-recording calls genuinely overlapped.
 
 const recordPayoutSchema = z.object({
   amountCents:  z.number().int().positive().optional(),
@@ -436,21 +461,59 @@ async function adminRecordPayout(ctx) {
   }).select('*').single()
   if (error) throw error
 
+  let payoutRow = payout
+  let racedWithConcurrentPayout = false
+
   if (unpaidLedger.length > 0) {
     const ledgerIds = unpaidLedger.map(l => l.id)
-    const { error: settleErr } = await supabase.from('commission_ledger')
-      .update({ payout_id: payout.id }).in('id', ledgerIds)
-    if (settleErr) console.error('adminRecordPayout ledger settlement:', settleErr.message)
+    // Atomic claim: only settle rows that are STILL unpaid at the moment of
+    // this write, not just at the moment of the read above. `.select()`
+    // reports exactly which ones this call won.
+    const { data: claimed, error: settleErr } = await supabase.from('commission_ledger')
+      .update({ payout_id: payout.id })
+      .in('id', ledgerIds)
+      .is('payout_id', null)
+      .select('id, commission_amount_cents')
+    if (settleErr) {
+      console.error('adminRecordPayout ledger settlement:', settleErr.message)
+    } else if ((claimed?.length || 0) < ledgerIds.length) {
+      // A concurrent adminRecordPayout call for this same partner claimed
+      // some (or all) of these rows first. This payout row already exists
+      // and genuinely happened (admin sent real money) — it isn't rolled
+      // back — but if its amount wasn't explicitly typed in, it must be
+      // corrected to reflect only what THIS payout actually settled, or the
+      // books would show commissions counted under two different payouts.
+      racedWithConcurrentPayout = true
+      const actuallySettledCents = (claimed || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
+      if (body.amountCents == null) {
+        const { data: corrected, error: correctErr } = await supabase.from('payouts')
+          .update({ amount_cents: actuallySettledCents }).eq('id', payout.id).select('*').maybeSingle()
+        if (correctErr) console.error('adminRecordPayout amount correction:', correctErr.message)
+        else if (corrected) payoutRow = corrected
+      }
+      try {
+        await emailService.sendOwnerAlert(ctx.env,
+          'Payout recording raced a concurrent payout for the same partner',
+          `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\n` +
+          `ledger rows requested: ${ledgerIds.length}\nledger rows this payout actually claimed: ${claimed?.length || 0}\n` +
+          `recorded amount: ${payoutRow.amount_cents} cents\n\n` +
+          `Another payout for this partner was recorded at almost the same moment (double-click, or two admin sessions). ` +
+          `This payout's amount was ${body.amountCents == null ? 'automatically corrected to' : 'left as manually entered, despite'} ` +
+          `only ${claimed?.length || 0} of ${ledgerIds.length} conversion(s) actually being available to settle here — ` +
+          `review both payouts for this partner before their next payout run.`
+        )
+      } catch (_) {}
+    }
   }
 
   // The payout already happened in real life (admin sent it before
   // clicking this) — an email failure here must not roll back or hide the
   // recorded payout, only the notification.
   const emailed = await emailService.sendPayoutSent(
-    ctx.env, supabase, partner.email, partner.name, amountCents, body.currency
+    ctx.env, supabase, partner.email, partner.name, payoutRow.amount_cents, body.currency
   ).catch(() => false)
 
-  return ctx.json({ success: true, data: payoutRowToCamel(payout), emailed })
+  return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout })
 }
 
 // ── Public (token-gated): partner views their own current payout details ───

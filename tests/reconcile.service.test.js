@@ -5,12 +5,21 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 const NOW = Date.parse('2026-09-20T12:00:00Z')
 const minsAgo = m => new Date(NOW - m * 60_000).toISOString()
 
-function setup({ payments = [], scans = [], claimRows = [{ id: 'x' }], claimError = null, queueError = null, payErr = null } = {}) {
-  const state = { queue: [], alerts: [], claims: [] }
+function setup({
+  payments = [], scans = [], claimRows = [{ id: 'x' }], claimError = null, queueError = null, payErr = null,
+  // Referral-attribution fixtures — only ever queried by recordConversion()
+  // when a payment actually has a referral_code_id (see referral.service.js:
+  // no-referral payments short-circuit before touching any of these tables).
+  referralCode = { id: 'rc1', partner_id: 'p1' }, partner = { commission_rate: 0.2 }, ledgerError = null,
+} = {}) {
+  const state = { queue: [], alerts: [], claims: [], ledger: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'payments') return { data: payments, error: payErr }
     if (q.table === 'scans' && q.op === 'select') return { data: scans, error: null }
     if (q.table === 'scans' && q.op === 'update') { state.claims.push({ patch: q.patch, filters: q.filters }); return { data: claimRows, error: claimError } }
+    if (q.table === 'referral_codes') return { data: referralCode, error: null }
+    if (q.table === 'partners') return { data: partner, error: null }
+    if (q.table === 'commission_ledger') { state.ledger.push(q.values); return { error: ledgerError } }
     return undefined
   })
   const env = { FIX_QUEUE: { send: async m => { if (queueError) throw queueError; state.queue.push(m) } } }
@@ -49,12 +58,64 @@ describe('sweepOrphanedPayments', () => {
     t = setup({ payments: [pay()], scans: [scan({ fix_purchased: false })] })
     const r = await t.sweep()
     expect(r.orphans).toBe(1)
-    expect(r.reenqueued).toEqual([{ reference: 'ref1', scanId: 's1', kind: 'never-fulfilled' }])
+    // no referral_code_id on this payment -> recordConversion is a same-shape no-op
+    expect(r.reenqueued).toEqual([{ reference: 'ref1', scanId: 's1', kind: 'never-fulfilled',
+      conversion: { ok: true, recorded: false, reason: 'no-referral' } }])
     expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
     const claim = t.state.claims[0]
     expect(claim.patch).toEqual({ fix_purchased: true, fix_tier: 'FIX', status: 'FIX_PURCHASED' })
     // the atomic guard: only claim if it is STILL unpurchased
     expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'fix_purchased' && f[2] === false)).toBe(true)
+    // a no-referral payment never touches the commission ledger at all
+    expect(t.state.ledger).toHaveLength(0)
+  })
+
+  // AUDIT FIX (feature gap): previously this sweep only re-ran the
+  // scan-update + FIX_QUEUE.send half of fulfilment — a referred sale that
+  // never even reached recordConversion() (e.g. an exception thrown before
+  // it, an isolate killed early) would have its fix delivered here with the
+  // partner's commission silently never recorded. These lock in the fix:
+  // recordConversion is now attempted for every recovered orphan, exactly
+  // like the admin reconcilePayment endpoint already does.
+  it('retries the commission-ledger write for a referred payment recovered by the sweep', async () => {
+    t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })] })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].conversion).toEqual({ ok: true, recorded: true })
+    expect(t.state.ledger).toHaveLength(1)
+    expect(t.state.ledger[0]).toMatchObject({
+      payment_id: 'p1', partner_id: 'p1', referral_code_id: 'rc1',
+      gross_amount_cents: 2900, commission_amount_cents: 580,   // 20% of 2900
+    })
+  })
+
+  it('also retries the commission-ledger write for a job-lost (not just never-fulfilled) recovery', async () => {
+    t = setup({
+      payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })],
+      scans: [scan({ fix_purchased: true, status: 'FIX_PURCHASED', updated_at: minsAgo(30) })],
+    })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].kind).toBe('job-lost')
+    expect(r.reenqueued[0].conversion.recorded).toBe(true)
+    expect(t.state.ledger).toHaveLength(1)
+  })
+
+  it('is idempotent: re-recovering an already-recorded conversion is a harmless no-op', async () => {
+    t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
+      ledgerError: { code: '23505', message: 'duplicate key' } })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].conversion).toEqual({ ok: true, recorded: false, reason: 'duplicate' })
+  })
+
+  it('surfaces a failed commission write in both the sweep summary and a dedicated owner alert, without blocking delivery', async () => {
+    t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
+      ledgerError: { code: '08006', message: 'connection reset' } })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].conversion.ok).toBe(false)   // delivery still succeeded — see t.state.queue below
+    expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
+    // one alert from recordConversion's own notifyConversionFailure, one from the sweep's own summary
+    expect(t.state.alerts.some(a => /commission/i.test(a.subject))).toBe(true)
+    const summary = t.state.alerts.find(a => /payment sweep/i.test(a.subject))
+    expect(summary.message).toContain('commission NOT recorded')
   })
 
   it('a BADGE payment re-enqueues generateBadge', async () => {

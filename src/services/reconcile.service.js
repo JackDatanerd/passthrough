@@ -22,11 +22,33 @@
 // RETURNING id). If a concurrent path fixed it first, zero rows come back and
 // nothing is enqueued, so this cannot double-fulfil. Capped per run so a
 // systemic fault can't flood the queue.
-
+//
+// AUDIT FIX (feature gap): this sweep re-ran the scan-update + FIX_QUEUE.send
+// half of fulfilment, but never the referralService.recordConversion() half.
+// Both payments.controller.js's verifyPayment and webhooks.controller.js's
+// handlePaystack call recordConversion BEFORE the scans.update/queue.send —
+// so a payment that never got far enough to reach fulfilment at all (an
+// exception thrown earlier in the same async block, an isolate killed before
+// recordConversion was even invoked) lands here as a "never-fulfilled"
+// orphan having never had recordConversion attempted for it even once. The
+// admin-triggered POST /:reference/reconcile already retries recordConversion
+// for exactly this reason (see partners' commission-ledger comment there) —
+// this automatic sweep was the one recovery path that didn't. Net effect: a
+// referred sale could get its fix delivered (customer made whole) while the
+// partner's commission silently never got recorded and nobody was ever told,
+// since the sweep's own alert only covers reenqueued/failed re-delivery, not
+// missing commissions. Fixed by attempting recordConversion for every
+// claimed orphan, same as reconcilePayment does — it's a no-op for a
+// no-referral payment (recorded: false, reason: 'no-referral') and is
+// idempotent for one that already has a ledger row (commission_ledger.
+// payment_id is unique — see migration 0012), so re-attempting it here for
+// BOTH kinds (not just 'never-fulfilled') is always safe.
 const ORPHAN_MIN_AGE_MS   = 10 * 60 * 1000
 const STUCK_PURCHASED_MS  = 15 * 60 * 1000
 const LOOKBACK_MS         = 7 * 24 * 60 * 60 * 1000
 const MAX_PER_RUN         = 10
+
+const referralService = require('./referral.service')
 
 function generatorFor(fixTier) {
   return fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
@@ -37,7 +59,9 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
 
   const { data: payments, error: payErr } = await supabase
     .from('payments')
-    .select('id, paystack_ref, scan_id, fix_tier, created_at')
+    // referral_code_id + amount_cents added for recordConversion() below —
+    // everything else here was already selected.
+    .select('id, paystack_ref, scan_id, fix_tier, created_at, referral_code_id, amount_cents')
     .eq('status', 'SUCCESS')
     .gt('created_at', new Date(now - LOOKBACK_MS).toISOString())
     .lt('created_at', new Date(now - ORPHAN_MIN_AGE_MS).toISOString())
@@ -78,7 +102,15 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
       if (!claimed || claimed.length === 0) continue   // a live path got there first — nothing to do
 
       await env.FIX_QUEUE.send({ type: generatorFor(fixTier), scanId: scan.id })
-      result.reenqueued.push({ reference: payment.paystack_ref, scanId: scan.id, kind })
+
+      // Same attribution recording the live fulfilment paths do, retried
+      // here for the same reason reconcilePayment retries it — see the
+      // AUDIT FIX comment above. Never throws; `env` is passed so a failure
+      // pages the owner exactly like a live-path failure would
+      // (notifyConversionFailure), independently of this function's own
+      // reenqueued/failed alert below.
+      const conversion = await referralService.recordConversion(supabase, payment, env)
+      result.reenqueued.push({ reference: payment.paystack_ref, scanId: scan.id, kind, conversion })
     } catch (err) {
       result.failed.push({ reference: payment.paystack_ref, scanId: scan.id, kind, error: err.message })
     }
@@ -88,7 +120,13 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
     try {
       const emailService = require('./email.service')
       const lines = [
-        ...result.reenqueued.map(r => `RECOVERED  ${r.reference}  scan ${r.scanId}  (${r.kind})`),
+        // A separate, dedicated owner alert already fires from
+        // recordConversion() itself when `conversion.ok` is false (see the
+        // AUDIT FIX comment above) — this line is just so the commission
+        // outcome is visible in THIS summary too, next to the delivery
+        // outcome for the same payment, rather than only in a second email.
+        ...result.reenqueued.map(r => `RECOVERED  ${r.reference}  scan ${r.scanId}  (${r.kind})` +
+          (r.conversion && !r.conversion.ok ? `  [commission NOT recorded — see separate alert]` : '')),
         ...result.failed.map(r => `FAILED     ${r.reference}  scan ${r.scanId}  (${r.kind})  ${r.error}`),
       ]
       await emailService.sendOwnerAlert(env,
