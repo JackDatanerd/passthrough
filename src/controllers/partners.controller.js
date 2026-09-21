@@ -239,7 +239,21 @@ async function adminResendPayoutLink(ctx) {
 
   const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
   const sent = await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl)
-  return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.' })
+  // AUDIT FIX (feature gap): payout_details_token is deliberately stripped
+  // out of partnerRowToCamel everywhere (see mappers.js) so the raw token
+  // never round-trips through a general partner-read response — that's
+  // still the right default. But that left email as the ONLY delivery
+  // channel with zero admin-facing fallback: if Resend bounces, lands in
+  // spam, or the address on file is stale, the admin had no way to get the
+  // partner their link short of a raw DB query. This route is a narrower,
+  // deliberate exception to that rule: it's admin-only (adminOnly
+  // middleware), the requesting admin explicitly asked to (re)send THIS
+  // partner's link, and that same admin session can already read this
+  // partner's actual bank/mobile-money payout_details via adminGetPartner
+  // — strictly more sensitive than a rotatable link token. Returning it
+  // here doesn't expand what the admin can see, just gives them a copyable
+  // fallback for the one thing that's otherwise single-channel.
+  return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.', payoutUrl })
 }
 
 // ── Admin: ROTATE a partner's payout-details link ───────────────────────────
@@ -267,8 +281,13 @@ async function adminRegeneratePayoutLink(ctx) {
   const emailed = await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, partner.email, partner.name, payoutUrl)
     .catch(() => false)
 
+  // AUDIT FIX (feature gap): same admin-facing fallback as adminResendPayoutLink
+  // above, and if anything a stronger case here — this is the moment the
+  // token is freshly minted, so there's no "existing long-lived secret"
+  // concern, only a one-time echo of what this request itself just wrote.
   return ctx.json({ success: true, emailed,
-    message: emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed to send.' })
+    message: emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed to send.',
+    payoutUrl })
 }
 
 // ── Admin: create a referral code for a partner ─────────────────────────────

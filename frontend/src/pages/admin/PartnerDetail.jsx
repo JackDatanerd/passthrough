@@ -40,6 +40,22 @@ function siteOrigin() {
   return import.meta.env.VITE_PUBLIC_SITE_URL || window.location.origin
 }
 
+// AUDIT FIX (feature gap): expiration is fully enforced server-side
+// (referral.service.js's isCodeUsable checks expires_at) and both the
+// create and update schemas already accept expiresAt, but nothing in this
+// admin UI ever set it — there was no way to create a time-limited code
+// without a raw API call. <input type="date"> only gives a YYYY-MM-DD
+// string; the API requires a full ISO datetime (z.string().datetime()), so
+// treat the picked date as the LAST moment the code is usable — end of
+// that day, UTC — which is the intuitive reading of "expires on this date".
+function dateToExpiresAt(dateStr) {
+  if (!dateStr) return null
+  return new Date(`${dateStr}T23:59:59.999Z`).toISOString()
+}
+function expiresAtToDateInput(expiresAt) {
+  return expiresAt ? expiresAt.slice(0, 10) : ''
+}
+
 function EditPartnerModal({ partner, onClose, onSaved }) {
   const toast = useToast()
   const [name, setName] = useState(partner.name)
@@ -188,6 +204,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
   const [badge, setBadge] = useState('')
   const [fixPlain, setFixPlain] = useState('')
   const [usageLimit, setUsageLimit] = useState('')
+  const [expiresAt, setExpiresAt] = useState('')
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -203,7 +220,11 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
     setSaving(true)
     try {
       await api.post(`/partners/${partner.id}/referral-codes`, {
-        code, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined
+        code, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined,
+        // createReferralCodeSchema's expiresAt is optional but NOT
+        // nullable — omit the key entirely rather than send null when no
+        // date was picked.
+        ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {})
       })
       toast({ message: `Code ${code.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
       onCreated()
@@ -225,8 +246,12 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
           <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
           <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
         </div>
-        <Input label="Usage limit (optional)" type="number" value={usageLimit}
-          onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="Usage limit (optional)" type="number" value={usageLimit}
+            onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
+          <Input label="Expires on (optional)" type="date" value={expiresAt}
+            onChange={e => setExpiresAt(e.target.value)} />
+        </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -248,6 +273,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
   const [badge, setBadge] = useState(tp.BADGE != null ? (tp.BADGE / 100).toFixed(2) : '')
   const [fixPlain, setFixPlain] = useState(tp.FIX_PLAIN != null ? (tp.FIX_PLAIN / 100).toFixed(2) : '')
   const [usageLimit, setUsageLimit] = useState(codeRow.usageLimit != null ? String(codeRow.usageLimit) : '')
+  const [expiresAt, setExpiresAt] = useState(expiresAtToDateInput(codeRow.expiresAt))
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
 
@@ -263,7 +289,11 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     try {
       await api.patch(`/partners/referral-codes/${codeRow.id}`, {
         tierPrices,
-        usageLimit: usageLimit ? Number(usageLimit) : null
+        usageLimit: usageLimit ? Number(usageLimit) : null,
+        // updateReferralCodeSchema's expiresAt is nullable — unlike create,
+        // an explicit null here is how an admin clears an existing
+        // expiration, same convention as usageLimit right above.
+        expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null
       })
       toast({ message: `Code ${codeRow.code} updated.`, type: 'success' })
       onSaved()
@@ -286,8 +316,12 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
           <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
           <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
         </div>
-        <Input label="Usage limit (blank = unlimited)" type="number" value={usageLimit}
-          onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
+        <div className="grid grid-cols-2 gap-3">
+          <Input label="Usage limit (blank = unlimited)" type="number" value={usageLimit}
+            onChange={e => setUsageLimit(e.target.value)} placeholder="Unlimited" />
+          <Input label="Expires on (blank = never)" type="date" value={expiresAt}
+            onChange={e => setExpiresAt(e.target.value)} />
+        </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button variant="secondary" onClick={onClose}>Cancel</Button>
@@ -341,6 +375,11 @@ function ReferralCodesTab({ partner, onChanged }) {
                   {['FIX', 'BADGE', 'FIX_PLAIN'].filter(t => code.tierPrices?.[t] != null).map(t =>
                     `${t}: ${formatCents(code.tierPrices[t])}`).join(' · ')}
                 </div>
+                {code.expiresAt && (
+                  <div className={cn('text-xs mt-0.5', new Date(code.expiresAt) < new Date() ? 'text-red-500' : 'text-gray-400')}>
+                    {new Date(code.expiresAt) < new Date() ? 'Expired' : 'Expires'} {formatDate(code.expiresAt)}
+                  </div>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={() => copyLink(code)} className="text-xs text-blue-600 hover:underline">Copy link</button>
@@ -501,8 +540,21 @@ export default function PartnerDetail() {
 
   async function resendLink() {
     try {
-      await api.post(`/partners/${id}/resend-link`)
-      toast({ message: `Payout link re-sent to ${partner.name}.`, type: 'success' })
+      const res = await api.post(`/partners/${id}/resend-link`)
+      // AUDIT FIX (feature gap): email is still the primary channel, but it
+      // was the ONLY one — if Resend bounces, spam-filters it, or the
+      // address on file is stale, there was no way to get the partner
+      // their link short of a raw DB query. The endpoint now also returns
+      // the URL; copy it to the clipboard as a fallback so it's on hand to
+      // hand off manually (support chat, a different email, etc.) even
+      // when the send itself failed.
+      const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
+      toast({
+        message: res.data.success
+          ? `Payout link re-sent to ${partner.name}.${copied ? ' Also copied to your clipboard.' : ''}`
+          : `Email failed to send.${copied ? ' Link copied to your clipboard instead.' : ''}`,
+        type: res.data.success ? 'success' : 'warning'
+      })
     } catch (_) {
       toast({ message: 'Failed to resend link.', type: 'error' })
     }
@@ -512,8 +564,10 @@ export default function PartnerDetail() {
     if (!window.confirm(`This invalidates ${partner.name}'s current payout link immediately and emails a new one. Continue?`)) return
     try {
       const res = await api.post(`/partners/${id}/regenerate-link`)
+      const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
       toast({
-        message: res.data.emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed.',
+        message: (res.data.emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed.')
+          + (copied ? ' Also copied to your clipboard.' : ''),
         type: res.data.emailed ? 'success' : 'warning'
       })
     } catch (_) {

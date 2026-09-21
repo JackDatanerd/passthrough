@@ -185,11 +185,16 @@ const PARTNER_FIELD_MAP = {
 }
 
 // partners/payouts (see supabase/migrations/0011_partners_and_payouts.sql).
-// payout_details_token is intentionally NEVER included here — it's a bearer
-// secret (whoever has it can view/edit that partner's payout details), so
-// it must never round-trip into a JSON response. The only place it's ever
-// read is directly off the DB row inside partners.controller.js, right
-// before it's embedded in the emailed link.
+// payout_details_token is intentionally NEVER included in THIS mapper — it's
+// a bearer secret (whoever has it can view/edit that partner's payout
+// details), so it must never round-trip through a general partner-read
+// response (adminListPartners, adminGetPartner, etc.). The only places it's
+// ever read are directly off the DB row inside partners.controller.js,
+// right before being embedded in the emailed link — and, as a narrow,
+// deliberate exception (AUDIT FIX, feature gap: no admin fallback if the
+// email itself fails to deliver), echoed back as `payoutUrl` in the JSON
+// response of the two admin actions that just (re)issued it,
+// adminResendPayoutLink and adminRegeneratePayoutLink — never from here.
 function partnerRowToCamel(row) {
   if (!row) return row
   const { payout_details_token, ...rest } = row

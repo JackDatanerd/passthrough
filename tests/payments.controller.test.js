@@ -41,9 +41,103 @@ function setup(opts = {}) {
   return { mod, restore, state, db, c }
 }
 
+// Separate, narrower harness for initializePayment — different shape of
+// request (req.json() body, not query/param) and a different set of
+// payments-table queries (existing-PENDING lookup + insert, not the
+// select-then-update-by-reference pattern verifyPayment/reconcilePayment use.
+function setupInit(opts = {}) {
+  const state = { paymentInserts: [], paymentUpdates: [], alerts: [] }
+  const scan = 'scan' in opts
+    ? opts.scan
+    : { id: 's1', user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
+  const existingPending = 'existingPending' in opts ? opts.existingPending : null
+
+  const db = createFakeSupabase(q => {
+    if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+    if (q.table === 'payments' && q.op === 'select') return { data: existingPending, error: null }
+    if (q.table === 'payments' && q.op === 'update') {
+      state.paymentUpdates.push({ patch: q.patch, ref: eqValue(q, 'paystack_ref'), status: eqValue(q, 'status') })
+      return { data: [{}], error: opts.abandonError || null }
+    }
+    if (q.table === 'payments' && q.op === 'insert') { state.paymentInserts.push(q.values); return { error: opts.insertError || null } }
+    return undefined
+  })
+
+  const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+    'config/supabase.js': { getSupabase: () => db },
+    'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+    'services/paystack.service.js': {
+      initializeTransaction: async () => ({ access_code: 'AC_1', authorization_url: 'https://paystack.test/pay/AC_1' }),
+      verifyTransaction: async () => ({}),
+    },
+  })
+
+  const env = {}
+  const c = (over = {}) => ({
+    env,
+    get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
+    req: { json: async () => (over.body ?? { scanId: 's1', fixTier: 'FIX' }) },
+    json: (body, status = 200) => ({ body, status }),
+  })
+  return { mod, restore, state, db, c }
+}
+
 let t, realErr
 beforeEach(() => { realErr = console.error; console.error = () => {} })
 afterEach(() => { console.error = realErr; t?.restore() })
+
+describe('initializePayment — stale PENDING cleanup', () => {
+  // AUDIT FIX: pay_status_enum defines FAILED/ABANDONED but nothing ever
+  // wrote either — a PENDING row that fell out of the 30-minute reuse
+  // window used to just sit there forever. These lock in the new behavior:
+  // a stale PENDING gets flipped to ABANDONED (best-effort) right before a
+  // fresh payment is created for it.
+
+  it('marks a stale (>30min old) PENDING row ABANDONED before creating a new payment', async () => {
+    const staleCreatedAt = new Date(Date.now() - 40 * 60 * 1000).toISOString()
+    t = setupInit({ existingPending: { paystack_ref: 'old-ref', paystack_access_code: 'old-ac', fix_tier: 'FIX', created_at: staleCreatedAt } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.paymentUpdates).toHaveLength(1)
+    expect(t.state.paymentUpdates[0]).toEqual({ patch: { status: 'ABANDONED' }, ref: 'old-ref', status: 'PENDING' })
+    expect(t.state.paymentInserts).toHaveLength(1)   // fresh checkout still proceeds
+  })
+
+  it('does not touch anything when there is no existing PENDING row at all', async () => {
+    t = setupInit({ existingPending: null })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.paymentUpdates).toHaveLength(0)
+    expect(t.state.paymentInserts).toHaveLength(1)
+  })
+
+  it('still creates the new payment even if the ABANDONED flip itself fails (best-effort, non-blocking)', async () => {
+    const staleCreatedAt = new Date(Date.now() - 40 * 60 * 1000).toISOString()
+    t = setupInit({
+      existingPending: { paystack_ref: 'old-ref', paystack_access_code: 'old-ac', fix_tier: 'FIX', created_at: staleCreatedAt },
+      abandonError: { message: 'db hiccup' },
+    })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.paymentInserts).toHaveLength(1)
+  })
+
+  it('does NOT abandon a still-fresh PENDING row for the same tier — resumes it instead, untouched', async () => {
+    t = setupInit({ existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', created_at: new Date().toISOString() } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.body.data.reference).toBe('fresh-ref')
+    expect(t.state.paymentUpdates).toHaveLength(0)   // still mid-flight — must not be touched
+    expect(t.state.paymentInserts).toHaveLength(0)
+  })
+
+  it('does NOT abandon a still-fresh PENDING row for a DIFFERENT tier — blocks with 409, untouched', async () => {
+    t = setupInit({ existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'BADGE', created_at: new Date().toISOString() } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(409)
+    expect(t.state.paymentUpdates).toHaveLength(0)
+    expect(t.state.paymentInserts).toHaveLength(0)
+  })
+})
 
 describe('verifyPayment', () => {
   it('400s without a reference', async () => {

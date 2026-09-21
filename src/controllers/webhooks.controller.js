@@ -166,6 +166,37 @@ async function handlePaystack(c) {
     return c.text('OK', 200)
   }
 
+  // AUDIT FIX (feature gap): pay_status_enum defines FAILED and ABANDONED
+  // (migration 0001) but until now nothing anywhere ever wrote either value
+  // — a declined card, an expired Paystack session, or any other failure
+  // Paystack reports via charge.failed was silently ignored (fell through
+  // to the catch-all "OK, no action" below), leaving the payment row
+  // PENDING forever. That's not just cosmetic: getPaymentHistory shows the
+  // user a purchase that looks "still pending" indefinitely for something
+  // that actually failed outright. No owner alert here — unlike a
+  // signature mismatch or an amount/currency mismatch, a declined card is
+  // routine and not something the owner needs to be paged for. Same atomic
+  // PENDING-only guard as every other status flip in this file, so this
+  // can never race a genuine charge.success for the same reference.
+  if (event.event === 'charge.failed') {
+    const reference = event.data?.reference
+    if (reference) {
+      c.executionCtx?.waitUntil((async () => {
+        try {
+          const { error } = await supabase
+            .from('payments')
+            .update({ status: 'FAILED' })
+            .eq('paystack_ref', reference)
+            .eq('status', 'PENDING')
+          if (error) console.error('Webhook charge.failed update:', error.message)
+        } catch (err) {
+          console.error('Webhook charge.failed error:', err.message)
+        }
+      })())
+    }
+    return c.text('OK', 200)
+  }
+
   if (event.event !== 'charge.success') return c.text('OK', 200)
 
   const reference = event.data?.reference

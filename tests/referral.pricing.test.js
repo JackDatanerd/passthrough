@@ -66,6 +66,23 @@ describe('resolvePrice', () => {
     expect(r.referralApplied).toBe(false)
     expect(r.referralCode).toBeNull()
   })
+
+  // AUDIT FIX: currency used to be hardcoded to c.CURRENCY ('USD') here,
+  // disagreeing with what's actually charged (paystack.service.js,
+  // payments.controller.js's insert) whenever PAYSTACK_CURRENCY is set.
+  it('quotes env.PAYSTACK_CURRENCY when set, not a hardcoded USD — with and without a code', async () => {
+    const withCode = await resolvePrice(dbReturning(codeRow()), 'FIX', { PAYSTACK_CURRENCY: 'KES' }, 'coach20')
+    expect(withCode.currency).toBe('KES')
+    const noCode = await resolvePrice(dbReturning(null), 'FIX', { PAYSTACK_CURRENCY: 'KES' }, undefined)
+    expect(noCode.currency).toBe('KES')
+    const unusable = await resolvePrice(dbReturning(codeRow({ active: false })), 'FIX', { PAYSTACK_CURRENCY: 'KES' }, 'coach20')
+    expect(unusable.currency).toBe('KES')
+  })
+
+  it('falls back to USD when PAYSTACK_CURRENCY is unset', async () => {
+    const r = await resolvePrice(dbReturning(null), 'FIX', {}, undefined)
+    expect(r.currency).toBe('USD')
+  })
 })
 
 describe('isCodeUsable', () => {

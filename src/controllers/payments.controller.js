@@ -81,6 +81,31 @@ async function initializePayment(c2) {
     }, 409)
   }
 
+  // AUDIT FIX (feature gap): pay_status_enum defines FAILED and ABANDONED
+  // (migration 0001) but nothing anywhere ever wrote either value — a
+  // PENDING row that aged out of the reuse window above used to just sit
+  // there forever, so a user's own payment history (getPaymentHistory
+  // below) showed a phantom "still pending" purchase indefinitely for
+  // every checkout they never finished. This is the one place in the app
+  // that already knows, for certain, that a given PENDING row is dead: we
+  // just decided NOT to resume it. Best-effort and non-blocking — the same
+  // atomic PENDING-only guard verifyPayment/handlePaystack rely on means
+  // this can never clobber a payment that's genuinely mid-flight on
+  // Paystack's side, and a failure here shouldn't stop the fresh checkout
+  // below from proceeding.
+  if (existingPending) {
+    try {
+      const { error: abandonErr } = await supabase
+        .from('payments')
+        .update({ status: 'ABANDONED' })
+        .eq('paystack_ref', existingPending.paystack_ref)
+        .eq('status', 'PENDING')
+      if (abandonErr) console.error('Stale payment abandon failed:', abandonErr.message)
+    } catch (err) {
+      console.error('Stale payment abandon failed:', err.message)
+    }
+  }
+
   // Single source of truth for the amount — same resolver the public
   // /api/pricing quote goes through (pricing.controller.js), so whatever
   // price the checkout screen showed is exactly what gets charged here.

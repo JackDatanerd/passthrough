@@ -55,15 +55,21 @@ function isCodeUsable(row) {
  */
 async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
   const standard = c.priceForTier(fixTier, env)
+  // AUDIT FIX: this used to hardcode c.CURRENCY ('USD') in all three returns
+  // below, while the actual charge (paystack.service.js, payments.controller.js's
+  // insert) uses `env.PAYSTACK_CURRENCY || c.CURRENCY`. Same class of bug as
+  // pricing.controller.js's getPricing — if PAYSTACK_CURRENCY is ever set,
+  // the quoted currency here would silently disagree with what gets charged.
+  const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
 
   if (!rawReferralCode)
-    return { amount: standard, currency: c.CURRENCY, referralApplied: false, referralCode: null }
+    return { amount: standard, currency, referralApplied: false, referralCode: null }
 
   const codeRow = await lookupCode(supabase, rawReferralCode)
   const tierPrice = codeRow?.tier_prices?.[fixTier]
 
   if (!isCodeUsable(codeRow) || tierPrice == null)
-    return { amount: standard, currency: c.CURRENCY, referralApplied: false, referralCode: null }
+    return { amount: standard, currency, referralApplied: false, referralCode: null }
 
   // BUGFIX: tier_prices on a referral code is a static, admin-set cents
   // value with no awareness of an active site-wide promo (isPromoActive()).
@@ -76,7 +82,7 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
   // way — the partner is still attributed and credited via recordConversion
   // on whatever amount actually gets charged, they just don't out-charge
   // an active promo.
-  return { amount: Math.min(tierPrice, standard), currency: c.CURRENCY, referralApplied: true, referralCode: codeRow }
+  return { amount: Math.min(tierPrice, standard), currency, referralApplied: true, referralCode: codeRow }
 }
 
 /**

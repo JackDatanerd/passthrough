@@ -221,6 +221,41 @@ describe('handlePaystack — failure handling', () => {
   })
 })
 
+describe('handlePaystack — charge.failed', () => {
+  let h
+  afterEach(() => h?.restore())
+
+  // AUDIT FIX: pay_status_enum defines FAILED/ABANDONED but until now nothing
+  // ever wrote either — charge.failed fell through to the catch-all "OK, no
+  // action" and the payment row sat PENDING forever. No owner alert (routine,
+  // not urgent) and no fulfillment — just the atomic PENDING -> FAILED flip.
+  it('flips a PENDING payment to FAILED, keyed on the reference, with no alert and no fulfillment', async () => {
+    h = harness()
+    const res = await h.fire({ event: 'charge.failed', data: { reference: 'ref-1' } })
+    expect(res.status).toBe(200)
+    const upd = h.db.calls.find(q => q.table === 'payments' && q.op === 'update')
+    expect(eqValue(upd, 'paystack_ref')).toBe('ref-1')
+    expect(eqValue(upd, 'status')).toBe('PENDING')
+    expect(upd.patch.status).toBe('FAILED')
+    expect(h.state.queue).toHaveLength(0)
+    expect(h.state.scanUpdates).toHaveLength(0)
+    expect(h.state.alerts).toHaveLength(0)
+  })
+
+  it('does nothing if the event has no reference', async () => {
+    h = harness()
+    const res = await h.fire({ event: 'charge.failed', data: {} })
+    expect(res.status).toBe(200)
+    expect(h.db.calls.filter(q => q.table === 'payments')).toHaveLength(0)
+  })
+
+  it('is a no-op update (already handled) if the payment is no longer PENDING — never throws', async () => {
+    h = harness()
+    const res = await h.fire({ event: 'charge.failed', data: { reference: 'ref-1' } })
+    expect(res.status).toBe(200)
+  })
+})
+
 describe('handlePaystack — disputes and refunds', () => {
   let h
   afterEach(() => h?.restore())

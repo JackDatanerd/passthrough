@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
+import { getStoredReferralCode } from '../hooks/useReferralCapture'
 
 function PriceBlock({ tier }) {
   const onPromo = tier.amount !== tier.originalAmount
@@ -17,7 +19,14 @@ function PriceBlock({ tier }) {
 }
 
 export default function Pricing() {
-  const { pricing, byTier, refresh: refreshPricing, clockOffsetMs } = usePricing()
+  // AUDIT FIX (feature gap): this page used to call usePricing() with no
+  // code at all, so a visitor referred via ?ref=CODE — captured globally by
+  // useReferralCapture in App.jsx the same as on any other page — never saw
+  // their discount here, only at actual checkout (ScanResult.jsx/FixBanner).
+  // Same initialize-from-storage pattern ScanResult.jsx already uses for
+  // the identical reason.
+  const [referralCode] = useState(getStoredReferralCode())
+  const { pricing, byTier, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
@@ -26,6 +35,11 @@ export default function Pricing() {
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold text-gray-900 mb-3">Pricing</h1>
           <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
+          {referralCode && pricing?.referralApplied && (
+            <p className="text-sm font-medium text-emerald-700 mb-4">
+              ✓ Referral code <span className="font-mono">{referralCode}</span> applied — prices below reflect your discount.
+            </p>
+          )}
           {pricing?.promoActive && pricing.promoEndsAt && (
             <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-8" />
           )}
