@@ -15,6 +15,8 @@ import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
+import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
+import { getAnonScanToken } from '../lib/anonScans'
 
 // These used to be a single `TERMINAL` array serving two different jobs at
 // once: "when should we stop polling" and "which statuses render the
@@ -40,7 +42,12 @@ export default function ScanResult() {
   const [params]      = useSearchParams()
   const navigate      = useNavigate()
   const { user, refreshUser } = useAuth()
-  const anonToken     = params.get('token') || localStorage.getItem('passthrough_anon_token')
+  // AUDIT FIX: this read a single global 'passthrough_anon_token' key —
+  // broke the moment anonScans.js started tracking more than one pending
+  // anon scan (see that file), since there was no longer one universal
+  // "the" token to fall back to. getAnonScanToken(id) looks up the token
+  // for THIS specific scan by id instead.
+  const anonToken     = params.get('token') || getAnonScanToken(id)
   const [scan,        setScan      ] = useState(null)
   const [loading,     setLoading   ] = useState(true)
   const [payLoading,  setPayLoading] = useState(false)
@@ -353,7 +360,7 @@ export default function ScanResult() {
             {/* Score card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
               <div className="flex flex-col sm:flex-row items-center gap-8">
-                <ScoreGauge score={scan.atsScore} />
+                <ScoreGauge score={scan.atsScore} passed={scan.passed} />
                 <div className="flex-1 w-full">
                   <h2 className="text-lg font-semibold text-gray-900 mb-4">
                     {scan.passed ? 'Your resume passed ATS screening' : 'Your resume is failing ATS filters'}
@@ -383,8 +390,8 @@ export default function ScanResult() {
 
             {/* Delivered */}
             {scan.status === 'FIX_DELIVERED' && (
-              <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= 80 ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
-                {scan.fixAtsScore >= 80 ? (
+              <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+                {scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? (
                   <>
                     <p className="font-semibold text-green-900 mb-1">
                       {scan.fixTier === 'FIX_PLAIN'
@@ -393,7 +400,7 @@ export default function ScanResult() {
                     </p>
                     {scan.fixTier === 'BADGE' && (
                       <p className="text-sm text-green-800 mb-1">
-                        Your score was already 80+, so nothing was rewritten — this verifies and formats your existing content as a Passthrough Verified document.
+                        Your score was already {ATS_BADGE_THRESHOLD}+, so nothing was rewritten — this verifies and formats your existing content as a Passthrough Verified document.
                       </p>
                     )}
                   </>
@@ -402,11 +409,11 @@ export default function ScanResult() {
                     <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
                     <p className="text-sm text-amber-800 mb-3">
                       New ATS score: {scan.fixAtsScore ?? '—'}/100{scan.fixTier === 'FIX_PLAIN'
-                        ? ' — below our target score of 80.'
-                        : ' — below the 80+ threshold for Passthrough Verified status.'}
+                        ? ` — below our target score of ${ATS_BADGE_THRESHOLD}.`
+                        : ` — below the ${ATS_BADGE_THRESHOLD}+ threshold for Passthrough Verified status.`}
                       {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
                     </p>
-                    {scan.fixRetryCount < 2 ? (
+                    {scan.fixRetryCount < MAX_FIX_RETRIES ? (
                       <div className="mb-3">
                         {retryError && (
                           <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-2">
@@ -414,18 +421,18 @@ export default function ScanResult() {
                           </p>
                         )}
                         <Button onClick={handleRetryFix} loading={retryLoading} variant="secondary">
-                          Try Again — Free ({2 - scan.fixRetryCount} left)
+                          Try Again — Free ({MAX_FIX_RETRIES - scan.fixRetryCount} left)
                         </Button>
                       </div>
                     ) : (
                       <p className="text-sm text-amber-800 mb-3">
-                        We tried a few times but couldn't get this one past 80. We've added a free fix credit to your
+                        We tried a few times but couldn't get this one past {ATS_BADGE_THRESHOLD}. We've added a free fix credit to your
                         account for your next resume — no charge next time.
                       </p>
                     )}
                   </>
                 )}
-                {scan.fixAtsScore >= 80 && scan.verificationUrl && (
+                {scan.fixAtsScore >= ATS_BADGE_THRESHOLD && scan.verificationUrl && (
                   <p className="text-sm text-green-800 mb-4">
                     Verification URL:{' '}
                     <a href={scan.verificationUrl} target="_blank" rel="noreferrer"

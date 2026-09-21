@@ -25,6 +25,26 @@ export default function Settings() {
   const [emailError,    setEmailError   ] = useState('')
   const [emailSuccess,  setEmailSuccess ] = useState(false)
 
+  // AUDIT FIX: the "Email verified: No" status here was inert text with no
+  // way to act on it — the actual resend-verification button only existed
+  // on dashboard/Index.jsx. Same request/refresh pattern as that one.
+  const [resending, setResending] = useState(false)
+  const [resentOk,  setResentOk ] = useState(false)
+  const [resendError, setResendError] = useState('')
+
+  async function handleResendVerification() {
+    setResending(true); setResendError('')
+    try {
+      await api.post('/auth/resend-verification')
+      setResentOk(true)
+      refreshUser()
+    } catch (err) {
+      setResendError(err.response?.data?.message || 'Could not resend verification email.')
+    } finally {
+      setResending(false)
+    }
+  }
+
   useEffect(() => {
     if (user?.name) setName(user.name)
   }, [user?.name])
@@ -162,6 +182,18 @@ export default function Settings() {
                   : <span className="text-amber-600">No — check your inbox</span>
                 }
               </p>
+              {!user?.emailVerified && (
+                <div className="flex items-center gap-2">
+                  {resentOk ? (
+                    <span className="text-xs text-green-700 bg-green-100 px-3 py-1.5 rounded-md">Sent!</span>
+                  ) : (
+                    <Button size="sm" variant="secondary" onClick={handleResendVerification} loading={resending}>
+                      Resend verification email
+                    </Button>
+                  )}
+                  {resendError && <p className="text-sm text-red-600">{resendError}</p>}
+                </div>
+              )}
             </div>
 
             <div className="flex flex-col sm:flex-row gap-2 sm:items-end">

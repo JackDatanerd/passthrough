@@ -72,9 +72,28 @@ function extractKeywords(text) {
   return freq
 }
 
+// AUDIT FIX: bigrams and unigrams used to be ranked together in one shared
+// frequency list. A bigram's count can never exceed its rarest constituent
+// word's count, and ties were broken by object-key insertion order (all
+// unigrams inserted before any bigram) — so unigrams systematically won
+// both on raw frequency AND on ties, meaning the "top 25" was effectively
+// always unigrams-only in practice, and the whole point of extracting
+// bigrams (catching compound terms like "machine learning" or "quality
+// assurance" that splitting into single words would dilute or misrepresent)
+// almost never actually happened. Ranking the two pools separately and
+// reserving real slots for each guarantees bigrams actually show up when
+// the JD has them, instead of only in the rare case they happen to out-
+// frequency every single word too.
+const TOP_UNIGRAMS = 18
+const TOP_BIGRAMS  = 7
+
 function scoreKeywords(resumeText, jdText) {
-  const freq  = extractKeywords(jdText)
-  const top25 = Object.entries(freq).sort((a, b) => b[1] - a[1]).slice(0, 25).map(([w]) => w)
+  const freq = extractKeywords(jdText)
+  const unigramEntries = Object.entries(freq).filter(([w]) => !w.includes(' '))
+  const bigramEntries  = Object.entries(freq).filter(([w]) => w.includes(' '))
+  const topUnigrams = unigramEntries.sort((a, b) => b[1] - a[1]).slice(0, TOP_UNIGRAMS).map(([w]) => w)
+  const topBigrams  = bigramEntries.sort((a, b) => b[1] - a[1]).slice(0, TOP_BIGRAMS).map(([w]) => w)
+  const top25 = [...topUnigrams, ...topBigrams]
 
   // Match against STEMMED resume tokens, not a raw substring search — this
   // is what actually lets "managed"/"managing"/"manager" in the resume
@@ -202,7 +221,22 @@ function scoreFormat(resumeText) {
   const bTypes = new Set((resumeText.match(/^[\s]*[•\-\*◦▪‣·]/mg) || []).map(b => b.trim()[0]))
   if (bTypes.size > 2)
     { score -= 15; issues.push('Inconsistent bullet style') }
-  if (resumeText.split('\n').filter(l => l.length > 200).length > 3)
+  // AUDIT FIX: this fired on ordinary, well-formatted single-column resumes.
+  // Both resume.parser.js's DOCX extractor and this app's OWN docx.service.js
+  // generator emit one line per paragraph/bullet with no regard for visual
+  // wrapping (Word doesn't hard-wrap; wrapping is display-only) — a single
+  // detailed bullet or a 2-3 sentence professional summary routinely exceeds
+  // 200 characters as ONE line. Since this scorer's own Content category
+  // explicitly rewards specific, detailed bullets, a well-optimized (or
+  // AI-rewritten-by-this-app) resume was MORE likely to trip this and lose
+  // 15 points for a formatting problem it didn't have — the same class of
+  // false-positive the adjacent table-detection check was already removed
+  // for (see comment above). A genuine multi-column PDF-extraction garble
+  // concatenates whole paragraphs from two columns into one line and tends
+  // to run much longer than any single legitimate bullet/summary line —
+  // raising both the length and count bar keeps some signal for that real
+  // case while no longer firing on normal detailed writing.
+  if (resumeText.split('\n').filter(l => l.length > 400).length > 5)
     { score -= 15; issues.push('Possible multi-column layout') }
   return { score: Math.max(0, score), detail: { issues } }
 }
@@ -228,8 +262,13 @@ function scoreSections(resumeText) {
   const summaryPatterns = ['summary','objective','profile']
   const certPatterns    = ['certification','licenses','awards']
 
-  const lines10  = lower.split('\n').slice(0, 10).join(' ')
-  const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines10)
+  // AUDIT FIX: was slice(0, 10) — a header with name/phone/LinkedIn/
+  // portfolio/GitHub each on their own line (common) can push the email
+  // past line 10, wrongly flagging "Contact" as a missing section on a
+  // resume that has one. Widened to 20 lines, still well short of where
+  // real body content (Experience/Education) would start.
+  const lines20  = lower.split('\n').slice(0, 20).join(' ')
+  const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines20)
   const foundReq = required.filter(s => s.patterns ? s.patterns.some(p => lower.includes(p)) : hasEmail)
   const hasSummary = summaryPatterns.some(p => lower.includes(p))
   const hasCerts   = certPatterns.some(p => lower.includes(p))
@@ -260,7 +299,18 @@ function scoreContent(resumeText) {
   // "* " bullets, by far the most common resume bullet style. That made
   // Content scoring collapse to near-zero on most normally-formatted
   // resumes, independent of extraction method or file type.
-  const BULLET_LINE = /^\s*(?:[•\-\*◦▪‣·]|[0-9A-Za-z]+[.)])\s/
+  // AUDIT FIX: the numbered/lettered-list branch was `[0-9A-Za-z]+[.)]` —
+  // unbounded length, so it matched far more than the "1." / "a)" style
+  // markers the comment above (and the surrounding design intent) describes.
+  // Any line starting with a period-abbreviated word — "Sr. Software
+  // Engineer", "Dr. Jane Smith" — matched too, inflating the bullet-count
+  // denominator with lines that were never bullets, diluting
+  // actionVerbRate for reasons unrelated to actual bullet quality. Split
+  // into digits-of-any-length ("1.", "12)") or a SINGLE letter ("a)", "A.")
+  // — real numbered/lettered list markers are always one of these two
+  // shapes, while every common title/name abbreviation ("Sr.", "Dr.",
+  // "Mr.", "St.") is 2+ letters and no longer matches.
+  const BULLET_LINE = /^\s*(?:[•\-\*◦▪‣·]|[0-9]+[.)]|[A-Za-z][.)])\s/
   const bullets = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
   const total   = bullets.length || 1
   const actionCount = bullets.filter(b => {
@@ -268,7 +318,14 @@ function scoreContent(resumeText) {
     return words.length > 0 && ACTION_VERB_STEMS.has(stem(words[0]))
   }).length
   let score = Math.round((actionCount / total) * 100)
-  const quantifiedCount = (resumeText.match(/\d+\s*(%|\$|k\b|m\b|million|thousand)/gi) || []).length
+  // AUDIT FIX: this only matched digit-THEN-unit order (e.g. "50%", "50k"),
+  // which silently missed the standard US currency format where the symbol
+  // comes first — "$50,000", "$1,500,000" — since the comma also breaks the
+  // \d+ run before it ever reaches a trailing $/k/m/million/thousand token.
+  // Added a second alternative for $-prefixed numbers (comma/decimal-
+  // tolerant) so spelled-out dollar figures count as quantification just
+  // like "50%" or "50k" already did.
+  const quantifiedCount = (resumeText.match(/\d+\s*(%|\$|k\b|m\b|million|thousand)|\$\s*\d[\d,]*(\.\d+)?/gi) || []).length
   if (quantifiedCount >= 2) score = Math.min(100, score + 10)
   const wordCount = resumeText.split(/\s+/).filter(Boolean).length
   if (wordCount < 200) score = Math.max(0, score - 20)

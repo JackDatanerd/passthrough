@@ -38,6 +38,13 @@ async function auth(c, next) {
 
     const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, savedProfile, ...safe } = user
     c.set('user', safe)
+    // AUDIT FIX: the JWT's `exp` claim from THIS request's already-verified
+    // token, stashed for getMe() to use for silent renewal (see that
+    // handler) — feature gap: the 7-day JWT never renewed itself, so any
+    // daily-active user got hard-logged-out mid-session the moment it
+    // lapsed, no warning. Exposed via c.set rather than re-decoding: the
+    // token is already verified above, no need to parse it twice.
+    c.set('tokenExp', decoded.exp)
     await next()
   } catch (err) {
     if (err.name === 'TokenExpiredError')

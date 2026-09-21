@@ -1,0 +1,20 @@
+-- AUDIT FIX: `email text not null unique` (0001_init.sql) enforces
+-- uniqueness case-SENSITIVELY — "User@Example.com" and "user@example.com"
+-- were two distinct rows as far as Postgres was concerned, even though
+-- they're the same real mailbox. Application code (auth.controller.js) now
+-- lowercases email on every write/read path, which closes this going
+-- forward — but that's an app-level convention, not a guarantee. This adds
+-- the actual DB-level constraint so it holds even against a future code
+-- path, a direct SQL edit, or a race between two concurrent inserts that
+-- both slip past the app-level normalization somehow.
+--
+-- CAVEAT: if any pre-existing rows already differ only by case (e.g. from
+-- before this fix shipped), this CREATE UNIQUE INDEX will fail at migration
+-- time with a duplicate-key error. Run this first to check before applying:
+--
+--   select lower(email), array_agg(id), array_agg(email)
+--   from users group by lower(email) having count(*) > 1;
+--
+-- Any rows returned need manual resolution (merge or rename one) before
+-- this migration can apply cleanly.
+create unique index if not exists idx_users_email_lower_unique on users (lower(email));

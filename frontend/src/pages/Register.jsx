@@ -13,12 +13,14 @@ export default function Register() {
   const [name,     setName    ] = useState('')
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
+  const [confirm,  setConfirm ] = useState('')
   const [loading,  setLoading ] = useState(false)
   const [error,    setError   ] = useState('')
 
   async function handleSubmit() {
     if (!name || !email || !password) return setError('All fields required.')
     if (password.length < 8) return setError('Password must be at least 8 characters.')
+    if (password !== confirm) return setError('Passwords do not match.')
     setLoading(true); setError('')
     try {
       const res = await api.post('/auth/register', { name, email, password })
@@ -49,6 +51,8 @@ export default function Register() {
             <Input label="Password" type="password" value={password}
               onChange={e => setPassword(e.target.value)} autoComplete="new-password"
               placeholder="Min. 8 characters" />
+            <Input label="Confirm password" type="password" value={confirm}
+              onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
 
             {error && <p className="text-sm text-red-600">{error}</p>}
 

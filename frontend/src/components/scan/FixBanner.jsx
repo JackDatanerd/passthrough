@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '../ui/Button'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
+import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 
 // PriceTag — byTier() always returns a usable value (falls back to the
 // correct standard price internally if /api/pricing hasn't loaded or
@@ -80,7 +81,14 @@ export default function FixBanner({
   if (scan.fixPurchased) return null
 
   const score        = scan.atsScore ?? 0
-  const badgeEligible = score >= 80
+  // AUDIT FIX: this used to be its own `score >= 80` — a second, independent
+  // hardcoded copy of ATS_BADGE_THRESHOLD, even though `scan.badgeEligible`
+  // (computed server-side from the live constant — see scan.controller.js's
+  // getScan) is sitting right there on the same `scan` prop. Preferring it
+  // means this can never disagree with what initiateFix actually enforces
+  // server-side for the BADGE tier; the threshold comparison is kept only
+  // as a fallback for a scan object that predates this field.
+  const badgeEligible = scan.badgeEligible ?? (score >= ATS_BADGE_THRESHOLD)
   const hasCredit      = freeFixCredits > 0
 
   // <75 or 75-79: full fix ($49), or just the rewrite with no credential ($39)

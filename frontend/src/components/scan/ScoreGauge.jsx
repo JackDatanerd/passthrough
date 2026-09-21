@@ -1,12 +1,17 @@
-export default function ScoreGauge({ score }) {
+import { ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
+
+// AUDIT FIX: hardcoded `75` per category — see scoreThresholds.js for why
+// this now references the shared constant instead of its own copy.
+export default function ScoreGauge({ score, passed }) {
   const radius = 54
   const circ   = 2 * Math.PI * radius
   const pct    = Math.max(0, Math.min(100, score ?? 0)) / 100
   const dash   = pct * circ
   const gap    = circ - dash
 
-  const color = score >= 75 ? '#16a34a' : score >= 50 ? '#d97706' : '#dc2626'
-  const label = score >= 75 ? 'Pass' : score >= 50 ? 'Marginal' : 'Fail'
+  const isPass = passed ?? score >= ATS_PASS_THRESHOLD
+  const color = isPass ? '#16a34a' : score >= 50 ? '#d97706' : '#dc2626'
+  const label = isPass ? 'Pass' : score >= 50 ? 'Marginal' : 'Fail'
 
   return (
     <div className="flex flex-col items-center gap-2">

@@ -6,6 +6,7 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Textarea from '../ui/Textarea'
 import FileUpload from '../ui/FileUpload'
+import { addAnonScanToken } from '../../lib/anonScans'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
 // constants file between frontend/backend in this project (same pattern as
@@ -106,18 +107,24 @@ export default function ScanForm() {
       })
       const { scanId, anonToken } = res.data.data
 
-      // CRITICAL: store anonToken so postRegisterActions can claim this scan
-      if (anonToken) localStorage.setItem('passthrough_anon_token', anonToken)
+      // AUDIT FIX (feature gap): previously overwrote a single localStorage
+      // slot, so only the LAST anon scan before registering was ever
+      // claimable — see anonScans.js.
+      if (anonToken) addAnonScanToken(scanId, anonToken)
 
       navigate(`/scan/${scanId}`)
     } catch (err) {
       const msg = err.response?.data?.message || 'Something went wrong. Please try again.'
-      if (err.response?.data?.blocked) {
-        setUseUrl(false)
-        setError(msg)
-      } else {
-        setError(msg)
-      }
+      // AUDIT FIX: this only auto-switched back to paste mode when the
+      // backend explicitly marked the failure `blocked: true` (LinkedIn,
+      // listing pages, Workday). Every other JD-URL fetch failure — a 404,
+      // a timeout, a page that just didn't extract enough text — left the
+      // UI sitting in URL mode with the same URL, even though the error
+      // message itself says "paste instead" either way. Now any failure
+      // that happened while submitting a URL (not a pasted-text submission)
+      // switches back to paste mode, so the message and the UI agree.
+      if (useUrl) setUseUrl(false)
+      setError(msg)
     } finally {
       setLoading(false)
     }

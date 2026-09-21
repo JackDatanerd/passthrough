@@ -69,12 +69,25 @@ async function getDummyPasswordHash() {
   return dummyPasswordHash
 }
 
+// AUDIT FIX: email was stored and compared case-sensitively everywhere
+// except the newer updateEmail() below (which already normalized via
+// .toLowerCase()) — the schema's `email text not null unique` constraint
+// is case-sensitive Postgres text comparison, and nothing in register/
+// login/forgotPassword folded case before reading or writing it. Two
+// consequences: "User@Example.com" and "user@example.com" could register
+// as two independent accounts sharing one real inbox, and a real user
+// whose email got re-cased by autocapitalize/autofill between signup and
+// login got an indistinguishable "Invalid credentials". Normalizing here
+// at every read/write site closes both; see 0014_case_insensitive_email.sql
+// for the matching DB-level backstop against races/other write paths.
+const emailSchema = z.string().trim().toLowerCase().email()
+
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
   const { name, email, password } = z.object({
     name:     z.string().min(1).max(100),
-    email:    z.string().email(),
+    email:    emailSchema,
     password: z.string().min(8, 'Password must be at least 8 characters')
   }).parse(body)
 
@@ -112,7 +125,7 @@ async function register(c) {
 async function login(c) {
   const body = await c.req.json()
   const { email, password } = z.object({
-    email:    z.string().email(),
+    email:    emailSchema,
     password: z.string()
   }).parse(body)
 
@@ -145,26 +158,57 @@ async function login(c) {
     await recordLoginFailure(c.env, email)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
-  if (user.status === 'BANNED')
-    return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
+  // AUDIT FIX: the BANNED check used to run BEFORE the password compare,
+  // returning 403 "Account suspended" for ANY password on a banned email —
+  // no bcrypt.compare() paid at all. That directly defeated the timing-
+  // equalization hardening just above: an attacker could confirm "this
+  // email exists and is banned" with a single request and no guessing,
+  // via both the distinct message and the near-instant response (versus
+  // the ~100ms bcrypt cost every other branch pays). Checking the password
+  // first means a wrong guess against a banned account looks identical
+  // (message AND timing) to a wrong guess against an active one — status
+  // is only revealed once the credential itself has been proven correct.
   if (!await bcrypt.compare(password, user.passwordHash)) {
     await recordLoginFailure(c.env, email)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
+  if (user.status === 'BANNED')
+    return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
 
   await recordLoginSuccess(c.env, email)
   return c.json({ success: true, data: { token: await issueJWT(c.env, user), user: safeUser(user) } })
 }
 
 // GET /api/auth/me
+// AUDIT FIX (feature gap): there was no renewal path on the 7-day JWT at
+// all — an active daily user got hard-logged-out the instant it lapsed,
+// mid-session, no warning, since nothing ever reissued it early. getMe()
+// already runs on every app load and dashboard visit (see AuthContext.jsx/
+// dashboard pages' refreshUser() calls), so it's a natural, low-effort
+// place to silently top it up: if less than 24h remains on the token that
+// authenticated THIS request, mint a fresh 7-day one and hand it back
+// alongside the user object. The frontend only needs to notice `token` is
+// present and re-store it (see AuthContext.jsx's refreshUser) — no new
+// polling, no separate refresh endpoint, no behavior change for a request
+// that's already comfortably inside its window.
+const TOKEN_RENEW_THRESHOLD_SECONDS = 24 * 60 * 60
 async function getMe(c) {
-  return c.json({ success: true, data: { user: c.get('user') } })
+  const user = c.get('user')
+  const tokenExp = c.get('tokenExp')
+  let token
+  if (typeof tokenExp === 'number') {
+    const remaining = tokenExp - Math.floor(Date.now() / 1000)
+    if (remaining < TOKEN_RENEW_THRESHOLD_SECONDS) {
+      token = await issueJWT(c.env, { id: user.id, tokenVersion: user.tokenVersion })
+    }
+  }
+  return c.json({ success: true, data: { user, ...(token ? { token } : {}) } })
 }
 
 // POST /api/auth/forgot-password
 async function forgotPassword(c) {
   const body = await c.req.json()
-  const { email } = z.object({ email: z.string().email() }).parse(body)
+  const { email } = z.object({ email: emailSchema }).parse(body)
   const supabase = getSupabase(c.env)
 
   const { data: row } = await supabase
@@ -198,8 +242,20 @@ async function resetPassword(c) {
 
   const supabase = getSupabase(c.env)
   const stored = await cryptoLib.sha256(token)
+  // AUDIT FIX: this lookup used to match on the token/expiry alone, with no
+  // deleted_at/status check — a reset token issued while the account was
+  // still ACTIVE could still be "successfully" consumed after the account
+  // was later banned or soft-deleted (login() blocks both, so it granted
+  // no way back in today, but a token-only flow silently mutating a
+  // banned/deleted row is the wrong default, and the "harmless today"
+  // argument breaks the moment anything else ever trusts this row's
+  // password_hash). Every other mutation in this file already runs behind
+  // a live session (auth middleware, which enforces this) — these two
+  // token-only flows are the exception, so the check is added explicitly.
   const { data: row, error } = await supabase
-    .from('users').select('*').eq('reset_token', stored).gt('reset_token_expiry', new Date().toISOString()).maybeSingle()
+    .from('users').select('*').eq('reset_token', stored)
+    .gt('reset_token_expiry', new Date().toISOString())
+    .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
   if (error) throw error
   const user = userRowToCamel(row)
 
@@ -222,8 +278,13 @@ async function verifyEmail(c) {
 
   const supabase = getSupabase(c.env)
   const stored = await cryptoLib.sha256(token)
+  // AUDIT FIX: same gap as resetPassword above — add the deleted_at/status
+  // check so a link issued before a ban/deletion can't still flip
+  // email_verified on that row afterward.
   const { data: row, error } = await supabase
-    .from('users').select('*').eq('email_verify_token', stored).gt('email_verify_expiry', new Date().toISOString()).maybeSingle()
+    .from('users').select('*').eq('email_verify_token', stored)
+    .gt('email_verify_expiry', new Date().toISOString())
+    .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
   if (error) throw error
   const user = userRowToCamel(row)
 

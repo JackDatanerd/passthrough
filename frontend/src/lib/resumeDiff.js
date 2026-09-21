@@ -14,36 +14,49 @@
 // should be rare given detectFabrication() already guards against Claude
 // inventing or dropping employers, but the diff renders gracefully either way.
 
+// AUDIT FIX: everything below assumed a bullet/skill/cert/company/title
+// field that came back well-SHAPED (right key, right nesting) was also
+// well-TYPED (an actual string). The envelope/fabrication checks in
+// claude.service.js validate shape, not per-field type — a wrong-typed
+// value (a bullet as a number, a skill as a nested object) is well-formed
+// JSON and passes those checks, then hits a bare `.trim()`/`.toLowerCase()`
+// here and throws, crashing ScanResult.jsx's render for a scan the user
+// already paid for. `str()` coerces anything non-string-ish to '' instead
+// of throwing, everywhere this file touches an AI-sourced text field.
+function str(v) {
+  return typeof v === 'string' ? v : ''
+}
+
 function normCompany(s) {
-  return (s || '').toLowerCase().replace(/[.,]/g, '').trim()
+  return str(s).toLowerCase().replace(/[.,]/g, '').trim()
 }
 
 function diffText(before, after) {
-  const b = (before || '').trim()
-  const a = (after || '').trim()
+  const b = str(before).trim()
+  const a = str(after).trim()
   return { before: b, after: a, changed: b !== a }
 }
 
 function diffJob(original, rewritten) {
-  const company     = original?.company || rewritten?.company || ''
-  const beforeTitle = original?.title || ''
-  const afterTitle  = rewritten?.title ?? beforeTitle
-  const beforeDates = original?.dates || ''
-  const afterDates  = rewritten?.dates ?? beforeDates
+  const company     = str(original?.company) || str(rewritten?.company)
+  const beforeTitle = str(original?.title)
+  const afterTitle  = rewritten?.title !== undefined ? str(rewritten.title) : beforeTitle
+  const beforeDates = str(original?.dates)
+  const afterDates  = rewritten?.dates !== undefined ? str(rewritten.dates) : beforeDates
 
-  const beforeBullets = original?.bullets || []
-  const afterBullets  = rewritten?.bullets || []
+  const beforeBullets = Array.isArray(original?.bullets) ? original.bullets : []
+  const afterBullets  = Array.isArray(rewritten?.bullets) ? rewritten.bullets : []
   const maxLen = Math.max(beforeBullets.length, afterBullets.length)
   const bullets = []
   for (let i = 0; i < maxLen; i++) {
     const before = beforeBullets[i]
     const after  = afterBullets[i]
     if (before !== undefined && after !== undefined) {
-      bullets.push({ before, after, status: before.trim() === after.trim() ? 'unchanged' : 'changed' })
+      bullets.push({ before: str(before), after: str(after), status: str(before).trim() === str(after).trim() ? 'unchanged' : 'changed' })
     } else if (before !== undefined) {
-      bullets.push({ before, after: null, status: 'removed' })
+      bullets.push({ before: str(before), after: null, status: 'removed' })
     } else {
-      bullets.push({ before: null, after, status: 'added' })
+      bullets.push({ before: null, after: str(after), status: 'added' })
     }
   }
 
@@ -86,7 +99,7 @@ function diffExperience(originalJobs, rewrittenJobs) {
 }
 
 function diffList(before, after) {
-  const norm = s => (s || '').toLowerCase().trim()
+  const norm = s => str(s).toLowerCase().trim()
   const beforeSet = new Set(before.map(norm))
   const afterSet  = new Set(after.map(norm))
   return {

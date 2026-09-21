@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect } from 'react'
 import api from '../lib/api'
+import { getAnonScanTokens, clearAnonScanTokens } from '../lib/anonScans'
 
 // PATCH 3: exported so hooks/useAuth.js can import it directly
 export const AuthContext = createContext(null)
@@ -32,6 +33,15 @@ export function AuthProvider({ children }) {
     try {
       const res = await api.get('/auth/me')
       const fresh = res.data.data.user
+      // AUDIT FIX (feature gap): getMe() now silently reissues a token when
+      // the current one is within 24h of expiring (see auth.controller.js).
+      // refreshUser() already runs on every app load and dashboard visit,
+      // so picking this up here is what turns that server-side renewal into
+      // an actual sliding session — without it, the server could mint fresh
+      // tokens all day and the client would keep using the old one until it
+      // hard-expired anyway.
+      const renewedToken = res.data.data.token
+      if (renewedToken) localStorage.setItem('passthrough_token', renewedToken)
       localStorage.setItem('passthrough_user', JSON.stringify(fresh))
       setUser(fresh)
       return fresh
@@ -55,18 +65,28 @@ export function AuthProvider({ children }) {
     localStorage.setItem('passthrough_user', JSON.stringify(newUser))
     setUser(newUser)
 
-    // Check for pending anonymous scan to claim
-    const anonToken = localStorage.getItem('passthrough_anon_token')
-    if (anonToken) {
+    // AUDIT FIX (feature gap): this used to read a single stored anon token
+    // and claim just that one — an anonymous visitor who scanned more than
+    // once before registering (anonScan's rate limit allows 1/hour, so a
+    // full day gives up to ~24) could only ever recover the LAST scan; every
+    // earlier one silently aged out at its 24h TTL, unclaimed, with no way
+    // for the user to know they'd lost it. Now claims every tracked token
+    // (see anonScans.js), sequentially so a failed/expired one doesn't stop
+    // the rest, and still returns the LAST one's scanId for navigation —
+    // same "go straight to your most recent scan" behavior as before.
+    const anonEntries = getAnonScanTokens()
+    let lastClaimedScanId = null
+    for (const { token: anonToken } of anonEntries) {
       try {
         const res = await api.post('/auth/claim-scan', { anonToken })
-        localStorage.removeItem('passthrough_anon_token')
-        return res.data.data.scanId  // caller should navigate to /scan/:id
+        lastClaimedScanId = res.data.data.scanId
       } catch (_) {
-        localStorage.removeItem('passthrough_anon_token')
+        // Expired/already-claimed/not-found — drop this one and keep going
+        // with the rest, same as the original single-token behavior did.
       }
     }
-    return null  // caller should navigate to /dashboard
+    clearAnonScanTokens()
+    return lastClaimedScanId  // caller should navigate to /scan/:id, or /dashboard if null
   }
 
   function logout() {

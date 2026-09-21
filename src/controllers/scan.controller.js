@@ -881,7 +881,32 @@ async function generateFix(env, supabase, scanId) {
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
       const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback)
-      if (!rewriteResult.success) break  // API/parse failure — nothing to score, stop retrying
+      if (!rewriteResult.success) {
+        // AUDIT FIX: FABRICATION_DETECTED used to hit the same `break` as a
+        // genuine API/parse failure — but it isn't one. It means THIS ONE
+        // candidate got caught inventing or dropping an employer; it says
+        // nothing about whether another attempt would too. Treating it as
+        // fatal meant a single fabrication catch on attempt 1 (with no
+        // prior successful attempt to fall back on) silently delivered the
+        // user's UNTOUCHED ORIGINAL resume as their paid "Fix" — bestScore
+        // stayed -1, bestData stayed the original resumeData, and nothing
+        // ever surfaced that no rewrite actually happened. Feeding it back
+        // as explicit feedback and continuing to the next attempt (if any
+        // remain) gives Claude a chance to produce a clean rewrite instead
+        // of ending the whole fix over one bad candidate. Genuine hard
+        // failures (PARSE_FAIL, RESPONSE_TRUNCATED, a raw API error) still
+        // break immediately — retrying those isn't expected to help within
+        // the same request, which is what the original comment was about.
+        if (rewriteResult.error === 'FABRICATION_DETECTED' && attempt < c.MAX_FIX_ATTEMPTS) {
+          lastFeedback = {
+            score: null,
+            threshold: c.ATS_BADGE_THRESHOLD,
+            weakAreas: ['Previous attempt included a company, title, or institution not present in the original resume, or dropped one that was. Rewrite using ONLY the employers/institutions already present — do not add, remove, or substitute any.']
+          }
+          continue
+        }
+        break  // API/parse failure (or fabrication with no attempts left) — nothing to score, stop retrying
+      }
 
       const candidateData = rewriteResult.data
       const candidateQuantificationPrompts = rewriteResult.quantificationOpportunities || []

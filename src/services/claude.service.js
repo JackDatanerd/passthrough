@@ -161,8 +161,15 @@ async function structureFreeformText(env, rawText) {
 }
 
 async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = null) {
+  // AUDIT FIX: this always assumed a numeric `score` (a real prior attempt
+  // that got all the way to scoring) — scan.controller.js's generateFix now
+  // also feeds this a fabrication-retry signal with `score: null`, which
+  // used to read as the nonsensical "scored null/100". Branching on
+  // whether a real score is present keeps that message sensible either way.
   const feedbackBlock = scoreFeedback
-    ? `\n\nIMPORTANT — this is a retry. The previous attempt scored ${scoreFeedback.score}/100 and fell short of the ${scoreFeedback.threshold} target. Specifically weak areas: ${scoreFeedback.weakAreas.join('; ')}. Address these directly in this revision — don't just lightly rephrase, meaningfully strengthen the specific weak areas called out.`
+    ? (typeof scoreFeedback.score === 'number'
+        ? `\n\nIMPORTANT — this is a retry. The previous attempt scored ${scoreFeedback.score}/100 and fell short of the ${scoreFeedback.threshold} target. Specifically weak areas: ${scoreFeedback.weakAreas.join('; ')}. Address these directly in this revision — don't just lightly rephrase, meaningfully strengthen the specific weak areas called out.`
+        : `\n\nIMPORTANT — this is a retry. The previous attempt was rejected before scoring: ${scoreFeedback.weakAreas.join('; ')}. Fix this directly in this revision.`)
     : ''
   const result = await callClaude(
     env,
