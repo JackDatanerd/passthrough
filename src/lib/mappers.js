@@ -278,6 +278,7 @@ function leadRowToCamel(row) {
     email:        row.email,
     roleCategory: row.role_category,
     source:       row.source,
+    status:       row.status,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }

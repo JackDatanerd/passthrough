@@ -72,6 +72,15 @@ export default function Settings() {
       await refreshUser()
       setEmailSuccess(true)
       setNewEmail(''); setEmailPassword('')
+      // BUG FIX (Section 6): resentOk/resendError belong to the resend-
+      // verification button just above, keyed on whatever address is
+      // CURRENTLY unverified. Changing the email address here marks the
+      // NEW address unverified (updateEmail already fires one verification
+      // email automatically) — but without resetting these, a user who'd
+      // clicked "Resend" earlier for their OLD address would keep seeing
+      // the stale "Sent!" badge here instead of a live resend button, for
+      // an address that never actually had a resend click of its own.
+      setResentOk(false); setResendError('')
     } catch (err) {
       setEmailError(getErrorMessage(err, 'Failed to update email.'))
     } finally {

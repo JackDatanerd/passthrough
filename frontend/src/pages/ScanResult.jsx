@@ -521,8 +521,22 @@ export default function ScanResult() {
 
             {/* Save profile for reuse — logged-in users only (anonymous visitors
                 have no account to save to), and only if there's structured data
-                to actually save */}
-            {scan.status === 'FIX_DELIVERED' && user && scan.originalResumeData && (
+                to actually save.
+                BUG FIX (Section 6): this used to also require
+                scan.status === 'FIX_DELIVERED', which is a real technical
+                requirement for file-upload scans (structuring only happens
+                during fix generation for that mode) but not for brain-dump
+                or saved-profile-mode scans, where originalResumeData is
+                already populated right after the free scan completes
+                (runAtsScan, scan.controller.js). The backend's own
+                POST /profile/save has no such status check — it only cares
+                that originalResumeData exists — so the old gate was hiding
+                this feature from every free-tier brain-dump/saved-profile
+                user for no reason tied to the data actually being ready.
+                Checking originalResumeData alone is the correct, mode-
+                agnostic signal: it's simply never populated yet for a
+                file-upload scan that hasn't had a fix generated. */}
+            {user && scan.originalResumeData && (
               <SaveProfilePrompt scanId={scan.id} />
             )}
 

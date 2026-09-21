@@ -12,4 +12,9 @@ router.post('/', rl.employerLead, c.createLead)
 // a manual Supabase query.
 router.get('/', admin, c.adminListLeads)
 
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —
+// the leads list was read-only with no way to track outreach or clear spam.
+router.patch( '/:id', admin, c.adminUpdateLeadStatus)
+router.delete('/:id', admin, c.adminDeleteLead)
+
 module.exports = router

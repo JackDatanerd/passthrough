@@ -15,6 +15,7 @@
 
 const { getSupabase } = require('../config/supabase')
 const { scanRowToCamel } = require('../lib/mappers')
+const { UUID_RE } = require('../middleware/validateUuidParam')
 
 // GET /api/profile
 async function getProfile(c) {
@@ -36,6 +37,12 @@ async function saveProfile(c) {
   const body = await c.req.json()
   const scanId = body.scanId
   if (!scanId) return c.json({ success: false, message: 'scanId required.' }, 400)
+  // BUG FIX (Section 6, traced cross-cutting to scan.routes.js — see
+  // validateUuidParam.js): scanId here is a JSON body field rather than a
+  // route param, so the route-level middleware doesn't cover it — same
+  // underlying issue (a malformed value reaching `.eq('id', ...)` as an
+  // uncaught Postgres error) needs its own inline check.
+  if (!UUID_RE.test(scanId)) return c.json({ success: false, message: 'Invalid scanId.' }, 400)
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', scanId).maybeSingle()

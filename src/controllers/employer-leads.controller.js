@@ -3,6 +3,25 @@ const { getSupabase } = require('../config/supabase')
 const { leadRowToCamel } = require('../lib/mappers')
 const emailService = require('../services/email.service')
 
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): status lifecycle for a
+// lead, matching lead_status_enum (migration 0018). Exported for the route
+// file's own validation and reused below.
+const LEAD_STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
+
+// Same UUID-format check missing everywhere else in the app (id params are
+// otherwise handed straight to `.eq('id', ...)`, and a malformed one blows
+// up as an uncaught Postgres type error → generic 500 instead of a clean
+// 400). Scoped to this controller's two new id-taking endpoints for now.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+// Mirrors admin.controller.js's sanitizeSearchTerm — not exported from
+// there, so duplicated rather than reaching across controllers for one
+// helper. Strips characters that would break PostgREST's `.or()` filter
+// string (commas separate conditions, parens group them).
+function sanitizeSearchTerm(term) {
+  return String(term || '').trim().replace(/[,()]/g, '')
+}
+
 // AUDIT FIX (Section 5): all three string fields are now trimmed before
 // validation. Previously a trailing space from a copy-pasted email (very
 // common) failed z.string().email() outright and surfaced as a generic
@@ -43,6 +62,10 @@ async function createLead(c) {
     // company/role stays current instead of the list quietly accumulating
     // stale duplicates.
     if (insertErr.code !== '23505') throw insertErr
+    // Deliberately NOT touching `status` here: a resubmission from the
+    // public form shouldn't silently reopen a lead an admin already worked
+    // through to CONTACTED/CONVERTED, or un-archive one they dismissed as
+    // spam. Status is admin-owned, changed only via adminUpdateLeadStatus.
     const { error: updateErr } = await supabase.from('employer_leads').update({
       name: data.name, company: data.company, role_category: data.roleCategory || null,
       updated_at: new Date().toISOString()
@@ -69,15 +92,70 @@ async function createLead(c) {
 // GET /api/employer-leads — admin only.
 // AUDIT FIX (Section 5): the actual retrieval path this section was missing
 // entirely. Mirrors adminListPartners' shape in partners.controller.js.
+//
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): optional ?status= and
+// ?search= filters, mirroring adminListUsers' pattern in admin.controller.js
+// (search across name/company/email via `.or()` + ilike). Still unpaginated
+// on purpose — see this endpoint's history; volume hasn't changed, only the
+// ability to narrow the list has.
 async function adminListLeads(c) {
   const supabase = getSupabase(c.env)
-  const { data, error } = await supabase
-    .from('employer_leads')
-    .select('*')
-    .order('created_at', { ascending: false })
+  const search = sanitizeSearchTerm(c.req.query('search'))
+  const status = c.req.query('status')
+
+  let query = supabase.from('employer_leads').select('*').order('created_at', { ascending: false })
+  if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%`)
+  if (status && LEAD_STATUSES.includes(status)) query = query.eq('status', status)
+
+  const { data, error } = await query
   if (error) throw error
 
   return c.json({ success: true, data: data.map(leadRowToCamel) })
 }
 
-module.exports = { createLead, adminListLeads }
+// PATCH /api/employer-leads/:id — admin only.
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): the missing lifecycle-
+// tracking half of the leads gap. Lets an admin mark a lead CONTACTED /
+// CONVERTED / ARCHIVED so the list can actually be worked, not just viewed.
+async function adminUpdateLeadStatus(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
+
+  const body = await c.req.json()
+  const { status } = z.object({ status: z.enum(LEAD_STATUSES) }).parse(body)
+
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase
+    .from('employer_leads')
+    .update({ status, updated_at: new Date().toISOString() })
+    .eq('id', id)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
+
+  return c.json({ success: true, data: leadRowToCamel(data) })
+}
+
+// DELETE /api/employer-leads/:id — admin only.
+// FEATURE GAP CLOSED (Section 5, fixing-time pass): no way to remove a
+// spam/junk submission short of a manual Supabase query — same gap the
+// original retrieval-side fix (adminListLeads, above) closed for reads.
+async function adminDeleteLead(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
+
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase
+    .from('employer_leads')
+    .delete()
+    .eq('id', id)
+    .select()
+    .maybeSingle()
+  if (error) throw error
+  if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
+
+  return c.json({ success: true, message: 'Lead deleted.' })
+}
+
+module.exports = { createLead, adminListLeads, adminUpdateLeadStatus, adminDeleteLead, LEAD_STATUSES }
