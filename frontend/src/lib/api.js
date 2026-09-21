@@ -1,59 +1,94 @@
 import axios from 'axios'
+import { resolveApiBase } from './apiUrl'
+import { normalizeBlobError, shouldRetryRequest } from './errors'
+import {
+  TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
+  classifyAuthFailure, isProtectedPath,
+} from './session'
 
-// Dev: Vite proxy handles /api → localhost:4000
-// Prod: VITE_API_URL=https://api.passthrough.dev (Cloudflare Pages env)
+// Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
+export { getErrorMessage } from './errors'
+export { SESSION_ENDED_EVENT } from './session'
+
+// Dev:  Vite proxy handles /api -> localhost:4000
+// Prod: VITE_API_URL=https://api.passthrough.dev  (with or without the trailing
+//       /api — resolveApiBase() normalises both; every Worker route lives under /api)
 const api = axios.create({
-  baseURL: import.meta.env.VITE_API_URL || '/api'
+  baseURL: resolveApiBase(import.meta.env.VITE_API_URL),
+  // Without a timeout a stalled connection left the UI spinning forever.
+  timeout: 30_000,
 })
 
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem('passthrough_token')
+  const token = localStorage.getItem(TOKEN_KEY)
   if (token) config.headers.Authorization = `Bearer ${token}`
+  // Remembered so the response side knows whether a session was actually
+  // presented — a 401 on a request that carried no token isn't an "expiry".
+  config.__hadToken = !!token
+  // Uploads legitimately take long on slow mobile links (5MB @ ~500kbps ≈ 80s);
+  // don't let the default 30s cut them off unless the caller chose a timeout.
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.__customTimeout !== true && config.timeout === 30_000)
+    config.timeout = 180_000
   return config
 })
 
-// AUDIT FIX: this used to treat ANY 401 as "your session died", including
-// the plain business-logic 401 auth/login itself returns for a wrong
-// password ({ success:false, message:'Invalid credentials' }, no code).
-// That meant mistyping a password on the login page raced its own error
-// message against this interceptor's window.location.href — the redirect
-// usually won, wiping any token and showing a false "Your session expired,
-// please sign in again" instead of "Invalid credentials", on literally the
-// most common login-page interaction there is. auth/login and auth/register
-// never have a real session to invalidate in the first place, so their 401s
-// (and any other 4xx) are left alone here for the calling page's own catch
-// block to handle and display.
-const AUTH_ENDPOINTS_WITHOUT_SESSION = ['/auth/login', '/auth/register']
+let sessionEnding = false
+
+function endSession(reason) {
+  if (sessionEnding) return            // several in-flight requests can all fail at once
+  sessionEnding = true
+  localStorage.removeItem(TOKEN_KEY)
+  localStorage.removeItem(USER_KEY)
+  // Let AuthProvider drop `user` in-place (Navbar flips to "Sign in") without a page reload.
+  window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }))
+
+  const { pathname, search } = window.location
+  // Only pages that REQUIRE a session get bounced (and they remember where the
+  // user was, so login can send them back). Public pages just carry on
+  // logged-out. A banned account is sent to the login notice from anywhere.
+  if (pathname !== '/login' && (reason === 'banned' || isProtectedPath(pathname))) {
+    const flag = reason === 'banned' ? 'banned=true' : 'expired=true'
+    const next = reason === 'banned' ? '' : `&next=${encodeURIComponent(pathname + search)}`
+    window.location.replace(`/login?${flag}${next}`)
+  } else {
+    setTimeout(() => { sessionEnding = false }, 1000)
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 api.interceptors.response.use(
   res => res,
-  err => {
-    const code   = err.response?.data?.code
-    const status = err.response?.status
-    const url    = err.config?.url || ''
-    const isAuthEntry = AUTH_ENDPOINTS_WITHOUT_SESSION.some(p => url.includes(p))
+  async err => {
+    await normalizeBlobError(err)
 
-    if (!isAuthEntry && (status === 401 || code === 'SESSION_INVALID' || code === 'TOKEN_EXPIRED')) {
-      localStorage.removeItem('passthrough_token')
-      localStorage.removeItem('passthrough_user')
-      window.location.href = '/login?expired=true'
+    const status = err.response?.status
+    const code = err.response?.data?.code
+    const config = err.config || {}
+
+    const verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
+    if (verdict) endSession(verdict)
+
+    // A 403 from an admin-gated endpoint (server-side role check failed — see
+    // middleware/adminOnly.js): a non-admin who reached an /admin/* page is sent
+    // somewhere useful instead of being parked on a page with nothing to load.
+    // Scoped to /admin paths only — a 403 elsewhere means something different.
+    if (status === 403 && !verdict && window.location.pathname.startsWith('/admin')) {
+      window.location.replace('/dashboard')
     }
-    if (!isAuthEntry && code === 'BANNED') {
-      localStorage.removeItem('passthrough_token')
-      localStorage.removeItem('passthrough_user')
-      window.location.href = '/login?banned=true'
+
+    // One automatic retry for idempotent GETs that failed transiently.
+    const retryAfter = Number(err.response?.headers?.['retry-after'])
+    const decision = shouldRetryRequest({
+      method: config.method, status, hasResponse: !!err.response,
+      retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried,
+    })
+    if (decision.retry && !verdict) {
+      config.__retried = true
+      await sleep(decision.delayMs)
+      return api.request(config)
     }
-    // AUDIT FIX (Admin panel): a 403 from an admin-gated endpoint (server-
-    // side role check failed — see middleware/adminOnly.js) previously had
-    // no handling here at all. A non-admin who reached an /admin/* route —
-    // even just during AuthContext's refresh race — got a generic "failed
-    // to load" toast and stayed parked on the admin URL with nothing to
-    // load, instead of being sent somewhere useful. Scoped to /admin paths
-    // only: a 403 elsewhere (e.g. a partner-token endpoint rejecting a bad
-    // token) means something different and shouldn't redirect the page.
-    if (status === 403 && window.location.pathname.startsWith('/admin')) {
-      window.location.href = '/dashboard'
-    }
+
     return Promise.reject(err)
   }
 )

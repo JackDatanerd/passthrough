@@ -1,13 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useParams, Link } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, cn } from '../../lib/utils'
+import { formatCents, formatDate, cn, copyToClipboard } from '../../lib/utils'
 
 function PayoutDetailsSummary({ partner }) {
   if (!partner.payoutMethod) {
@@ -62,7 +62,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       onSaved()
       onClose()
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to update partner.')
+      setError(getErrorMessage(err, 'Failed to update partner.'))
     } finally {
       setSaving(false)
     }
@@ -134,7 +134,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       onRecorded()
       onClose()
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to record payout.')
+      setError(getErrorMessage(err, 'Failed to record payout.'))
     } finally {
       setSaving(false)
     }
@@ -203,7 +203,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
       onCreated()
       onClose()
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to create code.')
+      setError(getErrorMessage(err, 'Failed to create code.'))
     } finally {
       setSaving(false)
     }
@@ -263,7 +263,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
       onSaved()
       onClose()
     } catch (err) {
-      setError(err.response?.data?.message || 'Failed to update code.')
+      setError(getErrorMessage(err, 'Failed to update code.'))
     } finally {
       setSaving(false)
     }
@@ -306,9 +306,11 @@ function ReferralCodesTab({ partner, onChanged }) {
     }
   }
 
-  function copyLink(codeRow) {
-    navigator.clipboard.writeText(`${siteOrigin()}/?ref=${codeRow.code}`)
-    toast({ message: 'Link copied.', type: 'success' })
+  async function copyLink(codeRow) {
+    const url = `${siteOrigin()}/?ref=${codeRow.code}`
+    // Only claim "copied" when it actually was (it used to toast success even when the write failed).
+    if (await copyToClipboard(url)) toast({ message: 'Link copied.', type: 'success' })
+    else toast({ message: `Couldn't copy automatically — ${url}`, type: 'error', duration: 8000 })
   }
 
   const codes = partner.referralCodes || []

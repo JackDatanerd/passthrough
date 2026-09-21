@@ -43,3 +43,12 @@ export function getAnonScanToken(scanId) {
 export function clearAnonScanTokens() {
   localStorage.removeItem(KEY)
 }
+
+// Drops just one entry. Used by the claim loop so that a claim that failed for
+// a TRANSIENT reason (network blip, 5xx) keeps its token for a later attempt
+// instead of being wiped along with the ones that were actually consumed.
+export function removeAnonScanToken(scanId) {
+  const remaining = readAll().filter(e => e.scanId !== scanId)
+  if (remaining.length === 0) localStorage.removeItem(KEY)
+  else localStorage.setItem(KEY, JSON.stringify(remaining))
+}

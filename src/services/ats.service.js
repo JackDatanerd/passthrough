@@ -1,4 +1,5 @@
 const constants = require('../config/constants')
+const { decodeHtmlEntities } = require('../lib/htmlEntities')
 
 const STOP_WORDS = new Set([
   'a','an','the','and','or','but','in','on','at','to','for','of','with',
@@ -35,6 +36,7 @@ const STOP_WORDS = new Set([
 // fraction of the complexity. Verified against 12+ common word-pair tests
 // plus a false-positive check against common English words before shipping.
 function stem(word) {
+  if (PROTECTED_TOKENS.has(word)) return word
   let w = word
   if (w.length > 5 && w.endsWith('ational')) w = w.slice(0, -5)
   if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -4)
@@ -48,8 +50,69 @@ function stem(word) {
   return w
 }
 
+// ── Tech-term handling ──────────────────────────────────────────────────────
+// The tokenizer used to be `replace(/[^a-z0-9\s]/g, ' ')` plus a "length >= 3"
+// filter. Together those made the terms that matter MOST on technical JDs
+// invisible: "C++" and "C#" collapsed to a 1-letter token and vanished, ".NET"
+// became "net", "CI/CD" became "ci"+"cd" (both dropped), and every 2-letter
+// term — ML, AI, QA, UX, UI, BI, JS — was discarded outright. A JD asking for
+// all of them produced a keyword list of only the surrounding filler words, so
+// missing skills were never reported and present ones earned no credit.
+//
+// Fix: symbol-bearing terms are rewritten to plain-alphanumeric canonical
+// tokens BEFORE tokenizing (applied identically to the resume and the JD, so
+// they still match each other), and a curated allowlist of short terms is
+// kept. Canonical tokens are mapped back to their real spelling for display.
+const CANONICAL_DISPLAY = {
+  cplusplus: 'C++', csharp: 'C#', fsharp: 'F#', dotnet: '.NET', cicd: 'CI/CD',
+  objectivec: 'Objective-C', rlang: 'R', golang: 'Go', clang: 'C',
+}
+// Two-letter terms worth keeping as keywords. Deliberately NOT included:
+// "it", "pm", "go", "or" and friends that are ordinary English words — the
+// language names R / Go / C are handled by the context-aware rules below.
+const SHORT_KEEP = new Set(['ai', 'ml', 'qa', 'ux', 'ui', 'bi', 'js', 'ts', 'db', 'os', 'vr', 'ar', 'hr', 'ci', 'cd'])
+const PROTECTED_TOKENS = new Set([...Object.keys(CANONICAL_DISPLAY), ...SHORT_KEEP])
+
+// A list-ish position: start of line, or right after , ; : / ( | • * -
+const LIST_PREV = String.raw`(?<=(?:^|[,;:/(|•·*\-])[ \t]*)`
+
+function normalizeTechTerms(text) {
+  return decodeHtmlEntities(String(text ?? ''))
+    .replace(/\bobjective[\s-]c\b/gi, ' objectivec ')
+    .replace(/\b(node|next|vue|react|express|nuxt|angular|ember|d3|three)\.?js\b/gi, ' $1 js ')
+    .replace(/\bc\+\+/gi, ' cplusplus ')
+    .replace(/\bc#/gi, ' csharp ')
+    .replace(/\bf#/gi, ' fsharp ')
+    .replace(/\.net\b/gi, ' dotnet ')
+    .replace(/\bci\s*\/\s*cd\b/gi, ' cicd ')
+    .replace(/\bgolang\b/gi, ' golang ')
+    // Case-SENSITIVE on purpose: only the capitalised, standalone language
+    // names, and only where the surrounding punctuation says "this is a list
+    // of skills" — so "Go to market", "R&D", "Plan C" and "Jane R. Doe" are
+    // not misread as programming languages.
+    .replace(new RegExp(LIST_PREV + String.raw`Go(?=[ \t]*(?:[,;:/)|]|$)|[ \t]+(?:and|or|&)[ \t])`, 'gm'), ' golang ')
+    .replace(new RegExp(LIST_PREV + String.raw`C(?=[ \t]*[,;:/)|])`, 'gm'), ' clang ')
+    // "... Go and R." — a sentence-final R is still the language when it sits in
+    // a list ("," / "and" / "or" / "/" before it); a bare "R. " is otherwise
+    // treated as a middle initial ("Jane R. Doe").
+    .replace(/(?<=(?:[,;:/(&]|\b(?:and|or))[ \t]*)R(?=\.?(?:[ \t]|$))/gm, ' rlang ')
+    .replace(/(?<![\w.+#])R(?![\w+#]|\.\s|\s*[&/]\s*[Dd]\b)/g, ' rlang ')
+}
+
 function tokenizeRaw(text) {
-  return text.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(Boolean)
+  return normalizeTechTerms(text)
+    .toLowerCase()
+    // Unicode-aware: the old [^a-z0-9] class turned "ingénieur" into the two
+    // fragments "ing" + "nieur" and mangled every non-English JD.
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .split(/\s+/)
+    .filter(Boolean)
+}
+
+const keepToken = w => w.length >= 3 || SHORT_KEEP.has(w)
+
+function displayKeyword(kw) {
+  return kw.split(' ').map(t => CANONICAL_DISPLAY[t] || t).join(' ')
 }
 
 // Extracts both single-word and adjacent-word-pair ("bigram") candidates
@@ -60,11 +123,11 @@ function extractKeywords(text) {
   const raw = tokenizeRaw(text)
   const freq = {}
   for (const w of raw) {
-    if (w.length >= 3 && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
+    if (keepToken(w) && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
   }
   for (let i = 0; i < raw.length - 1; i++) {
     const a = raw[i], b = raw[i + 1]
-    if (a.length >= 3 && b.length >= 3 && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+    if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
       const phrase = `${a} ${b}`
       freq[phrase] = (freq[phrase] || 0) + 1
     }
@@ -116,7 +179,13 @@ function scoreKeywords(resumeText, jdText) {
   const missing = top25.filter(kw => !matched.includes(kw))
   return {
     score: top25.length ? Math.round((matched.length / top25.length) * 100) : 100,
-    detail: { matched, missing, matchRate: top25.length ? matched.length / top25.length : 1 }
+    // Canonical tokens (cplusplus, dotnet, ...) are internal — show users the
+    // real spelling (C++, .NET, ...).
+    detail: {
+      matched: matched.map(displayKeyword),
+      missing: missing.map(displayKeyword),
+      matchRate: top25.length ? matched.length / top25.length : 1
+    }
   }
 }
 
@@ -414,4 +483,8 @@ function describeWeakAreas(scoreResult) {
   return notes.length ? notes : ['overall score below target — strengthen keyword alignment and bullet specificity throughout']
 }
 
-module.exports = { scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas }
+module.exports = {
+  scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
+  // exported for tests
+  extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword
+}

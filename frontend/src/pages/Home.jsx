@@ -71,7 +71,7 @@ function DemoScoreCard() {
 }
 
 export default function Home() {
-  const { pricing, byTier } = usePricing()
+  const { pricing, byTier, refresh: refreshPricing, clockOffsetMs } = usePricing()
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
@@ -268,7 +268,7 @@ export default function Home() {
             <h2 className="text-2xl font-bold text-gray-900 mb-3">Simple pricing</h2>
             <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix.</p>
             {pricing?.promoActive && pricing.promoEndsAt && (
-              <PromoCountdown endsAt={pricing.promoEndsAt} className="mb-8" />
+              <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-8" />
             )}
             <div className="inline-grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left">
               <div className="rounded-lg border border-gray-200 p-6">

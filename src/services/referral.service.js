@@ -15,20 +15,11 @@
 // migration) — only the pre-check has this benign race, not the bookkeeping.
 
 const c = require('../config/constants')
-const emailService = require('./email.service')
 
 async function lookupCode(supabase, rawCode) {
   if (!rawCode) return null
   const code = String(rawCode).trim().toUpperCase()
   if (!code) return null
-  // AUDIT FIX (Section 10, feature gap): now also pulls the owning
-  // partner's status. partner_status_enum ('ACTIVE'/'PAUSED') existed on
-  // the partners table since 0011 with no endpoint that ever set it AND no
-  // check anywhere that ever read it — pausing a partner (even by hand,
-  // directly in the DB, the only way it could be set at all before this
-  // fix) had zero effect: their codes kept discounting checkout and kept
-  // crediting commission exactly as if nothing had changed. See
-  // isCodeUsable() below for where this actually gets enforced now.
   const { data, error } = await supabase
     .from('referral_codes').select('*, partners(status)').eq('code', code).maybeSingle()
   if (error) throw error
@@ -38,15 +29,18 @@ async function lookupCode(supabase, rawCode) {
 function isCodeUsable(row) {
   if (!row) return false
   if (!row.active) return false
-  // A paused partner's codes stop applying to NEW checkouts immediately.
-  // Deliberately NOT re-checked in recordConversion() below — a payment
-  // that already went through at the discounted price, under valid terms
-  // at the time, still owes its commission regardless of what happens to
-  // the partner's status afterward. "Paused" means "stop new referrals,"
-  // not "retroactively deny commission on completed sales."
-  if (row.partners?.status !== 'ACTIVE') return false
-  if (row.expires_at && Date.parse(row.expires_at) < Date.now()) return false
+  if (row.expires_at) {
+    const expiresMs = Date.parse(row.expires_at)
+    // Fail CLOSED on an unparseable date: NaN < Date.now() is false, so the
+    // old check silently treated a corrupt expires_at as "never expires".
+    if (Number.isNaN(expiresMs) || expiresMs < Date.now()) return false
+  }
   if (row.usage_limit != null && row.uses_so_far >= row.usage_limit) return false
+  // A paused partner's codes stop applying to NEW checkouts immediately.
+  // Deliberately NOT re-checked in recordConversion() — a payment that already
+  // went through at the discounted price still owes its commission; "paused"
+  // means "stop new referrals", not "retroactively deny commission on sales".
+  if (row.partners?.status !== 'ACTIVE') return false
   return true
 }
 
@@ -86,7 +80,8 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
 }
 
 /**
- * recordConversion(supabase, payment, env)
+ * recordConversion(supabase, payment, env?)
+ *   -> { ok: boolean, recorded: boolean, reason?: string, error?: string }
  *
  * Call exactly once, from the single fulfillment path that wins the atomic
  * idempotency race in payments.controller.js's verifyPayment or
@@ -96,63 +91,103 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
  * per payment. The unique constraint on commission_ledger.payment_id is a
  * backstop, not the primary guard.
  *
- * `env` is used ONLY to alert on failure (AUDIT FIX, Admin panel pass —
- * see the ledger-insert branch below). Every other payment-critical
- * failure in this codebase (Paystack init/verify, webhook signature/amount
- * mismatches) pages the owner via sendOwnerAlert; this function's two
- * failure points previously only logged to console, which nobody sees in
- * production unless they're actively running `wrangler tail`. A failure
- * here means a completed, already-charged sale silently fails to generate
- * (or count) its commission — the partner is underpaid and the admin
- * panel's own "pending commission" figure is quietly wrong, with no signal
- * that either thing happened.
+ * NEVER THROWS, but — unlike the previous version, which only console.error'd
+ * — it now REPORTS what happened. That matters because of the idempotency
+ * design above: this is the only automatic attempt a payment will ever get,
+ * so a transient DB error here used to mean a partner's commission was lost
+ * permanently with nobody told. Callers check `ok` and call
+ * notifyConversionFailure() on false; POST /api/payments/:reference/reconcile
+ * re-runs this (safely — a duplicate is a no-op) to recover.
+ *
+ * Each write gets one immediate retry, since the realistic failure here is a
+ * transient blip rather than a persistent one.
  */
+async function withOneRetry(fn) {
+  const first = await fn()
+  if (!first.error || first.error.code === '23505') return first
+  return fn()
+}
+
 async function recordConversion(supabase, payment, env) {
-  if (!payment?.referral_code_id) return
+  const result = await recordConversionInner(supabase, payment)
+  // Pass `env` from the fulfilment paths so a failure pages the owner; the admin
+  // reconcile endpoint omits it and just returns the result to the admin.
+  if (env && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
+  return result
+}
 
-  const { data: codeRow, error: codeErr } = await supabase
-    .from('referral_codes').select('id, partner_id').eq('id', payment.referral_code_id).maybeSingle()
-  if (codeErr) { console.error('recordConversion code lookup:', codeErr.message); return }
-  if (!codeRow) return
+async function recordConversionInner(supabase, payment) {
+  if (!payment?.referral_code_id) return { ok: true, recorded: false, reason: 'no-referral' }
 
-  const { data: partner, error: partnerErr } = await supabase
-    .from('partners').select('commission_rate').eq('id', codeRow.partner_id).maybeSingle()
-  if (partnerErr) { console.error('recordConversion partner lookup:', partnerErr.message); return }
-  if (!partner) return
-
-  const commissionRate = Number(partner.commission_rate)
-  const commissionAmountCents = Math.round(payment.amount_cents * commissionRate)
-
-  const { error: ledgerErr } = await supabase.from('commission_ledger').insert({
-    payment_id:              payment.id,
-    partner_id:              codeRow.partner_id,
-    referral_code_id:        codeRow.id,
-    gross_amount_cents:      payment.amount_cents,
-    commission_rate:         commissionRate,
-    commission_amount_cents: commissionAmountCents
-  })
-  if (ledgerErr) {
-    if (ledgerErr.code === '23505') return  // already recorded — harmless duplicate call
-    console.error('recordConversion ledger insert:', ledgerErr.message)
-    if (env) {
-      await emailService.sendOwnerAlert(env,
-        'Commission ledger write failed — partner will be underpaid unless fixed manually',
-        `paymentId: ${payment.id}\npartnerId: ${codeRow.partner_id}\nreferralCodeId: ${codeRow.id}\ngrossAmountCents: ${payment.amount_cents}\nerror: ${ledgerErr.message}\n\nThis payment charged successfully but no commission_ledger row was created. The partner's pending balance will not reflect this sale until a row is inserted manually.`
-      ).catch(() => {})
+  try {
+    const codeRes = await withOneRetry(() => supabase
+      .from('referral_codes').select('id, partner_id').eq('id', payment.referral_code_id).maybeSingle())
+    if (codeRes.error) {
+      console.error('recordConversion code lookup:', codeRes.error.message)
+      return { ok: false, recorded: false, reason: 'code-lookup', error: codeRes.error.message }
     }
-    return
-  }
+    const codeRow = codeRes.data
+    if (!codeRow) return { ok: true, recorded: false, reason: 'code-not-found' }
 
-  const { error: rpcErr } = await supabase.rpc('increment_referral_code_usage', { p_code_id: codeRow.id })
-  if (rpcErr) {
-    console.error('recordConversion usage increment:', rpcErr.message)
-    if (env) {
-      await emailService.sendOwnerAlert(env,
-        'Referral code usage counter failed to increment',
-        `referralCodeId: ${codeRow.id}\npaymentId: ${payment.id}\nerror: ${rpcErr.message}\n\nThe commission was still recorded correctly. Only uses_so_far (the usage-limit counter) under-counted this redemption — check whether the code's usage_limit needs manual adjustment.`
-      ).catch(() => {})
+    const partnerRes = await withOneRetry(() => supabase
+      .from('partners').select('commission_rate').eq('id', codeRow.partner_id).maybeSingle())
+    if (partnerRes.error) {
+      console.error('recordConversion partner lookup:', partnerRes.error.message)
+      return { ok: false, recorded: false, reason: 'partner-lookup', error: partnerRes.error.message }
     }
+    const partner = partnerRes.data
+    if (!partner) return { ok: true, recorded: false, reason: 'partner-not-found' }
+
+    // Number(null) is 0, which would silently record a $0 commission for a
+    // partner whose rate is simply missing — treat null/undefined as invalid,
+    // and anything above 100% (commission larger than the sale) as invalid too.
+    const commissionRate = partner.commission_rate == null ? NaN : Number(partner.commission_rate)
+    if (!Number.isFinite(commissionRate) || commissionRate < 0 || commissionRate > 1)
+      return { ok: false, recorded: false, reason: 'bad-commission-rate', error: `commission_rate=${partner.commission_rate}` }
+    const commissionAmountCents = Math.round(payment.amount_cents * commissionRate)
+
+    const ledgerRes = await withOneRetry(() => supabase.from('commission_ledger').insert({
+      payment_id:              payment.id,
+      partner_id:              codeRow.partner_id,
+      referral_code_id:        codeRow.id,
+      gross_amount_cents:      payment.amount_cents,
+      commission_rate:         commissionRate,
+      commission_amount_cents: commissionAmountCents
+    }))
+    if (ledgerRes.error) {
+      if (ledgerRes.error.code === '23505') return { ok: true, recorded: false, reason: 'duplicate' }
+      console.error('recordConversion ledger insert:', ledgerRes.error.message)
+      return { ok: false, recorded: false, reason: 'ledger-insert', error: ledgerRes.error.message }
+    }
+
+    const rpcRes = await withOneRetry(() => supabase.rpc('increment_referral_code_usage', { p_code_id: codeRow.id }))
+    if (rpcRes.error) {
+      console.error('recordConversion usage increment:', rpcRes.error.message)
+      // The commission itself IS recorded — only the usage counter is short by one.
+      return { ok: false, recorded: true, reason: 'usage-increment', error: rpcRes.error.message }
+    }
+    return { ok: true, recorded: true }
+  } catch (err) {
+    console.error('recordConversion unexpected:', err.message)
+    return { ok: false, recorded: false, reason: 'exception', error: err.message }
   }
 }
 
-module.exports = { resolvePrice, recordConversion }
+// Owner alert for a conversion that could not be (fully) recorded. Lazy
+// require: email.service pulls in the Resend/fetch plumbing, which pure
+// pricing callers/tests of this module shouldn't need to load.
+async function notifyConversionFailure(env, payment, result, source) {
+  try {
+    const emailService = require('./email.service')
+    await emailService.sendOwnerAlert(env,
+      'Partner commission NOT fully recorded',
+      `source: ${source}\npayment id: ${payment?.id}\nreference: ${payment?.paystack_ref}\n` +
+      `referral_code_id: ${payment?.referral_code_id}\namount_cents: ${payment?.amount_cents}\n` +
+      `step: ${result?.reason}\nerror: ${result?.error}\ncommission recorded: ${result?.recorded ? 'yes' : 'NO'}\n\n` +
+      `The customer's fix is unaffected. To retry the ledger write (safe to repeat), call:\n\n` +
+      `  POST /api/payments/${payment?.paystack_ref}/reconcile  (admin-only)`
+    )
+  } catch (_) {}
+}
+
+module.exports = { resolvePrice, recordConversion, notifyConversionFailure, isCodeUsable }

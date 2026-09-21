@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
+import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -43,7 +44,7 @@ export default function ResetPassword() {
       setSuccess(true)
       setTimeout(() => navigate('/login'), 2000)
     } catch (err) {
-      setError(err.response?.data?.message || 'Reset failed. Link may have expired.')
+      setError(getErrorMessage(err, 'Reset failed. Link may have expired.'))
     } finally {
       setLoading(false)
     }
@@ -60,17 +61,17 @@ export default function ResetPassword() {
               Password reset! Redirecting to sign in…
             </p>
           ) : (
-            <div className="flex flex-col gap-4">
+            <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
               <Input label="New password" type="password" value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 autoComplete="new-password" placeholder="Min. 8 characters" />
               <Input label="Confirm password" type="password" value={confirm}
                 onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
               {error && <p className="text-sm text-red-600">{error}</p>}
-              <Button onClick={handleSubmit} loading={loading} className="w-full">
+              <Button type="submit" loading={loading} className="w-full">
                 Reset password
               </Button>
-            </div>
+            </Form>
           )}
         </div>
       </main>

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
+import { copyToClipboard } from '../lib/utils'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -26,11 +27,11 @@ function ShareLink({ code }) {
   const [copied, setCopied] = useState(false)
   const url = `${window.location.origin}/?ref=${code}`
 
-  function copy() {
-    navigator.clipboard.writeText(url).then(() => {
+  async function copy() {
+    if (await copyToClipboard(url)) {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
-    })
+    }
   }
 
   return (

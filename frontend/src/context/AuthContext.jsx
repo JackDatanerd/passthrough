@@ -1,6 +1,6 @@
 import { createContext, useState, useEffect } from 'react'
-import api from '../lib/api'
-import { getAnonScanTokens, clearAnonScanTokens } from '../lib/anonScans'
+import api, { SESSION_ENDED_EVENT } from '../lib/api'
+import { getAnonScanTokens, removeAnonScanToken } from '../lib/anonScans'
 
 // PATCH 3: exported so hooks/useAuth.js can import it directly
 export const AuthContext = createContext(null)
@@ -60,7 +60,32 @@ export function AuthProvider({ children }) {
     else setAuthLoading(false)
   }, [])
 
-  async function postRegisterActions(token, newUser) {
+  // The API client ends the session (expired / banned) WITHOUT a page reload on
+  // public pages — drop the in-memory user so the UI flips to logged-out.
+  useEffect(() => {
+    const onEnded = () => { setUser(null); setAuthLoading(false) }
+    window.addEventListener(SESSION_ENDED_EVENT, onEnded)
+    return () => window.removeEventListener(SESSION_ENDED_EVENT, onEnded)
+  }, [])
+
+  // Keep every open tab consistent: signing out (or in) in one tab used to
+  // leave the others showing a logged-in UI until they were reloaded.
+  useEffect(() => {
+    function onStorage(e) {
+      if (e.key === 'passthrough_token' && !e.newValue) setUser(null)
+      if (e.key === 'passthrough_user') {
+        try { setUser(e.newValue ? JSON.parse(e.newValue) : null) } catch (_) {}
+      }
+    }
+    window.addEventListener('storage', onStorage)
+    return () => window.removeEventListener('storage', onStorage)
+  }, [])
+
+  // Shared by register AND login: stores the session, then claims any pending
+  // anonymous scans. Login used to skip the claim, so a returning user who
+  // scanned anonymously and then signed in was left holding a scan they could
+  // never pay for (initializePayment requires scan.userId === user.id).
+  async function postAuthActions(token, newUser) {
     localStorage.setItem('passthrough_token', token)
     localStorage.setItem('passthrough_user', JSON.stringify(newUser))
     setUser(newUser)
@@ -76,16 +101,20 @@ export function AuthProvider({ children }) {
     // same "go straight to your most recent scan" behavior as before.
     const anonEntries = getAnonScanTokens()
     let lastClaimedScanId = null
-    for (const { token: anonToken } of anonEntries) {
+    for (const { scanId, token: anonToken } of anonEntries) {
       try {
         const res = await api.post('/auth/claim-scan', { anonToken })
         lastClaimedScanId = res.data.data.scanId
-      } catch (_) {
-        // Expired/already-claimed/not-found — drop this one and keep going
-        // with the rest, same as the original single-token behavior did.
+        removeAnonScanToken(scanId)
+      } catch (err) {
+        // 400/404 = expired / already claimed / not found: this token is dead,
+        // drop it. Anything else (network blip, 5xx) may be transient — KEEP it
+        // for a later attempt. (Clearing everything unconditionally lost
+        // recoverable scans whenever one claim hit a transient error.)
+        const status = err.response?.status
+        if (status === 400 || status === 404) removeAnonScanToken(scanId)
       }
     }
-    clearAnonScanTokens()
     return lastClaimedScanId  // caller should navigate to /scan/:id, or /dashboard if null
   }
 
@@ -96,7 +125,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, postRegisterActions, logout, refreshUser, authLoading }}>
+    <AuthContext.Provider value={{ user, setUser, postAuthActions, postRegisterActions: postAuthActions, logout, refreshUser, authLoading }}>
       {children}
     </AuthContext.Provider>
   )

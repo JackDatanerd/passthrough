@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
 
 // Phase 4 — explicit opt-in only. Profile data (name, email, phone, work
@@ -26,7 +26,7 @@ export default function SaveProfilePrompt({ scanId }) {
       await api.post('/profile/save', { scanId })
       setStatus('saved')
     } catch (err) {
-      setError(err.response?.data?.message || 'Could not save profile.')
+      setError(getErrorMessage(err, 'Could not save profile.'))
       setStatus('error')
     }
   }

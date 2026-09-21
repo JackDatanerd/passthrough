@@ -37,8 +37,12 @@ export async function onRequestGet(context) {
   // so the SPA's own boot behavior can't drift from what real users get.
   const response = await context.next()
 
-  const apiUrl = env.API_URL
-  if (!apiUrl || !code) return response
+  if (!env.API_URL || !code) return response
+  // Every Worker route lives under /api. DEPLOYMENT.md used to say to set
+  // API_URL to the bare host, which made this fetch hit /verify/<code> (404)
+  // and silently fail open — so link previews never worked. Accept either form.
+  const noTrailing = String(env.API_URL).trim().replace(/\/+$/, '')
+  const apiUrl = /\/api$/i.test(noTrailing) ? noTrailing : `${noTrailing}/api`
 
   let data = null
   try {

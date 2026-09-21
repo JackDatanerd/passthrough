@@ -325,8 +325,12 @@ async function reconcilePayment(ctx) {
   if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
 
   if (scan.fix_purchased && ['FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)) {
+    // Fix delivery is fine, but the partner-commission ledger write may be
+    // the thing that failed (see recordConversion) — retry it here too;
+    // it's idempotent, so an already-recorded conversion is a no-op.
+    const conversion = await referralService.recordConversion(supabase, payment)
     return ctx.json({ success: true, message: 'Already fulfilled — nothing to do.',
-      data: { scanId: scan.id, status: scan.status } })
+      data: { scanId: scan.id, status: scan.status, conversion } })
   }
 
   const fixTier = payment.fix_tier || 'FIX'
@@ -338,7 +342,14 @@ async function reconcilePayment(ctx) {
   const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
   await ctx.env.FIX_QUEUE.send({ type: generatorType, scanId: scan.id })
 
-  return ctx.json({ success: true, message: 'Re-enqueued.', data: { scanId: scan.id, fixTier } })
+  // Also re-attempt the partner-commission ledger entry. recordConversion is
+  // idempotent (commission_ledger.payment_id is unique -> a repeat is a
+  // harmless no-op), and a failed ledger write at fulfillment time is
+  // otherwise unrecoverable: the idempotency guard means nothing else will
+  // ever retry it.
+  const conversion = await referralService.recordConversion(supabase, payment)
+
+  return ctx.json({ success: true, message: 'Re-enqueued.', data: { scanId: scan.id, fixTier, conversion } })
 }
 
 // GET /api/payments/history

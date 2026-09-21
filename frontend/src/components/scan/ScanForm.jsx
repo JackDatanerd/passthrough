@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
@@ -114,7 +114,7 @@ export default function ScanForm() {
 
       navigate(`/scan/${scanId}`)
     } catch (err) {
-      const msg = err.response?.data?.message || 'Something went wrong. Please try again.'
+      const msg = getErrorMessage(err, 'Something went wrong. Please try again.')
       // AUDIT FIX: this only auto-switched back to paste mode when the
       // backend explicitly marked the failure `blocked: true` (LinkedIn,
       // listing pages, Workday). Every other JD-URL fetch failure — a 404,
@@ -162,7 +162,7 @@ export default function ScanForm() {
           )}
         </div>
 
-        {entryMode === 'upload' && <FileUpload onFile={setFile} />}
+        {entryMode === 'upload' && <FileUpload value={file} onFile={setFile} />}
 
         {entryMode === 'brainDump' && (
           <div>

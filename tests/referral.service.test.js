@@ -32,7 +32,8 @@ describe('referral.service — resolvePrice', () => {
     const codeRow = {
       id: 'code-1', active: true, expires_at: null,
       usage_limit: null, uses_so_far: 0,
-      tier_prices: { FIX: 1900 }
+      tier_prices: { FIX: 1900 },
+      partners: { status: 'ACTIVE' }   // codes of a paused/absent partner no longer apply (see isCodeUsable)
     }
     const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'coach20')
     expect(result.referralApplied).toBe(true)
@@ -41,7 +42,7 @@ describe('referral.service — resolvePrice', () => {
   })
 
   it('is case-insensitive on the code string', async () => {
-    const codeRow = { id: 'code-1', active: true, tier_prices: { FIX: 1900 } }
+    const codeRow = { id: 'code-1', active: true, tier_prices: { FIX: 1900 }, partners: { status: 'ACTIVE' } }
     const result = await resolvePrice(fakeSupabase(codeRow), 'FIX', env, 'CoAcH20')
     expect(result.referralApplied).toBe(true)
   })

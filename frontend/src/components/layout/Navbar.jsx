@@ -11,7 +11,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav className="bg-white border-b border-gray-200">
+    <nav aria-label="Main" className="bg-white border-b border-gray-200">
       <div className="max-w-5xl mx-auto px-4 h-14 flex items-center justify-between">
         <Link to="/" className="font-bold text-blue-700 text-lg tracking-tight">
           Passthrough
@@ -33,7 +33,14 @@ export default function Navbar() {
               <Link to="/dashboard" className="text-gray-600 hover:text-gray-900 transition-colors">
                 Dashboard
               </Link>
+              {/* The admin page had no link anywhere — admins had to type the URL. */}
+              {user.role === 'ADMIN' && (
+                <Link to="/admin" className="text-gray-600 hover:text-gray-900 transition-colors">
+                  Admin
+                </Link>
+              )}
               <button
+                type="button"
                 onClick={handleLogout}
                 className="text-gray-600 hover:text-gray-900 transition-colors"
               >

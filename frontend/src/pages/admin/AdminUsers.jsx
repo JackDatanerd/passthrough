@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Badge from '../../components/ui/Badge'
@@ -44,7 +44,7 @@ export default function AdminUsers() {
       toast({ message: 'User updated.', type: 'success' })
       load()
     } catch (err) {
-      toast({ message: err.response?.data?.message || 'Failed to update user.', type: 'error' })
+      toast({ message: getErrorMessage(err, 'Failed to update user.'), type: 'error' })
     } finally {
       setBusyId(null)
     }

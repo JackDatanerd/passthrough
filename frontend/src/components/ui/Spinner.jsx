@@ -1,9 +1,11 @@
 import { cn } from '../../lib/utils'
 
-export default function Spinner({ size = 'md', className }) {
+export default function Spinner({ size = 'md', className, label = 'Loading' }) {
   const sizes = { sm: 'h-4 w-4', md: 'h-6 w-6', lg: 'h-10 w-10' }
   return (
     <svg
+      role="status"
+      aria-label={label}
       className={cn('animate-spin text-blue-600', sizes[size], className)}
       fill="none" viewBox="0 0 24 24"
     >

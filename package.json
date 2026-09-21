@@ -8,7 +8,10 @@
     "seed":       "node supabase/seed.js",
     "cf-typegen": "wrangler types",
     "test":       "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "lint":       "node scripts/lint-undefined.cjs",
+    "predeploy":  "npm run lint && npm test"
   },
   "dependencies": {
     "@supabase/supabase-js":  "^2.39.0",

@@ -38,6 +38,10 @@ async function getPricing(ctx) {
 
   return ctx.json({ success: true, data: {
     currency: c.CURRENCY,
+    // Server clock, so the client countdown can correct for a user's
+    // wrong/skewed device clock — the deadline it counts toward is enforced
+    // against THIS clock at checkout, not theirs.
+    serverTime: Date.now(),
     promoActive,
     // null when there's no active promo — frontend should not render a
     // countdown in that case rather than showing a stale/zero timer.

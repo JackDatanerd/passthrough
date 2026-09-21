@@ -1,42 +1,60 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { Suspense } from 'react'
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { ToastProvider } from './components/ui/Toast'
+import Spinner from './components/ui/Spinner'
+import ErrorBoundary from './components/ErrorBoundary'
+import lazyWithRetry from './lib/lazyWithRetry'
 import useScrollToHash from './hooks/useScrollToHash'
+import usePageTitle from './hooks/usePageTitle'
 import { useReferralCapture } from './hooks/useReferralCapture'
 
-// Pages
+// Landing + auth pages stay in the main bundle (first paint / most common entry
+// points). Everything else is split into its own chunk — the homepage used to
+// download the admin console, partner pages and the Paystack integration too.
 import Home           from './pages/Home'
 import Login          from './pages/Login'
 import Register       from './pages/Register'
-import ForgotPassword from './pages/ForgotPassword'
-import ResetPassword  from './pages/ResetPassword'
-import VerifyEmail    from './pages/VerifyEmail'
-import ScanResult     from './pages/ScanResult'
-import Verify         from './pages/Verify'
-import Pricing        from './pages/Pricing'
-import Terms          from './pages/Terms'
-import Privacy        from './pages/Privacy'
-import PaymentSuccess from './pages/PaymentSuccess'
-import DashboardIndex from './pages/dashboard/Index'
-import Settings       from './pages/dashboard/Settings'
-import PartnerPayoutDetails from './pages/PartnerPayoutDetails'
-import PartnerDashboard     from './pages/PartnerDashboard'
-import AdminLayout        from './pages/admin/AdminLayout'
-import AdminDashboard     from './pages/admin/AdminDashboard'
-import AdminPartners      from './pages/admin/AdminPartners'
-import PartnerDetail      from './pages/admin/PartnerDetail'
-import AdminUsers         from './pages/admin/AdminUsers'
-import AdminScans         from './pages/admin/AdminScans'
-import AdminPayments      from './pages/admin/AdminPayments'
-import AdminLeads         from './pages/admin/AdminLeads'
-import AdminSystemHealth  from './pages/admin/AdminSystemHealth'
+import NotFound       from './pages/NotFound'
+
+const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'))
+const ResetPassword  = lazyWithRetry(() => import('./pages/ResetPassword'))
+const VerifyEmail    = lazyWithRetry(() => import('./pages/VerifyEmail'))
+const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
+const Verify         = lazyWithRetry(() => import('./pages/Verify'))
+const Pricing        = lazyWithRetry(() => import('./pages/Pricing'))
+const Terms          = lazyWithRetry(() => import('./pages/Terms'))
+const Privacy        = lazyWithRetry(() => import('./pages/Privacy'))
+const PaymentSuccess = lazyWithRetry(() => import('./pages/PaymentSuccess'))
+const DashboardIndex = lazyWithRetry(() => import('./pages/dashboard/Index'))
+const Settings       = lazyWithRetry(() => import('./pages/dashboard/Settings'))
+const PartnerPayoutDetails = lazyWithRetry(() => import('./pages/PartnerPayoutDetails'))
+const PartnerDashboard     = lazyWithRetry(() => import('./pages/PartnerDashboard'))
+// Admin console (upstream Admin-panel work) — lazy like everything else non-landing.
+const AdminLayout        = lazyWithRetry(() => import('./pages/admin/AdminLayout'))
+const AdminDashboard     = lazyWithRetry(() => import('./pages/admin/AdminDashboard'))
+const AdminPartners      = lazyWithRetry(() => import('./pages/admin/AdminPartners'))
+const PartnerDetail      = lazyWithRetry(() => import('./pages/admin/PartnerDetail'))
+const AdminUsers         = lazyWithRetry(() => import('./pages/admin/AdminUsers'))
+const AdminScans         = lazyWithRetry(() => import('./pages/admin/AdminScans'))
+const AdminPayments      = lazyWithRetry(() => import('./pages/admin/AdminPayments'))
+const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'))
+const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
+
+// Sends a signed-out visitor to /login, remembering where they were headed so
+// login can return them there (Login validates ?next= via safeNext).
+function loginRedirect(location) {
+  const next = encodeURIComponent(location.pathname + location.search)
+  return <Navigate to={`/login?next=${next}`} replace />
+}
 
 // ProtectedRoute — redirects to /login if no token
 // Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
 function ProtectedRoute({ children }) {
   const token = localStorage.getItem('passthrough_token')
-  if (!token) return <Navigate to="/login" replace />
+  const location = useLocation()
+  if (!token) return loginRedirect(location)
   return children
 }
 
@@ -44,21 +62,13 @@ function ProtectedRoute({ children }) {
 // so this one does use useAuth/AuthContext rather than a raw localStorage
 // check. AuthProvider already refreshes `user` from /auth/me on load (see
 // AuthContext.jsx), so `role` here reflects the server, not a stale cache.
-//
-// AUDIT FIX (Admin panel): previously rendered `children` immediately
-// whenever `user` was falsy (only redirecting when a user object WAS
-// present and its role wasn't ADMIN) — so a null/not-yet-loaded `user`
-// (cleared localStorage cache, or the very first paint after opening the
-// app with only a token present) briefly rendered the admin page's client
-// shell before refreshUser() resolved. The actual data was always safe
-// (adminOnly.js re-checks role from the DB on every request — see
-// api.js's new 403 handler too), but the UI shouldn't render as admin
-// before a role is actually confirmed. Now waits for authLoading to clear
-// before deciding either way.
 function AdminRoute({ children }) {
   const token = localStorage.getItem('passthrough_token')
   const { user, authLoading } = useAuth()
-  if (!token) return <Navigate to="/login" replace />
+  const location = useLocation()
+  if (!token) return loginRedirect(location)
+  // Don't render admin chrome before the role is actually confirmed (upstream
+  // fix: a null/not-yet-loaded `user` used to render the admin shell briefly).
   if (authLoading) return null
   if (!user || user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
   return children
@@ -70,8 +80,62 @@ function AdminRoute({ children }) {
 // useLocation to see the current ?ref= query string on every navigation.
 function RouteEffects() {
   useScrollToHash()
+  usePageTitle()
   useReferralCapture()
   return null
+}
+
+// Inside the Router so it can reset itself when the route changes — one page
+// crashing must not leave the whole app stuck on the error screen.
+function RoutedApp() {
+  const { pathname } = useLocation()
+  return (
+    <ErrorBoundary resetKey={pathname}>
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50">
+          <Spinner size="lg" />
+        </div>
+      }>
+        <Routes>
+          {/* Public routes */}
+          <Route path="/"                element={<Home />} />
+          <Route path="/scan/:id"        element={<ScanResult />} />
+          <Route path="/v/:code"         element={<Verify />} />
+          <Route path="/login"           element={<Login />} />
+          <Route path="/register"        element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password"  element={<ResetPassword />} />
+          <Route path="/verify-email"    element={<VerifyEmail />} />
+          <Route path="/pricing"         element={<Pricing />} />
+          <Route path="/terms"           element={<Terms />} />
+          <Route path="/privacy"         element={<Privacy />} />
+          <Route path="/payment/success" element={<PaymentSuccess />} />
+          <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
+          <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
+
+          {/* Protected routes — redirect to /login if no token */}
+          <Route path="/dashboard"
+            element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
+          <Route path="/dashboard/settings"
+            element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/admin" element={<AdminRoute><AdminLayout /></AdminRoute>}>
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard"    element={<AdminDashboard />} />
+            <Route path="partners"     element={<AdminPartners />} />
+            <Route path="partners/:id" element={<PartnerDetail />} />
+            <Route path="users"        element={<AdminUsers />} />
+            <Route path="scans"        element={<AdminScans />} />
+            <Route path="payments"     element={<AdminPayments />} />
+            <Route path="leads"        element={<AdminLeads />} />
+            <Route path="health"       element={<AdminSystemHealth />} />
+          </Route>
+
+          {/* Catch-all: a real 404 page instead of a silent redirect home */}
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
+  )
 }
 
 export default function App() {
@@ -80,44 +144,7 @@ export default function App() {
       <ToastProvider>
         <BrowserRouter>
           <RouteEffects />
-          <Routes>
-            {/* Public routes */}
-            <Route path="/"                element={<Home />} />
-            <Route path="/scan/:id"        element={<ScanResult />} />
-            <Route path="/v/:code"         element={<Verify />} />
-            <Route path="/login"           element={<Login />} />
-            <Route path="/register"        element={<Register />} />
-            <Route path="/forgot-password" element={<ForgotPassword />} />
-            <Route path="/reset-password"  element={<ResetPassword />} />
-            <Route path="/verify-email"    element={<VerifyEmail />} />
-            <Route path="/pricing"         element={<Pricing />} />
-            <Route path="/terms"           element={<Terms />} />
-            <Route path="/privacy"         element={<Privacy />} />
-            <Route path="/payment/success" element={<PaymentSuccess />} />
-            <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
-            <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
-
-            {/* Protected routes — redirect to /login if no token */}
-            <Route path="/dashboard"
-              element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
-            <Route path="/dashboard/settings"
-              element={<ProtectedRoute><Settings /></ProtectedRoute>} />
-            <Route path="/admin"
-              element={<AdminRoute><AdminLayout /></AdminRoute>}>
-              <Route index element={<Navigate to="dashboard" replace />} />
-              <Route path="dashboard"     element={<AdminDashboard />} />
-              <Route path="partners"      element={<AdminPartners />} />
-              <Route path="partners/:id"  element={<PartnerDetail />} />
-              <Route path="users"         element={<AdminUsers />} />
-              <Route path="scans"         element={<AdminScans />} />
-              <Route path="payments"      element={<AdminPayments />} />
-              <Route path="leads"         element={<AdminLeads />} />
-              <Route path="health"        element={<AdminSystemHealth />} />
-            </Route>
-
-            {/* Catch-all */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
+          <RoutedApp />
         </BrowserRouter>
       </ToastProvider>
     </AuthProvider>

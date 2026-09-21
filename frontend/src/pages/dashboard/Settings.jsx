@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
+import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
 import { formatDate } from '../../lib/utils'
@@ -57,7 +58,7 @@ export default function Settings() {
       await refreshUser()
       setNameSuccess(true)
     } catch (err) {
-      setNameError(err.response?.data?.message || 'Failed to update name.')
+      setNameError(getErrorMessage(err, 'Failed to update name.'))
     } finally {
       setNameLoading(false)
     }
@@ -72,7 +73,7 @@ export default function Settings() {
       setEmailSuccess(true)
       setNewEmail(''); setEmailPassword('')
     } catch (err) {
-      setEmailError(err.response?.data?.message || 'Failed to update email.')
+      setEmailError(getErrorMessage(err, 'Failed to update email.'))
     } finally {
       setEmailLoading(false)
     }
@@ -116,7 +117,7 @@ export default function Settings() {
       setHasSavedProfile(false)
       setSavedAt(null)
     } catch (err) {
-      setRemoveError(err.response?.data?.message || 'Failed to remove saved profile.')
+      setRemoveError(getErrorMessage(err, 'Failed to remove saved profile.'))
     } finally {
       setRemoving(false)
     }
@@ -146,10 +147,17 @@ export default function Settings() {
       setPwSuccess(true)
       setCurrent(''); setNewPass(''); setConfirm('')
     } catch (err) {
-      setPwError(err.response?.data?.message || 'Failed to update password.')
+      setPwError(getErrorMessage(err, 'Failed to update password.'))
     } finally {
       setPwLoading(false)
     }
+  }
+
+  // Closing the dialog must also clear what was typed into it — the password
+  // and any error used to linger in state and reappear on the next open.
+  function closeDelete() {
+    if (deleteLoading) return
+    setDeleteOpen(false); setDeletePass(''); setDeleteError('')
   }
 
   async function handleDeleteAccount() {
@@ -160,7 +168,7 @@ export default function Settings() {
       logout()
       navigate('/')
     } catch (err) {
-      setDeleteError(err.response?.data?.message || 'Failed to delete account.')
+      setDeleteError(getErrorMessage(err, 'Failed to delete account.'))
       setDeleteLoading(false)
     }
   }
@@ -196,16 +204,16 @@ export default function Settings() {
               )}
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2 sm:items-end">
-              <Input label="Name" value={name} onChange={e => { setName(e.target.value); setNameSuccess(false) }} />
-              <Button onClick={handleUpdateName} loading={nameLoading} variant="secondary" size="sm">
+            <Form onSubmit={handleUpdateName} className="flex flex-col sm:flex-row gap-2 sm:items-end">
+              <Input label="Name" value={name} autoComplete="name" onChange={e => { setName(e.target.value); setNameSuccess(false) }} />
+              <Button type="submit" loading={nameLoading} variant="secondary" size="sm">
                 Save
               </Button>
-            </div>
+            </Form>
             {nameError   && <p className="text-sm text-red-600">{nameError}</p>}
             {nameSuccess && <p className="text-sm text-green-700">Name updated.</p>}
 
-            <div className="flex flex-col gap-2 pt-2 border-t border-gray-100">
+            <Form onSubmit={handleUpdateEmail} className="flex flex-col gap-2 pt-2 border-t border-gray-100">
               <p className="text-sm text-gray-600"><span className="font-medium">Current email:</span> {user?.email}</p>
               <Input label="New email" type="email" value={newEmail}
                 onChange={e => { setNewEmail(e.target.value); setEmailSuccess(false) }} />
@@ -214,17 +222,17 @@ export default function Settings() {
                 autoComplete="current-password" />
               {emailError   && <p className="text-sm text-red-600">{emailError}</p>}
               {emailSuccess && <p className="text-sm text-green-700">Email updated — check your inbox to verify it.</p>}
-              <Button onClick={handleUpdateEmail} loading={emailLoading} variant="secondary" size="sm" className="self-start">
+              <Button type="submit" loading={emailLoading} variant="secondary" size="sm" className="self-start">
                 Update email
               </Button>
-            </div>
+            </Form>
           </div>
         </div>
 
         {/* Change password */}
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Change password</h2>
-          <div className="flex flex-col gap-3">
+          <Form onSubmit={handleChangePassword} className="flex flex-col gap-3">
             <Input label="Current password" type="password" value={current}
               onChange={e => setCurrent(e.target.value)} autoComplete="current-password" />
             <Input label="New password" type="password" value={newPass}
@@ -234,10 +242,10 @@ export default function Settings() {
               onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
             {pwError   && <p className="text-sm text-red-600">{pwError}</p>}
             {pwSuccess && <p className="text-sm text-green-700">Password updated. Other sessions signed out.</p>}
-            <Button onClick={handleChangePassword} loading={pwLoading} variant="secondary" className="self-start">
+            <Button type="submit" loading={pwLoading} variant="secondary" className="self-start">
               Update password
             </Button>
-          </div>
+          </Form>
         </div>
 
         {/* Saved profile */}
@@ -278,23 +286,23 @@ export default function Settings() {
         </div>
       </div>
 
-      <Modal open={deleteOpen} onClose={() => setDeleteOpen(false)} title="Delete account">
+      <Modal open={deleteOpen} onClose={closeDelete} title="Delete account" dismissible={!deleteLoading}>
         <p className="text-sm text-gray-600 mb-4">
           This will permanently delete your account. Enter your password to confirm.
         </p>
-        <div className="flex flex-col gap-3">
+        <Form onSubmit={handleDeleteAccount} className="flex flex-col gap-3">
           <Input type="password" placeholder="Your password" value={deletePass}
-            onChange={e => setDeletePass(e.target.value)} />
+            autoComplete="current-password" onChange={e => setDeletePass(e.target.value)} />
           {deleteError && <p className="text-sm text-red-600">{deleteError}</p>}
           <div className="flex gap-3">
-            <Button variant="secondary" onClick={() => setDeleteOpen(false)} className="flex-1">
+            <Button variant="secondary" onClick={closeDelete} disabled={deleteLoading} className="flex-1">
               Cancel
             </Button>
-            <Button variant="danger" onClick={handleDeleteAccount} loading={deleteLoading} className="flex-1">
+            <Button type="submit" variant="danger" loading={deleteLoading} className="flex-1">
               Delete permanently
             </Button>
           </div>
-        </div>
+        </Form>
       </Modal>
     </DashboardLayout>
   )

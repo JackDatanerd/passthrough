@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
+import { safeNext } from '../lib/session'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
+import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -10,7 +12,7 @@ import Footer from '../components/layout/Footer'
 export default function Login() {
   const navigate        = useNavigate()
   const [params]        = useSearchParams()
-  const { setUser }     = useAuth()
+  const { postAuthActions } = useAuth()
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
   const [loading,  setLoading ] = useState(false)
@@ -18,19 +20,21 @@ export default function Login() {
 
   const expired = params.get('expired') === 'true'
   const banned  = params.get('banned')  === 'true'
+  // Where to go after signing in (set when a protected page bounced the user
+  // here). safeNext() rejects anything that isn't a same-site relative path.
+  const next    = safeNext(params.get('next'))
 
   async function handleSubmit() {
     if (!email || !password) return setError('Email and password required.')
     setLoading(true); setError('')
     try {
-      const res = await api.post('/auth/login', { email, password })
+      const res = await api.post('/auth/login', { email: email.trim(), password })
       const { token, user } = res.data.data
-      localStorage.setItem('passthrough_token', token)
-      localStorage.setItem('passthrough_user', JSON.stringify(user))
-      setUser(user)
-      navigate('/dashboard')
+      // Also claims a pending anonymous scan, exactly like registering does.
+      const claimedScanId = await postAuthActions(token, user)
+      navigate(next || (claimedScanId ? `/scan/${claimedScanId}` : '/dashboard'))
     } catch (err) {
-      setError(err.response?.data?.message || 'Login failed.')
+      setError(getErrorMessage(err, 'Login failed.'))
     } finally {
       setLoading(false)
     }
@@ -54,7 +58,7 @@ export default function Login() {
             </div>
           )}
 
-          <div className="flex flex-col gap-4">
+          <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <Input label="Email" type="email" value={email}
               onChange={e => setEmail(e.target.value)} autoComplete="email" />
             <Input label="Password" type="password" value={password}
@@ -62,10 +66,10 @@ export default function Login() {
 
             {error && <p className="text-sm text-red-600">{error}</p>}
 
-            <Button onClick={handleSubmit} loading={loading} className="w-full">
+            <Button type="submit" loading={loading} className="w-full">
               Sign in
             </Button>
-          </div>
+          </Form>
 
           <div className="mt-4 flex flex-col gap-2 text-sm text-center text-gray-500">
             <Link to="/forgot-password" className="text-blue-600 hover:underline">

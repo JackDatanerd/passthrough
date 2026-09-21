@@ -127,6 +127,25 @@ async function scheduled(event, env, ctx) {
   )
 }
 
+// Second, independent scheduled job: recover paid-but-undelivered payments
+// (see services/reconcile.service.js for why fulfilment is one-shot and what
+// "orphaned" means). Its own waitUntil + try/catch so a failure here can never
+// affect the cleanup job above, and vice versa.
+async function reconcileSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const { sweepOrphanedPayments } = require('./services/reconcile.service')
+        const r = await sweepOrphanedPayments(env, getSupabase(env))
+        if (r.error) console.error('Payment sweep query:', r.error)
+        else if (r.orphans > 0) console.log(`Payment sweep: ${r.orphans} orphan(s), ${r.reenqueued.length} recovered, ${r.failed.length} failed`)
+      } catch (err) {
+        console.error('Payment sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 // ── QUEUE CONSUMER (replaces the old waitUntil(generateFix(...)) pattern) ────
 // generateFix/generateBadge do two sequential Claude calls plus a Browser
 // Rendering PDF render — realistically 20-45+ seconds. ctx.waitUntil() has a
@@ -201,6 +220,7 @@ async function queue(batch, env, ctx) {
 // them up correctly.
 export default {
   fetch: app.fetch,
-  scheduled,
+  // One cron trigger, two independent jobs.
+  scheduled: (event, env, ctx) => { scheduled(event, env, ctx); return reconcileSweep(event, env, ctx) },
   queue,
 }

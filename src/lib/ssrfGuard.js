@@ -43,7 +43,14 @@
 // unsafe. This is a security check, not a best-effort feature — an
 // inconclusive answer must never be treated as a pass.
 
-const BLOCKED_HOSTNAME_SUFFIXES = ['.local', '.internal', '.localdomain', '.lan']
+const BLOCKED_HOSTNAME_SUFFIXES = [
+  '.local', '.internal', '.localdomain', '.lan', '.localhost', '.home.arpa', '.intranet', '.corp',
+  // Wildcard-DNS services that resolve "<anything>.<ip>.<service>" to that IP —
+  // the cheapest way to smuggle 127.0.0.1 / 169.254.169.254 past a hostname
+  // check. Best-effort only (see the DNS-rebinding note above): a determined
+  // attacker can run their own wildcard domain.
+  '.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me',
+]
 const BLOCKED_HOSTNAMES = ['localhost']
 
 function isIPv4(hostname) {
@@ -53,13 +60,18 @@ function isIPv4(hostname) {
 function isPrivateIPv4(hostname) {
   const parts = hostname.split('.').map(Number)
   if (parts.some(n => Number.isNaN(n) || n < 0 || n > 255)) return true // malformed -> reject
-  const [a, b] = parts
+  const [a, b, c] = parts
   if (a === 127) return true                          // loopback
   if (a === 10) return true                            // RFC1918
   if (a === 172 && b >= 16 && b <= 31) return true      // RFC1918
   if (a === 192 && b === 168) return true               // RFC1918
   if (a === 169 && b === 254) return true               // link-local incl. cloud metadata
   if (a === 100 && b >= 64 && b <= 127) return true      // CGNAT
+  if (a === 192 && b === 0 && c === 0) return true       // 192.0.0.0/24 IETF protocol assignments
+  if (a === 192 && b === 0 && c === 2) return true       // TEST-NET-1
+  if (a === 198 && (b === 18 || b === 19)) return true   // 198.18.0.0/15 benchmarking
+  if (a === 198 && b === 51 && c === 100) return true    // TEST-NET-2
+  if (a === 203 && b === 0 && c === 113) return true     // TEST-NET-3
   if (a === 0) return true                              // "this network"
   if (a >= 224) return true                              // multicast + reserved (224-255)
   return false
@@ -77,8 +89,19 @@ function isPrivateIPv6(hostname) {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (h === '::1') return true                          // loopback
   if (h === '::') return true                            // unspecified
-  if (h.startsWith('fc') || h.startsWith('fd')) return true   // unique local (fc00::/7)
-  if (h.startsWith('fe80')) return true                  // link-local
+
+  // Range checks are done on the numeric first group, not string prefixes.
+  // The previous `startsWith('fe80')` only covered fe80::/16, but link-local
+  // is fe80::/10 (fe80–febf) — fe90::1, fea0::1, febf::1 all slipped through.
+  const first = parseInt(h.split(':')[0] || '0', 16)
+  if (!Number.isNaN(first)) {
+    if ((first & 0xfe00) === 0xfc00) return true          // unique local  fc00::/7
+    if ((first & 0xffc0) === 0xfe80) return true          // link-local    fe80::/10
+    if ((first & 0xffc0) === 0xfec0) return true          // site-local    fec0::/10 (deprecated)
+    if (first === 0x2002) return true                     // 6to4 2002::/16 — embeds an IPv4, deprecated, never a job board
+  }
+  if (h.startsWith('2001:0:') || h.startsWith('2001::')) return true  // Teredo 2001::/32 (deprecated tunnel)
+  if (h.startsWith('2001:db8:')) return true                           // documentation range
 
   // IPv6 TRANSITION FORMS: multiple standardized encodings embed an IPv4
   // address inside an IPv6 literal, and each is a documented, actively-used
@@ -108,6 +131,11 @@ function isPrivateIPv6(hostname) {
   //    169.254.169.254 metadata address.
   const mappedHex = h.match(/^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
   if (mappedHex) return isPrivateIPv4(decodeEmbeddedIPv4Hex(mappedHex[1], mappedHex[2]))
+
+  // 2b. IPv4-translated (SIIT, RFC 2765) ::ffff:0:a.b.c.d — canonical hex
+  //     form ::ffff:0:hi:lo. Not covered by the plain mapped form above.
+  const translatedHex = h.match(/^::ffff:0:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
+  if (translatedHex) return isPrivateIPv4(decodeEmbeddedIPv4Hex(translatedHex[1], translatedHex[2]))
 
   // 3. IPv4-compatible (deprecated but still parsed) — ::a.b.c.d or its
   //    canonical hex equivalent ::hi:lo, with no "ffff" marker group.
@@ -168,13 +196,19 @@ async function checkUrlIsSafeToFetch(url) {
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'Only http/https URLs are supported.'
 
-  const hostname = parsed.hostname.toLowerCase()
+  // Strip trailing dots: "localhost." and "metadata.google.internal." are the
+  // same hosts as their dotless forms (fully-qualified DNS names), but the
+  // exact-match / endsWith checks below used to miss them entirely.
+  const hostname = parsed.hostname.toLowerCase().replace(/\.+$/, '')
+  if (!hostname) return 'That address cannot be fetched.'
   if (BLOCKED_HOSTNAMES.includes(hostname)) return 'That address cannot be fetched.'
   if (BLOCKED_HOSTNAME_SUFFIXES.some(sfx => hostname.endsWith(sfx))) return 'That address cannot be fetched.'
 
   if (isIPv4(hostname) && isPrivateIPv4(hostname)) return 'That address cannot be fetched.'
   if (hostname.includes(':') && isPrivateIPv6(hostname)) return 'That address cannot be fetched.'
   if (hostname === '0') return 'That address cannot be fetched.'
+  // Any purely numeric host that survived URL normalisation is malformed/exotic.
+  if (/^[0-9.]+$/.test(hostname) && !isIPv4(hostname)) return 'That address cannot be fetched.'
 
   // Hostname is already a literal IP (checked above, and either passed or
   // this function already returned) — no DNS resolution needed/possible.

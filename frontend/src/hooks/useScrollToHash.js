@@ -1,21 +1,30 @@
 import { useEffect } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigationType } from 'react-router-dom'
 
-// BrowserRouter does not scroll to `#hash` fragments on navigation the way a
-// plain multi-page site does — clicking a `to="/#employers"` link from any
-// route other than "/" itself just lands at the top of the page with no
-// scroll. This hook fixes that: on every location change, if there's a hash
-// and a matching element exists in the DOM, scroll to it.
+// Two jobs, both things BrowserRouter does not do on its own:
 //
-// The small delay + rAF is needed because on first navigation to "/" from
-// another route, the target page's content (and therefore the element with
-// that id) may not be mounted yet in the same tick this effect runs.
+// 1. New page -> scroll to top. Without this, following a footer link (which
+//    sits at the bottom of a long page) opened the destination at the same
+//    scroll offset, i.e. near its bottom. Skipped for browser back/forward
+//    (POP) so the browser can restore where the user was.
+//
+// 2. `#hash` -> scroll to that element. Clicking a `to="/#employers"` link from
+//    any route other than "/" itself would otherwise land at the top with no
+//    scroll. The small delay + rAF retry is needed because on first navigation
+//    to "/" from another route, the target page's content (and therefore the
+//    element with that id) may not be mounted yet in the same tick this runs.
 export default function useScrollToHash() {
   const { hash, pathname } = useLocation()
+  const navType = useNavigationType()
+
+  useEffect(() => {
+    if (hash || navType === 'POP') return
+    window.scrollTo(0, 0)
+  }, [pathname])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!hash) return
-    const id = hash.slice(1)
+    const id = decodeURIComponent(hash.slice(1))
     let cancelled = false
 
     function tryScroll(attempt = 0) {

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
@@ -66,7 +66,7 @@ export default function PartnerPayoutDetails() {
       await api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body)
       setSaved(true)
     } catch (err) {
-      setError(err.response?.data?.message || 'Something went wrong — please try again.')
+      setError(getErrorMessage(err, 'Something went wrong — please try again.'))
     } finally {
       setSaving(false)
     }

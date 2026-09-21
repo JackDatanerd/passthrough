@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
+import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -16,11 +17,15 @@ export default function ForgotPassword() {
     if (!email) return setError('Email required.')
     setLoading(true); setError('')
     try {
-      await api.post('/auth/forgot-password', { email })
+      await api.post('/auth/forgot-password', { email: email.trim() })
       setSent(true)
-    } catch (_) {
-      // Always show success — don't reveal if email is registered
-      setSent(true)
+    } catch (err) {
+      // The server answers 200 whether or not the email is registered (so
+      // this can't be used to probe for accounts) — which means an ERROR here
+      // is never "unknown email". It's a rate limit, a bad address, an outage
+      // or a dead network, and claiming "check your inbox" for those left
+      // people waiting on an email that was never sent.
+      setError(getErrorMessage(err, "Couldn't send the reset link. Please try again."))
     } finally {
       setLoading(false)
     }
@@ -46,14 +51,14 @@ export default function ForgotPassword() {
               <p className="text-sm text-gray-500 mb-6">
                 Enter your email and we'll send a reset link.
               </p>
-              <div className="flex flex-col gap-4">
+              <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <Input label="Email" type="email" value={email}
                   onChange={e => setEmail(e.target.value)} autoComplete="email" />
                 {error && <p className="text-sm text-red-600">{error}</p>}
-                <Button onClick={handleSubmit} loading={loading} className="w-full">
+                <Button type="submit" loading={loading} className="w-full">
                   Send reset link
                 </Button>
-              </div>
+              </Form>
               <p className="mt-4 text-sm text-center">
                 <Link to="/login" className="text-blue-600 hover:underline">Back to sign in</Link>
               </p>

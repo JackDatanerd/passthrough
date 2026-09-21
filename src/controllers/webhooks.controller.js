@@ -73,7 +73,13 @@ async function shouldSendSigMismatchAlert(env) {
 async function fulfill(env, supabase, { reference, scanId, fixTier }) {
   const { error: scanUpdErr } = await supabase.from('scans').update({
     fix_purchased: true,
-    fix_tier,
+    // REGRESSION FIX: this used to be a bare `fix_tier,` shorthand — but the
+    // variable in scope is `fixTier`. That's a ReferenceError at runtime, on
+    // the ONE code path (the webhook) that wins the fulfillment race for
+    // most real payments: the payment was already flipped to SUCCESS, so
+    // the client-side verifyPayment saw nothing left to do and no fix was
+    // ever generated. tests/webhooks.controller.test.js locks this in.
+    fix_tier:      fixTier,
     status:        'FIX_PURCHASED'
   }).eq('id', scanId)
   if (scanUpdErr) throw scanUpdErr
@@ -235,7 +241,10 @@ async function handlePaystack(c) {
         // owner alert + a pointer to the manual reconcile endpoint, instead
         // of vanishing into the outer catch's console.error.
         try {
-          await fulfill(c.env, supabase, { reference, scanId, fixTier })
+          // Prefer the payment ROW's scan_id (bound at initializePayment)
+          // over the event's metadata copy — same "trust the row, not the
+          // payload" rule fixTier already follows just above.
+          await fulfill(c.env, supabase, { reference, scanId: updatedRows[0]?.scan_id || scanId, fixTier })
         } catch (fulfillErr) {
           await alertFulfillmentFailed(c.env, { reference, scanId, fixTier, err: fulfillErr, source: 'webhook' })
         }

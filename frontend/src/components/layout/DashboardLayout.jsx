@@ -22,14 +22,15 @@ export default function DashboardLayout({ children }) {
           screens, and as the original vertical sidebar from sm upward. */}
       <div className="max-w-5xl mx-auto w-full px-4 py-8 flex-1 flex flex-col sm:flex-row gap-4 sm:gap-8">
         <aside className="w-full sm:w-44 sm:shrink-0">
-          <nav className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-visible pb-2 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
+          <nav aria-label="Dashboard" className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-visible pb-2 sm:pb-0 -mx-1 px-1 sm:mx-0 sm:px-0">
             {nav.map(item => (
               <Link
                 key={item.to}
                 to={item.to}
+                aria-current={pathname.replace(/\/+$/, '') === item.to ? 'page' : undefined}
                 className={cn(
                   'px-3 py-2 rounded-md text-sm font-medium transition-colors whitespace-nowrap shrink-0',
-                  pathname === item.to
+                  pathname.replace(/\/+$/, '') === item.to
                     ? 'bg-blue-50 text-blue-700'
                     : 'text-gray-600 hover:bg-gray-100'
                 )}

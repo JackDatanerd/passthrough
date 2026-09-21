@@ -204,10 +204,17 @@ Then redeploy: `npm run deploy`
 
    | Variable | Value |
    |----------|-------|
-   | `VITE_API_URL` | `https://api.passthrough.dev` |
-   | `API_URL`      | `https://api.passthrough.dev` |
+   | `VITE_API_URL` | `https://api.passthrough.dev/api` |
+   | `API_URL`      | `https://api.passthrough.dev/api` |
 
-   Both point at the same Worker. `VITE_API_URL` is baked into the client
+   Both point at the same Worker, and **both must include the `/api` suffix** —
+   every Worker route is mounted under `/api` (e.g. `/api/auth/login`). Both
+   consumers now append `/api` themselves if it is missing
+   (`frontend/src/lib/apiUrl.js` and `frontend/functions/v/[code].js`), so the
+   bare host also works, but writing the full URL here avoids any doubt. (This
+   table previously said `https://api.passthrough.dev` with no suffix, which on
+   its own would have sent every production request to a 404, and silently
+   broken the share-preview Function.) `VITE_API_URL` is baked into the client
    bundle at build time and used by the React app in the browser.
    `API_URL` is read server-side, at request time, by
    `frontend/functions/v/[code].js` — the Pages Function that injects

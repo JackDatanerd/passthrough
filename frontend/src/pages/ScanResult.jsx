@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
+import { createPoller } from '../lib/poller'
+import { downloadBlob } from '../lib/utils'
 import PaystackPop from '@paystack/inline-js'
 import { useAuth } from '../hooks/useAuth'
 import Navbar from '../components/layout/Navbar'
@@ -35,7 +37,7 @@ const POLLING_STOP = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_DELIVERED', 'ERROR'
 // RESULTS_READY: statuses where the score/results section should render at
 // all (as opposed to the plain "Scanning your resume…" placeholder).
 const RESULTS_READY = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']
-const POLL_MS  = 2500
+// Polling cadence lives in lib/poller.js (adaptive backoff, pauses in background tabs).
 
 export default function ScanResult() {
   const { id }        = useParams()
@@ -71,8 +73,8 @@ export default function ScanResult() {
   // the price shown immediately, not just on next page load.
   const [referralCode, setReferralCode] = useState(getStoredReferralCode())
   const pollRef     = useRef(null)
-  // Plain ref, not state — fetchScan is captured once by the setInterval
-  // call in the mount effect below, so a `scan` state read inside it would
+  // Plain ref, not state — fetchScan is captured once by the poller
+  // created in the mount effect below, so a `scan` state read inside it would
   // always see the stale value from that render. This needs to reflect
   // "have we EVER gotten a successful response", checked live, across every
   // tick of that same long-lived interval closure.
@@ -88,15 +90,16 @@ export default function ScanResult() {
       setLoading(false)
       setPollError('')
       if (POLLING_STOP.includes(data.status)) {
-        clearInterval(pollRef.current)
+        pollRef.current?.stop()
       }
+      return true
     } catch (err) {
       const status = err.response?.status
       // Only stop polling for errors that genuinely mean "this will never
       // succeed" — not found, or access revoked/denied.
       const terminal = status === 404 || status === 403 || status === 401
       if (terminal) {
-        clearInterval(pollRef.current)
+        pollRef.current?.stop()
         setLoading(false)
         return
       }
@@ -120,7 +123,16 @@ export default function ScanResult() {
       if (hasLoadedRef.current) {
         setLoading(false)
       }
+      return false   // tells the poller this tick failed -> it backs off instead of hammering
     }
+  }
+
+  // (Re)starts status polling after an action that moves the scan back into a
+  // non-terminal state. Callers have just fetched, so don't tick immediately.
+  function restartPolling() {
+    pollRef.current?.stop()
+    pollRef.current = createPoller(fetchScan)
+    pollRef.current.start({ immediate: false })
   }
 
   async function handleRetryFix() {
@@ -132,18 +144,17 @@ export default function ScanResult() {
       // already stopped once FIX_DELIVERED was reached (POLLING_STOP) —
       // has to be explicitly restarted, not just re-fetched once.
       await fetchScan()
-      clearInterval(pollRef.current)
-      pollRef.current = setInterval(fetchScan, POLL_MS)
+      restartPolling()
     } catch (err) {
-      setRetryError(err.response?.data?.message || 'Could not start a retry — try again in a moment.')
+      setRetryError(getErrorMessage(err, 'Could not start a retry — try again in a moment.'))
     }
     setRetryLoading(false)
   }
 
   useEffect(() => {
-    fetchScan()
-    pollRef.current = setInterval(fetchScan, POLL_MS)
-    return () => clearInterval(pollRef.current)
+    pollRef.current = createPoller(fetchScan)
+    pollRef.current.start()              // first tick runs immediately
+    return () => pollRef.current?.stop()
   }, [id])
 
   // Storage stays the source of truth ACROSS page loads/navigation;
@@ -187,8 +198,7 @@ export default function ScanResult() {
           // in POLLING_STOP — no page reload here (unlike the old redirect
           // flow) to naturally restart polling, so it has to be explicit.
           await fetchScan()
-          clearInterval(pollRef.current)
-          pollRef.current = setInterval(fetchScan, POLL_MS)
+          restartPolling()
           setPayLoading(false); setPayingTier(null)
         },
         onCancel: () => { setPayLoading(false); setPayingTier(null) },
@@ -198,7 +208,7 @@ export default function ScanResult() {
         }
       })
     } catch (err) {
-      setPayError(err.response?.data?.message || 'Payment failed to initialize.')
+      setPayError(getErrorMessage(err, 'Payment failed to initialize.'))
       setPayLoading(false); setPayingTier(null)
     }
   }
@@ -214,11 +224,10 @@ export default function ScanResult() {
       // POLLING_STOP, so it already stopped by the time this button was
       // even visible. Has to be explicitly restarted, same as handleRetryFix.
       await fetchScan()
-      clearInterval(pollRef.current)
-      pollRef.current = setInterval(fetchScan, POLL_MS)
+      restartPolling()
       refreshUser()  // freeFixCredits just decremented server-side
     } catch (err) {
-      setPayError(err.response?.data?.message || 'Could not redeem credit.')
+      setPayError(getErrorMessage(err, 'Could not redeem credit.'))
     }
     setPayLoading(false)
   }
@@ -232,7 +241,7 @@ export default function ScanResult() {
       await api.patch(`/scan/${id}/verify-visibility`, { [apiField]: value })
     } catch (err) {
       setScan(prev => ({ ...prev, [stateField]: !value }))  // revert on failure
-      setVisibilityError(err.response?.data?.message || 'Could not update visibility.')
+      setVisibilityError(getErrorMessage(err, 'Could not update visibility.'))
     }
   }
 
@@ -240,12 +249,7 @@ export default function ScanResult() {
     setDlError('')
     try {
       const res = await api.get(`/scan/${id}/download?type=${type}`, { responseType: 'blob' })
-      const url = URL.createObjectURL(res.data)
-      const a   = document.createElement('a')
-      a.href    = url
-      a.download = type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf'
-      a.click()
-      URL.revokeObjectURL(url)
+      downloadBlob(res.data, type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf')
     } catch (err) {
       // With responseType: 'blob', axios applies that same responseType to
       // ERROR responses too — err.response.data is a Blob, not parsed JSON,

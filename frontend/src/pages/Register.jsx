@@ -1,8 +1,9 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
+import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -23,13 +24,13 @@ export default function Register() {
     if (password !== confirm) return setError('Passwords do not match.')
     setLoading(true); setError('')
     try {
-      const res = await api.post('/auth/register', { name, email, password })
+      const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password })
       const { token, user } = res.data.data
       const scanId = await postRegisterActions(token, user)
       // If there was a pending anon scan, go to it — otherwise dashboard
       navigate(scanId ? `/scan/${scanId}` : '/dashboard')
     } catch (err) {
-      setError(err.response?.data?.message || 'Registration failed.')
+      setError(getErrorMessage(err, 'Registration failed.'))
     } finally {
       setLoading(false)
     }
@@ -43,7 +44,7 @@ export default function Register() {
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Create account</h1>
           <p className="text-sm text-gray-500 mb-6">Free. 3 scans per day. No credit card.</p>
 
-          <div className="flex flex-col gap-4">
+          <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <Input label="Name" type="text" value={name}
               onChange={e => setName(e.target.value)} autoComplete="name" />
             <Input label="Email" type="email" value={email}
@@ -56,10 +57,10 @@ export default function Register() {
 
             {error && <p className="text-sm text-red-600">{error}</p>}
 
-            <Button onClick={handleSubmit} loading={loading} className="w-full">
+            <Button type="submit" loading={loading} className="w-full">
               Create account
             </Button>
-          </div>
+          </Form>
 
           <p className="mt-4 text-sm text-center text-gray-500">
             Already have an account?{' '}

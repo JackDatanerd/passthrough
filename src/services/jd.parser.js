@@ -3,11 +3,20 @@
 // AbortController for the 5s timeout, a manual byte-length check while
 // reading the body for the 500KB cap.
 
-const BLOCKED = ['linkedin.com', 'www.linkedin.com', 'facebook.com', 'instagram.com']
+const BLOCKED = ['linkedin.com', 'lnkd.in', 'facebook.com', 'fb.com', 'instagram.com']
+
+// Exact host or a real subdomain of it. The old check was
+// `hostname.includes(d)`, which also blocked unrelated employers whose domain
+// merely CONTAINS one of these strings (e.g. notlinkedin.com, myfacebook.com).
+function isBlockedHost(hostname) {
+  const h = String(hostname || '').toLowerCase().replace(/\.+$/, '')
+  return BLOCKED.some(d => h === d || h.endsWith('.' + d))
+}
 const MAX_BYTES = 500_000
 const MAX_REDIRECTS = 3
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
 const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
+const { decodeHtmlEntities } = require('../lib/htmlEntities')
 
 // Reads a Response body via its stream, aborting the moment the accumulated
 // byte count crosses maxBytes rather than buffering the entire thing first.
@@ -15,12 +24,25 @@ const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
 // the old buffer-then-check approach only if res.body isn't a stream for
 // some reason (shouldn't happen on Workers' fetch, but fails safe rather
 // than throwing).
+function charsetOf(res) {
+  const m = /charset\s*=\s*["']?([\w.:-]+)/i.exec(res.headers?.get?.('content-type') || '')
+  return m ? m[1] : 'utf-8'
+}
+
+// The declared charset is honoured (a windows-1252 page decoded as UTF-8
+// turns every curly quote/accent into mojibake); an unknown label falls back
+// to UTF-8 instead of throwing.
+function decoderFor(charset) {
+  try { return new TextDecoder(charset) } catch (_) { return new TextDecoder() }
+}
+
 async function readCappedText(res, maxBytes) {
+  const decoder = decoderFor(charsetOf(res))
   const reader = res.body?.getReader?.()
   if (!reader) {
     const buf = await res.arrayBuffer()
     if (buf.byteLength > maxBytes) return null
-    return new TextDecoder().decode(buf)
+    return decoder.decode(buf)
   }
 
   const chunks = []
@@ -42,7 +64,7 @@ async function readCappedText(res, maxBytes) {
     merged.set(chunk, offset)
     offset += chunk.byteLength
   }
-  return new TextDecoder().decode(merged)
+  return decoder.decode(merged)
 }
 
 // SSRF-safe fetch: validates the target before every request AND before
@@ -59,6 +81,8 @@ async function safeFetch(url, opts) {
     const res = await fetch(current, { ...opts, redirect: 'manual' })
     const isRedirect = res.status >= 300 && res.status < 400 && res.headers.get('location')
     if (!isRedirect) return { blocked: false, res }
+    // Free the connection instead of leaving an unread redirect body open.
+    try { await res.body?.cancel?.() } catch (_) {}
 
     current = new URL(res.headers.get('location'), current).toString()
   }
@@ -89,12 +113,26 @@ function looksLikeListingPage(text) {
   return signals.length >= 2
 }
 
+// Regex flattening (no DOM on Workers). Entities are decoded AFTER tags are
+// stripped and BEFORE whitespace is collapsed, so "&nbsp;" becomes a real
+// separator instead of surviving as the junk keyword "nbsp".
+function htmlToText(html) {
+  return decodeHtmlEntities((html || '')
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, ' ')
+    .replace(/<[^>]+>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 async function fetchJobDescriptionFromUrl(url) {
   let parsed
   try { parsed = new URL(url) } catch (_) {
     return { success: false, blocked: false, text: null, message: 'Invalid URL.' }
   }
-  if (BLOCKED.some(d => parsed.hostname.includes(d)))
+  if (isBlockedHost(parsed.hostname))
     return {
       success: false, blocked: true, text: null,
       message: 'LinkedIn blocks automated reading. Paste the job description instead.'
@@ -108,7 +146,6 @@ async function fetchJobDescriptionFromUrl(url) {
       headers: { 'User-Agent': 'Mozilla/5.0 (compatible; Passthrough/1.0)' },
       signal: controller.signal
     })
-    clearTimeout(timeout)
 
     if (fetched.blocked) {
       return { success: false, blocked: false, text: null, message: 'Could not read that page. Paste instead.' }
@@ -117,6 +154,14 @@ async function fetchJobDescriptionFromUrl(url) {
 
     if (!res.ok) {
       return { success: false, blocked: false, text: null, message: 'Could not read that page. Paste instead.' }
+    }
+
+    // A PDF/image/zip that happens to be <500KB used to be UTF-8-decoded into
+    // binary garbage that sailed past the length check and was scored as a JD.
+    const contentType = (res.headers.get('content-type') || '').toLowerCase()
+    if (contentType && !/(text\/|html|xml|json)/.test(contentType)) {
+      return { success: false, blocked: false, text: null,
+        message: "That link doesn't look like a web page. Paste the job description instead." }
     }
 
     // Manual size cap — fetch has no maxContentLength option. This reads the
@@ -138,13 +183,7 @@ async function fetchJobDescriptionFromUrl(url) {
     // 5000 chars by boilerplate ahead of it, or leaving a truncated
     // boilerplate fragment behind. Doing it here, on the full flattened
     // text, avoids both.
-    let text = (html || '')
-      .replace(/<script[\s\S]*?<\/script>/gi, '')
-      .replace(/<style[\s\S]*?<\/style>/gi, '')
-      .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, '')
-      .replace(/<[^>]+>/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim()
+    let text = htmlToText(html)
 
     text = stripPlatformBoilerplate(parsed.hostname, text)
 
@@ -175,10 +214,15 @@ async function fetchJobDescriptionFromUrl(url) {
 
     return { success: true, blocked: false, text: text.slice(0, 5000) }
   } catch (_) {
-    clearTimeout(timeout)
     return { success: false, blocked: false, text: null,
       message: 'Could not read that page. Paste instead.' }
+  } finally {
+    // The 5s budget now covers the whole exchange INCLUDING the body read.
+    // It used to be cleared as soon as headers arrived, so a server that
+    // sent headers instantly and then dripped the body byte-by-byte could
+    // hold the request open indefinitely.
+    clearTimeout(timeout)
   }
 }
 
-module.exports = { fetchJobDescriptionFromUrl }
+module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage }

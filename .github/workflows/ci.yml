@@ -1,0 +1,45 @@
+name: CI
+
+# Make this workflow a REQUIRED status check on `main` (GitHub -> Settings ->
+# Branches -> branch protection). Cloudflare deploys from a push/manual
+# `wrangler deploy`, so the check only gates anything once it is required.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  worker:
+    name: Worker — lint + tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+      - run: npm ci
+      # --no-save: does not touch package.json / package-lock.json
+      - run: npm i --no-save typescript@5
+      - name: Undefined identifiers + syntax (would have caught the webhook fix_tier bug)
+        run: npm run lint
+      - name: Unit tests
+        run: npm test
+
+  frontend:
+    name: Frontend — production build
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # A real Vite build is the only thing that compiles every JSX file.
+      - run: npm run build

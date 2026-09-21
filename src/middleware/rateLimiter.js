@@ -131,8 +131,22 @@ const general = makeLimiter({
   // anyone). The route is already protected by HMAC signature verification
   // inside the handler itself, which is a stronger gate than a generic IP
   // counter anyway.
-  skip: c => c.req.path.startsWith('/api/webhooks')
+  skip: c => c.req.path.startsWith('/api/webhooks') || isScanPollRequest(c)
 })
+
+// Scan-status polling: the SPA polls GET /api/scan/:id every ~2.5s while a
+// scan or a fix is generating (a fix can take a minute or two). Counted
+// against the generic 100-per-15-min bucket, one scan + one fix alone
+// (~60 polls) plus normal browsing could exhaust it, after which EVERY
+// endpoint for that IP — login included — 429'd for up to 15 minutes. On
+// carrier-grade NAT / campus / office networks that hit unrelated users
+// too. Polling now has its own, much larger, bucket (see `scanPoll`).
+// /history is a real list query, not a poll, so it stays on `general`.
+function isScanPollRequest(c) {
+  if (c.req.method !== 'GET') return false
+  const m = /^\/api\/scan\/(?:status\/)?([^/]+)\/?$/.exec(c.req.path)
+  return !!m && m[1] !== 'history' && m[1] !== 'status'
+}
 
 // Dedicated webhook limiter — much higher ceiling than `general` since this
 // route's real protection is the HMAC signature check inside the handler,
@@ -140,6 +154,14 @@ const general = makeLimiter({
 // flood (not normal retry/burst traffic), still keyed by IP.
 const webhook = makeLimiter({
   windowSeconds: 5 * 60, max: 300, keyPrefix: 'rl:webhook',
+  message: msg('Too many requests.')
+})
+
+// Dedicated polling limiter — ~1 request / 1.5s sustained, per IP. Still a
+// real ceiling (a runaway client or a scraper can't hammer the DB with
+// unbounded reads), just sized for how the app legitimately behaves.
+const scanPoll = makeLimiter({
+  windowSeconds: 15 * 60, max: 600, keyPrefix: 'rl:scanpoll',
   message: msg('Too many requests.')
 })
 
@@ -273,6 +295,6 @@ async function recordLoginSuccess(env, email) {
 }
 
 module.exports = {
-  general, anonScan, auth, authVerify, payment, employerLead, webhook, click, isBypassed,
-  checkAccountLockout, recordLoginFailure, recordLoginSuccess
+  general, scanPoll, anonScan, auth, authVerify, payment, employerLead, webhook, click, isBypassed,
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess
 }

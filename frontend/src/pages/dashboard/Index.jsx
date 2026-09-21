@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Badge from '../../components/ui/Badge'
@@ -42,21 +42,28 @@ export default function DashboardIndex() {
   // getScanHistory now returns `total`, so this can page properly.
   const [page,  setPage ] = useState(1)
   const [total, setTotal] = useState(0)
+  // A failed history request used to fall into the same branch as "no scans"
+  // and told a user with 50 scans "No scans yet — scan your first resume".
+  const [loadError, setLoadError] = useState('')
+  const [reloadTick, setReloadTick] = useState(0)
 
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
   // path back into the scan form with that profile pre-selected.
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
 
   useEffect(() => {
-    setLoading(true)
+    setLoading(true); setLoadError('')
     api.get(`/scan/history?page=${page}&limit=${SCANS_PER_PAGE}`)
       .then(res => {
         setScans(res.data.data.scans)
         setTotal(res.data.data.total ?? 0)
         setLoading(false)
       })
-      .catch(() => setLoading(false))
-  }, [page])
+      .catch(err => {
+        setLoadError(getErrorMessage(err, "Couldn't load your scans."))
+        setLoading(false)
+      })
+  }, [page, reloadTick])
 
   useEffect(() => {
     api.get('/profile')
@@ -140,7 +147,14 @@ export default function DashboardIndex() {
           </div>
         )}
 
-        {!loading && scans.length === 0 && (
+        {!loading && loadError && (
+          <div role="alert" className="text-center py-12 border border-red-200 bg-red-50 rounded-xl">
+            <p className="text-sm text-red-700 mb-4">{loadError}</p>
+            <Button size="sm" variant="secondary" onClick={() => setReloadTick(t => t + 1)}>Try again</Button>
+          </div>
+        )}
+
+        {!loading && !loadError && scans.length === 0 && (
           <div className="text-center py-16 border border-dashed border-gray-200 rounded-xl">
             <p className="text-gray-500 mb-4">No scans yet.</p>
             <Link to="/"
@@ -150,7 +164,7 @@ export default function DashboardIndex() {
           </div>
         )}
 
-        {!loading && scans.length > 0 && (
+        {!loading && !loadError && scans.length > 0 && (
           <div className="flex flex-col gap-3">
             {scans.map(scan => (
               <Link

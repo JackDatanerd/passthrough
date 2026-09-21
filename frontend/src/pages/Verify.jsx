@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
-import { formatDate } from '../lib/utils'
+import { formatDate, copyToClipboard } from '../lib/utils'
 
 export default function Verify() {
   const { code } = useParams()
@@ -56,17 +56,19 @@ export default function Verify() {
       })
       setLeadSent(true)
     } catch (err) {
-      setLeadErr(err.response?.data?.message || 'Something went wrong.')
+      setLeadErr(getErrorMessage(err, 'Something went wrong.'))
     } finally {
       setLeadLoading(false)
     }
   }
 
-  function handleCopyLink() {
-    navigator.clipboard?.writeText(window.location.href).then(() => {
+  async function handleCopyLink() {
+    // copyToClipboard reports failure (insecure context, denied permission);
+    // only claim "copied" when it actually was.
+    if (await copyToClipboard(window.location.href)) {
       setLinkCopied(true)
       setTimeout(() => setLinkCopied(false), 2000)
-    })
+    }
   }
 
   const integrityLabel =
