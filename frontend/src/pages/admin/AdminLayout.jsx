@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Link, Outlet } from 'react-router-dom'
 import api from '../../lib/api'
 import { cn, formatCents } from '../../lib/utils'
 
@@ -18,6 +18,12 @@ const NAV = [
 // between admin sections doesn't re-trigger the same summary call.
 function TopStrip() {
   const [stats, setStats] = useState(null)
+  // AUDIT FIX (Admin panel re-audit): "N items need attention" used to be
+  // plain text with nowhere to go — the breakdown existed on the Dashboard
+  // page, but not from wherever you actually were in the panel when you
+  // noticed the number. Click to expand right here instead of forcing a
+  // navigation away from whatever you were doing.
+  const [expanded, setExpanded] = useState(false)
 
   useEffect(() => {
     api.get('/admin/dashboard').then(res => setStats(res.data.data)).catch(() => {})
@@ -25,27 +31,50 @@ function TopStrip() {
 
   if (!stats) return <div className="h-10" />
 
-  const openCount = stats.openItems.erroredScansThisWeek + stats.openItems.stuckScans + stats.openItems.stalePendingPayments
+  const { erroredScansThisWeek, stuckScans, stalePendingPayments } = stats.openItems
+  const openCount = erroredScansThisWeek + stuckScans + stalePendingPayments
 
   return (
-    <div className="flex flex-wrap gap-6 text-sm">
-      <div>
-        <span className="text-gray-400">Owed to partners: </span>
-        <span className="font-semibold text-gray-900">{formatCents(stats.totalPendingCommissionCents)}</span>
-      </div>
-      <div>
-        <span className="text-gray-400">Revenue today: </span>
-        <span className="font-semibold text-gray-900">{formatCents(stats.revenue.todayCents)}</span>
-      </div>
-      <div>
-        <span className="text-gray-400">Promo: </span>
-        <span className={cn('font-semibold', stats.promo.active ? 'text-green-700' : 'text-gray-500')}>
-          {stats.promo.active ? 'Active' : 'Inactive'}
-        </span>
-      </div>
-      {openCount > 0 && (
+    <div className="flex flex-col gap-2 text-sm">
+      <div className="flex flex-wrap gap-6 items-center">
         <div>
-          <span className="text-amber-600 font-semibold">{openCount} item{openCount === 1 ? '' : 's'} need attention</span>
+          <span className="text-gray-400">Owed to partners: </span>
+          <span className="font-semibold text-gray-900">{formatCents(stats.totalPendingCommissionCents)}</span>
+        </div>
+        <div>
+          <span className="text-gray-400">Revenue today: </span>
+          <span className="font-semibold text-gray-900">{formatCents(stats.revenue.todayCents)}</span>
+        </div>
+        <div>
+          <span className="text-gray-400">Promo: </span>
+          <span className={cn('font-semibold', stats.promo.active ? 'text-green-700' : 'text-gray-500')}>
+            {stats.promo.active ? 'Active' : 'Inactive'}
+          </span>
+        </div>
+        {openCount > 0 && (
+          <button onClick={() => setExpanded(e => !e)}
+            className="text-amber-600 font-semibold hover:underline">
+            {openCount} item{openCount === 1 ? '' : 's'} need attention {expanded ? '▲' : '▼'}
+          </button>
+        )}
+      </div>
+      {expanded && openCount > 0 && (
+        <div className="flex flex-wrap gap-4 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+          {erroredScansThisWeek > 0 && (
+            <Link to="/admin/scans?status=ERROR" className="text-amber-800 hover:underline">
+              {erroredScansThisWeek} errored scan{erroredScansThisWeek === 1 ? '' : 's'} (7d) →
+            </Link>
+          )}
+          {stuckScans > 0 && (
+            <Link to="/admin/scans" className="text-amber-800 hover:underline">
+              {stuckScans} stuck scan{stuckScans === 1 ? '' : 's'} (sort by Updated) →
+            </Link>
+          )}
+          {stalePendingPayments > 0 && (
+            <Link to="/admin/payments?status=PENDING" className="text-amber-800 hover:underline">
+              {stalePendingPayments} stale pending payment{stalePendingPayments === 1 ? '' : 's'} →
+            </Link>
+          )}
         </div>
       )}
     </div>

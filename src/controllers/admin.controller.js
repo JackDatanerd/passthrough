@@ -43,9 +43,18 @@ async function adminDashboardStats(ctx) {
   const startOfWeek  = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
   const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
   const oneHourAgo   = new Date(now.getTime() - 60 * 60 * 1000).toISOString()
+  // AUDIT FIX (Admin panel re-audit): today/week/month were all sliced from
+  // ONE query that only fetched created_at >= startOfMonth — correct for
+  // "today" and "month" (both subsets of the month), but "week" is NOT
+  // always a subset: on the 1st-6th of any month, `now - 7 days` reaches
+  // back into the PREVIOUS month, and those trailing days were never
+  // fetched at all, so "Revenue this week" silently undercounted near every
+  // month boundary. Fetch from whichever boundary is earliest instead, and
+  // filter each bucket from that one superset.
+  const queryFrom = startOfWeek < startOfMonth ? startOfWeek : startOfMonth
 
-  const { data: monthPayments, error: payErr } = await supabase
-    .from('payments').select('amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', startOfMonth)
+  const { data: revenueWindowPayments, error: payErr } = await supabase
+    .from('payments').select('amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
   if (payErr) throw payErr
 
   const { data: pendingLedger, error: ledgerErr } = await supabase
@@ -85,9 +94,9 @@ async function adminDashboardStats(ctx) {
     .order('created_at', { ascending: false }).limit(5)
   if (alertErr) throw alertErr
 
-  const revenueMonthCents = (monthPayments || []).reduce((sum, p) => sum + p.amount_cents, 0)
-  const revenueWeekCents  = (monthPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + p.amount_cents, 0)
-  const revenueTodayCents = (monthPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + p.amount_cents, 0)
+  const revenueMonthCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + p.amount_cents, 0)
+  const revenueWeekCents  = (revenueWindowPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + p.amount_cents, 0)
+  const revenueTodayCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + p.amount_cents, 0)
   const totalPendingCommissionCents = (pendingLedger || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 
   return ctx.json({ success: true, data: {

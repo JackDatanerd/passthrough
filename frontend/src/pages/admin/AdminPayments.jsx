@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
@@ -18,6 +18,7 @@ export default function AdminPayments() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [busyRef, setBusyRef] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -37,6 +38,29 @@ export default function AdminPayments() {
   function setStatus(next) {
     setPage(1)
     setSearchParams(next ? { status: next } : {})
+  }
+
+  // AUDIT FIX (Admin panel re-audit): the reconcile endpoint (Sections
+  // 11+12 — recovers a payment that charged successfully but whose
+  // fulfillment/commission-write failed) existed on the backend with no
+  // way to trigger it from here at all. Safe to offer on any SUCCESS
+  // payment: it's idempotent — a payment that's actually fine just comes
+  // back "Already fulfilled — nothing to do."
+  async function reconcile(payment) {
+    if (!window.confirm(
+      `Reconcile ${payment.paystackRef}? This re-attempts fix delivery and the partner-commission ` +
+      `write for this payment. Safe to run even if it already succeeded — it's a no-op in that case.`
+    )) return
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/payments/${payment.paystackRef}/reconcile`)
+      toast({ message: res.data.message || 'Reconciled.', type: res.data.success ? 'success' : 'error' })
+      load()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Failed to reconcile payment.'), type: 'error' })
+    } finally {
+      setBusyRef(null)
+    }
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -78,6 +102,7 @@ export default function AdminPayments() {
                 <th className="px-4 py-3">Tier</th>
                 <th className="px-4 py-3">Referral</th>
                 <th className="px-4 py-3">Created</th>
+                <th className="px-4 py-3"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -90,6 +115,14 @@ export default function AdminPayments() {
                   <td className="px-4 py-3 text-gray-500">{p.fixTier || '—'}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.referralCode || '—'}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(p.createdAt)}</td>
+                  <td className="px-4 py-3 text-right">
+                    {p.status === 'SUCCESS' && (
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => reconcile(p)}>
+                        Reconcile
+                      </Button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

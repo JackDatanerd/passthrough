@@ -51,9 +51,15 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
 
   async function handleSave() {
     setError('')
+    // AUDIT FIX (Admin panel re-audit): `!rateNum` rejected an intentional
+    // 0% rate — the backend/DB both explicitly allow commissionRate === 0
+    // (see partners.controller.js's updatePartnerSchema, min(0)), so this
+    // was stricter than what the system actually supports. Check for a
+    // genuinely empty/invalid field instead of falsy-zero.
+    if (rate.trim() === '') return setError('Enter a commission rate.')
     const rateNum = Number(rate) / 100
     if (!name || !email) return setError('Name and email are required.')
-    if (!rateNum || rateNum <= 0 || rateNum > 1) return setError('Commission rate must be between 0 and 100%.')
+    if (Number.isNaN(rateNum) || rateNum < 0 || rateNum > 1) return setError('Commission rate must be between 0 and 100%.')
 
     setSaving(true)
     try {
@@ -73,7 +79,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       <div className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
-        <Input label="Commission rate (%)" type="number" step="1" min="1" max="100" value={rate}
+        <Input label="Commission rate (%)" type="number" step="1" min="0" max="100" value={rate}
           onChange={e => setRate(e.target.value)} />
         <p className="text-xs text-gray-400 -mt-2">
           Only applies going forward — past conversions keep the rate they were earned at.
