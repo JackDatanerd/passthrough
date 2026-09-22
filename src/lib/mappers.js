@@ -63,7 +63,7 @@ function scanRowToCamel(row) {
     verificationUrl:     row.verification_url,
     verifyExposeDocx:    row.verify_expose_docx,
     verifyExposePdf:     row.verify_expose_pdf,
-    // Section 7 audit (migration 0021)
+    // Section 7 audit (migration 0025)
     verifyHideName:      row.verify_hide_name,
     verificationStatus:  row.verification_status,
     verificationRevokedAt:     row.verification_revoked_at,

@@ -13,7 +13,7 @@
 //     schedule becomes the first line of recovery. Only owner alerts go to
 //     waitUntil.
 //
-//  2. DURABLE INBOX (webhook_events, migration 0021). Every verified event is
+//  2. DURABLE INBOX (webhook_events, migration 0025). Every verified event is
 //     recorded before it is processed: an audit trail, dedupe on Paystack's own
 //     event id, and a FAILED status that makes a redelivery re-run the work
 //     instead of being skipped as "already seen".
@@ -343,9 +343,9 @@ async function handlePaystack(c) {
   }
   if (inbox.mode === 'done') return c.text('OK', 200)
   if (inbox.mode === 'unavailable') {
-    console.error('[CRITICAL] webhook_events table is missing — apply migration 0021. Processing without an inbox.')
+    console.error('[CRITICAL] webhook_events table is missing — apply migration 0025. Processing without an inbox.')
     if (await alertAllowed(c.env, 'webhook-alert-cooldown:inbox-missing'))
-      alert(c, 'webhook_events table missing — apply migration 0021',
+      alert(c, 'webhook_events table missing — apply migration 0025',
         'Webhooks are still being processed, but with no audit trail and no dedupe record.')
   }
 

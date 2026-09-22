@@ -64,14 +64,30 @@ export default function Verify() {
   const [checkResult, setCheckResult] = useState(null)   // 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error'
   const fileInputRef = useRef(null)
 
+  // SECTION 7 AUDIT (bug): this used to reset only the status flags
+  // (notFound/loadError/revoked), never `data` itself. Nothing in this app
+  // currently links between two different /v/:code pages without a full
+  // page reload, so it was unreachable in practice — but the `code` dependency
+  // on the effect below exists specifically so this component CAN be reused
+  // across codes, and the moment anything ever does that (a "next candidate"
+  // link, browser back/forward within the SPA), a failed or in-flight refetch
+  // would leave the PREVIOUS candidate's full card — score, name, download
+  // links — rendered underneath a "Verification not found" / revoked message
+  // for the code actually in the URL. `data && (...)` and `notFound && (...)`
+  // etc. are independent conditions, not mutually exclusive branches, so
+  // both rendered at once. Clearing every piece of per-candidate state
+  // (including the hiring-manager lead form, which is scoped to whichever
+  // candidate the visitor thinks they're looking at) closes that.
   function load() {
-    setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null)
+    setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null); setData(null)
+    setDownloadErr(''); setCheckResult(null)
+    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setEmail('')
+    setLeadSent(false); setLeadErr('')
     api.get(`/verify/${code}`)
       .then(res => {
         setData(res.data.data)
         setLoading(false)
-        // Pre-fill only — never clobber something the visitor already typed.
-        setRole(prev => prev || humanizeRoleCategory(res.data.data.roleCategory))
+        setRole(humanizeRoleCategory(res.data.data.roleCategory))
       })
       .catch(err => {
         setLoading(false)
@@ -231,7 +247,7 @@ export default function Verify() {
               {data.candidateFirstName && (
                 <p className="text-gray-500 text-lg mb-4">{data.candidateFirstName}</p>
               )}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 text-sm">
+              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mt-6 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-1">ATS Score</p>
                   <p className={`font-bold text-xl ${data.passed ? 'text-green-700' : 'text-red-600'}`}>
@@ -248,6 +264,15 @@ export default function Verify() {
                   <p className="text-gray-400 text-xs mb-1">Field</p>
                   <p className="font-semibold text-gray-700 capitalize text-sm">
                     {data.roleCategory?.replace(/_/g, ' ') || '—'}
+                  </p>
+                </div>
+                {/* SECTION 7 AUDIT (feature gap): seniorityLevel has always been
+                    computed (atsService.detectSeniority) and returned by
+                    GET /api/verify/:code — nothing ever rendered it. */}
+                <div className="bg-gray-50 rounded-lg p-3">
+                  <p className="text-gray-400 text-xs mb-1">Seniority</p>
+                  <p className="font-semibold text-gray-700 capitalize text-sm">
+                    {data.seniorityLevel || '—'}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
