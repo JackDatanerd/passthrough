@@ -34,9 +34,20 @@ max_batch_timeout  = 5
 max_retries        = 3
 dead_letter_queue  = "passthrough-fix-jobs-dlq"
 
+# AUDIT FIX (Section 9, feature gap): the dead_letter_queue above had no
+# consumer — a job that exhausted max_retries sat here forever with nothing
+# reading it. Consumed by the same `queue` export in index.js (dispatched on
+# batch.queue) — see services/deadletter.service.js for what it does with
+# each message.
+[[queues.consumers]]
+queue              = "passthrough-fix-jobs-dlq"
+max_batch_size     = 10
+max_batch_timeout  = 30
+
 # ── Cron: hourly — drives all four scheduled jobs in index.js's `scheduled`
 #    export (anon-scan cleanup, orphaned-payment sweep, stale-pending sweep,
-#    pending-payment/webhook_events maintenance). One trigger, four jobs. ──
+#    pending-payment/webhook_events maintenance, data retention). One
+#    trigger, five jobs. ──
 [triggers]
 crons = ["0 * * * *"]
 

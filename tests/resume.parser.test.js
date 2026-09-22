@@ -76,3 +76,31 @@ describe('serializeResumeData', () => {
     expect(() => serializeResumeData(resumeData)).not.toThrow()
   })
 })
+
+// ── zip-bomb defence ───────────────────────────────────────────────────────
+describe('extractText — zip bomb', () => {
+  const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  it('abandons a 300MB-inflating .docx immediately instead of inflating it (bounded memory, fast)', async () => {
+    const z = new JSZip()
+    // ~300MB of "A" compresses to a few hundred KB — a valid archive well under the 5MB upload cap.
+    z.file('word/document.xml', Buffer.alloc(300 * 1024 * 1024, 65), { compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    const bomb = await z.generateAsync({ type: 'uint8array', compression: 'DEFLATE', compressionOptions: { level: 9 } })
+    expect(bomb.length).toBeLessThan(5 * 1024 * 1024)
+
+    const before = process.memoryUsage().rss
+    const t0 = Date.now()
+    const text = await extractText(bomb, DOCX_MIME)
+    const elapsed = Date.now() - t0
+    const grew = process.memoryUsage().rss - before
+
+    expect(text).toBe('')                                 // rejected → the scan reports an unparseable resume
+    expect(elapsed).toBeLessThan(5000)
+    expect(grew).toBeLessThan(150 * 1024 * 1024)          // nowhere near the 300MB (or more) it claimed
+  })
+  it('still extracts an ordinary .docx', async () => {
+    const z = new JSZip()
+    z.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>' + 'Senior engineer with real experience building systems. '.repeat(5) + '</w:t></w:r></w:p></w:body></w:document>')
+    const bytes = await z.generateAsync({ type: 'uint8array' })
+    expect(await extractText(bytes, DOCX_MIME)).toContain('Senior engineer')
+  })
+})

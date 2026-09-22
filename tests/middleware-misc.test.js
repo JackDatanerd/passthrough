@@ -8,8 +8,8 @@ import validateUuidParam, { UUID_RE } from '../src/middleware/validateUuidParam.
 // malformed :id and — per this audit — was missing from 9 real routes
 // across those same three files (now fixed alongside this test).
 
-function fakeCtx({ user } = {}) {
-  const store = { user }
+function fakeCtx({ user, authError } = {}) {
+  const store = { user, authError }
   return { get: k => store[k], json: (body, status) => ({ body, status }) }
 }
 
@@ -36,6 +36,33 @@ describe('adminOnly', () => {
     const res = await adminOnly(c, async () => { nextCalled = true })
     expect(nextCalled).toBe(true)
     expect(res).toBeUndefined()
+  })
+
+  // AUDIT FIX (bug): plain 401 used to be the answer whenever there was no
+  // user, full stop — including when the REASON was a database hiccup during
+  // optionalAuth's own lookup (see optionalAuth.middleware.test.js's
+  // authError describe). The admin SPA treats a 401 on a request that carried
+  // a token as a dead session and signs the admin out — so an infra blip was
+  // logging admins out. c.get('authError') (set by optionalAuth) lets this
+  // middleware tell "your session is bad" apart from "we couldn't check".
+  it('503s (never 401) when the reason there is no user is OUR OWN lookup failing', async () => {
+    const c = fakeCtx({ authError: 'unavailable' })
+    let nextCalled = false
+    const res = await adminOnly(c, async () => { nextCalled = true })
+    expect(res.status).toBe(503)
+    expect(nextCalled).toBe(false)
+  })
+  it('401s with a machine-readable code for an expired token, so the SPA can prompt a fresh login', async () => {
+    const c = fakeCtx({ authError: 'expired' })
+    const res = await adminOnly(c, async () => {})
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('TOKEN_EXPIRED')
+  })
+  it('plain 401 for every other reason (no token, invalid, inactive)', async () => {
+    for (const authError of [undefined, 'invalid', 'inactive']) {
+      const res = await adminOnly(fakeCtx({ authError }), async () => {})
+      expect(res.status).toBe(401)
+    }
   })
 })
 

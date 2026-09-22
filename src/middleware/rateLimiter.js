@@ -1,15 +1,23 @@
-// Replaces express-rate-limit's in-memory store with Cloudflare KV. Same five
-// limiters, same windows/maxes/messages, same CF-Connecting-IP key strategy.
+// Replaces express-rate-limit's in-memory store with Cloudflare KV. Same
+// windows/maxes/messages, keyed per client IP.
 //
 // IMPORTANT CAVEAT (flagged, not silently glossed over): this is a best-effort
 // fixed-window counter, not a perfectly atomic one. KV's get-then-put is not
 // transactional — under a concurrent burst at the exact same second, two
 // requests can both read the same count and both increment from it, letting
-// a couple of extra requests through right at the boundary. This is the same
-// tradeoff every KV-based rate limiter has (Cloudflare's own examples use
-// this exact pattern); it's fine for abuse mitigation at this traffic level,
-// but if precise enforcement ever matters (e.g. metered billing), upgrade to
-// a Durable Object counter instead — KV is not the right primitive for that.
+// a couple of extra requests through right at the boundary. It's fine for
+// abuse mitigation at this traffic level, but if precise enforcement ever
+// matters (e.g. metered billing), upgrade to a Durable Object counter — KV is
+// not the right primitive for that.
+//
+// FAILS OPEN. KV is a dependency of *every* /api request through the `general`
+// limiter, and it is documented to throttle writes to a single key (~1/second)
+// and to return transient 5xx. A limiter whose storage error propagated used
+// to turn any of those into a 500 for the whole API. A rate limiter is an
+// abuse backstop, not an availability dependency: on any KV error we log and
+// let the request through. (The credential-guessing surface is additionally
+// protected by bcrypt cost and the account lockout below, both fail-open for
+// the same reason — an outage must never become a login outage.)
 //
 // Each limiter returns Hono middleware: async (c, next) => {...}.
 //
@@ -25,6 +33,8 @@
 // `wrangler secret put`, same as every other credential-adjacent value, so it
 // never gets committed to the repo or left on accidentally in a config file.
 
+const { clientIp, rateKeyIp } = require('../lib/clientIp')
+
 // Takes `env` directly (not the full Hono context) so this can be reused
 // anywhere a bypass check is needed — not just inside rate-limiter
 // middleware. Currently also used by createScan's daily-scan-quota check in
@@ -36,103 +46,120 @@ function isBypassed(env, ip) {
   return raw.split(',').map(s => s.trim()).filter(Boolean).includes(ip)
 }
 
-function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
+// Core fixed-window step shared by every limiter and by hitQuota() below.
+// windowStart is set once, on the first request of the window, and never moves
+// afterwards — each later request just increments `count` and re-derives the
+// REMAINING ttl from that original windowStart. (Re-arming the TTL on every
+// request would let a client that keeps polling ratchet up to the cap and
+// stay locked out forever instead of getting a fresh budget every window.)
+//
+// Cloudflare KV requires expirationTtl >= 60s, so the TTL is floored there;
+// the elapsed-time check on read — not the KV expiry — is what actually
+// guarantees the window rolls over on time.
+//
+// Returns { allowed, retryAfter }. Throws only if KV itself throws.
+async function consumeSlot(kv, key, windowSeconds, max, now = Date.now()) {
+  const raw = await kv.get(key)
+  let count = 0
+  let windowStart = now
+  let refunds = 0
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number') {
+        count = parsed.count
+        windowStart = parsed.windowStart
+        refunds = typeof parsed.refunds === 'number' ? parsed.refunds : 0
+      }
+    } catch (_) {
+      // Pre-fix value (plain integer string) or corrupt data — treat as the
+      // start of a fresh window rather than throwing.
+    }
+  }
+
+  let elapsedSeconds = (now - windowStart) / 1000
+  if (elapsedSeconds >= windowSeconds) {
+    count = 0
+    windowStart = now
+    refunds = 0
+    elapsedSeconds = 0   // recomputed from the reset windowStart, not left stale
+  }
+
+  if (count >= max) {
+    return { allowed: false, retryAfter: Math.max(1, Math.ceil(windowSeconds - elapsedSeconds)) }
+  }
+
+  const remainingTtl = Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
+  await kv.put(key, JSON.stringify({ count: count + 1, windowStart, refunds }), { expirationTtl: remainingTtl })
+  return { allowed: true, retryAfter: 0 }
+}
+
+// Give back one slot for a request that was counted but then failed — see the
+// `refund` option on makeLimiter. Bounded by `maxRefunds` per window so that
+// "failures don't count" can never become "unlimited free attempts".
+async function refundSlot(kv, key, windowSeconds, maxRefunds, now = Date.now()) {
+  const raw = await kv.get(key)
+  if (!raw) return
+  let st
+  try { st = JSON.parse(raw) } catch (_) { return }
+  if (typeof st.count !== 'number' || typeof st.windowStart !== 'number' || st.count <= 0) return
+  const refunds = typeof st.refunds === 'number' ? st.refunds : 0
+  if (refunds >= maxRefunds) return
+  const elapsedSeconds = (now - st.windowStart) / 1000
+  if (elapsedSeconds >= windowSeconds) return
+  await kv.put(key, JSON.stringify({ count: st.count - 1, windowStart: st.windowStart, refunds: refunds + 1 }), {
+    expirationTtl: Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
+  })
+}
+
+// Generic keyed fixed-window quota for things that aren't a per-IP request
+// limit (e.g. "at most 3 verification emails per hour to one address"). Fails
+// open (returns true) if KV is unavailable.
+async function hitQuota(env, key, max, windowSeconds) {
+  try {
+    const r = await consumeSlot(env.RATE_LIMIT_KV, key, windowSeconds, max)
+    return r.allowed
+  } catch (err) {
+    console.error(`quota (${key.split(':').slice(0, 2).join(':')}) KV error — failing open:`, err.message)
+    return true
+  }
+}
+
+// `refund: { maxRefunds }` — the request is counted up front (so concurrent
+// bursts can't slip past), but if the downstream handler then answers with a
+// 4xx/5xx the slot is handed back, up to maxRefunds per window. Used by
+// anonScan: a wrong file type, an oversized upload, or a server hiccup must not
+// burn the one anonymous scan an hour that the visitor never actually got.
+function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund }) {
   return async (c, next) => {
     if (skip && skip(c)) return next()
 
-    const ip  = c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
-
+    const ip = clientIp(c)
     if (isBypassed(c.env, ip)) return next()
 
-    const key = `${keyPrefix}:${ip}`
+    const key = `${keyPrefix}:${rateKeyIp(ip)}`
     const kv  = c.env.RATE_LIMIT_KV
-    const now = Date.now()
 
-    // SECTION 8 AUDIT FIX: a KV failure must never take the route down with it.
-    // Cloudflare KV allows roughly one write per second to any single key and
-    // errors above that; every request from one IP lands on ONE key, so two
-    // concurrent requests from the same address (Paystack delivers from just
-    // a handful of IPs — two events in the same second is routine; a page
-    // load firing parallel API calls is too) could make the put below throw
-    // and turn a perfectly good request into a 500. A rate limiter is a
-    // best-effort backstop (see the header comment) — when it can't do its
-    // job it fails OPEN and logs, it does not fail the request.
-    let raw = null
+    let slot
     try {
-      raw = await kv.get(key)
+      slot = await consumeSlot(kv, key, windowSeconds, max)
     } catch (err) {
-      console.error(`Rate limiter KV read failed (${keyPrefix}) — failing open:`, err.message)
+      console.error(`rate limiter (${keyPrefix}) KV error — failing open:`, err.message)
       return next()
     }
-    let count = 0
-    let windowStart = now
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw)
-        if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number') {
-          count = parsed.count
-          windowStart = parsed.windowStart
-        }
-      } catch (_) {
-        // Pre-fix value (plain integer string) or corrupt data — treat as
-        // the start of a fresh window rather than throwing.
-      }
+
+    if (!slot.allowed) {
+      return c.json({ success: false, message }, 429, { 'Retry-After': String(slot.retryAfter) })
     }
 
-    // Belt-and-suspenders against the 60s KV TTL floor below: if the window
-    // has actually elapsed already, start a new one here regardless of
-    // whether the key technically still exists in KV.
-    let elapsedSeconds = (now - windowStart) / 1000
-    if (elapsedSeconds >= windowSeconds) {
-      count = 0
-      windowStart = now
-      // AUDIT FIX (Section 9): elapsedSeconds must be recomputed from the
-      // just-reset windowStart before it's used below to derive the KV
-      // TTL. It used to stay at its stale, pre-reset value here (which is
-      // by definition >= windowSeconds, since that's the condition that
-      // got us into this branch), so `windowSeconds - elapsedSeconds` came
-      // out <= 0 and got floored to the 60s minimum — meaning every reset
-      // triggered by this branch persisted the fresh window for only 60s
-      // in KV instead of the intended full windowSeconds. Once a bucket
-      // hit this path once, it kept re-triggering it every ~60s instead of
-      // every windowSeconds, silently handing out a full fresh quota far
-      // more often than the limiter's own numbers promise (e.g. ~15x more
-      // often for the 15-minute `auth` bucket, ~60x for the 1-hour ones).
-      elapsedSeconds = 0
-    }
+    if (!refund) return next()
 
-    if (count >= max) {
-      return c.json({ success: false, message }, 429)
+    await next()
+    const status = c.res && c.res.status
+    if (typeof status === 'number' && status >= 400) {
+      try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
+      catch (err) { console.error(`rate limiter (${keyPrefix}) refund failed:`, err.message) }
     }
-
-    // FIX: true fixed window. windowStart is set once, on the first request
-    // of the window, and never moves after that — every subsequent request
-    // just increments count and re-derives the REMAINING ttl from that
-    // original windowStart, instead of resetting the clock.
-    //
-    // The previous version called `kv.put(key, ..., { expirationTtl:
-    // windowSeconds })` on every request, which means every request reset
-    // the key's expiry to windowSeconds from *that moment*. A client making
-    // requests faster than windowSeconds apart (e.g. this app's own 2.5s
-    // status-polling loop while a fix is generating) kept renewing the key
-    // forever — the counter never dropped back to 0 as long as traffic kept
-    // coming, so an active-but-under-the-cap client would eventually
-    // ratchet all the way up to max and then stay locked out until a full
-    // windowSeconds of total silence, instead of getting a fresh budget
-    // every window like a real fixed window is supposed to give it.
-    //
-    // Cloudflare KV requires expirationTtl >= 60s, so it's floored there.
-    // That can only ever extend a key's life by at most ~59s past its
-    // logical expiry (for a request landing in the final minute of a
-    // window) — the elapsedSeconds check above, not this floor, is what
-    // actually guarantees correctness in that case.
-    const remainingTtl = Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
-    try {
-      await kv.put(key, JSON.stringify({ count: count + 1, windowStart }), { expirationTtl: remainingTtl })
-    } catch (err) {
-      console.error(`Rate limiter KV write failed (${keyPrefix}) — failing open:`, err.message)
-    }
-    return next()
   }
 }
 
@@ -187,7 +214,13 @@ const scanPoll = makeLimiter({
 const anonScan = makeLimiter({
   windowSeconds: 60 * 60, max: 1, keyPrefix: 'rl:anonscan',
   message: msg('Anon limit: 1/hr. Create account for 3/day.'),
-  skip: c => !!c.get('user')
+  skip: c => !!c.get('user'),
+  // The slot is counted before the upload is validated (so a burst can't race
+  // past it), then handed back if the request fails — a wrong file type, an
+  // oversized upload or a server error must not burn the one anonymous scan
+  // per hour the visitor never actually got. Bounded (10 refunds/hour) so it
+  // can't become unlimited free invalid attempts against the upload parser.
+  refund: { maxRefunds: 10 }
 })
 
 // HARDENING: previously every auth-adjacent endpoint (register, login,
@@ -220,16 +253,15 @@ const payment = makeLimiter({
   message: msg('Payment in progress. Wait.')
 })
 
-// AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
-// backs the new PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
-// endpoints (scan.controller.js's updateResumeData/downloadDraft). Both are
-// cheap (no Claude call — a rule-based rescore and/or a docx render) but
-// reachable by anonymous visitors too (ownership is enforced via anon_token,
-// not the `auth` middleware — see those routes), so they still need a real
-// ceiling rather than riding on `general`'s shared 100/15min IP bucket
-// alongside every other unrelated anonymous request that IP makes.
+// Backs PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
+// (scan.controller.js's updateResumeData/downloadDraft). Reachable by
+// anonymous visitors too (ownership is enforced via anon_token, not the
+// `auth` middleware — see those routes). NOT free: every PATCH re-renders the
+// docx AND makes a Claude scoring call (scoreResumeWithAI), so this is also
+// a spend ceiling, not just abuse hygiene — 15 edits per 15 minutes is far
+// more than a person genuinely correcting their extracted data needs.
 const resumeEdit = makeLimiter({
-  windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:resumeedit',
+  windowSeconds: 15 * 60, max: 15, keyPrefix: 'rl:resumeedit',
   message: msg('Too many requests. Please wait a moment.')
 })
 
@@ -311,15 +343,21 @@ function lockoutKey(email) {
 // this same email-keyed counter means guesses against one account are
 // tallied together across every endpoint that can prove its password.
 async function checkAccountLockout(env, email) {
-  const kv = env.RATE_LIMIT_KV
-  const raw = await kv.get(lockoutKey(email))
-  if (!raw) return { locked: false, retryAfterSeconds: null }
-  let parsed
-  try { parsed = JSON.parse(raw) } catch (_) { return { locked: false, retryAfterSeconds: null } }
-  if (parsed.lockedUntil && parsed.lockedUntil > Date.now()) {
-    return { locked: true, retryAfterSeconds: Math.ceil((parsed.lockedUntil - Date.now()) / 1000) }
+  try {
+    const kv = env.RATE_LIMIT_KV
+    const raw = await kv.get(lockoutKey(email))
+    if (!raw) return { locked: false, retryAfterSeconds: null }
+    let parsed
+    try { parsed = JSON.parse(raw) } catch (_) { return { locked: false, retryAfterSeconds: null } }
+    if (parsed.lockedUntil && parsed.lockedUntil > Date.now()) {
+      return { locked: true, retryAfterSeconds: Math.ceil((parsed.lockedUntil - Date.now()) / 1000) }
+    }
+    return { locked: false, retryAfterSeconds: null }
+  } catch (err) {
+    // FAIL OPEN — see the file-level comment: an outage must never become a login outage.
+    console.error('login lockout check KV error — failing open:', err.message)
+    return { locked: false, retryAfterSeconds: null }
   }
-  return { locked: false, retryAfterSeconds: null }
 }
 
 // Call on every failed login attempt (wrong password OR no such account —
@@ -331,75 +369,79 @@ async function checkAccountLockout(env, email) {
 // (`cf-connecting-ip` first, `x-forwarded-for` fallback, else 'unknown').
 // Returns { justLocked: boolean } — true only on the specific call whose
 // failure is what pushed the account from unlocked into locked, so callers
-// with access to the account's name/email (auth.controller.js already
-// fetched the user row in every branch that can reach this point with a
-// real account) can fire a one-time alert rather than one per failed
-// attempt. See sendAccountLockoutAlert in email.service.js.
+// with access to the account's name/email can fire a one-time alert rather
+// than one per failed attempt (see sendAccountLockoutAlert in
+// email.service.js, wired up in auth.controller.js).
 async function recordLoginFailure(env, email, ip) {
-  const kv = env.RATE_LIMIT_KV
-  const key = lockoutKey(email)
-  const raw = await kv.get(key)
-  let failCount = 0
-  let ips = []
-  let wasLocked = false
   try {
-    if (raw) {
-      const parsed = JSON.parse(raw)
-      failCount = parsed.failCount || 0
-      ips = Array.isArray(parsed.ips) ? parsed.ips : []
-      wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > Date.now())
-      // BUG FIX (account-lockout DoS, round 2): failCount/ips previously lived
-      // on forever untouched once a lock fired and later expired — both
-      // already sat at/above the lock thresholds, so the very next failure
-      // (from ONE ip, no coordination needed) re-locked the account instantly.
-      // That defeats LOCKOUT_MIN_DISTINCT_IPS's whole purpose, which only ever
-      // actually gated the FIRST lock a fresh key could produce; every lock
-      // after that needed nothing but time and a single guess. A lock that
-      // already ran its course and expired is stale history, not an ongoing
-      // attack — start this failure's counting over from zero so the
-      // distinct-IP bar has to be cleared again before another lock can
-      // trigger, exactly like it did the first time.
-      if (parsed.lockedUntil && parsed.lockedUntil <= Date.now()) {
-        failCount = 0
-        ips = []
+    const kv = env.RATE_LIMIT_KV
+    const key = lockoutKey(email)
+    const raw = await kv.get(key)
+    let failCount = 0
+    let ips = []
+    let wasLocked = false
+    try {
+      if (raw) {
+        const parsed = JSON.parse(raw)
+        failCount = parsed.failCount || 0
+        ips = Array.isArray(parsed.ips) ? parsed.ips : []
+        wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > Date.now())
+        // BUG FIX (account-lockout DoS, round 2): failCount/ips previously
+        // lived on forever untouched once a lock fired and later expired —
+        // both already sat at/above the lock thresholds, so the very next
+        // failure (from ONE ip, no coordination needed) re-locked the account
+        // instantly. That defeats LOCKOUT_MIN_DISTINCT_IPS's whole purpose,
+        // which only ever actually gated the FIRST lock a fresh key could
+        // produce. A lock that already ran its course and expired is stale
+        // history, not an ongoing attack — start this failure's counting over
+        // from zero so the distinct-IP bar has to be cleared again before
+        // another lock can trigger, exactly like it did the first time.
+        if (parsed.lockedUntil && parsed.lockedUntil <= Date.now()) {
+          failCount = 0
+          ips = []
+        }
       }
-    }
-  } catch (_) { failCount = 0; ips = []; wasLocked = false }
-  failCount += 1
+    } catch (_) { failCount = 0; ips = []; wasLocked = false }
+    failCount += 1
 
-  const normalizedIp = String(ip || 'unknown')
-  if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
-  if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
+    const normalizedIp = String(ip || 'unknown')
+    if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
+    if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
 
-  const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= LOCKOUT_MIN_DISTINCT_IPS)
-    ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
-    : null
+    const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= LOCKOUT_MIN_DISTINCT_IPS)
+      ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
+      : null
 
-  await kv.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
-    // KV's 60s TTL floor applies here same as makeLimiter() above; either
-    // way this key naturally ages out well before it'd matter.
-    expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
-  })
+    await kv.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
+      // KV's 60s TTL floor applies here same as consumeSlot() above; either
+      // way this key naturally ages out well before it'd matter.
+      expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
+    })
 
-  return { justLocked: !!lockedUntil && !wasLocked }
+    return { justLocked: !!lockedUntil && !wasLocked }
+  } catch (err) {
+    console.error('login failure record KV error (ignored):', err.message)
+    return { justLocked: false }
+  }
 }
 
 // Call on every successful login — clears the failure count so a real user
 // who mistypes their password a few times isn't left one mistake away from
 // a lockout on their next legitimate attempt days later.
 async function recordLoginSuccess(env, email) {
-  await env.RATE_LIMIT_KV.delete(lockoutKey(email)).catch(() => {})
+  try { await env.RATE_LIMIT_KV.delete(lockoutKey(email)) }
+  catch (err) { console.error('login success record KV error (ignored):', err.message) }
 }
 
 // ── Public verification lookups: miss limiter ───────────────────────────────
-// SECTION 7 AUDIT FIX (feature gap): /api/verify/:code is public and
-// unauthenticated, and the codes are only 6 characters from a 32-symbol
-// alphabet (~1.07 billion combinations). `general`'s 100 req / 15 min per IP
-// treats a hiring manager opening a real link and a script probing random
-// codes identically. This counts only MISSES (unknown code / malformed code)
-// per IP: a real reader never produces one, a prober produces nothing but
-// them. Deliberately separate from `general` so an office NAT full of
-// legitimate readers is never punished for each other's successful lookups.
+// /api/verify/:code is public and unauthenticated, and the codes are only 6
+// characters from a 32-symbol alphabet (~1.07 billion combinations).
+// `general`'s 100 req / 15 min per IP treats a hiring manager opening a real
+// link and a script probing random codes identically. This counts only
+// MISSES (unknown code / malformed code) per IP: a real reader never
+// produces one, a prober produces nothing but them. Deliberately separate
+// from `general` so an office NAT full of legitimate readers is never
+// punished for each other's successful lookups.
 const VERIFY_MISS_MAX = 30
 const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 
@@ -445,5 +487,6 @@ async function recordVerifyMiss(env, ip, now = Date.now()) {
 module.exports = {
   general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
-  isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX
+  isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX,
+  clientIp, rateKeyIp, hitQuota, consumeSlot, refundSlot
 }

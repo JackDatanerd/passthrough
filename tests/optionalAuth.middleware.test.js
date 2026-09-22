@@ -129,3 +129,50 @@ describe('optionalAuth', () => {
     expect(store.user).toBeUndefined()
   })
 })
+
+// ── c.get('authError') classification (Section 9) ──────────────────────────
+// Every "falls through, no user" case above collapses distinct causes into
+// one outcome — fine for a page that's equally happy either way, but two
+// downstream consumers need to tell them apart: adminOnly.js must answer 503
+// (not 401) when OUR lookup failed, not the caller's session — see
+// middleware-misc.test.js's adminOnly describe — and createScan
+// (scan.controller.js) must not silently create an anonymous scan for a
+// signed-in user just because a database blip made them look logged out.
+describe('optionalAuth — c.get(\'authError\') classification', () => {
+  it('no header at all → no authError (this is a genuinely anonymous request)', async () => {
+    const { store } = await run(async (c, next) => next(), {})
+    expect(store.authError).toBeUndefined()
+  })
+  it('a valid token sets no authError', async () => {
+    ctx = setup(() => ({ data: userRow() }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.authError).toBeUndefined()
+  })
+  it('an expired token → "expired"', async () => {
+    ctx = setup(() => ({ data: userRow() }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, -10)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.authError).toBe('expired')
+  })
+  it('a forged/garbage token → "invalid"', async () => {
+    ctx = setup(() => ({ data: userRow() }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, 'wrong-secret', 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.authError).toBe('invalid')
+  })
+  it('banned / deleted / stale tokenVersion → "inactive" (the caller\'s credentials, not our fault)', async () => {
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    for (const over of [{ status: 'BANNED' }, { deleted_at: '2020-01-01' }, { token_version: 9 }]) {
+      ctx = setup(() => ({ data: userRow(over) }))
+      const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+      expect(store.authError).toBe('inactive')
+    }
+  })
+  it('a DATABASE failure → "unavailable" — must not be confused with a bad session', async () => {
+    ctx = setup(() => ({ data: null, error: { message: 'db down' } }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.authError).toBe('unavailable')
+  })
+})

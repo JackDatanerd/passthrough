@@ -113,16 +113,81 @@ function looksLikeListingPage(text) {
   return signals.length >= 2
 }
 
-// Regex flattening (no DOM on Workers). Entities are decoded AFTER tags are
-// stripped and BEFORE whitespace is collapsed, so "&nbsp;" becomes a real
-// separator instead of surviving as the junk keyword "nbsp".
+// ── Linear-time HTML flattening ──────────────────────────────────────────────
+// This runs on up to 500KB of HTML served by a stranger's server. The obvious
+// implementation — `.replace(/<script[\s\S]*?<\/script>/gi, ' ')` and friends —
+// is QUADRATIC on hostile input: a page that is just "<script " repeated with
+// no closing tag makes the lazy `[\s\S]*?` scan to the end of the string once
+// per opener. Measured at 500KB that is 40–65 seconds of CPU (a Worker gets
+// 30s), reachable by ANY anonymous visitor who can host a page — the SSRF guard
+// rightly passes it, because it is a normal public host. `<[^>]+>` has the
+// same flaw on a long run of "<" with no ">".
+//
+// The scanners below do a bounded amount of work per character: every search
+// uses a LITERAL pattern (no backtracking), always resumes from where the last
+// one ended, and — the key point — the moment a closer is missing they stop,
+// because if no closer exists after position p, none exists after any later
+// opener either.
+
+// First match of a literal (global, case-insensitive) regex at/after `from`.
+function findLiteral(text, re, from) {
+  re.lastIndex = from
+  return re.exec(text)
+}
+
+// Removes every <open …> … <close> block, leaving a space in its place.
+// `dropUnclosed`: what to do with an opener that never closes. Comments,
+// <script> and <style> are raw-text states in HTML: a browser treats
+// everything after an unclosed one as part of it, never as visible text, so
+// the rest is dropped. Ordinary elements (<nav>, <footer>, …) are left in
+// place, tags stripped later — matching what the old regex did.
+function stripBlocks(text, openRe, closeRe, dropUnclosed) {
+  let out = ''
+  let pos = 0
+  for (;;) {
+    const open = findLiteral(text, openRe, pos)
+    if (!open) { out += text.slice(pos); return out }
+    const close = findLiteral(text, closeRe, open.index + open[0].length)
+    if (!close) {
+      out += dropUnclosed ? text.slice(pos, open.index) : text.slice(pos)
+      return out
+    }
+    out += text.slice(pos, open.index) + ' '
+    pos = close.index + close[0].length
+  }
+}
+
+// Replaces every `<…>` tag with a space. A "<" with no later ">" cannot start
+// a tag, so the remainder is kept verbatim and the scan ends.
+function stripTags(text) {
+  let out = ''
+  let pos = 0
+  for (;;) {
+    const lt = text.indexOf('<', pos)
+    if (lt === -1) return out + text.slice(pos)
+    const gt = text.indexOf('>', lt + 1)
+    if (gt === -1) return out + text.slice(pos)
+    if (gt === lt + 1) {                 // "<>" is not a tag; keep it as text
+      out += text.slice(pos, gt + 1)
+      pos = gt + 1
+      continue
+    }
+    out += text.slice(pos, lt) + ' '
+    pos = gt + 1
+  }
+}
+
+// Entities are decoded AFTER tags are stripped and BEFORE whitespace is
+// collapsed, so "&nbsp;" becomes a real separator instead of surviving as the
+// junk keyword "nbsp".
 function htmlToText(html) {
-  return decodeHtmlEntities((html || '')
-    .replace(/<!--[\s\S]*?-->/g, ' ')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<(nav|header|footer|aside)[\s\S]*?<\/\1>/gi, ' ')
-    .replace(/<[^>]+>/g, ' '))
+  let t = html || ''
+  t = stripBlocks(t, /<!--/g, /-->/g, true)
+  t = stripBlocks(t, /<script(?=[\s/>])/gi, /<\/script\s*>/gi, true)
+  t = stripBlocks(t, /<style(?=[\s/>])/gi, /<\/style\s*>/gi, true)
+  for (const tag of ['nav', 'header', 'footer', 'aside'])
+    t = stripBlocks(t, new RegExp(`<${tag}(?=[\\s/>])`, 'gi'), new RegExp(`<\\/${tag}\\s*>`, 'gi'), false)
+  return decodeHtmlEntities(stripTags(t))
     .replace(/\s+/g, ' ')
     .trim()
 }

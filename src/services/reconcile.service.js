@@ -313,8 +313,86 @@ async function sweepPendingPayments(env, supabase, { now = Date.now(), alert = t
   return result
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fourth concern in this file: paid, but generation FAILED.
+//
+// Every sweep above recovers PAYMENT-side failures (never fulfilled, never
+// settled, never confirmed as paid). This covers a FULFILMENT-side failure:
+// the scan was correctly marked FIX_PURCHASED/FIX_GENERATING and a job was
+// enqueued, but the generation job itself failed (a Claude/Browser Rendering
+// error, or the job killed mid-flight, or the hourly stuck-job recovery in
+// index.js flipping a hung FIX_GENERATING to ERROR). Before this, such a scan
+// was a permanent dead end for a customer who had already paid — initiateFix
+// says "Already purchased", retryFix requires FIX_DELIVERED, and nothing else
+// ever looked at it again.
+//
+// Safety, same shape as every other sweep in this file:
+//   * the re-queue is an ATOMIC CLAIM (claim_errored_fix, migration 0026):
+//     one UPDATE ... WHERE status='ERROR' AND fix_purchased AND recoveries <
+//     cap — only one caller can win, so it can never double-enqueue;
+//   * a per-scan cap (MAX_AUTO_RECOVERIES) so a DETERMINISTIC failure (an
+//     unparseable resume) cannot loop forever burning Claude spend;
+//   * a scan that exhausts its attempts is reported to the owner ONCE, then
+//     left for a human (admin.controller.js's adminRequeueFix).
+
+const MAX_AUTO_RECOVERIES   = 2
+const ERROR_MIN_AGE_MS      = 10 * 60 * 1000       // let the failure email/alert go out first
+const EXHAUSTED_ALERT_MS    = 70 * 60 * 1000       // just past one cron interval -> alert once
+const FAILED_LOOKBACK_MS    = 7 * 24 * 60 * 60 * 1000
+
+async function sweepFailedFixes(env, supabase, { now = Date.now(), alert = true } = {}) {
+  const result = { candidates: 0, requeued: [], exhausted: [], failed: [] }
+
+  const { data: scans, error } = await supabase
+    .from('scans')
+    .select('id, fix_tier, fix_error_recoveries, updated_at')
+    .eq('status', 'ERROR')
+    .eq('fix_purchased', true)
+    .gt('updated_at', new Date(now - FAILED_LOOKBACK_MS).toISOString())
+    .lt('updated_at', new Date(now - ERROR_MIN_AGE_MS).toISOString())
+    .order('updated_at', { ascending: false })
+    .limit(50)
+  if (error) { result.error = error.message; return result }
+  result.candidates = scans?.length || 0
+
+  let attempted = 0
+  for (const s of scans || []) {
+    if ((s.fix_error_recoveries ?? 0) >= MAX_AUTO_RECOVERIES) {
+      if (now - Date.parse(s.updated_at) < EXHAUSTED_ALERT_MS) result.exhausted.push({ scanId: s.id })
+      continue
+    }
+    if (attempted >= MAX_PER_RUN) break
+    attempted++
+    try {
+      const { data: claimed, error: claimErr } = await supabase.rpc('claim_errored_fix', { p_scan_id: s.id, p_max: MAX_AUTO_RECOVERIES })
+      if (claimErr) throw claimErr
+      if (!claimed) continue                     // someone else got there first
+      await env.FIX_QUEUE.send({ type: generatorFor(s.fix_tier), scanId: s.id })
+      result.requeued.push({ scanId: s.id, attempt: (s.fix_error_recoveries ?? 0) + 1 })
+    } catch (err) {
+      result.failed.push({ scanId: s.id, error: err.message })
+    }
+  }
+
+  if (alert && (result.exhausted.length || result.failed.length)) {
+    try {
+      const emailService = require('./email.service')
+      const lines = [
+        ...result.exhausted.map(r => `GAVE UP    scan ${r.scanId}  (${MAX_AUTO_RECOVERIES} automatic attempts failed — needs a human)`),
+        ...result.failed.map(r => `FAILED     scan ${r.scanId}  ${r.error}`),
+      ]
+      await emailService.sendOwnerAlert(env,
+        `Paid fixes failing: ${result.exhausted.length} exhausted, ${result.failed.length} could not be re-queued`,
+        `${lines.join('\n')}\n\nThese customers PAID and did not receive their fix. Investigate the scan's ` +
+        `generation error (wrangler tail / alert_logs), then re-run with POST /api/admin/scans/:id/requeue-fix.`)
+    } catch (_) {}
+  }
+  return result
+}
+
 module.exports = {
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
   sweepStalePendingPayments, PENDING_ABANDON_AGE_MS,
   sweepPendingPayments, recheckPayment, PENDING_MIN_AGE_MS, PENDING_RECENT_MS, MAX_VERIFY_PER_RUN,
+  sweepFailedFixes, MAX_AUTO_RECOVERIES,
 }

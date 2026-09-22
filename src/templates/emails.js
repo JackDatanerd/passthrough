@@ -8,7 +8,7 @@
 const BASE = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n  <meta charset=\"UTF-8\">\n  <meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n  <style>\n    body { margin:0; padding:0; background:#f4f4f5; font-family: sans-serif; }\n    .wrapper { max-width:600px; margin:32px auto; background:#ffffff;\n               border-radius:8px; overflow:hidden; }\n    .header  { background:#1E40AF; padding:24px 32px; }\n    .header a { color:#ffffff; font-size:20px; font-weight:700; text-decoration:none; }\n    .body    { padding:32px; color:#1f2937; font-size:15px; line-height:1.6; }\n    .footer  { padding:20px 32px; background:#f9fafb; color:#9ca3af;\n               font-size:12px; text-align:center; }\n    .btn     { display:inline-block; background:#1E40AF; color:#ffffff;\n               padding:12px 24px; border-radius:6px; text-decoration:none;\n               font-weight:600; margin:16px 0; }\n  </style>\n</head>\n<body>\n  <div class=\"wrapper\">\n    <div class=\"header\"><a href=\"{{FRONTEND_URL}}\">Passthrough</a></div>\n    <div class=\"body\">{{CONTENT}}</div>\n    <div class=\"footer\">passthrough.dev \u2014 ATS Resume Scanner</div>\n  </div>\n</body>\n</html>\n"
 
 const TEMPLATES = {
-  welcome: "<h2>Welcome, {{NAME}}!</h2>\n<p>Your Passthrough account is ready.</p>\n<p>Scan any resume against any job description and find out exactly why\nit's being rejected \u2014 before a recruiter ever sees it.</p>\n<p>Check your inbox for a verification email to unlock file downloads.</p>\n<a href=\"https://passthrough.dev\" class=\"btn\">Start Scanning \u2192</a>\n",
+  welcome: "<h2>Welcome, {{NAME}}!</h2>\n<p>Your Passthrough account is ready.</p>\n<p>Scan any resume against any job description and find out exactly why\nit's being rejected \u2014 before a recruiter ever sees it.</p>\n<p>Check your inbox for a verification email to unlock file downloads.</p>\n<a href=\"{{FRONTEND_URL}}\" class=\"btn\">Start Scanning \u2192</a>\n",
   email_verification: "<h2>Verify your email</h2>\n<p>Hi {{NAME}}, click below to verify your Passthrough email address.</p>\n<p>You need to verify your email before you can download fixed resumes.</p>\n<a href=\"{{VERIFY_URL}}\" class=\"btn\">Verify Email \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link expires in 1 hour.\nIf you didn't create a Passthrough account, ignore this email.</p>\n",
   password_reset: "<h2>Reset your password</h2>\n<p>Hi {{NAME}}, click below to reset your Passthrough password.</p>\n<a href=\"{{RESET_URL}}\" class=\"btn\">Reset Password \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link expires in 1 hour.\nIf you didn't request a reset, ignore this email.</p>\n",
   // AUDIT FIX (feature gap, Auth section round 2): the app already has this
@@ -35,9 +35,9 @@ const TEMPLATES = {
   // Previously the only signal a real owner had that something was wrong was
   // stumbling onto the 429 toast themselves during the lock window.
   account_lockout_alert: "<h2>Repeated failed sign-in attempts</h2>\n<p>Hi {{NAME}}, we've temporarily locked your Passthrough account for {{LOCKOUT_MINUTES}} minutes after several failed sign-in attempts from multiple locations.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If this wasn't you, no action is needed right now \u2014 the account stays locked and your password hasn't been changed. If you're not sure your password is still safe, reset it once the lock clears.</p>\n",
-  scan_fail: "<h2>Your resume scored {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume scored {{SCORE}}/100 against the ATS filter.</p>\n<p>Resumes below 75 are typically discarded before a recruiter opens the file.</p>\n<table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n  <tr><td style=\"padding:8px 0;color:#374151\">Keyword Match</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{KEYWORD_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Formatting</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{FORMAT_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Resume Sections</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{SECTIONS_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Content Quality</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{CONTENT_SCORE}}/100</td></tr>\n</table>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Fix My Resume \u2014 $49 \u2192</a>\n",
-  scan_pass_standard: "<h2>Your resume passed \u2014 {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume passed ATS screening with a score of {{SCORE}}/100.</p>\n<p>Your score is just below our Verified threshold (80+). A full fix and rewrite\ncan get you there \u2014 and includes the Passthrough Verified credential.</p>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Polish to Get Verified \u2014 $49 \u2192</a>\n",
-  scan_pass_badge: "<h2>\u2713 Your resume passed \u2014 {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume scored {{SCORE}}/100 and is Verified-eligible.</p>\n<p>You can get the Passthrough Verified credential \u2014 an employer-checkable\nverification that confirms your resume passed ATS screening.</p>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Get Verified \u2014 $39 \u2192</a>\n<p>Or for a full AI polish and rewrite: <a href=\"{{SCAN_URL}}\">Full Package \u2014 $49</a></p>\n",
+  scan_fail: "<h2>Your resume scored {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume scored {{SCORE}}/100 against the ATS filter.</p>\n<p>Resumes below {{PASS_THRESHOLD}} are typically discarded before a recruiter opens the file.</p>\n<table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n  <tr><td style=\"padding:8px 0;color:#374151\">Keyword Match</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{KEYWORD_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Formatting</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{FORMAT_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Resume Sections</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{SECTIONS_SCORE}}/100</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Content Quality</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600;color:#dc2626\">{{CONTENT_SCORE}}/100</td></tr>\n</table>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Fix My Resume \u2014 {{PRICE_FIX}} \u2192</a>\n",
+  scan_pass_standard: "<h2>Your resume passed \u2014 {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume passed ATS screening with a score of {{SCORE}}/100.</p>\n<p>Your score is just below our Verified threshold ({{BADGE_THRESHOLD}}+). A full fix and rewrite\ncan get you there \u2014 and includes the Passthrough Verified credential.</p>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Polish to Get Verified \u2014 {{PRICE_FIX}} \u2192</a>\n",
+  scan_pass_badge: "<h2>\u2713 Your resume passed \u2014 {{SCORE}}/100</h2>\n<p>Hi {{NAME}}, your resume scored {{SCORE}}/100 and is Verified-eligible.</p>\n<p>You can get the Passthrough Verified credential \u2014 an employer-checkable\nverification that confirms your resume passed ATS screening.</p>\n<a href=\"{{SCAN_URL}}\" class=\"btn\">Get Verified \u2014 {{PRICE_BADGE}} \u2192</a>\n<p>Or for a full AI polish and rewrite: <a href=\"{{SCAN_URL}}\">Full Package \u2014 {{PRICE_FIX}}</a></p>\n",
   // AUDIT FIX (feature gap — section audit "generate a resume from
   // scratch"): anonymous brain-dump submitters previously got no email at
   // all. SCAN_URL here is a magic link (scan id + anon token), not a
@@ -86,21 +86,32 @@ function escapeHtml(str) {
  * equivalent to v8's email.service.js reading from a shared BASE constant scope —
  * see email.service.js, which injects it automatically exactly like the v8 patch did).
  */
+// FOUND DURING SECTION 9/10 HARDENING: the multi-pass loop above (one
+// `html.replace()` per variable, over the WHOLE accumulating string) already
+// used a function replacer to stop $-pattern reinterpretation ($&, $$, ...) —
+// but it has a second, worse hole: substituting NAME first and FRONTEND_URL
+// second means the FRONTEND_URL pass re-scans text that NAME's OWN
+// substitution just inserted. A display name containing the literal text
+// "{{FRONTEND_URL}}" — free text, no character restrictions — gets that
+// placeholder replaced a second time by a LATER loop iteration, so
+// attacker-controlled input can inject template syntax that gets resolved
+// against real values. Verified directly: render('welcome', { NAME:
+// '{{FRONTEND_URL}}', FRONTEND_URL: 'https://real.example' }) puts the real
+// URL, not the literal text, into the rendered NAME.
+//
+// Fixed by doing every substitution in ONE pass over the fully-assembled
+// string: a single regex sweep that looks up each {{KEY}} in a pre-escaped
+// map, so a value's own content is never re-scanned by another key's
+// substitution, however many passes there would otherwise have been.
+// Placeholders with no supplied value are left visible (not blanked), so a
+// template/sender mismatch stays obvious in review.
 function render(templateKey, vars) {
   const template = TEMPLATES[templateKey]
   if (!template) throw new Error(`Unknown email template: ${templateKey}`)
-  let html = BASE.replace('{{CONTENT}}', template)
-  for (const [k, v] of Object.entries(vars)) {
-    // Replacer must be a FUNCTION, not a string. String.replace() treats a
-    // string replacement as a pattern — $&, $`, $', $$, $1-$9 all have special
-    // meaning — so a user-controlled value (NAME, free text, no character
-    // restrictions) containing a literal "$" could corrupt the surrounding
-    // HTML or leak the raw {{PLACEHOLDER}} back into the output. A function
-    // return value is always inserted literally, sidestepping this entirely.
-    const escaped = escapeHtml(v || '')
-    html = html.replace(new RegExp(`{{${k}}}`, 'g'), () => escaped)
-  }
-  return html
+  const escaped = {}
+  for (const [k, v] of Object.entries(vars)) escaped[k] = escapeHtml(v ?? '')
+  return BASE.replace('{{CONTENT}}', () => template)
+    .replace(/{{(\w+)}}/g, (whole, key) => (Object.prototype.hasOwnProperty.call(escaped, key) ? escaped[key] : whole))
 }
 
 module.exports = { render }

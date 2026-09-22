@@ -1,5 +1,6 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import rl from '../src/middleware/rateLimiter.js'
+import { clientIp, rateKeyIp } from '../src/lib/clientIp.js'
 
 function kvStore(initial = {}) {
   const m = new Map(Object.entries(initial))
@@ -196,5 +197,113 @@ describe('anonScan limiter', () => {
     const env = { RATE_LIMIT_KV: kvStore() }
     const user = { id: 'u1' }
     for (let i = 0; i < 3; i++) expect((await hit(rl.anonScan, ctx({ env, method: 'POST', path: '/api/scan', user }))).passed).toBe(true)
+  })
+})
+
+// ── Section 9 hardening ────────────────────────────────────────────────────
+
+describe('429 responses tell the client when to come back', () => {
+  it('sets Retry-After (seconds left in the window)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore({ 'rl:general:1.2.3.4': JSON.stringify({ count: 100, windowStart: Date.now() - 60 * 1000 }) }) }
+    let headers
+    const c = ctx({ env }); c.json = (body, status, h) => { headers = h; return { body, status } }
+    await hit(rl.general, c)
+    const secs = Number(headers['Retry-After'])
+    expect(secs).toBeGreaterThan(14 * 60 - 5)
+    expect(secs).toBeLessThanOrEqual(14 * 60)
+  })
+})
+
+describe('anonScan refund — a failed attempt must not burn the hour', () => {
+  async function submit(env, status) {
+    const c = ctx({ env, method: 'POST', path: '/api/scan' })
+    let reached = false
+    await rl.anonScan(c, async () => { reached = true; c.res = { status } })
+    return reached
+  }
+  it('a 415/400/500 attempt is refunded, so the visitor can try again immediately', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    expect(await submit(env, 415)).toBe(true)
+    expect(await submit(env, 400)).toBe(true)
+    expect(await submit(env, 200)).toBe(true)
+    expect(await submit(env, 200)).toBe(false)
+  })
+  it('a successful scan is NOT refunded', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    await submit(env, 200)
+    expect(JSON.parse(env.RATE_LIMIT_KV.m.get('rl:anonscan:1.2.3.4')).count).toBe(1)
+  })
+  it('refunds are capped, so "failures are free" cannot become an unlimited upload-parsing oracle', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 10; i++) expect(await submit(env, 415)).toBe(true)
+    expect(await submit(env, 415)).toBe(true)
+    expect(await submit(env, 415)).toBe(false)
+  })
+})
+
+describe('client IP handling', () => {
+  const mk = (h, env) => ({ env, req: { header: k => h[k] } })
+  it('uses cf-connecting-ip', () => {
+    expect(clientIp(mk({ 'cf-connecting-ip': '8.8.8.8' }, { NODE_ENV: 'production' }))).toBe('8.8.8.8')
+  })
+  it('does NOT trust a client-supplied x-forwarded-for in production', () => {
+    expect(clientIp(mk({ 'x-forwarded-for': '7.7.7.7' }, { NODE_ENV: 'production' }))).toBe('unknown')
+    expect(clientIp(mk({ 'x-forwarded-for': '7.7.7.7' }, {}))).toBe('unknown')
+  })
+  it('honours x-forwarded-for (first hop only) outside production', () => {
+    expect(clientIp(mk({ 'x-forwarded-for': '7.7.7.7, 10.0.0.1' }, { NODE_ENV: 'development' }))).toBe('7.7.7.7')
+  })
+  it('collapses an IPv6 address to its /64 so one client cannot mint unlimited "different" IPs', () => {
+    const a = rateKeyIp('2001:db8:aaaa:bbbb:1111:2222:3333:4444')
+    const b = rateKeyIp('2001:0db8:aaaa:bbbb::9')
+    expect(a).toBe('2001:0db8:aaaa:bbbb::/64')
+    expect(b).toBe(a)
+    expect(rateKeyIp('2001:db8:aaaa:cccc::1')).not.toBe(a)
+  })
+  it('leaves IPv4 and IPv4-mapped IPv6 alone', () => {
+    expect(rateKeyIp('203.0.113.9')).toBe('203.0.113.9')
+    expect(rateKeyIp('::ffff:203.0.113.9')).toBe('203.0.113.9')
+  })
+  it('the limiter really buckets two addresses in the same /64 together', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    await hit(rl.authVerify, ctx({ env, ip: '2001:db8::1' }))
+    await hit(rl.authVerify, ctx({ env, ip: '2001:db8::2' }))
+    const key = [...env.RATE_LIMIT_KV.m.keys()].find(k => k.startsWith('rl:authverify:'))
+    expect(JSON.parse(env.RATE_LIMIT_KV.m.get(key)).count).toBe(2)
+  })
+})
+
+describe('hitQuota (per-recipient email throttle primitive)', () => {
+  it('allows N then refuses, per key', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 3; i++) expect(await rl.hitQuota(env, 'rl:mail:x', 3, 3600)).toBe(true)
+    expect(await rl.hitQuota(env, 'rl:mail:x', 3, 3600)).toBe(false)
+    expect(await rl.hitQuota(env, 'rl:mail:y', 3, 3600)).toBe(true)
+  })
+  it('fails open on KV errors', async () => {
+    const realErr = console.error; console.error = () => {}
+    const env = { RATE_LIMIT_KV: { get: async () => { throw new Error('down') }, put: async () => {} } }
+    expect(await rl.hitQuota(env, 'rl:mail:x', 1, 60)).toBe(true)
+    console.error = realErr
+  })
+})
+
+describe('verify-miss limiter', () => {
+  it('allows lookups until the miss cap, then reports limited', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < rl.VERIFY_MISS_MAX; i++) {
+      expect(await rl.isVerifyMissLimited(env, '9.9.9.9')).toBe(false)
+      await rl.recordVerifyMiss(env, '9.9.9.9')
+    }
+    expect(await rl.isVerifyMissLimited(env, '9.9.9.9')).toBe(true)
+  })
+  it('is per IP, and fails open on KV errors', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < rl.VERIFY_MISS_MAX; i++) await rl.recordVerifyMiss(env, '9.9.9.9')
+    expect(await rl.isVerifyMissLimited(env, '1.1.1.1')).toBe(false)
+    const realErr = console.error; console.error = () => {}
+    const dead = { RATE_LIMIT_KV: { get: async () => { throw new Error('down') } } }
+    expect(await rl.isVerifyMissLimited(dead, '9.9.9.9')).toBe(false)
+    console.error = realErr
   })
 })

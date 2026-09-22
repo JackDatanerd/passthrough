@@ -52,6 +52,12 @@ const BLOCKED_HOSTNAME_SUFFIXES = [
   '.nip.io', '.sslip.io', '.xip.io', '.localtest.me', '.lvh.me',
 ]
 const BLOCKED_HOSTNAMES = ['localhost']
+const DOH_TIMEOUT_MS = 3000
+
+// A job posting is served on the web's standard ports. Refusing everything else
+// means this fetcher can't be pointed at a database/cache/admin port on an
+// otherwise-public host ("http://example.com:6379/"). '' = the scheme default.
+const ALLOWED_PORTS = new Set(['', '80', '443', '8080', '8443'])
 
 function isIPv4(hostname) {
   return /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(hostname)
@@ -70,6 +76,7 @@ function isPrivateIPv4(hostname) {
   if (a === 192 && b === 0 && c === 0) return true       // 192.0.0.0/24 IETF protocol assignments
   if (a === 192 && b === 0 && c === 2) return true       // TEST-NET-1
   if (a === 198 && (b === 18 || b === 19)) return true   // 198.18.0.0/15 benchmarking
+  if (a === 192 && b === 88 && c === 99) return true     // 192.88.99.0/24 deprecated 6to4 relay anycast
   if (a === 198 && b === 51 && c === 100) return true    // TEST-NET-2
   if (a === 203 && b === 0 && c === 113) return true     // TEST-NET-3
   if (a === 0) return true                              // "this network"
@@ -98,6 +105,7 @@ function isPrivateIPv6(hostname) {
     if ((first & 0xfe00) === 0xfc00) return true          // unique local  fc00::/7
     if ((first & 0xffc0) === 0xfe80) return true          // link-local    fe80::/10
     if ((first & 0xffc0) === 0xfec0) return true          // site-local    fec0::/10 (deprecated)
+    if ((first & 0xff00) === 0xff00) return true          // multicast     ff00::/8
     if (first === 0x2002) return true                     // 6to4 2002::/16 — embeds an IPv4, deprecated, never a job board
   }
   if (h.startsWith('2001:0:') || h.startsWith('2001::')) return true  // Teredo 2001::/32 (deprecated tunnel)
@@ -161,9 +169,12 @@ function isPrivateIPv6(hostname) {
 // any failure — callers must treat a throw as "unsafe," not "unknown."
 async function resolveHostname(hostname) {
   const headers = { Accept: 'application/dns-json' }
+  // Bounded: an unresponsive resolver must fail the CHECK (closed — see
+  // resolveHostnameIsSafe), not hang the request until the platform kills it.
+  const opts = () => ({ headers, signal: AbortSignal.timeout(DOH_TIMEOUT_MS) })
   const [aRes, aaaaRes] = await Promise.all([
-    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,    { headers }),
-    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=AAAA`, { headers })
+    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,    opts()),
+    fetch(`https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=AAAA`, opts())
   ])
   if (!aRes.ok || !aaaaRes.ok) throw new Error('DoH lookup failed')
 
@@ -195,6 +206,11 @@ async function checkUrlIsSafeToFetch(url) {
   try { parsed = new URL(url) } catch (_) { return 'Invalid URL.' }
 
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'Only http/https URLs are supported.'
+
+  // Credentials in a URL have no place in a job link and are a classic way to
+  // dress up a request ("https://trusted.com@evil.com/").
+  if (parsed.username || parsed.password) return 'That address cannot be fetched.'
+  if (!ALLOWED_PORTS.has(parsed.port)) return 'That address cannot be fetched.'
 
   // Strip trailing dots: "localhost." and "metadata.google.internal." are the
   // same hosts as their dotless forms (fully-qualified DNS names), but the

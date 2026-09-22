@@ -22,6 +22,7 @@ const jwtLib    = require('../lib/jwt')
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
+const { must } = require('../lib/db')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
@@ -44,9 +45,11 @@ function maybeSendLockoutAlert(c, result, user) {
 // requester's IP (see rateLimiter.js's LOCKOUT_MIN_DISTINCT_IPS comment) —
 // same header precedence scan.controller.js's quota-bypass check already
 // uses, centralized here since four handlers in this file need it.
-function clientIp(c) {
-  return c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
-}
+// clientIp() itself now lives in lib/clientIp.js (shared with
+// rateLimiter.js/scan.controller.js): it only trusts x-forwarded-for outside
+// production, so a spoofable header can't pick its own lockout-tracking IP
+// in prod, which a local copy of this helper would not have gotten right.
+const { clientIp } = require('../lib/clientIp')
 
 async function issueJWT(env, user) {
   const expiresIn = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
@@ -102,7 +105,15 @@ async function getDummyPasswordHash() {
 // login got an indistinguishable "Invalid credentials". Normalizing here
 // at every read/write site closes both; see 0017_case_insensitive_email.sql
 // for the matching DB-level backstop against races/other write paths.
-const emailSchema = z.string().trim().toLowerCase().email()
+// max 254 = the RFC 5321 limit. Without it a multi-KB "email" reaches
+// Postgres and blows the unique-index row-size limit as an unhandled 500.
+const emailSchema = z.string().trim().toLowerCase().email().max(254)
+
+// Passwords being CHECKED (login, current-password confirmations) get a
+// generous but bounded ceiling — hashing a multi-MB string is a free
+// CPU-burning request for an attacker, and no legitimately-set password is
+// anywhere near this long.
+const checkPasswordSchema = z.string().max(1024)
 
 // BUG FIX (round 2 of the password-length audit): the earlier `.max(72)` on
 // a raw z.string() only bounds JS string length (UTF-16 code units), not the
@@ -183,7 +194,7 @@ async function login(c) {
   const body = await c.req.json()
   const { email, password } = z.object({
     email:    emailSchema,
-    password: z.string()
+    password: checkPasswordSchema
   }).parse(body)
 
   // AUDIT FIX (Section 9, feature gap): account-level lockout, independent
@@ -287,7 +298,8 @@ async function forgotPassword(c) {
     const stored = await cryptoLib.sha256(raw)
     const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
 
-    await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id)
+    // Checked: mailing a reset link whose token was never stored gives the user a dead link.
+    must(await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id), 'store reset token')
     // waitUntil, not fire-and-forget — see register()'s comment for why.
     c.executionCtx.waitUntil(
       emailService.sendPasswordReset(c.env, supabase, email, user.name, raw)
@@ -379,9 +391,9 @@ async function verifyEmail(c) {
 
   if (!user) return c.json({ success: false, message: 'Verification link invalid or expired.' }, 400)
 
-  await supabase.from('users').update({
+  must(await supabase.from('users').update({
     email_verified: true, email_verify_token: null, email_verify_expiry: null
-  }).eq('id', user.id)
+  }).eq('id', user.id), 'verify email')
 
   return c.json({ success: true, message: 'Email verified.' })
 }
@@ -396,7 +408,7 @@ async function resendVerification(c) {
   const stored = await cryptoLib.sha256(raw)
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
 
-  await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id)
+  must(await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id), 'store verify token')
   // waitUntil, not fire-and-forget — see register()'s comment for why. This
   // was the exact cause of "resend verification never arrives": the request
   // returned successfully, but the actual Resend API call was getting
@@ -414,7 +426,7 @@ async function changePassword(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
   const { currentPassword, newPassword } = z.object({
-    currentPassword: z.string(),
+    currentPassword: checkPasswordSchema,
     // BUG FIX: see register()'s matching comment and passwordSchema() above —
     // bcryptjs truncates past 72 BYTES, not 72 characters, with no error.
     newPassword:     passwordSchema()
@@ -513,8 +525,8 @@ async function updateEmail(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
   const { newEmail, password } = z.object({
-    newEmail: z.string().trim().toLowerCase().email(),
-    password: z.string()
+    newEmail: emailSchema,
+    password: checkPasswordSchema
   }).parse(body)
 
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
@@ -579,7 +591,7 @@ async function updateEmail(c) {
 async function deleteAccount(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
-  const { password } = z.object({ password: z.string() }).parse(body)
+  const { password } = z.object({ password: checkPasswordSchema }).parse(body)
 
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
@@ -661,6 +673,12 @@ async function deleteAccount(c) {
     emailService.sendAccountDeleted(c.env, supabase, preScrubEmail, preScrubName)
       .catch(e => console.error('Account-deleted email:', e.message))
   )
+  // Purges this address's own mail history too, so no trace of who we
+  // emailed and when survives the deletion it's the record of.
+  try {
+    const { error: logErr } = await supabase.from('email_logs').delete().eq('to', preScrubEmail)
+    if (logErr) console.error('deleteAccount: email_logs purge failed:', logErr.message)
+  } catch (e) { console.error('deleteAccount: email_logs purge failed:', e.message) }
 
   return c.json({ success: true, message: 'Account deleted.' })
 }
@@ -683,9 +701,14 @@ async function claimScan(c) {
 
   if (!scan) return c.json({ success: false, message: 'Scan not found or expired.' }, 404)
 
-  await supabase.from('scans').update({
-    user_id: user.id, anon_token: null, anon_expires_at: null
-  }).eq('id', scan.id)
+  // contact_name/contact_email were only ever collected so an ANONYMOUS
+  // submitter could be emailed a way back to their scan. Once the scan
+  // belongs to an account that purpose is served by the account itself, so
+  // the extra copy of their personal details is dropped rather than kept.
+  must(await supabase.from('scans').update({
+    user_id: user.id, anon_token: null, anon_expires_at: null,
+    contact_name: null, contact_email: null
+  }).eq('id', scan.id), 'claim scan')
 
   return c.json({ success: true, data: { scanId: scan.id } })
 }

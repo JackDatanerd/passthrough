@@ -32,7 +32,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [] }
+  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -40,7 +40,7 @@ async function setup(opts = {}) {
     if (q.table === 'users' && q.op === 'insert') return { data: opts.insertedRow ?? baseUserRow({ id: 'new1', password_hash: 'x' }), error: opts.insertError || null }
     if (q.table === 'users' && q.op === 'update') {
       state.updates.push({ table: 'users', patch: q.patch, id: eqValue(q, 'id') })
-      return { data: opts.updatedUserRow ?? { ...userRow, ...q.patch }, error: null }
+      return { data: opts.updatedUserRow ?? { ...userRow, ...q.patch }, error: opts.userUpdateError || null }
     }
     if (q.table === 'scans' && q.op === 'select') {
       // claimScan's lookup uses .maybeSingle() (a single row or null);
@@ -49,7 +49,8 @@ async function setup(opts = {}) {
       if (q.maybe) return { data: 'claimScanResult' in opts ? opts.claimScanResult : null, error: null }
       return { data: opts.scans ?? [], error: null }
     }
-    if (q.table === 'scans' && q.op === 'update') { state.updates.push({ table: 'scans', patch: q.patch }); return { error: null } }
+    if (q.table === 'scans' && q.op === 'update') { state.updates.push({ table: 'scans', patch: q.patch }); return { error: opts.scanUpdateError || null } }
+    if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(eqValue(q, 'to')); return { error: null } }
     if (q.op === 'rpc') { state.rpcCalls.push({ name: q.name, args: q.args }); return { data: null, error: opts.rpcError || null } }
     return undefined
   })
@@ -531,6 +532,66 @@ describe('claimScan', () => {
     expect(res.status).toBe(200)
     expect(res.body.data.scanId).toBe('s1')
     const update = t.state.updates.find(u => u.table === 'scans')
-    expect(update.patch).toEqual({ user_id: 'u1', anon_token: null, anon_expires_at: null })
+    expect(update.patch).toEqual({ user_id: 'u1', anon_token: null, anon_expires_at: null, contact_name: null, contact_email: null })
+  })
+})
+
+// ── Section 9/10 hardening on top of the round-2 auth pass ─────────────────
+
+describe('unchecked-write bug class: a failed DB write must never be reported as success', () => {
+  const dbErr = new Error('connection reset by peer')
+  it('forgotPassword: if the token cannot be stored, no reset email is sent (it would be a dead link)', async () => {
+    t = await setup({ userUpdateError: dbErr })
+    await expect(t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))).rejects.toThrow()
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('verifyEmail: a failed update rejects', async () => {
+    t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false }), userUpdateError: dbErr })
+    await expect(t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))).rejects.toThrow()
+  })
+  it('resendVerification: if the token cannot be stored, no email is sent', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: false, email: 'user@example.com', name: 'Ada' }, userUpdateError: dbErr })
+    await expect(t.mod.resendVerification(t.c())).rejects.toThrow()
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('claimScan: a failed update rejects', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS' }, scanUpdateError: dbErr })
+    await expect(t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))).rejects.toThrow()
+  })
+})
+
+describe('input bounds', () => {
+  it('login refuses an absurdly long password (no free CPU burn) but accepts any sane existing one', async () => {
+    t = await setup()
+    await expect(t.mod.login(t.c({ body: { email: 'user@example.com', password: 'x'.repeat(5000) } }))).rejects.toBeTruthy()
+    const ok = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(ok.status).toBe(200)
+  })
+  it('register rejects an absurdly long email before ever touching the DB', async () => {
+    t = await setup()
+    await expect(t.mod.register(t.c({ body: { name: 'A', email: 'a'.repeat(260) + '@b.com', password: 'longenough' } }))).rejects.toBeTruthy()
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('changePassword/updateEmail/deleteAccount refuse an absurdly long checked password too', async () => {
+    t = await setup()
+    await expect(t.mod.changePassword(t.c({ body: { currentPassword: 'x'.repeat(5000), newPassword: 'longenough' } }))).rejects.toBeTruthy()
+    t = await setup()
+    await expect(t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'x'.repeat(5000) } }))).rejects.toBeTruthy()
+    t = await setup()
+    await expect(t.mod.deleteAccount(t.c({ body: { password: 'x'.repeat(5000) } }))).rejects.toBeTruthy()
+  })
+})
+
+describe('deleteAccount — email_logs purge', () => {
+  it('purges email_logs for the account address after a successful deletion', async () => {
+    t = await setup({ scans: [] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.logPurges).toEqual(['user@example.com'])
+  })
+  it('a failed scrub purges nothing (the account was not actually deleted)', async () => {
+    t = await setup({ scans: [], rpcError: { message: 'constraint violation' } })
+    await expect(t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).rejects.toThrow()
+    expect(t.state.logPurges).toHaveLength(0)
   })
 })

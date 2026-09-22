@@ -52,6 +52,8 @@ const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
 const referralService      = require('../services/referral.service')
 const rateLimiter          = require('../middleware/rateLimiter')
+const { clientIp }         = require('../lib/clientIp')
+const { must, warnOnError } = require('../lib/db')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -133,6 +135,11 @@ async function createScan(ctx) {
 
   const user = ctx.get('user')
 
+  // A request that carried a session token but got no user because OUR lookup
+  // failed (database hiccup) must not fall through as an anonymous submission.
+  if (!user && ctx.get('authError') === 'unavailable')
+    return ctx.json({ success: false, message: 'We could not verify your session just now. Please try again in a moment.' }, 503)
+
   // PHASE 1 (extended in PHASE 4): exactly one of the three input modes
   // must be present. More than one present is rejected explicitly rather
   // than silently preferring one, so a frontend bug that sends two never
@@ -204,7 +211,13 @@ async function createScan(ctx) {
   // depending on someone happening to mention their own name while
   // describing their career (which people rarely do unprompted).
   const contactName  = (fields.contactName  || '').trim()
-  const contactEmail = (fields.contactEmail || '').trim()
+  const contactEmail = (fields.contactEmail || '').trim().toLowerCase()
+
+  // The contact email is emailed a magic link when the scan completes — and
+  // it is typed by an ANONYMOUS visitor — so it is validated like any other
+  // address we will send to.
+  if (!user && brainDumpText && contactEmail && !z.string().email().safeParse(contactEmail).success)
+    return ctx.json({ success: false, message: 'Enter a valid email address.' }, 400)
   const brainDumpWithContact = (!user && brainDumpText && (contactName || contactEmail))
     ? `Name: ${contactName}\nEmail: ${contactEmail}\n\n${brainDumpText}`
     : brainDumpText
@@ -293,7 +306,7 @@ async function createScan(ctx) {
 
     let bypassGranted = false
     if (!allowed) {
-      const ip = ctx.req.header('cf-connecting-ip') || ctx.req.header('x-forwarded-for') || 'unknown'
+      const ip = clientIp(ctx)
       // Same RATE_LIMIT_BYPASS_IPS secret used by middleware/rateLimiter.js —
       // this is a separate DB-tracked limit (not KV-based), but reuses the
       // same testing toggle so there's one bypass to turn on/off, not two.
@@ -302,7 +315,7 @@ async function createScan(ctx) {
       }
       // Bypassed — the RPC already declined to increment, so grant the
       // slot manually for this request only (testing path, unmetered).
-      await supabase.from('users').update({ scans_today: c.FREE_SCANS_PER_DAY }).eq('id', user.id)
+      warnOnError(await supabase.from('users').update({ scans_today: c.FREE_SCANS_PER_DAY }).eq('id', user.id), 'quota bypass grant')
       bypassGranted = true
     }
 
@@ -330,9 +343,9 @@ async function createScan(ctx) {
       // real Promise instances, so .catch() doesn't exist on them directly —
       // must go through a real try/catch (or await) instead.
       if (allowed || bypassGranted) {
-        try {
-          await supabase.rpc('decrement_scan_count', { p_user_id: user.id })
-        } catch (_) {}
+        // supabase-js reports a failed RPC as `{ error }` and never throws, so
+        // the result must be inspected — a bare try/catch around it can't fire.
+        warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: user.id }), 'scan quota rollback')
       }
       await cleanupFile()
       throw createErr
@@ -500,6 +513,7 @@ async function getScan(ctx) {
 // else (the AI-generation call sites intentionally do NOT run their output
 // through this — that would just be a second, redundant thing to keep in
 // sync with the prompt's own schema).
+const MAX_RESUME_DATA_JSON_CHARS = 100_000
 const resumeDataSchema = z.object({
   name:      z.string().nullable().optional(),
   email:     z.string().nullable().optional(),
@@ -579,6 +593,11 @@ async function updateResumeData(ctx) {
   } catch (_) {
     return ctx.json({ success: false, message: 'Invalid request body.' }, 400)
   }
+  // Bounded BEFORE it is validated, rendered to a docx and stored as JSONB:
+  // the schema is deliberately permissive (`.passthrough()`), so it can't be
+  // relied on to cap size. A real structured resume is a few KB.
+  if (JSON.stringify(body?.resumeData ?? null).length > MAX_RESUME_DATA_JSON_CHARS)
+    return ctx.json({ success: false, message: 'Resume data is too large.' }, 400)
   const parsedBody = resumeDataSchema.safeParse(body?.resumeData)
   if (!parsedBody.success)
     return ctx.json({ success: false, message: 'Resume data is not in the expected shape.' }, 400)
@@ -780,7 +799,10 @@ async function redeemCredit(ctx) {
     }
     console.error(`[CRITICAL] redeemCredit fulfillment failed after credit consumed (user ${user.id}, scan ${scan.id}):`, err.message)
     try {
-      await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id })
+      // must(): supabase-js reports a failed RPC as `{ error }` and never
+      // throws — without this the catch below (and its owner alert, which
+      // already existed but could never fire) silently never ran.
+      must(await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id }), 'refund free fix credit')
     } catch (refundErr) {
       // Refund itself failed — this is the one case that genuinely needs a
       // human, since the credit is stuck consumed with no automatic path
@@ -836,7 +858,25 @@ async function retryFix(ctx) {
   if (newRetryCount < 0)
     return ctx.json({ success: false, message: 'Could not start a retry — it may already be in progress. Refresh and try again.' }, 400)
 
-  await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+  // The RPC above has ALREADY spent one retry and flipped the scan to
+  // FIX_GENERATING. If the job then can't be enqueued, nothing will ever
+  // generate it. Undo both changes atomically so the user can simply press
+  // "Try Again" once more.
+  try {
+    await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+  } catch (queueErr) {
+    console.error(`[CRITICAL] retryFix could not enqueue (scan ${scan.id}):`, queueErr.message)
+    try {
+      must(await supabase.rpc('revert_fix_retry', { p_scan_id: scan.id }), 'revert fix retry')
+    } catch (revertErr) {
+      console.error(`[CRITICAL] retryFix revert ALSO failed (scan ${scan.id}):`, revertErr.message)
+      try {
+        await emailService.sendOwnerAlert(ctx.env, 'retryFix: enqueue and revert both failed',
+          `scanId: ${scan.id}\nenqueue error: ${queueErr.message}\nrevert error: ${revertErr.message}\n\nThe scan is stuck in FIX_GENERATING with a retry consumed.`)
+      } catch (_) {}
+    }
+    throw queueErr
+  }
 
   return ctx.json({ success: true, data: { retriesRemaining: c.MAX_FIX_RETRIES - newRetryCount } })
 }
@@ -1041,7 +1081,7 @@ async function getScanWithUser(supabase, scanId) {
 
 async function runAtsScan(env, supabase, scanId) {
   try {
-    await supabase.from('scans').update({ status: 'SCANNING' }).eq('id', scanId)
+    warnOnError(await supabase.from('scans').update({ status: 'SCANNING' }).eq('id', scanId), 'runAtsScan: mark SCANNING')
     const { data: row, error } = await supabase.from('scans').select('*').eq('id', scanId).single()
     if (error) throw error
     const scan = scanRowToCamel(row)
@@ -1100,10 +1140,12 @@ async function runAtsScan(env, supabase, scanId) {
       // nothing for the majority of the exact scans it exists to help.
       // resumeData.name is already sitting right here, already paid for
       // (this Claude call already ran), so persisting it costs nothing extra.
-      await supabase.from('scans').update({
+      // Checked: generateFix/generateBadge read original_resume_data back
+      // and have no other source for it.
+      must(await supabase.from('scans').update({
         original_resume_data: resumeData,
         candidate_first_name: candidateFirstNameFrom(resumeData)
-      }).eq('id', scanId)
+      }).eq('id', scanId), 'runAtsScan: persist structured resume')
     } else if (scan.inputMode === 'saved_profile') {
       // PHASE 4: structured data was already populated at scan-creation
       // time directly from users.saved_profile (see createScan) — no file,
@@ -1126,9 +1168,9 @@ async function runAtsScan(env, supabase, scanId) {
       // name search silently doing nothing for the common, never-purchased
       // case). No new call needed — originalResumeData already came from
       // users.saved_profile with no Claude round trip involved.
-      await supabase.from('scans').update({
+      warnOnError(await supabase.from('scans').update({
         candidate_first_name: candidateFirstNameFrom(scan.originalResumeData)
-      }).eq('id', scanId)
+      }).eq('id', scanId), 'runAtsScan: persist candidate name')
     } else {
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
@@ -1151,7 +1193,11 @@ async function runAtsScan(env, supabase, scanId) {
     const aiResult = await claudeService.scoreResumeWithAI(env, resumeText, jdText)
     const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
 
-    await supabase.from('scans').update({
+    // Checked: this is THE write that completes the scan. If it fails the
+    // row stays SCANNING, so it must throw into the handler below (which
+    // marks the scan ERROR immediately) instead of the user waiting on a
+    // scan that will never finish.
+    must(await supabase.from('scans').update({
       ats_score:       finalScore,
       passed:          finalScore >= c.ATS_PASS_THRESHOLD,
       keyword_score:   ruleResult.keywordScore,
@@ -1163,7 +1209,7 @@ async function runAtsScan(env, supabase, scanId) {
       seniority_level: atsService.detectSeniority(jdText),
       scan_completed_at: new Date().toISOString(),
       status: finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
-    }).eq('id', scanId)
+    }).eq('id', scanId), 'runAtsScan: save result')
 
     if (scan.userId) {
       const { data: userRow } = await supabase.from('users').select('*').eq('id', scan.userId).maybeSingle()
@@ -1417,9 +1463,13 @@ async function generateFix(env, supabase, scanId) {
     // rather than leaving the user with nothing to show for it.
     if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
       try {
-        await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId })
+        must(await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId }), 'grant free fix credit')
       } catch (creditErr) {
-        console.error(`Failed to grant fix credit to ${scan.userId}:`, creditErr.message)
+        console.error(`[CRITICAL] Failed to grant fix credit to ${scan.userId}:`, creditErr.message)
+        try {
+          await emailService.sendOwnerAlert(env, 'Free fix credit NOT granted',
+            `userId: ${scan.userId}\nscanId: ${scanId}\nerror: ${creditErr.message}\n\nRetries were exhausted below the badge threshold; the promised free credit was not written. Restore it with increment_free_fix_credits.`)
+        } catch (_) {}
       }
     }
 

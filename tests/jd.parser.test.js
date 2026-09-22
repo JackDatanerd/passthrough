@@ -174,3 +174,62 @@ describe('fetchJobDescriptionFromUrl', () => {
     expect(r.success).toBe(false)
   })
 })
+
+// ── htmlToText: correctness + resistance to quadratic-time input ────────────
+describe('htmlToText — correctness', () => {
+  it('removes script, style, comments and nav/header/footer/aside blocks, keeps the posting', () => {
+    const html = '<html><head><style>.a{color:red}</style><script>var x=1</script></head><body>' +
+      '<header>Site header</header><nav><a>Home</a></nav><!-- hidden --><main><h1>Backend Engineer</h1>' +
+      '<p>Build APIs &amp; services.</p></main><aside>Ads</aside><footer>Footer links</footer></body></html>'
+    const t = htmlToText(html)
+    expect(t).toContain('Backend Engineer')
+    expect(t).toContain('Build APIs & services.')
+    for (const junk of ['Site header', 'Home', 'hidden', 'Ads', 'Footer links', 'color:red', 'var x'])
+      expect(t).not.toContain(junk)
+  })
+  it('is case-insensitive about tag names, and tolerates whitespace in closers', () => {
+    expect(htmlToText('a <SCRIPT>bad()</SCRIPT > b <STYLE>x{}</style> c')).toBe('a b c')
+  })
+  it('does not treat similarly-named tags as blocks (<navigation> is not <nav>)', () => {
+    expect(htmlToText('<navigation>keep me</navigation>')).toContain('keep me')
+  })
+  it('an unclosed <script>/<style>/comment swallows the rest, exactly as a browser would', () => {
+    expect(htmlToText('visible <script>alert(1) invisible')).toBe('visible')
+    expect(htmlToText('visible <!-- never closed invisible')).toBe('visible')
+  })
+  it('an unclosed <nav> leaves the text in place (only its tag is dropped)', () => {
+    expect(htmlToText('<nav>menu text')).toBe('menu text')
+  })
+  it('keeps a literal "<>" and a lone "<" as text', () => {
+    expect(htmlToText('a <> b < c')).toBe('a <> b < c')
+  })
+  it('handles nested/adjacent blocks and repeated blocks', () => {
+    expect(htmlToText('<nav>a</nav>KEEP<nav>b</nav>ALSO<script>x</script>END')).toBe('KEEP ALSO END')
+  })
+})
+
+describe('htmlToText — hostile input must stay linear (was 40-65s of CPU at 500KB)', () => {
+  const N = 500_000
+  const cases = {
+    'unclosed <script':  '<script '.repeat(N / 8),
+    'unclosed <style':   '<style '.repeat(N / 7),
+    'unclosed <!--':     '<!-- '.repeat(N / 5),
+    'unclosed <nav':     '<nav '.repeat(N / 5),
+    'unclosed <header':  '<header '.repeat(N / 8),
+    'run of "<" (no >)': '<'.repeat(N),
+    'many "<a" no ">"':  '<a'.repeat(N / 2),
+    'mixed openers':     '<script <style <nav <!-- <header <footer <aside '.repeat(N / 48),
+  }
+  for (const [name, html] of Object.entries(cases)) {
+    it(`${name}`, () => {
+      const t0 = Date.now()
+      htmlToText(html)
+      expect(Date.now() - t0).toBeLessThan(750)
+    })
+  }
+  it('the full text pipeline (flatten → boilerplate → listing detection) is also linear on hostile text', () => {
+    const t0 = Date.now()
+    looksLikeListingPage(htmlToText('$1 - '.repeat(100_000) + '12 jobs '.repeat(60_000)))
+    expect(Date.now() - t0).toBeLessThan(1500)
+  })
+})

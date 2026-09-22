@@ -345,7 +345,37 @@ async function adminListAlerts(ctx) {
   return ctx.json({ success: true, data: alerts, meta: { page, pageSize, total: count || 0 } })
 }
 
+// POST /api/admin/scans/:id/requeue-fix
+//
+// The manual escape hatch for a customer who PAID and whose fix failed to
+// generate. The automatic sweep (reconcile.service.js's sweepFailedFixes) gives
+// up after a fixed number of attempts so a deterministic failure can't loop
+// forever; once it has, this is the way to run the job again after the cause
+// has been dealt with. Uses the same atomic claim as the sweep — so it cannot
+// double-enqueue against it — but with no attempt cap.
+async function adminRequeueFix(ctx) {
+  const scanId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: scan, error } = await supabase
+    .from('scans').select('id, status, fix_purchased, fix_tier').eq('id', scanId).maybeSingle()
+  if (error) throw error
+  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  if (!scan.fix_purchased)
+    return ctx.json({ success: false, message: 'This scan has no purchased fix — nothing to re-run.' }, 400)
+
+  const { data: claimed, error: claimErr } = await supabase.rpc('claim_errored_fix', { p_scan_id: scanId, p_max: 1000 })
+  if (claimErr) throw claimErr
+  if (!claimed)
+    return ctx.json({ success: false,
+      message: `Only a paid scan currently in ERROR can be re-queued (this one is ${scan.status}).` }, 409)
+
+  await ctx.env.FIX_QUEUE.send({ type: scan.fix_tier === 'BADGE' ? 'generateBadge' : 'generateFix', scanId })
+  return ctx.json({ success: true, message: 'Re-queued. The customer will be emailed when it is ready.' })
+}
+
 module.exports = {
+  adminRequeueFix,
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,
   adminListScans, adminSetVerification, adminListPayments,

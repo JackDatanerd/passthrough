@@ -107,3 +107,34 @@ describe('ssrfGuard — DNS resolution layer (fails CLOSED)', () => {
     expect(dohCalls.sort()).toEqual(['jobs.example.com:A', 'jobs.example.com:AAAA'])
   })
 })
+
+describe('ssrfGuard — additional hardening', () => {
+  const blocked = async u => expect(await checkUrlIsSafeToFetch(u)).not.toBeNull()
+  const allowed = async u => expect(await checkUrlIsSafeToFetch(u)).toBeNull()
+  it('blocks IPv6 multicast (ff00::/8) and the 6to4 relay anycast range', async () => {
+    await blocked('http://[ff02::1]/')
+    await blocked('http://[ff05::2]/')
+    await blocked('http://192.88.99.1/')
+  })
+  it('refuses non-web ports on otherwise public hosts', async () => {
+    for (const p of [22, 25, 3306, 5432, 6379, 9200, 11211]) await blocked(`http://1.1.1.1:${p}/`)
+  })
+  it('allows the standard web ports', async () => {
+    for (const u of ['http://1.1.1.1/', 'http://1.1.1.1:80/', 'https://1.1.1.1:443/', 'http://1.1.1.1:8080/', 'https://1.1.1.1:8443/']) await allowed(u)
+  })
+  it('refuses URLs carrying credentials', async () => {
+    await blocked('http://user:pass@1.1.1.1/')
+    await blocked('https://trusted.com@1.1.1.1/')
+  })
+  it('a DNS-over-HTTPS lookup that never answers fails CLOSED within its timeout', async () => {
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (url, opts) => new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(new Error('aborted'))))
+    const keepAlive = setTimeout(() => {}, 10_000)   // AbortSignal.timeout() timers are unref'd in Node; keep the loop alive for the test
+    try {
+      const t0 = Date.now()
+      const reason = await checkUrlIsSafeToFetch('https://hangs.example.com/job')
+      expect(reason).not.toBeNull()
+      expect(Date.now() - t0).toBeLessThan(6000)
+    } finally { globalThis.fetch = realFetch; clearTimeout(keepAlive) }
+  })
+})

@@ -19,6 +19,9 @@ router.get('/scans',    c.adminListScans)
 router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)
 router.get('/payments', c.adminListPayments)
 
+// Manual re-run of a paid fix that failed to generate (see adminRequeueFix).
+router.post('/scans/:id/requeue-fix', validateUuidParam(), c.adminRequeueFix)
+
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)
 

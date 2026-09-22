@@ -400,3 +400,83 @@ describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCC
     restore()
   })
 })
+
+// ── paid-but-generation-failed recovery (Section 9/10) ──────────────────────
+function setupFailed({ scans = [], claim = true, claimError = null, queueError = null, selectError = null } = {}) {
+  const state = { queue: [], alerts: [], claims: [] }
+  const db = createFakeSupabase(q => {
+    if (q.table === 'scans' && q.op === 'select') return { data: scans, error: selectError }
+    if (q.op === 'rpc' && q.name === 'claim_errored_fix') { state.claims.push(q.args); return { data: typeof claim === 'function' ? claim(q.args) : claim, error: claimError } }
+    return undefined
+  })
+  const env = { FIX_QUEUE: { send: async m => { if (queueError) throw queueError; state.queue.push(m) } } }
+  const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+    'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+  })
+  return { sweep: () => mod.sweepFailedFixes(env, db, { now: NOW }), state, db, mod, restore }
+}
+const errScan = (over = {}) => ({ id: 's1', fix_tier: 'FIX', fix_error_recoveries: 0, updated_at: minsAgo(30), ...over })
+
+describe('sweepFailedFixes', () => {
+
+  it('re-queues a paid scan whose generation failed, via the atomic claim', async () => {
+    t = setupFailed({ scans: [errScan()] })
+    const r = await t.sweep()
+    expect(r.requeued).toEqual([{ scanId: 's1', attempt: 1 }])
+    expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
+    expect(t.state.claims).toEqual([{ p_scan_id: 's1', p_max: t.mod.MAX_AUTO_RECOVERIES }])
+  })
+  it('only looks at PAID scans in ERROR, inside the window and past the grace period', async () => {
+    t = setupFailed({ scans: [] })
+    await t.sweep()
+    const q = t.db.calls.find(c => c.table === 'scans')
+    expect(q.filters.find(f => f[0] === 'eq' && f[1] === 'status')[2]).toBe('ERROR')
+    expect(q.filters.find(f => f[0] === 'eq' && f[1] === 'fix_purchased')[2]).toBe(true)
+    expect(q.filters.some(f => f[0] === 'gt' && f[1] === 'updated_at')).toBe(true)
+    expect(q.filters.some(f => f[0] === 'lt' && f[1] === 'updated_at')).toBe(true)
+  })
+  it('uses generateBadge for a BADGE-tier scan', async () => {
+    t = setupFailed({ scans: [errScan({ fix_tier: 'BADGE' })] })
+    await t.sweep()
+    expect(t.state.queue[0].type).toBe('generateBadge')
+  })
+  it('does NOT enqueue when the atomic claim is lost (a concurrent recovery won)', async () => {
+    t = setupFailed({ scans: [errScan()], claim: false })
+    const r = await t.sweep()
+    expect(r.requeued).toHaveLength(0); expect(t.state.queue).toHaveLength(0)
+  })
+  it('stops retrying a scan after the cap and alerts the owner ONCE', async () => {
+    t = setupFailed({ scans: [errScan({ fix_error_recoveries: 2, updated_at: minsAgo(30) })] })
+    const r = await t.sweep()
+    expect(r.requeued).toHaveLength(0); expect(t.state.claims).toHaveLength(0)
+    expect(r.exhausted).toEqual([{ scanId: 's1' }])
+    expect(t.state.alerts).toHaveLength(1)
+    expect(t.state.alerts[0].message).toContain('requeue-fix')
+  })
+  it('an exhausted scan that failed long ago is not re-announced every hour', async () => {
+    t = setupFailed({ scans: [errScan({ fix_error_recoveries: 2, updated_at: minsAgo(60 * 5) })] })
+    const r = await t.sweep()
+    expect(r.exhausted).toHaveLength(0); expect(t.state.alerts).toHaveLength(0)
+  })
+  it('a queue failure after the claim is reported, not thrown (left for the job-lost sweep)', async () => {
+    t = setupFailed({ scans: [errScan()], queueError: new Error('queue down') })
+    const r = await t.sweep()
+    expect(r.failed).toEqual([{ scanId: 's1', error: 'queue down' }])
+    expect(t.state.alerts).toHaveLength(1)
+  })
+  it('a claim RPC error is reported and the scan is not enqueued', async () => {
+    t = setupFailed({ scans: [errScan()], claimError: new Error('rpc missing') })
+    const r = await t.sweep()
+    expect(r.failed[0].error).toBe('rpc missing'); expect(t.state.queue).toHaveLength(0)
+  })
+  it('caps work per run', async () => {
+    const scans = Array.from({ length: 30 }, (_, i) => errScan({ id: `s${i}` }))
+    t = setupFailed({ scans })
+    const r = await t.sweep()
+    expect(r.requeued).toHaveLength(t.mod.MAX_PER_RUN)
+  })
+  it('a query error is returned, not thrown', async () => {
+    t = setupFailed({ selectError: new Error('boom') })
+    expect((await t.sweep()).error).toBe('boom')
+  })
+})

@@ -33,6 +33,8 @@ const adminRoutes        = require('./routes/admin.routes')
 const { getSupabase } = require('./config/supabase')
 const { scanRowToCamel } = require('./lib/mappers')
 const emailService = require('./services/email.service')
+const { runRetention } = require('./services/retention.service')
+const { handleDeadLetterBatch } = require('./services/deadletter.service')
 
 const app = new Hono()
 
@@ -246,6 +248,16 @@ async function pendingSweep(event, env, ctx) {
 // own error handling didn't catch (a genuine platform-level failure), which
 // is the correct place for the queue's built-in retry/DLQ behavior to apply.
 async function queue(batch, env, ctx) {
+  // Cloudflare routes every queue this Worker consumes (the fix-jobs queue
+  // AND its dead-letter queue — see wrangler.toml) to this same export,
+  // distinguished by batch.queue. A job that ends up HERE already exhausted
+  // the main queue's retries; see deadletter.service.js for what happens to
+  // it — never regular fix generation.
+  if (batch.queue.endsWith('-dlq')) {
+    const supabase = getSupabase(env)
+    return handleDeadLetterBatch(batch, env, supabase, emailService)
+  }
+
   const { generateFix, generateBadge } = require('./controllers/scan.controller')
   const supabase = getSupabase(env)
 
@@ -291,14 +303,38 @@ async function queue(batch, env, ctx) {
 // fetch (HTTP requests), scheduled (cron), and queue (background job
 // processing) must all be on the same default export for Wrangler to wire
 // them up correctly.
+// AUDIT FIX (Section 9/10, feature gap — data retention): email_logs and
+// alert_logs grew forever, and reset/verification tokens outlived their
+// expiry sitting readable in the users row. runRetention (own isolated
+// waitUntil, same as every job above) purges/clears all of that on the same
+// hourly cron — see services/retention.service.js.
+async function retentionSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const supabase = getSupabase(env)
+        const r = await runRetention(env, supabase)
+        console.log(`Retention sweep: ${r.anon.deleted} anon scan(s), ${r.logs.emailLogs} email_logs, ${r.logs.alertLogs} alert_logs, ${r.tokens.resetTokens} reset + ${r.tokens.verifyTokens} verify token(s) cleared`)
+        for (const e of [...(r.logs.errors || []), ...(r.tokens.errors || [])]) console.error('Retention sweep:', e)
+        if (r.anon.error) console.error('Retention sweep (anon):', r.anon.error)
+      } catch (err) {
+        console.error('Retention sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 export default {
   fetch: app.fetch,
-  // One cron trigger, four independent jobs.
+  // One cron trigger, five independent jobs — each isolated by its own
+  // waitUntil + try/catch, so a failure in any one of them can never skip or
+  // crash the others.
   scheduled: (event, env, ctx) => {
     scheduled(event, env, ctx)
     reconcileSweep(event, env, ctx)
     pendingSweep(event, env, ctx)
-    return webhookMaintenanceSweep(event, env, ctx)
+    webhookMaintenanceSweep(event, env, ctx)
+    return retentionSweep(event, env, ctx)
   },
   queue,
 }

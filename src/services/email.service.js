@@ -16,34 +16,100 @@ const c = require('../config/constants')
 // function here already receives `supabase` from its caller, but
 // sendOwnerAlert historically didn't take one (see its own comment below).
 const { getSupabase } = require('../config/supabase')
+const { hitQuota } = require('../middleware/rateLimiter')
+const { sha256 } = require('../lib/crypto')
+const { must } = require('../lib/db')
+
+// ── Per-recipient throttle ──────────────────────────────────────────────────
+// The per-IP limiters can't stop one address being mailed repeatedly (from many
+// IPs, or by any flow that mails a third party's address: registering with
+// someone else's email, "forgot password" for someone else's account, or the
+// anonymous scan-result email). That is email-bombing a victim, and — since it
+// all goes out under our sender domain — the fastest way to earn the spam
+// complaints that get the domain blocked, breaking EVERY transactional email.
+//
+// Only templates a STRANGER can trigger are limited. Mail that follows a real
+// customer proving their own identity (a password change, an account
+// deletion) is not — those are already gated by the action itself (a correct
+// current password, a successful login), not by anything an outsider can
+// repeat at will.
+const RECIPIENT_LIMITS = {
+  email_verification: { max: 5, windowSeconds: 3600 },
+  password_reset:     { max: 3, windowSeconds: 3600 },
+  welcome:            { max: 2, windowSeconds: 24 * 3600 },
+  anon_scan_result:   { max: 3, windowSeconds: 3600 },
+}
+
+async function recipientAllowed(env, to, template) {
+  const limit = RECIPIENT_LIMITS[template]
+  if (!limit) return true
+  const digest = (await sha256(String(to).trim().toLowerCase())).slice(0, 32)
+  return hitQuota(env, `rl:mail:${template}:${digest}`, limit.max, limit.windowSeconds)
+}
+
+// ── Plain-text alternative ──────────────────────────────────────────────────
+// HTML-only mail scores worse with spam filters and is unreadable in text
+// clients. Templates are ours and every substituted value is HTML-escaped, so
+// this can be a small, predictable converter rather than a general HTML parser.
+function htmlToPlainText(html) {
+  const decode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+  const stripTags = s => s.replace(/<[^>]*>/g, '')
+  let t = html.replace(/<style>[\s\S]*?<\/style>/i, '')
+  t = t.replace(/<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
+    const l = stripTags(label).trim(), h = decode(href)
+    return !l || l === h ? h : `${l} (${h})`
+  })
+  t = t.replace(/<\/(p|h[1-6]|tr|div|table)>|<br\s*\/?>/gi, '\n')
+  t = decode(stripTags(t))
+  return t.split('\n').map(l => l.trim()).join('\n').replace(/\n{3,}/g, '\n\n').trim()
+}
+
+// Prices and thresholds shown in email copy come from constants.js (the
+// single source of truth the site and checkout use), not from text typed
+// into a template — a hard-coded "$49" quoted the wrong price for the whole
+// launch promo and would drift again with any price change.
+function fmtMoney(cents, currency) {
+  const amount = cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2)
+  return currency === 'USD' ? `$${amount}` : `${amount} ${currency}`
+}
+function globalVars(env) {
+  const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
+  return {
+    FRONTEND_URL:    env.FRONTEND_URL,
+    PRICE_FIX:       fmtMoney(c.priceForTier('FIX', env), currency),
+    PRICE_BADGE:     fmtMoney(c.priceForTier('BADGE', env), currency),
+    PRICE_FIX_PLAIN: fmtMoney(c.priceForTier('FIX_PLAIN', env), currency),
+    PASS_THRESHOLD:  String(c.ATS_PASS_THRESHOLD),
+    BADGE_THRESHOLD: String(c.ATS_BADGE_THRESHOLD),
+  }
+}
 
 // PATCH 1 (carried over): FRONTEND_URL injected automatically so base.html's
 // header link is always correct. Individual send calls do not need to pass it.
 async function send(env, supabase, to, subject, template, vars) {
-  const html = render(template, {
-    FRONTEND_URL: env.FRONTEND_URL,  // injected globally
-    ...vars                          // caller vars override if needed
-  })
   let status = 'sent', error = null
-  try {
-    await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html })
-  } catch (err) {
-    status = 'failed'
-    error  = err.message
-    console.error(`Email [${template}] to ${to}:`, err.message)
+
+  if (!(await recipientAllowed(env, to, template))) {
+    status = 'throttled'
+    error  = 'per-recipient limit reached'
+    console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
+  } else {
+    const html = render(template, { ...globalVars(env), ...vars })
+    try {
+      await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html) })
+    } catch (err) {
+      status = 'failed'
+      error  = err.message
+      console.error(`Email [${template}] to ${to}:`, err.message)
+    }
   }
-  // AUDIT FIX (Section 9): this insert used to be fire-and-forget
-  // (`.then(() => {}, () => {})`, never awaited, no ctx.waitUntil()). On
-  // Workers, a promise that's neither awaited nor handed to waitUntil()
-  // risks being cancelled the moment the response is returned — exactly
-  // the failure mode this codebase's own scheduled-handler/queue-consumer
-  // code elsewhere is careful to avoid. Unlike verify.controller.js's
-  // increment_verification_views counter (deliberately left fire-and-forget
-  // there, since it's just an analytics counter), email_logs is the one
-  // real audit trail this app has for "did this email actually go out" —
-  // worth the small added latency to guarantee it's written.
+
+  // email_logs is the one real audit trail for "did this email actually go
+  // out" — awaited, and its result CHECKED: supabase-js reports a failed
+  // insert as `{ error }`, it never throws, so a try/catch alone could not
+  // detect it.
   try {
-    await supabase.from('email_logs').insert({ to, subject, template, status, error })
+    must(await supabase.from('email_logs').insert({ to, subject, template, status, error }), 'email_logs insert')
   } catch (logErr) {
     console.error(`email_logs insert failed for [${template}] to ${to}:`, logErr.message)
   }
@@ -257,10 +323,19 @@ function escapeHtml(str) {
 // anyone. The admin panel's System Health view reads this table. Awaited
 // for the same Workers-cancellation reason the email_logs insert above
 // was just changed to be awaited (see send()'s comment).
+// The same alert is EMAILED at most once per 10 minutes. A failure that repeats
+// (a broken queue, a payment provider outage) used to send one email per
+// occurrence — a flood that buries the signal and trips Resend's own rate
+// limit, so the alerts that matter stop arriving. Every occurrence is still
+// written to alert_logs (emailed=false for the suppressed ones).
+const ALERT_EMAIL_DEDUPE_SECONDS = 600
+
 async function sendOwnerAlert(env, subject, message) {
   const to = env.OWNER_ALERT_EMAIL
   let emailed = false
-  if (to) {
+  const subjectDigest = (await sha256(String(subject))).slice(0, 32)
+  const shouldEmail = !!to && await hitQuota(env, `rl:alert:${subjectDigest}`, 1, ALERT_EMAIL_DEDUPE_SECONDS)
+  if (shouldEmail) {
     try {
       await sendViaResend(env, {
         from: env.EMAIL_FROM,
@@ -275,7 +350,7 @@ async function sendOwnerAlert(env, subject, message) {
   }
   try {
     const supabase = getSupabase(env)
-    await supabase.from('alert_logs').insert({ subject, message, emailed })
+    must(await supabase.from('alert_logs').insert({ subject, message, emailed }), 'alert_logs insert')
   } catch (err) {
     // Logging the alert must never throw past this function — a broken
     // alert_logs write is exactly the kind of secondary failure that
@@ -286,6 +361,7 @@ async function sendOwnerAlert(env, subject, message) {
 }
 
 module.exports = {
+  htmlToPlainText, fmtMoney,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,

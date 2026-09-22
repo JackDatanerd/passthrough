@@ -12,19 +12,51 @@
 const JSZip   = require('jszip')
 const c        = require('../config/constants')
 
-// HARDENING: the 5MB upload cap (middleware/upload.js) only bounds the
-// COMPRESSED size on the wire — it says nothing about how large the
-// decompressed word/document.xml can get. A crafted .docx with pathological
-// compression can expand far past its on-disk size once JSZip inflates it,
-// which then gets fed into the paragraph-matching regexes below. This isn't
-// a full zip-bomb defense (JSZip has already done the decompression work by
-// the time this check runs), but it stops a merely-oversized result from
-// being handed to the regex engine and from bloating the ~8000-char resume
-// text pipeline downstream. A legitimate resume's document.xml is reliably
-// well under 1MB; 20MB gives generous headroom for an unusually long/complex
-// real resume while still rejecting anything wildly out of proportion to a
-// 5MB input.
-const MAX_DOCX_XML_CHARS = 20 * 1024 * 1024
+// ZIP-BOMB DEFENCE. The 5MB upload cap (middleware/upload.js) only bounds the
+// COMPRESSED size on the wire; DEFLATE can expand ~1000:1, so a 5MB .docx can
+// inflate to gigabytes and exhaust the Worker's 128MB before any check on the
+// finished string could run. (The previous guard — `xml.length > MAX` after
+// `entry.async('string')` — fired only AFTER that full inflation, so it could
+// not stop a bomb, only reject a large-but-survivable one.)
+//
+// The entry is therefore inflated as a STREAM and the read is abandoned the
+// moment the running byte count crosses the cap, so memory stays bounded by
+// the cap plus at most one inflate step regardless of what the archive claims
+// about itself (the sizes in a zip header are attacker-controlled and cannot
+// be trusted). A legitimate resume's document.xml is reliably well under 1MB;
+// 20MB is generous headroom for an unusually long real resume.
+const MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
+
+function readEntryCapped(entry, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = []
+    let total = 0
+    let settled = false
+    const helper = entry.internalStream('uint8array')
+    helper
+      .on('data', chunk => {
+        if (settled) return
+        total += chunk.length
+        if (total > maxBytes) {
+          settled = true
+          helper.pause()   // stop the inflate pipeline; nothing more is buffered
+          reject(new Error('Document content too large after decompression — not a valid resume file'))
+          return
+        }
+        chunks.push(chunk)
+      })
+      .on('error', err => { if (!settled) { settled = true; reject(err) } })
+      .on('end', () => {
+        if (settled) return
+        settled = true
+        const out = new Uint8Array(total)
+        let off = 0
+        for (const ch of chunks) { out.set(ch, off); off += ch.length }
+        resolve(out)
+      })
+    helper.resume()
+  })
+}
 
 // Direct .docx text extraction via JSZip + native Promises, bypassing
 // mammoth's extractRawText entirely for this specific call.
@@ -59,12 +91,8 @@ async function extractDocxText(bytes) {
   const zip = await JSZip.loadAsync(bytes)
   const docXml = zip.file('word/document.xml')
   if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
-  const xml = await docXml.async('string')
-
-  // HARDENING: reject before regex-parsing — see MAX_DOCX_XML_CHARS comment
-  // above for why this check exists and why the limit is set where it is.
-  if (xml.length > MAX_DOCX_XML_CHARS)
-    throw new Error('Document content too large after decompression — not a valid resume file')
+  // Capped streaming inflate — see the ZIP-BOMB DEFENCE comment above.
+  const xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
 
   const paragraphs = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || []
   const lines = paragraphs.map(p => {
