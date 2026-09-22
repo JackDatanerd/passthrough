@@ -283,6 +283,7 @@ async function createScan(ctx) {
     )
     if (quotaErr) throw quotaErr
 
+    let bypassGranted = false
     if (!allowed) {
       const ip = ctx.req.header('cf-connecting-ip') || ctx.req.header('x-forwarded-for') || 'unknown'
       // Same RATE_LIMIT_BYPASS_IPS secret used by middleware/rateLimiter.js —
@@ -294,6 +295,7 @@ async function createScan(ctx) {
       // Bypassed — the RPC already declined to increment, so grant the
       // slot manually for this request only (testing path, unmetered).
       await supabase.from('users').update({ scans_today: c.FREE_SCANS_PER_DAY }).eq('id', user.id)
+      bypassGranted = true
     }
 
     try {
@@ -308,13 +310,18 @@ async function createScan(ctx) {
       })
       if (insertErr) throw insertErr
     } catch (createErr) {
-      // Return the slot — scan was not created. Only meaningful if the RPC
-      // actually incremented (allowed === true); the bypass path above
-      // didn't touch the counter via the RPC, so nothing to roll back there.
+      // Return the slot — scan was not created.
+      // AUDIT FIX (bug — Scan/ATS section audit): this used to only roll
+      // back `if (allowed)` — the manual bypass grant above (testing IPs
+      // only) was never reverted on a failed insert, so a bypass IP that
+      // hit this failure path kept its manually-granted slot regardless.
+      // Low-stakes (testing-only surface), but decrement_scan_count is the
+      // exact same RPC that already exists to undo one granted slot either
+      // way, so there's no reason for the two paths to behave differently.
       // NOTE: supabase-js query builders are thenable (have .then) but are not
       // real Promise instances, so .catch() doesn't exist on them directly —
       // must go through a real try/catch (or await) instead.
-      if (allowed) {
+      if (allowed || bypassGranted) {
         try {
           await supabase.rpc('decrement_scan_count', { p_user_id: user.id })
         } catch (_) {}

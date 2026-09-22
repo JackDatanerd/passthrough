@@ -91,7 +91,22 @@ async function scheduled(event, env, ctx) {
     (async () => {
       try {
         const supabase = getSupabase(env)
-        const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+        // AUDIT FIX (bug — Scan/ATS section audit): this used to compute its
+        // own independent cutoff as `now - 24h` and compare THAT against
+        // anon_expires_at — but anon_expires_at is already the absolute
+        // expiry timestamp (createScan sets it to `now + ANON_SCAN_TTL_HOURS`
+        // at creation time). Comparing `anon_expires_at < now - 24h` is
+        // equivalent to `creation_time + 24h < now - 24h`, i.e.
+        // `creation_time < now - 48h` — the cron was silently re-applying
+        // the same 24h TTL a second time on top of a column that already
+        // had it applied once, doubling real retention to ~48h. The two
+        // numbers only ever looked consistent because both happened to be
+        // hardcoded to 24 — changing ANON_SCAN_TTL_HOURS in constants.js
+        // (the single place the app tells you retention is configured)
+        // would have silently decoupled actual cleanup timing from it
+        // entirely. Comparing directly against `now` is correct: a row's
+        // own anon_expires_at is already the moment it should go.
+        const cutoff = new Date().toISOString()
         const { data: expired, error } = await supabase
           .from('scans')
           .select('id, resume_path')

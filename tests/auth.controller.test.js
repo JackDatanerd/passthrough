@@ -32,7 +32,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], successes: [], bucketDeletes: [], rpcCalls: [] }
+  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -63,7 +63,11 @@ async function setup(opts = {}) {
     },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
-      recordLoginFailure:  async (env, email) => { state.failures.push(email) },
+      // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now takes
+      // the requester's IP as a third argument — captured here (alongside
+      // the pre-existing state.failures) so tests can assert it's actually
+      // being threaded through from clientIp(c), not silently dropped.
+      recordLoginFailure:  async (env, email, ip) => { state.failures.push(email); state.failureIps.push(ip) },
       recordLoginSuccess:  async (env, email) => { state.successes.push(email) },
     },
   })
@@ -85,6 +89,12 @@ async function setup(opts = {}) {
     req: {
       json: async () => (over.body ?? {}),
       query: k => (over.query ?? {})[k],
+      // AUDIT FIX (bug — account-lockout DoS): clientIp(c) in
+      // auth.controller.js now reads this on every login/changePassword/
+      // updateEmail/deleteAccount call — a mock missing it entirely would
+      // throw before ever reaching the logic under test. Defaults to
+      // 'unknown' (clientIp's own fallback) unless a test supplies one.
+      header: k => (over.headers ?? { 'cf-connecting-ip': '1.2.3.4' })[k],
     },
     executionCtx: { waitUntil: p => p },
     json: (body, status = 200) => ({ body, status }),
@@ -137,6 +147,22 @@ describe('login', () => {
     expect(res.status).toBe(401)
     expect(t.state.failures).toEqual(['user@example.com'])
     expect(t.state.successes).toHaveLength(0)
+  })
+
+  // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure's third
+  // argument is the piece rateLimiter.js's distinct-IP requirement depends
+  // on entirely — if clientIp(c) silently stopped being threaded through
+  // (e.g. a future edit that reverts to the old two-arg call), every
+  // failure would collapse onto the same 'unknown' bucket and the fix
+  // would quietly regress back to a single-IP-locks-any-email DoS with no
+  // test catching it. This asserts the real header value reaches the call.
+  it('threads the requester IP through to recordLoginFailure', async () => {
+    t = await setup()
+    await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'nope' },
+      headers: { 'cf-connecting-ip': '203.0.113.7' }
+    }))
+    expect(t.state.failureIps).toEqual(['203.0.113.7'])
   })
 
   // AUDIT FIX being locked in: BANNED is only revealed AFTER the password

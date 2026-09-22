@@ -98,14 +98,37 @@ function diffExperience(originalJobs, rewrittenJobs) {
   return matched.map(({ original, rewritten }) => diffJob(original, rewritten))
 }
 
+// AUDIT FIX (bug — Scan/ATS section audit): this file's own header comment
+// above declares the point of `str()` as coercing every AI-sourced text
+// field so a wrong-typed value from Claude's output degrades to '' instead
+// of crashing the render — and diffText/diffJob do that correctly. This
+// function did not: it used str() only internally, for the norm()
+// comparison used to bucket items into unchanged/removed/added, but
+// returned the RAW, un-coerced original array elements. DiffView.jsx's
+// TagList renders those directly as `{item}` in JSX with no further
+// coercion — so a non-string skill/certification entry (nothing enforces
+// array-of-strings on the AI's rewrite output before it reaches here)
+// would throw "Objects are not valid as a React child" and blank the
+// entire delivered-fix results page for a scan the user already paid for.
+// Mapping through str() on the way out closes that gap the same way every
+// other AI-sourced field in this file already is.
 function diffList(before, after) {
   const norm = s => str(s).toLowerCase().trim()
-  const beforeSet = new Set(before.map(norm))
-  const afterSet  = new Set(after.map(norm))
+  // Coerce first, then drop anything that coerces down to blank — a
+  // malformed entry (an object, null, a number) degrading to '' is safe to
+  // render but has zero informational value as a chip, and worse, two
+  // UNRELATED malformed entries on either side would both normalize to the
+  // same '' key and spuriously match each other as "unchanged," which is
+  // its own small but real correctness bug on top of the crash this exists
+  // to prevent.
+  const beforeStr = before.map(str).filter(s => s.trim())
+  const afterStr  = after.map(str).filter(s => s.trim())
+  const beforeSet = new Set(beforeStr.map(norm))
+  const afterSet  = new Set(afterStr.map(norm))
   return {
-    unchanged: before.filter(s => afterSet.has(norm(s))),
-    removed:   before.filter(s => !afterSet.has(norm(s))),
-    added:     after.filter(s => !beforeSet.has(norm(s)))
+    unchanged: beforeStr.filter(s => afterSet.has(norm(s))),
+    removed:   beforeStr.filter(s => !afterSet.has(norm(s))),
+    added:     afterStr.filter(s => !beforeSet.has(norm(s)))
   }
 }
 

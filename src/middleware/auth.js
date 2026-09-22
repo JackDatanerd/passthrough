@@ -17,6 +17,35 @@ const { getSupabase } = require('../config/supabase')
 const { userRowToCamel } = require('../lib/mappers')
 
 async function auth(c, next) {
+  // AUDIT FIX (bug — redundant double auth check): optionalAuth (mounted
+  // app-wide in index.js, ahead of every route including this one) already
+  // ran the exact same JWT verify + full Supabase user-row fetch this
+  // request, for every request, authenticated or not. Doing that work AGAIN
+  // here doubled the DB round-trip and HMAC verify cost on every single
+  // authenticated request app-wide, for no behavioral benefit — a genuinely
+  // wasteful default that only got worse at scale.
+  //
+  // optionalAuth only ever sets BOTH c.get('user') and c.get('tokenExp')
+  // together, and only after passing every check this function's full path
+  // below also performs (deletedAt, BANNED, tokenVersion match) — see its
+  // own logic. So if both are present, this request already passed
+  // everything this function would otherwise re-check; reuse that result
+  // and skip straight to next() instead of re-verifying and re-fetching.
+  //
+  // If either is missing — no token, an invalid/expired token, a banned or
+  // deleted account, or a stale tokenVersion — optionalAuth deliberately
+  // did NOT set them (it swallows all of those into a silent fall-through,
+  // by design, since it must never block an anonymous request). Falling
+  // through to the full path below is what recovers the SPECIFIC reason
+  // (expired vs invalid vs banned vs not-found vs session-invalid) that
+  // this function's distinct error codes depend on and optionalAuth never
+  // needed to distinguish — that full path is unchanged from before this
+  // fix, so behavior on every error case is identical to what it was.
+  if (c.get('user') && c.get('tokenExp') !== undefined) {
+    await next()
+    return
+  }
+
   const header = c.req.header('Authorization')
   if (!header?.startsWith('Bearer '))
     return c.json({ success: false, message: 'Authentication required' }, 401)

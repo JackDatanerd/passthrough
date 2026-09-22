@@ -3,7 +3,7 @@ import rl from '../src/middleware/rateLimiter.js'
 
 function kvStore(initial = {}) {
   const m = new Map(Object.entries(initial))
-  return { get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, m }
+  return { get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, delete: async k => { m.delete(k) }, m }
 }
 const ctx = ({ ip = '1.2.3.4', method = 'GET', path = '/api/x', env = {}, user } = {}) => ({
   env: { RATE_LIMIT_KV: kvStore(), ...env },
@@ -75,6 +75,59 @@ describe('scanPoll limiter', () => {
   it('still enforces a ceiling (a runaway client is not unlimited)', async () => {
     const env = { RATE_LIMIT_KV: kvStore({ 'rl:scanpoll:1.2.3.4': JSON.stringify({ count: 600, windowStart: Date.now() }) }) }
     expect((await hit(rl.scanPoll, ctx({ env }))).res.status).toBe(429)
+  })
+})
+
+// AUDIT FIX (bug — account-lockout DoS): before this fix, failCount alone
+// decided lockout — LOCKOUT_MAX_CONSECUTIVE_FAILURES (8) trivial failed
+// logins against any known email, all from ONE IP, locked that account for
+// 15 minutes, repeatably, with zero authentication and zero credential
+// knowledge required. These tests pin the fixed behavior directly against
+// the exported functions (not through the controller), since this is the
+// one place that actually enforces LOCKOUT_MIN_DISTINCT_IPS.
+describe('account lockout — checkAccountLockout / recordLoginFailure / recordLoginSuccess', () => {
+  it('does NOT lock after 8 failures from a single IP (the DoS this closes)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 8; i++) await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9')
+    const status = await rl.checkAccountLockout(env, 'victim@example.com')
+    expect(status.locked).toBe(false)
+  })
+
+  it('locks once failures reach the threshold AND span >= 2 distinct IPs', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    // 7 failures from one IP, then a couple more from a second IP —
+    // crosses both the count threshold and the distinct-IP requirement.
+    for (let i = 0; i < 7; i++) await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9')
+    await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9')
+    let status = await rl.checkAccountLockout(env, 'victim@example.com')
+    expect(status.locked).toBe(false)  // still just 1 distinct IP so far
+    await rl.recordLoginFailure(env, 'victim@example.com', '4.4.4.4')
+    status = await rl.checkAccountLockout(env, 'victim@example.com')
+    expect(status.locked).toBe(true)
+    expect(status.retryAfterSeconds).toBeGreaterThan(0)
+  })
+
+  it('a real distributed attempt (many IPs, one failure each) still locks — the protection this preserves', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    const ips = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5', '6.6.6.6', '7.7.7.7', '8.8.8.8']
+    for (const ip of ips) await rl.recordLoginFailure(env, 'victim@example.com', ip)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(true)
+  })
+
+  it('recordLoginSuccess clears the counter entirely', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (const ip of ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5', '6.6.6.6', '7.7.7.7', '8.8.8.8']) {
+      await rl.recordLoginFailure(env, 'victim@example.com', ip)
+    }
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(true)
+    await rl.recordLoginSuccess(env, 'victim@example.com')
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)
+  })
+
+  it('missing/unknown IPs still count toward the same bucket, never crash', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 8; i++) await rl.recordLoginFailure(env, 'victim@example.com', undefined)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)  // still one bucket ('unknown')
   })
 })
 

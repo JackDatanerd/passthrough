@@ -21,10 +21,18 @@ const { z }  = require('zod')
 const jwtLib    = require('../lib/jwt')
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
-const { userRowToCamel, scanRowToCamel, camelToSnake, USER_FIELD_MAP, SCAN_FIELD_MAP } = require('../lib/mappers')
+const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
+
+// AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now needs the
+// requester's IP (see rateLimiter.js's LOCKOUT_MIN_DISTINCT_IPS comment) —
+// same header precedence scan.controller.js's quota-bypass check already
+// uses, centralized here since four handlers in this file need it.
+function clientIp(c) {
+  return c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
+}
 
 async function issueJWT(env, user) {
   const expiresIn = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
@@ -78,7 +86,7 @@ async function getDummyPasswordHash() {
 // as two independent accounts sharing one real inbox, and a real user
 // whose email got re-cased by autocapitalize/autofill between signup and
 // login got an indistinguishable "Invalid credentials". Normalizing here
-// at every read/write site closes both; see 0014_case_insensitive_email.sql
+// at every read/write site closes both; see 0017_case_insensitive_email.sql
 // for the matching DB-level backstop against races/other write paths.
 const emailSchema = z.string().trim().toLowerCase().email()
 
@@ -164,7 +172,7 @@ async function login(c) {
     // so "no such email" and "wrong password" aren't distinguishable by
     // response latency. See getDummyPasswordHash() above.
     await bcrypt.compare(password, await getDummyPasswordHash())
-    await recordLoginFailure(c.env, email)
+    await recordLoginFailure(c.env, email, clientIp(c))
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
   // AUDIT FIX: the BANNED check used to run BEFORE the password compare,
@@ -178,7 +186,7 @@ async function login(c) {
   // (message AND timing) to a wrong guess against an active one — status
   // is only revealed once the credential itself has been proven correct.
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, email)
+    await recordLoginFailure(c.env, email, clientIp(c))
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
   if (user.status === 'BANNED')
@@ -378,7 +386,7 @@ async function changePassword(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email)
+    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
@@ -456,7 +464,7 @@ async function updateEmail(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email)
+    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
@@ -510,7 +518,7 @@ async function deleteAccount(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email)
+    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)

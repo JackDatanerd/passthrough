@@ -24,6 +24,14 @@ async function optionalAuth(c, next) {
 
     const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, savedProfile, ...safe } = user
     c.set('user', safe)
+    // AUDIT FIX (bug — redundant double auth check): middleware/auth.js runs
+    // on every protected route AFTER this one (mounted app-wide) and used to
+    // redo the exact same JWT verify + full user-row fetch from scratch,
+    // even though this middleware just did identical work moments earlier
+    // in the same request. Stashing tokenExp here too (not just user) is
+    // what lets auth.js's own fast-path below skip straight to reusing both
+    // instead of re-deriving tokenExp via a second decode.
+    c.set('tokenExp', decoded.exp)
   } catch (_) {}
   return next()
 }

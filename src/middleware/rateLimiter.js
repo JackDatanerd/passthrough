@@ -257,6 +257,23 @@ const click = makeLimiter({
 const LOCKOUT_MAX_CONSECUTIVE_FAILURES = 8
 const LOCKOUT_MINUTES = 15
 const LOCKOUT_KEY_PREFIX = 'rl:lockout'
+// AUDIT FIX (bug — account-lockout DoS, section audit): failCount alone let
+// anyone who merely knows a real user's email lock that account for
+// LOCKOUT_MINUTES with LOCKOUT_MAX_CONSECUTIVE_FAILURES trivial requests
+// from a single IP — comfortably under `rl.auth`'s own 10/15min budget —
+// and repeat indefinitely, fully unauthenticated, with zero credential
+// knowledge required. Requiring failures to come from at least this many
+// DISTINCT IPs before actually locking preserves the original purpose
+// (catching a distributed/rotating-IP credential-stuffing attempt the
+// IP-only `rl.auth` limiter structurally can't see — see the comment below)
+// while closing the free single-IP DoS: a lone attacker now exhausts
+// `rl.auth`'s own IP budget long before an account-level lock can ever
+// trigger, since it takes coordinated failures from more than one address.
+const LOCKOUT_MIN_DISTINCT_IPS = 2
+// Bounded — recordLoginFailure only needs to know "how many distinct IPs
+// have failed," not a full history, so this caps the stored array rather
+// than letting it grow unboundedly under a long-running distributed attempt.
+const LOCKOUT_MAX_TRACKED_IPS = 10
 
 function lockoutKey(email) {
   return `${LOCKOUT_KEY_PREFIX}:${String(email).trim().toLowerCase()}`
@@ -287,21 +304,36 @@ async function checkAccountLockout(env, email) {
 }
 
 // Call on every failed login attempt (wrong password OR no such account —
-// see the non-enumeration note above). Locks the account once
-// LOCKOUT_MAX_CONSECUTIVE_FAILURES is reached.
-async function recordLoginFailure(env, email) {
+// see the non-enumeration note above). Locks the account once BOTH
+// LOCKOUT_MAX_CONSECUTIVE_FAILURES is reached AND those failures span at
+// least LOCKOUT_MIN_DISTINCT_IPS distinct IPs (see that constant's comment
+// above for why the IP requirement exists). `ip` is required — callers
+// extract it the same way scan.controller.js's quota bypass check does
+// (`cf-connecting-ip` first, `x-forwarded-for` fallback, else 'unknown').
+async function recordLoginFailure(env, email, ip) {
   const kv = env.RATE_LIMIT_KV
   const key = lockoutKey(email)
   const raw = await kv.get(key)
   let failCount = 0
-  try { failCount = raw ? (JSON.parse(raw).failCount || 0) : 0 } catch (_) { failCount = 0 }
+  let ips = []
+  try {
+    if (raw) {
+      const parsed = JSON.parse(raw)
+      failCount = parsed.failCount || 0
+      ips = Array.isArray(parsed.ips) ? parsed.ips : []
+    }
+  } catch (_) { failCount = 0; ips = [] }
   failCount += 1
 
-  const lockedUntil = failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES
+  const normalizedIp = String(ip || 'unknown')
+  if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
+  if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
+
+  const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= LOCKOUT_MIN_DISTINCT_IPS)
     ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
     : null
 
-  await kv.put(key, JSON.stringify({ failCount, lockedUntil }), {
+  await kv.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
     // KV's 60s TTL floor applies here same as makeLimiter() above; either
     // way this key naturally ages out well before it'd matter.
     expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
