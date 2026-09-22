@@ -7,6 +7,10 @@ const c     = require('../controllers/payments.controller')
 const router = new Hono()
 
 router.post('/initialize', auth, rl.payment, c.initializePayment)
+// AUDIT FIX (feature gap): initializePayment's 409 ("...finish or cancel it")
+// had no cancel path behind it anywhere — see cancelPayment's comment in
+// payments.controller.js.
+router.post('/:reference/cancel', auth, rl.payment, c.cancelPayment)
 router.get( '/verify',     auth,             c.verifyPayment)
 router.get( '/history',    auth,             c.getPaymentHistory)
 // Manual recovery for a payment stuck between "marked SUCCESS" and "fix

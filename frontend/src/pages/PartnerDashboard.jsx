@@ -47,8 +47,21 @@ function ShareLink({ code }) {
   )
 }
 
+// AUDIT FIX (feature gap): the caption below used to be unconditional — a
+// partner whose code had gone inactive, expired, or hit its usage limit
+// still saw "gets the discount automatically" and kept promoting a dead
+// link, with only a small badge above (easy to miss) telling a different
+// story. Mirrors isCodeUsable's checks in referral.service.js.
+function isCodeLive(code) {
+  if (!code.active) return false
+  if (code.expiresAt && new Date(code.expiresAt) < new Date()) return false
+  if (code.usageLimit != null && (code.usesSoFar || 0) >= code.usageLimit) return false
+  return true
+}
+
 function CodeCard({ code }) {
   const prices = Object.entries(code.tierPrices || {})
+  const live = isCodeLive(code)
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -67,9 +80,14 @@ function CodeCard({ code }) {
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
       </div>
       <p className="text-xs text-gray-400 mt-2">
-        Anyone who visits your link gets the discount automatically. They can also just tell
-        people the code <span className="font-mono">{code.code}</span> directly — there's a
-        "have a code?" box at checkout too.
+        {live ? (
+          <>Anyone who visits your link gets the discount automatically. They can also just tell
+          people the code <span className="font-mono">{code.code}</span> directly — there's a
+          "have a code?" box at checkout too.</>
+        ) : (
+          <>This code isn't live anymore — links using it will fall back to standard pricing and
+          won't earn you commission. Ask us about setting up a new one.</>
+        )}
       </p>
     </div>
   )

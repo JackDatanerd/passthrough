@@ -230,6 +230,21 @@ async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payou
 // payout email uses the same "$45.00"-style formatting regardless of who
 // calls this — currently only partners.controller.js's adminRecordPayout,
 // but this shouldn't silently drift if a second caller is added later.
+// AUDIT FIX (feature gap): adminUpdatePartner (partners.controller.js) could
+// change partner.email with no confirmation to anyone — the sole channel for
+// every future payout link, payout-sent confirmation, and referral-code
+// notification, so this mirrors sendEmailChangedOldAddress's tripwire
+// pattern for the user-account case. Called once for the OLD address and
+// once for the NEW one (same template either way — the copy already covers
+// both readers). Goes through send() like every other partner email here, so
+// it inherits the per-recipient throttle, plain-text alternative, and
+// awaited email_logs write from the Section 9/10 hardening above.
+async function sendPartnerEmailChanged(env, supabase, to, name, oldEmail, newEmail) {
+  return send(env, supabase, to, 'Your Passthrough partner account email was changed', 'partner_email_changed', {
+    NAME: name, OLD_EMAIL: oldEmail, NEW_EMAIL: newEmail
+  })
+}
+
 async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
   const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
   return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
@@ -367,5 +382,5 @@ module.exports = {
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
-  sendPayoutDetailsChanged, sendPartnerLinkRegenerated
+  sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged
 }

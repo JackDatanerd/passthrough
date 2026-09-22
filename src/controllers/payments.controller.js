@@ -80,7 +80,12 @@ async function initializePayment(c2) {
       }})
     }
     return c2.json({ success: false,
-      message: 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.'
+      message: 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.',
+      // AUDIT FIX (feature gap): this message told the user to "cancel it"
+      // with no way to actually do that anywhere in the app — see
+      // cancelPayment below. Surfacing the reference here is what lets the
+      // frontend offer a real cancel action instead of a 30-minute wait.
+      data: { reference: existingPending.paystack_ref, fixTier: existingPending.fix_tier }
     }, 409)
   }
 
@@ -165,13 +170,67 @@ async function initializePayment(c2) {
     referral_code_id:      priced.referralCode?.id || null,
     referral_code:         priced.referralCode?.code || null
   })
-  if (insertErr) throw insertErr
+  // AUDIT FIX (bug): Paystack has ALREADY been successfully initialized for
+  // this reference at this point — every other critical failure in this
+  // function (Paystack init itself failing, an amount mismatch at verify
+  // time) pages the owner; this write failing used to just `throw` into the
+  // generic error handler, which only console.errors. If this is happening,
+  // every payment attempt is likely failing the same way — exactly the
+  // "every payment attempt fails until this is resolved" case the Paystack-
+  // init failure branch above already treats as page-worthy.
+  if (insertErr) {
+    console.error(`[CRITICAL] payments insert failed after Paystack initialize succeeded (scan ${scanId}, ref ${reference}):`, insertErr.message)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Payment row insert failed — payments may be blocked',
+        `Paystack was successfully initialized for this reference, but saving the payment record failed.\n` +
+        `If this isn't a one-off, every payment attempt is likely failing the same way.\n\n` +
+        `userId: ${user.id}\nscanId: ${scanId}\nfixTier: ${fixTier}\nreference: ${reference}\namount: ${amount}\nerror: ${insertErr.message}`
+      )
+    } catch (_) {}
+    return c2.json({ success: false,
+      message: 'Payment could not be started right now. We\'ve been notified — please try again shortly.'
+    }, 502)
+  }
 
   return c2.json({ success: true, data: {
     authorization_url: result.authorization_url,
     access_code:        result.access_code,
     reference
   }})
+}
+
+// POST /api/payments/:reference/cancel
+//
+// AUDIT FIX (feature gap): initializePayment's 409 above ("...before
+// choosing a different option") has told the user they can cancel a stuck
+// checkout since that message existed — nothing anywhere ever let them.
+// Self-serve, ownership- and status-checked in the SAME atomic UPDATE (no
+// separate read-then-write): `.eq('user_id', user.id).eq('status','PENDING')`
+// means this can only ever touch a still-fresh payment that genuinely
+// belongs to the caller, and — same guarantee every other status flip in
+// this file relies on — a payment that finishes on Paystack's side in the
+// same instant (webhook or /verify winning the race) simply won't match
+// here, so a real payment can never be cancelled out from under a paying
+// customer.
+async function cancelPayment(c2) {
+  const user = c2.get('user')
+  const reference = c2.req.param('reference')
+  const supabase = getSupabase(c2.env)
+
+  const { data: updated, error } = await supabase
+    .from('payments')
+    .update({ status: 'ABANDONED' })
+    .eq('paystack_ref', reference)
+    .eq('user_id', user.id)
+    .eq('status', 'PENDING')
+    .select('id')
+  if (error) throw error
+  if (!updated || updated.length === 0)
+    return c2.json({ success: false,
+      message: 'Nothing to cancel — this payment is not pending, or does not belong to you.' }, 404)
+
+  return c2.json({ success: true })
 }
 
 // GET /api/payments/verify?reference=xxx
@@ -426,4 +485,4 @@ async function getPaymentHistory(c2) {
   return c2.json({ success: true, data: { payments } })
 }
 
-module.exports = { initializePayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment }
+module.exports = { initializePayment, cancelPayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment }

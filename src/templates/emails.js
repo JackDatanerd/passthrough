@@ -58,6 +58,12 @@ const TEMPLATES = {
   // money goes is never silent to them either \u2014 if they didn't make this
   // change, this email is the tripwire that tells them so.
   partner_payout_details_changed: "<h2>Your payout details were updated</h2>\n<p>Hi {{NAME}}, this confirms your Passthrough payout details (method: {{METHOD}}) were just added or changed.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't make this change, reply to this email immediately \u2014\nyour payout link may have been shared or compromised.</p>\n",
+  // AUDIT FIX (feature gap): mirrors email_changed_old_address's tripwire
+  // pattern for the user-account case, applied to partner.email — the sole
+  // channel for every future payout link, payout-sent confirmation, and
+  // referral-code notification a partner ever receives. Sent to BOTH the
+  // old and new address (see partners.controller.js's adminUpdatePartner).
+  partner_email_changed: "<h2>Your partner account email was changed</h2>\n<p>Hi {{NAME}}, the email address on file for your Passthrough partner account was just changed from {{OLD_EMAIL}} to {{NEW_EMAIL}}.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't request this, reply to this email or contact support@passthrough.dev immediately \u2014 future payout links, payout confirmations, and referral-code notifications will go to the new address.</p>\n",
   // Sent when an admin regenerates a partner's payout-details link \u2014
   // the OLD link stops working the moment this is sent.
   partner_link_regenerated: "<h2>Your payout link has been reset</h2>\n<p>Hi {{NAME}}, for security your Passthrough payout-details link has been reset.</p>\n<p>Your previous link no longer works. Use the new one below \u2014 it's unique to you, so don't share it.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Open Your Payout Details \u2192</a>\n",

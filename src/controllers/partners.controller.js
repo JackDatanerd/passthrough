@@ -142,6 +142,12 @@ async function adminUpdatePartner(ctx) {
   const body = updatePartnerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
+  // AUDIT FIX (feature gap): need the OLD email before it's overwritten, so
+  // a change can be confirmed to both addresses — see the notification
+  // below. Best-effort — if this read fails, fall through to the update
+  // exactly as before, just without the notification.
+  const { data: before } = await supabase.from('partners').select('email').eq('id', partnerId).maybeSingle()
+
   const patch = camelToSnake(body, PARTNER_FIELD_MAP)  // status, commissionRate
   if (body.name !== undefined)  patch.name = body.name
   if (body.email !== undefined) patch.email = body.email
@@ -151,6 +157,27 @@ async function adminUpdatePartner(ctx) {
     .update(patch).eq('id', partnerId).select('*').maybeSingle()
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+
+  // AUDIT FIX (feature gap): submitPayoutDetails already treats a
+  // payout-details change as a tripwire moment worth notifying both the
+  // partner and the owner about — this is that same treatment for the one
+  // change that's arguably higher-stakes: partner.email is the sole channel
+  // for every future payout link, payout-sent confirmation, and
+  // referral-code notification, so a typo or a compromised admin session
+  // silently redirecting (or killing) all future partner comms previously
+  // left no paper trail at all. Best-effort, like every other notification
+  // in this file — never blocks or fails the save itself.
+  if (body.email !== undefined && before?.email && before.email !== data.email) {
+    await Promise.all([
+      emailService.sendPartnerEmailChanged(ctx.env, supabase, before.email, data.name, before.email, data.email).catch(() => {}),
+      emailService.sendPartnerEmailChanged(ctx.env, supabase, data.email,  data.name, before.email, data.email).catch(() => {}),
+      emailService.sendOwnerAlert(ctx.env,
+        'Partner email changed',
+        `partner: ${data.name}\nold email: ${before.email}\nnew email: ${data.email}\ntime: ${new Date().toISOString()}\n\n` +
+        `If this wasn't expected, verify with the partner directly before their next payout or referral-code notification.`
+      ).catch(() => {})
+    ])
+  }
 
   return ctx.json({ success: true, data: partnerRowToCamel(data) })
 }
@@ -472,6 +499,7 @@ async function adminRecordPayout(ctx) {
 
   let payoutRow = payout
   let racedWithConcurrentPayout = false
+  let ledgerSettlementFailed = false
 
   if (unpaidLedger.length > 0) {
     const ledgerIds = unpaidLedger.map(l => l.id)
@@ -484,7 +512,27 @@ async function adminRecordPayout(ctx) {
       .is('payout_id', null)
       .select('id, commission_amount_cents')
     if (settleErr) {
+      // AUDIT FIX (bug): this used to be console.error only, with the
+      // function still returning success:true and a payout row that CLAIMS
+      // these commissions were settled. They weren't — payout_id is still
+      // null on every one of them, so they're still "unpaid" and will be
+      // pulled into this partner's NEXT payout run too, double-counting
+      // real money the admin already sent once. The payout row itself
+      // isn't rolled back (it genuinely happened), but unlike the "raced"
+      // branch below this failure mode had no owner alert at all.
       console.error('adminRecordPayout ledger settlement:', settleErr.message)
+      ledgerSettlementFailed = true
+      try {
+        await emailService.sendOwnerAlert(ctx.env,
+          'Payout recorded but commission-ledger settlement failed — books may be wrong',
+          `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\namount recorded: ${payoutRow.amount_cents} cents\n` +
+          `ledger rows this payout was supposed to settle: ${ledgerIds.length}\nerror: ${settleErr.message}\n\n` +
+          `The payout row was created (real money was already sent), but marking these commission_ledger rows ` +
+          `as paid failed — they still show as UNPAID and may be pulled into a future payout for this partner, ` +
+          `double-counting this money. Check commission_ledger for partner_id=${partnerId} with payout_id null ` +
+          `and created before this payout, and settle them by hand if this payout already covers them.`
+        )
+      } catch (_) {}
     } else if ((claimed?.length || 0) < ledgerIds.length) {
       // A concurrent adminRecordPayout call for this same partner claimed
       // some (or all) of these rows first. This payout row already exists
@@ -522,7 +570,7 @@ async function adminRecordPayout(ctx) {
     ctx.env, supabase, partner.email, partner.name, payoutRow.amount_cents, body.currency
   ).catch(() => false)
 
-  return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout })
+  return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout, ledgerSettlementFailed })
 }
 
 // ── Public (token-gated): partner views their own current payout details ───

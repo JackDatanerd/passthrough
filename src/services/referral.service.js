@@ -6,13 +6,18 @@
 // principle config/constants.js's priceForTier()/isPromoActive() already
 // apply to the site-wide promo.
 //
-// Usage-limit race, flagged the same way middleware/rateLimiter.js flags
-// its own: under a concurrent burst against the exact same code, two
-// redemptions could both pass the under-limit check before either's
-// increment lands, letting a couple of extra uses through right at the
-// boundary. Acceptable for a marketing usage cap; the uses_so_far COUNTER
-// itself stays exact regardless (see increment_referral_code_usage in the
-// migration) — only the pre-check has this benign race, not the bookkeeping.
+// Usage-limit gap: isCodeUsable() below is only checked in resolvePrice() —
+// at quote time and at initializePayment time — never again when a payment
+// actually completes (recordConversion, further down). uses_so_far is only
+// incremented on completion, so the real enforcement window is the FULL
+// checkout duration for every concurrent shopper, not a narrow simultaneous
+// DB race. A single-use code shared in a burst can be legitimately redeemed
+// by many more people than usage_limit intends, each a genuine, correctly-
+// tracked commission. AUDIT FIX (bug): a proper fix is a reservation system
+// (hold a slot at initializePayment time, release on abandon/fail) — out of
+// scope for this pass; recordConversion now at least alerts the owner the
+// first time a code's uses_so_far runs past its usage_limit, so an
+// over-redeemed code doesn't sit silently unnoticed — see warnIfOverLimit.
 
 const c = require('../config/constants')
 
@@ -115,14 +120,14 @@ async function withOneRetry(fn) {
 }
 
 async function recordConversion(supabase, payment, env) {
-  const result = await recordConversionInner(supabase, payment)
+  const result = await recordConversionInner(supabase, payment, env)
   // Pass `env` from the fulfilment paths so a failure pages the owner; the admin
   // reconcile endpoint omits it and just returns the result to the admin.
   if (env && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
   return result
 }
 
-async function recordConversionInner(supabase, payment) {
+async function recordConversionInner(supabase, payment, env) {
   if (!payment?.referral_code_id) return { ok: true, recorded: false, reason: 'no-referral' }
 
   try {
@@ -172,11 +177,49 @@ async function recordConversionInner(supabase, payment) {
       // The commission itself IS recorded — only the usage counter is short by one.
       return { ok: false, recorded: true, reason: 'usage-increment', error: rpcRes.error.message }
     }
+    // AUDIT FIX (bug): see the file-level comment above — this is the
+    // mitigation for the usage-limit gap. Not gated on `env` being passed
+    // for a live fulfilment path specifically; every caller that DOES pass
+    // env (verifyPayment, the webhook, the sweeps) gets this for free, and
+    // the admin reconcile endpoint's deliberate omission of env (see
+    // recordConversion's comment) means it stays quiet on a retry, same as
+    // notifyConversionFailure just above.
+    if (env) await warnIfOverLimit(supabase, env, codeRow.id)
     return { ok: true, recorded: true }
   } catch (err) {
     console.error('recordConversion unexpected:', err.message)
     return { ok: false, recorded: false, reason: 'exception', error: err.message }
   }
+}
+
+// AUDIT FIX (bug): throttled the same way webhooks.controller.js throttles
+// its signature-mismatch alert — a popular over-limit code redeeming
+// repeatedly in a burst must not email-bomb the owner once per sale, so
+// this fires at most once per code per day. Never throws.
+async function warnIfOverLimit(supabase, env, codeId) {
+  try {
+    const { data: code, error } = await supabase.from('referral_codes')
+      .select('code, usage_limit, uses_so_far').eq('id', codeId).maybeSingle()
+    if (error || !code || code.usage_limit == null || code.uses_so_far <= code.usage_limit) return
+
+    const kv = env.RATE_LIMIT_KV
+    const key = `referral-over-limit-alert:${codeId}`
+    if (kv) {
+      if (await kv.get(key)) return
+      await kv.put(key, '1', { expirationTtl: 24 * 60 * 60 })
+    }
+
+    const emailService = require('./email.service')
+    await emailService.sendOwnerAlert(env,
+      `Referral code ${code.code} redeemed past its usage limit`,
+      `code: ${code.code}\nusage_limit: ${code.usage_limit}\nuses_so_far: ${code.uses_so_far}\n\n` +
+      `The limit is only checked when a checkout starts, not when it completes, so under concurrent ` +
+      `redemptions this code can legitimately be used more times than its limit before any of them ` +
+      `finish paying. Each use here is a real, already-charged sale — nothing to undo. Deactivate the ` +
+      `code (Admin -> Partners -> that partner -> Referral Codes) if it shouldn't keep accepting new ` +
+      `checkouts.\n\n(Further redemptions of this same code are throttled to one alert per day.)`
+    )
+  } catch (_) {}
 }
 
 // Owner alert for a conversion that could not be (fully) recorded. Lazy

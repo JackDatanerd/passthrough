@@ -99,8 +99,27 @@ async function fulfillPayment(env, supabase, payment, { force = false, now = Dat
   // Ours — but did the queue message survive? (claim succeeded, send() threw)
   const stuckFor = now - Date.parse(current.updated_at || 0)
   if (current.status === 'FIX_PURCHASED' && (force || stuckFor > REENQUEUE_AFTER_MS)) {
-    await env.FIX_QUEUE.send({ type: generatorFor(fixTier), scanId })
-    return { outcome: 'REENQUEUED', fixTier }
+    // AUDIT FIX (bug): sending to FIX_QUEUE here used to be unguarded — two
+    // callers reading the same stale `current.updated_at` (two rapid admin
+    // reconcile clicks, an admin reconcile racing this same sweep, two admin
+    // tabs) would BOTH pass this check and BOTH enqueue a second generation
+    // job for the same scan: double Claude spend, double PDF render, a
+    // last-write-wins race on the delivered file. Same atomic-claim idiom as
+    // the initial claim above: set_updated_at() (migration 0001) bumps
+    // scans.updated_at on every UPDATE — even one that writes the same
+    // value — so it doubles as a compare-and-swap token here. Only the
+    // caller whose read is still current wins the row and gets to enqueue.
+    const { data: reclaimed, error: reclaimErr } = await supabase.from('scans')
+      .update({ status: 'FIX_PURCHASED' })
+      .eq('id', scanId).eq('updated_at', current.updated_at)
+      .select('id')
+    if (reclaimErr) throw reclaimErr
+    if (reclaimed && reclaimed.length > 0) {
+      await env.FIX_QUEUE.send({ type: generatorFor(fixTier), scanId })
+      return { outcome: 'REENQUEUED', fixTier }
+    }
+    // Lost the race — a concurrent call already reclaimed it and is
+    // sending (or has already sent) the queue message.
   }
   return { outcome: 'ALREADY_FULFILLED' }
 }

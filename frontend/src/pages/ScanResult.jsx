@@ -64,6 +64,12 @@ export default function ScanResult() {
   // payingTier additionally drives which specific button shows the spinner.
   const [payingTier,  setPayingTier] = useState(null)
   const [payError,    setPayError  ] = useState('')
+  // AUDIT FIX (feature gap): initializePayment's 409 ("...finish or cancel
+  // it") had no actual cancel path anywhere behind it — see cancelPayment's
+  // comment in payments.controller.js. When the 409 carries a reference,
+  // this holds it so the error message can offer a real "cancel that
+  // payment" action instead of leaving the user stuck for up to 30 minutes.
+  const [stuckPayment, setStuckPayment] = useState(null)
   const [dlError,     setDlError   ] = useState('')
   const [visibilityError, setVisibilityError] = useState('')
   const [publishLoading, setPublishLoading] = useState(false)
@@ -182,7 +188,7 @@ export default function ScanResult() {
     // this, a click that lands between render and the disabled state
     // taking effect could still double-fire.
     if (payLoading) return
-    setPayLoading(true); setPayingTier(fixTier); setPayError('')
+    setPayLoading(true); setPayingTier(fixTier); setPayError(''); setStuckPayment(null)
     try {
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined
@@ -217,8 +223,32 @@ export default function ScanResult() {
         }
       })
     } catch (err) {
+      // AUDIT FIX (feature gap): a 409 here means initializePayment found an
+      // existing fresh PENDING payment for a different tier and refused to
+      // start a new one — see cancelPayment's comment in
+      // payments.controller.js. The reference to cancel now comes back in
+      // the error body; hang onto it so the error message can offer a real
+      // way out instead of the old dead-end "please cancel it" text.
+      const stuck = err.response?.status === 409 ? err.response?.data?.data : null
+      setStuckPayment(stuck?.reference ? stuck : null)
       setPayError(getErrorMessage(err, 'Payment failed to initialize.'))
       setPayLoading(false); setPayingTier(null)
+    }
+  }
+
+  // AUDIT FIX (feature gap): the other half of the fix above — actually lets
+  // the user act on "please cancel it" instead of just reading it.
+  async function handleCancelStuckPayment() {
+    if (!stuckPayment) return
+    setPayLoading(true)
+    try {
+      await api.post(`/payments/${stuckPayment.reference}/cancel`)
+      setStuckPayment(null)
+      setPayError('')
+    } catch (err) {
+      setPayError(getErrorMessage(err, 'Could not cancel that payment — please try again.'))
+    } finally {
+      setPayLoading(false)
     }
   }
 
@@ -675,7 +705,19 @@ export default function ScanResult() {
             {!scan.fixPurchased && (
               <>
                 {payError && (
-                  <p className="text-sm text-red-600">{payError}</p>
+                  <div className="text-sm text-red-600">
+                    <p>{payError}</p>
+                    {stuckPayment && (
+                      <button
+                        type="button"
+                        onClick={handleCancelStuckPayment}
+                        disabled={payLoading}
+                        className="mt-1 underline underline-offset-2 hover:text-red-800 disabled:opacity-50"
+                      >
+                        Cancel that payment and choose again
+                      </button>
+                    )}
+                  </div>
                 )}
                 <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} />
               </>

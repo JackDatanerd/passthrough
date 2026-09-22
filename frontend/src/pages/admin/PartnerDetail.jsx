@@ -147,12 +147,16 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
         note: note || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
       }), { fallback: 'Failed to record payout.' })
-      toast({
-        message: data.emailed
+      // AUDIT FIX (bug): ledgerSettlementFailed means the payout row was
+      // created but the commission_ledger rows it was meant to settle are
+      // still marked unpaid (see adminRecordPayout's comment) — a real,
+      // higher-priority warning than a merely-failed confirmation email.
+      const message = data.ledgerSettlementFailed
+        ? `Payout recorded, but marking commissions as paid failed — the owner has been alerted. Check the ledger before running another payout for ${partner.name}.`
+        : data.emailed
           ? `Payout recorded — ${partner.name} has been emailed.`
-          : `Payout recorded, but the confirmation email failed to send.`,
-        type: data.emailed ? 'success' : 'warning'
-      })
+          : `Payout recorded, but the confirmation email failed to send.`
+      toast({ message, type: (data.ledgerSettlementFailed || !data.emailed) ? 'warning' : 'success' })
       onRecorded()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
