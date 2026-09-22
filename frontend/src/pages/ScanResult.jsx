@@ -18,7 +18,7 @@ import QuantificationPrompts from '../components/scan/QuantificationPrompts'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
-import { statusLabel, formatDate } from '../lib/utils'
+import { statusLabel, formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken } from '../lib/anonScans'
 
@@ -67,6 +67,12 @@ export default function ScanResult() {
   const [dlError,     setDlError   ] = useState('')
   const [visibilityError, setVisibilityError] = useState('')
   const [publishLoading, setPublishLoading] = useState(false)
+  // SECTION 7 AUDIT (feature gap closed): the badge.svg endpoint has existed
+  // since the Section 7 audit — nothing on this page (or anywhere else) ever
+  // showed the candidate its URL or gave them something to paste into a
+  // README/LinkedIn/portfolio. The whole point of an embeddable badge is
+  // that most people who see it never click through to this page.
+  const [badgeCopied, setBadgeCopied] = useState(false)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const [pollError,    setPollError   ] = useState('')
@@ -259,6 +265,21 @@ export default function ScanResult() {
       setVisibilityError(getErrorMessage(err, 'Could not update.'))
     } finally {
       setPublishLoading(false)
+    }
+  }
+
+  // Markdown is the most common paste target (README, a portfolio's markdown
+  // bio) and links through to the live page, not just the bare image — an
+  // <img> alone loses the click-through that makes the badge worth anything.
+  function badgeUrls() {
+    const base = `${api.defaults.baseURL}/verify/${scan.verificationCode}/badge.svg`
+    return { image: base, markdown: `[![Passthrough Verified](${base})](${scan.verificationUrl})` }
+  }
+
+  async function handleCopyBadge() {
+    if (await copyToClipboard(badgeUrls().markdown)) {
+      setBadgeCopied(true)
+      setTimeout(() => setBadgeCopied(false), 2000)
     }
   }
 
@@ -561,6 +582,45 @@ export default function ScanResult() {
                         Hide my name on the public page
                       </label>
                     </div>
+
+                    {/* SECTION 7 AUDIT (feature gap closed): the badge.svg
+                        endpoint has always existed — this is the missing
+                        other half, showing the candidate something to
+                        actually paste into a LinkedIn "featured" link, a
+                        portfolio, or a README. Hidden while unpublished so
+                        this doesn't invite grabbing an embed for a page
+                        that currently reads "revoked". */}
+                    {scan.verificationStatus !== 'REVOKED' && (
+                      <div className="mt-4 pt-4 border-t border-green-200">
+                        <p className="text-xs font-medium text-green-900 mb-2">
+                          Embed your live badge
+                        </p>
+                        <div className="flex items-center gap-3 flex-wrap">
+                          <img
+                            src={badgeUrls().image}
+                            alt="Passthrough badge preview"
+                            className="h-5"
+                          />
+                          <input
+                            readOnly
+                            value={badgeUrls().markdown}
+                            onFocus={e => e.target.select()}
+                            className="text-xs text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5 flex-1 min-w-[200px] font-mono"
+                          />
+                          <button
+                            onClick={handleCopyBadge}
+                            type="button"
+                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap"
+                          >
+                            {badgeCopied ? 'Copied ✓' : 'Copy Markdown'}
+                          </button>
+                        </div>
+                        <p className="text-xs text-gray-500 mt-1.5">
+                          Always reflects the live status — score, integrity, or an unpublish will update it automatically.
+                        </p>
+                      </div>
+                    )}
+
                     {scan.verificationStatus !== 'REVOKED' && (
                       <button
                         onClick={handleTogglePublished}

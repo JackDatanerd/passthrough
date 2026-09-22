@@ -142,6 +142,23 @@ async function scheduled(event, env, ctx) {
   )
 }
 
+// SECTION 7/8 AUDIT FIX (bug): this whole job — the pending-payment sweep
+// (sweepPendingPayments, "Section 8 audit (feature gap)" per
+// reconcile.service.js) and the webhook_events retention prune — used to sit
+// here as bare top-level statements, OUTSIDE every function, left behind
+// when `scheduled()` above was split into the separate named jobs below.
+// `env` doesn't exist at module scope in a Worker, so every run of this threw
+// ReferenceError immediately, silently caught by each block's own try/catch —
+// and because it was top-level code, "every run" meant ONCE, at module
+// evaluation on cold start, not hourly like every other job here. Net effect:
+// a payment Paystack marked paid but this app never got the webhook for was
+// never automatically recovered (the feature existed, tested, wired to
+// nothing), and webhook_events grew forever. Moving it into a fourth
+// registered job — same shape, same isolation, as the two below — is the fix;
+// nothing about the two try/catch blocks themselves needed to change.
+async function webhookMaintenanceSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
       // Independent of the sweep above: a failure in one must never skip the other.
       try {
         const { sweepPendingPayments } = require('./services/reconcile.service')
@@ -159,6 +176,10 @@ async function scheduled(event, env, ctx) {
       } catch (err) {
         console.error('webhook_events prune error:', err.message)
       }
+    })()
+  )
+}
+
 // Second, independent scheduled job: recover paid-but-undelivered payments
 // (see services/reconcile.service.js for why fulfilment is one-shot and what
 // "orphaned" means). Its own waitUntil + try/catch so a failure here can never
@@ -272,11 +293,12 @@ async function queue(batch, env, ctx) {
 // them up correctly.
 export default {
   fetch: app.fetch,
-  // One cron trigger, three independent jobs.
+  // One cron trigger, four independent jobs.
   scheduled: (event, env, ctx) => {
     scheduled(event, env, ctx)
     reconcileSweep(event, env, ctx)
-    return pendingSweep(event, env, ctx)
+    pendingSweep(event, env, ctx)
+    return webhookMaintenanceSweep(event, env, ctx)
   },
   queue,
 }

@@ -74,15 +74,30 @@ function revokedResponse(c, row) {
   }, 410)
 }
 
+// SECTION 7 AUDIT FIX (bug): this used to hash only resume_ats_path/resume_hash
+// (the docx) — resume_pdf_path/resume_pdf_hash were never checked, even though
+// the PDF is independently exposable for download and is the file candidates
+// are actually told to email. A corrupted/tampered PDF object in R2 would have
+// read "Unmodified" forever. Checks the docx first (existing behavior/cost for
+// the common case), then the PDF only if this row has one on file — 'verified'
+// now means BOTH stored files match what we hashed at generation time.
 async function checkIntegrity(env, row) {
   // Starts (and on any failure stays) 'unknown' rather than defaulting to
   // 'verified' — this must never fail OPEN.
   if (!row.resume_ats_path || !row.resume_hash) return 'unknown'
   try {
-    const obj = await env.RESUMES_BUCKET.get(row.resume_ats_path)
-    if (!obj) return 'unknown'
-    const actual = await cryptoLib.sha256Bytes(await obj.arrayBuffer())
-    return actual === row.resume_hash ? 'verified' : 'modified'
+    const docxObj = await env.RESUMES_BUCKET.get(row.resume_ats_path)
+    if (!docxObj) return 'unknown'
+    const docxActual = await cryptoLib.sha256Bytes(await docxObj.arrayBuffer())
+    if (docxActual !== row.resume_hash) return 'modified'
+
+    if (row.resume_pdf_path && row.resume_pdf_hash) {
+      const pdfObj = await env.RESUMES_BUCKET.get(row.resume_pdf_path)
+      if (!pdfObj) return 'unknown'
+      const pdfActual = await cryptoLib.sha256Bytes(await pdfObj.arrayBuffer())
+      if (pdfActual !== row.resume_pdf_hash) return 'modified'
+    }
+    return 'verified'
   } catch (err) {
     console.error('Integrity check failed:', err.message)
     return 'unknown'
@@ -195,7 +210,21 @@ async function downloadVerifiedFile(c) {
 // ── live badge (SVG) ────────────────────────────────────────────────────────
 // SECTION 7 AUDIT (feature gap): candidates had nothing they could embed in a
 // LinkedIn "featured" link, a portfolio or a README that reflects the page's
-// LIVE state. Deliberately cheap: no R2 read, no view count, cacheable.
+// LIVE state. No view count — embeds get looked at far more than clicked
+// through, and counting every impression as a "view" would inflate the number
+// on the real page. Still cacheable (Cache-Control below).
+//
+// SECTION 7 AUDIT FIX (bug): this used to call a resume "Verified" on score
+// alone — the exact bug already fixed on the main page (see `verified` above):
+// a file flagged "Modified" there could still read "Passthrough Verified ✓"
+// on every site it was embedded on, for as long as five minutes at a time.
+// The badge is the one surface people see WITHOUT clicking through, so its
+// claim has to satisfy the same invariant as the page's headline: passed AND
+// integrity verified AND not revoked. This does cost an R2 read + re-hash the
+// original "deliberately cheap" comment traded away — accepted because
+// Cache-Control below already bounds it to at most once per 5 minutes per
+// code at the edge, the same amortization the real page already relies on,
+// so the added cost is not per-impression, just per cache-miss.
 
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 
@@ -210,7 +239,8 @@ function renderBadge(label, value, color) {
 }
 
 async function getBadge(c) {
-  const loaded = await loadByCode(c, { columns: 'ats_score, fix_ats_score, verification_status' })
+  const loaded = await loadByCode(c, { columns:
+    'ats_score, fix_ats_score, verification_status, resume_ats_path, resume_hash, resume_pdf_path, resume_pdf_hash' })
   if (loaded.response) return loaded.response
   const { row } = loaded
 
@@ -218,7 +248,12 @@ async function getBadge(c) {
   if (row.verification_status === STATUS.REVOKED) { value = 'revoked'; color = '#6b7280' }
   else {
     const score = row.fix_ats_score ?? row.ats_score
-    if (score != null && score >= constants.ATS_BADGE_THRESHOLD) { value = `${Math.round(score)}/100`; color = '#15803d' }
+    const passed = score != null && score >= constants.ATS_BADGE_THRESHOLD
+    // Only pay for the integrity check when the score alone could otherwise
+    // earn the "Verified" claim — a below-threshold scan is never going to
+    // say "Verified" regardless of integrity, so there's nothing to check.
+    const verified = passed && (await checkIntegrity(c.env, row)) === 'verified'
+    if (verified) { value = `${Math.round(score)}/100`; color = '#15803d' }
     else { value = score != null ? `scan ${Math.round(score)}/100` : 'scan report'; color = '#b45309' }
   }
   const label = value === 'revoked' || String(value).startsWith('scan') ? 'Passthrough' : 'Passthrough Verified'

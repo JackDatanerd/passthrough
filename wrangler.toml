@@ -34,7 +34,9 @@ max_batch_timeout  = 5
 max_retries        = 3
 dead_letter_queue  = "passthrough-fix-jobs-dlq"
 
-# ── Cron: hourly anonymous-scan cleanup (replaces the old setInterval in server.js) ──
+# ── Cron: hourly — drives all four scheduled jobs in index.js's `scheduled`
+#    export (anon-scan cleanup, orphaned-payment sweep, stale-pending sweep,
+#    pending-payment/webhook_events maintenance). One trigger, four jobs. ──
 [triggers]
 crons = ["0 * * * *"]
 
