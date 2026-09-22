@@ -329,20 +329,42 @@ async function checkAccountLockout(env, email) {
 // above for why the IP requirement exists). `ip` is required — callers
 // extract it the same way scan.controller.js's quota bypass check does
 // (`cf-connecting-ip` first, `x-forwarded-for` fallback, else 'unknown').
+// Returns { justLocked: boolean } — true only on the specific call whose
+// failure is what pushed the account from unlocked into locked, so callers
+// with access to the account's name/email (auth.controller.js already
+// fetched the user row in every branch that can reach this point with a
+// real account) can fire a one-time alert rather than one per failed
+// attempt. See sendAccountLockoutAlert in email.service.js.
 async function recordLoginFailure(env, email, ip) {
   const kv = env.RATE_LIMIT_KV
   const key = lockoutKey(email)
   const raw = await kv.get(key)
   let failCount = 0
-
   let ips = []
+  let wasLocked = false
   try {
     if (raw) {
       const parsed = JSON.parse(raw)
       failCount = parsed.failCount || 0
       ips = Array.isArray(parsed.ips) ? parsed.ips : []
+      wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > Date.now())
+      // BUG FIX (account-lockout DoS, round 2): failCount/ips previously lived
+      // on forever untouched once a lock fired and later expired — both
+      // already sat at/above the lock thresholds, so the very next failure
+      // (from ONE ip, no coordination needed) re-locked the account instantly.
+      // That defeats LOCKOUT_MIN_DISTINCT_IPS's whole purpose, which only ever
+      // actually gated the FIRST lock a fresh key could produce; every lock
+      // after that needed nothing but time and a single guess. A lock that
+      // already ran its course and expired is stale history, not an ongoing
+      // attack — start this failure's counting over from zero so the
+      // distinct-IP bar has to be cleared again before another lock can
+      // trigger, exactly like it did the first time.
+      if (parsed.lockedUntil && parsed.lockedUntil <= Date.now()) {
+        failCount = 0
+        ips = []
+      }
     }
-  } catch (_) { failCount = 0; ips = [] }
+  } catch (_) { failCount = 0; ips = []; wasLocked = false }
   failCount += 1
 
   const normalizedIp = String(ip || 'unknown')
@@ -358,6 +380,8 @@ async function recordLoginFailure(env, email, ip) {
     // way this key naturally ages out well before it'd matter.
     expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
   })
+
+  return { justLocked: !!lockedUntil && !wasLocked }
 }
 
 // Call on every successful login — clears the failure count so a real user
@@ -420,6 +444,6 @@ async function recordVerifyMiss(env, ip, now = Date.now()) {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess,
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX
 }

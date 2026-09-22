@@ -129,6 +129,61 @@ describe('account lockout — checkAccountLockout / recordLoginFailure / recordL
     for (let i = 0; i < 8; i++) await rl.recordLoginFailure(env, 'victim@example.com', undefined)
     expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)  // still one bucket ('unknown')
   })
+
+  // FEATURE (Auth section round 2): recordLoginFailure's return value is
+  // what auth.controller.js uses to fire the one-time lockout-alert email —
+  // must be true exactly on the transitioning call, never before or after.
+  it('recordLoginFailure reports justLocked exactly on the call that triggers the lock', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    let last
+    for (let i = 0; i < 7; i++) last = await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9')
+    expect(last.justLocked).toBe(false)
+    last = await rl.recordLoginFailure(env, 'victim@example.com', '4.4.4.4')
+    expect(last.justLocked).toBe(true)
+    // Already locked — a further failure is not a NEW transition.
+    last = await rl.recordLoginFailure(env, 'victim@example.com', '5.5.5.5')
+    expect(last.justLocked).toBe(false)
+  })
+
+  // BUG FIX (round 2 — the lockout that re-arms itself forever): before this
+  // fix, failCount/ips lived on untouched once a lock fired and later
+  // expired — both already sat at/above the lock thresholds, so the very
+  // next failure from a SINGLE ip re-locked the account instantly, forever,
+  // defeating LOCKOUT_MIN_DISTINCT_IPS's entire purpose after the first lock.
+  it('once a lock has expired, a single failure from one IP does NOT immediately re-lock', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    const key = 'rl:lockout:victim@example.com'
+    const ips = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5', '6.6.6.6', '7.7.7.7', '8.8.8.8']
+    for (const ip of ips) await rl.recordLoginFailure(env, 'victim@example.com', ip)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(true)
+
+    // Simulate the lock having naturally expired — same failCount/ips as a
+    // real clock tick past lockedUntil would leave behind, nothing else touched.
+    const stored = JSON.parse(await env.RATE_LIMIT_KV.get(key))
+    await env.RATE_LIMIT_KV.put(key, JSON.stringify({ ...stored, lockedUntil: Date.now() - 1000 }))
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)
+
+    // Before the fix: failCount/ips already sat at/above threshold here, so
+    // this single failure from ONE ip alone would instantly re-lock.
+    const result = await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9')
+    expect(result.justLocked).toBe(false)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)
+  })
+
+  it('after an expired lock resets the counters, a real distributed attempt can still re-lock the account', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    const key = 'rl:lockout:victim@example.com'
+    const ips = ['1.1.1.1', '2.2.2.2', '3.3.3.3', '4.4.4.4', '5.5.5.5', '6.6.6.6', '7.7.7.7', '8.8.8.8']
+    for (const ip of ips) await rl.recordLoginFailure(env, 'victim@example.com', ip)
+    const stored = JSON.parse(await env.RATE_LIMIT_KV.get(key))
+    await env.RATE_LIMIT_KV.put(key, JSON.stringify({ ...stored, lockedUntil: Date.now() - 1000 }))
+
+    const otherIps = ['11.1.1.1', '12.1.1.1', '13.1.1.1', '14.1.1.1', '15.1.1.1', '16.1.1.1', '17.1.1.1', '18.1.1.1']
+    let last
+    for (const ip of otherIps) last = await rl.recordLoginFailure(env, 'victim@example.com', ip)
+    expect(last.justLocked).toBe(true)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(true)
+  })
 })
 
 describe('anonScan limiter', () => {

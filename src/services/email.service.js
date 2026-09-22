@@ -71,6 +71,42 @@ async function sendPasswordReset(env, supabase, email, name, rawToken) {
   })
 }
 
+// AUDIT FIX (feature gap, Auth section round 2): mirrors the existing
+// sendPayoutDetailsChanged pattern below, applied to auth's own — more
+// sensitive — credential changes. Called from BOTH changePassword and
+// resetPassword in auth.controller.js, since either one leaves the account
+// with a different password than a moment ago.
+async function sendPasswordChanged(env, supabase, email, name) {
+  return send(env, supabase, email, 'Your Passthrough password was changed', 'password_changed', {
+    NAME: name
+  })
+}
+
+// Sent to the OLD address from updateEmail() — the new address gets its own
+// sendVerification() call already; this is the notice to the address being
+// abandoned, which previously got nothing at all.
+async function sendEmailChangedOldAddress(env, supabase, oldEmail, name, newEmail) {
+  return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_changed_old_address', {
+    NAME:      name,
+    NEW_EMAIL: newEmail
+  })
+}
+
+async function sendAccountDeleted(env, supabase, email, name) {
+  return send(env, supabase, email, 'Your Passthrough account has been deleted', 'account_deleted', {
+    NAME: name
+  })
+}
+
+// Sent once, at the moment recordLoginFailure() actually transitions an
+// account into a lock — not on every failed attempt. See rateLimiter.js.
+async function sendAccountLockoutAlert(env, supabase, email, name, lockoutMinutes) {
+  return send(env, supabase, email, 'Passthrough: repeated failed sign-in attempts', 'account_lockout_alert', {
+    NAME:             name,
+    LOCKOUT_MINUTES:  lockoutMinutes
+  })
+}
+
 async function sendScanFail(env, supabase, email, name, score, cats) {
   return send(env, supabase, email, `Your resume scored ${score}/100`, 'scan_fail', {
     NAME:           name,
@@ -251,6 +287,7 @@ async function sendOwnerAlert(env, subject, message) {
 
 module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
+  sendPasswordChanged, sendEmailChangedOldAddress, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,

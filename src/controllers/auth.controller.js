@@ -24,7 +24,21 @@ const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
-const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
+const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
+
+// FEATURE (Auth section round 2): fires the one-time lockout email exactly
+// when recordLoginFailure() reports the transition into a lock, from any of
+// the four call sites below that have a real user row in hand (the
+// no-such-account branch in login() never reaches this — there's no inbox
+// to notify). waitUntil, not fire-and-forget — see register()'s comment.
+function maybeSendLockoutAlert(c, result, user) {
+  if (result?.justLocked) {
+    c.executionCtx.waitUntil(
+      emailService.sendAccountLockoutAlert(c.env, getSupabase(c.env), user.email, user.name, LOCKOUT_MINUTES)
+        .catch(e => console.error('Lockout alert email:', e.message))
+    )
+  }
+}
 
 // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now needs the
 // requester's IP (see rateLimiter.js's LOCKOUT_MIN_DISTINCT_IPS comment) —
@@ -90,6 +104,31 @@ async function getDummyPasswordHash() {
 // for the matching DB-level backstop against races/other write paths.
 const emailSchema = z.string().trim().toLowerCase().email()
 
+// BUG FIX (round 2 of the password-length audit): the earlier `.max(72)` on
+// a raw z.string() only bounds JS string length (UTF-16 code units), not the
+// UTF-8 byte length bcryptjs actually truncates at. Any password using
+// multi-byte characters — accented letters, non-Latin scripts, emoji — can
+// have a `.length` of 72 or less while still being well over 72 BYTES, so it
+// sails past validation and then gets silently truncated by bcrypt anyway:
+// exactly the "false confidence in extra length that does nothing" problem
+// the original fix was meant to close, just one level deeper. Verified
+// directly against bcryptjs: a password of 72 'é' characters is 144 bytes,
+// and two such passwords differing only after the 72-byte mark hash
+// identically and both compare as valid.
+//
+// `min(8)` stays character-based — bcrypt has no equivalent lower-bound
+// quirk, and a shorter multi-byte password is never a weaker one, so
+// counting characters there is fine. Only the upper bound needs to be
+// byte-aware.
+const PASSWORD_MAX_BYTES = 72
+function passwordSchema(minMessage) {
+  return z.string()
+    .min(8, minMessage || 'Password must be at least 8 characters')
+    .refine(pw => new TextEncoder().encode(pw).length <= PASSWORD_MAX_BYTES, {
+      message: 'Password is too long (max 72 bytes — some characters, like emoji or accented letters, count as more than one byte).'
+    })
+}
+
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
@@ -103,9 +142,10 @@ async function register(c) {
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
     // that is quietly ignored with no error, giving false confidence in
-    // extra length that does nothing. max(72) turns that into an explicit,
-    // honest validation error instead of a silent no-op.
-    password: z.string().min(8, 'Password must be at least 8 characters').max(72, 'Password must be at most 72 characters')
+    // extra length that does nothing. passwordSchema() (see above) turns
+    // that into an explicit, honest validation error instead of a silent
+    // no-op — byte-aware, not just character-count-aware.
+    password: passwordSchema()
   }).parse(body)
 
   const supabase = getSupabase(c.env)
@@ -186,7 +226,8 @@ async function login(c) {
   // (message AND timing) to a wrong guess against an active one — status
   // is only revealed once the credential itself has been proven correct.
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, email, clientIp(c))
+    const failResult = await recordLoginFailure(c.env, email, clientIp(c))
+    maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
   if (user.status === 'BANNED')
@@ -263,9 +304,9 @@ async function resetPassword(c) {
   const body = await c.req.json()
   const { token, newPassword } = z.object({
     token:       z.string(),
-    // BUG FIX: see register()'s matching comment — bcryptjs silently
-    // truncates past 72 bytes with no error, so this caps it explicitly.
-    newPassword: z.string().min(8).max(72, 'Password must be at most 72 characters')
+    // BUG FIX: see register()'s matching comment and passwordSchema() above —
+    // bcryptjs truncates past 72 BYTES, not 72 characters, with no error.
+    newPassword: passwordSchema()
   }).parse(body)
 
   const supabase = getSupabase(c.env)
@@ -295,6 +336,26 @@ async function resetPassword(c) {
     reset_token_expiry: null,
     token_version:       user.tokenVersion + 1  // kills all existing sessions
   }).eq('id', user.id)
+
+  // BUG FIX (account lockout, section audit round 2): proving control of the
+  // account's inbox — clicking a time-limited, single-use emailed link — is a
+  // far stronger identity check than the "8 failed guesses from 2+ IPs" the
+  // login lockout gates on, but this endpoint never cleared that lockout.
+  // A real owner using the reset flow BECAUSE their account got locked
+  // (whether by an actual credential-stuffing attempt or by a run of their
+  // own typos) would set a brand-new password and then still be locked out
+  // of using it for up to LOCKOUT_MINUTES more — the one flow specifically
+  // meant to hand control back to them didn't. Clearing it here is the same
+  // call login() makes on a successful password check.
+  await recordLoginSuccess(c.env, user.email)
+
+  // FEATURE (Auth section round 2): see sendPasswordChanged's comment —
+  // resetPassword is the other of the two paths that leave the password
+  // different, so it gets the same confirmation changePassword does.
+  c.executionCtx.waitUntil(
+    emailService.sendPasswordChanged(c.env, supabase, user.email, user.name)
+      .catch(e => console.error('Password-changed email:', e.message))
+  )
 
   return c.json({ success: true, message: 'Password reset. Please log in.' })
 }
@@ -354,9 +415,9 @@ async function changePassword(c) {
   const body = await c.req.json()
   const { currentPassword, newPassword } = z.object({
     currentPassword: z.string(),
-    // BUG FIX: see register()'s matching comment — bcryptjs silently
-    // truncates past 72 bytes with no error, so this caps it explicitly.
-    newPassword:     z.string().min(8).max(72, 'Password must be at most 72 characters')
+    // BUG FIX: see register()'s matching comment and passwordSchema() above —
+    // bcryptjs truncates past 72 BYTES, not 72 characters, with no error.
+    newPassword:     passwordSchema()
   }).parse(body)
 
   // FEATURE (account lockout applied here too): checkAccountLockout/
@@ -386,7 +447,8 @@ async function changePassword(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
@@ -410,6 +472,12 @@ async function changePassword(c) {
   // login) keeps the current session alive across the change, which is
   // what the message already claimed was happening.
   const token = await issueJWT(c.env, { id: user.id, tokenVersion: newTokenVersion })
+
+  // FEATURE (Auth section round 2): see sendPasswordChanged's comment.
+  c.executionCtx.waitUntil(
+    emailService.sendPasswordChanged(c.env, supabase, user.email, user.name)
+      .catch(e => console.error('Password-changed email:', e.message))
+  )
 
   return c.json({ success: true, message: 'Password updated. Other sessions signed out.', data: { token } })
 }
@@ -464,7 +532,8 @@ async function updateEmail(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
@@ -475,6 +544,7 @@ async function updateEmail(c) {
   const raw    = cryptoLib.randomToken(32)
   const stored = await cryptoLib.sha256(raw)
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
+  const oldEmail = user.email  // captured before the update below overwrites it
 
   const { data: updatedRow, error: updateErr } = await supabase.from('users').update({
     email:               newEmail,
@@ -491,6 +561,14 @@ async function updateEmail(c) {
   c.executionCtx.waitUntil(
     emailService.sendVerification(c.env, supabase, newEmail, updated.name, raw)
       .catch(e => console.error('Email-change verify email:', e.message))
+  )
+  // AUDIT FIX (feature gap, Auth section round 2): the OLD address —
+  // the one place a real account-takeover victim can still be reached —
+  // previously heard nothing at all about this change. See
+  // sendEmailChangedOldAddress's comment in email.service.js.
+  c.executionCtx.waitUntil(
+    emailService.sendEmailChangedOldAddress(c.env, supabase, oldEmail, updated.name, newEmail)
+      .catch(e => console.error('Email-changed old-address notice:', e.message))
   )
 
   return c.json({ success: true, message: 'Email updated. Please verify your new address.',
@@ -518,10 +596,17 @@ async function deleteAccount(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
+
+  // Captured before scrub_account_data overwrites both columns with
+  // placeholder values (see migration 0022) — needed below to send the
+  // deletion confirmation to the real address after the scrub commits.
+  const preScrubEmail = user.email
+  const preScrubName  = user.name
 
   // BUG FIX (Section 6, fixing-time pass): the scan-content scrub and the
   // user soft-delete used to run as two separate best-effort UPDATEs whose
@@ -566,6 +651,16 @@ async function deleteAccount(c) {
       }
     }
   }
+
+  // FEATURE (Auth section round 2): sent only after the scrub has durably
+  // committed (thrown errors above skip this entirely) — to the address the
+  // account actually had a moment ago, since scrub_account_data has already
+  // overwritten it with a placeholder by this point. See sendAccountDeleted's
+  // comment in email.service.js.
+  c.executionCtx.waitUntil(
+    emailService.sendAccountDeleted(c.env, supabase, preScrubEmail, preScrubName)
+      .catch(e => console.error('Account-deleted email:', e.message))
+  )
 
   return c.json({ success: true, message: 'Account deleted.' })
 }

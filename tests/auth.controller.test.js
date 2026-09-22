@@ -60,6 +60,15 @@ async function setup(opts = {}) {
       sendWelcome:       async (...a) => { state.emails.push({ type: 'welcome', to: a[2] }) },
       sendVerification:  async (...a) => { state.emails.push({ type: 'verify', to: a[2], raw: a[4] }) },
       sendPasswordReset: async (...a) => { state.emails.push({ type: 'reset', to: a[2], raw: a[4] }) },
+      // FEATURE (Auth section round 2): confirmation/notification emails for
+      // auth's own sensitive account changes — see auth.controller.js's
+      // callers and email.service.js's real implementations for what each
+      // covers. `a[2]` is always the `to` address in every emailService.send*
+      // signature (env, supabase, to, ...), same convention as the three above.
+      sendPasswordChanged:        async (...a) => { state.emails.push({ type: 'password_changed', to: a[2] }) },
+      sendEmailChangedOldAddress: async (...a) => { state.emails.push({ type: 'email_changed_old_address', to: a[2], newEmail: a[4] }) },
+      sendAccountDeleted:         async (...a) => { state.emails.push({ type: 'account_deleted', to: a[2] }) },
+      sendAccountLockoutAlert:    async (...a) => { state.emails.push({ type: 'lockout_alert', to: a[2] }) },
     },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
@@ -67,8 +76,11 @@ async function setup(opts = {}) {
       // the requester's IP as a third argument — captured here (alongside
       // the pre-existing state.failures) so tests can assert it's actually
       // being threaded through from clientIp(c), not silently dropped.
-      recordLoginFailure:  async (env, email, ip) => { state.failures.push(email); state.failureIps.push(ip) },
+      // Also now returns { justLocked }, defaulting to false — tests that
+      // care about the one-time lockout-alert email set opts.justLocked.
+      recordLoginFailure:  async (env, email, ip) => { state.failures.push(email); state.failureIps.push(ip); return { justLocked: !!opts.justLocked } },
       recordLoginSuccess:  async (env, email) => { state.successes.push(email) },
+      LOCKOUT_MINUTES: 15,
     },
   })
 
@@ -121,6 +133,26 @@ describe('register', () => {
     t = await setup()
     await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'short' } }))).rejects.toBeTruthy()
     expect(t.db.calls).toHaveLength(0)
+  })
+
+  // BUG FIX (round 2): the earlier length cap only checked JS string
+  // .length (UTF-16 code units), not the UTF-8 byte length bcryptjs
+  // actually truncates at. 72 'é' characters is well under any character-
+  // count cap but is 144 bytes — verified directly against bcryptjs that a
+  // password this long silently loses everything past byte 72. This must
+  // now be rejected with a validation error instead of silently accepted.
+  it('rejects a password within the character-count cap but over 72 UTF-8 bytes', async () => {
+    t = await setup()
+    const password = 'é'.repeat(72) // .length === 72, but 144 bytes in UTF-8
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password } }))).rejects.toBeTruthy()
+    expect(t.db.calls).toHaveLength(0)
+  })
+
+  it('accepts a password made of multi-byte characters as long as it fits in 72 bytes', async () => {
+    t = await setup()
+    const password = 'é'.repeat(36) // 36 chars, exactly 72 UTF-8 bytes
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password } }))
+    expect(res.status).toBe(201)
   })
 })
 
@@ -190,6 +222,32 @@ describe('login', () => {
     expect(res.body.data.token).toBeTypeOf('string')
     expect(t.state.successes).toEqual(['user@example.com'])
   })
+
+  // FEATURE (Auth section round 2): recordLoginFailure reporting justLocked
+  // is what triggers the one-time lockout alert email — this pins that
+  // wiring down at the call site, independent of rateLimiter.js's own
+  // justLocked logic (covered separately in rateLimiter.test.js).
+  it('sends a one-time lockout alert email when this failure is the one that locks the account', async () => {
+    t = await setup({ justLocked: true })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'nope' } }))
+    expect(res.status).toBe(401)
+    expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
+  })
+
+  it('does NOT send a lockout alert on an ordinary failure that does not trigger a lock', async () => {
+    t = await setup({ justLocked: false })
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'nope' } }))
+    expect(t.state.emails).toHaveLength(0)
+  })
+
+  // The no-such-account branch never has a real user/email to alert — this
+  // guards against a future edit trying to wire the alert in there too and
+  // emailing an address that isn't a Passthrough account.
+  it('never sends a lockout alert for an unknown email, even if justLocked', async () => {
+    t = await setup({ userRow: null, justLocked: true })
+    await t.mod.login(t.c({ body: { email: 'ghost@example.com', password: 'whatever' } }))
+    expect(t.state.emails).toHaveLength(0)
+  })
 })
 
 describe('getMe — silent token renewal', () => {
@@ -232,6 +290,28 @@ describe('resetPassword', () => {
     expect(res.status).toBe(200)
     const update = t.state.updates.find(u => u.table === 'users')
     expect(update.patch.token_version).toBe(4)
+  })
+
+  // BUG FIX (round 2): resetting the password is a stronger identity proof
+  // than the failed-guess heuristic the login lockout gates on — it must
+  // clear any active lockout so the owner isn't still locked out right
+  // after doing the one thing the flow exists for.
+  it('clears any account lockout on success', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    expect(t.state.successes).toEqual(['user@example.com'])
+  })
+
+  it('sends a password-changed confirmation email', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    expect(t.state.emails).toEqual([{ type: 'password_changed', to: 'user@example.com' }])
+  })
+
+  it('rejects a new password within the character-count cap but over 72 UTF-8 bytes', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    const newPassword = 'é'.repeat(72)
+    await expect(t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword } }))).rejects.toBeTruthy()
   })
 })
 
@@ -308,6 +388,24 @@ describe('changePassword', () => {
     expect(t.state.successes).toEqual(['user@example.com'])
     expect(t.state.failures).toHaveLength(0)
   })
+
+  it('sends a password-changed confirmation email on success', async () => {
+    t = await setup()
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'longenough' } }))
+    expect(t.state.emails).toEqual([{ type: 'password_changed', to: 'user@example.com' }])
+  })
+
+  it('rejects a new password within the character-count cap but over 72 UTF-8 bytes', async () => {
+    t = await setup()
+    const newPassword = 'é'.repeat(72)
+    await expect(t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword } }))).rejects.toBeTruthy()
+  })
+
+  it('sends a one-time lockout alert email when this failure is the one that locks the account', async () => {
+    t = await setup({ justLocked: true })
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
+    expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
+  })
 })
 
 describe('updateEmail', () => {
@@ -327,7 +425,10 @@ describe('updateEmail', () => {
     expect(res.status).toBe(200)
     const update = t.state.updates.find(u => u.table === 'users')
     expect(update.patch.email_verified).toBe(false)
-    expect(t.state.emails).toEqual([{ type: 'verify', to: 'new@example.com', raw: expect.any(String) }])
+    expect(t.state.emails).toEqual([
+      { type: 'verify', to: 'new@example.com', raw: expect.any(String) },
+      { type: 'email_changed_old_address', to: 'user@example.com', newEmail: 'new@example.com' },
+    ])
   })
   // FEATURE FIX being locked in — same password-guessing-oracle shape as
   // changePassword above: `password` here is a live bcrypt.compare too.
@@ -342,6 +443,12 @@ describe('updateEmail', () => {
     t = await setup()
     await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
     expect(t.state.failures).toEqual(['user@example.com'])
+  })
+
+  it('sends a one-time lockout alert email when this failure is the one that locks the account', async () => {
+    t = await setup({ justLocked: true })
+    await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
+    expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
   })
 })
 
@@ -393,6 +500,22 @@ describe('deleteAccount', () => {
     t = await setup()
     await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
     expect(t.state.failures).toEqual(['user@example.com'])
+  })
+
+  it('sends a one-time lockout alert email when this failure is the one that locks the account', async () => {
+    t = await setup({ justLocked: true })
+    await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
+    expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
+  })
+
+  // FEATURE (Auth section round 2): sent to the address the account had a
+  // moment ago — captured before scrub_account_data overwrites it with a
+  // placeholder (migration 0022).
+  it('sends an account-deleted confirmation to the pre-scrub email address', async () => {
+    t = await setup({ scans: [] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.emails).toEqual([{ type: 'account_deleted', to: 'user@example.com' }])
   })
 })
 
