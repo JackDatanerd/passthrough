@@ -3,6 +3,27 @@ import { useEffect, useId, useRef } from 'react'
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
 
+// BUG FIX (audit): background-scroll locking used to save/restore
+// document.body.style.overflow per Modal instance — `previousOverflow` was
+// whatever it was when THAT instance mounted. If two modals were ever open
+// at once (nested, or two triggered in quick succession), closing the OUTER
+// one would restore overflow to its own pre-open value ('') while the INNER
+// one was still open, silently unlocking background scroll underneath it.
+// No usage in this codebase currently nests Modals, but it's a shared
+// primitive — the bug would only show up the first time someone did. Fixed
+// with a module-level open-count: overflow is locked on the first Modal to
+// open and restored only when the last one closes, so nesting (now or in
+// the future) is safe by construction rather than by convention.
+let lockCount = 0
+function lockScroll() {
+  if (lockCount === 0) document.body.style.overflow = 'hidden'
+  lockCount++
+}
+function unlockScroll() {
+  lockCount = Math.max(0, lockCount - 1)
+  if (lockCount === 0) document.body.style.overflow = ''
+}
+
 // Changes vs. the original (which was only a styled div + Escape handler):
 //  - role="dialog" / aria-modal / aria-labelledby, so assistive tech treats it as a dialog.
 //  - Focus moves INTO the dialog on open, is trapped while open (Tab used to walk
@@ -26,8 +47,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     if (!open) return
     const dialog = dialogRef.current
     const previouslyFocused = document.activeElement
-    const previousOverflow = document.body.style.overflow
-    document.body.style.overflow = 'hidden'
+    lockScroll()
 
     const initial =
       dialog.querySelector('[data-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ||
@@ -51,7 +71,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
 
     return () => {
       document.removeEventListener('keydown', onKeyDown)
-      document.body.style.overflow = previousOverflow
+      unlockScroll()
       if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused))
         previouslyFocused.focus()
     }

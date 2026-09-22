@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import api from '../../lib/api'
-import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Pagination from '../../components/ui/Pagination'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, statusLabel, scoreColor } from '../../lib/utils'
 
@@ -136,11 +136,7 @@ export default function AdminScans() {
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3">
-          <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</Button>
-          <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
-          <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
-        </div>
+        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />
       )}
     </div>
   )

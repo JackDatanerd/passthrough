@@ -7,6 +7,7 @@ import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
+import Pagination from '../../components/ui/Pagination'
 import { formatDate, statusLabel } from '../../lib/utils'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
@@ -297,23 +298,12 @@ export default function DashboardIndex() {
             there's actually more than one page, so this stays invisible for
             the common case of a user with a handful of scans. */}
         {!loading && total > SCANS_PER_PAGE && (
-          <div className="flex items-center justify-between gap-3 pt-2">
-            <Button
-              variant="secondary" size="sm"
-              disabled={page <= 1}
-              onClick={() => setPage(Math.max(page - 1, 1))}
-            >
-              ← Previous
-            </Button>
-            <p className="text-xs text-gray-400">Page {page} of {totalPages}</p>
-            <Button
-              variant="secondary" size="sm"
-              disabled={page >= totalPages}
-              onClick={() => setPage(Math.min(page + 1, totalPages))}
-            >
-              Next →
-            </Button>
-          </div>
+          <Pagination
+            page={page} totalPages={totalPages} onChange={p => setPage(p)}
+            className="flex items-center justify-between gap-3 pt-2"
+            prevLabel="← Previous" nextLabel="Next →"
+            countClassName="text-xs text-gray-400"
+          />
         )}
       </div>
     </DashboardLayout>

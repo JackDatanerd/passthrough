@@ -72,6 +72,13 @@ function extForMimeType(mimetype) {
   return EXT_BY_MIME[mimetype] || ''
 }
 
+// Shared by runAtsScan (new — see BUG FIX below) and generateFix/generateBadge
+// (which already used this exact expression inline, twice). Factored out
+// here rather than left duplicated four ways.
+function candidateFirstNameFrom(resumeData) {
+  return (resumeData?.name || '').split(' ')[0] || 'Candidate'
+}
+
 // Hoisted to module scope — was previously declared locally inside
 // generateFix only; runAtsScan's WYSIWYG scoring fix below (see
 // renderStructuredResumeText) needs the same constant.
@@ -928,12 +935,24 @@ async function downloadFile(ctx) {
 // convenience, not a security boundary).
 const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
 
+// Same reasoning as admin.controller.js's pageParams() (see its comment): a
+// client-controlled limit with no ceiling lets a stray/malicious
+// ?limit=1000000 turn a paginated endpoint into a full-table dump in one
+// request. That was already fixed there; it wasn't fixed here.
+const MAX_SCAN_HISTORY_LIMIT = 100
+
 async function getScanHistory(ctx) {
   const user = ctx.get('user')
   // Clamped to at least 1 — a page of 0 or negative previously reached
   // Supabase's `.range()` with a negative offset untouched.
   const page  = Math.max(parseInt(ctx.req.query('page')) || 1, 1)
-  const limit = parseInt(ctx.req.query('limit')) || 10
+  // BUG FIX (audit): this used to be `parseInt(ctx.req.query('limit')) || 10`
+  // with no upper bound at all — unlike every admin list endpoint, which
+  // goes through pageParams()'s explicit 100-row cap for exactly this
+  // reason. Any authenticated user could request their own history with
+  // ?limit=1000000 and force one unbounded read. Clamped the same way here:
+  // at least 1, at most MAX_SCAN_HISTORY_LIMIT.
+  const limit = Math.min(MAX_SCAN_HISTORY_LIMIT, Math.max(1, parseInt(ctx.req.query('limit')) || 10))
   const from = (page - 1) * limit
   const to   = from + limit - 1
 
@@ -957,11 +976,15 @@ async function getScanHistory(ctx) {
     .from('scans')
     .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
     .eq('user_id', user.id)
-  // candidate_first_name is populated at scoring time for every scan (see
-  // runAtsScan), not just brain-dump/anonymous ones — searching it too
-  // means brain-dump and saved-profile scans (which have no
-  // resume_original_name at all, see Index.jsx's scanLabel()) are still
-  // findable by name instead of being permanently unsearchable.
+  // BUG FIX (audit): this comment previously claimed candidate_first_name
+  // was "populated at scoring time for every scan (see runAtsScan)" — it
+  // wasn't. Until now it was only ever set inside generateFix/generateBadge,
+  // i.e. only after a Fix/Badge was purchased, which meant this search
+  // silently did nothing for the free/unpurchased brain-dump and
+  // saved-profile scans it was written to help (the vast majority of them).
+  // runAtsScan now sets it at scoring time for those two modes (see above) —
+  // file-mode doesn't need it here since it already has resume_original_name
+  // to search on instead.
   if (search) query = query.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
   if (status && SCAN_STATUSES.includes(status)) query = query.eq('status', status)
 
@@ -1067,7 +1090,20 @@ async function runAtsScan(env, supabase, scanId) {
       // capture for file-mode scans, purely for the diff-view feature —
       // this write here is separate from that and would exist even if
       // Phase 2 never shipped.)
-      await supabase.from('scans').update({ original_resume_data: resumeData }).eq('id', scanId)
+      //
+      // BUG FIX (audit): candidate_first_name used to only get set inside
+      // generateFix/generateBadge — i.e. only once a Fix or Badge was
+      // purchased. getScanHistory's ?search= filter matches against this
+      // column specifically so brain-dump/saved-profile scans (which have
+      // no resume_original_name) are still findable by name — but since
+      // most free scans are never purchased, that search silently did
+      // nothing for the majority of the exact scans it exists to help.
+      // resumeData.name is already sitting right here, already paid for
+      // (this Claude call already ran), so persisting it costs nothing extra.
+      await supabase.from('scans').update({
+        original_resume_data: resumeData,
+        candidate_first_name: candidateFirstNameFrom(resumeData)
+      }).eq('id', scanId)
     } else if (scan.inputMode === 'saved_profile') {
       // PHASE 4: structured data was already populated at scan-creation
       // time directly from users.saved_profile (see createScan) — no file,
@@ -1084,6 +1120,15 @@ async function runAtsScan(env, supabase, scanId) {
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
       // see renderStructuredResumeText's comment.
       rawResumeText = await renderStructuredResumeText(scan.originalResumeData)
+      // BUG FIX (audit): same candidate_first_name gap as the brain_dump
+      // branch above — saved-profile scans never got it set until a Fix/
+      // Badge was purchased either, for the same reason (getScanHistory's
+      // name search silently doing nothing for the common, never-purchased
+      // case). No new call needed — originalResumeData already came from
+      // users.saved_profile with no Claude round trip involved.
+      await supabase.from('scans').update({
+        candidate_first_name: candidateFirstNameFrom(scan.originalResumeData)
+      }).eq('id', scanId)
     } else {
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
@@ -1232,7 +1277,7 @@ async function generateFix(env, supabase, scanId) {
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
-    const candidateFirstName = (resumeData.name || '').split(' ')[0] || 'Candidate'
+    const candidateFirstName = candidateFirstNameFrom(resumeData)
     // DOCX_MIME is now module-level — see top of file.
 
     // Verification code/URL computed BEFORE the loop now (was previously
@@ -1540,7 +1585,7 @@ async function generateBadge(env, supabase, scanId) {
     }
 
     // Use finalData.name — correct source after fallback
-    const candidateFirstName = (finalData.name || '').split(' ')[0] || 'Candidate'
+    const candidateFirstName = candidateFirstNameFrom(finalData)
     // Same reasoning as generateFix: never orphan an already-delivered link.
     const code            = scan.verificationCode || await badgeService.generateShortCode(supabase)
     const verificationUrl = badgeService.buildVerificationUrl(env, code)

@@ -4,6 +4,8 @@ import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Pagination from '../../components/ui/Pagination'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
 
@@ -21,6 +23,7 @@ export default function AdminPayments() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [busyRef, setBusyRef] = useState(null)
+  const [pendingAction, setPendingAction] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -42,17 +45,27 @@ export default function AdminPayments() {
     setSearchParams(next ? { status: next } : {})
   }
 
-  // AUDIT FIX (Admin panel re-audit): the reconcile endpoint (Sections
-  // 11+12 — recovers a payment that charged successfully but whose
-  // fulfillment/commission-write failed) existed on the backend with no
-  // way to trigger it from here at all. Safe to offer on any SUCCESS
-  // payment: it's idempotent — a payment that's actually fine just comes
-  // back "Already fulfilled — nothing to do."
-  async function reconcile(payment) {
-    if (!window.confirm(
-      `Reconcile ${payment.paystackRef}? This re-attempts fix delivery and the partner-commission ` +
-      `write for this payment. Safe to run even if it already succeeded — it's a no-op in that case.`
-    )) return
+  // BUG FIX (audit, feature gap): reconcile/recheck/resolvePayment all used
+  // `window.confirm()` — see components/ui/ConfirmDialog.jsx. recheck's
+  // follow-up (the amount-mismatch "accept and settle anyway?" case) used to
+  // be a second, nested window.confirm() inside the first's catch block;
+  // that's now its own pendingAction type ('recheck-mismatch') rather than a
+  // second native dialog stacked on the first. Each of the four click
+  // handlers below now just opens the dialog with what it needs to run;
+  // confirmPendingAction (below the last one) dispatches to the matching
+  // run* function, and each run* function is responsible for its own
+  // pendingAction lifecycle — closing it on success/hard-failure, or (only
+  // recheck) transitioning it to the mismatch follow-up instead of closing.
+  function reconcile(payment) {
+    setPendingAction({
+      type: 'reconcile', payment,
+      confirmMsg: `Reconcile ${payment.paystackRef}? This re-attempts fix delivery and the partner-commission ` +
+        `write for this payment. Safe to run even if it already succeeded — it's a no-op in that case.`,
+      danger: false
+    })
+  }
+
+  async function runReconcile(payment) {
     setBusyRef(payment.paystackRef)
     try {
       const res = await api.post(`/payments/${payment.paystackRef}/reconcile`)
@@ -63,32 +76,41 @@ export default function AdminPayments() {
     } finally {
       setBusyRef(null)
     }
+    setPendingAction(null)
   }
 
   // SECTION 8 AUDIT (feature gap): a payment held for an amount mismatch, or
   // one whose webhook was lost, sat PENDING/ABANDONED/FAILED with no action
   // here — /reconcile only accepts SUCCESS. This asks Paystack directly and
   // settles it if the money really arrived.
-  async function recheck(payment, acceptAmountMismatch = false) {
-    if (!acceptAmountMismatch && !window.confirm(
-      `Ask Paystack whether ${payment.paystackRef} was actually paid, and settle it if so?`
-    )) return
+  function recheck(payment) {
+    setPendingAction({
+      type: 'recheck', payment,
+      confirmMsg: `Ask Paystack whether ${payment.paystackRef} was actually paid, and settle it if so?`,
+      danger: false
+    })
+  }
+
+  async function runRecheck(payment, acceptAmountMismatch = false) {
     setBusyRef(payment.paystackRef)
     try {
       const res = await api.post(`/payments/${payment.paystackRef}/recheck`, { acceptAmountMismatch })
       toast({ message: res.data.message || 'Checked.', type: res.data.success ? 'success' : 'error' })
       load()
+      setPendingAction(null)
     } catch (err) {
       const data = err.response?.data
       // A held amount mismatch (409) offers a follow-up: accept the amount difference explicitly.
-      if (err.response?.status === 409 && data?.data?.outcome === 'MISMATCH' && data.data.expectedCurrency === data.data.receivedCurrency) {
-        if (window.confirm(
-          `${data.message}
-
-Expected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same currency). Accept and settle anyway?`
-        )) return recheck(payment, true)
+      if (!acceptAmountMismatch && err.response?.status === 409 && data?.data?.outcome === 'MISMATCH' && data.data.expectedCurrency === data.data.receivedCurrency) {
+        setPendingAction({
+          type: 'recheck-mismatch', payment,
+          confirmMsg: `${data.message}\n\nExpected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same currency). Accept and settle anyway?`,
+          danger: true
+        })
+      } else {
+        toast({ message: getErrorMessage(err, 'Failed to check payment.'), type: 'error' })
+        setPendingAction(null)
       }
-      toast({ message: getErrorMessage(err, 'Failed to check payment.'), type: 'error' })
     } finally {
       setBusyRef(null)
     }
@@ -96,11 +118,14 @@ Expected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same
 
   // SECTION 8 AUDIT: refunds/disputes now have real states to move between —
   // reverse (refund the sale / lost dispute) and clear-dispute (won it).
-  async function resolvePayment(payment, action) {
+  function resolvePayment(payment, action) {
     const confirmMsg = action === 'reverse'
       ? `Reverse ${payment.paystackRef}? This marks it REFUNDED, reverses any partner commission, and revokes the public verification page. This cannot be undone from here.`
       : `Clear the dispute on ${payment.paystackRef} and mark it SUCCESS again?`
-    if (!window.confirm(confirmMsg)) return
+    setPendingAction({ type: 'resolve', payment, action, confirmMsg, danger: action === 'reverse' })
+  }
+
+  async function runResolvePayment(payment, action) {
     setBusyRef(payment.paystackRef)
     try {
       const res = await api.post(`/payments/${payment.paystackRef}/resolve`, { action })
@@ -111,6 +136,15 @@ Expected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same
     } finally {
       setBusyRef(null)
     }
+    setPendingAction(null)
+  }
+
+  async function confirmPendingAction() {
+    const action = pendingAction
+    if (action.type === 'reconcile') return runReconcile(action.payment)
+    if (action.type === 'recheck') return runRecheck(action.payment)
+    if (action.type === 'recheck-mismatch') return runRecheck(action.payment, true)
+    if (action.type === 'resolve') return runResolvePayment(action.payment, action.action)
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -205,12 +239,18 @@ Expected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3">
-          <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</Button>
-          <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
-          <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
-        </div>
+        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />
       )}
+
+      <ConfirmDialog
+        open={!!pendingAction}
+        title="Confirm"
+        message={pendingAction?.confirmMsg}
+        danger={pendingAction?.danger ?? true}
+        loading={busyRef === pendingAction?.payment.paystackRef}
+        onConfirm={confirmPendingAction}
+        onCancel={() => setPendingAction(null)}
+      />
     </div>
   )
 }

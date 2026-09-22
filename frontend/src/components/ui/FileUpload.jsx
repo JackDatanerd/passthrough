@@ -61,8 +61,17 @@ export default function FileUpload({ onFile, value, accept = '.pdf,.docx', maxMB
           if (!disabled) handle(e.dataTransfer.files)
         }}
         onDragOver={e => e.preventDefault()}
-        onDragEnter={e => { e.preventDefault(); dragDepth.current++; setDrag(true) }}
-        onDragLeave={() => { dragDepth.current = Math.max(0, dragDepth.current - 1); if (dragDepth.current === 0) setDrag(false) }}
+        // BUG FIX (audit): these two previously ignored `disabled`, so
+        // dragging a file over a disabled dropzone still lit it up blue as
+        // if it were droppable — onDrop already correctly no-ops when
+        // disabled, but nothing told the drag-enter/leave handlers not to
+        // bother tracking depth or flipping the highlight in the first place.
+        onDragEnter={e => { e.preventDefault(); if (disabled) return; dragDepth.current++; setDrag(true) }}
+        onDragLeave={() => {
+          if (disabled) return
+          dragDepth.current = Math.max(0, dragDepth.current - 1)
+          if (dragDepth.current === 0) setDrag(false)
+        }}
         className={cn(
           'flex flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed',
           'p-8 transition-colors text-center focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',

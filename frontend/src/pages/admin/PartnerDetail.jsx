@@ -5,6 +5,7 @@ import { useApi } from '../../hooks/useApi'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
@@ -511,6 +512,8 @@ export default function PartnerDetail() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
   const [showEdit, setShowEdit] = useState(false)
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  const [regenerating, setRegenerating] = useState(false)
 
   async function load() {
     setLoading(true)
@@ -548,8 +551,15 @@ export default function PartnerDetail() {
     }
   }
 
-  async function regenerateLink() {
-    if (!window.confirm(`This invalidates ${partner.name}'s current payout link immediately and emails a new one. Continue?`)) return
+  // BUG FIX (audit, feature gap): was `if (!window.confirm(...)) return` — see
+  // components/ui/ConfirmDialog.jsx. This now just opens the dialog; the
+  // actual regenerate call moved to confirmRegenerateLink, run on confirm.
+  function regenerateLink() {
+    setConfirmRegenerate(true)
+  }
+
+  async function confirmRegenerateLink() {
+    setRegenerating(true)
     try {
       const res = await api.post(`/partners/${id}/regenerate-link`)
       const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
@@ -558,8 +568,12 @@ export default function PartnerDetail() {
           + (copied ? ' Also copied to your clipboard.' : ''),
         type: res.data.emailed ? 'success' : 'warning'
       })
+      setConfirmRegenerate(false)
     } catch (_) {
       toast({ message: 'Failed to regenerate link.', type: 'error' })
+      setConfirmRegenerate(false)
+    } finally {
+      setRegenerating(false)
     }
   }
 
@@ -599,7 +613,7 @@ export default function PartnerDetail() {
 
       <div className="flex gap-2 flex-wrap">
         <Button size="sm" variant="secondary" onClick={resendLink}>Resend payout-details link</Button>
-        <Button size="sm" variant="secondary" onClick={regenerateLink}>Regenerate link (revoke old one)</Button>
+        <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link (revoke old one)</Button>
       </div>
 
       <div className="border-b border-gray-200 flex gap-4 overflow-x-auto">
@@ -623,6 +637,16 @@ export default function PartnerDetail() {
       {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={load} />}
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={load} />}
+
+      <ConfirmDialog
+        open={confirmRegenerate}
+        title="Regenerate payout link"
+        message={`This invalidates ${partner.name}'s current payout link immediately and emails a new one. Continue?`}
+        confirmLabel="Regenerate"
+        loading={regenerating}
+        onConfirm={confirmRegenerateLink}
+        onCancel={() => setConfirmRegenerate(false)}
+      />
     </div>
   )
 }

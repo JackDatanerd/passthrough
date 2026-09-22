@@ -4,6 +4,8 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Pagination from '../../components/ui/Pagination'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 
@@ -18,6 +20,7 @@ export default function AdminUsers() {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
+  const [pendingAction, setPendingAction] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -36,8 +39,16 @@ export default function AdminUsers() {
 
   useEffect(() => { load() }, [load])
 
-  async function updateUser(user, patch, confirmMsg) {
-    if (confirmMsg && !window.confirm(confirmMsg)) return
+  // BUG FIX (audit, feature gap): was `if (confirmMsg && !window.confirm(confirmMsg)) return`
+  // — see components/ui/ConfirmDialog.jsx. Actions with no confirmMsg (Reset
+  // quota, Unban) still run immediately; ones that had a confirmMsg now open
+  // the dialog instead, and the actual PATCH runs from confirmPendingAction.
+  function updateUser(user, patch, confirmMsg, danger = true) {
+    if (confirmMsg) { setPendingAction({ user, patch, confirmMsg, danger }); return }
+    return runUpdateUser(user, patch)
+  }
+
+  async function runUpdateUser(user, patch) {
     setBusyId(user.id)
     try {
       await api.patch(`/admin/users/${user.id}`, patch)
@@ -48,6 +59,12 @@ export default function AdminUsers() {
     } finally {
       setBusyId(null)
     }
+  }
+
+  async function confirmPendingAction() {
+    const { user, patch } = pendingAction
+    await runUpdateUser(user, patch)
+    setPendingAction(null)
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
@@ -111,7 +128,7 @@ export default function AdminUsers() {
                       </Button>
                       {u.status === 'ACTIVE' ? (
                         <Button size="sm" variant="danger" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { status: 'BANNED' }, `Ban ${u.email}?`)}>
+                          onClick={() => updateUser(u, { status: 'BANNED' }, `Ban ${u.email}?`, true)}>
                           Ban
                         </Button>
                       ) : (
@@ -122,12 +139,12 @@ export default function AdminUsers() {
                       )}
                       {u.role === 'ADMIN' ? (
                         <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { role: 'SEEKER' }, `Remove admin access from ${u.email}?`)}>
+                          onClick={() => updateUser(u, { role: 'SEEKER' }, `Remove admin access from ${u.email}?`, true)}>
                           Demote
                         </Button>
                       ) : (
                         <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { role: 'ADMIN' }, `Make ${u.email} an admin?`)}>
+                          onClick={() => updateUser(u, { role: 'ADMIN' }, `Make ${u.email} an admin?`, false)}>
                           Promote
                         </Button>
                       )}
@@ -141,12 +158,18 @@ export default function AdminUsers() {
       )}
 
       {totalPages > 1 && (
-        <div className="flex items-center justify-center gap-3">
-          <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => setPage(p => p - 1)}>Prev</Button>
-          <span className="text-sm text-gray-500">Page {page} of {totalPages}</span>
-          <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => setPage(p => p + 1)}>Next</Button>
-        </div>
+        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />
       )}
+
+      <ConfirmDialog
+        open={!!pendingAction}
+        title="Confirm"
+        message={pendingAction?.confirmMsg}
+        danger={pendingAction?.danger ?? true}
+        loading={busyId === pendingAction?.user.id}
+        onConfirm={confirmPendingAction}
+        onCancel={() => setPendingAction(null)}
+      />
     </div>
   )
 }

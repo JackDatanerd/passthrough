@@ -4,6 +4,7 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 
@@ -26,6 +27,7 @@ export default function AdminLeads() {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [busyId, setBusyId] = useState(null)
+  const [pendingDelete, setPendingDelete] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -72,15 +74,25 @@ export default function AdminLeads() {
     }
   }
 
-  async function removeLead(lead) {
-    if (!window.confirm(`Delete the lead from ${lead.email}? This can't be undone.`)) return
+  // BUG FIX (audit, feature gap): was `if (!window.confirm(...)) return` — see
+  // components/ui/ConfirmDialog.jsx for why. removeLead now just opens the
+  // dialog; the actual delete moved to confirmRemoveLead, run on confirm.
+  function removeLead(lead) {
+    setPendingDelete(lead)
+  }
+
+  async function confirmRemoveLead() {
+    const lead = pendingDelete
     setBusyId(lead.id)
     try {
       await api.delete(`/employer-leads/${lead.id}`)
       setLeads(prev => prev.filter(l => l.id !== lead.id))
       toast({ message: 'Lead deleted.', type: 'success' })
+      setPendingDelete(null)
     } catch (err) {
       toast({ message: err.response?.data?.message || 'Failed to delete lead.', type: 'error' })
+      setPendingDelete(null)
+    } finally {
       setBusyId(null)
     }
   }
@@ -178,6 +190,16 @@ export default function AdminLeads() {
           </table>
         </div>
       )}
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete lead"
+        message={pendingDelete ? `Delete the lead from ${pendingDelete.email}? This can't be undone.` : ''}
+        confirmLabel="Delete"
+        loading={busyId === pendingDelete?.id}
+        onConfirm={confirmRemoveLead}
+        onCancel={() => setPendingDelete(null)}
+      />
     </div>
   )
 }

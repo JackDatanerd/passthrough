@@ -72,12 +72,33 @@ async function callClaude(env, system, userMsg, maxTokens) {
 // or adds a stray leading/trailing sentence despite explicit "ONLY valid JSON"
 // instructions. Strip that defensively before parsing rather than letting a
 // well-formatted-but-fenced response get discarded as a hard parse failure.
+//
+// BUG FIX (audit): this used to search for a ``` fence unconditionally and
+// take the FIRST pair it found, via a lazy [\s\S]*? match. The prompts all
+// ask for raw JSON (see "Return ONLY valid JSON" below) — a normal response
+// has no fence at all — but resume/JD content routinely contains its own
+// literal ``` sequences (a bullet quoting a markdown code block, e.g.
+// "Documented API usage with ```curl``` examples"), and the old regex would
+// mistake that embedded pair for the wrapper, truncate `s` to whatever sat
+// between them, and hand JSON.parse a garbage fragment — discarding an
+// entirely valid, successfully-generated response as a PARSE_FAIL on every
+// Claude call site in the app (scoring, structuring, and the paid rewrite).
+// Fixed two ways: (1) try a direct parse first, which is what a normal
+// unfenced response needs and makes it immune to embedded backticks
+// entirely; (2) only if that fails, fall back to a fence match — now greedy
+// ([\s\S]* not [\s\S]*?) so it captures up to the LAST ``` in the response
+// rather than the first, correctly spanning an embedded backtick pair
+// inside the real fenced JSON instead of stopping at it.
 function extractJson(raw) {
   if (typeof raw !== 'string') throw new Error('Claude response was not a string')
-  let s = raw.trim()
-  const fenced = s.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  if (fenced) s = fenced[1].trim()
-  return JSON.parse(s)
+  const s = raw.trim()
+  try {
+    return JSON.parse(s)
+  } catch (_) {
+    const fenced = s.match(/```(?:json)?\s*([\s\S]*)```/i)
+    if (fenced) return JSON.parse(fenced[1].trim())
+    throw new Error('Could not parse Claude response as JSON')
+  }
 }
 
 // Parses `result.data` as JSON with fence-stripping, and on failure logs
@@ -258,8 +279,19 @@ function detectFabrication(orig, rewritten) {
     ...(rewritten.education  || []).map(e => norm(e.institution)),
     ...(rewritten.projects   || []).map(p => norm(p.name))
   ].filter(Boolean)
+  // BUG FIX (audit): only the o.includes(n) direction is safe here — it
+  // catches a rewrite that shortens a real name (e.g. "Cape Town
+  // University" -> "Cape Town"), which is the one legitimate case
+  // normalization alone (corporate-suffix stripping, above) doesn't already
+  // handle. The other direction, n.includes(o), was also being accepted:
+  // it means the NEW name contains the ORIGINAL as a substring, i.e. the
+  // rewrite EXTENDED a real name with extra words ("IBM" -> "IBM Watson
+  // Research"). That's exactly the shape of fabrication this function
+  // exists to catch — padding a real anchor with invented detail — so
+  // accepting it was a bypass, not a feature. No legitimate rewrite needs
+  // to add words to an employer/institution/project name it was given.
   for (const n of newAll)
-    if (!origAll.some(o => o.includes(n) || n.includes(o))) return true
+    if (!origAll.some(o => o.includes(n))) return true
   return false
 }
 
@@ -336,14 +368,36 @@ function isAllowedResourceUrl(url) {
   }
 }
 
+// BUG FIX (audit): four narrow regex-bypass shapes hardened, all in the same
+// "belt and suspenders" spirit as the rest of this function (JS execution is
+// already disabled at the Puppeteer layer, but the img/link/url() paths
+// below don't depend on JS execution at all, so this sanitizer is the only
+// thing standing between an SSRF attempt and Browser Rendering fetching it):
+//   1. An unclosed <script> (no matching </script>, e.g. a truncated
+//      generation) previously survived entirely — the lazy [\s\S]*?<\/script>
+//      match requires a closing tag to match at all. Added a second pass
+//      that strips any <script ...> with nothing left to pair it with,
+//      through to the end of the document.
+//   2. on\w+= handlers required a preceding whitespace character to match —
+//      `<div/onclick="...">` (a slash instead of a space, valid/tolerated
+//      HTML) slipped through untouched. Broadened to [\s/] on all three
+//      quoting variants.
+//   3. javascript:/data: URIs required the scheme immediately after the
+//      opening quote — `href=" javascript:..."` (leading whitespace, which
+//      browsers strip when resolving the scheme) bypassed the check.
+//      Allowed optional whitespace before the scheme.
+// (The fourth — <link>'s unquoted-href handling — is fixed separately below,
+// next to that block, since it's a false-positive-removal bug rather than a
+// bypass.)
 function sanitizeGeneratedHtml(html) {
   let out = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
-    .replace(/\son\w+\s*=\s*"[^"]*"/gi, '')
-    .replace(/\son\w+\s*=\s*'[^']*'/gi, '')
-    .replace(/\son\w+\s*=\s*[^\s>]+/gi, '')
-    .replace(/(href|src)\s*=\s*"(javascript|data):[^"]*"/gi, '$1="#"')
-    .replace(/(href|src)\s*=\s*'(javascript|data):[^']*'/gi, "$1='#'")
+    .replace(/<script\b[^>]*>[\s\S]*/gi, '')
+    .replace(/[\s/]on\w+\s*=\s*"[^"]*"/gi, '')
+    .replace(/[\s/]on\w+\s*=\s*'[^']*'/gi, '')
+    .replace(/[\s/]on\w+\s*=\s*[^\s>]+/gi, '')
+    .replace(/(href|src)\s*=\s*"\s*(javascript|data):[^"]*"/gi, '$1="#"')
+    .replace(/(href|src)\s*=\s*'\s*(javascript|data):[^']*'/gi, "$1='#'")
 
   // Resource-loading tags with no legitimate role in a static resume PDF —
   // removed entirely rather than trying to sanitize their src/content.
@@ -363,9 +417,9 @@ function sanitizeGeneratedHtml(html) {
   // call to emit `background="http://169.254.169.254/..."` and Browser
   // Rendering would fetch it with zero JS involved. Stripped outright,
   // same posture as the other legacy resource-loading vectors.
-  out = out.replace(/\sbackground\s*=\s*"[^"]*"/gi, '')
-  out = out.replace(/\sbackground\s*=\s*'[^']*'/gi, '')
-  out = out.replace(/\sbackground\s*=\s*[^\s>]+/gi, '')
+  out = out.replace(/[\s/]background\s*=\s*"[^"]*"/gi, '')
+  out = out.replace(/[\s/]background\s*=\s*'[^']*'/gi, '')
+  out = out.replace(/[\s/]background\s*=\s*[^\s>]+/gi, '')
 
   // HARDENING: SVG's <image> element (distinct from HTML's <img>, so the
   // resource-tag strip above — which matches the literal tag name "img" —
@@ -377,9 +431,21 @@ function sanitizeGeneratedHtml(html) {
   // <link href="...">: keep only if it targets an allowlisted font host
   // (the prompt legitimately requests @import fonts from Google) — strip
   // everything else (favicons, arbitrary external stylesheets, etc.)
+  // <link href="...">: keep only if it targets an allowlisted font host
+  // (the prompt legitimately requests @import fonts from Google) — strip
+  // everything else (favicons, arbitrary external stylesheets, etc.)
+  //
+  // BUG FIX (audit): the href match required quotes — an unquoted attribute
+  // (`<link href=https://fonts.googleapis.com/... rel=stylesheet>`, valid
+  // HTML) had no match, so `m` was null and the tag was stripped entirely
+  // even though it targeted an allowed host. Fails safe (over-removes rather
+  // than under-removes) but silently breaks the one thing this block exists
+  // to let through. Now accepts double-quoted, single-quoted, or unquoted,
+  // matching how the CSS url() check below already handles all three.
   out = out.replace(/<link\b[^>]*>/gi, tag => {
-    const m = tag.match(/href\s*=\s*["']([^"']*)["']/i)
-    return (m && isAllowedResourceUrl(m[1])) ? tag : ''
+    const m = tag.match(/href\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i)
+    const href = m && (m[1] ?? m[2] ?? m[3])
+    return (href && isAllowedResourceUrl(href)) ? tag : ''
   })
 
   // CSS url(...) — inside <style> blocks and inline style="" attributes
@@ -398,4 +464,9 @@ function sanitizeGeneratedHtml(html) {
   return out
 }
 
-module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson }
+// detectFabrication and sanitizeGeneratedHtml were previously internal-only.
+// Exported (in addition to being used internally by rewriteResumeContent /
+// generateBeautifulResumeHTML above) so they're directly unit-testable —
+// see tests/claude.service.test.js — rather than only reachable through a
+// full Claude API round trip.
+module.exports = { scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeGeneratedHtml, isAllowedResourceUrl }
