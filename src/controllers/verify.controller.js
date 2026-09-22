@@ -1,150 +1,231 @@
-// Replaces Prisma + disk-based hashFile. The integrity check now:
-//   1. Fetches the DOCX bytes from R2 (keyed by resume_ats_path)
-//   2. SHA-256 hashes them in-memory via lib/crypto.js → sha256Bytes()
-//   3. Compares against the stored resume_hash
-// This is functionally identical to the v8 version's
-// hashFile(scan.resumeAtsPath) === scan.resumeHash — same algorithm, same
-// on-disk content (the file was written to R2 during generateFix/Badge
-// with the same bytes that were hashed at generation time).
+// Public verification endpoints (no auth) — what a hiring manager's browser talks to.
 //
-// verificationViews is incremented fire-and-forget before the response is
-// returned — no waitUntil needed here because the increment is a simple
-// fast Supabase update, not a multi-second background job. The increment
-// loss on isolate death is acceptable for an analytics counter.
+// Section 7 (Verify) audit — summary of what this file now does differently:
+//
+//  * The integrity check finally means something on the client: the response
+//    carries the SHA-256 fingerprints so a reader can check the file THEY were
+//    sent (in their browser, nothing uploaded) — the server-side re-hash below
+//    only ever compared R2 against a hash we wrote ourselves and could never see
+//    a candidate's edited copy. Fingerprints now cover the PDF too (the file
+//    candidates are told to email), plus the hashes of superseded versions so an
+//    older delivered file reads "earlier version", not "modified".
+//  * `verified` (score passed AND integrity verified AND not revoked) is what the
+//    headline must key off. `passed` alone kept a green "Verified ✓" on a page
+//    whose integrity check had failed.
+//  * A page can be revoked (owner unpublish, refund, admin) → 410.
+//  * View counting: skips previews, bots, the owner and repeat visits by the same
+//    visitor within a day; goes through waitUntil; and READS the RPC's { error }
+//    (supabase-js resolves with it rather than rejecting, so the old
+//    `.then(_, onRejected)` swallowed a missing/denied function forever).
+//  * Malformed codes are rejected before the DB, and unknown-code misses are
+//    throttled per IP.
+//  * Downloads validate `type` and only advertise files that exist.
 
+const constants = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
-const { sha256Bytes } = require('../lib/crypto')
-const constants        = require('../config/constants')
+const cryptoLib = require('../lib/crypto')
+const rateLimiter = require('../middleware/rateLimiter')
+const { runInBackground } = require('../lib/background')
+const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey } = require('../lib/verification')
 
-// Codes are generated exclusively from constants.SHORT_CODE_CHARS, an
-// uppercase-only alphabet chosen specifically to avoid characters that are
-// easy to confuse when read aloud or hand-typed (no I/O/0/1) — that choice
-// only pays off if lookups are actually tolerant of how a human retypes the
-// code, so normalize case here rather than doing an exact-case DB match.
-function normalizeCode(raw) {
-  return (raw || '').trim().toUpperCase()
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+const PAGE_COLUMNS =
+  'candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, ' +
+  'verification_views, resume_ats_path, resume_pdf_path, resume_hash, resume_pdf_hash, resume_hash_history, ' +
+  'verify_expose_docx, verify_expose_pdf, verify_hide_name, verification_status, verification_revoked_at, user_id'
+
+const clientIp = c => c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
+
+function noStore(c) {
+  // The integrity verdict and revocation state must never be served stale.
+  c.header('Cache-Control', 'no-store')
+  // Verification pages are for whoever the candidate sent the link to, not for search.
+  c.header('X-Robots-Tag', 'noindex, nofollow')
 }
 
-async function getVerification(c) {
+// Shared by all three endpoints. Returns { row } or { response }.
+async function loadByCode(c, { columns = PAGE_COLUMNS } = {}) {
   const code = normalizeCode(c.req.param('code'))
-  const supabase = getSupabase(c.env)
+  const ip = clientIp(c)
 
-  const { data: row, error } = await supabase
-    .from('scans')
-    .select('candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, resume_ats_path, resume_hash, verify_expose_docx, verify_expose_pdf, resume_pdf_path, verification_views')
-    .eq('verification_code', code)
-    .maybeSingle()
-  if (error) throw error
-  if (!row) return c.json({ success: false, message: 'Verification not found.' }, 404)
+  if (await rateLimiter.isVerifyMissLimited(c.env, ip))
+    return { response: c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429) }
 
-
-
-  // Increment view count — fire-and-forget via Supabase RPC.
-  // The SQL function increment_verification_views is defined in 0002_helpers.sql.
-  // Using RPC avoids the read-modify-write race that a select+update would have.
-  supabase.rpc('increment_verification_views', { p_code: code })
-    .then(() => {}, e => console.error('verificationViews increment:', e.message))
-
-  // Integrity check — re-hash the stored DOCX bytes from R2.
-  //
-  // Starts (and, on any failure, stays) at 'unknown' rather than defaulting
-  // to 'verified' — this used to fail OPEN: if the R2 object was missing or
-  // the fetch/hash threw, the catch swallowed it and the default 'verified'
-  // value stood, so a storage hiccup would present as a confirmed-unmodified
-  // badge. The entire point of this page is "cryptographically verified —
-  // not just a badge" (see Verify.jsx's explainer card), so an
-  // unverifiable file must never render the same as a positively-confirmed
-  // one. 'unknown' is a distinct third state the frontend renders
-  // separately from both 'verified' and 'modified'.
-  let integrityStatus = 'unknown'
-  if (row.resume_ats_path && row.resume_hash) {
-    try {
-      const obj = await c.env.RESUMES_BUCKET.get(row.resume_ats_path)
-      if (obj) {
-        const bytes = await obj.arrayBuffer()
-        const hash  = await sha256Bytes(bytes)
-        integrityStatus = hash === row.resume_hash ? 'verified' : 'modified'
-      } else {
-        console.error(`Verify integrity check: R2 object missing at ${row.resume_ats_path} (code ${code})`)
-      }
-    } catch (e) {
-      console.error(`Verify integrity check failed for code ${code}:`, e.message)
-    }
+  if (!isPlausibleCode(code)) {
+    await rateLimiter.recordVerifyMiss(c.env, ip)
+    return { response: c.json({ success: false, message: 'Verification not found.' }, 404) }
   }
 
-  // fix_ats_score is the score of the resume actually being verified here
-  // (the delivered DOCX at resume_ats_path) — ats_score is the score of
-  // whatever was originally uploaded, before any fix, and should never be
-  // shown on this page. Older rows created before fix_ats_score existed
-  // fall back to ats_score so verification doesn't break for them, but
-  // every row generated going forward always has fix_ats_score set (see
-  // generateFix/generateBadge in scan.controller.js).
+  const supabase = getSupabase(c.env)
+  const { data: row, error } = await supabase.from('scans').select(columns).eq('verification_code', code).maybeSingle()
+  if (error) throw error
+  if (!row) {
+    await rateLimiter.recordVerifyMiss(c.env, ip)
+    return { response: c.json({ success: false, message: 'Verification not found.' }, 404) }
+  }
+  return { row, code, supabase }
+}
+
+function revokedResponse(c, row) {
+  return c.json({
+    success: false, code: 'REVOKED',
+    message: 'This verification has been revoked and is no longer valid.',
+    revokedAt: row.verification_revoked_at || null,
+  }, 410)
+}
+
+async function checkIntegrity(env, row) {
+  // Starts (and on any failure stays) 'unknown' rather than defaulting to
+  // 'verified' — this must never fail OPEN.
+  if (!row.resume_ats_path || !row.resume_hash) return 'unknown'
+  try {
+    const obj = await env.RESUMES_BUCKET.get(row.resume_ats_path)
+    if (!obj) return 'unknown'
+    const actual = await cryptoLib.sha256Bytes(await obj.arrayBuffer())
+    return actual === row.resume_hash ? 'verified' : 'modified'
+  } catch (err) {
+    console.error('Integrity check failed:', err.message)
+    return 'unknown'
+  }
+}
+
+async function incrementViews(env, code) {
+  const { error } = await getSupabase(env).rpc('increment_verification_views', { p_code: code })
+  // supabase-js RESOLVES with { error } — it does not reject.
+  if (error) console.error('[verify] increment_verification_views failed:', error.message)
+}
+
+// True when this request was counted as a view.
+async function maybeCountView(c, code, row) {
+  const ua = c.req.header('user-agent') || ''
+  if (isBotUserAgent(ua)) return false
+  const user = c.get ? c.get('user') : null
+  if (user && row.user_id && user.id === row.user_id) return false   // the owner checking their own link
+
+  const kv = c.env.RATE_LIMIT_KV
+  if (kv) {
+    try {
+      const key = await visitorKey(code, clientIp(c), ua)
+      if (await kv.get(key)) return false                            // already counted today
+      await kv.put(key, '1', { expirationTtl: 24 * 60 * 60 })
+    } catch (err) {
+      console.error('[verify] view dedupe unavailable, counting anyway:', err.message)
+    }
+  }
+  runInBackground(c, incrementViews(c.env, code))
+  return true
+}
+
+function fingerprintsFor(row) {
+  const history = Array.isArray(row.resume_hash_history) ? row.resume_hash_history : []
+  const previous = []
+  for (const h of history) {
+    if (h?.docx && h.docx !== row.resume_hash) previous.push({ kind: 'docx', hash: h.docx, at: h.at || null })
+    if (h?.pdf && h.pdf !== row.resume_pdf_hash) previous.push({ kind: 'pdf', hash: h.pdf, at: h.at || null })
+  }
+  return { docx: row.resume_hash || null, pdf: row.resume_pdf_hash || null, previous }
+}
+
+// GET /api/verify/:code[?preview=1]
+// `preview=1` is sent by the Pages Function that builds link-preview meta tags:
+// it must neither count as a view nor pay for a full R2 read + re-hash.
+async function getVerification(c) {
+  noStore(c)
+  const loaded = await loadByCode(c)
+  if (loaded.response) return loaded.response
+  const { row, code } = loaded
+
+  if (row.verification_status === STATUS.REVOKED) return revokedResponse(c, row)
+
+  const preview = c.req.query('preview') === '1'
   const verifiedScore = row.fix_ats_score ?? row.ats_score
+  const passed = verifiedScore != null && verifiedScore >= constants.ATS_BADGE_THRESHOLD
+
+  const integrityStatus = preview ? 'unchecked' : await checkIntegrity(c.env, row)
+  const counted = preview ? false : await maybeCountView(c, code, row)
 
   return c.json({ success: true, data: {
-    candidateFirstName: row.candidate_first_name || null,
+    candidateFirstName: row.verify_hide_name ? null : (row.candidate_first_name || null),
     atsScore:           verifiedScore,
-    passed:             verifiedScore >= constants.ATS_BADGE_THRESHOLD,
+    passed,
+    // The ONLY flag a headline may use to say "Verified".
+    verified:           preview ? null : (passed && integrityStatus === 'verified'),
     roleCategory:       row.role_category,
     seniorityLevel:     row.seniority_level,
     verifiedAt:         row.verified_at,
     integrityStatus,
-    // +1 — the increment above is fire-and-forget (not awaited), so `row`
-    // still reflects the count from before this view. Reporting it
-    // optimistically here means the count on screen matches "views
-    // including this one" instead of always looking one behind.
-    verificationViews: (row.verification_views || 0) + 1,
-    // Owner-controlled — default OFF for both (see 0007_verify_document_visibility.sql).
-    // The frontend uses these to decide whether to show a download link at
-    // all; the actual download is separately re-checked server-side below,
-    // not trusted from this response alone.
-    exposeDocx:         !!row.verify_expose_docx,
-    exposePdf:           !!row.verify_expose_pdf
+    verificationViews:  (row.verification_views || 0) + (counted ? 1 : 0),
+    // Only advertise files that can actually be served.
+    exposeDocx:         !!(row.verify_expose_docx && row.resume_ats_path),
+    exposePdf:          !!(row.verify_expose_pdf && row.resume_pdf_path),
+    fingerprints:       fingerprintsFor(row),
   }})
 }
 
-// GET /api/verify/:code/download?type=docx|pdf — public, no auth. Only
-// serves a file if the resume owner has explicitly toggled that document
-// type visible on their verification page (see scan.controller.js's
-// updateVerifyVisibility for the toggle, off by default). Deliberately
-// re-checks the flag here rather than trusting the frontend to only call
-// this when getVerification said it was OK — the frontend check is a UX
-// convenience, this is the actual access control.
+// GET /api/verify/:code/download?type=docx|pdf
 async function downloadVerifiedFile(c) {
-  const code = normalizeCode(c.req.param('code'))
-  const type = c.req.query('type')
-  const supabase = getSupabase(c.env)
+  noStore(c)
+  const type = String(c.req.query('type') || 'docx').toLowerCase()
+  if (type !== 'docx' && type !== 'pdf')
+    return c.json({ success: false, message: 'type must be "docx" or "pdf".' }, 400)
 
-  const { data: row, error } = await supabase
-    .from('scans')
-    .select('resume_ats_path, resume_pdf_path, verify_expose_docx, verify_expose_pdf')
-    .eq('verification_code', code)
-    .maybeSingle()
-  if (error) throw error
-  if (!row) return c.json({ success: false, message: 'Verification not found.' }, 404)
+  const loaded = await loadByCode(c, { columns:
+    'resume_ats_path, resume_pdf_path, verify_expose_docx, verify_expose_pdf, verification_status, verification_revoked_at' })
+  if (loaded.response) return loaded.response
+  const { row, code } = loaded
 
-  const exposed = type === 'pdf' ? row.verify_expose_pdf : row.verify_expose_docx
-  if (!exposed) return c.json({ success: false, message: 'This document is not publicly available.' }, 403)
+  if (row.verification_status === STATUS.REVOKED) return revokedResponse(c, row)
 
-  const fileKey  = type === 'pdf' ? row.resume_pdf_path : row.resume_ats_path
-  const filename = type === 'pdf' ? 'resume-verified.pdf' : 'resume-ats.docx'
-  if (!fileKey) return c.json({ success: false, message: 'File not available.' }, 404)
+  const wantPdf = type === 'pdf'
+  const allowed = wantPdf ? row.verify_expose_pdf : row.verify_expose_docx
+  if (!allowed) return c.json({ success: false, message: 'The owner has not made this file available.' }, 403)
 
-  const obj = await c.env.RESUMES_BUCKET.get(fileKey)
+  const key = wantPdf ? row.resume_pdf_path : row.resume_ats_path
+  if (!key) return c.json({ success: false, message: 'File not available.' }, 404)
+
+  const obj = await c.env.RESUMES_BUCKET.get(key)
   if (!obj) return c.json({ success: false, message: 'File not available.' }, 404)
 
-  // 'inline' only makes sense for PDF — browsers can display it directly,
-  // which is exactly what the frontend's window.open(..., '_blank') relies
-  // on. DOCX has no in-browser renderer, and the frontend navigates the
-  // SAME tab to this URL (window.location.href) — without 'attachment', a
-  // browser that doesn't know what to do with an inline docx byte stream
-  // can leave the user on a blank/broken page instead of downloading the
-  // file, which is what they actually asked for.
-  c.header('Content-Disposition', `${type === 'pdf' ? 'inline' : 'attachment'}; filename="${filename}"`)
-  c.header('Content-Type', type === 'pdf'
-    ? 'application/pdf'
-    : 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+  c.header('Content-Type', wantPdf ? 'application/pdf' : DOCX_MIME)
+  c.header('Content-Disposition', `${wantPdf ? 'inline' : 'attachment'}; filename="Passthrough-${code}.${wantPdf ? 'pdf' : 'docx'}"`)
+  c.header('X-Content-Type-Options', 'nosniff')
   return c.body(obj.body)
 }
 
-module.exports = { getVerification, downloadVerifiedFile }
+// ── live badge (SVG) ────────────────────────────────────────────────────────
+// SECTION 7 AUDIT (feature gap): candidates had nothing they could embed in a
+// LinkedIn "featured" link, a portfolio or a README that reflects the page's
+// LIVE state. Deliberately cheap: no R2 read, no view count, cacheable.
+
+const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+
+function renderBadge(label, value, color) {
+  const w = t => Math.round(String(t).length * 6.6 + 14)
+  const lw = w(label), vw = w(value), total = lw + vw
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${total}" height="20" role="img" aria-label="${esc(label)}: ${esc(value)}">` +
+    `<title>${esc(label)}: ${esc(value)}</title>` +
+    `<rect width="${lw}" height="20" fill="#374151"/><rect x="${lw}" width="${vw}" height="20" fill="${color}"/>` +
+    `<g fill="#fff" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" text-anchor="middle">` +
+    `<text x="${lw / 2}" y="14">${esc(label)}</text><text x="${lw + vw / 2}" y="14">${esc(value)}</text></g></svg>`
+}
+
+async function getBadge(c) {
+  const loaded = await loadByCode(c, { columns: 'ats_score, fix_ats_score, verification_status' })
+  if (loaded.response) return loaded.response
+  const { row } = loaded
+
+  let value, color
+  if (row.verification_status === STATUS.REVOKED) { value = 'revoked'; color = '#6b7280' }
+  else {
+    const score = row.fix_ats_score ?? row.ats_score
+    if (score != null && score >= constants.ATS_BADGE_THRESHOLD) { value = `${Math.round(score)}/100`; color = '#15803d' }
+    else { value = score != null ? `scan ${Math.round(score)}/100` : 'scan report'; color = '#b45309' }
+  }
+  const label = value === 'revoked' || String(value).startsWith('scan') ? 'Passthrough' : 'Passthrough Verified'
+  c.header('Content-Type', 'image/svg+xml; charset=utf-8')
+  c.header('Cache-Control', 'public, max-age=300')
+  c.header('X-Robots-Tag', 'noindex')
+  return c.body(renderBadge(label, value, color))
+}
+
+module.exports = { getVerification, downloadVerifiedFile, getBadge, renderBadge }

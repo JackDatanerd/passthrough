@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
+import { createWorld } from './helpers/memoryDb.cjs'
 
 function setup(opts = {}) {
   const state = { scanUpdates: [], queue: [], alerts: [], verifyCalls: [], ledger: [] }
@@ -195,14 +196,6 @@ describe('verifyPayment', () => {
     expect(t.state.alerts.some(a => /amount mismatch/i.test(a.subject))).toBe(true)
   })
 
-  it('fulfils: writes the PAID tier from the payment row to the scan and enqueues', async () => {
-    t = setup({ updatedRows: [{ id: 'pay1', paystack_ref: 'ref1', fix_tier: 'BADGE', scan_id: 's1', referral_code_id: null, amount_cents: 2900 }] })
-    const res = await t.mod.verifyPayment(t.c())
-    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
-    expect(t.state.scanUpdates[0].patch).toEqual({ fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'BADGE' })
-    expect(t.state.queue).toEqual([{ type: 'generateBadge', scanId: 's1' }])
-  })
-
   it('is idempotent: if the webhook already processed it (0 rows), reports success without re-fulfilling', async () => {
     t = setup({ updatedRows: [] })
     const res = await t.mod.verifyPayment(t.c())
@@ -211,20 +204,6 @@ describe('verifyPayment', () => {
     expect(t.state.scanUpdates).toHaveLength(0)
   })
 
-  it('a failed fulfilment alerts the owner but does not show the paying customer an error', async () => {
-    t = setup({ queueError: new Error('queue down') })
-    const res = await t.mod.verifyPayment(t.c())
-    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
-    const alert = t.state.alerts.find(a => /fulfillment failed/i.test(a.subject))
-    expect(alert.message).toContain('/api/payments/ref1/reconcile')
-  })
-
-  it('alerts the owner when the partner commission could not be recorded, but still fulfils', async () => {
-    t = setup({ updatedRows: [{ id: 'pay1', paystack_ref: 'ref1', fix_tier: 'FIX', scan_id: 's1', referral_code_id: 'rc1', amount_cents: 2900 }], ledgerError: { code: '08006', message: 'conn' } })
-    await t.mod.verifyPayment(t.c())
-    expect(t.state.queue).toHaveLength(1)
-    expect(t.state.alerts.some(a => /commission/i.test(a.subject))).toBe(true)
-  })
 })
 
 describe('reconcilePayment (admin recovery)', () => {
@@ -240,19 +219,230 @@ describe('reconcilePayment (admin recovery)', () => {
     expect(res.status).toBe(400)
     expect(t.state.queue).toHaveLength(0)
   })
-  it('re-applies the purchase and re-enqueues for a stranded payment', async () => {
-    t = setup({ fullPayment: full(), scan: { id: 's1', status: 'COMPLETE_PASS', fix_purchased: false } })
-    const res = await t.mod.reconcilePayment(t.c())
+})
+
+// ── Section 8 audit: settlement/fulfilment now flow through fulfillment.service,
+// so these run against the stateful in-memory DB and assert on where the world ENDS UP.
+
+const OLD = new Date(Date.now() - 60 * 60_000).toISOString()
+
+function worldSetup(over = {}, opts = {}) {
+  const world = createWorld({
+    users: [{ id: 'u1', deleted_at: null }],
+    scans: [{ id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', fix_purchased: false, fix_payment_id: null, updated_at: OLD, verification_code: 'AB3XY7', verification_status: 'ACTIVE' }],
+    payments: [{ id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', referral_code_id: null }],
+    referral_codes: [{ id: 'rc1', partner_id: 'p1' }],
+    partners: [{ id: 'p1', commission_rate: 0.2 }],
+    commission_ledger: [],
+    ...over,
+  })
+  world.partialUnique.commission_ledger = [
+    { cols: ['payment_id'], where: r => !r.reverses_ledger_id },
+    { cols: ['reverses_ledger_id'], where: r => !!r.reverses_ledger_id },
+  ]
+  const state = { queue: [], alerts: [], verifyCalls: [] }
+  const paystack = opts.paystack ?? { data: { status: 'success', currency: 'USD', amount: 2900, authorization: { authorization_code: 'AUTH_1' } } }
+  const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+    'config/supabase.js': { getSupabase: () => world.db },
+    'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+    'services/paystack.service.js': {
+      verifyTransaction: async (env, ref) => { state.verifyCalls.push(ref); if (opts.verifyThrows) throw opts.verifyThrows; return paystack },
+      initializeTransaction: async () => ({ data: {} }),
+    },
+  })
+  const env = { FIX_QUEUE: { send: async m => { if (opts.queueError) throw opts.queueError; state.queue.push(m) } } }
+  const c = (o = {}) => ({
+    env,
+    get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
+    req: {
+      query: k => (o.query ?? { reference: 'ref1' })[k],
+      param: k => (o.params ?? { reference: 'ref1' })[k],
+      json: async () => o.body ?? {},
+    },
+    json: (body, status = 200) => ({ body, status }),
+  })
+  return { mod, restore, state, world, c }
+}
+
+describe('verifyPayment — settlement and fulfilment (fulfillment.service)', () => {
+  it('fulfils: claims the scan FOR THIS PAYMENT with the paid tier and enqueues the matching generator', async () => {
+    t = worldSetup(); t.world.t.payments[0].fix_tier = 'BADGE'
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
+    expect(t.world.t.payments[0]).toMatchObject({ status: 'SUCCESS', paystack_auth_code: 'AUTH_1' })
+    expect(t.world.t.scans[0]).toMatchObject({ fix_purchased: true, fix_tier: 'BADGE', status: 'FIX_PURCHASED', fix_payment_id: 'pay1' })
+    expect(t.state.queue).toEqual([{ type: 'generateBadge', scanId: 's1' }])
+  })
+  it('calling it twice fulfils once', async () => {
+    t = worldSetup()
+    await t.mod.verifyPayment(t.c()); await t.mod.verifyPayment(t.c())
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('SELF-HEALING: the webhook flipped the payment but died before fulfilling — the buyer\'s return visit finishes the job', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'SUCCESS'
+    const res = await t.mod.verifyPayment(t.c())
     expect(res.body.success).toBe(true)
-    expect(t.state.scanUpdates[0].patch).toEqual({ fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX' })
+    expect(t.world.t.scans[0].fix_payment_id).toBe('pay1')
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('an ABANDONED checkout (marked by initializePayment\'s stale cleanup) that was really paid is fulfilled', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'ABANDONED'
+    await t.mod.verifyPayment(t.c())
+    expect(t.world.t.payments[0].status).toBe('SUCCESS')
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('a failed fulfilment alerts the owner but does not show the paying customer an error', async () => {
+    t = worldSetup({}, { queueError: new Error('queue down') })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
+    const alert = t.state.alerts.find(a => /fulfillment failed/i.test(a.subject))
+    expect(alert.message).toContain('/api/payments/ref1/reconcile')
+  })
+  it('a second payment for an already-purchased scan is not re-generated and earns no commission — the owner is told to refund', async () => {
+    t = worldSetup()
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    t.world.t.payments[0].referral_code_id = 'rc1'
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.success).toBe(true)
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.world.t.commission_ledger).toHaveLength(0)
+    expect(t.world.t.scans[0].status).toBe('FIX_DELIVERED')
+    expect(t.state.alerts.some(a => /Duplicate payment/i.test(a.subject))).toBe(true)
+  })
+  it('records the partner commission (AFTER fulfilment)', async () => {
+    t = worldSetup(); t.world.t.payments[0].referral_code_id = 'rc1'
+    await t.mod.verifyPayment(t.c())
+    expect(t.state.queue).toHaveLength(1)
+    expect(t.world.t.commission_ledger).toHaveLength(1)
+    expect(t.world.t.commission_ledger[0]).toMatchObject({ payment_id: 'pay1', commission_amount_cents: 580 })
+  })
+  it('alerts the owner when the partner commission could not be recorded, but still fulfils', async () => {
+    t = worldSetup(); t.world.t.payments[0].referral_code_id = 'rc1'
+    t.world.failNext('commission_ledger', 'insert', { code: '08006', message: 'conn' })
+    t.world.failNext('commission_ledger', 'insert', { code: '08006', message: 'conn' })
+    await t.mod.verifyPayment(t.c())
+    expect(t.state.queue).toHaveLength(1)
+    expect(t.state.alerts.some(a => /commission/i.test(a.subject))).toBe(true)
+  })
+})
+
+describe('reconcilePayment (admin recovery) — via fulfillment.service', () => {
+  const paid = (over = {}) => ({ status: 'SUCCESS', ...over })
+  it('re-applies the purchase and enqueues for a stranded payment', async () => {
+    t = worldSetup(); Object.assign(t.world.t.payments[0], paid())
+    const res = await t.mod.reconcilePayment(t.c())
+    expect(res.body).toMatchObject({ success: true, data: { outcome: 'FULFILLED' } })
+    expect(t.world.t.scans[0]).toMatchObject({ fix_purchased: true, fix_payment_id: 'pay1' })
     expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
   })
   it('does not re-enqueue something already delivered — but still retries the commission ledger', async () => {
-    t = setup({ fullPayment: full({ referral_code_id: 'rc1' }), scan: { id: 's1', status: 'FIX_DELIVERED', fix_purchased: true } })
+    t = worldSetup(); Object.assign(t.world.t.payments[0], paid({ referral_code_id: 'rc1' }))
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
     const res = await t.mod.reconcilePayment(t.c())
     expect(res.body.message).toMatch(/already fulfilled/i)
     expect(t.state.queue).toHaveLength(0)
-    expect(t.state.ledger).toHaveLength(1)
+    expect(t.world.t.commission_ledger).toHaveLength(1)
     expect(res.body.data.conversion).toEqual({ ok: true, recorded: true })
+  })
+  it('a JOB-LOST scan (claimed, still FIX_PURCHASED) is re-enqueued immediately for an explicit admin reconcile', async () => {
+    t = worldSetup(); Object.assign(t.world.t.payments[0], paid())
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_PURCHASED', updated_at: new Date().toISOString() })
+    const res = await t.mod.reconcilePayment(t.c())
+    expect(res.body.data.outcome).toBe('REENQUEUED')
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('a DUPLICATE payment is reported and never re-generated, and earns no commission', async () => {
+    t = worldSetup(); Object.assign(t.world.t.payments[0], paid({ referral_code_id: 'rc1' }))
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.reconcilePayment(t.c())
+    expect(res.body.data.outcome).toBe('DUPLICATE')
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.world.t.commission_ledger).toHaveLength(0)
+  })
+})
+
+describe('recheckPayment (admin) — PENDING/ABANDONED/FAILED that Paystack says were paid', () => {
+  it('asks Paystack, and when the money really arrived settles + delivers', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'FAILED'
+    const res = await t.mod.recheckPayment(t.c())
+    expect(res.body.success).toBe(true)
+    expect(t.state.verifyCalls).toEqual(['ref1'])
+    expect(t.world.t.payments[0].status).toBe('SUCCESS')
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('409s when Paystack says it was not paid', async () => {
+    t = worldSetup({}, { paystack: { data: { status: 'abandoned' } } })
+    const res = await t.mod.recheckPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(t.world.t.payments[0].status).toBe('PENDING')
+  })
+  it('an amount mismatch is held until the admin explicitly accepts it', async () => {
+    t = worldSetup({}, { paystack: { data: { status: 'success', currency: 'USD', amount: 3100 } } })
+    expect((await t.mod.recheckPayment(t.c())).status).toBe(409)
+    expect(t.state.queue).toHaveLength(0)
+    const ok = await t.mod.recheckPayment(t.c({ body: { acceptAmountMismatch: true } }))
+    expect(ok.body.success).toBe(true)
+    expect(t.state.queue).toHaveLength(1)
+  })
+  it('a CURRENCY mismatch can never be accepted', async () => {
+    t = worldSetup({}, { paystack: { data: { status: 'success', currency: 'NGN', amount: 2900 } } })
+    const res = await t.mod.recheckPayment(t.c({ body: { acceptAmountMismatch: true } }))
+    expect(res.status).toBe(409)
+    expect(t.state.queue).toHaveLength(0)
+  })
+  it('refuses SUCCESS (use reconcile), REFUNDED and free-credit payments', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'SUCCESS'
+    expect((await t.mod.recheckPayment(t.c())).status).toBe(400)
+    t.world.t.payments[0].status = 'REFUNDED'
+    expect((await t.mod.recheckPayment(t.c())).status).toBe(400)
+    t.world.t.payments[0].status = 'PENDING'; t.world.t.payments[0].paystack_ref = 'credit:s1:1'
+    expect((await t.mod.recheckPayment(t.c({ params: { reference: 'credit:s1:1' } }))).status).toBe(400)
+  })
+  it('502s (and changes nothing) when the Paystack lookup itself fails', async () => {
+    t = worldSetup({}, { verifyThrows: new Error('timeout') })
+    expect((await t.mod.recheckPayment(t.c())).status).toBe(502)
+    expect(t.world.t.payments[0].status).toBe('PENDING')
+  })
+})
+
+describe('resolvePayment (admin) — reverse a sale / clear a dispute', () => {
+  function soldWorld(status = 'SUCCESS') {
+    const w = worldSetup()
+    Object.assign(w.world.t.payments[0], { status, referral_code_id: 'rc1' })
+    Object.assign(w.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    w.world.t.commission_ledger.push({ id: 'led1', payment_id: 'pay1', partner_id: 'p1', referral_code_id: 'rc1', gross_amount_cents: 2900, commission_rate: 0.2, commission_amount_cents: 580, payout_id: null, reverses_ledger_id: null })
+    return w
+  }
+  it('reverse: payment REFUNDED, commission reversed, credential revoked (reason REFUND)', async () => {
+    t = soldWorld()
+    const res = await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(res.body.data).toMatchObject({ transitioned: true, commissionReversed: true, verificationRevoked: true })
+    expect(t.world.t.payments[0].status).toBe('REFUNDED')
+    expect(t.world.t.scans[0]).toMatchObject({ verification_status: 'REVOKED', verification_revoked_reason: 'REFUND' })
+  })
+  it('reverse on a DISPUTED payment records reason DISPUTE (a lost chargeback)', async () => {
+    t = soldWorld('DISPUTED')
+    await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(t.world.t.scans[0].verification_revoked_reason).toBe('DISPUTE')
+  })
+  it('reverse is idempotent', async () => {
+    t = soldWorld()
+    await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } })); await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(t.world.t.commission_ledger.filter(r => r.reverses_ledger_id)).toHaveLength(1)
+  })
+  it('clear-dispute puts a DISPUTED payment back to SUCCESS and changes nothing else', async () => {
+    t = soldWorld('DISPUTED')
+    const res = await t.mod.resolvePayment(t.c({ body: { action: 'clear-dispute' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.world.t.payments[0].status).toBe('SUCCESS')
+    expect(t.world.t.scans[0].verification_status).toBe('ACTIVE')
+  })
+  it('clear-dispute on a payment that is not DISPUTED is a 400', async () => {
+    t = soldWorld('SUCCESS')
+    expect((await t.mod.resolvePayment(t.c({ body: { action: 'clear-dispute' } }))).status).toBe(400)
+  })
+  it('404s for an unknown payment', async () => {
+    t = worldSetup()
+    expect((await t.mod.resolvePayment(t.c({ params: { reference: 'nope' }, body: { action: 'reverse' } }))).status).toBe(404)
   })
 })

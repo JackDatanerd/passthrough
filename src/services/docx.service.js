@@ -6,7 +6,12 @@ const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx')
 // CHANGE FROM v8: returns the DOCX bytes (Buffer) directly instead of writing
 // to outputPath and returning that path. R2 has no filesystem — the caller
 // .put()s these bytes into the bucket under the key from config/storage.js.
-async function generateAtsDocx(resumeData, verificationUrl) {
+//
+// SECTION 7 AUDIT: `verified` (default true) selects the credential wording.
+// false is used when the final score is under the Verified threshold — the link
+// still points at the (honest) scan-report page, but the document must not
+// claim a credential the page will not confirm.
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true } = {}) {
   const children = []
 
   children.push(new Paragraph({
@@ -26,7 +31,7 @@ async function generateAtsDocx(resumeData, verificationUrl) {
   // Plain text URL — ATS ignores it, humans can click it in a document viewer.
   // Omitted entirely (not just left blank) when there's no verification link
   // for this tier — see FIX_PLAIN in scan.controller.js's generateFix.
-  if (verificationUrl) parts.push(`Passthrough Verified: ${verificationUrl}`)
+  if (verificationUrl) parts.push(`${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: ${verificationUrl}`)
   children.push(new Paragraph({
     children: [new TextRun({ text: parts.join(' | '), size: 18, font: 'Calibri' })]
   }))

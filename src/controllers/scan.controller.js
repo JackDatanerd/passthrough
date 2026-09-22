@@ -45,6 +45,7 @@ const claudeService  = require('../services/claude.service')
 const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
+const { revokeVerification, restoreVerification, REVOKE_REASON } = require('../lib/verification')
 const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
@@ -479,7 +480,7 @@ async function getScan(ctx) {
                   (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
-  const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, ...safe } = scan
+  const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   const atsDetail = buildAtsDetail(fullAtsReport)
   return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail } })
@@ -734,26 +735,42 @@ async function redeemCredit(ctx) {
   // path already uses to grant a credit) on any failure, so a transient
   // DB/queue error costs the user nothing. Re-throw afterward so the
   // request still surfaces as an error to the caller/errorHandler.
+  let creditPaymentId = null
+  let claimObtained = false
   try {
     // Recorded as a $0 payment so payment history stays complete and
     // consistent — same shape as a real transaction, just free.
-    const { error: paymentErr } = await supabase.from('payments').insert({
+    const { data: creditPayment, error: paymentErr } = await supabase.from('payments').insert({
       amount_cents: 0,
       currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
       status:       'SUCCESS',
       paystack_ref: `credit:${scan.id}:${Date.now()}`,
       user_id:      user.id,
       scan_id:      scan.id
-    })
+    }).select('id').single()
     if (paymentErr) throw paymentErr
+    creditPaymentId = creditPayment.id
 
-    const { error: scanUpdateErr } = await supabase.from('scans').update({
-      fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX'
-    }).eq('id', scan.id)
+    // SECTION 8 AUDIT: this is a CLAIM, same as fulfillment.service — it used
+    // to be an unconditional update, so a credit redeemed while a paid checkout
+    // for the same scan was still open (or vice versa) fulfilled the scan twice.
+    // Losing the claim throws into the catch below, which refunds the credit.
+    const { data: claimed, error: scanUpdateErr } = await supabase.from('scans').update({
+      fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX', fix_payment_id: creditPaymentId
+    }).eq('id', scan.id).eq('fix_purchased', false).select('id')
     if (scanUpdateErr) throw scanUpdateErr
+    if (!claimed || claimed.length === 0) throw new Error('Scan was purchased concurrently')
+    claimObtained = true
 
     await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
   } catch (err) {
+    // If the claim was LOST, the $0 row must not linger as a SUCCESS payment for
+    // this scan — it would make fulfilment think the scan has a second purchase.
+    // (If the claim was WON and only the queue send failed, the row is the
+    // scan's legitimate owning payment and the sweeps will finish delivery.)
+    if (creditPaymentId && !claimObtained) {
+      try { await supabase.from('payments').update({ status: 'FAILED' }).eq('id', creditPaymentId) } catch (_) {}
+    }
     console.error(`[CRITICAL] redeemCredit fulfillment failed after credit consumed (user ${user.id}, scan ${scan.id}):`, err.message)
     try {
       await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id })
@@ -838,15 +855,38 @@ async function updateVerifyVisibility(ctx) {
   const update = {}
   if (typeof body.exposeDocx === 'boolean') update.verify_expose_docx = body.exposeDocx
   if (typeof body.exposePdf  === 'boolean') update.verify_expose_pdf  = body.exposePdf
-  if (Object.keys(update).length === 0)
-    return ctx.json({ success: false, message: 'Nothing to update — expected exposeDocx and/or exposePdf as booleans.' }, 400)
+  // SECTION 7 AUDIT (feature gap): the owner had no way to hide their first
+  // name from the public page, nor to switch the page off at all.
+  if (typeof body.hideName   === 'boolean') update.verify_hide_name   = body.hideName
+  const wantsPublish = typeof body.published === 'boolean'
+  if (Object.keys(update).length === 0 && !wantsPublish)
+    return ctx.json({ success: false, message: 'Nothing to update — expected exposeDocx, exposePdf, hideName and/or published as booleans.' }, 400)
 
-  const { error: updateErr } = await supabase.from('scans').update(update).eq('id', scan.id)
-  if (updateErr) throw updateErr
+  if (Object.keys(update).length > 0) {
+    const { error: updateErr } = await supabase.from('scans').update(update).eq('id', scan.id)
+    if (updateErr) throw updateErr
+  }
+
+  let status = scan.verificationStatus || 'ACTIVE'
+  if (wantsPublish) {
+    if (body.published === false) {
+      await revokeVerification(supabase, scan.id, REVOKE_REASON.OWNER)
+      status = 'REVOKED'
+    } else if (status === 'REVOKED') {
+      // The owner may only undo THEIR OWN unpublish — never a refund/dispute/admin takedown.
+      const restored = await restoreVerification(supabase, scan.id)
+      if (!restored)
+        return ctx.json({ success: false, message: 'This verification page was revoked by Passthrough and cannot be republished. Contact support if you think this is a mistake.' }, 403)
+      status = 'ACTIVE'
+    }
+  }
 
   return ctx.json({ success: true, data: {
     exposeDocx: update.verify_expose_docx ?? scan.verifyExposeDocx,
-    exposePdf:  update.verify_expose_pdf  ?? scan.verifyExposePdf
+    exposePdf:  update.verify_expose_pdf  ?? scan.verifyExposePdf,
+    hideName:   update.verify_hide_name   ?? scan.verifyHideName ?? false,
+    published:  status !== 'REVOKED',
+    verificationStatus: status,
   }})
 }
 
@@ -915,7 +955,7 @@ async function getScanHistory(ctx) {
   // second round trip.
   let query = supabase
     .from('scans')
-    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
+    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
     .eq('user_id', user.id)
   // candidate_first_name is populated at scoring time for every scan (see
   // runAtsScan), not just brain-dump/anonymous ones — searching it too
@@ -934,6 +974,7 @@ async function getScanHistory(ctx) {
     id: r.id, status: r.status, atsScore: r.ats_score, passed: r.passed,
     resumeOriginalName: r.resume_original_name, inputMode: r.input_mode, createdAt: r.created_at,
     fixPurchased: r.fix_purchased, fixTier: r.fix_tier, verificationCode: r.verification_code,
+    verificationStatus: r.verification_status, fixAtsScore: r.fix_ats_score,
     keywordScore: r.keyword_score, formatScore: r.format_score,
     sectionsScore: r.sections_score, contentScore: r.content_score
   }))
@@ -1132,6 +1173,28 @@ async function runAtsScan(env, supabase, scanId) {
 
 // ─── generateFix — AI rewrite + ATS DOCX + beautiful PDF + credential ────────
 
+// ─── Section 7 (Verify) audit: deliverable storage helpers ───────────────────
+
+// Hashes of a superseded delivery, kept so a hiring manager holding an OLDER
+// file is told "earlier version", not "modified" (see verify.controller).
+function nextHashHistory(scan) {
+  const history = Array.isArray(scan.resumeHashHistory) ? [...scan.resumeHashHistory] : []
+  if ((scan.resumeHash || scan.resumePdfHash) &&
+      !history.some(h => h.docx === (scan.resumeHash || null) && h.pdf === (scan.resumePdfHash || null)))
+    history.push({ docx: scan.resumeHash || null, pdf: scan.resumePdfHash || null, at: scan.verifiedAt || scan.fixGeneratedAt || null })
+  return history.slice(-20)
+}
+
+// Best-effort removal of objects the row no longer points at. Runs only AFTER
+// the row has been repointed — until then the old object is still the one the
+// public page is verifying against.
+async function deleteSuperseded(env, oldKeys, keepKeys) {
+  for (const key of oldKeys) {
+    if (!key || keepKeys.includes(key)) continue
+    try { await env.RESUMES_BUCKET.delete(key) } catch (err) { console.error(`[WARN] could not delete superseded ${key}:`, err.message) }
+  }
+}
+
 async function generateFix(env, supabase, scanId) {
   try {
     await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
@@ -1184,8 +1247,13 @@ async function generateFix(env, supabase, scanId) {
     // the credential line entirely rather than render a broken one (see
     // their null-verificationUrl handling).
     const isPlain = scan.fixTier === 'FIX_PLAIN'
-    const code            = isPlain ? null : (isRetry && scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase))
-    const verificationUrl = isPlain ? null : (isRetry && scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code))
+    // SECTION 7/8 AUDIT: reuse an existing code whenever the scan already has one,
+    // not only on an explicit retry. Queue delivery is at-least-once, so the same
+    // generation can legitimately run twice; a fresh code on the second run left
+    // the first run's already-emailed document pointing at a page that no longer
+    // exists.
+    const code            = isPlain ? null : (scan.verificationCode ? scan.verificationCode : await badgeService.generateShortCode(supabase))
+    const verificationUrl = isPlain ? null : (scan.verificationUrl  ? scan.verificationUrl  : badgeService.buildVerificationUrl(env, code))
 
     // Rewrite → score → retry-with-feedback loop. A rewrite that "succeeds"
     // (valid JSON, no fabrication) isn't the same as a rewrite that's
@@ -1317,8 +1385,25 @@ async function generateFix(env, supabase, scanId) {
     // forward previous-round result, so bestData never changed from its
     // initial value and there's nothing new to reuse — regenerate in that
     // one case only.
-    const docxBytes = bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl)
-    const docxKey   = storage.atsDocxKey(scanId)
+    // SECTION 7 AUDIT (bug + product decision): the credential wording must match
+    // what the public page will say. A rewrite that finishes under the
+    // threshold used to ship a document reading "Passthrough Verified: <link>"
+    // (and a PDF with a ✓ Passthrough Verified badge) pointing at a page that says
+    // "Below the Passthrough Verified threshold" — a false claim, printed on a
+    // resume the candidate sends to employers. Below the threshold the link is
+    // kept (it's still the scan report) but labelled honestly, everywhere.
+    // The loop above scored the "Verified"-labelled document; the label is one
+    // word of header text, so the stored score is deliberately NOT re-derived.
+    const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
+    const docxBytes = (verificationUrl && !credentialVerified)
+      ? await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false })
+      : (bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl))
+
+    // Fresh key per generation: the previously delivered object stays intact
+    // (and is what the public page keeps verifying) until the DB row is
+    // repointed below. See config/storage.js.
+    const version = cryptoLib.randomToken(6)
+    const docxKey = storage.atsDocxKey(scanId, version)
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
       httpMetadata: { contentType: DOCX_MIME }
     })
@@ -1326,23 +1411,31 @@ async function generateFix(env, supabase, scanId) {
 
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
     let pdfKey = null
-    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl)
+    let pdfHash = null
+    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl, { verified: credentialVerified })
     if (htmlResult.success) {
       try {
         const pdfBytes = await pdfService.generateResumePDF(env, htmlResult.data)
-        pdfKey = storage.beautifulPdfKey(scanId)
-        await env.RESUMES_BUCKET.put(pdfKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
+        const pdfCandidateKey = storage.beautifulPdfKey(scanId, version)
+        await env.RESUMES_BUCKET.put(pdfCandidateKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
+        pdfKey = pdfCandidateKey
+        // The PDF is the file candidates email to hiring managers — it needs a
+        // fingerprint too, or the file employers actually receive is unverifiable.
+        pdfHash = isPlain ? null : await badgeService.hashBytes(pdfBytes)
       } catch (pdfErr) {
         // PDF failure must not kill delivery — DOCX is already generated and paid for
         console.error(`[WARN] PDF generation failed for ${scanId}:`, pdfErr.message)
         pdfKey = null
+        pdfHash = null
       }
     }
 
-    await supabase.from('scans').update({
+    const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      pdfKey,
+      resume_pdf_hash:      pdfHash,
+      resume_hash_history:  isPlain ? [] : nextHashHistory(scan),
       fix_ats_score:        fixAtsScore,
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
@@ -1365,11 +1458,15 @@ async function generateFix(env, supabase, scanId) {
       quantification_prompts: quantificationPrompts,
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
+    // This write was never checked: a failed update used to fall straight
+    // through to "delivered" emails for a scan still stuck at FIX_GENERATING.
+    if (deliverErr) throw deliverErr
+    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, pdfKey])
 
     if (user) {
       try {
         if (isPlain) await emailService.sendFixDeliveredPlain(env, supabase, user.email, user.name)
-        else         await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
+        else         await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, credentialVerified)
       } catch (e) { console.error('Fix email:', e.message) }
     }
     return { success: true }
@@ -1444,12 +1541,15 @@ async function generateBadge(env, supabase, scanId) {
 
     // Use finalData.name — correct source after fallback
     const candidateFirstName = (finalData.name || '').split(' ')[0] || 'Candidate'
-    const code            = await badgeService.generateShortCode(supabase)
+    // Same reasoning as generateFix: never orphan an already-delivered link.
+    const code            = scan.verificationCode || await badgeService.generateShortCode(supabase)
     const verificationUrl = badgeService.buildVerificationUrl(env, code)
 
     // Pass verificationUrl — not hardcoded domain
+    // Versioned keys + hashes for BOTH files — see generateFix and config/storage.js.
     const docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl)
-    const docxKey   = storage.atsDocxKey(scanId)
+    const version = cryptoLib.randomToken(6)
+    const docxKey = storage.atsDocxKey(scanId, version)
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
       httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
     })
@@ -1457,23 +1557,31 @@ async function generateBadge(env, supabase, scanId) {
 
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
     let pdfKey = null
-    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl)
+    let pdfHash = null
+    // A badge purchase requires a score at/above the threshold (initiateFix), so
+    // the credential wording is always the verified one here.
+    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl, { verified: true })
     if (htmlResult.success) {
       try {
         const pdfBytes = await pdfService.generateResumePDF(env, htmlResult.data)
-        pdfKey = storage.beautifulPdfKey(scanId)
-        await env.RESUMES_BUCKET.put(pdfKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
+        const pdfCandidateKey = storage.beautifulPdfKey(scanId, version)
+        await env.RESUMES_BUCKET.put(pdfCandidateKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
+        pdfKey = pdfCandidateKey
+        pdfHash = await badgeService.hashBytes(pdfBytes)
       } catch (pdfErr) {
         // PDF failure must not kill delivery — DOCX is already generated and paid for
         console.error(`[WARN] PDF generation failed for ${scanId}:`, pdfErr.message)
         pdfKey = null
+        pdfHash = null
       }
     }
 
-    await supabase.from('scans').update({
+    const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      pdfKey,
+      resume_pdf_hash:      pdfHash,
+      resume_hash_history:  nextHashHistory(scan),
       fix_ats_score:        scan.atsScore,
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
@@ -1491,10 +1599,12 @@ async function generateBadge(env, supabase, scanId) {
       original_resume_data:  finalData,
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
+    if (deliverErr) throw deliverErr
+    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, pdfKey])
 
     if (user) {
       try {
-        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl)
+        await emailService.sendFixDelivered(env, supabase, user.email, user.name, code, verificationUrl, true)
       } catch (e) { console.error('Badge email:', e.message) }
     }
     return { success: true }

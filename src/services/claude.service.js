@@ -263,12 +263,15 @@ function detectFabrication(orig, rewritten) {
   return false
 }
 
-async function generateBeautifulResumeHTML(env, resumeData, designTokens, verificationUrl) {
+async function generateBeautifulResumeHTML(env, resumeData, designTokens, verificationUrl, { verified = true } = {}) {
   const { palette, fonts } = designTokens
+  // SECTION 7 AUDIT: only claim "Verified" (with the ✓) when the score actually
+  // cleared the threshold — see generateFix in scan.controller.js.
+  const credentialText = verified ? '✓ Passthrough Verified' : 'Passthrough Scan Report'
   const verificationInstruction = verificationUrl
     ? `Header line 3 MUST be: <a href="${verificationUrl}" style="text-decoration:none">
-       <span style="color:${palette.primary};font-size:8pt;font-variant:small-caps">✓ Passthrough Verified</span>
-     </a> — URL hidden, only "✓ Passthrough Verified" visible as clickable link.`
+       <span style="color:${palette.primary};font-size:8pt;font-variant:small-caps">${credentialText}</span>
+     </a> — URL hidden, only "${credentialText}" visible as clickable link.`
     : `Do NOT include any "Passthrough Verified" credential line, badge, or link anywhere — this resume has no verification credential attached. Header is just name + contact info.`
   const result = await callClaude(
     env,

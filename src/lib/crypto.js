@@ -38,17 +38,25 @@ async function sha256Bytes(data) {
 }
 
 /**
- * hmacSha512Hex(secret, bodyText) -> hex string
+ * hmacSha512Hex(secret, body) -> hex string
  * Replaces: crypto.createHmac('sha512', secret).update(body).digest('hex')
  * Used for Paystack webhook signature verification.
+ *
+ * `body` may be a string OR raw bytes (Uint8Array/ArrayBuffer). SECTION 8
+ * AUDIT FIX: the webhook now passes the request's RAW bytes. Signing over
+ * `await req.text()` re-encoded is only equivalent when the payload is
+ * perfectly-formed UTF-8 with no BOM — text() decodes lossily, so any byte
+ * sequence that doesn't survive decode→encode would make a genuine event
+ * fail its own signature check.
  */
-async function hmacSha512Hex(secret, bodyText) {
+async function hmacSha512Hex(secret, body) {
   const key = await crypto.subtle.importKey(
     'raw', new TextEncoder().encode(secret),
     { name: 'HMAC', hash: 'SHA-512' },
     false, ['sign']
   )
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(bodyText))
+  const data = typeof body === 'string' ? new TextEncoder().encode(body) : body
+  const sig = await crypto.subtle.sign('HMAC', key, data)
   return bytesToHex(sig)
 }
 

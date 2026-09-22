@@ -131,7 +131,17 @@ export default function AdminLeads() {
                     <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
                   </td>
                   <td className="px-4 py-3 text-gray-500">{l.roleCategory || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500">{l.source}</td>
+                  <td className="px-4 py-3 text-gray-500">
+                    {l.source}
+                    {/* SECTION 7 AUDIT (feature gap): which candidate's verification
+                        page this lead came from, when it came from one. */}
+                    {l.sourceCode && (
+                      <a href={`/v/${l.sourceCode}`} target="_blank" rel="noreferrer"
+                        className="block text-xs text-blue-700 hover:text-blue-800 underline">
+                        {l.sourceCode}
+                      </a>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(l.createdAt)}</td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">

@@ -2,6 +2,7 @@ const { z }  = require('zod')
 const { getSupabase } = require('../config/supabase')
 const { leadRowToCamel } = require('../lib/mappers')
 const emailService = require('../services/email.service')
+const { normalizeCode, isPlausibleCode } = require('../lib/verification')
 
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): status lifecycle for a
 // lead, matching lead_status_enum (migration 0018). Exported for the route
@@ -44,7 +45,12 @@ const schema = z.object({
   company:      z.string().trim().min(1).max(200),
   email:        z.string().trim().toLowerCase().email(),
   roleCategory: z.string().trim().max(100).optional(),
-  source:       z.enum(LEAD_SOURCES).optional()
+  source:       z.enum(LEAD_SOURCES).optional(),
+  // SECTION 7 AUDIT (feature gap): which verification page (if any) the
+  // submitter was looking at. Free-form is tolerated here — a malformed value
+  // is just dropped (see sourceCode below) rather than rejecting an
+  // otherwise-good lead over a field the client filled in without asking.
+  verificationCode: z.string().max(32).optional()
 })
 
 // POST /api/employer-leads — public, rate-limited.
@@ -52,13 +58,16 @@ async function createLead(c) {
   const body = await c.req.json()
   const data = schema.parse(body)
   const supabase = getSupabase(c.env)
+  const sourceCode = data.verificationCode && isPlausibleCode(normalizeCode(data.verificationCode))
+    ? normalizeCode(data.verificationCode) : null
 
   const row = {
     name:          data.name,
     company:       data.company,
     email:         data.email,
     role_category: data.roleCategory || null,
-    source:        data.source || 'verification_page'
+    source:        data.source || 'verification_page',
+    source_code:   sourceCode
   }
 
   const { error: insertErr } = await supabase.from('employer_leads').insert(row)
@@ -78,6 +87,8 @@ async function createLead(c) {
     // spam. Status is admin-owned, changed only via adminUpdateLeadStatus.
     const { error: updateErr } = await supabase.from('employer_leads').update({
       name: data.name, company: data.company, role_category: data.roleCategory || null,
+      // Latest page they came from — but never blank out one we already have.
+      ...(sourceCode ? { source_code: sourceCode } : {}),
       updated_at: new Date().toISOString()
     }).eq('email', data.email)
     if (updateErr) throw updateErr
@@ -92,7 +103,7 @@ async function createLead(c) {
   // fail the request itself.
   try {
     await emailService.sendOwnerAlert(c.env, 'New employer lead',
-      `name: ${data.name}\ncompany: ${data.company}\nemail: ${data.email}\nroleCategory: ${data.roleCategory || '(none)'}`
+      `name: ${data.name}\ncompany: ${data.company}\nemail: ${data.email}\nroleCategory: ${data.roleCategory || '(none)'}\nverification page: ${sourceCode || '(none)'}`
     )
   } catch (_) {}
 

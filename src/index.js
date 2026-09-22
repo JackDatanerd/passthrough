@@ -142,6 +142,23 @@ async function scheduled(event, env, ctx) {
   )
 }
 
+      // Independent of the sweep above: a failure in one must never skip the other.
+      try {
+        const { sweepPendingPayments } = require('./services/reconcile.service')
+        const p = await sweepPendingPayments(env, getSupabase(env))
+        if (p.error) console.error('Pending-payment sweep query:', p.error)
+        else if (p.recovered.length || p.failed.length)
+          console.log(`Pending-payment sweep: checked ${p.checked}, ${p.recovered.length} recovered, ${p.failed.length} failed`)
+      } catch (err) {
+        console.error('Pending-payment sweep error:', err.message)
+      }
+      // webhook_events is an audit log, not an archive.
+      try {
+        const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
+        await getSupabase(env).from('webhook_events').delete().lt('received_at', cutoff).in('status', ['PROCESSED', 'IGNORED'])
+      } catch (err) {
+        console.error('webhook_events prune error:', err.message)
+      }
 // Second, independent scheduled job: recover paid-but-undelivered payments
 // (see services/reconcile.service.js for why fulfilment is one-shot and what
 // "orphaned" means). Its own waitUntil + try/catch so a failure here can never

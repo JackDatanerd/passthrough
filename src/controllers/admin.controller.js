@@ -13,6 +13,7 @@
 // flips an EXISTING account's role/status, it can't create the first admin).
 
 const { z } = require('zod')
+const { revokeVerification, restoreVerification, REVOKE_REASON } = require('../lib/verification')
 const { getSupabase } = require('../config/supabase')
 const c = require('../config/constants')
 
@@ -236,7 +237,7 @@ async function adminListScans(ctx) {
   const status = ctx.req.query('status')
 
   let query = supabase.from('scans')
-    .select('id, status, ats_score, fix_purchased, fix_tier, resume_original_name, user_id, users(email), created_at, updated_at', { count: 'exact' })
+    .select('id, status, ats_score, fix_purchased, fix_tier, resume_original_name, user_id, users(email), verification_code, verification_status, verification_revoked_reason, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false }).range(from, to)
   if (status) query = query.eq('status', status)
 
@@ -246,9 +247,31 @@ async function adminListScans(ctx) {
   const scans = data.map(s => ({
     id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased, fixTier: s.fix_tier,
     resumeOriginalName: s.resume_original_name, userId: s.user_id, userEmail: s.users?.email || null,
+    verificationCode: s.verification_code, verificationStatus: s.verification_status,
+    verificationRevokedReason: s.verification_revoked_reason,
     createdAt: s.created_at, updatedAt: s.updated_at
   }))
   return ctx.json({ success: true, data: scans, meta: { page, pageSize, total: count || 0 } })
+}
+
+// PATCH /api/admin/scans/:id/verification  { action: 'revoke' | 'restore' }
+// SECTION 7 AUDIT (feature gap): a public credential page had no off switch for
+// abuse/takedown. An admin revoke is stronger than an owner unpublish (the
+// owner cannot undo it); restore lifts ANY revocation.
+async function adminSetVerification(ctx) {
+  const { action } = z.object({ action: z.enum(['revoke', 'restore']) }).parse(await ctx.req.json())
+  const scanId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: scan, error } = await supabase.from('scans').select('id, verification_code').eq('id', scanId).maybeSingle()
+  if (error) throw error
+  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  if (!scan.verification_code) return ctx.json({ success: false, message: 'This scan has no verification page.' }, 400)
+
+  const changed = action === 'revoke'
+    ? await revokeVerification(supabase, scanId, REVOKE_REASON.ADMIN)
+    : await restoreVerification(supabase, scanId, { asAdmin: true })
+  return ctx.json({ success: true, data: { changed, verificationStatus: action === 'revoke' ? 'REVOKED' : 'ACTIVE' } })
 }
 
 // ── Payments ─────────────────────────────────────────────────────────────
@@ -325,6 +348,6 @@ async function adminListAlerts(ctx) {
 module.exports = {
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,
-  adminListScans, adminListPayments,
+  adminListScans, adminSetVerification, adminListPayments,
   adminListEmailLogs, adminListAlerts
 }

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
@@ -7,18 +7,28 @@ import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { formatDate, copyToClipboard } from '../lib/utils'
+import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
+import { sha256Hex, classifyFingerprint } from '../lib/fileFingerprint'
 
 // FEATURE GAP CLOSED (Section 5): the "role you're hiring for" field used
 // to always start blank, even though this page already fetches and shows
 // data.roleCategory for the exact candidate being viewed — asking a hiring
 // manager to retype what's already on the screen was pure friction.
-// Mirrors the `.replace(/_/g, ' ')` humanization already used to display
-// this same field elsewhere on this page, with title-casing since this
-// value becomes actual submitted (and editable) input text rather than a
-// CSS-`capitalize`'d label.
 function humanizeRoleCategory(cat) {
   if (!cat) return ''
   return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase())
+}
+
+// Downloads used window.location.href — on a 403/404 that just navigates the
+// whole tab to raw JSON. Fetches as a blob so a failure surfaces on the page
+// instead of blanking it, and only ever triggers a save on a real success.
+async function downloadFile(code, type, filename) {
+  const res = await api.get(`/verify/${code}/download`, { params: { type }, responseType: 'blob' })
+  const url = URL.createObjectURL(res.data)
+  const a = document.createElement('a')
+  a.href = url; a.download = filename
+  document.body.appendChild(a); a.click(); a.remove()
+  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
 export default function Verify() {
@@ -26,11 +36,13 @@ export default function Verify() {
   const [data,    setData   ] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
+  const [revoked,  setRevoked ] = useState(null)   // { revokedAt } | null
   // Generic failure state — separate from notFound. The old version only
   // ever branched on a 404; anything else (500, timeout, offline) left
   // loading/notFound/data all falsy, so the page silently rendered nothing
   // but the Navbar/Footer with no explanation and no way to retry.
   const [loadError, setLoadError] = useState(false)
+  const [downloadErr, setDownloadErr] = useState('')
 
   // Hiring manager soft opt-in
   const [hmExpanded,  setHmExpanded ] = useState(false)
@@ -44,8 +56,16 @@ export default function Verify() {
 
   const [linkCopied, setLinkCopied] = useState(false)
 
+  // SECTION 7 AUDIT (feature gap G7-1): let the READER check the actual file
+  // they were sent, in their own browser — nothing is uploaded. This is the
+  // only check that can ever catch a candidate's edited copy; the server-side
+  // integrity badge above can only compare our own stored copy against itself.
+  const [checking, setChecking] = useState(false)
+  const [checkResult, setCheckResult] = useState(null)   // 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error'
+  const fileInputRef = useRef(null)
+
   function load() {
-    setLoading(true); setNotFound(false); setLoadError(false)
+    setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null)
     api.get(`/verify/${code}`)
       .then(res => {
         setData(res.data.data)
@@ -55,7 +75,9 @@ export default function Verify() {
       })
       .catch(err => {
         setLoading(false)
-        if (err.response?.status === 404) setNotFound(true)
+        const status = err.response?.status
+        if (status === 404) setNotFound(true)
+        else if (status === 410) setRevoked({ revokedAt: err.response?.data?.revokedAt || null })
         else setLoadError(true)
       })
   }
@@ -71,7 +93,10 @@ export default function Verify() {
         company,
         email,
         roleCategory: role || undefined,
-        source: 'verification_page'
+        source: 'verification_page',
+        // SECTION 7 AUDIT (feature gap): which candidate's page this lead came
+        // from, so the admin list isn't just an undifferentiated pile.
+        verificationCode: code
       })
       setLeadSent(true)
     } catch (err) {
@@ -90,6 +115,36 @@ export default function Verify() {
     }
   }
 
+  async function handleDownload(type) {
+    setDownloadErr('')
+    try {
+      await downloadFile(code, type, `Passthrough-${code}.${type}`)
+    } catch (err) {
+      setDownloadErr(getErrorMessage(err, 'Could not download that file — please try again.'))
+    }
+  }
+
+  async function handleCheckFile(e) {
+    const file = e.target.files?.[0]
+    if (!file) return
+    setChecking(true); setCheckResult(null)
+    try {
+      const hash = await sha256Hex(file)
+      setCheckResult(classifyFingerprint(hash, data?.fingerprints))
+    } catch (_) {
+      setCheckResult('error')
+    } finally {
+      setChecking(false)
+      if (fileInputRef.current) fileInputRef.current.value = ''
+    }
+  }
+
+  // SECTION 7 AUDIT (bug B7-1): the headline must reflect BOTH the score and
+  // the integrity check — `data.passed` alone kept a green "Verified" up even
+  // when the file didn't match its own hash. `data.verified` is the one flag
+  // this page is allowed to key its headline off.
+  const isVerified = !!data?.verified
+
   const integrityLabel =
     data?.integrityStatus === 'verified' ? 'Unmodified' :
     data?.integrityStatus === 'modified' ? 'Modified'   :
@@ -98,6 +153,14 @@ export default function Verify() {
     data?.integrityStatus === 'verified' ? 'text-green-700' :
     data?.integrityStatus === 'modified' ? 'text-red-600'   :
     'text-amber-600'
+
+  const checkLabel = {
+    current:     { text: 'Matches — this is the current, unmodified file.', cls: 'text-green-700' },
+    previous:    { text: 'Matches an earlier version — not the current one, but not tampered with either.', cls: 'text-amber-600' },
+    mismatch:    { text: "Doesn't match anything on file — this file has been edited, or didn't come from Passthrough.", cls: 'text-red-600' },
+    unavailable: { text: 'This scan has no fingerprints to check against.', cls: 'text-gray-500' },
+    error:       { text: "Couldn't check that file — please try again.", cls: 'text-gray-500' },
+  }[checkResult]
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -115,6 +178,19 @@ export default function Verify() {
           </div>
         )}
 
+        {revoked && (
+          <div className="text-center py-20">
+            <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
+              <span className="text-gray-500 text-3xl">⊘</span>
+            </div>
+            <h1 className="text-xl font-bold text-gray-900 mb-2">This verification has been revoked</h1>
+            <p className="text-gray-500 text-sm">
+              {revoked.revokedAt ? `Revoked on ${formatDate(revoked.revokedAt)}. ` : ''}
+              It is no longer valid and cannot be restored from this page.
+            </p>
+          </div>
+        )}
+
         {loadError && (
           <div className="text-center py-20">
             <p className="text-gray-600 mb-4">
@@ -128,7 +204,7 @@ export default function Verify() {
           <div className="flex flex-col gap-6">
             {/* Verification card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
-              {data.passed ? (
+              {isVerified ? (
                 <>
                   <div className="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
                     <span className="text-green-600 text-3xl">✓</span>
@@ -146,7 +222,9 @@ export default function Verify() {
                     Passthrough Scan Report
                   </h1>
                   <p className="text-sm text-amber-700 mb-1">
-                    Below the Passthrough Verified threshold (80+)
+                    {data.passed
+                      ? 'This file no longer matches what was verified — see Integrity below.'
+                      : `Below the Passthrough Verified threshold (${ATS_BADGE_THRESHOLD}+)`}
                   </p>
                 </>
               )}
@@ -181,26 +259,22 @@ export default function Verify() {
               {(data.exposeDocx || data.exposePdf) && (
                 <div className="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
                   {data.exposeDocx && (
-                    <Button
-                      variant="secondary"
-                      onClick={() => { window.location.href = `${api.defaults.baseURL}/verify/${code}/download?type=docx` }}
-                    >
+                    <Button variant="secondary" onClick={() => handleDownload('docx')}>
                       Download .docx
                     </Button>
                   )}
                   {data.exposePdf && (
-                    <Button
-                      onClick={() => window.open(`${api.defaults.baseURL}/verify/${code}/download?type=pdf`, '_blank')}
-                    >
+                    <Button onClick={() => handleDownload('pdf')}>
                       View / Download PDF
                     </Button>
                   )}
                 </div>
               )}
+              {downloadErr && <p className="text-xs text-red-600 mt-3">{downloadErr}</p>}
               <p className="text-xs text-gray-400 mt-6">
-                {data.passed
+                {isVerified
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
-                  : "This resume was scanned by Passthrough's ATS engine. It has not been modified since this scan, but did not reach the score threshold required for Passthrough Verified status."}
+                  : "This resume was scanned by Passthrough's ATS engine. It did not reach (or no longer meets) the standard required for Passthrough Verified status."}
               </p>
               <div className="flex items-center justify-center gap-3 mt-4">
                 {typeof data.verificationViews === 'number' && (
@@ -217,10 +291,7 @@ export default function Verify() {
               </div>
             </div>
 
-            {/* Integrity check explainer — elevated from a stat box to its own
-                headline feature. The mechanism itself is unchanged (see
-                verify.controller.js — SHA-256 re-hash on every view), this
-                only changes how prominently it's explained. */}
+            {/* Integrity check explainer */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
               <div className="flex items-start gap-4">
                 <div className="w-10 h-10 rounded-lg bg-blue-50 flex items-center justify-center shrink-0">
@@ -234,8 +305,8 @@ export default function Verify() {
                     Most "resume checker" badges are just an image — nothing stops a
                     candidate from editing the file after the fact and keeping the badge.
                     Passthrough hashes the exact document at verification time and
-                    re-checks it against that hash every time this page loads. If the
-                    file has changed in any way, this page will say{' '}
+                    re-checks our own stored copy against that hash every time this page loads. If our
+                    copy has changed in any way, this page will say{' '}
                     <strong className="text-red-600">Modified</strong> instead of{' '}
                     <strong className="text-green-700">Unmodified</strong> — automatically,
                     with no way for the candidate to control it.
@@ -249,6 +320,30 @@ export default function Verify() {
                   </p>
                 </div>
               </div>
+            </div>
+
+            {/* SECTION 7 AUDIT (feature gap): check the file YOU were sent, not
+                just our stored copy — this is the only check that can catch a
+                candidate's edited copy. Runs entirely in your browser. */}
+            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+              <h2 className="font-semibold text-gray-900 mb-1">Received a file from this candidate?</h2>
+              <p className="text-sm text-gray-500 mb-3">
+                Check whether the .docx or .pdf you were sent matches what's on file. This
+                happens entirely in your browser — the file is never uploaded anywhere.
+              </p>
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  onChange={handleCheckFile}
+                  className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm file:font-medium hover:file:bg-blue-100"
+                />
+                {checking && <Spinner size="sm" />}
+              </div>
+              {checkLabel && (
+                <p className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
+              )}
             </div>
 
             {/* Hiring manager soft opt-in — shown above the full form */}

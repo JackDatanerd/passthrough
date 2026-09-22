@@ -14,5 +14,10 @@ router.get( '/history',    auth,             c.getPaymentHistory)
 // payments.controller.js and the matching hardening in
 // webhooks.controller.js's handlePaystack.
 router.post('/:reference/reconcile', auth, admin, c.reconcilePayment)
+// Section 8 audit: PENDING/ABANDONED/FAILED payments (held mismatches, lost
+// webhooks) — ask Paystack and settle if the money really arrived.
+router.post('/:reference/recheck',   auth, admin, c.recheckPayment)
+// Section 8 audit: reverse a sale (refund / lost dispute) or clear a won dispute.
+router.post('/:reference/resolve',   auth, admin, c.resolvePayment)
 
 module.exports = router

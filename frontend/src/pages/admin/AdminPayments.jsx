@@ -8,7 +8,9 @@ import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
 
 const PAGE_SIZE = 25
-const STATUSES = ['PENDING', 'SUCCESS', 'FAILED', 'ABANDONED']
+// SECTION 8 AUDIT: REFUNDED/DISPUTED added (migration 0023) — payments in
+// either state used to be indistinguishable from SUCCESS in this list.
+const STATUSES = ['PENDING', 'SUCCESS', 'FAILED', 'ABANDONED', 'REFUNDED', 'DISPUTED']
 
 export default function AdminPayments() {
   const toast = useToast()
@@ -63,8 +65,56 @@ export default function AdminPayments() {
     }
   }
 
+  // SECTION 8 AUDIT (feature gap): a payment held for an amount mismatch, or
+  // one whose webhook was lost, sat PENDING/ABANDONED/FAILED with no action
+  // here — /reconcile only accepts SUCCESS. This asks Paystack directly and
+  // settles it if the money really arrived.
+  async function recheck(payment, acceptAmountMismatch = false) {
+    if (!acceptAmountMismatch && !window.confirm(
+      `Ask Paystack whether ${payment.paystackRef} was actually paid, and settle it if so?`
+    )) return
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/payments/${payment.paystackRef}/recheck`, { acceptAmountMismatch })
+      toast({ message: res.data.message || 'Checked.', type: res.data.success ? 'success' : 'error' })
+      load()
+    } catch (err) {
+      const data = err.response?.data
+      // A held amount mismatch (409) offers a follow-up: accept the amount difference explicitly.
+      if (err.response?.status === 409 && data?.data?.outcome === 'MISMATCH' && data.data.expectedCurrency === data.data.receivedCurrency) {
+        if (window.confirm(
+          `${data.message}
+
+Expected ${data.data.expectedAmount}, received ${data.data.receivedAmount} (same currency). Accept and settle anyway?`
+        )) return recheck(payment, true)
+      }
+      toast({ message: getErrorMessage(err, 'Failed to check payment.'), type: 'error' })
+    } finally {
+      setBusyRef(null)
+    }
+  }
+
+  // SECTION 8 AUDIT: refunds/disputes now have real states to move between —
+  // reverse (refund the sale / lost dispute) and clear-dispute (won it).
+  async function resolvePayment(payment, action) {
+    const confirmMsg = action === 'reverse'
+      ? `Reverse ${payment.paystackRef}? This marks it REFUNDED, reverses any partner commission, and revokes the public verification page. This cannot be undone from here.`
+      : `Clear the dispute on ${payment.paystackRef} and mark it SUCCESS again?`
+    if (!window.confirm(confirmMsg)) return
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/payments/${payment.paystackRef}/resolve`, { action })
+      toast({ message: res.data.message || 'Done.', type: res.data.success ? 'success' : 'error' })
+      load()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Failed to update payment.'), type: 'error' })
+    } finally {
+      setBusyRef(null)
+    }
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
-  const badgeVariant = s => ({ SUCCESS: 'green', PENDING: 'amber', FAILED: 'red', ABANDONED: 'gray' }[s] || 'gray')
+  const badgeVariant = s => ({ SUCCESS: 'green', PENDING: 'amber', FAILED: 'red', ABANDONED: 'gray', REFUNDED: 'gray', DISPUTED: 'red' }[s] || 'gray')
 
   return (
     <div className="flex flex-col gap-6">
@@ -115,12 +165,36 @@ export default function AdminPayments() {
                   <td className="px-4 py-3 text-gray-500">{p.fixTier || '—'}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.referralCode || '—'}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(p.createdAt)}</td>
-                  <td className="px-4 py-3 text-right">
+                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
                     {p.status === 'SUCCESS' && (
+                      <>
+                        <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                          onClick={() => reconcile(p)}>
+                          Reconcile
+                        </Button>
+                        <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                          onClick={() => resolvePayment(p, 'reverse')}>
+                          Reverse
+                        </Button>
+                      </>
+                    )}
+                    {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
-                        onClick={() => reconcile(p)}>
-                        Reconcile
+                        onClick={() => recheck(p)}>
+                        Recheck
                       </Button>
+                    )}
+                    {p.status === 'DISPUTED' && (
+                      <>
+                        <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                          onClick={() => resolvePayment(p, 'clear-dispute')}>
+                          Clear dispute
+                        </Button>
+                        <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                          onClick={() => resolvePayment(p, 'reverse')}>
+                          Reverse
+                        </Button>
+                      </>
                     )}
                   </td>
                 </tr>

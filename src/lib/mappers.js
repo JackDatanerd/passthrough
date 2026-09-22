@@ -63,6 +63,14 @@ function scanRowToCamel(row) {
     verificationUrl:     row.verification_url,
     verifyExposeDocx:    row.verify_expose_docx,
     verifyExposePdf:     row.verify_expose_pdf,
+    // Section 7 audit (migration 0021)
+    verifyHideName:      row.verify_hide_name,
+    verificationStatus:  row.verification_status,
+    verificationRevokedAt:     row.verification_revoked_at,
+    verificationRevokedReason: row.verification_revoked_reason,
+    resumePdfHash:       row.resume_pdf_hash,
+    resumeHashHistory:   row.resume_hash_history,
+    fixPaymentId:        row.fix_payment_id,
     verificationViews:   row.verification_views,
     resumeHash:          row.resume_hash,
     verifiedAt:          row.verified_at,
@@ -154,7 +162,10 @@ const SCAN_FIELD_MAP = {
   coverLetterText: 'cover_letter_text', verificationCode: 'verification_code',
   verificationUrl: 'verification_url', verificationViews: 'verification_views',
   verifyExposeDocx: 'verify_expose_docx', verifyExposePdf: 'verify_expose_pdf',
-  resumeHash: 'resume_hash', verifiedAt: 'verified_at', roleCategory: 'role_category',
+  resumeHash: 'resume_hash', verifiedAt: 'verified_at',
+  verifyHideName: 'verify_hide_name', verificationStatus: 'verification_status',
+  verificationRevokedAt: 'verification_revoked_at', verificationRevokedReason: 'verification_revoked_reason',
+  resumePdfHash: 'resume_pdf_hash', resumeHashHistory: 'resume_hash_history', fixPaymentId: 'fix_payment_id', roleCategory: 'role_category',
   seniorityLevel: 'seniority_level', integrityScore: 'integrity_score', userId: 'user_id',
   anonToken: 'anon_token', anonExpiresAt: 'anon_expires_at',
   contactName: 'contact_name', contactEmail: 'contact_email',
@@ -275,6 +286,9 @@ function commissionLedgerRowToCamel(row) {
     commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
     commissionAmountCents: row.commission_amount_cents,
     payoutId:              row.payout_id,
+    // Section 8 audit: a reversal is a NEGATIVE row pointing at the row it undoes.
+    reversesLedgerId:      row.reverses_ledger_id ?? null,
+    reversalReason:        row.reversal_reason ?? null,
     createdAt:             row.created_at
   }
 }
@@ -288,6 +302,7 @@ function leadRowToCamel(row) {
     email:        row.email,
     roleCategory: row.role_category,
     source:       row.source,
+    sourceCode:   row.source_code ?? null,
     status:       row.status,
     notes:        row.notes,
     createdAt:    row.created_at,

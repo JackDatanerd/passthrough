@@ -49,6 +49,7 @@ const LOOKBACK_MS         = 7 * 24 * 60 * 60 * 1000
 const MAX_PER_RUN         = 10
 
 const referralService = require('./referral.service')
+const fulfillment = require('./fulfillment.service')
 
 function generatorFor(fixTier) {
   return fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
@@ -93,9 +94,16 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
   for (const { payment, scan, kind } of orphans.slice(0, MAX_PER_RUN)) {
     const fixTier = payment.fix_tier || 'FIX'
     try {
-      let claim = supabase.from('scans')
-        .update({ fix_purchased: true, fix_tier: fixTier, status: 'FIX_PURCHASED' })
-        .eq('id', scan.id)
+      // SECTION 7/8 AUDIT: record WHICH payment claimed the scan (fix_payment_id,
+      // migration — see fulfillment.service.js), same as every other claim in the
+      // codebase now does. Only set on the 'never-fulfilled' claim, which is the
+      // one actually taking ownership; 'job-lost' is a re-enqueue of a scan this
+      // payment already owns, and must not touch it (a DIFFERENT payment must
+      // never be able to steal ownership by winning the FIX_PURCHASED-stuck race).
+      const patch = kind === 'never-fulfilled'
+        ? { fix_purchased: true, fix_tier: fixTier, status: 'FIX_PURCHASED', fix_payment_id: payment.id }
+        : { status: 'FIX_PURCHASED' }
+      let claim = supabase.from('scans').update(patch).eq('id', scan.id)
       claim = kind === 'never-fulfilled' ? claim.eq('fix_purchased', false) : claim.eq('status', 'FIX_PURCHASED')
       const { data: claimed, error: claimErr } = await claim.select('id')
       if (claimErr) throw claimErr
@@ -204,7 +212,109 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
   return result
 }
 
+
+// ── Third concern in this file: PENDING/ABANDONED/FAILED that Paystack says
+//    were actually PAID ───────────────────────────────────────────────────
+//
+// Different again from both sweeps above:
+//   sweepOrphanedPayments      SUCCESS in our DB, but delivery never happened.
+//   sweepStalePendingPayments  genuinely never paid — times out to ABANDONED.
+//   sweepPendingPayments (below) SECTION 8 AUDIT (feature gap): a payment our
+//     webhook/verify path never marked SUCCESS at all — the webhook was lost,
+//     or the buyer paid and closed the tab before the redirect ever called
+//     /verify — even though Paystack DID receive the money. Nothing before
+//     this looked at non-SUCCESS rows against Paystack's own record of them.
+//     Each candidate is verified against Paystack's API before anything is
+//     settled, so this never trusts anything the client could have forged.
+//
+// Deliberately runs BEFORE sweepStalePendingPayments has a chance to time a
+// row out from under it: this checks payments still inside PENDING_RECENT_MS,
+// well short of sweepStalePendingPayments's 2-hour PENDING_ABANDON_AGE_MS, so
+// the two never race over the same row. A row already abandoned by that sweep
+// is still revivable here for a good while longer (fulfillment.service treats
+// ABANDONED as revivable) — a very late Paystack success should still be
+// honoured, it just won't be caught until the buyer returns or an admin
+// recheck is used past that point.
+const PENDING_MIN_AGE_MS     = 10 * 60 * 1000          // don't race a checkout still in progress
+const PENDING_RECENT_MS      = 60 * 60 * 1000          // stays well inside sweepStalePendingPayments's 2h window
+const MAX_VERIFY_PER_RUN     = 25                      // each is one Paystack API call
+
+/**
+ * Ask Paystack whether this payment was really paid; if so, settle + deliver it.
+ * Shared by the hourly sweep and the admin "Recheck" action.
+ *   NOT_PAID   Paystack says it wasn't
+ *   MISMATCH   paid, but amount/currency differ from the row (held; currency is
+ *              never overridable, amount only with acceptAmountMismatch)
+ * otherwise the outcome of settlePayment (FULFILLED, ALREADY_FULFILLED, DUPLICATE, …).
+ * Throws when the Paystack lookup itself fails.
+ */
+async function recheckPayment(env, supabase, payment, { acceptAmountMismatch = false, source = 'recheck' } = {}) {
+  // Lazy on purpose, matching fulfillment.service.js's own pattern for
+  // email/referral: this module is required ONCE (payments.controller.js
+  // holds a long-lived reference to it), so a top-level `require` here would
+  // bind forever to whatever paystack.service export existed at that first
+  // load — including in tests, where each test wants its own fresh stub.
+  const paystackService = require('./paystack.service')
+  const pResult = await paystackService.verifyTransaction(env, payment.paystack_ref)
+  const d = pResult?.data || {}
+  if (d.status !== 'success') return { outcome: 'NOT_PAID', paystackStatus: d.status || 'unknown' }
+
+  const mismatch = fulfillment.chargeMismatch(payment, { amount: d.amount, currency: d.currency })
+  if (mismatch && (mismatch.receivedCurrency !== mismatch.expectedCurrency || !acceptAmountMismatch))
+    return { outcome: 'MISMATCH', paystackStatus: d.status, ...mismatch }
+
+  const result = await fulfillment.settlePayment(env, supabase, payment, {
+    authCode: d.authorization?.authorization_code, source,
+  })
+  return { ...result, paystackStatus: d.status }
+}
+
+async function sweepPendingPayments(env, supabase, { now = Date.now(), alert = true } = {}) {
+  const result = { checked: 0, recovered: [], held: [], failed: [] }
+  const cols = 'id, paystack_ref, scan_id, fix_tier, status, amount_cents, currency, referral_code_id, created_at'
+
+  const { data: candidates, error } = await supabase.from('payments').select(cols)
+    .in('status', fulfillment.REVIVABLE_STATUSES)
+    .gt('created_at', new Date(now - PENDING_RECENT_MS).toISOString())
+    .lt('created_at', new Date(now - PENDING_MIN_AGE_MS).toISOString())
+    .order('created_at', { ascending: false }).limit(MAX_VERIFY_PER_RUN)
+  if (error) { result.error = error.message; return result }
+
+  // Free-credit redemptions never touch Paystack — nothing to verify.
+  const toCheck = (candidates || []).filter(p => p.paystack_ref && !p.paystack_ref.startsWith('credit:'))
+  result.checked = toCheck.length
+
+  for (const payment of toCheck) {
+    try {
+      const r = await recheckPayment(env, supabase, payment, { source: 'pending-sweep' })
+      if (r.outcome === 'NOT_PAID') continue   // routine — sweepStalePendingPayments owns the eventual ABANDON
+      if (r.outcome === 'MISMATCH') { result.held.push({ reference: payment.paystack_ref }); continue }  // webhook already alerted
+      if (r.won) result.recovered.push({ reference: payment.paystack_ref, scanId: payment.scan_id, outcome: r.outcome })
+      await fulfillment.notifySettlementProblem(env, r, payment, 'pending-sweep')
+    } catch (err) {
+      result.failed.push({ reference: payment.paystack_ref, error: err.message })
+    }
+  }
+
+  if (alert && (result.recovered.length || result.failed.length)) {
+    try {
+      const emailService = require('./email.service')
+      const lines = [
+        ...result.recovered.map(r => `RECOVERED  ${r.reference}  scan ${r.scanId}  (${r.outcome})`),
+        ...result.failed.map(r => `FAILED     ${r.reference}  ${r.error}`),
+      ]
+      await emailService.sendOwnerAlert(env,
+        `Pending-payment sweep: ${result.recovered.length} paid-but-unsettled recovered, ${result.failed.length} failed`,
+        `Paystack reports these as PAID although our own records never reached SUCCESS (checked ${result.checked}).\n\n${lines.join('\n')}\n\n` +
+        `Recovered items were settled and fulfilled automatically. Any occurrence means a webhook was lost or ` +
+        `the buyer never returned to the site after paying — check webhook_events and wrangler tail around the payment times.`)
+    } catch (_) {}
+  }
+  return result
+}
+
 module.exports = {
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
-  sweepStalePendingPayments, PENDING_ABANDON_AGE_MS
+  sweepStalePendingPayments, PENDING_ABANDON_AGE_MS,
+  sweepPendingPayments, recheckPayment, PENDING_MIN_AGE_MS, PENDING_RECENT_MS, MAX_VERIFY_PER_RUN,
 }

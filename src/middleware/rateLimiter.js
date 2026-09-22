@@ -48,7 +48,22 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
     const kv  = c.env.RATE_LIMIT_KV
     const now = Date.now()
 
-    const raw = await kv.get(key)
+    // SECTION 8 AUDIT FIX: a KV failure must never take the route down with it.
+    // Cloudflare KV allows roughly one write per second to any single key and
+    // errors above that; every request from one IP lands on ONE key, so two
+    // concurrent requests from the same address (Paystack delivers from just
+    // a handful of IPs — two events in the same second is routine; a page
+    // load firing parallel API calls is too) could make the put below throw
+    // and turn a perfectly good request into a 500. A rate limiter is a
+    // best-effort backstop (see the header comment) — when it can't do its
+    // job it fails OPEN and logs, it does not fail the request.
+    let raw = null
+    try {
+      raw = await kv.get(key)
+    } catch (err) {
+      console.error(`Rate limiter KV read failed (${keyPrefix}) — failing open:`, err.message)
+      return next()
+    }
     let count = 0
     let windowStart = now
     if (raw) {
@@ -112,7 +127,11 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip }) {
     // window) — the elapsedSeconds check above, not this floor, is what
     // actually guarantees correctness in that case.
     const remainingTtl = Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
-    await kv.put(key, JSON.stringify({ count: count + 1, windowStart }), { expirationTtl: remainingTtl })
+    try {
+      await kv.put(key, JSON.stringify({ count: count + 1, windowStart }), { expirationTtl: remainingTtl })
+    } catch (err) {
+      console.error(`Rate limiter KV write failed (${keyPrefix}) — failing open:`, err.message)
+    }
     return next()
   }
 }
@@ -315,6 +334,7 @@ async function recordLoginFailure(env, email, ip) {
   const key = lockoutKey(email)
   const raw = await kv.get(key)
   let failCount = 0
+
   let ips = []
   try {
     if (raw) {
@@ -347,7 +367,59 @@ async function recordLoginSuccess(env, email) {
   await env.RATE_LIMIT_KV.delete(lockoutKey(email)).catch(() => {})
 }
 
+// ── Public verification lookups: miss limiter ───────────────────────────────
+// SECTION 7 AUDIT FIX (feature gap): /api/verify/:code is public and
+// unauthenticated, and the codes are only 6 characters from a 32-symbol
+// alphabet (~1.07 billion combinations). `general`'s 100 req / 15 min per IP
+// treats a hiring manager opening a real link and a script probing random
+// codes identically. This counts only MISSES (unknown code / malformed code)
+// per IP: a real reader never produces one, a prober produces nothing but
+// them. Deliberately separate from `general` so an office NAT full of
+// legitimate readers is never punished for each other's successful lookups.
+const VERIFY_MISS_MAX = 30
+const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
+
+function verifyMissKey(ip) { return `rl:vmiss:${ip}` }
+
+async function readMissCounter(kv, key, now) {
+  const raw = await kv.get(key)
+  if (!raw) return { count: 0, windowStart: now }
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number'
+        && (now - parsed.windowStart) / 1000 < VERIFY_MISS_WINDOW_SECONDS)
+      return parsed
+  } catch (_) { /* corrupt value → fresh window */ }
+  return { count: 0, windowStart: now }
+}
+
+// true → this IP has already produced too many misses in the window.
+// Fails OPEN on any KV problem (same posture as makeLimiter).
+async function isVerifyMissLimited(env, ip, now = Date.now()) {
+  if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return false
+  try {
+    const { count } = await readMissCounter(env.RATE_LIMIT_KV, verifyMissKey(ip), now)
+    return count >= VERIFY_MISS_MAX
+  } catch (err) {
+    console.error('Verify miss limiter read failed — failing open:', err.message)
+    return false
+  }
+}
+
+async function recordVerifyMiss(env, ip, now = Date.now()) {
+  if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return
+  try {
+    const key = verifyMissKey(ip)
+    const cur = await readMissCounter(env.RATE_LIMIT_KV, key, now)
+    const remaining = Math.max(Math.ceil(VERIFY_MISS_WINDOW_SECONDS - (now - cur.windowStart) / 1000), 60)
+    await env.RATE_LIMIT_KV.put(key, JSON.stringify({ count: cur.count + 1, windowStart: cur.windowStart }), { expirationTtl: remaining })
+  } catch (err) {
+    console.error('Verify miss limiter write failed:', err.message)
+  }
+}
+
 module.exports = {
   general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess,
+  isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX
 }

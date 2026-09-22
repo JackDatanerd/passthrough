@@ -208,7 +208,7 @@ async function adminGetPartner(ctx) {
       *,
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at),
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at)
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at)
     `)
     .eq('id', partnerId)
     .order('paid_at',    { foreignTable: 'payouts',         ascending: false })
@@ -447,6 +447,15 @@ async function adminRecordPayout(ctx) {
   if (ledgerErr) throw ledgerErr
 
   const owedCents   = unpaidLedger.reduce((sum, l) => sum + l.commission_amount_cents, 0)
+  // SECTION 8 AUDIT: reversal rows (refunds/chargebacks) are NEGATIVE ledger
+  // entries, so the net owed can now be zero or negative — e.g. a commission
+  // already paid out was reversed and nothing new has accrued to net it
+  // against. Recording a payout of <= 0 would be nonsense (and negative
+  // amounts fail the payouts check constraint); tell the admin instead.
+  if (body.amountCents === undefined && owedCents <= 0)
+    return ctx.json({ success: false, message: owedCents < 0
+      ? `Net owed is negative (${owedCents} cents) because of refund/chargeback reversals — nothing to pay. It will net against this partner's future commission.`
+      : 'Nothing owed for this scope.' }, 400)
   const amountCents = body.amountCents ?? owedCents
 
   const { data: payout, error } = await supabase.from('payouts').insert({
@@ -603,7 +612,7 @@ async function getPartnerDashboard(ctx) {
     .select(`
       name, commission_rate,
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, created_at),
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at),
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at)
     `)
     .eq('payout_details_token', token)

@@ -163,7 +163,19 @@ async function sendPartnerLinkRegenerated(env, supabase, email, name, payoutUrl)
   })
 }
 
-async function sendFixDelivered(env, supabase, email, name, code, verificationUrl) {
+// SECTION 7 AUDIT: `verified` (default true) is false when the fixed resume's
+// score finished under the Verified threshold. The email used to congratulate
+// the candidate on a "Passthrough Verified resume" and tell them to paste
+// "My resume has been Passthrough Verified" into cover letters — for a
+// resume whose public page says the opposite.
+async function sendFixDelivered(env, supabase, email, name, code, verificationUrl, verified = true) {
+  if (!verified) {
+    return send(env, supabase, email, 'Your rewritten resume is ready', 'fix_delivered_report', {
+      NAME:             name,
+      VERIFICATION_URL: verificationUrl,
+      DOWNLOAD_URL:     `${env.FRONTEND_URL}/dashboard`
+    })
+  }
   return send(env, supabase, email, '✓ Your Passthrough Verified resume is ready', 'fix_delivered', {
     NAME:              name,
     VERIFICATION_CODE: code,

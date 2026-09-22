@@ -18,6 +18,7 @@ export default function AdminScans() {
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
+  const [busyId, setBusyId] = useState(null)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -40,6 +41,23 @@ export default function AdminScans() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  // SECTION 7 AUDIT (feature gap G7-2): the public verification page had no
+  // admin off switch — abuse or a takedown request had no lever here at all.
+  async function handleSetVerification(scan, action) {
+    setBusyId(scan.id)
+    try {
+      await api.patch(`/admin/scans/${scan.id}/verification`, { action })
+      setScans(prev => prev.map(s => s.id === scan.id
+        ? { ...s, verificationStatus: action === 'revoke' ? 'REVOKED' : 'ACTIVE', verificationRevokedReason: action === 'revoke' ? 'ADMIN' : null }
+        : s))
+      toast({ message: action === 'revoke' ? 'Verification revoked.' : 'Verification restored.', type: 'success' })
+    } catch (_) {
+      toast({ message: 'Could not update verification.', type: 'error' })
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -70,6 +88,7 @@ export default function AdminScans() {
                 <th className="px-4 py-3">Fix tier</th>
                 <th className="px-4 py-3">Created</th>
                 <th className="px-4 py-3">Updated</th>
+                <th className="px-4 py-3">Verification</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -88,6 +107,27 @@ export default function AdminScans() {
                   <td className="px-4 py-3 text-gray-500">{s.fixPurchased ? (s.fixTier || 'FIX') : '—'}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(s.createdAt)}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(s.updatedAt)}</td>
+                  <td className="px-4 py-3">
+                    {!s.verificationCode ? (
+                      <span className="text-gray-300">—</span>
+                    ) : s.verificationStatus === 'REVOKED' ? (
+                      <div className="flex items-center gap-2">
+                        <Badge variant="gray">Revoked{s.verificationRevokedReason ? ` (${s.verificationRevokedReason})` : ''}</Badge>
+                        <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'restore')}
+                          className="text-xs text-blue-700 hover:text-blue-800 underline disabled:opacity-50">
+                          Restore
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <Badge variant="green">Active</Badge>
+                        <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'revoke')}
+                          className="text-xs text-red-600 hover:text-red-700 underline disabled:opacity-50">
+                          Revoke
+                        </button>
+                      </div>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -66,6 +66,7 @@ export default function ScanResult() {
   const [payError,    setPayError  ] = useState('')
   const [dlError,     setDlError   ] = useState('')
   const [visibilityError, setVisibilityError] = useState('')
+  const [publishLoading, setPublishLoading] = useState(false)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const [pollError,    setPollError   ] = useState('')
@@ -244,6 +245,20 @@ export default function ScanResult() {
     } catch (err) {
       setScan(prev => ({ ...prev, [stateField]: !value }))  // revert on failure
       setVisibilityError(getErrorMessage(err, 'Could not update visibility.'))
+    }
+  }
+
+  async function handleTogglePublished() {
+    setVisibilityError('')
+    setPublishLoading(true)
+    const wantPublished = scan.verificationStatus === 'REVOKED'
+    try {
+      const res = await api.patch(`/scan/${id}/verify-visibility`, { published: wantPublished })
+      setScan(prev => ({ ...prev, verificationStatus: res.data.data.verificationStatus }))
+    } catch (err) {
+      setVisibilityError(getErrorMessage(err, 'Could not update.'))
+    } finally {
+      setPublishLoading(false)
     }
   }
 
@@ -453,7 +468,23 @@ export default function ScanResult() {
                     )}
                   </>
                 )}
-                {scan.fixAtsScore >= ATS_BADGE_THRESHOLD && scan.verificationUrl && (
+                {/* SECTION 7 AUDIT (feature gap G7-2): the page had no off switch —
+                    an owner could not unpublish it (refund/abuse/second thoughts),
+                    and a scan below the badge threshold got a live public page
+                    with no visibility into that from here at all. */}
+                {scan.verificationUrl && scan.verificationStatus === 'REVOKED' ? (
+                  <p className="text-sm text-gray-700 bg-gray-100 border border-gray-200 rounded px-3 py-2 mb-4">
+                    Your verification page is currently unpublished.
+                    {scan.verificationRevokedReason === 'OWNER' ? (
+                      <button onClick={handleTogglePublished} disabled={publishLoading}
+                        className="ml-2 underline underline-offset-2 hover:text-gray-900 disabled:opacity-50">
+                        Republish
+                      </button>
+                    ) : (
+                      ' It was taken down by Passthrough and cannot be republished from here — contact support if this seems wrong.'
+                    )}
+                  </p>
+                ) : scan.fixAtsScore >= ATS_BADGE_THRESHOLD && scan.verificationUrl && (
                   <p className="text-sm text-green-800 mb-4">
                     Verification URL:{' '}
                     <a href={scan.verificationUrl} target="_blank" rel="noreferrer"
@@ -515,7 +546,30 @@ export default function ScanResult() {
                         />
                         Allow public PDF download
                       </label>
+                      {/* SECTION 7 AUDIT (feature gap): hide the candidate's
+                          first name from the public page — useful for someone
+                          sharing the link more widely than a direct employer
+                          submission (e.g. a portfolio) who'd rather not have
+                          their name attached to the score itself. */}
+                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={!!scan.verifyHideName}
+                          onChange={e => handleToggleExposure('verifyHideName', 'hideName', e.target.checked)}
+                          className="rounded border-gray-300"
+                        />
+                        Hide my name on the public page
+                      </label>
                     </div>
+                    {scan.verificationStatus !== 'REVOKED' && (
+                      <button
+                        onClick={handleTogglePublished}
+                        disabled={publishLoading}
+                        className="mt-3 text-xs font-medium text-gray-500 hover:text-red-600 underline underline-offset-2 transition-colors disabled:opacity-50"
+                      >
+                        Unpublish verification page
+                      </button>
+                    )}
                   </div>
                 )}
               </div>

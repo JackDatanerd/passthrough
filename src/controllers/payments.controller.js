@@ -13,6 +13,7 @@
 // comment block for why waitUntil() isn't viable here (30s wall-clock cap,
 // non-catchable kill on timeout).
 
+const { z } = require('zod')
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
@@ -20,6 +21,8 @@ const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
 const emailService = require('../services/email.service')
 const referralService = require('../services/referral.service')
+const fulfillmentService = require('../services/fulfillment.service')
+const reconcileService = require('../services/reconcile.service')
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
@@ -191,7 +194,7 @@ async function verifyPayment(c2) {
   // all. Also doubles as the "expected payment" row the amount check below
   // needs, so there's no second query for the same row anymore.
   const { data: paymentRow, error: paymentErr } = await supabase
-    .from('payments').select('user_id, amount_cents, currency, scan_id, fix_tier').eq('paystack_ref', reference).maybeSingle()
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
   if (paymentErr) throw paymentErr
   if (!paymentRow || paymentRow.user_id !== user.id)
     return c2.json({ success: false, message: 'Payment not found.' }, 404)
@@ -242,85 +245,35 @@ async function verifyPayment(c2) {
 
   const authCode = pResult.data?.authorization?.authorization_code
 
-  // Atomic idempotency — UPDATE...RETURNING only matches rows that were
-  // still PENDING at update time, same guarantee as Prisma's updateMany count.
-  const { data: updatedRows, error: updErr } = await supabase
-    .from('payments')
-    .update({ status: 'SUCCESS', paystack_auth_code: authCode })
-    .eq('paystack_ref', reference)
-    .eq('status', 'PENDING')
-    .select()
-  if (updErr) throw updErr
-
-  if (updatedRows.length === 0) {
-    // Already processed (webhook got there first, or this is a duplicate
-    // client call) — scan_id is already known from the ownership check
-    // above, no need to re-query it.
-    return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
-  }
-
-  const payment = updatedRows[0]
-
-  // Referral attribution is bound to the payment row itself (referral_code_id,
-  // set once at initializePayment time — see that function's comment) — this
-  // runs exactly once, gated by the same atomic idempotency check above, so
-  // a partner is never double-credited for one sale. recordConversion never
-  // throws (it swallows and logs its own errors internally).
-  await referralService.recordConversion(supabase, payment, c2.env)
-
-  // fixTier comes from the PAYMENT row (bound at initializePayment, immutable
-  // per reference) — never from scans.fix_tier, which is just a downstream
-  // display/logic convenience field. This update is what makes scans.fix_tier
-  // trustworthy again: it's now only ever written here, at confirmed-paid
-  // time, from the tier that reference actually paid for.
-  const fixTier = payment.fix_tier || 'FIX'
-
-  // HARDENING: the atomic UPDATE above is, by design, the only moment
-  // fulfillment will ever run for this reference — any future call to this
-  // endpoint (or the webhook, in webhooks.controller.js) sees status !==
-  // 'PENDING' and returns the early "already processed" success response
-  // below, with no retry. That's correct for avoiding double-fulfillment,
-  // but it means a failure in the two steps below previously had no path
-  // back: the scans.update's own error was never even checked, so a failed
-  // write could go unnoticed while this endpoint still reported success —
-  // and scan.fixPurchased staying false is exactly what downloadFile in
-  // scan.controller.js gates the paid file on, and what initiateFix's
-  // already-purchased check relies on to prevent a second charge. Isolated
-  // in its own try/catch so a failure here gets an owner alert pointing at
-  // the manual recovery path, instead of either an opaque 500 or a false
-  // "success" with fulfillment silently incomplete.
+  // SECTION 8 AUDIT: settlement + fulfilment now live in
+  // services/fulfillment.service.js, shared with the webhook, the admin actions
+  // and both sweeps (they used to be four hand-copied variants). What this path
+  // gains: the flip accepts ABANDONED/FAILED rows (initializePayment's
+  // stale-checkout cleanup marks unfinished checkouts ABANDONED — a buyer who
+  // then pays that old checkout was silently dropped), a redelivery finishes a
+  // half-done fulfilment instead of skipping it, a second payment for an
+  // already-purchased scan is reported instead of re-generating the fix, and the
+  // customer's fulfilment runs BEFORE the partner-commission bookkeeping.
+  let result
   try {
-    const { error: scanUpdErr } = await supabase.from('scans').update({
-      fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
-    }).eq('id', payment.scan_id)
-    if (scanUpdErr) throw scanUpdErr
-
-    const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
-    // Enqueue instead of running inline via waitUntil() — generateFix/
-    // generateBadge (two Claude calls + a Browser Rendering PDF render) can
-    // easily exceed the 30-second waitUntil wall-clock cap, which silently
-    // kills the task with no catchable error. The queue consumer (index.js)
-    // has no such cap. See index.js's queue() handler for the full rationale.
-    await c2.env.FIX_QUEUE.send({ type: generatorType, scanId: payment.scan_id })
+    result = await fulfillmentService.settlePayment(c2.env, supabase, paymentRow, { authCode, source: 'verifyPayment' })
   } catch (fulfillErr) {
-    console.error(`[CRITICAL] verifyPayment fulfillment failed after payment marked SUCCESS (ref ${reference}, scan ${payment.scan_id}):`, fulfillErr.message)
+    console.error(`[CRITICAL] verifyPayment settlement/fulfillment failed (ref ${reference}, scan ${paymentRow.scan_id}):`, fulfillErr.message)
     try {
       await emailService.sendOwnerAlert(c2.env,
         'Payment succeeded but fulfillment failed — manual reconcile needed',
-        `source: verifyPayment\nreference: ${reference}\nscanId: ${payment.scan_id}\nfixTier: ${fixTier}\nerror: ${fulfillErr.message}\n\n` +
-        `This payment is marked SUCCESS and will NOT be automatically retried. Once ` +
-        `the underlying issue is fixed, call:\n\n  POST /api/payments/${reference}/reconcile  (admin-only)\n\n` +
-        `to re-run the scan update + fix-generation enqueue.`
+        `source: verifyPayment\nreference: ${reference}\nscanId: ${paymentRow.scan_id}\nfixTier: ${paymentRow.fix_tier}\nerror: ${fulfillErr.message}\n\n` +
+        `Recovery is automatic: Paystack's webhook retries, the buyer's next /verify call, and the hourly sweeps all re-run settlement. ` +
+        `To force it now: POST /api/payments/${reference}/reconcile (admin-only).`
       )
     } catch (_) {}
-    // The payment itself genuinely succeeded — Paystack was charged and
-    // verified above. Don't surface a scary error for something that isn't
-    // the payer's fault; fulfillment will be completed via the reconcile
-    // path once the owner is alerted.
-    return c2.json({ success: true, data: { scanId: payment.scan_id } })
+    // The payment itself genuinely succeeded — Paystack was charged and verified
+    // above. Don't surface a scary error for something that isn't the payer's fault.
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
   }
 
-  return c2.json({ success: true, data: { scanId: payment.scan_id } })
+  await fulfillmentService.notifySettlementProblem(c2.env, result, paymentRow, 'verifyPayment')
+  return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
 }
 
 // POST /api/payments/:reference/reconcile — admin-only manual recovery.
@@ -342,39 +295,111 @@ async function reconcilePayment(ctx) {
   if (error) throw error
   if (!payment) return ctx.json({ success: false, message: 'Payment not found.' }, 404)
   if (payment.status !== 'SUCCESS')
-    return ctx.json({ success: false, message: `Payment status is ${payment.status}, not SUCCESS — nothing to reconcile.` }, 400)
+    return ctx.json({ success: false, message: `Payment status is ${payment.status}, not SUCCESS — nothing to reconcile. (PENDING/ABANDONED/FAILED: use /recheck.)` }, 400)
 
-  const { data: scan, error: scanErr } = await supabase
-    .from('scans').select('id, status, fix_purchased').eq('id', payment.scan_id).maybeSingle()
-  if (scanErr) throw scanErr
-  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
-
-  if (scan.fix_purchased && ['FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)) {
-    // Fix delivery is fine, but the partner-commission ledger write may be
-    // the thing that failed (see recordConversion) — retry it here too;
-    // it's idempotent, so an already-recorded conversion is a no-op.
-    const conversion = await referralService.recordConversion(supabase, payment)
-    return ctx.json({ success: true, message: 'Already fulfilled — nothing to do.',
-      data: { scanId: scan.id, status: scan.status, conversion } })
-  }
-
-  const fixTier = payment.fix_tier || 'FIX'
-  const { error: updErr } = await supabase.from('scans').update({
-    fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: fixTier
-  }).eq('id', scan.id)
-  if (updErr) throw updErr
-
-  const generatorType = fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
-  await ctx.env.FIX_QUEUE.send({ type: generatorType, scanId: scan.id })
+  // force: an admin explicitly asked, so re-enqueue a stuck FIX_PURCHASED scan
+  // without waiting out the automatic re-enqueue grace period.
+  const result = await fulfillmentService.fulfillPayment(ctx.env, supabase, payment, { force: true })
 
   // Also re-attempt the partner-commission ledger entry. recordConversion is
-  // idempotent (commission_ledger.payment_id is unique -> a repeat is a
-  // harmless no-op), and a failed ledger write at fulfillment time is
-  // otherwise unrecoverable: the idempotency guard means nothing else will
-  // ever retry it.
-  const conversion = await referralService.recordConversion(supabase, payment)
+  // idempotent (one original ledger row per payment -> a repeat is a harmless
+  // no-op), and a failed ledger write at fulfillment time is otherwise
+  // unrecoverable. Skipped for a duplicate: it must never earn commission.
+  const skipCommission = ['DUPLICATE', 'SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED'].includes(result.outcome)
+  const conversion = skipCommission ? null : await referralService.recordConversion(supabase, payment)
 
-  return ctx.json({ success: true, message: 'Re-enqueued.', data: { scanId: scan.id, fixTier, conversion } })
+  const messages = {
+    FULFILLED:         'Fulfilled.',
+    REENQUEUED:        'Re-enqueued.',
+    ALREADY_FULFILLED: 'Already fulfilled — nothing to do.',
+    DUPLICATE:         'This is a DUPLICATE payment — the scan was already fulfilled by another payment. Nothing was generated. Refund it in Paystack.',
+    SCAN_MISSING:      'Scan not found.',
+    NO_SCAN:           'This payment has no scan attached.',
+    ACCOUNT_DELETED:   'The account was deleted — nothing to deliver. Refund it in Paystack.',
+  }
+  const ok = !['SCAN_MISSING', 'NO_SCAN'].includes(result.outcome)
+  return ctx.json({ success: ok, message: messages[result.outcome] || result.outcome,
+    data: { scanId: payment.scan_id, outcome: result.outcome, fixTier: result.fixTier, conversion } }, ok ? 200 : 404)
+}
+
+// POST /api/payments/:reference/recheck — admin-only.
+// SECTION 8 AUDIT (feature gap): a payment held for a mismatch (or one whose
+// webhook was lost) sits PENDING/ABANDONED/FAILED, and /reconcile refuses
+// anything that isn't SUCCESS — so "left PENDING for manual review" had no
+// tool behind it. This asks Paystack, and if the money really arrived,
+// settles + delivers it. Body: { acceptAmountMismatch?: boolean } — only for a
+// genuine amount difference (customer paid fees, etc.); a currency mismatch is
+// never accepted.
+const recheckSchema = z.object({ acceptAmountMismatch: z.boolean().optional() })
+
+async function recheckPayment(ctx) {
+  const reference = ctx.req.param('reference')
+  const body = recheckSchema.parse(await ctx.req.json().catch(() => ({})))
+  const supabase = getSupabase(ctx.env)
+
+  const { data: payment, error } = await supabase
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment) return ctx.json({ success: false, message: 'Payment not found.' }, 404)
+  if (payment.status === 'SUCCESS')
+    return ctx.json({ success: false, message: 'Already SUCCESS — use /reconcile to re-run delivery.' }, 400)
+  if (['REFUNDED', 'DISPUTED'].includes(payment.status))
+    return ctx.json({ success: false, message: `Payment is ${payment.status} — not eligible.` }, 400)
+  if (payment.paystack_ref.startsWith('credit:'))
+    return ctx.json({ success: false, message: 'Free-credit redemption — nothing to check with Paystack.' }, 400)
+
+  let r
+  try {
+    r = await reconcileService.recheckPayment(ctx.env, supabase, payment, {
+      acceptAmountMismatch: !!body.acceptAmountMismatch, source: 'admin-recheck',
+    })
+  } catch (err) {
+    return ctx.json({ success: false, message: `Paystack lookup failed: ${err.message}` }, 502)
+  }
+  await fulfillmentService.notifySettlementProblem(ctx.env, r, payment, 'admin-recheck')
+
+  if (r.outcome === 'NOT_PAID')
+    return ctx.json({ success: false, message: `Paystack reports this transaction as "${r.paystackStatus}" — not paid.`, data: r }, 409)
+  if (r.outcome === 'MISMATCH')
+    return ctx.json({ success: false, message: 'Paid, but amount/currency differ from what was expected. Re-send with acceptAmountMismatch:true to accept an amount difference (currency can never be accepted).', data: r }, 409)
+  return ctx.json({ success: true, message: r.outcome, data: r })
+}
+
+// POST /api/payments/:reference/resolve — admin-only.
+// SECTION 8 AUDIT (feature gap): refunds/disputes had no state to move to.
+//   reverse         SUCCESS|DISPUTED → REFUNDED, reverse commission, revoke credential
+//                   (use when you LOST a dispute, or refunded outside Paystack)
+//   clear-dispute   DISPUTED → SUCCESS (you WON the dispute)
+const resolveSchema = z.object({ action: z.enum(['reverse', 'clear-dispute']) })
+
+async function resolvePayment(ctx) {
+  const reference = ctx.req.param('reference')
+  const body = resolveSchema.parse(await ctx.req.json())
+  const supabase = getSupabase(ctx.env)
+
+  const { data: payment, error } = await supabase
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment) return ctx.json({ success: false, message: 'Payment not found.' }, 404)
+
+  if (body.action === 'clear-dispute') {
+    if (payment.status !== 'DISPUTED')
+      return ctx.json({ success: false, message: `Payment is ${payment.status}, not DISPUTED.` }, 400)
+    const { error: upErr } = await supabase.from('payments')
+      .update({ status: 'SUCCESS', disputed_at: null }).eq('id', payment.id).eq('status', 'DISPUTED')
+    if (upErr) throw upErr
+    return ctx.json({ success: true, message: 'Dispute cleared — payment is SUCCESS again.' })
+  }
+
+  if (!['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status))
+    return ctx.json({ success: false, message: `Payment is ${payment.status} — nothing to reverse.` }, 400)
+  const reason = payment.status === 'DISPUTED' ? 'DISPUTE' : 'REFUND'
+  const done = await fulfillmentService.reversePayment(supabase, payment, { reason })
+  return ctx.json({ success: true, message: 'Reversed.', data: {
+    transitioned: done.transitioned, commissionReversed: done.ledger.reversed,
+    commissionNote: done.ledger.reason || (done.ledger.alreadyPaidOut ? 'already paid out — nets against next payout' : null),
+    verificationRevoked: done.revoked,
+  } })
 }
 
 // GET /api/payments/history
@@ -401,4 +426,4 @@ async function getPaymentHistory(c2) {
   return c2.json({ success: true, data: { payments } })
 }
 
-module.exports = { initializePayment, verifyPayment, getPaymentHistory, reconcilePayment }
+module.exports = { initializePayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment }

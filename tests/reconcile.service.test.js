@@ -63,7 +63,11 @@ describe('sweepOrphanedPayments', () => {
       conversion: { ok: true, recorded: false, reason: 'no-referral' } }])
     expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
     const claim = t.state.claims[0]
-    expect(claim.patch).toEqual({ fix_purchased: true, fix_tier: 'FIX', status: 'FIX_PURCHASED' })
+    // SECTION 8 AUDIT: the claim now also records WHICH payment took ownership
+    // (fix_payment_id) — same field fulfillment.service.js's own claim sets —
+    // so a later duplicate payment for this scan can be told apart from the
+    // one that legitimately fulfilled it.
+    expect(claim.patch).toEqual({ fix_purchased: true, fix_tier: 'FIX', status: 'FIX_PURCHASED', fix_payment_id: 'p1' })
     // the atomic guard: only claim if it is STILL unpurchased
     expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'fix_purchased' && f[2] === false)).toBe(true)
     // a no-referral payment never touches the commission ledger at all
@@ -281,6 +285,118 @@ describe('sweepStalePendingPayments', () => {
     const { mod, restore } = loadWithStubs('services/reconcile.service.js', {})
     const r = await mod.sweepStalePendingPayments({}, db, { now: NOW })
     expect(r.error).toBe('timeout')
+    restore()
+  })
+})
+
+// ── sweepPendingPayments / recheckPayment (Section 8 audit: paid-but-never-
+//    settled — the webhook was lost, or the buyer never returned) ──────────
+
+function setupRecheck({
+  payments = [], claimRows = [{ id: 'p1' }], claimError = null, scanRows = { id: 's1', user_id: 'u1', fix_purchased: false, updated_at: minsAgo(60) },
+  ownerRows = { deleted_at: null }, queueError = null, payErr = null, verify,
+} = {}) {
+  const state = { queue: [], alerts: [], verifyCalls: [] }
+  const db = createFakeSupabase(q => {
+    if (q.table === 'payments' && q.op === 'select') return { data: payments, error: payErr }
+    if (q.table === 'payments' && q.op === 'update') return { data: [{ id: 'p1', ...payments[0] }], error: null }
+    if (q.table === 'scans' && q.op === 'select') return { data: scanRows, error: null }
+    if (q.table === 'scans' && q.op === 'update') return { data: claimRows, error: claimError }
+    if (q.table === 'users') return { data: ownerRows, error: null }
+    return undefined
+  })
+  const env = { FIX_QUEUE: { send: async m => { if (queueError) throw queueError; state.queue.push(m) } } }
+  const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+    'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+    'services/paystack.service.js': { verifyTransaction: async (e, ref) => { state.verifyCalls.push(ref); return verify } },
+    'services/referral.service.js': { recordConversion: async () => ({ ok: true, recorded: false, reason: 'no-referral' }) },
+  })
+  return { sweep: (opts) => mod.sweepPendingPayments(env, db, { now: NOW, ...opts }), mod, env, db, state, restore }
+}
+
+const pendingReal = (over = {}) => ({ id: 'p1', paystack_ref: 'ref1', scan_id: 's1', fix_tier: 'FIX',
+  status: 'PENDING', amount_cents: 2900, currency: 'USD', created_at: minsAgo(30), ...over })
+
+describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCCESS rows)', () => {
+  it('does nothing when there is nothing to check', async () => {
+    t = setupRecheck()
+    const r = await t.sweep()
+    expect(r.checked).toBe(0)
+    expect(t.state.verifyCalls).toHaveLength(0)
+  })
+
+  it('only queries PENDING/ABANDONED/FAILED rows inside the recent window, past the min-age grace period', async () => {
+    t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'success', amount: 2900, currency: 'USD' } } })
+    await t.sweep()
+    const q = t.db.calls.find(c => c.table === 'payments' && c.op === 'select')
+    expect(q.filters.find(f => f[0] === 'in' && f[1] === 'status')[2]).toEqual(['PENDING', 'ABANDONED', 'FAILED'])
+    const gt = q.filters.find(f => f[0] === 'gt' && f[1] === 'created_at')[2]
+    const lt = q.filters.find(f => f[0] === 'lt' && f[1] === 'created_at')[2]
+    expect(Date.parse(gt)).toBe(NOW - 60 * 60_000)   // 60-minute recent window
+    expect(Date.parse(lt)).toBe(NOW - 10 * 60_000)   // 10-minute grace: don't race a checkout still in progress
+  })
+
+  it('recovers a payment Paystack says was really paid: settles and enqueues', async () => {
+    t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'success', amount: 2900, currency: 'USD', authorization: { authorization_code: 'AUTH_1' } } } })
+    const r = await t.sweep()
+    expect(t.state.verifyCalls).toEqual(['ref1'])
+    expect(r.recovered).toEqual([{ reference: 'ref1', scanId: 's1', outcome: 'FULFILLED' }])
+    expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 's1' }])
+  })
+
+  it('leaves an unpaid payment alone — routine, not abandoned here (sweepStalePendingPayments owns that)', async () => {
+    t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'abandoned' } } })
+    const r = await t.sweep()
+    expect(r.recovered).toHaveLength(0)
+    expect(r.held).toHaveLength(0)
+    expect(t.state.alerts).toHaveLength(0)
+  })
+
+  it('holds (does not fulfil) an amount mismatch, without alerting again — the webhook already did', async () => {
+    t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'success', amount: 100, currency: 'USD' } } })
+    const r = await t.sweep()
+    expect(r.held).toEqual([{ reference: 'ref1' }])
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.state.alerts).toHaveLength(0)
+  })
+
+  it('skips free-credit rows entirely — nothing to verify with Paystack', async () => {
+    t = setupRecheck({ payments: [pendingReal({ paystack_ref: 'credit:s1:123' })] })
+    const r = await t.sweep()
+    expect(r.checked).toBe(0)
+    expect(t.state.verifyCalls).toHaveLength(0)
+  })
+
+  it('keeps going and reports a failure when the Paystack lookup itself throws', async () => {
+    t = setupRecheck({ payments: [pendingReal()] })
+    t.mod && null
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+      'services/email.service.js': { sendOwnerAlert: async () => {} },
+      'services/paystack.service.js': { verifyTransaction: async () => { throw new Error('timeout') } },
+    })
+    const r = await mod.sweepPendingPayments(t.env, t.db, { now: NOW })
+    expect(r.failed).toEqual([{ reference: 'ref1', error: 'timeout' }])
+    restore()
+  })
+
+  it('emails a summary when something was recovered or failed', async () => {
+    t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'success', amount: 2900, currency: 'USD' } } })
+    await t.sweep()
+    expect(t.state.alerts.some(a => /recovered/i.test(a.subject))).toBe(true)
+  })
+
+  it('returns an error (does not throw) when the payments query fails', async () => {
+    t = setupRecheck({ payErr: { message: 'timeout' } })
+    const r = await t.sweep()
+    expect(r.error).toBe('timeout')
+  })
+
+  it("recheckPayment refuses NOT_PAID and MISMATCH without touching the payment", async () => {
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+      'services/paystack.service.js': { verifyTransaction: async () => ({ data: { status: 'failed' } }) },
+    })
+    const r = await mod.recheckPayment({}, {}, pendingReal())
+    expect(r.outcome).toBe('NOT_PAID')
     restore()
   })
 })

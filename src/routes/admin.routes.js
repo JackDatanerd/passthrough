@@ -1,5 +1,6 @@
 const { Hono } = require('hono')
 const admin = require('../middleware/adminOnly')
+const validateUuidParam = require('../middleware/validateUuidParam')
 const c     = require('../controllers/admin.controller')
 
 const router = new Hono()
@@ -15,6 +16,7 @@ router.get('/users/:id', c.adminGetUserDetail)
 router.patch('/users/:id', c.adminUpdateUser)
 
 router.get('/scans',    c.adminListScans)
+router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)
 router.get('/payments', c.adminListPayments)
 
 router.get('/email-logs', c.adminListEmailLogs)
