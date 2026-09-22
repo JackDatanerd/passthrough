@@ -6,6 +6,7 @@ import ScanForm from '../components/scan/ScanForm'
 import PromoCountdown from '../components/ui/PromoCountdown'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
+import Form from '../components/ui/Form'
 import api, { getErrorMessage } from '../lib/api'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 
@@ -91,7 +92,8 @@ function EmployerLeadForm() {
   const [err,     setErr    ] = useState('')
   const [loading, setLoading] = useState(false)
 
-  async function handleSubmit() {
+  async function handleSubmit(e) {
+    e?.preventDefault?.()
     if (!name || !company || !email) return setErr('Name, company, and email required.')
     setLoading(true); setErr('')
     try {
@@ -116,13 +118,13 @@ function EmployerLeadForm() {
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
       <h3 className="font-semibold text-gray-900 mb-1">Get early access to Verified candidates</h3>
       <p className="text-sm text-gray-500 mb-4">We'll reach out when we have candidates matching your needs.</p>
-      <div className="flex flex-col gap-3">
+      <Form onSubmit={handleSubmit} className="flex flex-col gap-3">
         <Input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
         <Input placeholder="Company" value={company} onChange={e => setCompany(e.target.value)} />
         <Input type="email" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
         {err && <p className="text-xs text-red-600">{err}</p>}
-        <Button onClick={handleSubmit} loading={loading}>Get early access</Button>
-      </div>
+        <Button type="submit" loading={loading}>Get early access</Button>
+      </Form>
     </div>
   )
 }

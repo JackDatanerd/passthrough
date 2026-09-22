@@ -1,6 +1,7 @@
 const { Hono } = require('hono')
 const admin = require('../middleware/adminOnly')
 const rl    = require('../middleware/rateLimiter')
+const validateUuidParam = require('../middleware/validateUuidParam')
 const c     = require('../controllers/partners.controller')
 
 const router = new Hono()
@@ -20,15 +21,20 @@ router.post('/track-click', rl.click, c.trackClick)
 // Admin only
 router.post( '/',                          admin, c.adminCreatePartner)
 router.get(  '/',                          admin, c.adminListPartners)
-router.get(  '/:id',                       admin, c.adminGetPartner)
+router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.
 // name/email closed in the same pass (Admin panel).
-router.patch('/:id',                       admin, c.adminUpdatePartner)
-router.post( '/:id/resend-link',           admin, c.adminResendPayoutLink)
-router.post( '/:id/regenerate-link',       admin, c.adminRegeneratePayoutLink)
-router.post( '/:id/payouts',               admin, c.adminRecordPayout)
-router.post( '/:id/referral-codes',        admin, c.adminCreateReferralCode)
-router.patch('/referral-codes/:codeId',    admin, c.adminUpdateReferralCode)
+//
+// BUG FIX (traced from Section 11/12's audit of validateUuidParam.js — every
+// :id/:codeId route below was still handing an unvalidated param straight to
+// `.eq('id'/'code_id', ...)` against a uuid column, same uncaught-500 shape
+// the middleware exists to prevent elsewhere): validated here too.
+router.patch('/:id',                       admin, validateUuidParam(), c.adminUpdatePartner)
+router.post( '/:id/resend-link',           admin, validateUuidParam(), c.adminResendPayoutLink)
+router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRegeneratePayoutLink)
+router.post( '/:id/payouts',               admin, validateUuidParam(), c.adminRecordPayout)
+router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
+router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 
 module.exports = router

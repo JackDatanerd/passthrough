@@ -6,6 +6,7 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Textarea from '../ui/Textarea'
 import FileUpload from '../ui/FileUpload'
+import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
@@ -75,7 +76,8 @@ export default function ScanForm() {
     setError('')
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(e) {
+    e?.preventDefault?.()
     if (entryMode === 'upload' && !file)
       return setError('Please upload your resume.')
     if (entryMode === 'brainDump' && brainDumpText.trim().length < MIN_BRAIN_DUMP_CHARS)
@@ -146,23 +148,23 @@ export default function ScanForm() {
       : 'Build & Score My Resume — Free'
 
   return (
-    <div className="flex flex-col gap-5">
+    <Form onSubmit={handleSubmit} className="flex flex-col gap-5">
       <div>
         <div className="flex rounded-md overflow-hidden border border-gray-300 text-sm mb-3 w-fit flex-wrap">
-          <button
+          <button type="button"
             onClick={() => switchEntryMode('upload')}
             className={`px-3 py-1.5 transition-colors ${entryMode === 'upload' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Upload resume
           </button>
-          <button
+          <button type="button"
             onClick={() => switchEntryMode('brainDump')}
             className={`px-3 py-1.5 transition-colors ${entryMode === 'brainDump' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Start from scratch
           </button>
           {hasSavedProfile && (
-            <button
+            <button type="button"
               onClick={() => switchEntryMode('savedProfile')}
               className={`px-3 py-1.5 transition-colors ${entryMode === 'savedProfile' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
@@ -256,13 +258,13 @@ export default function ScanForm() {
         <div className="flex items-center gap-4 mb-3">
           <span className="text-sm font-medium text-gray-700">Job description</span>
           <div className="flex rounded-md overflow-hidden border border-gray-300 text-sm">
-            <button
+            <button type="button"
               onClick={() => setUseUrl(false)}
               className={`px-3 py-1.5 transition-colors ${!useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Paste text
             </button>
-            <button
+            <button type="button"
               onClick={() => setUseUrl(true)}
               className={`px-3 py-1.5 transition-colors ${useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
@@ -300,12 +302,12 @@ export default function ScanForm() {
         </p>
       )}
 
-      <Button onClick={handleSubmit} loading={loading} size="lg" className="w-full sm:w-auto">
+      <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
         {submitLabel}
       </Button>
       <p className="text-xs text-gray-500">
         No account needed. Results in ~30 seconds.
       </p>
-    </div>
+    </Form>
   )
 }

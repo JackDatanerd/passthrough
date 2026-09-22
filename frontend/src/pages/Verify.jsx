@@ -4,6 +4,7 @@ import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
+import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { formatDate, copyToClipboard } from '../lib/utils'
@@ -100,7 +101,8 @@ export default function Verify() {
 
   useEffect(() => { load() }, [code])
 
-  async function handleLead() {
+  async function handleLead(e) {
+    e?.preventDefault?.()
     if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
     setLeadLoading(true); setLeadErr('')
     try {
@@ -390,7 +392,7 @@ export default function Verify() {
                 </div>
               ) : (
                 /* Expanded form */
-                <div className="flex flex-col gap-3">
+                <Form onSubmit={handleLead} className="flex flex-col gap-3">
                   <div>
                     <h2 className="font-semibold text-gray-900 mb-0.5">Get early access to Verified candidates</h2>
                     <p className="text-sm text-gray-500">We'll reach out when we have candidates matching your role.</p>
@@ -418,17 +420,18 @@ export default function Verify() {
                   />
                   {leadErr && <p className="text-xs text-red-600">{leadErr}</p>}
                   <div className="flex gap-3">
-                    <Button onClick={handleLead} loading={leadLoading}>
+                    <Button type="submit" loading={leadLoading}>
                       Get early access
                     </Button>
                     <Button
+                      type="button"
                       variant="ghost"
                       onClick={() => setHmExpanded(false)}
                     >
                       Cancel
                     </Button>
                   </div>
-                </div>
+                </Form>
               )}
             </div>
           </div>

@@ -26,7 +26,18 @@ export function ToastProvider({ children }) {
   const toast = useMemo(() => {
     const show = ({ message, type = 'info', duration = 4000 }) => {
       const id = ++nextId.current
-      setToasts(prev => [...prev.slice(-4), { id, message, type }])   // at most 5 on screen
+      setToasts(prev => {
+        const next = [...prev, { id, message, type }]
+        // Cap at 5 on screen. Anything sliced off here is gone from state, so
+        // its auto-dismiss timer must be cleared too — otherwise it lingers
+        // in `timers` and fires a no-op remove() later for a toast nobody can see.
+        const dropped = next.slice(0, Math.max(0, next.length - 5))
+        for (const t of dropped) {
+          clearTimeout(timers.current.get(t.id))
+          timers.current.delete(t.id)
+        }
+        return next.slice(-5)
+      })
       if (duration > 0) timers.current.set(id, setTimeout(() => remove(id), duration))
       return id
     }
