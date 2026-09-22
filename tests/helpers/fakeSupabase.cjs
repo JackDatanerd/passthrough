@@ -15,7 +15,7 @@ function createFakeSupabase(resolver = () => undefined) {
   const calls = []
 
   function from(table) {
-    const q = { table, op: 'select', filters: [], patch: null, values: null, cols: null, single: false, maybe: false, returning: false }
+    const q = { table, op: 'select', filters: [], orders: [], patch: null, values: null, cols: null, single: false, maybe: false, returning: false }
     const run = () => {
       calls.push(q)
       return Promise.resolve(resolver(q)).then(r => r ?? { data: null, error: null })
@@ -26,7 +26,7 @@ function createFakeSupabase(resolver = () => undefined) {
       update(patch) { q.op = 'update'; q.patch = patch; return api },
       delete() { q.op = 'delete'; return api },
       upsert(values) { q.op = 'upsert'; q.values = values; return api },
-      order() { return api }, limit() { return api }, range() { return api },
+      order(col, opts) { q.orders.push([col, opts]); return api }, limit() { return api }, range() { return api },
       maybeSingle() { q.maybe = true; return run() },
       single() { q.single = true; return run() },
       then(resolve, reject) { return run().then(resolve, reject) },

@@ -146,6 +146,26 @@ async function reconcileSweep(event, env, ctx) {
   )
 }
 
+// Third, independent scheduled job: mark PENDING payments ABANDONED once
+// they're old enough that nothing further will ever legitimately happen to
+// them (see services/reconcile.service.js's sweepStalePendingPayments for
+// the age margin and race reasoning). Its own waitUntil + try/catch, same
+// isolation as the two jobs above.
+async function pendingSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const { sweepStalePendingPayments } = require('./services/reconcile.service')
+        const r = await sweepStalePendingPayments(env, getSupabase(env))
+        if (r.error) console.error('Pending payment sweep query:', r.error)
+        else if (r.checked > 0) console.log(`Pending payment sweep: ${r.abandoned}/${r.checked} marked ABANDONED`)
+      } catch (err) {
+        console.error('Pending payment sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 // ── QUEUE CONSUMER (replaces the old waitUntil(generateFix(...)) pattern) ────
 // generateFix/generateBadge do two sequential Claude calls plus a Browser
 // Rendering PDF render — realistically 20-45+ seconds. ctx.waitUntil() has a
@@ -220,7 +240,11 @@ async function queue(batch, env, ctx) {
 // them up correctly.
 export default {
   fetch: app.fetch,
-  // One cron trigger, two independent jobs.
-  scheduled: (event, env, ctx) => { scheduled(event, env, ctx); return reconcileSweep(event, env, ctx) },
+  // One cron trigger, three independent jobs.
+  scheduled: (event, env, ctx) => {
+    scheduled(event, env, ctx)
+    reconcileSweep(event, env, ctx)
+    return pendingSweep(event, env, ctx)
+  },
   queue,
 }

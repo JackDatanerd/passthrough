@@ -44,22 +44,40 @@ function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
     )
   }
 
+  // AUDIT FIX (feature gap): a code that's set (typed and applied, or
+  // arrived pre-filled via a ?ref= link — see useReferralCapture) but that
+  // pricing reports back as NOT applied means the code doesn't exist, is
+  // inactive, or has expired. This previously fell straight through to the
+  // plain entry field with zero indication anything had been tried — no way
+  // to tell "haven't applied a code yet" from "applied one that didn't
+  // work". `pricing` is null while /api/pricing is still loading for this
+  // code (see usePricing) — checking it explicitly avoids flashing an error
+  // during that normal loading gap.
+  const invalid = referralCode && !editing && pricing && !pricing.referralApplied
+
   return (
-    <div className="flex items-center gap-2 mb-3">
-      <input
-        type="text"
-        value={value}
-        onChange={e => setValue(e.target.value)}
-        onKeyDown={e => e.key === 'Enter' && handleApply()}
-        placeholder="Have a referral code?"
-        disabled={disabled}
-        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50"
-      />
-      <button type="button" onClick={handleApply}
-        disabled={!value.trim() || disabled}
-        className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
-        Apply
-      </button>
+    <div className="mb-3">
+      {invalid && (
+        <p className="text-sm text-red-600 mb-1">
+          That code doesn't look right — check it and try again, or leave it blank.
+        </p>
+      )}
+      <div className="flex items-center gap-2">
+        <input
+          type="text"
+          value={value}
+          onChange={e => setValue(e.target.value)}
+          onKeyDown={e => e.key === 'Enter' && handleApply()}
+          placeholder="Have a referral code?"
+          disabled={disabled}
+          className={`text-sm border rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 ${invalid ? 'border-red-300' : 'border-gray-300'}`}
+        />
+        <button type="button" onClick={handleApply}
+          disabled={!value.trim() || disabled}
+          className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
+          Apply
+        </button>
+      </div>
     </div>
   )
 }

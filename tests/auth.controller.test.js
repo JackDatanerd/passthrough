@@ -32,7 +32,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], successes: [], bucketDeletes: [] }
+  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], successes: [], bucketDeletes: [], rpcCalls: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -50,6 +50,7 @@ async function setup(opts = {}) {
       return { data: opts.scans ?? [], error: null }
     }
     if (q.table === 'scans' && q.op === 'update') { state.updates.push({ table: 'scans', patch: q.patch }); return { error: null } }
+    if (q.op === 'rpc') { state.rpcCalls.push({ name: q.name, args: q.args }); return { data: null, error: opts.rpcError || null } }
     return undefined
   })
 
@@ -324,24 +325,34 @@ describe('deleteAccount', () => {
     const res = await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
     expect(res.status).toBe(400)
     expect(t.state.updates).toHaveLength(0)
+    expect(t.state.rpcCalls).toHaveLength(0)
   })
-  it('scrubs scan content, deletes R2 files, and anonymizes the user row — but keeps score/fix_tier', async () => {
+  // AUDIT FIX: stale since migration 0022 — this used to assert on two
+  // separate app-level `.update()` calls (scans, then users) that deleteAccount
+  // has not issued since scrub_account_data (see that migration's comment)
+  // replaced them with one atomic RPC. The old assertions here always found
+  // `undefined` where they expected the 'scans' update, throwing before ever
+  // reaching the 'users' assertions below — this test had been failing on
+  // main independent of anything in this round's actual changes. The
+  // column-level scrub behavior (scan content nulled, ats_score/status kept,
+  // user anonymized, token_version bumped) is what scrub_account_data itself
+  // does and is documented/asserted at the SQL level in that migration; what
+  // belongs here at the controller boundary is that deleteAccount calls it
+  // with the right user, surfaces its error instead of swallowing it, and
+  // still does the best-effort R2 cleanup using the scan paths read before
+  // the scrub runs.
+  it('calls scrub_account_data for the right user and deletes the R2 files read before the scrub', async () => {
     t = await setup({
       scans: [{ id: 's1', resume_path: 'r/1.docx', resume_ats_path: 'r/1-ats.docx', resume_pdf_path: null }],
     })
     const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
     expect(res.status).toBe(200)
     expect(t.state.bucketDeletes.sort()).toEqual(['r/1-ats.docx', 'r/1.docx'])
-
-    const scanUpdate = t.state.updates.find(u => u.table === 'scans')
-    expect(scanUpdate.patch.job_description_text).toBeNull()
-    expect(scanUpdate.patch).not.toHaveProperty('ats_score')
-    expect(scanUpdate.patch).not.toHaveProperty('status')
-
-    const userUpdate = t.state.updates.find(u => u.table === 'users')
-    expect(userUpdate.patch.deleted_at).toBeTypeOf('string')
-    expect(userUpdate.patch.saved_profile).toBeNull()
-    expect(userUpdate.patch.token_version).toBe(2)
+    expect(t.state.rpcCalls).toEqual([{ name: 'scrub_account_data', args: { p_user_id: 'u1' } }])
+  })
+  it('surfaces a scrub failure as an error and does not report success', async () => {
+    t = await setup({ scans: [], rpcError: { message: 'constraint violation' } })
+    await expect(t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).rejects.toThrow('constraint violation')
   })
   // FEATURE FIX being locked in — same password-guessing-oracle shape as
   // changePassword/updateEmail above.

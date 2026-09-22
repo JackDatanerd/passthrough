@@ -139,4 +139,72 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
   return result
 }
 
-module.exports = { sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN }
+// ── Second concern in this file: stale PENDING -> ABANDONED ────────────────
+//
+// A DIFFERENT failure mode from the orphan sweep above: a customer opens
+// Paystack checkout and simply never finishes — closes the tab, no card
+// entered, browser crash. Nothing else in the app ever resolves this. The
+// only existing ABANDONED write (initializePayment, payments.controller.js)
+// fires solely when the SAME scan starts ANOTHER checkout later; a user who
+// never returns at all leaves that row PENDING forever. Effects: a user's
+// own getPaymentHistory shows a purchase that looks "still pending"
+// indefinitely, and AdminPayments' PENDING filter conflates this completely
+// routine case with the very different "amount mismatch held for manual
+// review" case (verifyPayment / handlePaystack's amount-check branch), with
+// nothing in the data itself to tell them apart.
+//
+// PENDING_ABANDON_AGE_MS is deliberately well beyond initializePayment's own
+// PENDING_REUSE_WINDOW_MS (30 min) — that existing window is already this
+// app's judgment call for "this checkout session/access code has expired
+// anyway" (see that function's comment). This sweep uses a much wider
+// margin on top of it purely to make the atomic guard below airtight: if a
+// customer ever DID come back and pay hours after opening checkout (vastly
+// outside any realistic Paystack session lifetime), the same
+// `.eq('status', 'PENDING')` atomic guard verifyPayment/handlePaystack rely
+// on means whichever caller gets to a row first wins — a row THIS sweep has
+// already flipped to ABANDONED can never be silently un-flipped by a
+// stray-late success, so the wide margin exists to make that race
+// vanishingly unlikely, not to paper over it.
+//
+// No owner alert here, on purpose — same posture as the webhook's
+// charge.failed handling: an abandoned checkout is routine, not something
+// anyone needs to be paged for.
+const PENDING_ABANDON_AGE_MS = 2 * 60 * 60 * 1000        // 2 hours
+const PENDING_LOOKBACK_MS    = 30 * 24 * 60 * 60 * 1000  // don't rescan ancient history forever
+const MAX_ABANDON_PER_RUN    = 500                       // plain status flips, no queue/email work — safe to be generous
+
+async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {}) {
+  const result = { checked: 0, abandoned: 0 }
+
+  const { data: stale, error } = await supabase
+    .from('payments')
+    .select('id, paystack_ref')
+    .eq('status', 'PENDING')
+    .gt('created_at', new Date(now - PENDING_LOOKBACK_MS).toISOString())
+    .lt('created_at', new Date(now - PENDING_ABANDON_AGE_MS).toISOString())
+    .limit(MAX_ABANDON_PER_RUN)
+  if (error) { result.error = error.message; return result }
+  result.checked = stale?.length || 0
+  if (!result.checked) return result
+
+  // Same atomic per-row claim as every other status flip in this codebase:
+  // `.eq('status', 'PENDING')` means a row a concurrent verify/webhook call
+  // flips to SUCCESS in the same instant simply won't match here, and vice
+  // versa — whichever caller gets there first wins, cleanly.
+  for (const row of stale) {
+    const { data: claimed, error: updErr } = await supabase
+      .from('payments')
+      .update({ status: 'ABANDONED' })
+      .eq('id', row.id)
+      .eq('status', 'PENDING')
+      .select('id')
+    if (updErr) { console.error('Stale payment sweep update:', updErr.message); continue }
+    if (claimed?.length) result.abandoned++
+  }
+  return result
+}
+
+module.exports = {
+  sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
+  sweepStalePendingPayments, PENDING_ABANDON_AGE_MS
+}

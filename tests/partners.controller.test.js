@@ -183,3 +183,52 @@ describe('adminRecordPayout', () => {
     expect(res.status).toBe(404)
   })
 })
+
+// AUDIT FIX (feature gap): getPartnerDashboard's referral_codes /
+// commission_ledger / payouts sub-selects came back in whatever order
+// Postgres felt like, and the partner-facing dashboard never rendered
+// commissionLedger at all — a partner could see aggregate cycle totals but
+// never "did the click from X actually convert, and when". Locks in both:
+// the three sub-relations are now explicitly ordered newest-first, matching
+// adminGetPartner's existing convention for the same three relations.
+describe('getPartnerDashboard', () => {
+  function setupDashboard(partner) {
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: partner, error: null }
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+    })
+    const c = { env: {}, req: { query: () => 'tok123' }, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, db, c }
+  }
+
+  it('orders referral_codes, commission_ledger, and payouts newest-first', async () => {
+    const { mod, restore, db, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2, referral_codes: [], commission_ledger: [], payouts: [],
+    })
+    await mod.getPartnerDashboard(c)
+    const q = db.calls.find(call => call.table === 'partners')
+    expect(q.orders).toEqual([
+      ['paid_at',    { foreignTable: 'payouts', ascending: false }],
+      ['created_at', { foreignTable: 'referral_codes', ascending: false }],
+      ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
+    ])
+    restore()
+  })
+
+  it('returns commissionLedger (not just aggregated stats) for the frontend to render', async () => {
+    const { mod, restore, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2,
+      referral_codes: [{ id: 'rc1', clicks: 5 }],
+      commission_ledger: [{ id: 'l1', payment_id: 'p1', partner_id: 'pt1', referral_code_id: 'rc1',
+        gross_amount_cents: 2900, commission_rate: 0.2, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' }],
+      payouts: [],
+    })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.commissionLedger).toHaveLength(1)
+    expect(r.body.data.commissionLedger[0]).toMatchObject({ grossAmountCents: 2900, commissionAmountCents: 580 })
+    restore()
+  })
+})

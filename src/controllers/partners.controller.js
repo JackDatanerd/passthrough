@@ -607,6 +607,13 @@ async function getPartnerDashboard(ctx) {
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at)
     `)
     .eq('payout_details_token', token)
+    // AUDIT FIX (feature gap): these three sub-selects came back in whatever
+    // order Postgres felt like — adminGetPartner already orders the same
+    // three relations for exactly this reason (a partner-facing "recent
+    // activity" list is meaningless out of order). Matching that here too.
+    .order('paid_at',    { foreignTable: 'payouts',           ascending: false })
+    .order('created_at', { foreignTable: 'referral_codes',    ascending: false })
+    .order('created_at', { foreignTable: 'commission_ledger', ascending: false })
     .maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)

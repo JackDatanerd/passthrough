@@ -193,3 +193,94 @@ describe('sweepOrphanedPayments', () => {
     expect(r.error).toBe('timeout')
   })
 })
+
+// AUDIT FIX (feature gap): PENDING payments where the customer opened
+// Paystack checkout and simply never came back were never resolved by
+// anything — initializePayment only ever writes ABANDONED for a stale row
+// when the SAME scan starts ANOTHER checkout later (see that function's own
+// comment), so a customer who never returns at all left the row PENDING
+// forever. Effect: getPaymentHistory shows the user a purchase that looks
+// "still pending" indefinitely, and AdminPayments' PENDING filter conflated
+// this completely routine case with the very different "amount mismatch
+// held for manual review" case, with nothing in the data to tell them
+// apart. These lock in the fix: an hourly sweep (wired into the same cron
+// as sweepOrphanedPayments, as its own independent job) flips old-enough
+// PENDING rows to ABANDONED via the same atomic per-row claim pattern used
+// everywhere else in this file.
+function setupPending({ payments = [], updateResults = {}, updateErrors = {} } = {}) {
+  const state = { selects: [], updates: [] }
+  const db = createFakeSupabase(q => {
+    if (q.table === 'payments' && q.op === 'select') { state.selects.push(q); return { data: payments, error: null } }
+    if (q.table === 'payments' && q.op === 'update') {
+      state.updates.push(q)
+      const id = eqValue(q, 'id')
+      if (updateErrors[id]) return { data: null, error: updateErrors[id] }
+      const claimed = Object.prototype.hasOwnProperty.call(updateResults, id) ? updateResults[id] : [{ id }]
+      return { data: claimed, error: null }
+    }
+    return undefined
+  })
+  const { mod, restore } = loadWithStubs('services/reconcile.service.js', {})
+  return { sweep: (opts) => mod.sweepStalePendingPayments({}, db, { now: NOW, ...opts }), state, restore }
+}
+
+const pending = (over = {}) => ({ id: 'p1', paystack_ref: 'ref1', ...over })
+
+describe('sweepStalePendingPayments', () => {
+  it('does nothing when there are no stale pending payments', async () => {
+    t = setupPending()
+    const r = await t.sweep()
+    expect(r.checked).toBe(0)
+    expect(r.abandoned).toBe(0)
+    expect(t.state.updates).toHaveLength(0)
+  })
+
+  it('only considers PENDING payments inside the lookback window and past the abandon-age margin', async () => {
+    t = setupPending({ payments: [pending()] })
+    await t.sweep()
+    const q = t.state.selects[0]
+    expect(eqValue(q, 'status')).toBe('PENDING')
+    const gt = q.filters.find(f => f[0] === 'gt' && f[1] === 'created_at')[2]
+    const lt = q.filters.find(f => f[0] === 'lt' && f[1] === 'created_at')[2]
+    expect(Date.parse(gt)).toBe(NOW - 30 * 24 * 3600_000)   // 30-day lookback
+    expect(Date.parse(lt)).toBe(NOW - 2 * 3600_000)          // 2-hour abandon-age margin
+  })
+
+  it('claims each stale row atomically and flips it to ABANDONED', async () => {
+    t = setupPending({ payments: [pending()] })
+    const r = await t.sweep()
+    expect(r.checked).toBe(1)
+    expect(r.abandoned).toBe(1)
+    const claim = t.state.updates[0]
+    expect(claim.patch).toEqual({ status: 'ABANDONED' })
+    // the atomic guard: only claim if it is STILL pending
+    expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === 'p1')).toBe(true)
+    expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'status' && f[2] === 'PENDING')).toBe(true)
+  })
+
+  it('does not count a row a concurrent verify/webhook already resolved (0 rows claimed)', async () => {
+    t = setupPending({ payments: [pending()], updateResults: { p1: [] } })
+    const r = await t.sweep()
+    expect(r.checked).toBe(1)
+    expect(r.abandoned).toBe(0)
+  })
+
+  it('keeps going when one row errors, and still abandons the rest', async () => {
+    t = setupPending({
+      payments: [pending({ id: 'p1' }), pending({ id: 'p2', paystack_ref: 'ref2' })],
+      updateErrors: { p1: { message: 'connection reset' } },
+    })
+    const r = await t.sweep()
+    expect(r.checked).toBe(2)
+    expect(r.abandoned).toBe(1)
+  })
+
+  it('returns an error (does not throw) when the payments query fails', async () => {
+    const state = { updates: [] }
+    const db = createFakeSupabase(q => q.table === 'payments' && q.op === 'select' ? { data: null, error: { message: 'timeout' } } : undefined)
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {})
+    const r = await mod.sweepStalePendingPayments({}, db, { now: NOW })
+    expect(r.error).toBe('timeout')
+    restore()
+  })
+})
