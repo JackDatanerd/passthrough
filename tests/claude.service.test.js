@@ -62,26 +62,39 @@ describe('detectFabrication', () => {
   })
 
   it('does not flag corporate-suffix normalization (Acme Corp -> Acme)', () => {
-    const rewritten = { experience: [{ company: 'Acme' }], education: [], projects: [] }
+    // Other fields carried forward unchanged, same as a real "same schema"
+    // rewrite always does (see rewriteResumeContent's prompt) — a fixture
+    // that just drops them would itself look like a fabrication-by-omission
+    // to the round-2 drop check below, independent of the company field
+    // this test actually exercises.
+    const rewritten = { experience: [{ company: 'Acme' }], education: orig.education, projects: orig.projects }
     expect(detectFabrication(orig, rewritten)).toBe(false)
   })
 
   it('does not flag a legitimate shortening of a real institution name', () => {
-    const rewritten = { experience: [], education: [{ institution: 'Cape Town' }], projects: [] }
+    const rewritten = { experience: orig.experience, education: [{ institution: 'Cape Town' }], projects: orig.projects }
     expect(detectFabrication(orig, rewritten)).toBe(false)
   })
 
   it('flags a wholly invented company', () => {
-    const rewritten = { experience: [{ company: 'Globodyne' }], education: [], projects: [] }
+    // Real entry kept alongside the invented one — isolates "added an
+    // invented company" from "also dropped the real one", which is the
+    // separate case covered below.
+    const rewritten = { experience: [...orig.experience, { company: 'Globodyne' }], education: orig.education, projects: orig.projects }
     expect(detectFabrication(orig, rewritten)).toBe(true)
   })
 
   it('flags a rewrite that drops a real employer entirely', () => {
-    const rewritten = { experience: [], education: [], projects: [] }
-    // Nothing new was added, so nothing to flag under the "new name not
-    // found in original" rule — dropping isn't this function's job (a
-    // separate concern), but confirms an empty rewrite never false-positives.
-    expect(detectFabrication(orig, rewritten)).toBe(false)
+    // AUDIT FIX (Scan/ATS section audit, round 2): this used to assert
+    // `false` here, on the stated grounds that "dropping isn't this
+    // function's job" — but the retry-feedback text this function's own
+    // caller sends back to Claude (scan.controller.js's generateFix)
+    // explicitly claims a drop IS caught ("...or dropped one that was"),
+    // and a silently-dropped job/degree/project is a real integrity problem
+    // for a resume about to be sent to employers. detectFabrication now
+    // checks both directions — see its comment.
+    const rewritten = { experience: [], education: orig.education, projects: orig.projects }
+    expect(detectFabrication(orig, rewritten)).toBe(true)
   })
 
   it('BUG FIX: flags a real company name padded with invented detail', () => {

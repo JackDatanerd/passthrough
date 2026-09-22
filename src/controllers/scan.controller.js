@@ -1451,6 +1451,27 @@ async function generateFix(env, supabase, scanId) {
     // (never even produced a scoreable candidate) — fall back to scoring the
     // untouched original so fix_ats_score is never left null on a delivered
     // scan. Uses the same WYSIWYG approach as the main loop for consistency.
+    //
+    // AUDIT FIX (feature gap — Scan/ATS section audit, round 2): bestScore
+    // staying at -1 means something more specific than "scored low" — it
+    // means NOTHING this loop produced was ever usable (every attempt hit a
+    // raw API error, a truncated/malformed response, or fabricated content
+    // with no attempts left to retry). In that case finalData === resumeData
+    // — the user's ORIGINAL, unmodified resume — is what gets delivered as
+    // their paid "Fix", with no distinguishing signal anywhere: the delivered
+    // email/UI previously treated this identically to a legitimate rewrite
+    // that simply landed under the badge threshold. The existing safety net
+    // (a free credit) only ever fired once a user manually exhausted
+    // MAX_FIX_RETRIES clicking "Try Again" — on the very FIRST generateFix
+    // run, a pure system-side failure cost the user a full purchase with
+    // zero automatic compensation and zero explanation. rewriteFailed is
+    // persisted below so the frontend can show an honest "we hit a system
+    // issue, this is your original resume unchanged" message instead of the
+    // normal "below threshold" copy, and a credit is granted immediately —
+    // every time this happens, not just once retries run out — since each
+    // occurrence is a real failure on Passthrough's side, not a quality
+    // shortfall the retry loop exists to iterate on.
+    const rewriteFailed = bestScore < 0
     const fixAtsScore = bestScore >= 0
       ? bestScore
       : atsService.scoreResume(
@@ -1458,10 +1479,26 @@ async function generateFix(env, supabase, scanId) {
           jdText
         ).score
 
-    // Retries are exhausted (this was the last one allowed) and still
-    // short of the badge threshold — grant a free credit for next time
-    // rather than leaving the user with nothing to show for it.
-    if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
+    if (rewriteFailed && scan.userId) {
+      // A total rewrite failure, not a quality shortfall — compensate every
+      // time it happens rather than waiting for retries to run out. Same
+      // must()+owner-alert hardening as the exhausted-retries branch below,
+      // so a credit that fails to write is never silently lost either way.
+      try {
+        must(await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId }), 'grant free fix credit (rewrite failure)')
+      } catch (creditErr) {
+        console.error(`[CRITICAL] Failed to grant fix credit (rewrite failure) to ${scan.userId}:`, creditErr.message)
+        try {
+          await emailService.sendOwnerAlert(env, 'Free fix credit NOT granted',
+            `userId: ${scan.userId}\nscanId: ${scanId}\nerror: ${creditErr.message}\n\nEvery rewrite attempt hard-failed (rewriteFailed); the compensating free credit was not written. Restore it with increment_free_fix_credits.`)
+        } catch (_) {}
+      }
+    } else if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
+      // Retries are exhausted (this was the last one allowed) and still
+      // short of the badge threshold — grant a free credit for next time
+      // rather than leaving the user with nothing to show for it. Mutually
+      // exclusive with the rewriteFailed branch above so a total failure on
+      // the final retry can never grant two credits for one occurrence.
       try {
         must(await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId }), 'grant free fix credit')
       } catch (creditErr) {
@@ -1532,6 +1569,10 @@ async function generateFix(env, supabase, scanId) {
       resume_pdf_hash:      pdfHash,
       resume_hash_history:  isPlain ? [] : nextHashHistory(scan),
       fix_ats_score:        fixAtsScore,
+      // Reset every generation — this reflects THIS attempt's outcome only,
+      // never a stale value from an earlier round on the same scan (a
+      // subsequent retry that succeeds must clear it, not just add to it).
+      rewrite_failed:       rewriteFailed,
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
       verification_url:     verificationUrl,

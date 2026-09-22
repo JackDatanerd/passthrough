@@ -493,13 +493,37 @@ export default function ScanResult() {
                   </>
                 ) : (
                   <>
-                    <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
-                    <p className="text-sm text-amber-800 mb-3">
-                      New ATS score: {scan.fixAtsScore ?? '—'}/100{scan.fixTier === 'FIX_PLAIN'
-                        ? ` — below our target score of ${ATS_BADGE_THRESHOLD}.`
-                        : ` — below the ${ATS_BADGE_THRESHOLD}+ threshold for Passthrough Verified status.`}
-                      {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
-                    </p>
+                    {/* AUDIT FIX (feature gap — Scan/ATS section audit, round 2):
+                        rewriteFailed means every rewrite attempt hard-failed —
+                        this is the user's ORIGINAL resume, unchanged, not a
+                        legitimate rewrite that simply fell short. Saying
+                        "below target" here would be actively misleading: it
+                        implies Passthrough tried to improve the content and
+                        couldn't get it high enough, when in fact nothing was
+                        ever rewritten at all. A credit was already granted
+                        automatically server-side (see generateFix) — this
+                        message says so rather than leaving the person to
+                        wonder why a "Try Again" costs nothing. */}
+                    {scan.rewriteFailed ? (
+                      <>
+                        <p className="font-semibold text-amber-900 mb-1">We hit a snag generating your rewrite</p>
+                        <p className="text-sm text-amber-800 mb-3">
+                          This is your original resume, unchanged — we weren't able to generate an improved
+                          version this time. We've already added a free fix credit to your account, no charge,
+                          so this attempt cost you nothing. You can try again below at no cost.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="font-semibold text-amber-900 mb-1">Your improved resume is ready</p>
+                        <p className="text-sm text-amber-800 mb-3">
+                          New ATS score: {scan.fixAtsScore ?? '—'}/100{scan.fixTier === 'FIX_PLAIN'
+                            ? ` — below our target score of ${ATS_BADGE_THRESHOLD}.`
+                            : ` — below the ${ATS_BADGE_THRESHOLD}+ threshold for Passthrough Verified status.`}
+                          {scan.quantificationPrompts?.length > 0 && ' Adding the numbers/metrics suggested below would likely push this higher.'}
+                        </p>
+                      </>
+                    )}
                     {scan.fixRetryCount < MAX_FIX_RETRIES ? (
                       <div className="mb-3">
                         {retryError && (

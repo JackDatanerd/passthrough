@@ -292,6 +292,31 @@ function detectFabrication(orig, rewritten) {
   // to add words to an employer/institution/project name it was given.
   for (const n of newAll)
     if (!origAll.some(o => o.includes(n))) return true
+
+  // BUG FIX (Scan/ATS section audit, round 2): this function only ever
+  // checked the ADDED direction above — every `n` in the rewrite had to
+  // trace back to something real — but never checked the reverse: whether
+  // an entry from the ORIGINAL simply vanished from the rewrite. That's not
+  // a hypothetical gap — the retry-feedback text this function's own
+  // caller sends back to Claude on a catch (see generateFix in
+  // scan.controller.js) explicitly claims both directions are guarded:
+  // "included a company, title, or institution not present in the original
+  // resume, or dropped one that was". Only the first half was ever true.
+  // A rewrite that silently drops an entire job, degree, or project is a
+  // real integrity problem for a document someone is about to send to
+  // employers — arguably worse than an addition, since it UNDERSTATES a
+  // candidate's real history — and it went completely unguarded: no
+  // FABRICATION_DETECTED, no retry, nothing. DiffView.jsx's positional/
+  // name matching can SHOW a drop after the fact if the user happens to
+  // look, but that's a passive display, not a gate on what gets delivered.
+  // Symmetric with the loop above: every `o` in the original must trace
+  // forward to something in the rewrite (o.includes(n) — a real name is
+  // allowed to be quoted more briefly, e.g. "Cape Town University" ->
+  // "Cape Town" still matches here since some `n` will still equal/contain
+  // "cape town").
+  for (const o of origAll)
+    if (!newAll.some(n => o.includes(n))) return true
+
   return false
 }
 

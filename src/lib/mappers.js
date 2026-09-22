@@ -44,6 +44,13 @@ function scanRowToCamel(row) {
     jobDescriptionUrl:   row.job_description_url,
     atsScore:            row.ats_score,
     fixAtsScore:         row.fix_ats_score,
+    // AUDIT FIX (feature gap — Scan/ATS section audit, round 2): see
+    // migration 0027 — surfaces whether the last generateFix delivery was a
+    // total rewrite failure (original resume delivered unchanged) so
+    // getScan/ScanResult.jsx can tell the user honestly rather than showing
+    // the normal "below threshold" copy for a scan that was never rewritten
+    // at all.
+    rewriteFailed:       row.rewrite_failed ?? false,
     fixRetryCount:       row.fix_retry_count,
     passed:              row.passed,
     keywordScore:        row.keyword_score,

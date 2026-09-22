@@ -140,6 +140,12 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     })
   })
 
+  it('scanRowToCamel maps rewrite_failed and defaults it to false when the column is absent/null (migration 0027)', () => {
+    expect(scanRowToCamel({ id: 's1', rewrite_failed: true })).toMatchObject({ rewriteFailed: true })
+    expect(scanRowToCamel({ id: 's1', rewrite_failed: false })).toMatchObject({ rewriteFailed: false })
+    expect(scanRowToCamel({ id: 's1' })).toMatchObject({ rewriteFailed: false })
+  })
+
   it('paymentRowToCamel includes fixTier and referralCode (Section 9 fix)', () => {
     const mapped = paymentRowToCamel({
       id: 'pay1', amount_cents: 2900, currency: 'USD', status: 'SUCCESS',
