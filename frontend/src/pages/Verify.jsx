@@ -178,12 +178,18 @@ export default function Verify() {
   // FEATURE GAP CLOSED: a 'previous' match now names WHEN that version was
   // superseded (classifyFingerprint carries the matched entry's `at` through)
   // instead of a flat "an earlier version" with no way to tell which one.
+  //
+  // FIX (Section 7 audit, gap): classifyFingerprint has always returned WHICH
+  // file type matched (`kind: 'docx' | 'pdf'`) but this label never said so —
+  // "an earlier version" left the reader unable to tell whether it was an old
+  // .docx or an old .pdf that matched, which matters when they have both.
+  const kindLabel = checkResult?.kind === 'pdf' ? 'PDF' : checkResult?.kind === 'docx' ? '.docx' : 'version'
   const checkLabel = checkResult && {
     current:     { text: 'Matches — this is the current, unmodified file.', cls: 'text-green-700' },
     previous:    {
       text: checkResult.at
-        ? `Matches an earlier version, current until ${formatDate(checkResult.at)} — not the current one, but not tampered with either.`
-        : 'Matches an earlier version — not the current one, but not tampered with either.',
+        ? `Matches an earlier ${kindLabel}, current until ${formatDate(checkResult.at)} — not the current one, but not tampered with either.`
+        : `Matches an earlier ${kindLabel} — not the current one, but not tampered with either.`,
       cls: 'text-amber-600',
     },
     mismatch:    { text: "Doesn't match anything on file — this file has been edited, or didn't come from Passthrough.", cls: 'text-red-600' },

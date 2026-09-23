@@ -8,7 +8,10 @@
 //    only ever compared R2 against a hash we wrote ourselves and could never see
 //    a candidate's edited copy. Fingerprints now cover the PDF too (the file
 //    candidates are told to email), plus the hashes of superseded versions so an
-//    older delivered file reads "earlier version", not "modified".
+//    older delivered file reads "earlier version", not "modified" — each with
+//    the date it was ACTUALLY superseded (the next version's start / the
+//    current version's verified_at), not its own start date, which is all
+//    resume_hash_history itself records (see fingerprintsFor below).
 //  * `verified` (score passed AND integrity verified AND not revoked) is what the
 //    headline must key off. `passed` alone kept a green "Verified ✓" on a page
 //    whose integrity check had failed.
@@ -140,12 +143,30 @@ async function maybeCountView(c, code, row) {
   return true
 }
 
+// FIX (Section 7 audit, bug): `resume_hash_history` entries store each old
+// version's OWN `verified_at` — i.e. when THAT version was generated and
+// became current (see scan.controller.js's nextHashHistory) — not when it
+// was superseded. `fileFingerprint.js`'s contract (and the "current until"
+// copy on the Verify page) both promise the LATTER: the moment a reader's
+// older file stopped being current. Those are off by exactly one
+// regeneration cycle — a file that was current from Jan 1 to Mar 1 was
+// being reported as "current until Jan 1" (the date it STARTED, not ended).
+//
+// `history` is chronological (oldest first, most-recently-superseded last),
+// so entry i's real "current until" moment is entry i+1's own `at` (the
+// next version's start = this one's end) — or, for the last historical
+// entry, `row.verified_at` (the CURRENT version's start = when it took
+// over). Both docx and pdf changes from the same regeneration round share
+// one `at` in the source data, so this is computed once per round and
+// applied to whichever of the pair actually changed.
 function fingerprintsFor(row) {
   const history = Array.isArray(row.resume_hash_history) ? row.resume_hash_history : []
   const previous = []
-  for (const h of history) {
-    if (h?.docx && h.docx !== row.resume_hash) previous.push({ kind: 'docx', hash: h.docx, at: h.at || null })
-    if (h?.pdf && h.pdf !== row.resume_pdf_hash) previous.push({ kind: 'pdf', hash: h.pdf, at: h.at || null })
+  for (let i = 0; i < history.length; i++) {
+    const h = history[i]
+    const supersededAt = history[i + 1]?.at || row.verified_at || null
+    if (h?.docx && h.docx !== row.resume_hash) previous.push({ kind: 'docx', hash: h.docx, at: supersededAt })
+    if (h?.pdf && h.pdf !== row.resume_pdf_hash) previous.push({ kind: 'pdf', hash: h.pdf, at: supersededAt })
   }
   return { docx: row.resume_hash || null, pdf: row.resume_pdf_hash || null, previous }
 }

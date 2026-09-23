@@ -124,6 +124,85 @@ describe('checkIntegrity / getVerification — PDF coverage (bug fix)', () => {
   })
 })
 
+describe('fingerprintsFor — "current until" date on a superseded version (bug fix)', () => {
+  // FIX (Section 7 audit): resume_hash_history entries store each old
+  // version's OWN verified_at (when IT became current), not the date it was
+  // superseded. The API's `fingerprints.previous[].at` — and the "current
+  // until" copy on the Verify page — must report the LATTER: the moment a
+  // reader's older file stopped being current. That's the next history
+  // entry's `at` (or the row's own verified_at for the most recent
+  // superseded entry), never the entry's own `at`.
+  it('a single superseded version is "current until" the row\'s (current) verified_at, not its own verified_at', async () => {
+    const oldDocxHash = await sha256Bytes(OTHER_BYTES)
+    const oldAt = '2026-01-01T00:00:00.000Z'   // when the OLD version became current
+    const currentAt = '2026-03-01T00:00:00.000Z' // when the CURRENT version took over (= when old was superseded)
+    const row = await seedRow({
+      verified_at: currentAt,
+      resume_hash_history: [{ docx: oldDocxHash, pdf: null, at: oldAt }],
+    })
+    t = harness(row)
+    const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES, [row.resume_pdf_path]: PDF_BYTES } })
+    const res = await t.mod.getVerification(c)
+    await t.drain()
+    const prev = res.data.data.fingerprints.previous.find(p => p.hash === oldDocxHash)
+    expect(prev.kind).toBe('docx')
+    expect(prev.at).toBe(currentAt)   // NOT oldAt — that's the bug this test guards against
+  })
+
+  it('with two superseded rounds, each is "current until" the NEXT round\'s at, not its own', async () => {
+    const h1 = await sha256Bytes(new TextEncoder().encode('round 1 docx'))
+    const h2 = await sha256Bytes(new TextEncoder().encode('round 2 docx'))
+    const at1 = '2026-01-01T00:00:00.000Z'
+    const at2 = '2026-02-01T00:00:00.000Z'
+    const atCurrent = '2026-03-01T00:00:00.000Z'
+    const row = await seedRow({
+      verified_at: atCurrent,
+      resume_hash_history: [
+        { docx: h1, pdf: null, at: at1 },
+        { docx: h2, pdf: null, at: at2 },
+      ],
+    })
+    t = harness(row)
+    const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES, [row.resume_pdf_path]: PDF_BYTES } })
+    const res = await t.mod.getVerification(c)
+    await t.drain()
+    const prevs = res.data.data.fingerprints.previous
+    expect(prevs.find(p => p.hash === h1).at).toBe(at2)         // round 1 ended when round 2 started
+    expect(prevs.find(p => p.hash === h2).at).toBe(atCurrent)   // round 2 ended when the current version started
+  })
+
+  it('a docx and pdf superseded in the SAME round share the same "current until" date', async () => {
+    const oldDocx = await sha256Bytes(new TextEncoder().encode('old docx'))
+    const oldPdf = await sha256Bytes(new TextEncoder().encode('old pdf'))
+    const roundAt = '2026-01-01T00:00:00.000Z'
+    const currentAt = '2026-03-01T00:00:00.000Z'
+    const row = await seedRow({
+      verified_at: currentAt,
+      resume_hash_history: [{ docx: oldDocx, pdf: oldPdf, at: roundAt }],
+    })
+    t = harness(row)
+    const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES, [row.resume_pdf_path]: PDF_BYTES } })
+    const res = await t.mod.getVerification(c)
+    await t.drain()
+    const prevs = res.data.data.fingerprints.previous
+    expect(prevs.find(p => p.kind === 'docx').at).toBe(currentAt)
+    expect(prevs.find(p => p.kind === 'pdf').at).toBe(currentAt)
+  })
+
+  it('falls back to null when neither a next round nor a row verified_at is available', async () => {
+    const oldDocx = await sha256Bytes(new TextEncoder().encode('old docx'))
+    const row = await seedRow({
+      verified_at: null,
+      resume_hash_history: [{ docx: oldDocx, pdf: null, at: '2026-01-01T00:00:00.000Z' }],
+    })
+    t = harness(row)
+    const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES, [row.resume_pdf_path]: PDF_BYTES } })
+    const res = await t.mod.getVerification(c)
+    await t.drain()
+    expect(res.data.data.fingerprints.previous.find(p => p.hash === oldDocx).at).toBeNull()
+  })
+})
+
 describe('getBadge — integrity-gated "Verified" claim (bug fix)', () => {
   it('shows the green "Verified" badge when score passes AND integrity checks out', async () => {
     const row = await seedRow()
