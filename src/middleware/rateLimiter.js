@@ -445,7 +445,16 @@ async function recordLoginSuccess(env, email) {
 const VERIFY_MISS_MAX = 30
 const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 
-function verifyMissKey(ip) { return `rl:vmiss:${ip}` }
+// SECTION 7 AUDIT FIX (bug): every OTHER limiter in this file keys its KV
+// entry off rateKeyIp(ip), which collapses an IPv6 address to its /64 —
+// without that, one IPv6 subscriber (who controls billions of addresses,
+// often rotated automatically by their own OS for privacy) can mint
+// effectively unlimited "different" callers for free. This is the one
+// per-IP counter in the file that guards against enumerating the ~1.07
+// billion possible verification codes, and it was keying on the raw IP —
+// exactly the gap rateKeyIp exists to close, left open on the limiter that
+// most needed it.
+function verifyMissKey(ip) { return `rl:vmiss:${rateKeyIp(ip)}` }
 
 async function readMissCounter(kv, key, now) {
   const raw = await kv.get(key)

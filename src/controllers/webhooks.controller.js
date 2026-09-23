@@ -253,21 +253,39 @@ async function processDispute(c, supabase, event) {
     `reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n` +
     `dispute status: ${d.status || '?'}${d.resolution ? `\nresolution: ${d.resolution}` : ''}\n\n`
 
+  // SECTION 8 AUDIT FIX (bug): `marked` records whether the guarded UPDATE
+  // below actually ran, so the alert text can say what happened instead of
+  // assuming it. Before this fix the alert always claimed "now marked
+  // DISPUTED" on a charge.dispute.create event, even when nothing was
+  // touched — an unresolved reference, or a payment that wasn't SUCCESS
+  // (e.g. a second dispute id opened against a payment already DISPUTED).
+  // That's a false state claim in the one email a human uses to decide
+  // whether to act — worth getting right even though every case here is
+  // otherwise harmless (idempotent / no-op).
+  let marked = false
   if (event.event === 'charge.dispute.create' && payment?.status === 'SUCCESS') {
-    const { error } = await supabase.from('payments')
+    const { data: updated, error } = await supabase.from('payments')
       .update({ status: 'DISPUTED', disputed_at: new Date().toISOString() })
-      .eq('id', payment.id).eq('status', 'SUCCESS')
+      .eq('id', payment.id).eq('status', 'SUCCESS').select('id')
     if (error) throw error
+    marked = !!(updated && updated.length)
   }
 
-  alert(c, `Paystack ${event.event}`,
-    `A "${event.event}" event was received.\n\n${summary}` +
-    (event.event === 'charge.dispute.create'
-      ? `The payment is now marked DISPUTED (excluded from revenue). Nothing else was changed: ` +
-        `access and the public credential stay live and any partner commission stays put until you decide. ` +
-        `If you LOSE the dispute: Admin → Payments → Reverse (refunds the sale, reverses commission, revokes the credential). ` +
-        `If you WIN: Admin → Payments → Clear dispute.`
-      : `No state change for this event type; the dispute is tracked from charge.dispute.create.`))
+  let detail
+  if (event.event !== 'charge.dispute.create') {
+    detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
+  } else if (marked) {
+    detail = `The payment is now marked DISPUTED (excluded from revenue). Nothing else was changed: ` +
+      `access and the public credential stay live and any partner commission stays put until you decide. ` +
+      `If you LOSE the dispute: Admin → Payments → Reverse (refunds the sale, reverses commission, revokes the credential). ` +
+      `If you WIN: Admin → Payments → Clear dispute.`
+  } else if (!payment) {
+    detail = `Nothing was marked — no payment could be resolved for this reference. Review manually.`
+  } else {
+    detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
+  }
+
+  alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`)
   return { status: 'PROCESSED', note: payment ? undefined : 'payment not found' }
 }
 

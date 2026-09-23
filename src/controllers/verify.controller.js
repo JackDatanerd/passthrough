@@ -27,14 +27,23 @@ const cryptoLib = require('../lib/crypto')
 const rateLimiter = require('../middleware/rateLimiter')
 const { runInBackground } = require('../lib/background')
 const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey } = require('../lib/verification')
+// SECTION 7 AUDIT FIX (bug): this file used to define its own local
+// `clientIp` (`cf-connecting-ip || x-forwarded-for || 'unknown'`), which
+// trusts the client-supplied X-Forwarded-For header unconditionally — every
+// OTHER IP-keyed control in the app (rateLimiter.js, scan.controller.js's
+// quota bypass, auth.controller.js's lockout) goes through this shared,
+// hardened helper instead, which only honours X-Forwarded-For outside
+// production for exactly that reason. This endpoint's own anti-enumeration
+// guard (isVerifyMissLimited/recordVerifyMiss below) exists specifically to
+// stop someone guessing across the ~1.07 billion possible verification
+// codes — keying it off a spoofable header defeated the point of having it.
+const { clientIp } = require('../lib/clientIp')
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const PAGE_COLUMNS =
   'candidate_first_name, ats_score, fix_ats_score, verified_at, role_category, seniority_level, ' +
   'verification_views, resume_ats_path, resume_pdf_path, resume_hash, resume_pdf_hash, resume_hash_history, ' +
   'verify_expose_docx, verify_expose_pdf, verify_hide_name, verification_status, verification_revoked_at, user_id'
-
-const clientIp = c => c.req.header('cf-connecting-ip') || c.req.header('x-forwarded-for') || 'unknown'
 
 function noStore(c) {
   // The integrity verdict and revocation state must never be served stale.

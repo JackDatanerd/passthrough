@@ -63,7 +63,8 @@ export default function Verify() {
   // only check that can ever catch a candidate's edited copy; the server-side
   // integrity badge above can only compare our own stored copy against itself.
   const [checking, setChecking] = useState(false)
-  const [checkResult, setCheckResult] = useState(null)   // 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error'
+  // { status: 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error', at, kind } | null
+  const [checkResult, setCheckResult] = useState(null)
   const fileInputRef = useRef(null)
 
   // SECTION 7 AUDIT (bug): this used to reset only the status flags
@@ -152,7 +153,7 @@ export default function Verify() {
       const hash = await sha256Hex(file)
       setCheckResult(classifyFingerprint(hash, data?.fingerprints))
     } catch (_) {
-      setCheckResult('error')
+      setCheckResult({ status: 'error', at: null, kind: null })
     } finally {
       setChecking(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
@@ -174,13 +175,21 @@ export default function Verify() {
     data?.integrityStatus === 'modified' ? 'text-red-600'   :
     'text-amber-600'
 
-  const checkLabel = {
+  // FEATURE GAP CLOSED: a 'previous' match now names WHEN that version was
+  // superseded (classifyFingerprint carries the matched entry's `at` through)
+  // instead of a flat "an earlier version" with no way to tell which one.
+  const checkLabel = checkResult && {
     current:     { text: 'Matches — this is the current, unmodified file.', cls: 'text-green-700' },
-    previous:    { text: 'Matches an earlier version — not the current one, but not tampered with either.', cls: 'text-amber-600' },
+    previous:    {
+      text: checkResult.at
+        ? `Matches an earlier version, current until ${formatDate(checkResult.at)} — not the current one, but not tampered with either.`
+        : 'Matches an earlier version — not the current one, but not tampered with either.',
+      cls: 'text-amber-600',
+    },
     mismatch:    { text: "Doesn't match anything on file — this file has been edited, or didn't come from Passthrough.", cls: 'text-red-600' },
     unavailable: { text: 'This scan has no fingerprints to check against.', cls: 'text-gray-500' },
     error:       { text: "Couldn't check that file — please try again.", cls: 'text-gray-500' },
-  }[checkResult]
+  }[checkResult.status]
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">

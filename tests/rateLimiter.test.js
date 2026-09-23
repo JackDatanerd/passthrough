@@ -306,4 +306,19 @@ describe('verify-miss limiter', () => {
     expect(await rl.isVerifyMissLimited(dead, '9.9.9.9')).toBe(false)
     console.error = realErr
   })
+  // SECTION 7 AUDIT FIX (bug): this is the guard against enumerating the
+  // ~1.07 billion possible verification codes. It used to key the KV
+  // counter off the raw IP, unlike every other limiter in this file — so
+  // two IPv6 addresses in the same /64 (trivially free for one client to
+  // mint, and something residential/mobile ISPs rotate on their own) got
+  // separate buckets and the whole guard was bypassable for free.
+  it('buckets two IPv6 addresses in the same /64 together, same as every other limiter', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < rl.VERIFY_MISS_MAX; i++) await rl.recordVerifyMiss(env, '2001:db8::1')
+    expect(await rl.isVerifyMissLimited(env, '2001:db8::1')).toBe(true)
+    // a different address, same /64 — must already be limited too
+    expect(await rl.isVerifyMissLimited(env, '2001:db8::2')).toBe(true)
+    // a genuinely different /64 is unaffected
+    expect(await rl.isVerifyMissLimited(env, '2001:db8:aaaa:cccc::1')).toBe(false)
+  })
 })

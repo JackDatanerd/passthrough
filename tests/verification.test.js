@@ -86,6 +86,28 @@ describe('revokeVerification', () => {
     expect(world.t.scans[0].verification_revoked_reason).toBe(REVOKE_REASON.REFUND)
   })
 
+  // SECTION 7/8 AUDIT FIX (bug): a redelivered webhook (or a repeated admin
+  // action) calling this again with the SAME reason on an already-revoked
+  // row used to still report changed:true and silently re-stamp
+  // verification_revoked_at to now() — drifting the publicly-displayed
+  // revocation date forward for no real reason. It must now be a no-op.
+  it('is idempotent: revoking again with the SAME reason does not touch the row', async () => {
+    const world = createWorld({ scans: [{ id: 's1', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.REFUND, verification_revoked_at: '2026-01-01T00:00:00.000Z' }] })
+    const changed = await revokeVerification(world.db, 's1', REVOKE_REASON.REFUND, new Date('2026-06-01T00:00:00.000Z'))
+    expect(changed).toBe(false)
+    expect(world.t.scans[0].verification_revoked_at).toBe('2026-01-01T00:00:00.000Z')
+    expect(world.calls.some(c => c.op === 'update')).toBe(false)
+  })
+
+  // A DIFFERENT non-OWNER reason must still win even though it's already
+  // revoked — only the same-reason case is a no-op.
+  it('a different non-OWNER reason still overwrites an existing non-OWNER revocation', async () => {
+    const world = createWorld({ scans: [{ id: 's1', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.DISPUTE, verification_revoked_at: '2026-01-01T00:00:00.000Z' }] })
+    const changed = await revokeVerification(world.db, 's1', REVOKE_REASON.ADMIN, new Date('2026-06-01T00:00:00.000Z'))
+    expect(changed).toBe(true)
+    expect(world.t.scans[0]).toMatchObject({ verification_revoked_reason: REVOKE_REASON.ADMIN, verification_revoked_at: '2026-06-01T00:00:00.000Z' })
+  })
+
   it('throws on a DB error rather than reporting false silently', async () => {
     const world = createWorld({ scans: [{ id: 's1', verification_status: STATUS.ACTIVE }] })
     world.failNext('scans', 'update', { message: 'db down' })

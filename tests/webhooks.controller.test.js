@@ -425,6 +425,29 @@ describe('disputes (B8-3 / G8-1)', () => {
     await t.fire(dispute('charge.dispute.create', { transaction: { reference: 'ghost' } }))
     expect(t.state.alerts.find(a => /dispute\.create/.test(a.subject)).message).toMatch(/could not resolve/)
   })
+  // SECTION 8 AUDIT FIX (bug): the alert used to say "The payment is now
+  // marked DISPUTED" on every charge.dispute.create event regardless of
+  // whether the guarded update actually ran — a false state claim in the
+  // one email a human uses to decide whether to act. It must only say that
+  // when the payment really was (re-)marked.
+  it('an unmatched dispute does NOT falsely claim the payment was marked DISPUTED', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(dispute('charge.dispute.create', { transaction: { reference: 'ghost' } }))
+    const a = t.state.alerts.find(x => /dispute\.create/.test(x.subject))
+    expect(a.message).not.toMatch(/now marked DISPUTED/)
+    expect(a.message).toMatch(/nothing was marked/i)
+  })
+  it('a second, genuinely-new dispute id against an already-DISPUTED payment does NOT falsely re-claim it was marked', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(dispute('charge.dispute.create'))            // id 700 — genuinely marks DISPUTED
+    await t.fire(dispute('charge.dispute.create', {}, 701))    // a real, distinct dispute id from Paystack
+    const alerts = t.state.alerts.filter(x => /dispute\.create/.test(x.subject))
+    expect(alerts).toHaveLength(2)
+    expect(alerts[0].message).toMatch(/now marked DISPUTED/)
+    expect(alerts[1].message).not.toMatch(/now marked DISPUTED/)
+    expect(alerts[1].message).toMatch(/nothing was marked/i)
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+  })
 })
 
 describe('other events', () => {
