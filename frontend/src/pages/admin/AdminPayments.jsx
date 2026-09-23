@@ -195,7 +195,21 @@ export default function AdminPayments() {
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.paystackRef}</td>
                   <td className="px-4 py-3 text-gray-600">{p.userEmail || '—'}</td>
                   <td className="px-4 py-3 text-right font-medium">{formatCents(p.amountCents, p.currency)}</td>
-                  <td className="px-4 py-3"><Badge variant={badgeVariant(p.status)}>{p.status}</Badge></td>
+                  <td className="px-4 py-3">
+                    <Badge variant={badgeVariant(p.status)}>{p.status}</Badge>
+                    {/* AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
+                        (migrations 0024/0025) were captured by the webhook handler but never
+                        shown here — a REFUNDED or DISPUTED row gave no way to see when it
+                        happened or what the refund reference was. */}
+                    {p.status === 'REFUNDED' && p.refundedAt && (
+                      <div className="text-xs text-gray-400 mt-0.5">
+                        {formatDate(p.refundedAt)}{p.refundReference ? ` · ${p.refundReference}` : ''}
+                      </div>
+                    )}
+                    {p.status === 'DISPUTED' && p.disputedAt && (
+                      <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-500">{p.fixTier || '—'}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.referralCode || '—'}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(p.createdAt)}</td>

@@ -128,6 +128,16 @@ function paymentRowToCamel(row) {
     fixTier:             row.fix_tier,
     referralCodeId:      row.referral_code_id,
     referralCode:        row.referral_code,
+    // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
+    // (migrations 0024/0025) were missing here, same latent-drop shape as
+    // fix_tier/referral_code above — no current caller of paymentRowToCamel
+    // needed them yet, but adminListPayments (admin.controller.js) is about
+    // to become one, and a mapper that silently omits a payment's refund/
+    // dispute state is exactly the kind of gap that stays invisible until
+    // someone builds the view that needed it.
+    refundedAt:          row.refunded_at,
+    refundReference:     row.refund_reference,
+    disputedAt:          row.disputed_at,
     createdAt:           row.created_at,
     updatedAt:           row.updated_at
   }
@@ -181,14 +191,26 @@ const SCAN_FIELD_MAP = {
   contactName: 'contact_name', contactEmail: 'contact_email',
   inputMode: 'input_mode', rawBrainDumpText: 'raw_brain_dump_text',
   originalResumeData: 'original_resume_data', rewrittenResumeData: 'rewritten_resume_data',
-  quantificationPrompts: 'quantification_prompts'
+  quantificationPrompts: 'quantification_prompts',
+  // AUDIT FIX (Section 9/10 pass): rewrite_failed (migration 0027) was
+  // missing here. Not live today — scan.controller.js's one writer builds a
+  // raw snake_case update object rather than going through
+  // camelToSnake(SCAN_FIELD_MAP) — but the same latent-drop trap as every
+  // other entry above marked AUDIT FIX: any future caller that updates a
+  // scan via this map would silently no-op a rewriteFailed write.
+  rewriteFailed: 'rewrite_failed'
 }
 
 const PAYMENT_FIELD_MAP = {
   amountCents: 'amount_cents', currency: 'currency', status: 'status',
   paystackRef: 'paystack_ref', paystackAccessCode: 'paystack_access_code',
   paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id',
-  fixTier: 'fix_tier', referralCodeId: 'referral_code_id', referralCode: 'referral_code'
+  fixTier: 'fix_tier', referralCodeId: 'referral_code_id', referralCode: 'referral_code',
+  // AUDIT FIX (Section 9/10 pass): same gap as paymentRowToCamel above —
+  // refunded_at/refund_reference/disputed_at (0024/0025) had no reverse-map
+  // entry either. webhooks.controller.js and payments.controller.js write
+  // these today via raw snake_case updates, so this was latent, not live.
+  refundedAt: 'refunded_at', refundReference: 'refund_reference', disputedAt: 'disputed_at'
 }
 
 // AUDIT FIX (Section 10 build-out): needed for the new admin

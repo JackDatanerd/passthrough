@@ -104,7 +104,18 @@ export default function AdminScans() {
                   <td className={`px-4 py-3 text-right font-medium ${s.atsScore != null ? scoreColor(s.atsScore) : 'text-gray-300'}`}>
                     {s.atsScore ?? '—'}
                   </td>
-                  <td className="px-4 py-3 text-gray-500">{s.fixPurchased ? (s.fixTier || 'FIX') : '—'}</td>
+                  <td className="px-4 py-3 text-gray-500">
+                    {s.fixPurchased ? (s.fixTier || 'FIX') : '—'}
+                    {/* AUDIT FIX (Section 9/10 pass): fix_error_recoveries was tracked
+                        (migration 0026, reconcile.service.js) but never shown anywhere —
+                        the admin had no way to see "this delivery only succeeded after N
+                        automatic retries" versus a clean one. */}
+                    {s.fixErrorRecoveries > 0 && (
+                      <span className="ml-2 inline-block" title={`${s.fixErrorRecoveries} automatic recovery attempt(s) before this fix succeeded`}>
+                        <Badge variant="amber">{s.fixErrorRecoveries} auto-retry{s.fixErrorRecoveries === 1 ? '' : 's'}</Badge>
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(s.createdAt)}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(s.updatedAt)}</td>
                   <td className="px-4 py-3">

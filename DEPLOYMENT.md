@@ -156,13 +156,43 @@ wrangler secret put SUPABASE_SERVICE_ROLE_KEY
 wrangler secret put JWT_SECRET
 wrangler secret put ANTHROPIC_API_KEY
 wrangler secret put PAYSTACK_SECRET_KEY
-wrangler secret put PAYSTACK_PUBLIC_KEY
 wrangler secret put RESEND_API_KEY
 ```
+
+<!-- AUDIT FIX (Section 9/10 pass): this list previously included
+     `wrangler secret put PAYSTACK_PUBLIC_KEY` and counted "7 secrets" below.
+     Nothing in src/ or frontend/src/ reads PAYSTACK_PUBLIC_KEY — the
+     checkout flow (ScanResult.jsx) opens the Paystack popup with
+     `popup.resumeTransaction(access_code, ...)`, using only the access_code
+     the backend already returned from /payments/initialize; no public key
+     is needed client-side with that flow. Left over from an earlier
+     implementation, presumably. Dropped rather than kept as a harmless
+     no-op instruction, since an operator following this list has no way to
+     tell "unused" apart from "I forgot to wire this up" — a stale
+     instruction here costs real time chasing a key that does nothing. -->
 
 For `JWT_SECRET`, generate a strong value:
 ```bash
 node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
+```
+
+### Optional secrets
+
+Neither is required for a normal deploy — both default to "off" when unset,
+which is the correct state for a real production launch:
+
+```bash
+# Restricts /api/webhooks/paystack to Paystack's published outbound IP
+# ranges. Optional defense-in-depth on top of the HMAC signature check
+# webhooks.controller.js already does; unset means IP is not checked.
+wrangler secret put PAYSTACK_WEBHOOK_IPS
+
+# Lets specific IPs (comma-separated) skip every rate limiter entirely —
+# for load-testing or manual QA against production limits. Unset = no
+# bypass = normal behavior for everyone, which is the fail-safe default.
+# Turn it OFF again before real users arrive:
+#   wrangler secret delete RATE_LIMIT_BYPASS_IPS
+wrangler secret put RATE_LIMIT_BYPASS_IPS
 ```
 
 ### Deploy
@@ -251,9 +281,14 @@ Every push to `main` triggers an automatic rebuild and deploy.
 ## 8. Go-Live Checklist
 
 ### Secrets
-- [ ] All 7 secrets set via `wrangler secret put`
+- [ ] All 6 required secrets set via `wrangler secret put` (SUPABASE_URL,
+      SUPABASE_SERVICE_ROLE_KEY, JWT_SECRET, ANTHROPIC_API_KEY,
+      PAYSTACK_SECRET_KEY, RESEND_API_KEY)
 - [ ] `JWT_SECRET` is at least 32 random chars
 - [ ] `PAYSTACK_SECRET_KEY` is `sk_live_...` (not `sk_test_...`)
+- [ ] `RATE_LIMIT_BYPASS_IPS` is **unset** (or deleted) — if it was set for
+      testing, `wrangler secret delete RATE_LIMIT_BYPASS_IPS` before real
+      users arrive
 
 ### wrangler.toml [vars]
 - [ ] `FRONTEND_URL=https://passthrough.dev`

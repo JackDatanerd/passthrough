@@ -246,7 +246,14 @@ async function adminListScans(ctx) {
   const status = ctx.req.query('status')
 
   let query = supabase.from('scans')
-    .select('id, status, ats_score, fix_purchased, fix_tier, resume_original_name, user_id, users(email), verification_code, verification_status, verification_revoked_reason, created_at, updated_at', { count: 'exact' })
+    // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026)
+    // was never selected here, even though 0026's own comment describes this
+    // exact endpoint as the reason the column exists — "the admin
+    // dashboard's ability to show '2 automatic attempts failed' rather than
+    // a bare status". reconcile.service.js was the only reader of it. The
+    // backing column and the reconcile-sweep logic existed; the admin-facing
+    // half of the feature didn't.
+    .select('id, status, ats_score, fix_purchased, fix_tier, fix_error_recoveries, resume_original_name, user_id, users(email), verification_code, verification_status, verification_revoked_reason, created_at, updated_at', { count: 'exact' })
     .order('created_at', { ascending: false }).range(from, to)
   if (status) query = query.eq('status', status)
 
@@ -255,6 +262,7 @@ async function adminListScans(ctx) {
 
   const scans = data.map(s => ({
     id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased, fixTier: s.fix_tier,
+    fixErrorRecoveries: s.fix_error_recoveries ?? 0,
     resumeOriginalName: s.resume_original_name, userId: s.user_id, userEmail: s.users?.email || null,
     verificationCode: s.verification_code, verificationStatus: s.verification_status,
     verificationRevokedReason: s.verification_revoked_reason,
@@ -290,8 +298,14 @@ async function adminListPayments(ctx) {
   const { page, pageSize, from, to } = pageParams(ctx)
   const status = ctx.req.query('status')
 
+  // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
+  // (migrations 0024/0025) were never selected here. webhooks.controller.js
+  // writes them correctly on a real refund/dispute webhook, and this list
+  // already filters/displays REFUNDED and DISPUTED statuses — but an admin
+  // looking at one had no way to see when it happened or what the refund
+  // reference was, because the one place that could show it never read it.
   let query = supabase.from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), created_at', { count: 'exact' })
+    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, created_at', { count: 'exact' })
     .order('created_at', { ascending: false }).range(from, to)
   if (status) query = query.eq('status', status)
 
@@ -301,7 +315,9 @@ async function adminListPayments(ctx) {
   const payments = data.map(p => ({
     id: p.id, amountCents: p.amount_cents, currency: p.currency, status: p.status,
     paystackRef: p.paystack_ref, fixTier: p.fix_tier, referralCode: p.referral_code,
-    scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null, createdAt: p.created_at
+    scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
+    refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
+    createdAt: p.created_at
   }))
   return ctx.json({ success: true, data: payments, meta: { page, pageSize, total: count || 0 } })
 }

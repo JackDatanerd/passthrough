@@ -154,7 +154,30 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund }) {
 
     if (!refund) return next()
 
-    await next()
+    // AUDIT FIX (Section 9/10 pass — bug): this used to be a bare
+    // `await next()` with the refund check immediately after it. Hono only
+    // registers ONE app-level app.onError (src/index.js) — its internal
+    // compose() wraps the WHOLE middleware chain in a single try/catch at
+    // the outermost layer, so an exception thrown downstream (createScan has
+    // several plain `throw insertErr`/`throw quotaErr` DB-error paths)
+    // propagates straight up through this `await next()`, completely
+    // unguarded, before the status check below ever runs. The refund never
+    // fired for exactly the case its own comment names as the reason it
+    // exists — "a wrong file type, an oversized upload, or a server hiccup
+    // must not burn the one anonymous scan an hour" — a thrown server hiccup
+    // burned it anyway, silently, every time. A response returned via
+    // ctx.json(...) (never thrown) still hits the status check exactly as
+    // before; this only adds the previously-missing thrown-error path, then
+    // re-throws so errorHandler.js still produces the same response it
+    // always did — this change is refund bookkeeping only, never a change in
+    // what the client receives.
+    try {
+      await next()
+    } catch (err) {
+      try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
+      catch (refundErr) { console.error(`rate limiter (${keyPrefix}) refund failed:`, refundErr.message) }
+      throw err
+    }
     const status = c.res && c.res.status
     if (typeof status === 'number' && status >= 400) {
       try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
