@@ -154,6 +154,40 @@ describe('sendOwnerAlert — de-duplicated', () => {
   })
 })
 
+// BUG FIX (Section 5 audit): sendOwnerNotice didn't exist at all — every
+// employer-lead notification (createLead's notifyOwner) silently failed
+// since employer-leads.controller.js was written, and nothing here would
+// have caught it: the controller's own test stubs this entire module. These
+// tests exercise the real export directly so a future regression (e.g.
+// swallowing the error again, or routing back through alert_logs) fails
+// here instead of disappearing into a try/catch again.
+describe('sendOwnerNotice — employer leads', () => {
+  it('emails the owner with a distinct subject prefix, and never touches alert_logs', async () => {
+    t = setup()
+    expect(await t.mod.sendOwnerNotice(t.env, 'New employer lead', 'name: Dana')).toBe(true)
+    expect(t.sent).toHaveLength(1)
+    expect(t.sent[0].to).toBe('owner@example.com')
+    expect(t.sent[0].subject).toBe('[Passthrough Lead] New employer lead')
+    expect(t.sent[0].html).toContain('name: Dana')
+    expect(logs(t.db, 'alert_logs')).toHaveLength(0)
+  })
+  it('is not deduplicated by subject — unlike sendOwnerAlert, a repeat lead notice always sends', async () => {
+    t = setup()
+    await t.mod.sendOwnerNotice(t.env, 'New employer lead', 'a')
+    await t.mod.sendOwnerNotice(t.env, 'New employer lead', 'b')
+    expect(t.sent).toHaveLength(2)
+  })
+  it('no-ops without throwing when there is no owner address configured', async () => {
+    t = setup(); delete t.env.OWNER_ALERT_EMAIL
+    expect(await t.mod.sendOwnerNotice(t.env, 's', 'm')).toBe(false)
+    expect(t.sent).toHaveLength(0)
+  })
+  it('propagates a send failure rather than swallowing it — the caller (employer-leads.controller.js) owns that try/catch', async () => {
+    t = setup({ sendFails: true })
+    await expect(t.mod.sendOwnerNotice(t.env, 's', 'm')).rejects.toThrow('Resend down')
+  })
+})
+
 describe('htmlToPlainText / fmtMoney', () => {
   it('converts links, paragraphs, entities; drops <style>', () => {
     t = setup()

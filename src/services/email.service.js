@@ -419,13 +419,56 @@ async function sendOwnerAlert(env, subject, message) {
   return emailed
 }
 
+// ── Employer-lead notices ───────────────────────────────────────────────────
+// BUG FIX (Section 5 audit): this function was called from
+// employer-leads.controller.js (createLead's notifyOwner -> sendNotice) but
+// never existed here — every employer-lead notification has silently failed
+// since that controller was written. The call sat inside a try/catch that
+// only logs ("Employer-lead notice failed: ..."), so nothing ever surfaced
+// it: leads were still stored and visible in the admin list, so there was no
+// user-facing symptom. Nothing else caught it either — the controller's own
+// test file stubs this whole module (so it never touches the real export
+// list), and scripts/lint-undefined.cjs only flags undefined bare
+// identifiers, not a missing property on an untyped require() (see its own
+// header comment on exactly this class of bug).
+//
+// Deliberately NOT sendOwnerAlert: that function also writes an alert_logs
+// row — the record of CRITICAL failures (payment/webhook errors, signature
+// mismatches) — and a routine lead is not one of those; doubling it in there
+// buried real incidents in a 5-row dashboard panel and copied lead PII into
+// a table with no delete path (see migration 0028's own cleanup of the rows
+// this used to write, back when leads went through sendOwnerAlert). This
+// also skips sendOwnerAlert's per-subject dedupe (hitQuota, 1/10min keyed
+// off a hash of the subject) — employer-leads.controller.js already runs its
+// own hourly budget (withinNoticeBudget) and per-lead 24h resubmission
+// cooldown before ever calling this, at a granularity that fits "how many
+// leads came in", not "how many identical alert subjects fired".
+//
+// Errors are NOT swallowed here (unlike sendOwnerAlert) — the caller already
+// wraps this call in its own try/catch and logs its own context, so
+// swallowing here too would make that branch unreachable. (Confirmed by the
+// controller's own test, "a failing mail provider never fails the
+// submission", which stubs this function to throw and asserts the
+// submission still succeeds.)
+async function sendOwnerNotice(env, subject, message) {
+  const to = env.OWNER_ALERT_EMAIL
+  if (!to) return false
+  await sendViaResend(env, {
+    from: env.EMAIL_FROM,
+    to,
+    subject: `[Passthrough Lead] ${subject}`,
+    html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`
+  })
+  return true
+}
+
 module.exports = {
   htmlToPlainText, fmtMoney,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendPaymentReceipt,
-  sendOwnerAlert,
+  sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged
 }
