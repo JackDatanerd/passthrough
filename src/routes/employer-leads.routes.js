@@ -12,6 +12,8 @@ router.post('/', rl.employerLead, c.createLead)
 // were being written with no way for anyone to ever read them back short of
 // a manual Supabase query.
 router.get('/', admin, c.adminListLeads)
+// Must not be shadowed by a future GET /:id.
+router.get('/export.csv', admin, c.adminExportLeads)
 
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —
 // the leads list was read-only with no way to track outreach or clear spam.

@@ -54,6 +54,7 @@ export default function Verify() {
   const [leadSent,    setLeadSent   ] = useState(false)
   const [leadErr,     setLeadErr    ] = useState('')
   const [leadLoading, setLeadLoading] = useState(false)
+  const [website,     setWebsite    ] = useState('')  // honeypot — real visitors never see or fill this
 
   const [linkCopied, setLinkCopied] = useState(false)
 
@@ -82,7 +83,7 @@ export default function Verify() {
   function load() {
     setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null); setData(null)
     setDownloadErr(''); setCheckResult(null)
-    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setEmail('')
+    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setEmail(''); setWebsite('')
     setLeadSent(false); setLeadErr('')
     api.get(`/verify/${code}`)
       .then(res => {
@@ -114,7 +115,8 @@ export default function Verify() {
         source: 'verification_page',
         // SECTION 7 AUDIT (feature gap): which candidate's page this lead came
         // from, so the admin list isn't just an undifferentiated pile.
-        verificationCode: code
+        verificationCode: code,
+        website
       })
       setLeadSent(true)
     } catch (err) {
@@ -419,6 +421,12 @@ export default function Verify() {
                     onChange={e => setEmail(e.target.value)}
                   />
                   {leadErr && <p className="text-xs text-red-600">{leadErr}</p>}
+                  {/* Honeypot: invisible to a real person, tempting to a bot filling
+                      every field it finds. Off-screen rather than display:none/hidden —
+                      some bots skip fields a screen reader would also skip. */}
+                  <input type="text" name="website" value={website} onChange={e => setWebsite(e.target.value)}
+                    tabIndex={-1} autoComplete="off" aria-hidden="true"
+                    style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
                   <div className="flex gap-3">
                     <Button type="submit" loading={leadLoading}>
                       Get early access

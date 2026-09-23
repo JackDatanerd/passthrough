@@ -64,6 +64,12 @@ export default function Settings() {
     }
   }
 
+  // BUG FIX (Section 6, second fixing-time pass): updateEmail no longer
+  // flips the live email immediately — it stages a pending change that only
+  // takes effect once the NEW address confirms (see auth.controller.js's own
+  // comment for the full reasoning). The success message and the account
+  // section below reflect that: the current email keeps working, and a
+  // "confirmation pending" notice appears until it's confirmed or canceled.
   async function handleUpdateEmail() {
     if (!newEmail || !emailPassword) return setEmailError('New email and password required.')
     setEmailLoading(true); setEmailError(''); setEmailSuccess(false)
@@ -72,19 +78,25 @@ export default function Settings() {
       await refreshUser()
       setEmailSuccess(true)
       setNewEmail(''); setEmailPassword('')
-      // BUG FIX (Section 6): resentOk/resendError belong to the resend-
-      // verification button just above, keyed on whatever address is
-      // CURRENTLY unverified. Changing the email address here marks the
-      // NEW address unverified (updateEmail already fires one verification
-      // email automatically) — but without resetting these, a user who'd
-      // clicked "Resend" earlier for their OLD address would keep seeing
-      // the stale "Sent!" badge here instead of a live resend button, for
-      // an address that never actually had a resend click of its own.
-      setResentOk(false); setResendError('')
     } catch (err) {
       setEmailError(getErrorMessage(err, 'Failed to update email.'))
     } finally {
       setEmailLoading(false)
+    }
+  }
+
+  const [cancelingPending, setCancelingPending] = useState(false)
+  async function handleCancelPendingEmail() {
+    const password = window.prompt('Enter your password to cancel this email change:')
+    if (!password) return
+    setCancelingPending(true); setEmailError('')
+    try {
+      await api.patch('/auth/email', { newEmail: user.email, password, cancelPending: true })
+      await refreshUser()
+    } catch (err) {
+      setEmailError(getErrorMessage(err, 'Failed to cancel.'))
+    } finally {
+      setCancelingPending(false)
     }
   }
 
@@ -235,15 +247,29 @@ export default function Settings() {
 
             <Form onSubmit={handleUpdateEmail} className="flex flex-col gap-2 pt-2 border-t border-gray-100">
               <p className="text-sm text-gray-600"><span className="font-medium">Current email:</span> {user?.email}</p>
+              {/* FEATURE GAP CLOSED / BUG FIX (Section 6, second fixing-time
+                  pass): a change used to take effect the instant a password
+                  was supplied, with no confirmation and no way back. This
+                  banner is the only place that reality is now visible — the
+                  address above stays live and correct until the one below is
+                  confirmed. */}
+              {user?.pendingEmail && (
+                <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2 flex items-center justify-between gap-2 flex-wrap">
+                  <span>Confirmation pending for <strong>{user.pendingEmail}</strong> — check that inbox.</span>
+                  <Button type="button" size="sm" variant="ghost" loading={cancelingPending} onClick={handleCancelPendingEmail}>
+                    Cancel
+                  </Button>
+                </div>
+              )}
               <Input label="New email" type="email" value={newEmail}
                 onChange={e => { setNewEmail(e.target.value); setEmailSuccess(false) }} />
               <Input label="Password" type="password" value={emailPassword}
                 onChange={e => { setEmailPassword(e.target.value); setEmailSuccess(false) }}
                 autoComplete="current-password" />
               {emailError   && <p className="text-sm text-red-600">{emailError}</p>}
-              {emailSuccess && <p className="text-sm text-green-700">Email updated — check your inbox to verify it.</p>}
+              {emailSuccess && <p className="text-sm text-green-700">Confirmation email sent to your new address. Your current email stays active until you confirm.</p>}
               <Button type="submit" loading={emailLoading} variant="secondary" size="sm" className="self-start">
-                Update email
+                {user?.pendingEmail ? 'Request a different change' : 'Update email'}
               </Button>
             </Form>
           </div>

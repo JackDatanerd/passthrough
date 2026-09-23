@@ -78,7 +78,7 @@ async function auth(c, next) {
   if (user.tokenVersion !== decoded.tokenVersion)
     return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
 
-  const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, savedProfile, ...safe } = user
+  const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
   c.set('user', safe)
   // The JWT's `exp` from THIS request's already-verified token, stashed for
   // getMe() to use for silent session renewal (added upstream; kept here).

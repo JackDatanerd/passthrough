@@ -15,9 +15,12 @@ import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 
 // All requires below are CommonJS — esbuild bundles them cleanly.
-const optionalAuth  = require('./middleware/optionalAuth')
-const errorHandler  = require('./middleware/errorHandler')
-const rateLimiter   = require('./middleware/rateLimiter')
+const optionalAuth     = require('./middleware/optionalAuth')
+const errorHandler     = require('./middleware/errorHandler')
+const rateLimiter      = require('./middleware/rateLimiter')
+const bodyLimit         = require('./middleware/bodyLimit')
+const envCheck          = require('./middleware/envCheck')
+const securityHeaders   = require('./middleware/securityHeaders')
 
 const authRoutes         = require('./routes/auth.routes')
 const scanRoutes         = require('./routes/scan.routes')
@@ -37,6 +40,22 @@ const { runRetention } = require('./services/retention.service')
 const { handleDeadLetterBatch } = require('./services/deadletter.service')
 
 const app = new Hono()
+
+// CRITICAL BUG FIX (traced cross-section — found while adapting Section 5/6
+// fixes to this snapshot; src/index.js is nobody's assigned section): all
+// three of bodyLimit.js, envCheck.js and securityHeaders.js exist, are fully
+// implemented, and are exercised by tests/infra.middleware.test.js — but
+// none of them were ever require()'d or app.use()'d here. Every doc comment
+// in those three files already describes itself as active ("wraps the whole
+// app", "mounted app-wide") — that description was aspirational, not true:
+// no response has ever actually carried these security headers, no request
+// has ever actually been size-capped outside of upload.js's own multipart
+// path, and a fatal misconfiguration has never actually short-circuited into
+// the 503 it was built to produce. Wiring them in is the fix; nothing about
+// their own logic needed to change.
+app.use('*', securityHeaders)   // wraps every response, success or error — mount first
+app.use('/api/*', envCheck)     // fail fast on a broken config before any route runs
+app.use('/api/*', bodyLimit())  // caps non-multipart bodies before a handler reads one
 
 // ── 1. CORS ──────────────────────────────────────────────────────────────────
 // origin is set at request time from env.FRONTEND_URL (not hardcoded) so the

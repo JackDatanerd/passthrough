@@ -24,6 +24,11 @@ router.patch('/password',           auth, rl.auth, c.changePassword)
 // general per-route rate limit only.
 router.patch('/name',               auth,          c.updateName)
 router.patch('/email',              auth, rl.auth,  c.updateEmail)
+// Public, token-gated (same posture as /verify-email) — the confirmation
+// link is opened from an email client, which may not carry the original
+// session. Shares /verify-email's looser bucket for the same reason its own
+// comment gives: a link click isn't credential guessing.
+router.post('/email/confirm',       rl.authVerify, c.confirmEmailChange)
 router.delete('/account',           auth, rl.auth, c.deleteAccount)
 router.post('/claim-scan',          auth,    c.claimScan)
 

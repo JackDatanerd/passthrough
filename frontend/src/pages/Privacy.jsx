@@ -1,7 +1,7 @@
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
-const LAST_UPDATED = 'July 24, 2026'
+const LAST_UPDATED = 'September 22, 2026'
 
 function Section({ title, children }) {
   return (
@@ -49,6 +49,12 @@ export default function Privacy() {
           <p>
             <strong>Technical data:</strong> IP address (used for rate-limiting and anonymous scan
             allowances), and basic request logs.
+          </p>
+          <p>
+            <strong>Employer inquiries:</strong> if you're a hiring manager and submit the "Get
+            early access" form (on the homepage or on a candidate's verification page), we collect
+            your name, company, work email, and, optionally, the role you're hiring for — so we can
+            follow up. This is stored separately from candidate accounts.
           </p>
         </Section>
 

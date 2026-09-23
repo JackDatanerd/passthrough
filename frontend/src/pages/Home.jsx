@@ -84,10 +84,23 @@ function DemoScoreCard() {
 // with no way to act on it at all. Mirrors Verify.jsx's lead form (same
 // fields, same endpoint) — source is 'homepage' so admin can tell the two
 // entry points apart in the leads list.
+// The same taxonomy candidates' scans are tagged with — kept in sync by hand
+// with constants.js's ROLE_CATEGORIES (a small backend module isn't
+// importable into the SPA bundle; AdminUsers/AdminLeads follow the same
+// inline-list convention for their own dropdowns).
+const ROLE_CATEGORIES = [
+  ['software_engineering', 'Software Engineering'], ['product_management', 'Product Management'],
+  ['design', 'Design'], ['data_science', 'Data Science'], ['marketing', 'Marketing'],
+  ['sales', 'Sales'], ['operations', 'Operations'], ['finance', 'Finance'],
+  ['healthcare', 'Healthcare'], ['legal', 'Legal'], ['education', 'Education'], ['other', 'Other']
+]
+
 function EmployerLeadForm() {
   const [name,    setName   ] = useState('')
   const [company, setCompany] = useState('')
   const [email,   setEmail  ] = useState('')
+  const [field,   setField  ] = useState('')
+  const [website, setWebsite] = useState('')  // honeypot — real visitors never see or fill this
   const [sent,    setSent   ] = useState(false)
   const [err,     setErr    ] = useState('')
   const [loading, setLoading] = useState(false)
@@ -97,7 +110,7 @@ function EmployerLeadForm() {
     if (!name || !company || !email) return setErr('Name, company, and email required.')
     setLoading(true); setErr('')
     try {
-      await api.post('/employer-leads', { name, company, email, source: 'homepage' })
+      await api.post('/employer-leads', { name, company, email, roleCategory: field || undefined, source: 'homepage', website })
       setSent(true)
     } catch (e) {
       setErr(getErrorMessage(e, 'Something went wrong.'))
@@ -122,7 +135,24 @@ function EmployerLeadForm() {
         <Input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
         <Input placeholder="Company" value={company} onChange={e => setCompany(e.target.value)} />
         <Input type="email" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
+        {/* FEATURE GAP CLOSED (Section 5, second fixing-time pass): the
+            field/role dropdown was entirely missing here — the copy promises
+            "candidates matching your needs" with no way to say what those
+            needs are. A taxonomy dropdown (not free text) is what makes that
+            promise checkable against verified_candidate_counts() on the
+            admin side. */}
+        <select value={field} onChange={e => setField(e.target.value)}
+          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700">
+          <option value="">What role are you hiring for? (optional)</option>
+          {ROLE_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+        </select>
         {err && <p className="text-xs text-red-600">{err}</p>}
+        {/* Honeypot: invisible to a real person, tempting to a bot filling every
+            field it finds. Off-screen rather than display:none/hidden — some
+            bots skip fields a screen reader would also skip. */}
+        <input type="text" name="website" value={website} onChange={e => setWebsite(e.target.value)}
+          tabIndex={-1} autoComplete="off" aria-hidden="true"
+          style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
         <Button type="submit" loading={loading}>Get early access</Button>
       </Form>
     </div>

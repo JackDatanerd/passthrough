@@ -151,6 +151,18 @@ async function sendPasswordChanged(env, supabase, email, name) {
 // Sent to the OLD address from updateEmail() — the new address gets its own
 // sendVerification() call already; this is the notice to the address being
 // abandoned, which previously got nothing at all.
+// Part of the pending-email flow (auth.controller.js's updateEmail /
+// confirmEmailChange) — the confirmation link, sent to the NEW address.
+// Companion to sendEmailChangedOldAddress below, which now fires at
+// REQUEST time (see that function's own comment) rather than after an
+// actual change — this is the function that makes the change actual.
+async function sendEmailChangeConfirmation(env, supabase, newEmail, name, rawToken) {
+  return send(env, supabase, newEmail, 'Confirm your new Passthrough email', 'email_change_confirm', {
+    NAME:        name,
+    CONFIRM_URL: `${env.FRONTEND_URL}/confirm-email-change?token=${rawToken}`
+  })
+}
+
 async function sendEmailChangedOldAddress(env, supabase, oldEmail, name, newEmail) {
   return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_changed_old_address', {
     NAME:      name,
@@ -378,7 +390,7 @@ async function sendOwnerAlert(env, subject, message) {
 module.exports = {
   htmlToPlainText, fmtMoney,
   sendWelcome, sendVerification, sendPasswordReset,
-  sendPasswordChanged, sendEmailChangedOldAddress, sendAccountDeleted, sendAccountLockoutAlert,
+  sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendOwnerAlert,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,

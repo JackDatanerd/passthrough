@@ -90,6 +90,14 @@ async function adminDashboardStats(ctx) {
     .from('employer_leads').select('id', { count: 'exact', head: true }).gte('created_at', startOfWeek)
   if (leadErr) throw leadErr
 
+  // Leads nobody has worked yet — what actually "needs attention". The 7-day
+  // count above only says how many arrived recently: it counts leads that were
+  // already contacted or archived as spam, and a NEW lead nobody has touched
+  // silently drops out of it after a week.
+  const { count: newLeadsCount, error: newLeadErr } = await supabase
+    .from('employer_leads').select('id', { count: 'exact', head: true }).eq('status', 'NEW')
+  if (newLeadErr) throw newLeadErr
+
   const { data: recentAlerts, error: alertErr } = await supabase
     .from('alert_logs').select('id, subject, message, emailed, created_at')
     .order('created_at', { ascending: false }).limit(5)
@@ -117,7 +125,8 @@ async function adminDashboardStats(ctx) {
       erroredScansThisWeek: erroredScansCount || 0,
       stuckScans:           stuckScansCount || 0,
       stalePendingPayments: stalePendingCount || 0,
-      leadsThisWeek:        leadsThisWeekCount || 0
+      leadsThisWeek:        leadsThisWeekCount || 0,
+      newLeads:             newLeadsCount || 0
     },
     recentAlerts: (recentAlerts || []).map(a => ({
       id: a.id, subject: a.subject, message: a.message, emailed: a.emailed, createdAt: a.created_at

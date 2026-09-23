@@ -21,12 +21,17 @@ function createFakeSupabase(resolver = () => undefined) {
       return Promise.resolve(resolver(q)).then(r => r ?? { data: null, error: null })
     }
     const api = {
-      select(cols) { q.cols = cols ?? '*'; q.returning = true; return api },
+      select(cols, opts) { q.cols = cols ?? '*'; q.selectOpts = opts || null; q.returning = true; return api },
       insert(values) { q.op = 'insert'; q.values = values; return api },
       update(patch) { q.op = 'update'; q.patch = patch; return api },
       delete() { q.op = 'delete'; return api },
       upsert(values) { q.op = 'upsert'; q.values = values; return api },
-      order(col, opts) { q.orders.push([col, opts]); return api }, limit() { return api }, range() { return api },
+      order(col, opts) { q.orders.push([col, opts]); return api },
+      limit() { return api },
+      // range/or are recorded (q.range / q.or) so tests can assert on them;
+      // before, they were silently dropped.
+      range(from, to) { q.range = [from, to]; return api },
+      or(expr) { (q.or = q.or || []).push(expr); return api },
       maybeSingle() { q.maybe = true; return run() },
       single() { q.single = true; return run() },
       then(resolve, reject) { return run().then(resolve, reject) },

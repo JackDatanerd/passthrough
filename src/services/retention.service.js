@@ -68,18 +68,28 @@ async function purgeOldLogs(supabase, now = Date.now()) {
 // lookup filters on expiry) — but the hash sits in the row. Clear it.
 async function clearExpiredTokens(supabase, now = Date.now()) {
   const nowIso = new Date(now).toISOString()
-  const out = { resetTokens: 0, verifyTokens: 0, errors: [] }
-  for (const [tokenCol, expiryCol, key] of [
-    ['reset_token', 'reset_token_expiry', 'resetTokens'],
-    ['email_verify_token', 'email_verify_expiry', 'verifyTokens'],
+  const out = { resetTokens: 0, verifyTokens: 0, pendingEmailTokens: 0, errors: [] }
+  for (const [patch, expiryCol, key] of [
+    [{ reset_token: null }, 'reset_token_expiry', 'resetTokens'],
+    [{ email_verify_token: null }, 'email_verify_expiry', 'verifyTokens'],
+    // BUG FIX (Section 6, second fixing-time pass): pending_email_token
+    // (auth.controller.js's updateEmail/confirmEmailChange) is the same
+    // shape as the two above — a hashed, expiring, single-use token — and
+    // was missing from this sweep entirely, since the column didn't exist
+    // yet when this file was written. Unlike the other two, this one also
+    // clears pending_email itself: that's the value Settings.jsx's "email
+    // change pending" banner keys off, and leaving it set with no live
+    // token behind it would show a banner for a change that can never be
+    // completed or canceled through the normal flow again.
+    [{ pending_email: null, pending_email_token: null }, 'pending_email_expiry', 'pendingEmailTokens'],
   ]) {
     try {
       const { data, error } = await supabase.from('users')
-        .update({ [tokenCol]: null, [expiryCol]: null })
+        .update({ ...patch, [expiryCol]: null })
         .lt(expiryCol, nowIso).select('id')
-      if (error) out.errors.push(`${tokenCol}: ${error.message}`)
+      if (error) out.errors.push(`${expiryCol}: ${error.message}`)
       else out[key] = data?.length || 0
-    } catch (err) { out.errors.push(`${tokenCol}: ${err.message}`) }
+    } catch (err) { out.errors.push(`${expiryCol}: ${err.message}`) }
   }
   return out
 }

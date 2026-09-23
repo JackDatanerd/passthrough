@@ -58,6 +58,10 @@ backend runs as a Cloudflare Worker.
    -- paste contents of supabase/migrations/0013_employer_leads_dedup.sql
    -- paste contents of supabase/migrations/0014_enable_rls.sql
    -- paste contents of supabase/migrations/0015_definer_hardening_and_score_checks.sql
+   -- ...and every migration after 0015 too, in filename order — this list has
+   -- fallen behind the folder before (once as far back as 0015 itself, caught
+   -- during the Section 5 fixing-time pass); `ls supabase/migrations/` is the
+   -- source of truth, not this file.
    -- ...and any files added after this doc was last updated
    ```
    AUDIT FIX (Section 9): this used to say to run only `0001_init.sql` and

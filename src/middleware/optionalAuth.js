@@ -34,7 +34,7 @@ async function optionalAuth(c, next) {
       if (!user || user.deletedAt || user.status === 'BANNED' || user.tokenVersion !== decoded.tokenVersion) {
         c.set('authError', 'inactive')
       } else {
-        const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, savedProfile, ...safe } = user
+        const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
         c.set('user', safe)
         // AUDIT FIX (bug — redundant double auth check): middleware/auth.js
         // runs on every protected route AFTER this one and used to redo the

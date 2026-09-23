@@ -36,7 +36,28 @@ async function setup(opts = {}) {
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
-    if (q.table === 'users' && q.op === 'select') return { data: userRow, error: opts.selectError || null }
+    if (q.table === 'users' && q.op === 'select') {
+      // maybeSingle() lookups get their own handling, since the same shape
+      // (.eq('email', ...).maybeSingle()) is ALSO how login/forgotPassword do
+      // their own primary, legitimate lookup — this can't just special-case
+      // "any maybeSingle with an email filter" without breaking those. Instead
+      // this mimics what Postgres itself would actually do: a lookup by
+      // pending_email_token only ever matches confirmEmailChange's own query
+      // (nothing else in this file filters on that column), and a lookup BY
+      // VALUE that matches this test's userRow.email is the normal "find the
+      // session user" case (login, forgotPassword, updateEmail's own initial
+      // read) — only a lookup for some OTHER email (updateEmail's /
+      // confirmEmailChange's proactive duplicate-email check) needs the
+      // opt-in opts.existingEmailUser.
+      if (q.maybe) {
+        if (q.filters.some(f => f[1] === 'pending_email_token'))
+          return { data: 'pendingLookupRow' in opts ? opts.pendingLookupRow : null, error: null }
+        const byEmail = q.filters.find(f => f[1] === 'email')
+        if (byEmail && eqValue(q, 'email') !== userRow?.email)
+          return { data: opts.existingEmailUser ?? null, error: null }
+      }
+      return { data: userRow, error: opts.selectError || null }
+    }
     if (q.table === 'users' && q.op === 'insert') return { data: opts.insertedRow ?? baseUserRow({ id: 'new1', password_hash: 'x' }), error: opts.insertError || null }
     if (q.table === 'users' && q.op === 'update') {
       state.updates.push({ table: 'users', patch: q.patch, id: eqValue(q, 'id') })
@@ -70,6 +91,7 @@ async function setup(opts = {}) {
       sendEmailChangedOldAddress: async (...a) => { state.emails.push({ type: 'email_changed_old_address', to: a[2], newEmail: a[4] }) },
       sendAccountDeleted:         async (...a) => { state.emails.push({ type: 'account_deleted', to: a[2] }) },
       sendAccountLockoutAlert:    async (...a) => { state.emails.push({ type: 'lockout_alert', to: a[2] }) },
+      sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4] }) },
     },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
@@ -407,6 +429,23 @@ describe('changePassword', () => {
     await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
     expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
   })
+
+  // BUG FIX being locked in (Section 6, second fixing-time pass): a reset
+  // link (a separate credential from any JWT) and a pending email change in
+  // flight both used to survive a password change untouched.
+  it('clears any outstanding reset token and pending email change', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      reset_token: 'sometoken', reset_token_expiry: FUTURE(),
+      pending_email: 'new@example.com', pending_email_token: 'x', pending_email_expiry: FUTURE(),
+    }) })
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'longenough' } }))
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toMatchObject({
+      reset_token: null, reset_token_expiry: null,
+      pending_email: null, pending_email_token: null, pending_email_expiry: null,
+    })
+  })
 })
 
 describe('updateEmail', () => {
@@ -420,16 +459,35 @@ describe('updateEmail', () => {
     const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password' } }))
     expect(res.status).toBe(400)
   })
-  it('on success, marks the account unverified again and emails the NEW address', async () => {
+  it('400s a new email already in use by someone else, WITHOUT touching pending_email', async () => {
+    t = await setup({ existingEmailUser: { id: 'someone-else' } })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'taken@example.com', password: 'correct-password' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toBe('That email address is already in use.')
+    expect(t.state.updates.find(u => u.table === 'users')).toBeUndefined()
+    expect(t.state.emails).toHaveLength(0)
+  })
+  // BUG FIX being locked in (Section 6, second fixing-time pass): this used
+  // to flip `email` immediately, to whatever was sent, and mark the account
+  // unverified right away. Now it only stages the change: the live account
+  // (including email_verified) is untouched until confirmEmailChange
+  // succeeds. The round-2 old-address notice is kept, now fired at this
+  // REQUEST step (see the controller's and the template's own comments for
+  // why the timing — and therefore the wording — changed).
+  it('on success, stages a pending email WITHOUT touching the live email/email_verified, and notifies both addresses', async () => {
     t = await setup()
     const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'correct-password' } }))
     expect(res.status).toBe(200)
+    expect(res.body.message).toContain('new@example.com')
     const update = t.state.updates.find(u => u.table === 'users')
-    expect(update.patch.email_verified).toBe(false)
-    expect(t.state.emails).toEqual([
-      { type: 'verify', to: 'new@example.com', raw: expect.any(String) },
+    expect(update.patch).toMatchObject({ pending_email: 'new@example.com' })
+    expect(update.patch.pending_email_token).toBeTypeOf('string')
+    expect('email' in update.patch).toBe(false)
+    expect('email_verified' in update.patch).toBe(false)
+    expect(t.state.emails).toEqual(expect.arrayContaining([
+      { type: 'change_confirm', to: 'new@example.com', raw: expect.any(String) },
       { type: 'email_changed_old_address', to: 'user@example.com', newEmail: 'new@example.com' },
-    ])
+    ]))
   })
   // FEATURE FIX being locked in — same password-guessing-oracle shape as
   // changePassword above: `password` here is a live bcrypt.compare too.
@@ -450,6 +508,68 @@ describe('updateEmail', () => {
     t = await setup({ justLocked: true })
     await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
     expect(t.state.emails).toEqual([{ type: 'lockout_alert', to: 'user@example.com' }])
+  })
+
+  it('cancels a pending change back to the current email, when requested with cancelPending', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      pending_email: 'new@example.com', pending_email_token: 'x', pending_email_expiry: FUTURE(),
+    }) })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password', cancelPending: true } }))
+    expect(res.status).toBe(200)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toEqual({ pending_email: null, pending_email_token: null, pending_email_expiry: null })
+  })
+  it('without cancelPending, "unchanged email" is still a plain 400 even with a pending change present', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      pending_email: 'new@example.com', pending_email_token: 'x', pending_email_expiry: FUTURE(),
+    }) })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password' } }))
+    expect(res.status).toBe(400)
+    expect(t.state.updates.find(u => u.table === 'users')).toBeUndefined()
+  })
+})
+
+describe('confirmEmailChange', () => {
+  const RAW = 'a-raw-token'
+  async function pendingRow(over = {}) {
+    return baseUserRow({
+      pending_email: 'new@example.com',
+      pending_email_token: await (await import('../src/lib/crypto.js')).sha256(RAW),
+      pending_email_expiry: FUTURE(),
+      token_version: 4,
+      ...over,
+    })
+  }
+  it('400s an unknown/expired token without changing anything', async () => {
+    t = await setup({ pendingLookupRow: null })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: 'nope' } }))
+    expect(res.status).toBe(400)
+    expect(t.state.updates).toHaveLength(0)
+  })
+  it('on success, commits the email, verifies it, clears pending_*, bumps token_version and returns a fresh token', async () => {
+    const row = await pendingRow()
+    t = await setup({ userRow: row, pendingLookupRow: row })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.token).toBeTypeOf('string')
+    expect(res.body.data.user.email).toBe('new@example.com')
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toMatchObject({
+      email: 'new@example.com', email_verified: true,
+      pending_email: null, pending_email_token: null, pending_email_expiry: null,
+      token_version: 5,
+    })
+  })
+  it('400s if the pending email was claimed by someone else in the meantime, and clears the stale pending_* fields', async () => {
+    const row = await pendingRow()
+    t = await setup({ userRow: row, pendingLookupRow: row, existingEmailUser: { id: 'someone-else' } })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toBe('That email address is already in use.')
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toEqual({ pending_email: null, pending_email_token: null, pending_email_expiry: null })
   })
 })
 

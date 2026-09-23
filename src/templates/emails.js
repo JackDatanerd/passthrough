@@ -25,7 +25,16 @@ const TEMPLATES = {
   // old one previously heard nothing at all. This is the one place a real
   // account-takeover victim can still be reached once the address on file
   // has changed out from under them.
-  email_changed_old_address: "<h2>Your account email was changed</h2>\n<p>Hi {{NAME}}, the email address on your Passthrough account was just changed from this address to {{NEW_EMAIL}}.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't make this change, contact support@passthrough.dev immediately \u2014 your account may be compromised. This is the only notice sent to this address; future account emails will go to the new one.</p>\n",
+  // BUG FIX (Section 6, second fixing-time pass): updateEmail below no
+  // longer flips the live email immediately (see its own comment) — it only
+  // STAGES the change until the new address confirms. This notice now fires
+  // at that request moment, not after a change that hasn't actually happened
+  // yet, so the wording can no longer say "was changed" while the old
+  // address is still the live, working one.
+  email_changed_old_address: "<h2>Email change requested on your account</h2>\n<p>Hi {{NAME}}, someone requested changing the email on your Passthrough account from this address to {{NEW_EMAIL}}.</p>\n<p>Nothing has changed yet \u2014 this address stays active and nothing else about your account is affected unless the new one is confirmed.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't request this, no action is needed \u2014 the change won't take effect without access to the new address. If you're unsure your password is safe, change it.</p>\n",
+  // The other half of the same flow — the confirmation link, sent to the NEW
+  // address. Nothing calls this a success until this link is clicked.
+  email_change_confirm: "<h2>Confirm your new email</h2>\n<p>Hi {{NAME}}, you (or someone with your password) asked to change the email on your Passthrough account to this address.</p>\n<a href=\"{{CONFIRM_URL}}\" class=\"btn\">Confirm New Email \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link expires in 1 hour. Your account keeps using its current email address until you confirm \u2014 if you don't recognize this, you can safely ignore it and nothing will change.</p>\n",
   // Sent right before the scrub/soft-delete commits (deleteAccount already
   // has the user's current, pre-scrub email in hand at that point). No link
   // or CTA \u2014 deletion is immediate and irreversible by the time this sends.

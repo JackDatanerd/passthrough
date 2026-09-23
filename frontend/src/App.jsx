@@ -21,6 +21,7 @@ import NotFound       from './pages/NotFound'
 const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'))
 const ResetPassword  = lazyWithRetry(() => import('./pages/ResetPassword'))
 const VerifyEmail    = lazyWithRetry(() => import('./pages/VerifyEmail'))
+const ConfirmEmailChange = lazyWithRetry(() => import('./pages/ConfirmEmailChange'))
 const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
 const Verify         = lazyWithRetry(() => import('./pages/Verify'))
 const Pricing        = lazyWithRetry(() => import('./pages/Pricing'))
@@ -106,6 +107,7 @@ function RoutedApp() {
           <Route path="/forgot-password" element={<ForgotPassword />} />
           <Route path="/reset-password"  element={<ResetPassword />} />
           <Route path="/verify-email"    element={<VerifyEmail />} />
+          <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
           <Route path="/pricing"         element={<Pricing />} />
           <Route path="/terms"           element={<Terms />} />
           <Route path="/privacy"         element={<Privacy />} />

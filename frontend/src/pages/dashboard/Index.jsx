@@ -9,6 +9,7 @@ import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
 import { formatDate, statusLabel } from '../../lib/utils'
+import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
 // .js's SCAN_STATUSES allowlist, for the filter dropdown below.
@@ -274,20 +275,41 @@ export default function DashboardIndex() {
                   </p>
                   <p className="text-xs text-gray-400 mt-0.5">{formatDate(scan.createdAt)}</p>
                 </div>
+                {/* BUG FIX (Section 6, second fixing-time pass): this showed the
+                    ORIGINAL score even for a delivered fix (the number that
+                    got someone to pay in the first place, not the result they
+                    paid for — a scan that went 52 → 88 kept showing a red
+                    "52/100" next to "Delivered ✓ Verified"), and showed the
+                    Verified chip for ANY row with a code, including a fix
+                    that finished below the badge threshold, where the public
+                    verification page itself already says "below the Verified
+                    threshold". displayScore/isVerified below use the same
+                    fixAtsScore-when-purchased and score+revocation-aware logic
+                    scan.controller.js and Verify.jsx already use. */}
                 <div className="flex items-center gap-3 shrink-0">
-                  {scan.atsScore != null && (
-                    <span className={`text-sm font-bold ${scan.atsScore >= 75 ? 'text-green-700' : scan.atsScore >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
-                      {scan.atsScore}/100
-                    </span>
-                  )}
-                  <Badge variant={scanBadgeVariant(scan.status)}>
-                    {statusLabel(scan.status)}
-                  </Badge>
-                  {scan.verificationCode && (
-                    <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
-                      ✓ Verified
-                    </span>
-                  )}
+                  {(() => {
+                    const displayScore = scan.fixPurchased && scan.fixAtsScore != null ? scan.fixAtsScore : scan.atsScore
+                    const isVerified = scan.verificationCode
+                      && scan.verificationStatus !== 'REVOKED'
+                      && displayScore != null && displayScore >= ATS_BADGE_THRESHOLD
+                    return (
+                      <>
+                        {displayScore != null && (
+                          <span className={`text-sm font-bold ${displayScore >= 75 ? 'text-green-700' : displayScore >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                            {displayScore}/100
+                          </span>
+                        )}
+                        <Badge variant={scanBadgeVariant(scan.status)}>
+                          {statusLabel(scan.status)}
+                        </Badge>
+                        {isVerified && (
+                          <span className="text-xs bg-green-100 text-green-800 px-2 py-0.5 rounded-full">
+                            ✓ Verified
+                          </span>
+                        )}
+                      </>
+                    )
+                  })()}
                 </div>
               </Link>
             ))}

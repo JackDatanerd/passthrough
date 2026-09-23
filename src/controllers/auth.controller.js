@@ -60,6 +60,7 @@ function safeUser(user) {
   const {
     passwordHash, paystackAuthCode, paystackCustomerCode,
     resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry,
+    pendingEmailToken, pendingEmailExpiry,
     savedProfile, ...safe
   } = user
   return safe
@@ -468,7 +469,24 @@ async function changePassword(c) {
   const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
   await supabase.from('users').update({
     password_hash: await bcrypt.hash(newPassword, 10),
-    token_version:  newTokenVersion
+    token_version:  newTokenVersion,
+    // BUG FIX (Section 6, second fixing-time pass): token_version above
+    // kills every outstanding JWT, but a reset link is a SEPARATE credential
+    // (a bare token in reset_token, checked on its own) that survived a
+    // password change untouched — someone who reset the password once
+    // (a briefly-compromised mailbox, a shoulder-surfed code) could reuse
+    // the same link again within its 1-hour window even after the account
+    // owner "secures" things by changing the password themselves — and even
+    // after the round-2 sendPasswordChanged email below, which confirms the
+    // change happened but doesn't invalidate anything left outstanding. A
+    // pending email change in flight (see updateEmail/confirmEmailChange) is
+    // cleared for the same reason — it shouldn't survive proving you know
+    // the current password either. Signup verification (email_verify_token)
+    // is left alone: it isn't a bypass of anything password-related, and
+    // clearing it would silently break a still-valid, still-wanted
+    // verification link for no security benefit.
+    reset_token: null, reset_token_expiry: null,
+    pending_email: null, pending_email_token: null, pending_email_expiry: null
   }).eq('id', user.id)
 
   // BUG FIX: token_version bump above invalidates ALL outstanding JWTs for
@@ -516,17 +534,34 @@ async function updateName(c) {
 // security-adjacent, so this follows the pattern already established by
 // changePassword: current password required, and — since this reuses the
 // existing email-verification machinery rather than inventing a new one —
-// the account is marked unverified again and a fresh verification email
-// goes to the NEW address. token_version is deliberately left untouched;
-// unlike a password change, changing your email address doesn't invalidate
-// the credential that proves who's making other requests, so there's no
-// reason to sign out other sessions over it.
+// BUG FIX (Section 6, second fixing-time pass): this used to flip `email`
+// the instant a correct password was supplied, to whatever string the
+// caller sent — a typo, or someone else's real address — immediately making
+// it the account's live login/reset/notification address, and simultaneously
+// flipping email_verified to false (which blocks paid downloads until the
+// NEW, possibly-wrong address verifies). The round-2 pass (below, kept)
+// added a notice to the OLD address, which helps a genuine takeover victim
+// notice — but doesn't stop an honest typo, or a not-yet-malicious mistake,
+// from taking effect immediately with no way back. This now only STAGES the
+// change (pending_email + its own confirmation token) — the current email
+// keeps working exactly as before until the new address proves it's real by
+// clicking the link confirmEmailChange() below handles. token_version stays
+// untouched here, same reasoning as before: nothing about the live account
+// has changed yet.
 async function updateEmail(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
-  const { newEmail, password } = z.object({
+  const { newEmail, password, cancelPending } = z.object({
     newEmail: emailSchema,
-    password: checkPasswordSchema
+    password: checkPasswordSchema,
+    // FEATURE GAP CLOSED (Section 6, second fixing-time pass): the pending-
+    // email flow above needed a way BACK — a change requested by mistake
+    // (or by someone else with a stolen session) had no way to be withdrawn
+    // short of waiting out the 1-hour token expiry. Settings.jsx's "cancel"
+    // action re-submits this same endpoint with the account's own current
+    // email and this flag, rather than a separate endpoint, since the
+    // password-confirmation and lookup logic is otherwise identical.
+    cancelPending: z.boolean().optional()
   }).parse(body)
 
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
@@ -550,41 +585,112 @@ async function updateEmail(c) {
   }
   await recordLoginSuccess(c.env, sessionUser.email)
 
-  if (newEmail === user.email)
+  if (newEmail === user.email) {
+    if (cancelPending && user.pendingEmail) {
+      await supabase.from('users').update({
+        pending_email: null, pending_email_token: null, pending_email_expiry: null
+      }).eq('id', user.id)
+      return c.json({ success: true, message: 'Email change canceled.' })
+    }
     return c.json({ success: false, message: 'That is already your email address.' }, 400)
+  }
+
+  // BUG FIX: proactive check instead of relying solely on the unique-
+  // constraint 23505 -> "Already exists." errorHandler branch — that generic
+  // message meant "email already exists" and "you're not allowed to do that"
+  // were indistinguishable to the person reading it. The 23505 branch stays
+  // as defense-in-depth against a race between this check and the eventual
+  // confirm; this is the one anybody actually sees.
+  const { data: existing, error: existingErr } = await supabase
+    .from('users').select('id').eq('email', newEmail).is('deleted_at', null).maybeSingle()
+  if (existingErr) throw existingErr
+  if (existing) return c.json({ success: false, message: 'That email address is already in use.' }, 400)
 
   const raw    = cryptoLib.randomToken(32)
   const stored = await cryptoLib.sha256(raw)
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
-  const oldEmail = user.email  // captured before the update below overwrites it
 
-  const { data: updatedRow, error: updateErr } = await supabase.from('users').update({
-    email:               newEmail,
-    email_verified:      false,
-    email_verify_token:  stored,
-    email_verify_expiry: exp
-  }).eq('id', user.id).select().single()
-  // Relies on the same email-unique constraint register() does — a
-  // duplicate here surfaces as the errorHandler's 23505 branch ("Already
-  // exists."), same as everywhere else in the app.
+  const { error: updateErr } = await supabase.from('users').update({
+    pending_email:        newEmail,
+    pending_email_token:  stored,
+    pending_email_expiry: exp
+  }).eq('id', user.id)
   if (updateErr) throw updateErr
-  const updated = userRowToCamel(updatedRow)
 
   c.executionCtx.waitUntil(
-    emailService.sendVerification(c.env, supabase, newEmail, updated.name, raw)
-      .catch(e => console.error('Email-change verify email:', e.message))
+    emailService.sendEmailChangeConfirmation(c.env, supabase, newEmail, user.name, raw)
+      .catch(e => console.error('Email-change confirm email:', e.message))
   )
-  // AUDIT FIX (feature gap, Auth section round 2): the OLD address —
-  // the one place a real account-takeover victim can still be reached —
-  // previously heard nothing at all about this change. See
-  // sendEmailChangedOldAddress's comment in email.service.js.
+  // AUDIT FIX (feature gap, Auth section round 2): the OLD address — the one
+  // place a real account-takeover victim can still be reached — previously
+  // heard nothing at all about this. Reused here for the pending flow at the
+  // moment that actually matters most: the REQUEST, not the eventual
+  // confirmation (which an attacker who doesn't control the new inbox will
+  // never complete anyway — the owner needs to know now). See
+  // sendEmailChangedOldAddress's comment in email.service.js / its template.
   c.executionCtx.waitUntil(
-    emailService.sendEmailChangedOldAddress(c.env, supabase, oldEmail, updated.name, newEmail)
+    emailService.sendEmailChangedOldAddress(c.env, supabase, user.email, user.name, newEmail)
       .catch(e => console.error('Email-changed old-address notice:', e.message))
   )
 
-  return c.json({ success: true, message: 'Email updated. Please verify your new address.',
-    data: { user: safeUser(updated) } })
+  return c.json({ success: true,
+    message: `Confirmation email sent to ${newEmail}. Your current email stays active until you confirm.` })
+}
+
+// POST /api/auth/email/confirm  { token }
+// The other half of updateEmail's pending-email flow — public (token-gated,
+// same posture as resetPassword/verifyEmail), since the confirmation link
+// is clicked from an email client that may not carry the original session.
+async function confirmEmailChange(c) {
+  const body = await c.req.json()
+  const { token } = z.object({ token: z.string() }).parse(body)
+
+  const supabase = getSupabase(c.env)
+  const stored = await cryptoLib.sha256(token)
+  const { data: row, error } = await supabase
+    .from('users').select('*').eq('pending_email_token', stored)
+    .gt('pending_email_expiry', new Date().toISOString())
+    .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
+  if (error) throw error
+  const user = userRowToCamel(row)
+  if (!user || !user.pendingEmail)
+    return c.json({ success: false, message: 'Confirmation link invalid or expired.' }, 400)
+
+  // The proactive uniqueness check in updateEmail can't see a SECOND email
+  // change (by this account or another) that landed in between — re-check
+  // here, right before the write that would otherwise 23505.
+  const { data: existing, error: existingErr } = await supabase
+    .from('users').select('id').eq('email', user.pendingEmail).neq('id', user.id).is('deleted_at', null).maybeSingle()
+  if (existingErr) throw existingErr
+  if (existing) {
+    await supabase.from('users').update({
+      pending_email: null, pending_email_token: null, pending_email_expiry: null
+    }).eq('id', user.id)
+    return c.json({ success: false, message: 'That email address is already in use.' }, 400)
+  }
+
+  // The identity this session's JWTs are bound to is changing here (unlike
+  // updateEmail's request step, where nothing live changed yet) — bump
+  // token_version so a stale token can't keep acting as the old identity,
+  // and mint a fresh one so THIS request's own confirmation doesn't
+  // immediately invalidate itself if the browser that clicked the link also
+  // happens to be signed in (same reasoning changePassword's own fresh-token
+  // reissue above already established for this codebase).
+  const newTokenVersion = user.tokenVersion + 1
+  const { data: updatedRow, error: updateErr } = await supabase.from('users').update({
+    email:                 user.pendingEmail,
+    email_verified:        true,
+    pending_email:         null,
+    pending_email_token:   null,
+    pending_email_expiry:  null,
+    token_version:         newTokenVersion
+  }).eq('id', user.id).select().single()
+  if (updateErr) throw updateErr
+  const updated = userRowToCamel(updatedRow)
+
+  const newToken = await issueJWT(c.env, { id: user.id, tokenVersion: newTokenVersion })
+  return c.json({ success: true, message: 'Email address updated.',
+    data: { user: safeUser(updated), token: newToken } })
 }
 
 // DELETE /api/auth/account
@@ -716,5 +822,5 @@ async function claimScan(c) {
 module.exports = {
   register, login, getMe, forgotPassword, resetPassword,
   verifyEmail, resendVerification, changePassword, updateName, updateEmail,
-  deleteAccount, claimScan
+  confirmEmailChange, deleteAccount, claimScan
 }
