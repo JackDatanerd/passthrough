@@ -9,9 +9,14 @@ const router = new Hono()
 // Public — partner self-serve, gated by the emailed token (?token=...), not
 // a route param, since the pages that read it are plain pages, not
 // :id-style resource routes.
-router.get( '/payout-details', c.getPartnerByToken)
-router.post('/payout-details', c.submitPayoutDetails)
-router.get( '/dashboard',      c.getPartnerDashboard)
+//
+// AUDIT FIX (bug): these three had no rate limit at all — see rateLimiter.js's
+// partnerRead/partnerWrite comment. The token itself is unguessable, so this
+// is hardening, not a fix for an exploited gap: a throttle on a leaked/logged
+// token, and on the expensive dashboard join, where previously there was none.
+router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
+router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
+router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 
 // Public — click tracking. Rate-limited with its own dedicated bucket
 // (rl.click) rather than sharing rl.employerLead's lead-spam bucket — see

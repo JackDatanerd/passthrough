@@ -1,14 +1,23 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { copyToClipboard } from '../lib/utils'
+import { copyToClipboard, formatCents } from '../lib/utils'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
-function fmtCents(cents, currency = 'USD') {
-  return `$${(cents / 100).toFixed(2)} ${currency === 'USD' ? '' : currency}`.trim()
-}
+// AUDIT FIX (bug): this local formatter put the `$` before the number's own
+// negative sign — e.g. "$-5.00" — instead of "-$5.00". Harmless while every
+// amount here was positive, but getPartnerDashboard's own stats.pendingCents
+// can legitimately go negative (a refund/chargeback reversal outrunning a
+// partner's new commission — see adminRecordPayout's comment in
+// partners.controller.js), and that's shown right here as this page's
+// "Pending" stat, on the one page a partner would see it. Swapped for the
+// shared formatMoney/formatCents (lib/utils.js), already used correctly for
+// the same negative-balance case throughout the admin side
+// (PartnerDetail.jsx, AdminPartners.jsx) — one currency formatter instead of
+// a second, divergent copy.
+const fmtCents = formatCents
 
 function StatCard({ label, value }) {
   return (

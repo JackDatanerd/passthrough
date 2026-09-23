@@ -30,6 +30,9 @@ const Privacy        = lazyWithRetry(() => import('./pages/Privacy'))
 const PaymentSuccess = lazyWithRetry(() => import('./pages/PaymentSuccess'))
 const DashboardIndex = lazyWithRetry(() => import('./pages/dashboard/Index'))
 const Settings       = lazyWithRetry(() => import('./pages/dashboard/Settings'))
+// FEATURE GAP CLOSED (Payments & Pricing re-audit): see PaymentHistory.jsx's
+// header comment — GET /api/payments/history had no frontend consumer at all.
+const PaymentHistory  = lazyWithRetry(() => import('./pages/dashboard/PaymentHistory'))
 const PartnerPayoutDetails = lazyWithRetry(() => import('./pages/PartnerPayoutDetails'))
 const PartnerDashboard     = lazyWithRetry(() => import('./pages/PartnerDashboard'))
 // Admin console (upstream Admin-panel work) — lazy like everything else non-landing.
@@ -120,6 +123,8 @@ function RoutedApp() {
             element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
           <Route path="/dashboard/settings"
             element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/dashboard/payments"
+            element={<ProtectedRoute><PaymentHistory /></ProtectedRoute>} />
           <Route path="/admin" element={<AdminRoute><AdminLayout /></AdminRoute>}>
             <Route index element={<Navigate to="dashboard" replace />} />
             <Route path="dashboard"    element={<AdminDashboard />} />

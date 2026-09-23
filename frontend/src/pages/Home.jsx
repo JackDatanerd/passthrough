@@ -12,14 +12,16 @@ import { usePricing, fmtPrice } from '../hooks/usePricing'
 
 // tier is always a usable object — byTier() falls back internally to the
 // correct standard price if /api/pricing hasn't loaded or failed.
-function TeaserPrice({ tier }) {
+// AUDIT FIX (bug): currency now threaded through, same fix as Pricing.jsx's
+// PriceBlock — see usePricing.js's fmtPrice comment.
+function TeaserPrice({ tier, currency }) {
   const onPromo = tier.amount !== tier.originalAmount
   return (
     <div className="mb-1 flex items-baseline gap-2">
       {onPromo && (
-        <span className="text-lg text-gray-400 line-through">{fmtPrice(tier.originalAmount)}</span>
+        <span className="text-lg text-gray-400 line-through">{fmtPrice(tier.originalAmount, currency)}</span>
       )}
-      <span className="text-3xl font-bold text-gray-900">{fmtPrice(tier.amount)}</span>
+      <span className="text-3xl font-bold text-gray-900">{fmtPrice(tier.amount, currency)}</span>
     </div>
   )
 }
@@ -370,17 +372,17 @@ export default function Home() {
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Credential only</div>
-                <TeaserPrice tier={byTier('BADGE')} />
+                <TeaserPrice tier={byTier('BADGE')} currency={pricing?.currency} />
                 <p className="text-sm text-gray-500">Verified credential for resumes already scoring 80+.</p>
               </div>
               <div className="rounded-lg border border-gray-200 p-6">
                 <div className="text-sm text-gray-500 mb-1">Fix only</div>
-                <TeaserPrice tier={byTier('FIX_PLAIN')} />
+                <TeaserPrice tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
                 <p className="text-sm text-gray-500">AI rewrite + ATS .docx + PDF. No verification link, any score.</p>
               </div>
               <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
                 <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
-                <TeaserPrice tier={byTier('FIX')} />
+                <TeaserPrice tier={byTier('FIX')} currency={pricing?.currency} />
                 <p className="text-sm text-gray-600">AI rewrite + ATS .docx + PDF + Verified credential. Any score.</p>
               </div>
             </div>

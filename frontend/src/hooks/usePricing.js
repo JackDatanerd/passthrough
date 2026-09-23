@@ -117,4 +117,17 @@ export function usePricing(referralCode = '') {
   return { pricing, byTier, pricingFailed: failed, refresh, clockOffsetMs: entry?.clockOffsetMs || 0 }
 }
 
-export const fmtPrice = cents => `$${(cents / 100).toFixed(0)}`
+// AUDIT FIX (bug): this used to hardcode `$` regardless of what /api/pricing
+// actually returned in `data.currency` — the one formatter in the codebase
+// that didn't respect it. pricing.controller.js and referral.service.js both
+// carry dedicated audit comments (and referral.pricing.test.js has a test)
+// specifically guarding against ever hardcoding USD, because the ACTUAL
+// charge always defers to `env.PAYSTACK_CURRENCY || c.CURRENCY` — this was
+// the one place downstream of that work that threw it away, and it's on the
+// literal checkout buttons (FixBanner's PriceTag). Mirrors the
+// already-correct pattern used elsewhere for money (lib/utils.js's
+// formatMoney/formatCents, PartnerDashboard's fmtCents): USD gets a bare `$`
+// for the common case, anything else gets a plain-number + currency-code
+// suffix rather than a `$` that would misrepresent what's actually charged.
+export const fmtPrice = (cents, currency = 'USD') =>
+  currency === 'USD' ? `$${(cents / 100).toFixed(0)}` : `${(cents / 100).toFixed(0)} ${currency}`

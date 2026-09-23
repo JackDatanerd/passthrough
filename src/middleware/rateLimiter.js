@@ -293,6 +293,31 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
+// AUDIT FIX (Payments & Pricing / Partners re-audit, bug — no live incident,
+// hardening only): partners.routes.js's three public, TOKEN-gated endpoints
+// (GET /payout-details, POST /payout-details, GET /dashboard) had no rate
+// limit at all, unlike everything else public in this file — including
+// `click` right below, which explicitly got its OWN bucket specifically
+// because sharing one was wrong for a different reason. The 32-byte
+// payout_details_token (see partners.controller.js) makes brute-forcing the
+// token itself infeasible either way, so this was never an auth-bypass
+// risk — but a leaked/logged/shoulder-surfed token had zero throttle
+// standing between it and unlimited payout-detail-rewrite attempts (each
+// one firing two notification emails via submitPayoutDetails) or unlimited
+// expensive 3-relation-join dashboard queries. Split into read/write the
+// same way `payment` vs. `resumeEdit` are split elsewhere in this file — a
+// GET is cheap and legitimately polled more; the POST redirects real money
+// and has a real side effect (2 emails) per call, so it gets the tighter
+// ceiling.
+const partnerRead = makeLimiter({
+  windowSeconds: 5 * 60, max: 30, keyPrefix: 'rl:partnerread',
+  message: msg('Too many requests. Please wait a moment.')
+})
+const partnerWrite = makeLimiter({
+  windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
+  message: msg('Too many attempts. Please wait a few minutes.')
+})
+
 // AUDIT FIX (Section 9): partners.routes.js's POST /track-click used to
 // share this exact `employerLead` limiter instance — same KV bucket
 // (`rl:lead:<ip>`), not just the same numbers. Two problems: (1) 10/hr is
@@ -517,7 +542,8 @@ async function recordVerifyMiss(env, ip, now = Date.now()) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click, isBypassed,
+  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click,
+  partnerRead, partnerWrite, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX,
   clientIp, rateKeyIp, hitQuota, consumeSlot, refundSlot

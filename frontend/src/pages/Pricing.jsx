@@ -6,14 +6,17 @@ import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 import { getStoredReferralCode } from '../hooks/useReferralCapture'
 
-function PriceBlock({ tier }) {
+// AUDIT FIX (bug): currency now threaded through from the page's own
+// /api/pricing response (see usePricing.js's fmtPrice comment) — this page
+// used to always render a `$`, even if PAYSTACK_CURRENCY were ever non-USD.
+function PriceBlock({ tier, currency }) {
   const onPromo = tier.amount !== tier.originalAmount
   return (
     <div className="mb-1 flex items-baseline gap-2">
       {onPromo && (
-        <span className="text-xl text-gray-400 line-through">{fmtPrice(tier.originalAmount)}</span>
+        <span className="text-xl text-gray-400 line-through">{fmtPrice(tier.originalAmount, currency)}</span>
       )}
-      <span className="text-4xl font-bold text-gray-900">{fmtPrice(tier.amount)}</span>
+      <span className="text-4xl font-bold text-gray-900">{fmtPrice(tier.amount, currency)}</span>
     </div>
   )
 }
@@ -67,7 +70,7 @@ export default function Pricing() {
           {/* Badge */}
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Credential only</div>
-            <PriceBlock tier={byTier('BADGE')} />
+            <PriceBlock tier={byTier('BADGE')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Score 80+ required · no content changes</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF'].map(f => (
@@ -85,7 +88,7 @@ export default function Pricing() {
           {/* Fix, no credential */}
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Fix only</div>
-            <PriceBlock tier={byTier('FIX_PLAIN')} />
+            <PriceBlock tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score · no verification link</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Retry until it passes','No Passthrough Verified link — just your documents'].map(f => (
@@ -106,7 +109,7 @@ export default function Pricing() {
               Most popular
             </div>
             <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
-            <PriceBlock tier={byTier('FIX')} />
+            <PriceBlock tier={byTier('FIX')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(f => (

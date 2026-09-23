@@ -715,12 +715,26 @@ async function initiateFix(ctx) {
   // what a payment would actually charge.
   const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode)
   const promoActive = c.isPromoActive(ctx.env)
+  // AUDIT FIX (bug): originalAmount used to branch on referralApplied and,
+  // in that branch, anchor on c.priceForTier(fixTier, ctx.env) — the
+  // current promo/standard price — rather than the true pre-promo standard
+  // price. pricing.controller.js's getPricing (the public quote this
+  // endpoint's own comment above says it's "kept in sync" with) anchors
+  // originalAmount on c.standardPriceForTier(tier) UNCONDITIONALLY,
+  // referral code or not, specifically so the strikethrough "was $X" never
+  // depends on which discount layer is active. This endpoint disagreed with
+  // that in exactly the referral+promo-both-active case, which would have
+  // shown two different "was" prices for the same scan+tier+code depending
+  // which endpoint served the quote. No live impact today — the frontend
+  // checkout calls /api/payments/initialize directly, never this endpoint
+  // (see the comment above) — but fixed here so a future caller of this
+  // route can't silently disagree with the public price quote.
   return ctx.json({ success: true, data: {
     amount: priced.amount, currency: priced.currency, scanId: scan.id, fixTier,
     // originalAmount/promoActive let the checkout UI show the same
     // anchor+slash treatment as the public pricing page, without a second,
     // independently-maintained price table on the frontend.
-    originalAmount: priced.referralApplied ? c.priceForTier(fixTier, ctx.env) : (promoActive ? c.priceForTier(fixTier, null) : priced.amount),
+    originalAmount: c.standardPriceForTier(fixTier),
     promoActive,
     referralApplied: priced.referralApplied
   } })

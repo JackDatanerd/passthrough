@@ -35,9 +35,24 @@ export default function PaymentSuccess() {
   // automatic retry handles the transient case silently; a manual "Try
   // again" button covers anything slower than that without forcing a full
   // page reload.
+  // AUDIT FIX (bug): this used to read `status === 'pending'` here to decide
+  // whether a retry should stay on the "Still confirming…" copy. That never
+  // actually worked: `verify` is a plain function re-created every render,
+  // but the retry chain below (`setTimeout(() => verify(attempt + 1), ...)`)
+  // is kicked off once from the mount-only effect, so every recursive call
+  // reuses THAT render's closure — `status` inside it stays frozen at
+  // whatever it was on mount ('loading'), never the current state. The
+  // check was therefore always false, so every 4s poll flipped the screen
+  // back to "Confirming your payment…" for a beat before flipping back to
+  // "Still confirming…" once the fetch resolved — a flicker on exactly the
+  // path (repeated mobile-money polling) this screen was written to smooth
+  // over. `attempt > 1` alone is the correct condition with no state read
+  // needed: this function only ever gets called with attempt > 1 from the
+  // scheduled retry inside the `res.data.pending` branch below, so by
+  // construction a retry IS a still-pending poll.
   function verify(attempt = 1) {
     if (!reference) { setStatus('error'); return }
-    setStatus(attempt > 1 && status === 'pending' ? 'pending' : 'loading')
+    setStatus(attempt > 1 ? 'pending' : 'loading')
     api.get(`/payments/verify?reference=${reference}`)
       .then(res => {
         // AUDIT FIX (bug): a 202 { pending: true } means Paystack hasn't

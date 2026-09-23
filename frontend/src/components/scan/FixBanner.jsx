@@ -7,13 +7,17 @@ import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 // PriceTag — byTier() always returns a usable value (falls back to the
 // correct standard price internally if /api/pricing hasn't loaded or
 // failed), so this only needs to decide whether to show the anchor.
-function PriceTag({ tier, byTier }) {
+// AUDIT FIX (bug): currency now threaded through — this is the literal
+// checkout button; a `$` here when PAYSTACK_CURRENCY isn't USD would have
+// been the most consequential instance of the fmtPrice bug (see
+// usePricing.js's fmtPrice comment).
+function PriceTag({ tier, byTier, currency }) {
   const live = byTier(tier)
   const onPromo = live.amount !== live.originalAmount
   return (
     <>
-      {onPromo && <s className="opacity-60 mr-1">{fmtPrice(live.originalAmount)}</s>}
-      {fmtPrice(live.amount)}
+      {onPromo && <s className="opacity-60 mr-1">{fmtPrice(live.originalAmount, currency)}</s>}
+      {fmtPrice(live.amount, currency)}
     </>
   )
 }
@@ -145,10 +149,10 @@ export default function FixBanner({
             </Button>
           )}
           <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
-            Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} />
+            Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={pricing?.currency} />
           </Button>
           <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
-            Fix + Verified Credential — <PriceTag tier="FIX" byTier={byTier} />
+            Fix + Verified Credential — <PriceTag tier="FIX" byTier={byTier} currency={pricing?.currency} />
           </Button>
         </div>
       </div>
@@ -172,10 +176,10 @@ export default function FixBanner({
       <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary" disabled={payLoading} loading={payingTier === 'BADGE'}>
-          Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} />
+          Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={pricing?.currency} />
         </Button>
         <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
-          Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} />
+          Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={pricing?.currency} />
         </Button>
         {hasCredit && (
           <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
@@ -183,7 +187,7 @@ export default function FixBanner({
           </Button>
         )}
         <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
-          Full AI Fix + Credential — <PriceTag tier="FIX" byTier={byTier} />
+          Full AI Fix + Credential — <PriceTag tier="FIX" byTier={byTier} currency={pricing?.currency} />
         </Button>
       </div>
     </div>

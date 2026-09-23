@@ -5,6 +5,11 @@ import { cn } from '../../lib/utils'
 
 const nav = [
   { label: 'Scans',    to: '/dashboard' },
+  // FEATURE GAP CLOSED (Payments & Pricing re-audit): the only other way to
+  // reach payment history was a hand-typed URL — this nav array was already
+  // the single, generic route to every dashboard sub-page (see the Settings
+  // audit-fix comment below), so the new page just slots in the same way.
+  { label: 'Payments', to: '/dashboard/payments' },
   { label: 'Settings', to: '/dashboard/settings' },
 ]
 
