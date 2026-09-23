@@ -24,6 +24,25 @@ function unlockScroll() {
   if (lockCount === 0) document.body.style.overflow = ''
 }
 
+// BUG FIX (audit): the scroll-lock counter above made nesting SAFE for
+// background scroll, but Escape/Tab were still handled per-instance, each
+// registering its own document-level 'keydown' listener. Two Modals open at
+// once (still no live call site today, but ConfirmDialog nests inside Modal
+// content in the general case, and this is a shared primitive) meant every
+// listener fired for the SAME keydown — stopPropagation() only stops
+// bubbling to ancestors, it does nothing to sibling listeners on the same
+// `document` target — so pressing Escape once closed every open Modal
+// simultaneously, and Tab-trapping from two dialogs fought over
+// document.activeElement in the same keystroke.
+// A module-level stack fixes this the same way lockCount fixed scrolling:
+// each Modal instance pushes its own id on open and pops it on close, and
+// the shared keydown handler only acts for the id on TOP of the stack — so
+// only the most-recently-opened (visually topmost) Modal ever responds to
+// Escape or Tab, and closing it correctly hands control back to whichever
+// Modal is now on top.
+let modalStack = []
+let nextModalId = 0
+
 // Changes vs. the original (which was only a styled div + Escape handler):
 //  - role="dialog" / aria-modal / aria-labelledby, so assistive tech treats it as a dialog.
 //  - Focus moves INTO the dialog on open, is trapped while open (Tab used to walk
@@ -49,12 +68,18 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     const previouslyFocused = document.activeElement
     lockScroll()
 
+    const id = ++nextModalId
+    modalStack.push(id)
+
     const initial =
       dialog.querySelector('[data-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ||
       dialog.querySelector(FOCUSABLE) || dialog
     initial.focus()
 
     function onKeyDown(e) {
+      // Only the topmost Modal (the last one pushed, i.e. still on screen
+      // above any others) reacts — see the module-level comment above.
+      if (modalStack[modalStack.length - 1] !== id) return
       if (e.key === 'Escape') {
         if (dismissibleRef.current) { e.stopPropagation(); onCloseRef.current?.() }
         return
@@ -71,6 +96,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
 
     return () => {
       document.removeEventListener('keydown', onKeyDown)
+      modalStack = modalStack.filter(x => x !== id)
       unlockScroll()
       if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused))
         previouslyFocused.focus()

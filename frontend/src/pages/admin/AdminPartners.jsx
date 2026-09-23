@@ -5,6 +5,7 @@ import { useApi } from '../../hooks/useApi'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
+import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
@@ -32,15 +33,15 @@ function AddPartnerModal({ onClose, onCreated }) {
 
   return (
     <Modal open onClose={onClose} title="Add partner">
-      <div className="flex flex-col gap-4">
+      <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleCreate} loading={saving}>Add & send link</Button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Add & send link</Button>
         </div>
-      </div>
+      </Form>
     </Modal>
   )
 }

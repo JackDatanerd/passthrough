@@ -448,3 +448,96 @@ describe('resolvePayment (admin) — reverse a sale / clear a dispute', () => {
     expect((await t.mod.resolvePayment(t.c({ params: { reference: 'nope' }, body: { action: 'reverse' } }))).status).toBe(404)
   })
 })
+
+// SECTION 12 AUDIT: cancelPayment and getPaymentHistory had zero coverage.
+// cancelPayment's whole point is the atomic ownership+status guard baked
+// into the UPDATE's WHERE clause, so that's the one worth pinning down —
+// not just "happy path 200", but that the filters actually sent to
+// supabase are exactly user_id + PENDING, and that a mismatch on either
+// (wrong owner, already-settled payment) comes back 404 rather than
+// silently touching someone else's row or re-cancelling a real payment.
+
+function setupCancel(opts = {}) {
+  const state = { updates: [] }
+  const db = createFakeSupabase(q => {
+    if (q.table === 'payments' && q.op === 'update') {
+      state.updates.push(q)
+      return { data: 'updated' in opts ? opts.updated : [{ id: 'pay1' }], error: opts.error ?? null }
+    }
+  })
+  const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+    'config/supabase.js': { getSupabase: () => db },
+  })
+  const c = (over = {}) => ({
+    env: {},
+    get: k => (k === 'user' ? (over.user ?? { id: 'u1' }) : undefined),
+    req: { param: () => over.reference ?? 'ref1' },
+    json: (body, status = 200) => ({ body, status }),
+  })
+  return { mod, restore, state, c, db }
+}
+
+describe('cancelPayment', () => {
+  it('cancels by flipping status to ABANDONED, scoped to this reference + this user + PENDING only', async () => {
+    t = setupCancel()
+    const res = await t.mod.cancelPayment(t.c({ reference: 'ref1', user: { id: 'u1' } }))
+    expect(res.body.success).toBe(true)
+    const call = t.state.updates[0]
+    expect(call.patch).toEqual({ status: 'ABANDONED' })
+    expect(call.filters).toEqual(expect.arrayContaining([
+      ['eq', 'paystack_ref', 'ref1'], ['eq', 'user_id', 'u1'], ['eq', 'status', 'PENDING'],
+    ]))
+  })
+
+  it('404s — and never claims success — when nothing matched (wrong owner, already-settled, or unknown reference)', async () => {
+    t = setupCancel({ updated: [] })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(404)
+    expect(res.body.success).toBe(false)
+  })
+
+  it('404s when updated comes back null rather than an empty array', async () => {
+    t = setupCancel({ updated: null })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(404)
+  })
+
+  it('propagates a database error', async () => {
+    t = setupCancel({ error: new Error('db down') })
+    await expect(t.mod.cancelPayment(t.c())).rejects.toThrow('db down')
+  })
+})
+
+describe('getPaymentHistory', () => {
+  function setupHistory(rows) {
+    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: rows, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined), json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, c, db }
+  }
+
+  it('scopes to the requesting user and orders newest-first', async () => {
+    t = setupHistory([])
+    await t.mod.getPaymentHistory(t.c)
+    const call = t.db.calls.find(c => c.table === 'payments')
+    expect(call.filters.find(f => f[0] === 'eq')).toEqual(['eq', 'user_id', 'u1'])
+    expect(call.orders).toEqual([['created_at', { ascending: false }]])
+  })
+
+  it('maps rows to camelCase and includes fixTier', async () => {
+    t = setupHistory([{ id: 'p1', amount_cents: 1900, currency: 'USD', status: 'SUCCESS', paystack_ref: 'r1', created_at: 't1', scan_id: 's1', fix_tier: 'BADGE' }])
+    const res = await t.mod.getPaymentHistory(t.c)
+    expect(res.body.data.payments[0]).toEqual({
+      id: 'p1', amountCents: 1900, currency: 'USD', status: 'SUCCESS',
+      paystackRef: 'r1', createdAt: 't1', scanId: 's1', fixTier: 'BADGE',
+    })
+  })
+
+  it('propagates a database error', async () => {
+    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: null, error: new Error('db down') } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined), json: (body, status = 200) => ({ body, status }) }
+    await expect(mod.getPaymentHistory(c)).rejects.toThrow('db down')
+    restore()
+  })
+})

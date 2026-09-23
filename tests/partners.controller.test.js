@@ -231,4 +231,421 @@ describe('getPartnerDashboard', () => {
     expect(r.body.data.commissionLedger[0]).toMatchObject({ grossAmountCents: 2900, commissionAmountCents: 580 })
     restore()
   })
+
+  // Not yet covered elsewhere: the AUDIT FIX (bug) above this file's
+  // buildCyclesSummary/totalConversions — a refund is a second ledger row
+  // (reverses_ledger_id set), which must net out of "how many sales" rather
+  // than counting as a second conversion.
+  it('totalConversions counts only original sales, not their reversal rows', async () => {
+    const { mod, restore, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2,
+      referral_codes: [],
+      commission_ledger: [
+        { id: 'l1', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' },
+        { id: 'l2', reverses_ledger_id: 'l1', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: null, created_at: '2026-09-02T00:00:00Z' },
+      ],
+      payouts: [],
+    })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.stats.totalConversions).toBe(1)
+    restore()
+  })
+})
+
+// SECTION 12 AUDIT: the remaining 9 of 15 functions in this file had zero
+// coverage — CRUD on partners and referral codes, the two public
+// token-gated endpoints, and click tracking.
+
+describe('adminCreatePartner', () => {
+  function setupCreate(opts = {}) {
+    const state = { inserted: null, emailed: [] }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'insert') { state.inserted = q.values; return { data: { id: 'p1', ...q.values }, error: opts.insertError || null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPartnerPayoutDetailsRequest: async (...a) => { state.emailed.push(a); if (opts.emailThrows) throw new Error('mail down') } },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+    })
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, state, c, db }
+  }
+
+  it('creates the partner with a fresh token and never returns the token in the response', async () => {
+    t = setupCreate()
+    const res = await t.mod.adminCreatePartner(t.c)
+    expect(res.body.success).toBe(true)
+    expect(t.state.inserted).toMatchObject({ name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok-fixed' })
+    expect(res.body.data.payoutDetailsToken).toBeUndefined()
+    expect(JSON.stringify(res.body.data)).not.toContain('tok-fixed')
+  })
+
+  it('a failed notification email never fails partner creation', async () => {
+    t = setupCreate({ emailThrows: true })
+    const res = await t.mod.adminCreatePartner(t.c)
+    expect(res.body.success).toBe(true)
+  })
+
+  it('rejects an invalid email', async () => {
+    t = setupCreate({ body: { name: 'Coach K', email: 'not-an-email' } })
+    await expect(t.mod.adminCreatePartner(t.c)).rejects.toThrow()
+  })
+
+  it('propagates an insert error', async () => {
+    t = setupCreate({ insertError: new Error('db down') })
+    await expect(t.mod.adminCreatePartner(t.c)).rejects.toThrow('db down')
+  })
+})
+
+describe('adminUpdatePartner', () => {
+  function setupUpdate(opts = {}) {
+    const state = { patch: null, notifications: [] }
+    const before = 'before' in opts ? opts.before : { email: 'old@x.co' }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: before, error: null }
+      if (q.table === 'partners' && q.op === 'update') { state.patch = q.patch; return { data: opts.updated ?? null, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendPartnerEmailChanged: async (...a) => state.notifications.push({ type: 'emailChanged', to: a[2] }),
+        sendOwnerAlert:          async (...a) => state.notifications.push({ type: 'ownerAlert' }),
+      },
+    })
+    const c = (over = {}) => ({ env: {}, req: { param: () => 'p1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    return { mod, restore, state, c }
+  }
+
+  it('rejects an empty body', async () => {
+    t = setupUpdate()
+    await expect(t.mod.adminUpdatePartner(t.c({ body: {} }))).rejects.toThrow()
+  })
+
+  it('404s when the partner does not exist', async () => {
+    t = setupUpdate({ updated: null })
+    const res = await t.mod.adminUpdatePartner(t.c({ body: { status: 'PAUSED' } }))
+    expect(res.status).toBe(404)
+  })
+
+  it('updates status/commissionRate via the generic mapper, and name/email as explicit fields', async () => {
+    t = setupUpdate({ updated: { id: 'p1', email: 'old@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'PAUSED', commissionRate: 0.3, name: 'New Name' } }))
+    expect(t.state.patch).toMatchObject({ status: 'PAUSED', commission_rate: 0.3, name: 'New Name' })
+  })
+
+  it('notifies both old and new addresses (plus the owner) only when the email actually changes', async () => {
+    t = setupUpdate({ before: { email: 'old@x.co' }, updated: { id: 'p1', email: 'new@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
+    expect(t.state.notifications.filter(n => n.type === 'emailChanged')).toHaveLength(2)
+    expect(t.state.notifications.some(n => n.type === 'ownerAlert')).toBe(true)
+  })
+
+  it('does not notify when email is provided but unchanged, or not provided at all', async () => {
+    t = setupUpdate({ before: { email: 'same@x.co' }, updated: { id: 'p1', email: 'same@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { email: 'same@x.co' } }))
+    expect(t.state.notifications).toHaveLength(0)
+    t.restore()
+
+    t = setupUpdate({ updated: { id: 'p1', email: 'old@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'ACTIVE' } }))
+    expect(t.state.notifications).toHaveLength(0)
+  })
+
+  it('rejects a commissionRate outside 0-1', async () => {
+    t = setupUpdate()
+    await expect(t.mod.adminUpdatePartner(t.c({ body: { commissionRate: 1.5 } }))).rejects.toThrow()
+  })
+})
+
+describe('adminListPartners', () => {
+  function setupList(rows) {
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: rows, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, req: {}, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, c }
+  }
+
+  it('an unpaid ledger row from a PRIOR cycle counts as ready-to-pay; one from the CURRENT cycle only counts as accruing', async () => {
+    const old = new Date(); old.setUTCMonth(old.getUTCMonth() - 2)
+    t = setupList([{
+      id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500',
+      payouts: [], referral_codes: [],
+      commission_ledger: [
+        { id: 'l1', partner_id: 'p1', gross_amount_cents: 4900, commission_amount_cents: 500, payout_id: null, created_at: old.toISOString() },
+        { id: 'l2', partner_id: 'p1', gross_amount_cents: 3900, commission_amount_cents: 300, payout_id: null, created_at: new Date().toISOString() },
+      ],
+    }])
+    const res = await t.mod.adminListPartners(t.c)
+    const p = res.body.data[0]
+    expect(p.pendingCommissionCents).toBe(800)
+    expect(p.currentCycleAccruedCents).toBe(300)
+    expect(p.readyToPayCents).toBe(500)
+    expect(p.commissionLedger).toBeUndefined()   // never shipped in the list view
+  })
+
+  it('a paid ledger row never counts toward pending', async () => {
+    t = setupList([{
+      id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500',
+      payouts: [], referral_codes: [],
+      commission_ledger: [{ id: 'l1', gross_amount_cents: 4900, commission_amount_cents: 500, payout_id: 'payout1', created_at: new Date().toISOString() }],
+    }])
+    const res = await t.mod.adminListPartners(t.c)
+    expect(res.body.data[0].pendingCommissionCents).toBe(0)
+    expect(res.body.data[0].readyToPayCents).toBe(0)
+  })
+})
+
+describe('adminGetPartner', () => {
+  function setupGet(row) {
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: row, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, req: { param: () => 'p1' }, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, db, c }
+  }
+
+  it('404s for an unknown partner', async () => {
+    t = setupGet(null)
+    const res = await t.mod.adminGetPartner(t.c)
+    expect(res.status).toBe(404)
+  })
+
+  it('returns the full ledger and a 12-cycle summary', async () => {
+    t = setupGet({
+      id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500',
+      payouts: [], referral_codes: [],
+      commission_ledger: [{ id: 'l1', payment_id: 'pay1', partner_id: 'p1', referral_code_id: 'rc1', gross_amount_cents: 4900, commission_rate: '0.2500', commission_amount_cents: 1225, payout_id: null, created_at: new Date().toISOString() }],
+    })
+    const res = await t.mod.adminGetPartner(t.c)
+    expect(res.body.data.commissionLedger).toHaveLength(1)
+    expect(res.body.data.cyclesSummary).toHaveLength(12)
+    expect(res.body.data.pendingCommissionCents).toBe(1225)
+  })
+
+  it('orders payouts/referral_codes/commission_ledger newest-first', async () => {
+    t = setupGet({ id: 'p1', name: 'X', payouts: [], referral_codes: [], commission_ledger: [] })
+    await t.mod.adminGetPartner(t.c)
+    const call = t.db.calls.find(c => c.table === 'partners')
+    expect(call.orders).toEqual([
+      ['paid_at', { foreignTable: 'payouts', ascending: false }],
+      ['created_at', { foreignTable: 'referral_codes', ascending: false }],
+      ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
+    ])
+  })
+})
+
+describe('adminCreateReferralCode', () => {
+  function setupCreateCode(opts = {}) {
+    const state = { inserted: null, emailed: [] }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: opts.partner ?? null, error: null }
+      if (q.table === 'referral_codes' && q.op === 'insert') { state.inserted = q.values; return { data: { id: 'rc1', ...q.values }, error: opts.insertError || null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendReferralCodeCreated: async (...a) => state.emailed.push(a) },
+    })
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, state, c }
+  }
+
+  it('404s for an unknown partner, before ever inserting a code', async () => {
+    t = setupCreateCode({ partner: null })
+    const res = await t.mod.adminCreateReferralCode(t.c)
+    expect(res.status).toBe(404)
+    expect(t.state.inserted).toBeNull()
+  })
+
+  it('uppercases and trims the code before storing it', async () => {
+    t = setupCreateCode({ partner: { name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok' } })
+    await t.mod.adminCreateReferralCode(t.c)
+    expect(t.state.inserted.code).toBe('COACH20')
+  })
+
+  it('rejects a body with no tier prices set', async () => {
+    t = setupCreateCode({ partner: { name: 'Coach K', email: 'k@x.co' }, body: { code: 'X20', tierPrices: {} } })
+    await expect(t.mod.adminCreateReferralCode(t.c)).rejects.toThrow()
+  })
+
+  it('a failed notification email never fails code creation', async () => {
+    const state = { inserted: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: { name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok' }, error: null }
+      if (q.table === 'referral_codes' && q.op === 'insert') { state.inserted = q.values; return { data: { id: 'rc1', ...q.values }, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendReferralCodeCreated: async () => { throw new Error('mail down') } },
+    })
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.adminCreateReferralCode(c)
+    expect(res.body.success).toBe(true)
+    restore()
+  })
+})
+
+describe('adminUpdateReferralCode', () => {
+  function setupUpdateCode(opts = {}) {
+    const state = { patch: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'referral_codes' && q.op === 'update') { state.patch = q.patch; return { data: opts.updated ?? null, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = (over = {}) => ({ env: {}, req: { param: () => 'rc1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    return { mod, restore, state, c }
+  }
+
+  it('rejects an empty body', async () => {
+    t = setupUpdateCode()
+    await expect(t.mod.adminUpdateReferralCode(t.c({ body: {} }))).rejects.toThrow()
+  })
+
+  it('404s for an unknown code', async () => {
+    t = setupUpdateCode({ updated: null })
+    const res = await t.mod.adminUpdateReferralCode(t.c({ body: { active: false } }))
+    expect(res.status).toBe(404)
+  })
+
+  it('toggling active alone leaves pricing/limits untouched', async () => {
+    t = setupUpdateCode({ updated: { id: 'rc1', active: false } })
+    await t.mod.adminUpdateReferralCode(t.c({ body: { active: false } }))
+    expect(t.state.patch).toEqual({ active: false })
+  })
+
+  it('an explicit null usageLimit/expiresAt clears the field (distinct from omitting it)', async () => {
+    t = setupUpdateCode({ updated: { id: 'rc1' } })
+    await t.mod.adminUpdateReferralCode(t.c({ body: { usageLimit: null, expiresAt: null } }))
+    expect(t.state.patch).toEqual({ usage_limit: null, expires_at: null })
+  })
+
+  it('never allows changing the code string itself (not in the schema at all)', async () => {
+    t = setupUpdateCode({ updated: { id: 'rc1' } })
+    await t.mod.adminUpdateReferralCode(t.c({ body: { active: true, code: 'HACKED' } }))
+    expect(t.state.patch.code).toBeUndefined()
+  })
+})
+
+describe('getPartnerByToken', () => {
+  function setupToken(opts = {}) {
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: opts.partner ?? null, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, req: { query: () => opts.token }, json: (body, status = 200) => ({ body, status }) }
+    return { mod, restore, c }
+  }
+
+  it('400s with no token at all', async () => {
+    t = setupToken({ token: undefined })
+    const res = await t.mod.getPartnerByToken(t.c)
+    expect(res.status).toBe(400)
+  })
+
+  it('404s for an unknown/expired token', async () => {
+    t = setupToken({ token: 'bad', partner: null })
+    const res = await t.mod.getPartnerByToken(t.c)
+    expect(res.status).toBe(404)
+  })
+
+  it('returns partner details without ever leaking the token itself', async () => {
+    t = setupToken({ token: 'tok123', partner: { name: 'Coach K', payout_method: 'BANK', payout_details: { bankName: 'X' }, payout_details_submitted_at: 't', payout_details_token: 'tok123' } })
+    const res = await t.mod.getPartnerByToken(t.c)
+    expect(res.body.data.name).toBe('Coach K')
+    expect(JSON.stringify(res.body.data)).not.toContain('tok123')
+  })
+})
+
+describe('submitPayoutDetails', () => {
+  function setupSubmit(opts = {}) {
+    const state = { patch: null, notified: [] }
+    const db = createFakeSupabase(q => (q.table === 'partners' && q.op === 'update'
+      ? (state.patch = q.patch, { data: opts.updated ?? null, error: null }) : undefined))
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendPayoutDetailsChanged: async () => state.notified.push('partner'),
+        sendOwnerAlert:           async () => state.notified.push('owner'),
+      },
+    })
+    const c = (over = {}) => ({ env: {}, req: { query: () => over.token ?? 'tok123', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    return { mod, restore, state, c }
+  }
+
+  it('400s with no token', async () => {
+    t = setupSubmit()
+    const res = await t.mod.submitPayoutDetails(t.c({ token: undefined }))
+    expect(res.status).toBe(400)
+  })
+
+  it('rejects a body missing required BANK fields', async () => {
+    t = setupSubmit()
+    await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK' } }))).rejects.toThrow()
+  })
+
+  it('accepts BANK details and stores them under payout_details', async () => {
+    t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Coach K', accountNumber: '123' } }))
+    expect(t.state.patch.payout_method).toBe('BANK')
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'X', accountName: 'Coach K', accountNumber: '123' })
+  })
+
+  it('accepts MOBILE_MONEY details', async () => {
+    t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'Coach K', phoneNumber: '0700' } }))
+    expect(t.state.patch.payout_method).toBe('MOBILE_MONEY')
+  })
+
+  it('404s for an unknown/expired token', async () => {
+    t = setupSubmit({ updated: null })
+    const res = await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '1' } }))
+    expect(res.status).toBe(404)
+  })
+
+  it('notifies both the partner and the owner on a successful change', async () => {
+    t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '1' } }))
+    expect(t.state.notified.sort()).toEqual(['owner', 'partner'])
+  })
+})
+
+describe('trackClick', () => {
+  function setupTrack() {
+    const state = { rpcCalls: [] }
+    const db = createFakeSupabase(q => {
+      if (q.op === 'rpc') { state.rpcCalls.push(q); return { data: null, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = (over = {}) => ({ env: {}, req: { json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    return { mod, restore, state, c }
+  }
+
+  it('normalizes the code (trim + uppercase) before the RPC call', async () => {
+    t = setupTrack()
+    await t.mod.trackClick(t.c({ body: { code: '  coach20 ' } }))
+    expect(t.state.rpcCalls[0].name).toBe('increment_referral_code_clicks')
+    expect(t.state.rpcCalls[0].args).toEqual({ p_code: 'COACH20' })
+  })
+
+  it('a blank code is a silent no-op — still 200, no RPC call', async () => {
+    t = setupTrack()
+    const res = await t.mod.trackClick(t.c({ body: { code: '   ' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.rpcCalls).toHaveLength(0)
+  })
+
+  it('a malformed JSON body never throws (caught and treated as empty)', async () => {
+    const state = { rpcCalls: [] }
+    const db = createFakeSupabase(q => { if (q.op === 'rpc') state.rpcCalls.push(q) })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, req: { json: async () => { throw new Error('bad json') } }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.trackClick(c)
+    expect(res.body.success).toBe(true)
+    restore()
+  })
+
+  it('an RPC error is logged, not thrown — the frontend never has to handle a failure here', async () => {
+    const db = createFakeSupabase(q => (q.op === 'rpc' ? { data: null, error: new Error('rpc down') } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const c = { env: {}, req: { json: async () => ({ code: 'ABC' }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.trackClick(c)
+    expect(res.body.success).toBe(true)
+    restore()
+  })
 })

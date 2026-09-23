@@ -5,6 +5,7 @@ import { useApi } from '../../hooks/useApi'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
+import Form from '../../components/ui/Form'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
@@ -91,7 +92,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
 
   return (
     <Modal open onClose={onClose} title="Edit partner">
-      <div className="flex flex-col gap-4">
+      <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
         <Input label="Commission rate (%)" type="number" step="1" min="0" max="100" value={rate}
@@ -113,10 +114,10 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave} loading={saving}>Save</Button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Save</Button>
         </div>
-      </div>
+      </Form>
     </Modal>
   )
 }
@@ -164,7 +165,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
 
   return (
     <Modal open onClose={onClose} title={cycle ? `Record payout — ${cycle.label}` : `Record ad hoc payout — ${partner.name}`}>
-      <div className="flex flex-col gap-4">
+      <Form onSubmit={handleRecord} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
           Only use this <strong>after</strong> you've actually sent the money via your bank
           or mobile money app. This just logs it and notifies {partner.name}.
@@ -187,12 +188,12 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           placeholder="e.g. September referrals" />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleRecord} loading={saving} disabled={!partner.payoutMethod}>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving} disabled={!partner.payoutMethod}>
             Mark paid & notify
           </Button>
         </div>
-      </div>
+      </Form>
     </Modal>
   )
 }
@@ -234,7 +235,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
 
   return (
     <Modal open onClose={onClose} title={`New referral code — ${partner.name}`}>
-      <div className="flex flex-col gap-4">
+      <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="COACHNAME20" />
         <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
         <div className="grid grid-cols-3 gap-3">
@@ -250,10 +251,10 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleCreate} loading={saving}>Create & notify</Button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Create & notify</Button>
         </div>
-      </div>
+      </Form>
     </Modal>
   )
 }
@@ -300,7 +301,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
 
   return (
     <Modal open onClose={onClose} title={`Edit ${codeRow.code}`}>
-      <div className="flex flex-col gap-4">
+      <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <p className="text-xs text-gray-400">
           The code string itself, clicks, and usage history stay unchanged — only pricing and limits update.
         </p>
@@ -317,10 +318,10 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         </div>
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
-          <Button variant="secondary" onClick={onClose}>Cancel</Button>
-          <Button onClick={handleSave} loading={saving}>Save</Button>
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Save</Button>
         </div>
-      </div>
+      </Form>
     </Modal>
   )
 }
