@@ -333,7 +333,12 @@ async function retentionSweep(event, env, ctx) {
       try {
         const supabase = getSupabase(env)
         const r = await runRetention(env, supabase)
-        console.log(`Retention sweep: ${r.anon.deleted} anon scan(s), ${r.logs.emailLogs} email_logs, ${r.logs.alertLogs} alert_logs, ${r.tokens.resetTokens} reset + ${r.tokens.verifyTokens} verify token(s) cleared`)
+        // AUDIT FIX (Section 9/10 pass): pendingEmailTokens (added to
+        // clearExpiredTokens by retention.service.js when pending_email_token
+        // was added to its own sweep) was missing from this summary line —
+        // the sweep itself was already clearing them correctly, this was
+        // purely a wrangler-tail visibility gap.
+        console.log(`Retention sweep: ${r.anon.deleted} anon scan(s), ${r.logs.emailLogs} email_logs, ${r.logs.alertLogs} alert_logs, ${r.tokens.resetTokens} reset + ${r.tokens.verifyTokens} verify + ${r.tokens.pendingEmailTokens} pending-email token(s) cleared`)
         for (const e of [...(r.logs.errors || []), ...(r.tokens.errors || [])]) console.error('Retention sweep:', e)
         if (r.anon.error) console.error('Retention sweep (anon):', r.anon.error)
       } catch (err) {

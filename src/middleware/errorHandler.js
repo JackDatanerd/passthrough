@@ -6,8 +6,6 @@
 // Postgres unique-constraint violations arrive as SQLSTATE '23505'
 // (unique_violation) via PostgREST, surfaced on error.code by supabase-js.
 
-const c = require('../config/constants')
-
 const validStatus = s => Number.isInteger(s) && s >= 400 && s <= 599 ? s : 500
 
 function errorHandler(err, ctx) {

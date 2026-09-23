@@ -146,6 +146,22 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     expect(scanRowToCamel({ id: 's1' })).toMatchObject({ rewriteFailed: false })
   })
 
+  // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026) was
+  // selected via `select('*')` throughout scan.controller.js but silently
+  // dropped by scanRowToCamel — same latent-drop shape as rewrite_failed
+  // above, just not caught the first time round.
+  it('scanRowToCamel maps fix_error_recoveries and defaults it to 0 when the column is absent/null', () => {
+    expect(scanRowToCamel({ id: 's1', fix_error_recoveries: 2 })).toMatchObject({ fixErrorRecoveries: 2 })
+    expect(scanRowToCamel({ id: 's1', fix_error_recoveries: 0 })).toMatchObject({ fixErrorRecoveries: 0 })
+    expect(scanRowToCamel({ id: 's1' })).toMatchObject({ fixErrorRecoveries: 0 })
+  })
+
+  it('USER_FIELD_MAP and SCAN_FIELD_MAP round-trip the pending-email and fix_error_recoveries fields (Section 9/10 fix)', () => {
+    expect(camelToSnake({ pendingEmail: 'new@x.com', pendingEmailToken: 'tok', pendingEmailExpiry: 't1' }, USER_FIELD_MAP))
+      .toEqual({ pending_email: 'new@x.com', pending_email_token: 'tok', pending_email_expiry: 't1' })
+    expect(camelToSnake({ fixErrorRecoveries: 1 }, SCAN_FIELD_MAP)).toEqual({ fix_error_recoveries: 1 })
+  })
+
   it('paymentRowToCamel includes fixTier and referralCode (Section 9 fix)', () => {
     const mapped = paymentRowToCamel({
       id: 'pay1', amount_cents: 2900, currency: 'USD', status: 'SUCCESS',

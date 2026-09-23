@@ -47,6 +47,17 @@ describe('email send — per-recipient throttle', () => {
     for (let i = 0; i < 4; i++) r.push(await t.mod.sendAnonScanResult(t.env, t.db, 'v@x.co', 'N', 'scan1', 'tok', 50, false))
     expect(r).toEqual([true, true, true, false])
   })
+  // AUDIT FIX (Section 9/10 pass): updateEmail() requires the CALLER to prove
+  // their own password, but the RECIPIENT here is whatever `newEmail` they
+  // typed — an arbitrary, attacker-chosen address, not the identity-proven
+  // account holder. That made this template a stranger-mailbombing vector
+  // exactly like anon_scan_result above, just missed the first time round.
+  it('the email-change confirmation (recipient is attacker-chosen, not the caller) is throttled too', async () => {
+    t = setup()
+    const r = []
+    for (let i = 0; i < 6; i++) r.push(await t.mod.sendEmailChangeConfirmation(t.env, t.db, 'victim@example.com', 'N', 'tok'))
+    expect(r).toEqual([true, true, true, true, true, false])
+  })
   it('fails open if KV is down — an outage must not stop password-reset mail', async () => {
     t = setup()
     t.env.RATE_LIMIT_KV = { get: async () => { throw new Error('down') }, put: async () => { throw new Error('down') } }

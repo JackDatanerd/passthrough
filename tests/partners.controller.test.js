@@ -564,7 +564,20 @@ describe('submitPayoutDetails', () => {
         sendOwnerAlert:           async () => state.notified.push('owner'),
       },
     })
-    const c = (over = {}) => ({ env: {}, req: { query: () => over.token ?? 'tok123', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    // BUG FIX (traced from Section 9/10 pass — out of scope but found via the
+    // full test-suite run, so fixed here per the "trace it and we fix it"
+    // rule): `over.token ?? 'tok123'` can't distinguish "caller explicitly
+    // passed token: undefined to simulate a missing token" from "caller
+    // didn't mention token at all" — both read as `over.token === undefined`,
+    // so `??` picked the 'tok123' default either way. That made the "400s
+    // with no token" test below call the real submitPayoutDetails with a
+    // truthy token, skip its `if (!token)` guard entirely, and fail for an
+    // unrelated reason (an empty body failing Zod validation further down) —
+    // a false failure that would just as easily have been a false PASS if a
+    // real regression had actually removed that guard. The production guard
+    // in submitPayoutDetails was never broken; only this mock couldn't
+    // exercise it.
+    const c = (over = {}) => ({ env: {}, req: { query: () => 'token' in over ? over.token : 'tok123', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 

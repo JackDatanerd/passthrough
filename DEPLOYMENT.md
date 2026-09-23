@@ -294,6 +294,12 @@ Every push to `main` triggers an automatic rebuild and deploy.
 - [ ] `FRONTEND_URL=https://passthrough.dev`
 - [ ] `PAYSTACK_CALLBACK_URL=https://passthrough.dev/payment/success`
 - [ ] KV namespace `id` is filled in (not placeholder text)
+- [ ] `PROMO_ENDS_AT` is set to your real launch-week end time, not the
+      placeholder date shipped in the repo — the placeholder is a real UTC
+      timestamp, not an obviously-fake one, so a deploy that skips this step
+      doesn't error out; it just silently ships with the promo already
+      expired (or expiring at the wrong moment) with no warning anywhere.
+      Set `PROMO_ACTIVE=false` instead if you don't want a promo at launch.
 
 ### Infrastructure
 - [ ] R2 bucket created: `passthrough-resumes`

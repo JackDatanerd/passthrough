@@ -45,12 +45,28 @@ const { must } = require('../lib/db')
 // could repeat this indefinitely — the exact email-bombing shape this table
 // exists to stop, just missed for the one "failure" template among templates
 // that otherwise only fire on success.
+//
+// AUDIT FIX (Section 9/10 pass): email_change_confirm was also missing, and
+// for the same reason as account_lockout_alert above — it doesn't actually
+// fit the "proven identity" exemption either. updateEmail() in
+// auth.controller.js does require the CALLER to prove their own current
+// password, but the RECIPIENT of this specific template is whatever
+// `newEmail` they typed — an arbitrary, attacker-chosen address, not the
+// identity-proven account holder. Nothing stopped a logged-in attacker from
+// repeatedly "changing their email" to a victim's address purely to spam
+// that inbox; the only throttle was rl.auth (10 req/15min PER IP on the
+// route), which bounds nothing per-recipient and resets forever. Capped the
+// same as email_verification, since it's the same shape of flow (a
+// confirmation link, legitimately retried a few times by a real user who
+// fat-fingered an address or didn't see the first email) just reached
+// through a different route.
 const RECIPIENT_LIMITS = {
   email_verification:    { max: 5, windowSeconds: 3600 },
   password_reset:        { max: 3, windowSeconds: 3600 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
+  email_change_confirm:   { max: 5, windowSeconds: 3600 },
 }
 
 async function recipientAllowed(env, to, template) {

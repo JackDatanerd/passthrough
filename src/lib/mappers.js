@@ -55,6 +55,15 @@ function scanRowToCamel(row) {
     // at all.
     rewriteFailed:       row.rewrite_failed ?? false,
     fixRetryCount:       row.fix_retry_count,
+    // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026,
+    // claim_errored_fix RPC) was missing here despite being selected via
+    // `select('*')` on nearly every call site in scan.controller.js — the
+    // same latent-drop pattern as rewriteFailed/freeFixCredits elsewhere in
+    // this file, just not yet flagged for this column. Not live today (the
+    // only writer is the claim_errored_fix RPC, called directly, never
+    // through this mapper) but any future read path expecting it back from
+    // scanRowToCamel would have silently gotten undefined.
+    fixErrorRecoveries: row.fix_error_recoveries ?? 0,
     passed:              row.passed,
     keywordScore:        row.keyword_score,
     formatScore:         row.format_score,
@@ -168,7 +177,16 @@ const USER_FIELD_MAP = {
   // map.
   freeFixCredits: 'free_fix_credits',
   paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code',
-  savedProfile: 'saved_profile'
+  savedProfile: 'saved_profile',
+  // AUDIT FIX (Section 9/10 pass): same latent-drop trap as freeFixCredits
+  // above, for pending_email/pending_email_token/pending_email_expiry
+  // (migration 0029, auth.controller.js's updateEmail/confirmEmailChange
+  // pending-email flow). The only current writers build raw snake_case
+  // update objects, so this was harmless today — but a future caller using
+  // camelToSnake(USER_FIELD_MAP) to update any of these three would have
+  // silently no-opped exactly like the freeFixCredits case did.
+  pendingEmail: 'pending_email', pendingEmailToken: 'pending_email_token',
+  pendingEmailExpiry: 'pending_email_expiry'
 }
 
 const SCAN_FIELD_MAP = {
@@ -198,7 +216,12 @@ const SCAN_FIELD_MAP = {
   // camelToSnake(SCAN_FIELD_MAP) — but the same latent-drop trap as every
   // other entry above marked AUDIT FIX: any future caller that updates a
   // scan via this map would silently no-op a rewriteFailed write.
-  rewriteFailed: 'rewrite_failed'
+  rewriteFailed: 'rewrite_failed',
+  // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026) —
+  // same reasoning, matching the scanRowToCamel fix above. The only current
+  // writer is the claim_errored_fix RPC, called directly, never through
+  // this map.
+  fixErrorRecoveries: 'fix_error_recoveries'
 }
 
 const PAYMENT_FIELD_MAP = {

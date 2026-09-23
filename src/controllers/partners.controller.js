@@ -485,8 +485,18 @@ async function adminRecordPayout(ctx) {
   // SECTION 8 AUDIT: reversal rows (refunds/chargebacks) are NEGATIVE ledger
   // entries, so the net owed can now be zero or negative — e.g. a commission
   // already paid out was reversed and nothing new has accrued to net it
-  // against. Recording a payout of <= 0 would be nonsense (and negative
-  // amounts fail the payouts check constraint); tell the admin instead.
+  // against. Recording a payout of <= 0 would be nonsense; tell the admin
+  // instead.
+  // AUDIT FIX (Section 9/10 pass — comment correction): this used to say
+  // "and negative amounts fail the payouts check constraint" — no such
+  // constraint existed anywhere in the schema until
+  // 0031_payment_sweep_index_and_amount_checks.sql added one. Before that,
+  // the ONLY thing stopping a negative `amountCents` from reaching the
+  // insert below was recordPayoutSchema's `z.number().int().positive()`
+  // above (which does work, so this was never actually exploitable) — but
+  // the comment claimed a DB-level backstop that didn't exist, which is
+  // exactly the kind of false confidence that survives a refactor of the
+  // Zod schema and quietly stops meaning anything. Both layers are real now.
   if (body.amountCents === undefined && owedCents <= 0)
     return ctx.json({ success: false, message: owedCents < 0
       ? `Net owed is negative (${owedCents} cents) because of refund/chargeback reversals — nothing to pay. It will net against this partner's future commission.`
@@ -551,6 +561,15 @@ async function adminRecordPayout(ctx) {
       racedWithConcurrentPayout = true
       const actuallySettledCents = (claimed || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
       if (body.amountCents == null) {
+        // Note (Section 9/10 pass): claimed rows can include unpaid reversal
+        // rows (negative commission_amount_cents — see fulfillment.service.js),
+        // so actuallySettledCents can in theory come out <= 0 here even though
+        // the pre-check earlier required owedCents > 0 at READ time — that's
+        // exactly the race this whole branch exists to handle. If it does,
+        // 0031's payouts_amount_cents_nonnegative constraint will reject this
+        // update; correctErr below already logs and falls through without
+        // throwing, so payoutRow just keeps its original (now-known-wrong)
+        // amount and the owner alert further down still fires either way.
         const { data: corrected, error: correctErr } = await supabase.from('payouts')
           .update({ amount_cents: actuallySettledCents }).eq('id', payout.id).select('*').maybeSingle()
         if (correctErr) console.error('adminRecordPayout amount correction:', correctErr.message)

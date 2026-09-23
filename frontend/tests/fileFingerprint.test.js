@@ -30,9 +30,18 @@ describe('classifyFingerprint', () => {
   // A superseded entry with no recorded `at` (older data, or a field that
   // was never backfilled) still reports 'previous' — just without a date,
   // rather than lumping it in with a genuine 'mismatch'.
+  //
+  // BUG FIX (traced from Section 9/10 pass — out of scope but found via the
+  // full test-suite run): this assertion expected `kind: null` even though
+  // the fixture's matched entry has `kind: 'docx'` — a copy-paste from the
+  // 'mismatch' case below, which genuinely has no match to take a kind from.
+  // classifyFingerprint's own doc comment says `kind` is "which file type
+  // matched", independent of whether `at` was recorded, and the
+  // implementation already does exactly that (`match.kind || null`). The
+  // implementation was correct; only this assertion was wrong.
   it('still reports "previous" when a matched entry has no recorded `at`', () => {
     const fp = { docx: 'cur', pdf: null, previous: [{ kind: 'docx', hash: 'old', at: null }] }
-    expect(classifyFingerprint('old', fp)).toEqual({ status: 'previous', at: null, kind: null })
+    expect(classifyFingerprint('old', fp)).toEqual({ status: 'previous', at: null, kind: 'docx' })
   })
 
   it('reports "mismatch" for a hash that matches nothing on file', () => {
