@@ -32,7 +32,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [] }
+  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -71,7 +71,12 @@ async function setup(opts = {}) {
       return { data: opts.scans ?? [], error: null }
     }
     if (q.table === 'scans' && q.op === 'update') { state.updates.push({ table: 'scans', patch: q.patch }); return { error: opts.scanUpdateError || null } }
-    if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(eqValue(q, 'to')); return { error: null } }
+    // AUDIT FIX (Auth section audit, fresh pass — deleteAccount email_logs
+    // purge race): pushed onto the same state.callOrder array the
+    // sendAccountDeleted stub below pushes onto, so a test can assert the
+    // confirmation email is actually sent-and-logged BEFORE this purge runs,
+    // not just that both eventually happen.
+    if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(eqValue(q, 'to')); state.callOrder.push('log-purge'); return { error: null } }
     if (q.op === 'rpc') { state.rpcCalls.push({ name: q.name, args: q.args }); return { data: null, error: opts.rpcError || null } }
     return undefined
   })
@@ -89,7 +94,23 @@ async function setup(opts = {}) {
       // signature (env, supabase, to, ...), same convention as the three above.
       sendPasswordChanged:        async (...a) => { state.emails.push({ type: 'password_changed', to: a[2] }) },
       sendEmailChangedOldAddress: async (...a) => { state.emails.push({ type: 'email_changed_old_address', to: a[2], newEmail: a[4] }) },
-      sendAccountDeleted:         async (...a) => { state.emails.push({ type: 'account_deleted', to: a[2] }) },
+      // AUDIT FIX (Auth section audit, fresh pass — deleteAccount email_logs
+      // purge race): a real send has an actual network round trip in it
+      // (Resend) before its own email_logs row is written. A plain
+      // microtask delay isn't a reliable stand-in — the fake Supabase
+      // client's own `.then()` chain (see fakeSupabase.cjs) also resolves
+      // over a couple of microtasks, so two microtask-only delays race too
+      // closely to deterministically catch "the handler merely scheduled
+      // this and moved on" (the actual bug: the old code used waitUntil and
+      // never awaited this call at all). A real macrotask delay (setTimeout)
+      // reliably outlasts the purge's microtask-only chain either way, so
+      // this only passes for a handler that genuinely awaits the send
+      // before running the purge.
+      sendAccountDeleted:         async (...a) => {
+        await new Promise(resolve => setTimeout(resolve, 5))
+        state.emails.push({ type: 'account_deleted', to: a[2] })
+        state.callOrder.push('account-deleted-email')
+      },
       sendAccountLockoutAlert:    async (...a) => { state.emails.push({ type: 'lockout_alert', to: a[2] }) },
       sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4] }) },
     },
@@ -298,6 +319,21 @@ describe('forgotPassword — non-enumeration', () => {
     const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
     expect(res.body.message).toMatch(/if that email is registered/i)
     expect(t.state.emails).toEqual([{ type: 'reset', to: 'user@example.com', raw: expect.any(String) }])
+  })
+  // HARDENING (Auth section audit, fresh pass): the known-email branch pays
+  // for a real network round trip to Supabase (the reset-token UPDATE)
+  // before responding; the unknown-email branch used to pay for nothing
+  // extra at all, which is a bigger and easier-to-measure timing tell than
+  // the bcrypt gap login()'s getDummyPasswordHash() closes. An unknown email
+  // must now issue an equivalent UPDATE — filtered on a value that can never
+  // match a real row — so both branches do exactly one users-table UPDATE.
+  it('an unknown email still issues an equivalent-cost dummy UPDATE, matching no real user', async () => {
+    t = await setup({ userRow: null })
+    await t.mod.forgotPassword(t.c({ body: { email: 'ghost@example.com' } }))
+    const userUpdates = t.state.updates.filter(u => u.table === 'users')
+    expect(userUpdates).toHaveLength(1)
+    expect(userUpdates[0].id).not.toBe('u1')
+    expect(userUpdates[0].patch).toHaveProperty('reset_token')
   })
 })
 
@@ -713,5 +749,20 @@ describe('deleteAccount — email_logs purge', () => {
     t = await setup({ scans: [], rpcError: { message: 'constraint violation' } })
     await expect(t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).rejects.toThrow()
     expect(t.state.logPurges).toHaveLength(0)
+  })
+  // BUG FIX (Auth section audit, fresh pass): sendAccountDeleted used to be
+  // fired via waitUntil (fire-and-forget) with the purge below running
+  // synchronously right after — not after the send actually finished. Since
+  // send() only inserts this email's own email_logs row once the outbound
+  // call completes, and an external Resend round trip is essentially always
+  // slower than one Supabase DELETE, the purge would typically win the race
+  // and run BEFORE this email's own log row existed — leaving exactly the
+  // row "no trace... survives" was supposed to prevent. The confirmation
+  // email must now be fully sent (awaited) before the purge runs.
+  it('sends and logs the account-deleted confirmation BEFORE purging that address\'s email_logs — not merely before it, in scheduling order', async () => {
+    t = await setup({ scans: [] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.callOrder).toEqual(['account-deleted-email', 'log-purge'])
   })
 })

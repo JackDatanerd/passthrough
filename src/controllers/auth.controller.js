@@ -306,6 +306,26 @@ async function forgotPassword(c) {
       emailService.sendPasswordReset(c.env, supabase, email, user.name, raw)
         .catch(e => console.error('Reset email:', e.message))
     )
+  } else {
+    // HARDENING (Auth section audit, fresh pass): login() burns a comparable
+    // bcrypt.compare when no matching user exists (see getDummyPasswordHash()
+    // above) so "no such email" and "wrong password" can't be told apart by
+    // response latency — but this handler's own non-enumeration comment below
+    // was only ever true of the response BODY. The `user` branch pays for a
+    // full network round-trip to Supabase (the reset-token UPDATE) before
+    // responding; this branch previously paid for nothing extra at all, which
+    // is a bigger, easier-to-measure tell than the bcrypt gap login() was
+    // fixed for. Issuing an equivalent UPDATE here — filtered on a random
+    // uuid that can never match a real row, so it's a genuine no-op — costs
+    // the same round trip and index lookup without touching any data.
+    const raw    = cryptoLib.randomToken(32)
+    const stored = await cryptoLib.sha256(raw)
+    const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
+    try {
+      await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', cryptoLib.uuid())
+    } catch (e) {
+      console.error('forgotPassword timing-equalizer UPDATE:', e.message)
+    }
   }
 
   // Always return same message — don't reveal if email is registered
@@ -775,12 +795,32 @@ async function deleteAccount(c) {
   // account actually had a moment ago, since scrub_account_data has already
   // overwritten it with a placeholder by this point. See sendAccountDeleted's
   // comment in email.service.js.
-  c.executionCtx.waitUntil(
-    emailService.sendAccountDeleted(c.env, supabase, preScrubEmail, preScrubName)
-      .catch(e => console.error('Account-deleted email:', e.message))
-  )
+  //
+  // BUG FIX (Auth section audit, fresh pass): this was a waitUntil
+  // (fire-and-forget), with the email_logs purge below running synchronously
+  // right after it was merely SCHEDULED — not after it finished. send() only
+  // inserts this email's own email_logs row once the outbound Resend call
+  // completes, and a single Supabase DELETE is essentially always faster
+  // than an external Resend round trip (which can take several seconds with
+  // retries — see config/email.js's ATTEMPT_TIMEOUT_MS and retry delays). So
+  // the purge almost always ran BEFORE this email's own log row existed,
+  // leaving exactly the one row the purge exists to prevent: the real,
+  // pre-scrub address, in the clear, for the very email announcing its own
+  // deletion. Awaiting the send here makes the ordering the purge's comment
+  // always assumed actually hold — by the time the purge runs, this email
+  // has already been logged (or definitively failed, in which case nothing
+  // was written for it at all). Costs the response a little latency; the
+  // account is already fully, durably deleted by this point regardless of
+  // whether this confirmation email succeeds.
+  try {
+    await emailService.sendAccountDeleted(c.env, supabase, preScrubEmail, preScrubName)
+  } catch (e) {
+    console.error('Account-deleted email:', e.message)
+  }
   // Purges this address's own mail history too, so no trace of who we
-  // emailed and when survives the deletion it's the record of.
+  // emailed and when survives the deletion it's the record of. Safe now:
+  // the confirmation email above has already been sent-and-logged or
+  // failed outright, so nothing further will be written for this address.
   try {
     const { error: logErr } = await supabase.from('email_logs').delete().eq('to', preScrubEmail)
     if (logErr) console.error('deleteAccount: email_logs purge failed:', logErr.message)

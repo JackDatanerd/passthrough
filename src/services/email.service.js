@@ -33,11 +33,24 @@ const { must } = require('../lib/db')
 // deletion) is not — those are already gated by the action itself (a correct
 // current password, a successful login), not by anything an outsider can
 // repeat at will.
+//
+// AUDIT FIX (Auth section audit, fresh pass): account_lockout_alert was
+// missing from this list. It's the one template on the "not limited" side of
+// that reasoning that doesn't actually fit it — it fires from
+// recordLoginFailure() the moment an account LOCKS, i.e. on repeated FAILED
+// attempts, not a proven identity. Knowing a victim's email plus 8 failures
+// from >=2 distinct IPs (LOCKOUT_MAX_CONSECUTIVE_FAILURES /
+// LOCKOUT_MIN_DISTINCT_IPS in rateLimiter.js) is enough to trigger it, and
+// once the 15-minute lock expires the failure counter resets, so a stranger
+// could repeat this indefinitely — the exact email-bombing shape this table
+// exists to stop, just missed for the one "failure" template among templates
+// that otherwise only fire on success.
 const RECIPIENT_LIMITS = {
-  email_verification: { max: 5, windowSeconds: 3600 },
-  password_reset:     { max: 3, windowSeconds: 3600 },
-  welcome:            { max: 2, windowSeconds: 24 * 3600 },
-  anon_scan_result:   { max: 3, windowSeconds: 3600 },
+  email_verification:    { max: 5, windowSeconds: 3600 },
+  password_reset:        { max: 3, windowSeconds: 3600 },
+  welcome:                { max: 2, windowSeconds: 24 * 3600 },
+  anon_scan_result:       { max: 3, windowSeconds: 3600 },
+  account_lockout_alert:  { max: 4, windowSeconds: 3600 },
 }
 
 async function recipientAllowed(env, to, template) {
