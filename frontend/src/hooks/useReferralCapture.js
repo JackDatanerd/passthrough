@@ -52,10 +52,18 @@ export function useReferralCapture() {
 
   useEffect(() => {
     const params = new URLSearchParams(location.search)
+    // AUDIT FIX (bug): the guard below used to check the RAW `ref` value
+    // before trimming — `?ref=%20` (or a marketing link template with an
+    // unfilled `&ref=` placeholder) has a truthy raw value, so it slipped
+    // past `if (!ref) return`, got trimmed down to '', and writeStored('')
+    // then overwrote whatever real code was previously captured. Trimming
+    // BEFORE the emptiness check closes that: a blank/whitespace-only ref
+    // is now treated exactly like no ref param at all, so it can never
+    // clobber a real, already-stored attribution.
     const ref = params.get('ref')
-    if (!ref) return
+    const code = (ref || '').trim().toUpperCase()
+    if (!code) return
 
-    const code = ref.trim().toUpperCase()
     const previous = readStored()
     writeStored(code)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
 

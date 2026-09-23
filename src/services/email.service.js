@@ -242,6 +242,25 @@ async function sendAnonScanResult(env, supabase, email, name, scanId, anonToken,
   })
 }
 
+// AUDIT FIX (feature gap): the app never sent any payment confirmation —
+// Privacy.jsx explicitly tells visitors Resend "delivers transactional
+// emails (verification, delivery, receipts)", but no code path actually sent
+// one. Called once, from fulfillment.service.js's settlePayment, the single
+// place a payment actually flips to SUCCESS — so it fires exactly once per
+// payment regardless of which path (verifyPayment, the webhook, a sweep, an
+// admin recheck) won that flip. amountCents/currency/date formatted here for
+// the same reason sendPayoutSent formats its own amount: one place to keep
+// "$45.00"-style formatting consistent, not left to each caller.
+async function sendPaymentReceipt(env, supabase, email, name, { fixTier, amountCents, currency, reference, createdAt }) {
+  return send(env, supabase, email, 'Your Passthrough receipt', 'payment_receipt', {
+    NAME:       name,
+    TIER_LABEL: c.tierLabel(fixTier),
+    AMOUNT:     fmtMoney(amountCents, currency),
+    DATE:       new Date(createdAt || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    REFERENCE:  reference
+  })
+}
+
 // ── Partner payouts (manual) ────────────────────────────────────────────────
 
 async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
@@ -405,6 +424,7 @@ module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
+  sendPaymentReceipt,
   sendOwnerAlert,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged

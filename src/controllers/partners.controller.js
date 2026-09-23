@@ -47,7 +47,15 @@ function buildCyclesSummary(ledgerRows, count) {
     if (!bucket) continue  // older than the window being summarized
     bucket.grossCents      += row.gross_amount_cents
     bucket.commissionCents += row.commission_amount_cents
-    bucket.ledgerCount     += 1
+    // AUDIT FIX (bug): a refund/reversal is a SECOND commission_ledger row
+    // (reverses_ledger_id pointing back at the original — see fulfillment.
+    // service.js's reverseCommission), with negative gross/commission
+    // amounts so the $ totals above net out correctly. This count didn't
+    // know the difference: one refunded sale showed as 2 "conversions"
+    // instead of net 0/1, on both this cycle breakdown (admin PartnerDetail.
+    // jsx) and getPartnerDashboard's totalConversions below (partner-facing
+    // PartnerDashboard.jsx). Only an ORIGINAL row is a real conversion.
+    if (!row.reverses_ledger_id) bucket.ledgerCount += 1
     if (row.payout_id) {
       bucket.paidCents += row.commission_amount_cents
       bucket.payoutIds.add(row.payout_id)
@@ -690,7 +698,11 @@ async function getPartnerDashboard(ctx) {
     cyclesSummary: buildCyclesSummary(ledger, 3),
     stats: {
       totalClicks:      codes.reduce((sum, code) => sum + (code.clicks || 0), 0),
-      totalConversions: ledger.length,
+      // AUDIT FIX (bug): ledger.length counted refund/reversal rows as
+      // additional conversions (see buildCyclesSummary's matching fix,
+      // above) — a refunded sale showed as 2 conversions here instead of
+      // net 0/1. Only rows that AREN'T themselves a reversal are real sales.
+      totalConversions: ledger.filter(l => !l.reverses_ledger_id).length,
       pendingCents:     pendingCents(ledger),
       paidCents:        ledger.filter(l => l.payout_id).reduce((sum, l) => sum + l.commission_amount_cents, 0)
     }

@@ -29,6 +29,7 @@ function setup(opts = {}) {
         return opts.paystack ?? { data: { status: 'success', currency: 'USD', amount: 2900, authorization: { authorization_code: 'AUTH_1' } } }
       },
       initializeTransaction: async () => ({ data: {} }),
+      isPendingStatus: s => ['ongoing', 'pending', 'processing', 'queued'].includes(s),
     },
   })
 
@@ -248,6 +249,7 @@ function worldSetup(over = {}, opts = {}) {
     'services/paystack.service.js': {
       verifyTransaction: async (env, ref) => { state.verifyCalls.push(ref); if (opts.verifyThrows) throw opts.verifyThrows; return paystack },
       initializeTransaction: async () => ({ data: {} }),
+      isPendingStatus: s => ['ongoing', 'pending', 'processing', 'queued'].includes(s),
     },
   })
   const env = { FIX_QUEUE: { send: async m => { if (opts.queueError) throw opts.queueError; state.queue.push(m) } } }

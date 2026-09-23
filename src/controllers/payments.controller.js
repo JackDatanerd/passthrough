@@ -130,6 +130,18 @@ async function initializePayment(c2) {
       email: user.email, amount, userId: user.id, scanId, fixTier, reference
     })
   } catch (err) {
+    // AUDIT FIX (bug): an ordinary, request-specific rejection from Paystack
+    // (paystackService.initializeTransaction's `err.paystackRejected` — a
+    // duplicate reference, a value Paystack's own validation didn't like)
+    // used to be paged identically to a genuine outage/misconfiguration
+    // below. That's routine, not "every payment attempt fails until this is
+    // resolved" — no owner alert, just a normal 400 back to this customer.
+    if (err.paystackRejected) {
+      console.error(`Paystack declined initialize (scan ${scanId}):`, err.message)
+      return c2.json({ success: false,
+        message: 'Payment could not be started — please try again.'
+      }, 400)
+    }
     console.error(`[CRITICAL] Paystack initialize failed (scan ${scanId}):`, err.message)
     try {
       await emailService.sendOwnerAlert(c2.env,
@@ -271,6 +283,22 @@ async function verifyPayment(c2) {
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 502)
   }
+  // AUDIT FIX (bug): Paystack's verify endpoint can report a non-terminal
+  // status (ongoing/pending/processing/queued — paystackService.isPendingStatus)
+  // for a transaction that hasn't failed, just hasn't finished confirming yet —
+  // most commonly mobile-money "pay with transfer"/OTP-approval channels,
+  // which are common for this app's customer base. Collapsing that into the
+  // same "Payment verification failed" the code below returns for a genuine
+  // failure told a customer who may well have already paid that they hadn't,
+  // with no owner visibility either (the hourly pending-sweep does eventually
+  // recover the money side, but the customer is left staring at a false
+  // "failed" in the meantime). Checked BEFORE the currency/success check
+  // below so a still-processing transaction never reaches it.
+  if (paystackService.isPendingStatus(pResult.data?.status))
+    return c2.json({ success: false, pending: true,
+      message: 'Your payment is still processing — this can take a minute or two, especially for mobile money. Check back shortly.'
+    }, 202)
+
   // BUGFIX: previously compared against the CURRENT env config
   // (c2.env.PAYSTACK_CURRENCY || c.CURRENCY) rather than what THIS payment
   // was actually initialized with. webhooks.controller.js's handlePaystack

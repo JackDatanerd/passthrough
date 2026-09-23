@@ -166,6 +166,29 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
   if (won && (result.outcome === 'FULFILLED' || result.outcome === 'ALREADY_FULFILLED' || result.outcome === 'REENQUEUED'))
     conversion = await referralService.recordConversion(supabase, row, env)
 
+  // AUDIT FIX (feature gap): `won` is true exactly once per payment — the
+  // one caller whose UPDATE...RETURNING actually saw the PENDING/ABANDONED/
+  // FAILED row and flipped it. That makes this the single correct place to
+  // send the payment receipt (see email.service.js's sendPaymentReceipt):
+  // it fires exactly once regardless of which path won (verifyPayment, the
+  // webhook, a sweep, an admin recheck), unlike a receipt sent from any one
+  // of those callers individually, which would either miss the other paths
+  // or double-send on a redelivery. Best-effort and never blocks fulfilment
+  // — a failed receipt email is not a reason to fail a payment that already
+  // went through and was already delivered.
+  if (won) {
+    try {
+      const emailService = require('./email.service')
+      const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
+      if (buyer?.email) {
+        await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+          fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
+          reference: row.paystack_ref, createdAt: row.created_at
+        }).catch(() => {})
+      }
+    } catch (_) {}
+  }
+
   return { ...result, won, payment: row, conversion, source }
 }
 

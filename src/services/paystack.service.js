@@ -4,9 +4,37 @@
 
 const c = require('../config/constants')
 
+// AUDIT FIX (bug): neither Paystack call had a timeout, unlike every other
+// outbound-fetch service in this codebase (claude.service.js's
+// CLAUDE_TIMEOUT_MS, jd.parser.js's 5s job-description fetch, lib/ssrfGuard.js's
+// DoH lookups). A hung connection to Paystack (a stalled TLS handshake, a
+// half-open socket) could otherwise block indefinitely — initializePayment and
+// verifyPayment would simply never resolve within the caller's own try/catch,
+// and reconcile.service.js's sweepPendingPayments (up to MAX_VERIFY_PER_RUN
+// sequential verify calls in one run) could have a single hung call silently
+// stall every candidate behind it for the rest of that run, with no timeout to
+// ever surface the problem. 15s comfortably covers a slow-but-real Paystack
+// response while still failing fast enough for the existing owner-alert/502
+// paths in payments.controller.js to actually run, instead of the platform's
+// own hard limits killing the request out from under them uncaught.
+const PAYSTACK_TIMEOUT_MS = 15000
+
+async function paystackFetch(url, options, label) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), PAYSTACK_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...options, signal: controller.signal })
+  } catch (err) {
+    if (err.name === 'AbortError') throw new Error(`${label} timed out after ${PAYSTACK_TIMEOUT_MS / 1000}s`)
+    throw err
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
 // reference param: caller generates once, passes to both Paystack and DB
 async function initializeTransaction(env, { email, amount, userId, scanId, fixTier, reference }) {
-  const res = await fetch('https://api.paystack.co/transaction/initialize', {
+  const res = await paystackFetch('https://api.paystack.co/transaction/initialize', {
     method: 'POST',
     headers: {
       'Authorization':  `Bearer ${env.PAYSTACK_SECRET_KEY}`,
@@ -17,9 +45,25 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
       metadata: { userId, scanId, fixTier, custom_fields: [] },
       callback_url: env.PAYSTACK_CALLBACK_URL
     })
-  })
+  }, 'Paystack initialize')
   const json = await res.json()
-  if (!json.status) throw new Error(json.message || 'Paystack init failed')
+  // AUDIT FIX (bug): this used to throw identically whether Paystack was
+  // genuinely down/misconfigured (res.ok false — a real outage or a bad
+  // secret key, exactly the "every payment attempt fails until this is
+  // resolved" case initializePayment's catch pages the owner for) or simply
+  // declined THIS specific request on an ordinary 200 (a duplicate
+  // reference, a request Paystack's own validation rejects) — the second
+  // case is routine and request-specific, not a systemic outage. Same
+  // distinction verifyTransaction below already makes via res.ok vs
+  // json.status; mirrored here via `err.paystackRejected` so
+  // initializePayment's catch can tell the two apart instead of paging the
+  // owner for both alike.
+  if (!res.ok) throw new Error(json?.message || `Paystack initialize returned HTTP ${res.status}`)
+  if (!json.status) {
+    const err = new Error(json.message || 'Paystack init failed')
+    err.paystackRejected = true
+    throw err
+  }
   return {
     authorization_url: json.data.authorization_url,
     access_code:       json.data.access_code,
@@ -27,10 +71,26 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
   }
 }
 
+// AUDIT FIX (bug): Paystack's verify endpoint reports several non-terminal
+// statuses for a transaction that is neither confirmed successful nor
+// actually failed yet — most commonly seen on payment channels that need an
+// extra confirmation step after the customer leaves the checkout page
+// (mobile money OTP approval, bank transfer, USSD). payments.controller.js's
+// verifyPayment used to treat anything other than 'success' identically —
+// including these — as an outright "Payment verification failed", which is
+// actively misleading for a customer whose money may already be on its way.
+// Exported so payments.controller.js can tell "still processing" apart from
+// a genuine failure without duplicating Paystack's vocabulary.
+const PENDING_STATUSES = ['ongoing', 'pending', 'processing', 'queued']
+function isPendingStatus(status) {
+  return PENDING_STATUSES.includes(status)
+}
+
 async function verifyTransaction(env, reference) {
-  const res = await fetch(
+  const res = await paystackFetch(
     `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
-    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } }
+    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
+    'Paystack verify'
   )
   const json = await res.json()
   // BUGFIX: this used to return json unconditionally, with no equivalent of
@@ -52,4 +112,4 @@ async function verifyTransaction(env, reference) {
   // json.data.status — ONE level of .data (native fetch, not Axios)
 }
 
-module.exports = { initializeTransaction, verifyTransaction }
+module.exports = { initializeTransaction, verifyTransaction, isPendingStatus, PENDING_STATUSES }

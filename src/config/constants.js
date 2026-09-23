@@ -61,6 +61,17 @@ module.exports = {
     if (fixTier === 'FIX_PLAIN') return this.PRICE_FIX_PLAIN
     return this.PRICE_FIX
   },
+  // AUDIT FIX (feature gap): single-source-of-truth display name per tier,
+  // for the payment receipt email (email.service.js's sendPaymentReceipt) —
+  // same "don't let this drift into an independently-maintained copy"
+  // reasoning as priceForTier() above. Matches the labels used on the
+  // pricing page (frontend/src/pages/Pricing.jsx): "Full fix", "Credential
+  // only", "Fix only".
+  tierLabel(fixTier) {
+    if (fixTier === 'BADGE')     return 'Credential only'
+    if (fixTier === 'FIX_PLAIN') return 'Fix only'
+    return 'Full fix'
+  },
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,
   ATS_BADGE_THRESHOLD: 80,
