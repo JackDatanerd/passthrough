@@ -678,6 +678,15 @@ export default function ScanResult() {
                         />
                         Hide my name on the public page
                       </label>
+                      {/* ROUND-3 AUDIT FIX (bug): this only hides the first name shown ON the page.
+                          A downloadable .docx/PDF carries the full name, email and phone, so hiding
+                          the name while allowing either download hid nothing that matters. */}
+                      {scan.verifyHideName && (scan.verifyExposeDocx || scan.verifyExposePdf) && (
+                        <p className="text-xs text-amber-700">
+                          Heads up: your name is hidden on the page, but the file you've allowed people to
+                          download still contains your full name and contact details.
+                        </p>
+                      )}
                     </div>
 
                     {/* SECTION 7 AUDIT (feature gap closed): the badge.svg
@@ -713,7 +722,7 @@ export default function ScanResult() {
                           </button>
                         </div>
                         <p className="text-xs text-gray-500 mt-1.5">
-                          Always reflects the live status — score, integrity, or an unpublish will update it automatically.
+                          Follows the live status — a change (an unpublish, a new score) can take up to about 5 minutes to show, longer where a site caches images.
                         </p>
                       </div>
                     )}

@@ -7,14 +7,26 @@ const STATUS = Object.freeze({ ACTIVE: 'ACTIVE', REVOKED: 'REVOKED' })
 // Who revoked. OWNER can be undone by the owner; everything else only by an admin.
 const REVOKE_REASON = Object.freeze({ OWNER: 'OWNER', REFUND: 'REFUND', DISPUTE: 'DISPUTE', ADMIN: 'ADMIN', BAN: 'BAN' })
 
-// Codes are generated from SHORT_CODE_CHARS at SHORT_CODE_LENGTH (badge.service).
-// Anything else can never match a row, so it is rejected before touching the DB.
+// Codes are drawn from SHORT_CODE_CHARS. New pages get VERIFY_CODE_LENGTH characters
+// (badge.service); pages issued before that keep their original SHORT_CODE_LENGTH-long
+// code, so both shapes are accepted. Anything else can never match a row, so it is
+// rejected before touching the DB.
 const escapeForClass = s => s.replace(/[\\\]\[^-]/g, '\\$&')
-const CODE_RE = new RegExp(`^[${escapeForClass(constants.SHORT_CODE_CHARS)}]{${constants.SHORT_CODE_LENGTH}}$`)
+const CLASS = `[${escapeForClass(constants.SHORT_CODE_CHARS)}]`
+const CODE_RE = new RegExp(`^${CLASS}{${constants.SHORT_CODE_LENGTH}}(?:${CLASS}{${constants.VERIFY_CODE_LENGTH - constants.SHORT_CODE_LENGTH}})?$`)
 
+// AUDIT FIX (bug, verify round 3): String.prototype.toUpperCase is Unicode-aware, so a
+// look-alike such as U+017F (long s) folded into a real code character ('S') and several
+// distinct URL spellings resolved to one page (and, for the badge, one cache key).
+// Anything outside printable ASCII normalises to '' (never a plausible code).
 function normalizeCode(raw) {
-  return String(raw || '').trim().toUpperCase()
+  const s = String(raw || '').trim()
+  if (/[^\x21-\x7e]/.test(s)) return ''
+  return s.toUpperCase()
 }
+
+// A SHA-256 as the verify lookup-by-file endpoint accepts it: 64 lowercase hex characters.
+const SHA256_RE = /^[a-f0-9]{64}$/
 
 function isPlausibleCode(code) {
   return CODE_RE.test(code)
@@ -58,18 +70,6 @@ function isTrustedPreview(c) {
     if (!key || c.req.query('preview') !== '1') return false
     return cryptoLib.timingSafeEqual(String(c.req.header('x-preview-key') || ''), String(key))
   } catch (_) { return false }
-}
-
-// Sec-Fetch-* are forbidden headers a page cannot forge: a request the browser
-// itself reports as a sub-resource load (<img>, <script>, no-cors fetch) is
-// never the SPA's own XHR. Such loads must not be able to spend a visitor's
-// "miss" budget — that is how a hostile page could lock an office NAT out of
-// verification. Non-browser clients send none of these headers and are counted.
-function isBrowserSubresourceLoad(c) {
-  const h = n => (c.req.header(n) || '').toLowerCase()
-  if (h('sec-fetch-mode') === 'no-cors') return true
-  const dest = h('sec-fetch-dest')
-  return !!dest && dest !== 'empty' && dest !== 'document'
 }
 
 // Revoke a scan's public verification page.
@@ -158,9 +158,26 @@ async function restoreUserVerifications(supabase, userId) {
   return (data || []).length
 }
 
+// A page that is deleted (its scan, or its owner's whole account) leaves its code behind in
+// verification_tombstones so a link printed on a resume answers "removed by its owner"
+// instead of a 404 that reads like a typo. Only the code is kept — nothing about the person.
+// Best-effort by design: the deletion it follows has already committed and must not be
+// undone, or reported as failed, by a bookkeeping write.
+async function recordTombstones(supabase, codes) {
+  const rows = [...new Set((codes || []).filter(Boolean))].map(code => ({ code }))
+  if (!rows.length) return
+  try {
+    const { error } = await supabase.from('verification_tombstones').upsert(rows, { onConflict: 'code', ignoreDuplicates: true })
+    if (error) console.error('[verify] could not record tombstone(s):', error.message)
+  } catch (err) {
+    console.error('[verify] could not record tombstone(s):', err.message)
+  }
+}
+
 module.exports = {
-  STATUS, REVOKE_REASON, CODE_RE,
+  recordTombstones,
+  STATUS, REVOKE_REASON, CODE_RE, SHA256_RE,
   normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey,
   revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications,
-  isTrustedPreview, isBrowserSubresourceLoad,
+  isTrustedPreview,
 }

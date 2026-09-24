@@ -8,6 +8,7 @@ export default function Footer() {
         <div className="flex items-center gap-4">
           <Link to="/pricing" className="hover:text-gray-700 transition-colors">Pricing</Link>
           <Link to="/#employers" className="hover:text-gray-700 transition-colors">For employers</Link>
+          <Link to="/check" className="hover:text-gray-700 transition-colors">Check a resume</Link>
           <Link to="/terms" className="hover:text-gray-700 transition-colors">Terms</Link>
           <Link to="/privacy" className="hover:text-gray-700 transition-colors">Privacy</Link>
           <a href="mailto:support@passthrough.dev" className="hover:text-gray-700 transition-colors">

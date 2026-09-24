@@ -480,3 +480,75 @@ describe('sweepFailedFixes', () => {
     expect((await t.sweep()).error).toBe('boom')
   })
 })
+
+// ── Round 3 (Section 8): refund reconciliation ─────────────────────────────
+import { createWorld } from './helpers/memoryDb.cjs'
+
+describe('sweepReversedPayments — Paystack refunded it, but we never heard', () => {
+  function rig({ verify, refunds = [], payments } = {}) {
+    const world = createWorld({
+      payments: payments || [{ id: 'p1', paystack_ref: 'ref1', scan_id: 's1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', created_at: minsAgo(60 * 24), last_reconciled_at: null }],
+      scans: [{ id: 's1', user_id: 'u1', fix_payment_id: 'p1', verification_code: 'AB3XY7', verification_status: 'ACTIVE' }],
+      commission_ledger: [],
+    })
+    const state = { alerts: [], verified: [], listed: [] }
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+      'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+      'services/paystack.service.js': {
+        verifyTransaction: async (e, ref) => { state.verified.push(ref); return typeof verify === 'function' ? verify(ref) : verify },
+        listRefunds: async (e, ref) => { state.listed.push(ref); return { data: refunds } },
+      },
+      'services/referral.service.js': { recordConversion: async () => ({ ok: true }) },
+    })
+    return { world, state, mod, restore, run: () => mod.sweepReversedPayments({ RATE_LIMIT_KV: null }, world.db, { now: NOW }) }
+  }
+  let r
+  afterEach(() => r?.restore())
+
+  it('reverses the sale when Paystack\'s processed refunds add up to the amount paid', async () => {
+    r = rig({ verify: { data: { status: 'reversed' } }, refunds: [{ status: 'processed', amount: 1000, currency: 'USD' }, { status: 'processed', amount: 1900, currency: 'USD' }] })
+    const out = await r.run()
+    expect(out.reversed).toHaveLength(1)
+    expect(r.world.t.payments[0].status).toBe('REFUNDED')
+    expect(r.world.t.scans[0].verification_status).toBe('REVOKED')
+    expect(r.state.alerts.some(a => /1 sale\(s\) reversed/.test(a.subject))).toBe(true)
+  })
+  it('a partial (or still-pending) refund is reported, never actioned', async () => {
+    r = rig({ verify: { data: { status: 'reversed' } }, refunds: [{ status: 'processed', amount: 1000, currency: 'USD' }, { status: 'pending', amount: 1900, currency: 'USD' }] })
+    const out = await r.run()
+    expect(out.reversed).toHaveLength(0)
+    expect(out.partial).toHaveLength(1)
+    expect(r.world.t.payments[0].status).toBe('SUCCESS')
+    expect(r.state.alerts.some(a => /partial refund/.test(a.subject))).toBe(true)
+  })
+  it('does nothing for a transaction Paystack still reports as success (and never asks for its refunds)', async () => {
+    r = rig({ verify: { data: { status: 'success' } } })
+    const out = await r.run()
+    expect(out.checked).toBe(1)
+    expect(r.state.listed).toHaveLength(0)
+    expect(r.world.t.payments[0].status).toBe('SUCCESS')
+  })
+  it('stamps last_reconciled_at so the rotation moves on, and skips free-credit rows', async () => {
+    r = rig({ verify: { data: { status: 'success' } }, payments: [
+      { id: 'p1', paystack_ref: 'ref1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', created_at: minsAgo(500), last_reconciled_at: null },
+      { id: 'p2', paystack_ref: 'credit:abc', status: 'SUCCESS', amount_cents: 0, currency: 'USD', created_at: minsAgo(500), last_reconciled_at: null }] })
+    await r.run()
+    expect(r.state.verified).toEqual(['ref1'])
+    expect(r.world.t.payments[0].last_reconciled_at).toBeTruthy()
+  })
+  it('a Paystack failure on one payment is recorded and does not stop the rest', async () => {
+    r = rig({ verify: ref => { if (ref === 'ref1') throw new Error('timeout'); return { data: { status: 'success' } } } })
+    r.world.t.payments.push({ id: 'p9', paystack_ref: 'ref9', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', created_at: minsAgo(500), last_reconciled_at: null })
+    const out = await r.run()
+    expect(out.failed).toEqual([{ reference: 'ref1', error: 'timeout' }])
+    expect(out.checked).toBe(2)
+    expect(r.state.verified).toEqual(['ref1', 'ref9'])
+  })
+  it('falls back to a plain look at recent payments if migration 0036 (last_reconciled_at) is not applied', async () => {
+    r = rig({ verify: { data: { status: 'success' } } })
+    r.world.failNext('payments', 'select', { code: '42703', message: 'column payments.last_reconciled_at does not exist' })
+    const out = await r.run()
+    expect(out.error).toBeUndefined()
+    expect(out.checked).toBe(1)
+  })
+})

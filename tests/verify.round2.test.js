@@ -107,11 +107,22 @@ describe('page lookups — miss accounting', () => {
     expect((await t.mod.getVerification(t.ctx({ ip: '198.51.100.6' }))).status).toBe(200)
   })
 
-  it('does NOT let a browser-reported sub-resource load (<img>, no-cors) spend the visitor\'s budget', async () => {
+  it('ROUND 3: a caller-supplied Sec-Fetch-* header is NOT a free pass — every miss counts', async () => {
+    // Round 2 exempted requests that claimed to be an <img>/no-cors load. Those headers
+    // are only unforgeable inside a browser; a script sends them and was never counted.
     t = harness(await seedRow())
-    for (let i = 0; i < 40; i++)
+    for (let i = 0; i < 30; i++)
       await t.mod.getVerification(t.ctx({ code: 'QQQQQQ', ip: '198.51.100.7', headers: { 'sec-fetch-dest': 'image', 'sec-fetch-mode': 'no-cors' } }))
-    expect((await t.mod.getVerification(t.ctx({ ip: '198.51.100.7' }))).status).toBe(200)
+    expect((await t.mod.getVerification(t.ctx({ ip: '198.51.100.7' }))).status).toBe(429)
+  })
+
+  it('ROUND 3: the miss budget is shared across a whole IPv6 /48, not one /64', async () => {
+    t = harness(await seedRow())
+    for (let i = 0; i < 30; i++)
+      await t.mod.getVerification(t.ctx({ code: 'QQQQQQ', ip: `2001:db8:abcd:${(i + 1).toString(16)}::1` }))   // 30 different /64s, one /48
+    expect((await t.mod.getVerification(t.ctx({ ip: '2001:db8:abcd:ffff::9' }))).status).toBe(429)
+    // a different /48 is unaffected
+    expect((await t.mod.getVerification(t.ctx({ ip: '2001:db8:beef:1::1' }))).status).toBe(200)
   })
 
   it('the SPA\'s own XHR (Sec-Fetch-Dest: empty, cors) IS counted', async () => {
@@ -148,5 +159,86 @@ describe('general limiter no longer covers /api/verify/*', () => {
       for (let i = 0; i < 110; i++) blocked = await rl.general(c('/api/auth/me'), async () => 'next')
       expect(blocked.status).toBe(429)
     })()
+  })
+})
+
+// ── Round 3 ────────────────────────────────────────────────────────────────
+describe('round 3 — download integrity, partial integrity, codes, removed pages, lookup by file', () => {
+  const NEW_CODE = 'AB3XY7K9MN'
+
+  it('accepts both the legacy 6-character and the new 10-character code shape', async () => {
+    t = harness(await seedRow({ verification_code: NEW_CODE }))
+    expect((await t.mod.getVerification(t.ctx({ code: NEW_CODE }))).status).toBe(200)
+    expect((await t.mod.getVerification(t.ctx({ code: NEW_CODE.toLowerCase() }))).status).toBe(200)
+    // a look-alike Unicode code point must not fold into a real code character
+    expect((await t.mod.getVerification(t.ctx({ code: 'ſB3XY7' }))).status).toBe(404)
+  })
+
+  it('download REFUSES a file that no longer matches its stored fingerprint (409), and never streams it', async () => {
+    t = harness(await seedRow({ verify_expose_docx: true }))
+    const res = await t.mod.downloadVerifiedFile(t.ctx({ query: { type: 'docx' }, files: { d: new TextEncoder().encode('tampered'), p: PDF } }))
+    expect(res.status).toBe(409)
+    expect(res.data.code).toBe('INTEGRITY_FAILED')
+  })
+
+  it('download of an intact file carries its SHA-256 and is marked verified', async () => {
+    t = harness(await seedRow({ verify_expose_docx: true }))
+    const res = await t.mod.downloadVerifiedFile(t.ctx({ query: { type: 'docx' } }))
+    expect(res.status).toBe(200)
+    expect(res.headers['X-Passthrough-SHA256']).toBe(await sha256Bytes(DOCX))
+    expect(res.headers['X-Passthrough-Integrity']).toBe('verified')
+  })
+
+  it('a PDF with no stored fingerprint is served but labelled unchecked (legacy row)', async () => {
+    t = harness(await seedRow({ verify_expose_pdf: true, resume_pdf_hash: null }))
+    const res = await t.mod.downloadVerifiedFile(t.ctx({ query: { type: 'pdf' } }))
+    expect(res.status).toBe(200)
+    expect(res.headers['X-Passthrough-Integrity']).toBe('unchecked')
+  })
+
+  it('a present PDF with no fingerprint reads "partial" — never a green "verified"', async () => {
+    t = harness(await seedRow({ resume_pdf_hash: null }))
+    const res = await t.mod.getVerification(t.ctx())
+    expect(res.data.data.integrityStatus).toBe('partial')
+    expect(res.data.data.verified).toBe(false)
+    const badge = await t.mod.getBadge(t.ctx())
+    expect(badge.data).toContain('scan 85/100')
+  })
+
+  it('a deleted page (tombstone) answers 410 REMOVED — and its badge says "removed"', async () => {
+    t = harness(await seedRow())
+    t.world.t.verification_tombstones = [{ code: 'GNE222' }]
+    const res = await t.mod.getVerification(t.ctx({ code: 'GNE222' }))
+    expect(res.status).toBe(410)
+    expect(res.data.code).toBe('REMOVED')
+    const badge = await t.mod.getBadge(t.ctx({ code: 'GNE222' }))
+    expect(badge.status).toBe(200)
+    expect(badge.data).toContain('removed')
+    // an ordinary unknown code is still a plain 404
+    expect((await t.mod.getVerification(t.ctx({ code: 'QQQQQQ' }))).status).toBe(404)
+  })
+
+  it('lookup by file: finds the page for the current docx, the current pdf, and a superseded version', async () => {
+    const OLD = new TextEncoder().encode('older docx')
+    t = harness(await seedRow({ resume_hash_history: [{ docx: await sha256Bytes(OLD), pdf: null, at: '2026-01-01T00:00:00.000Z' }] }))
+    const look = h => t.mod.lookupByHash({ ...t.ctx(), req: { ...t.ctx().req, param: () => h } })
+    const cur = await look(await sha256Bytes(DOCX))
+    expect(cur.data.data).toMatchObject({ code: CODE, match: 'current', kind: 'docx' })
+    expect((await look(await sha256Bytes(PDF))).data.data).toMatchObject({ match: 'current', kind: 'pdf' })
+    expect((await look(await sha256Bytes(OLD))).data.data).toMatchObject({ code: CODE, match: 'previous', kind: 'docx' })
+  })
+
+  it('lookup by file: a stranger\'s file is a 404 that spends the miss budget; a malformed value is a 400', async () => {
+    t = harness(await seedRow())
+    const look = (h, ip) => t.mod.lookupByHash({ ...t.ctx({ ip }), req: { ...t.ctx({ ip }).req, param: () => h } })
+    expect((await look('not-a-hash', '198.51.100.30')).status).toBe(400)
+    for (let i = 0; i < 30; i++) expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(404)
+    expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(429)
+  })
+
+  it('lookup by file: reports a revoked page as revoked', async () => {
+    t = harness(await seedRow({ verification_status: 'REVOKED' }))
+    const res = await t.mod.lookupByHash({ ...t.ctx(), req: { ...t.ctx().req, param: () => t.world.t.scans[0].resume_hash } })
+    expect(res.data.data.revoked).toBe(true)
   })
 })

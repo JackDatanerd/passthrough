@@ -79,9 +79,9 @@ describe('page titles', () => {
     expect(titleFor('/nonsense')).toBe(DEFAULT_TITLE)
   })
   it('marks per-user / token pages noindex, but not marketing pages', () => {
-    for (const p of ['/scan/1', '/dashboard', '/dashboard/settings', '/admin/partners', '/partner/dashboard', '/payment/success', '/reset-password', '/verify-email'])
+    for (const p of ['/scan/1', '/dashboard', '/dashboard/settings', '/admin/partners', '/partner/dashboard', '/payment/success', '/reset-password', '/verify-email', '/v/ABC'])   // /v/: a candidate's name + score — round 3
       expect(isPrivatePath(p)).toBe(true)
-    for (const p of ['/', '/pricing', '/terms', '/privacy', '/login', '/v/ABC']) expect(isPrivatePath(p)).toBe(false)
+    for (const p of ['/', '/pricing', '/terms', '/privacy', '/login']) expect(isPrivatePath(p)).toBe(false)
   })
 })
 

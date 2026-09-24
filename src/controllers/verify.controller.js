@@ -24,6 +24,14 @@
 //    throttled per IP.
 //  * Downloads validate `type` and only advertise files that exist.
 //
+// Round-3 audit: every unknown-code miss now counts no matter what the request's
+// Sec-Fetch-* headers claim (a non-browser client simply sets them — see loadByCode);
+// the limiters bucket IPv6 by /48; new codes are 10 characters (old 6-character ones
+// still resolve); downloads refuse a file that no longer matches its fingerprint;
+// integrity says 'partial' rather than 'verified' when a PDF was never fingerprinted;
+// a deleted page answers 410 "removed" instead of an indistinguishable 404; and
+// GET /api/verify/by-hash/:sha256 finds the page for a file a reader already holds.
+//
 // Round-2 audit additions: verify traffic is exempt from the generic per-IP
 // limiter and has its own (rateLimiter.js verifyRead + scoped miss counters);
 // misses can no longer be spent by an <img> tag or a hostile page; the badge is
@@ -35,7 +43,7 @@ const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const rateLimiter = require('../middleware/rateLimiter')
 const { runInBackground } = require('../lib/background')
-const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview, isBrowserSubresourceLoad } = require('../lib/verification')
+const { STATUS, SHA256_RE, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview } = require('../lib/verification')
 // SECTION 7 AUDIT FIX (bug): this file used to define its own local
 // `clientIp` (`cf-connecting-ip || x-forwarded-for || 'unknown'`), which
 // trusts the client-supplied X-Forwarded-For header unconditionally — every
@@ -70,16 +78,21 @@ function noStore(c) {
 //    that also guards real lookups (see rateLimiter.js);
 //  * a code that is not even shaped like one is answered without recording a miss
 //    (it never touches the DB, and nothing can be learned from it);
-//  * a request the browser itself labels as a sub-resource load
-//    (Sec-Fetch-Dest: image, no-cors …) never records a miss — a hostile page must
-//    not be able to spend a visitor's budget;
+//  * ROUND-3 AUDIT FIX (bug, security): round 2 also let any request that CLAIMED, via
+//    Sec-Fetch-Mode/Dest, to be an <img>/no-cors load skip the miss counter. Those
+//    are only unforgeable inside a browser — curl or a script just sends
+//    `Sec-Fetch-Dest: image`, was never counted, and the 30-per-15-min brake
+//    silently became the 240-per-5-min read cap (about 38x weaker). A header the
+//    caller controls cannot gate a security counter, so EVERY miss now counts. The
+//    price is that a hostile page can again spend a visitor's PAGE budget with
+//    fetch(..., {mode:'cors'}); that is a lookup annoyance, the other was a scraper
+//    with a free pass, and the badge has its own, much higher, counter;
 //  * the trusted link-preview fetch (shared secret) is exempt from the limiter;
 //  * a 429 says when to come back.
 async function loadByCode(c, { columns = PAGE_COLUMNS, scope = 'page' } = {}) {
   const code = normalizeCode(c.req.param('code'))
   const ip = clientIp(c)
   const trusted = isTrustedPreview(c)
-  const countable = !trusted && !isBrowserSubresourceLoad(c)
 
   if (!trusted && await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, scope))
     return { response: c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429, { 'Retry-After': '900' }) }
@@ -91,10 +104,27 @@ async function loadByCode(c, { columns = PAGE_COLUMNS, scope = 'page' } = {}) {
   const { data: row, error } = await supabase.from('scans').select(columns).eq('verification_code', code).maybeSingle()
   if (error) throw error
   if (!row) {
-    if (countable) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, scope)
+    if (!trusted) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, scope)
+    // A page whose owner deleted it (or their account) answers "removed" rather than a
+    // 404 that looks exactly like a mistyped code on a printed resume.
+    if (await isRemovedCode(supabase, code))
+      return { response: c.json({ success: false, code: 'REMOVED', message: 'This verification page was removed by its owner.' }, 410), notFound: true, removed: true, code }
     return { response: c.json({ success: false, message: 'Verification not found.' }, 404), notFound: true, code }
   }
   return { row, code, supabase }
+}
+
+// verification_tombstones (migration 0036) holds just the code of a deleted page. Fails
+// SOFT: if the table is not there yet, a deleted page simply reads as not found, as before.
+async function isRemovedCode(supabase, code) {
+  try {
+    const { data, error } = await supabase.from('verification_tombstones').select('code').eq('code', code).maybeSingle()
+    if (error) { console.error('[verify] tombstone lookup failed:', error.message); return false }
+    return !!data
+  } catch (err) {
+    console.error('[verify] tombstone lookup failed:', err.message)
+    return false
+  }
 }
 
 function revokedResponse(c, row) {
@@ -122,7 +152,12 @@ async function checkIntegrity(env, row) {
     const docxActual = await cryptoLib.sha256Bytes(await docxObj.arrayBuffer())
     if (docxActual !== row.resume_hash) return 'modified'
 
-    if (row.resume_pdf_path && row.resume_pdf_hash) {
+    if (row.resume_pdf_path) {
+      // ROUND-3 AUDIT FIX (bug): a PDF with no stored fingerprint (a page issued before
+      // migration 0025 added resume_pdf_hash) used to be skipped and the page still said
+      // "verified" and "has not been modified" while offering that PDF for download.
+      // 'partial' = the Word file checks out, the PDF cannot be checked. Never a green tick.
+      if (!row.resume_pdf_hash) return 'partial'
       const pdfObj = await env.RESUMES_BUCKET.get(row.resume_pdf_path)
       if (!pdfObj) return 'unknown'
       const pdfActual = await cryptoLib.sha256Bytes(await pdfObj.arrayBuffer())
@@ -234,7 +269,7 @@ async function downloadVerifiedFile(c) {
     return c.json({ success: false, message: 'type must be "docx" or "pdf".' }, 400)
 
   const loaded = await loadByCode(c, { columns:
-    'resume_ats_path, resume_pdf_path, verify_expose_docx, verify_expose_pdf, verification_status, verification_revoked_at' })
+    'resume_ats_path, resume_pdf_path, resume_hash, resume_pdf_hash, verify_expose_docx, verify_expose_pdf, verification_status, verification_revoked_at' })
   if (loaded.response) return loaded.response
   const { row, code } = loaded
 
@@ -250,10 +285,60 @@ async function downloadVerifiedFile(c) {
   const obj = await c.env.RESUMES_BUCKET.get(key)
   if (!obj) return c.json({ success: false, message: 'File not available.' }, 404)
 
+  // ROUND-3 AUDIT FIX (bug): this used to stream whatever sat in R2 without comparing it
+  // to the fingerprint the page advertises — so a tampered object was served under the
+  // Passthrough name while the page next to the button said "Modified". Now the bytes are
+  // hashed first and refused on a mismatch. Bytes with no stored hash (a PDF from before
+  // 0025) are still served, labelled as unchecked, and the response carries the digest so
+  // the recipient can compare it themselves.
+  const bytes = await obj.arrayBuffer()
+  const actual = await cryptoLib.sha256Bytes(bytes)
+  const expected = wantPdf ? row.resume_pdf_hash : row.resume_hash
+  if (expected && actual !== expected)
+    return c.json({ success: false, code: 'INTEGRITY_FAILED', message: 'This file no longer matches its verified fingerprint, so it is not being served.' }, 409)
+
   c.header('Content-Type', wantPdf ? 'application/pdf' : DOCX_MIME)
   c.header('Content-Disposition', `${wantPdf ? 'inline' : 'attachment'}; filename="Passthrough-${code}.${wantPdf ? 'pdf' : 'docx'}"`)
   c.header('X-Content-Type-Options', 'nosniff')
-  return c.body(obj.body)
+  c.header('X-Passthrough-SHA256', actual)
+  c.header('X-Passthrough-Integrity', expected ? 'verified' : 'unchecked')
+  c.header('Content-Length', String(bytes.byteLength))
+  return c.body(bytes)
+}
+
+// GET /api/verify/by-hash/:sha256
+// The reader has a file but no link (an ATS strips them, a printout loses them): they hash
+// it in their browser (nothing is uploaded) and this finds the page it belongs to — a
+// current file, or one an earlier delivery of it. Same limiter, and the same miss counter,
+// as a code lookup: a hash is 256 bits and cannot be guessed, but this must not be a
+// cheaper oracle than /:code is.
+async function lookupByHash(c) {
+  noStore(c)
+  const hash = String(c.req.param('hash') || '').trim().toLowerCase()
+  const ip = clientIp(c)
+  if (await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, 'page'))
+    return c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429, { 'Retry-After': '900' })
+  if (!SHA256_RE.test(hash))
+    return c.json({ success: false, message: 'That is not a SHA-256 fingerprint.' }, 400)
+
+  const supabase = getSupabase(c.env)
+  const cols = 'verification_code, verification_status'
+  const attempts = [
+    () => supabase.from('scans').select(cols).eq('resume_hash', hash),
+    () => supabase.from('scans').select(cols).eq('resume_pdf_hash', hash),
+    () => supabase.from('scans').select(cols).contains('resume_hash_history', [{ docx: hash }]),
+    () => supabase.from('scans').select(cols).contains('resume_hash_history', [{ pdf: hash }]),
+  ]
+  const shapes = [['current', 'docx'], ['current', 'pdf'], ['previous', 'docx'], ['previous', 'pdf']]
+  for (let i = 0; i < attempts.length; i++) {
+    const { data, error } = await attempts[i]().not('verification_code', 'is', null).order('verified_at', { ascending: false }).limit(1)
+    if (error) throw error
+    const hit = (data || [])[0]
+    if (hit && hit.verification_code)
+      return c.json({ success: true, data: { code: hit.verification_code, match: shapes[i][0], kind: shapes[i][1], revoked: hit.verification_status === STATUS.REVOKED } })
+  }
+  if (!isTrustedPreview(c)) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, 'page')
+  return c.json({ success: false, code: 'NO_MATCH', message: 'No Passthrough verification matches that file.' }, 404)
 }
 
 // ── live badge (SVG) ────────────────────────────────────────────────────────
@@ -334,7 +419,7 @@ async function getBadge(c) {
   }
 
   const ip = clientIp(c)
-  if (!isTrustedPreview(c) && !(await rateLimiter.hitQuota(c.env, `rl:verifybadge:${rateKeyIp(ip)}`, BADGE_IP_QUOTA, 15 * 60)))
+  if (!isTrustedPreview(c) && !(await rateLimiter.hitQuota(c.env, `rl:verifybadge:${rateKeyIp(ip, 48)}`, BADGE_IP_QUOTA, 15 * 60)))
     return c.json({ success: false, message: 'Too many requests.' }, 429, { 'Retry-After': '300' })
 
   const loaded = await loadByCode(c, { scope: 'badge', columns:
@@ -342,7 +427,7 @@ async function getBadge(c) {
   if (loaded.response) {
     // A genuine "no such page" is answered with a real (grey) badge and cached;
     // only a rate-limit (429) stays a plain error.
-    if (loaded.notFound) return sendBadge(c, renderBadge('Passthrough', 'not found', '#6b7280'), BADGE_TTL_SECONDS, cache, key)
+    if (loaded.notFound) return sendBadge(c, renderBadge('Passthrough', loaded.removed ? 'removed' : 'not found', '#6b7280'), BADGE_TTL_SECONDS, cache, key)
     return loaded.response
   }
   const { row } = loaded
@@ -364,4 +449,4 @@ async function getBadge(c) {
   return sendBadge(c, renderBadge(label, value, color), ttl, cache, key)
 }
 
-module.exports = { getVerification, downloadVerifiedFile, getBadge, renderBadge }
+module.exports = { getVerification, downloadVerifiedFile, getBadge, lookupByHash, renderBadge }

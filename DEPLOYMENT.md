@@ -288,15 +288,29 @@ Every push to `main` triggers an automatic rebuild and deploy.
    ```bash
    wrangler tail
    ```
-4. Subscribe to at least: `charge.success`, `charge.failed`, `refund.processed`,
-   `refund.failed`, `refund.needs-attention`, `charge.dispute.create`,
-   `charge.dispute.remind`, `charge.dispute.resolve` (Paystack sends every event
-   type to the one URL; anything this app doesn't act on is recorded and ignored).
+4. There is nothing to subscribe to: Paystack sends every event type to the one URL,
+   and anything this app doesn't act on is recorded and ignored. The ones it acts on
+   are `charge.success`, `refund.processed`, `refund.failed`, `refund.needs-attention`,
+   `charge.dispute.create`, `charge.dispute.remind` and `charge.dispute.resolve`.
+   (There is no `charge.failed` event — earlier versions of this doc listed one.)
    `refund.needs-attention` matters: Paystack stalls that refund until you supply
    the customer's bank details, and the app emails you when it arrives.
 5. Every verified event is recorded in the `webhook_events` table and is visible —
    with a **Replay** button for HELD / FAILED / IGNORED ones — under
-   **Admin → Webhooks**.
+   **Admin → Webhooks** (search by reference or event type, view the stored payload).
+6. Recovery you don't have to do by hand (hourly, from the cron): FAILED or stuck events
+   are re-run up to 8 times and you're emailed once if they stay stuck; a HELD event
+   waiting over a day is escalated; recent paid payments are checked against Paystack
+   so a refund whose webhook never arrived is still reversed (partial refunds are only
+   reported); a receipt whose send was cancelled is re-sent.
+7. **Migration `0036_verify_webhooks_round3.sql`** adds what the above needs (webhook
+   inbox notes, replay attribution, refund-reconciliation and receipt columns,
+   "removed page" tombstones, look-up-by-file indexes). The app keeps working without
+   it, but those features stay off until it is applied.
+8. One-off, after 0036: pages issued before PDF fingerprinting existed show integrity
+   "partly checked". To fingerprint their PDFs as stored today (trust-on-first-use), call
+   `POST /api/admin/verification/backfill-pdf-hashes` as an admin, repeatedly until it
+   reports `remaining: false`.
 
 > **Upgrading an existing deployment:** apply migration
 > `0033_receipts_and_ban_revocation.sql` **before** deploying this version. The

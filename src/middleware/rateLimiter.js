@@ -136,14 +136,16 @@ async function hitQuota(env, key, max, windowSeconds) {
 // `auth` that is genuinely per-account (a heavy personal export) should key on
 // the account: on carrier-grade NAT, campus and office networks many unrelated
 // people share one IP and would otherwise share (and exhaust) one budget.
-function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, keyBy }) {
+// `ipBits` (64 default, 48 for the public verify lookups) is how much of an IPv6 address the
+// bucket keys on — see rateKeyIp.
+function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, keyBy, ipBits = 64 }) {
   return async (c, next) => {
     if (skip && skip(c)) return next()
 
     const ip = clientIp(c)
     if (isBypassed(c.env, ip)) return next()
 
-    const key = `${keyPrefix}:${(keyBy && keyBy(c)) || rateKeyIp(ip)}`
+    const key = `${keyPrefix}:${(keyBy && keyBy(c)) || rateKeyIp(ip, ipBits)}`
     const kv  = c.env.RATE_LIMIT_KV
 
     let slot
@@ -256,7 +258,8 @@ const scanPoll = makeLimiter({
 const verifyRead = makeLimiter({
   windowSeconds: 5 * 60, max: 240, keyPrefix: 'rl:verifyread',
   message: msg('Too many lookups. Please wait a few minutes.'),
-  skip: c => isTrustedPreview(c)
+  skip: c => isTrustedPreview(c),
+  ipBits: 48   // bucket a whole /48, not a /64 — see rateKeyIp
 })
 
 const anonScan = makeLimiter({
@@ -549,7 +552,10 @@ const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 // billion possible verification codes, and it was keying on the raw IP —
 // exactly the gap rateKeyIp exists to close, left open on the limiter that
 // most needed it.
-function verifyMissKey(ip, scope = 'page') { return `${scope === 'badge' ? 'rl:vmissb' : 'rl:vmiss'}:${rateKeyIp(ip)}` }
+// AUDIT FIX (bug, verify round 3): keyed on the /48, not the /64 — a single actor with a
+// /48 (free from tunnel brokers, standard on hosting plans) owns 65,536 /64s and so
+// 65,536 independent budgets under the old key.
+function verifyMissKey(ip, scope = 'page') { return `${scope === 'badge' ? 'rl:vmissb' : 'rl:vmiss'}:${rateKeyIp(ip, 48)}` }
 const missMax = scope => (scope === 'badge' ? VERIFY_BADGE_MISS_MAX : VERIFY_MISS_MAX)
 
 async function readMissCounter(kv, key, now) {

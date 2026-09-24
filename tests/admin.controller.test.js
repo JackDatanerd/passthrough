@@ -272,3 +272,34 @@ describe('adminListAlerts', () => {
     expect(res.body.data[0]).toEqual({ id: 'a1', subject: 'S', message: 'M', emailed: true, createdAt: 't' })
   })
 })
+
+// ── Round 3 ────────────────────────────────────────────────────────────────
+describe('round 3 — dashboard counts webhook events that need a person', () => {
+  it('adds FAILED+HELD and stuck-RECEIVED events to openItems.webhookEventsNeedingAttention', async () => {
+    t = setup(q => {
+      if (q.table === 'webhook_events') return { data: null, error: null, count: q.filters.some(f => f[0] === 'in') ? 3 : 2 }
+      if (q.op === 'select' && q.selectOpts?.head) return { data: null, error: null, count: 0 }
+    })
+    const res = await t.mod.adminDashboardStats(t.c())
+    expect(res.body.data.openItems.webhookEventsNeedingAttention).toBe(5)
+  })
+})
+
+describe('round 3 — adminBackfillPdfHashes (pages issued before PDF fingerprinting)', () => {
+  const PDF = new TextEncoder().encode('pdf bytes')
+  const bucket = files => ({ get: async k => files[k] ? { arrayBuffer: async () => files[k].buffer.slice(files[k].byteOffset, files[k].byteOffset + files[k].byteLength) } : null })
+
+  it('fingerprints the stored PDF for a page that has none, and skips a missing object', async () => {
+    const updates = []
+    t = setup(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: [{ id: 's1', resume_pdf_path: 'a.pdf' }, { id: 's2', resume_pdf_path: 'gone.pdf' }], error: null }
+      if (q.table === 'scans' && q.op === 'update') { updates.push(q); return { data: [{ id: 's1' }], error: null } }
+    })
+    const res = await t.mod.adminBackfillPdfHashes(t.c({ env: { RESUMES_BUCKET: bucket({ 'a.pdf': PDF }) } }))
+    expect(res.body.data).toMatchObject({ checked: 2, filled: 1, missing: 1, remaining: false })
+    expect(updates).toHaveLength(1)
+    expect(updates[0].patch.resume_pdf_hash).toMatch(/^[a-f0-9]{64}$/)
+    // only ever fills a HOLE — never overwrites an existing fingerprint
+    expect(updates[0].filters.some(f => f[0] === 'is' && f[1] === 'resume_pdf_hash')).toBe(true)
+  })
+})

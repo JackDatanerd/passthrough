@@ -390,7 +390,93 @@ async function sweepFailedFixes(env, supabase, { now = Date.now(), alert = true 
   return result
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fifth concern: Paystack REFUNDED it, but we never heard.
+//
+// Everything about refunds depends on a refund.processed webhook arriving AND processing. If
+// one is lost, or FAILED after Paystack stopped retrying (about 72 hours), the payment stays
+// SUCCESS, the partner keeps their commission and the public credential stays live — and no
+// other sweep looks at a SUCCESS row again once it is delivered.
+//
+// This asks Paystack about recent SUCCESS/DISPUTED payments (a rotating window, oldest-checked
+// first, so each is looked at about every 6 hours for 45 days). A transaction Paystack reports
+// as `reversed` is then compared with Paystack's own refund list: processed refunds that add up
+// to the amount paid → the sale is reversed exactly as the webhook would have; anything less is
+// a partial (goodwill) refund and only tells a human, once a week per payment.
+const REVERSAL_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
+const REVERSAL_RECHECK_MS  = 6 * 60 * 60 * 1000
+const MAX_REVERSAL_CHECKS_PER_RUN = 20
+
+async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = true } = {}) {
+  const result = { checked: 0, reversed: [], partial: [], failed: [] }
+  const base = 'id, paystack_ref, scan_id, status, amount_cents, currency, created_at'
+  const since = new Date(now - REVERSAL_LOOKBACK_MS).toISOString()
+  const stale = new Date(now - REVERSAL_RECHECK_MS).toISOString()
+
+  let tracked = true
+  let { data: rows, error } = await supabase.from('payments').select(`${base}, last_reconciled_at`)
+    .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
+    .or(`last_reconciled_at.is.null,last_reconciled_at.lt.${stale}`)
+    .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(MAX_REVERSAL_CHECKS_PER_RUN)
+  if (error && (error.code === '42703' || /last_reconciled_at|column/i.test(error.message || ''))) {
+    // migration 0036 not applied: no rotation marker, so just look at the newest payments
+    tracked = false
+    ;({ data: rows, error } = await supabase.from('payments').select(base)
+      .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
+      .order('created_at', { ascending: false }).limit(MAX_REVERSAL_CHECKS_PER_RUN))
+  }
+  if (error) { result.error = error.message; return result }
+
+  const paystackService = require('./paystack.service')
+  const toCheck = (rows || []).filter(p => p.paystack_ref && !p.paystack_ref.startsWith('credit:'))
+  result.checked = toCheck.length
+
+  for (const payment of toCheck) {
+    try {
+      const v = await paystackService.verifyTransaction(env, payment.paystack_ref)
+      if (v?.data?.status === 'reversed') {
+        const list = await paystackService.listRefunds(env, payment.paystack_ref)
+        const total = (list?.data || [])
+          .filter(r => String(r.status || '').toLowerCase() === 'processed' && (!r.currency || r.currency === payment.currency))
+          .reduce((sum, r) => sum + (Number.isFinite(Number(r.amount)) ? Number(r.amount) : 0), 0)
+        if (payment.amount_cents > 0 && total >= payment.amount_cents) {
+          await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND' })
+          result.reversed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total })
+        } else {
+          result.partial.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total, paid: payment.amount_cents })
+        }
+      }
+      if (tracked) await supabase.from('payments').update({ last_reconciled_at: new Date(now).toISOString() }).eq('id', payment.id)
+    } catch (err) {
+      result.failed.push({ reference: payment.paystack_ref, error: err.message })
+    }
+  }
+
+  if (alert) {
+    try {
+      const emailService = require('./email.service')
+      const kv = env.RATE_LIMIT_KV
+      const fresh = []
+      for (const p of result.partial) {
+        const key = `reconcile-partial-refund:${p.reference}`
+        try { if (kv && await kv.get(key)) continue; if (kv) await kv.put(key, '1', { expirationTtl: 7 * 24 * 3600 }) } catch (_) { /* over-alert rather than go silent */ }
+        fresh.push(p)
+      }
+      if (result.reversed.length)
+        await emailService.sendOwnerAlert(env, `Refund reconciliation: ${result.reversed.length} sale(s) reversed after a missed webhook`,
+          `Paystack reports these as fully refunded although our records still said paid — the refund.processed webhook never reached (or never finished on) this app. They were reversed now (payment → REFUNDED, partner commission reversed, public credential revoked):\n\n` +
+          result.reversed.map(r => `${r.reference}  scan ${r.scanId}  refunded ${r.total}`).join('\n'))
+      if (fresh.length)
+        await emailService.sendOwnerAlert(env, `Refund reconciliation: ${fresh.length} partial refund(s) found — NOT actioned`,
+          `Paystack reports these transactions as reversed, but the processed refunds add up to less than was paid, so nothing was changed. If a sale should be reversed: Admin → Payments → Reverse.\n\n` +
+          fresh.map(r => `${r.reference}  scan ${r.scanId}  refunded ${r.total} of ${r.paid}`).join('\n'))
+    } catch (_) { /* alerting is best effort */ }
+  }
+  return result
+}
+
 module.exports = {
+  sweepReversedPayments, REVERSAL_LOOKBACK_MS, REVERSAL_RECHECK_MS, MAX_REVERSAL_CHECKS_PER_RUN,
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
   sweepStalePendingPayments, PENDING_ABANDON_AGE_MS,
   sweepPendingPayments, recheckPayment, PENDING_MIN_AGE_MS, PENDING_RECENT_MS, MAX_VERIFY_PER_RUN,

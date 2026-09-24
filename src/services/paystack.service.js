@@ -112,4 +112,20 @@ async function verifyTransaction(env, reference) {
   // json.data.status — ONE level of .data (native fetch, not Axios)
 }
 
-module.exports = { initializeTransaction, verifyTransaction, isPendingStatus, PENDING_STATUSES }
+// GET /refund?reference=… — the refunds Paystack has recorded for one transaction. Used by
+// reconcile.service.js's sweepReversedPayments to tell a FULL refund (reverse the sale) from a
+// partial one (leave it, tell a human) when a refund.processed webhook never reached us.
+// Each item carries `status` (pending | processing | needs-attention | failed | processed),
+// `amount` (minor units) and `currency`.
+async function listRefunds(env, reference) {
+  const res = await paystackFetch(
+    `https://api.paystack.co/refund?reference=${encodeURIComponent(reference)}&perPage=50`,
+    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
+    'Paystack refund list'
+  )
+  const json = await res.json()
+  if (!res.ok) throw new Error(json?.message || `Paystack refund list returned HTTP ${res.status}`)
+  return json
+}
+
+module.exports = { initializeTransaction, verifyTransaction, listRefunds, isPendingStatus, PENDING_STATUSES }

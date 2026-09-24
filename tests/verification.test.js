@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import {
   STATUS, REVOKE_REASON, CODE_RE,
   normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey,
-  revokeVerification, restoreVerification,
+  revokeVerification, restoreVerification, recordTombstones, SHA256_RE,
 } from '../src/lib/verification.js'
 import { createWorld } from './helpers/memoryDb.cjs'
 
@@ -146,5 +146,44 @@ describe('restoreVerification', () => {
     const world = createWorld({ scans: [] })
     expect(await restoreVerification(world.db, undefined)).toBe(false)
     expect(world.calls.length).toBe(0)
+  })
+})
+
+// ── Round 3 ────────────────────────────────────────────────────────────────
+describe('round 3 — code shape, normalisation, tombstones', () => {
+  it('CODE_RE accepts the legacy 6-character code and the new 10-character one, and nothing in between', () => {
+    expect(isPlausibleCode('AB3XY7')).toBe(true)
+    expect(isPlausibleCode('AB3XY7K9MN')).toBe(true)
+    for (const bad of ['AB3XY', 'AB3XY7K', 'AB3XY7K9M', 'AB3XY7K9MNP', 'ab3xy7', 'AB3XY0', 'AB3XYI'])
+      expect(isPlausibleCode(bad)).toBe(false)
+  })
+  it('normalizeCode never lets a Unicode look-alike fold into a code character', () => {
+    expect(normalizeCode(' ab3xy7 ')).toBe('AB3XY7')
+    expect(normalizeCode('ſb3xy7')).toBe('')          // U+017F uppercases to "S" — must not
+    expect(normalizeCode('ab3xy7\n')).toBe('AB3XY7')  // surrounding whitespace is still trimmed
+    expect(normalizeCode('ab3 xy7')).toBe('')         // inner whitespace is not a code
+    expect(isPlausibleCode(normalizeCode('ﬁ23456'))).toBe(false)
+  })
+  it('SHA256_RE is exactly 64 lowercase hex characters', () => {
+    expect(SHA256_RE.test('a'.repeat(64))).toBe(true)
+    for (const bad of ['a'.repeat(63), 'a'.repeat(65), 'A'.repeat(64), 'g'.repeat(64), '']) expect(SHA256_RE.test(bad)).toBe(false)
+  })
+  it('recordTombstones upserts each distinct non-empty code once, ignoring duplicates', async () => {
+    const seen = []
+    const db = { from: t => ({ upsert: async (rows, opts) => { seen.push({ t, rows, opts }); return { error: null } } }) }
+    await recordTombstones(db, ['AB3XY7', null, 'AB3XY7', '', 'CD4ZW8'])
+    expect(seen).toHaveLength(1)
+    expect(seen[0].t).toBe('verification_tombstones')
+    expect(seen[0].rows).toEqual([{ code: 'AB3XY7' }, { code: 'CD4ZW8' }])
+    expect(seen[0].opts).toMatchObject({ onConflict: 'code', ignoreDuplicates: true })
+  })
+  it('recordTombstones does nothing for no codes, and NEVER throws (the deletion it follows already committed)', async () => {
+    let called = false
+    await recordTombstones({ from: () => { called = true } }, [null, ''])
+    expect(called).toBe(false)
+    const real = console.error; console.error = () => {}
+    await recordTombstones({ from: () => ({ upsert: async () => ({ error: { message: 'relation does not exist' } }) }) }, ['AB3XY7'])
+    await recordTombstones({ from: () => { throw new Error('boom') } }, ['AB3XY7'])
+    console.error = real
   })
 })

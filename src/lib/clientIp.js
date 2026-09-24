@@ -26,7 +26,12 @@ function clientIp(c) {
 // far more), so keying on the full address lets one client mint unlimited
 // "different" IPs and walk around every per-IP limit. Collapse IPv6 to its
 // /64 prefix; IPv4 (and IPv4-mapped IPv6) is unchanged.
-function rateKeyIp(ip) {
+//
+// `bits` (64 default, or 48) is how much of the address the bucket keys on. The
+// public verify lookups pass 48: a /64 is what one home connection gets, but a
+// free tunnel-broker or any hosting plan hands out a /48 (65,536 separate /64s),
+// which made a per-/64 enumeration brake trivially walkable by one actor.
+function rateKeyIp(ip, bits = 64) {
   if (!ip || ip === 'unknown' || !ip.includes(':')) return ip || 'unknown'
   const h = ip.toLowerCase().split('%')[0]
   const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(h)
@@ -43,7 +48,8 @@ function rateKeyIp(ip) {
     groups = headParts
   }
   if (groups.length !== 8) return h
-  return groups.slice(0, 4).map(g => g.padStart(4, '0')).join(':') + '::/64'
+  const keep = bits === 48 ? 3 : 4
+  return groups.slice(0, keep).map(g => g.padStart(4, '0')).join(':') + `::/${keep * 16}`
 }
 
 module.exports = { clientIp, rateKeyIp }

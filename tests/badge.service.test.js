@@ -10,7 +10,9 @@ describe('generateShortCode', () => {
   it('returns a code of the configured length/charset when the first try is unique', async () => {
     const world = createWorld({ scans: [] })
     const code = await generateShortCode(world.db)
-    expect(code).toHaveLength(constants.SHORT_CODE_LENGTH)
+    // New pages get the longer code; SHORT_CODE_LENGTH is the legacy length lookups still accept.
+    expect(code).toHaveLength(constants.VERIFY_CODE_LENGTH)
+    expect(constants.VERIFY_CODE_LENGTH).toBeGreaterThan(constants.SHORT_CODE_LENGTH)
     for (const ch of code) expect(constants.SHORT_CODE_CHARS).toContain(ch)
   })
 

@@ -20,12 +20,16 @@ router.get('/scans',    c.adminListScans)
 router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)
 router.get('/payments', c.adminListPayments)
 
+// One-off: fingerprint PDFs of pages issued before migration 0025 (see the controller).
+router.post('/verification/backfill-pdf-hashes', c.adminBackfillPdfHashes)
+
 // Manual re-run of a paid fix that failed to generate (see adminRequeueFix).
 router.post('/scans/:id/requeue-fix', validateUuidParam(), c.adminRequeueFix)
 
 // Webhook inbox (Section 8): what Paystack sent, what we did with it, and a replay
 // for anything that was HELD / FAILED / IGNORED.
 router.get('/webhook-events', wh.listWebhookEvents)
+router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
 
 router.get('/email-logs', c.adminListEmailLogs)

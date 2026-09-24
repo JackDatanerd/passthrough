@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useParams } from 'react-router-dom'
+import { useParams, Link } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
@@ -12,6 +12,31 @@ import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
 import { isRoleCategory } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
+
+const SUPPORT_EMAIL = 'support@passthrough.dev'
+
+// ROUND-3 AUDIT (feature gap): a reader who suspects a page is fake, or a candidate whose page
+// is wrong, had no way to say so from here. Prefills the code so the report needs no typing.
+function reportHref(code, why) {
+  const c = String(code || '').toUpperCase()
+  return `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent(`Passthrough verification ${c}: ${why}`)}` +
+    `&body=${encodeURIComponent(`Verification page: ${typeof window !== 'undefined' ? window.location.href : c}\n\nWhat looks wrong:\n`)}`
+}
+
+function Fingerprint({ label, hash }) {
+  const [copied, setCopied] = useState(false)
+  return (
+    <div className="flex items-center gap-2 text-xs">
+      <span className="text-gray-400 w-12 shrink-0">{label}</span>
+      <code className="text-gray-600 break-all font-mono">{hash}</code>
+      <button type="button"
+        onClick={async () => { if (await copyToClipboard(hash)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }}
+        className="text-blue-700 hover:text-blue-800 underline underline-offset-2 shrink-0">
+        {copied ? 'Copied' : 'Copy'}
+      </button>
+    </div>
+  )
+}
 
 // Downloads used window.location.href — on a 403/404 that just navigates the
 // whole tab to raw JSON. Fetches as a blob so a failure surfaces on the page
@@ -31,6 +56,9 @@ export default function Verify() {
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
   const [revoked,  setRevoked ] = useState(null)   // { revokedAt } | null
+  // ROUND-3 AUDIT (feature gap): the owner deleted this page (or their account) — say so, rather
+  // than the "not found" that reads like a mistyped code on a printed resume.
+  const [removed,  setRemoved ] = useState(false)
   // Generic failure state — separate from notFound. The old version only
   // ever branched on a 404; anything else (500, timeout, offline) left
   // loading/notFound/data all falsy, so the page silently rendered nothing
@@ -84,7 +112,7 @@ export default function Verify() {
   // candidate the visitor thinks they're looking at) closes that.
   function load() {
     const seq = ++loadSeq.current
-    setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setData(null)
+    setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
     setDownloadErr(''); setCheckResult(null)
     setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setWebsite('')
     setLeadSent(false); setLeadErr('')
@@ -105,6 +133,7 @@ export default function Verify() {
         setLoading(false)
         const status = err.response?.status
         if (status === 404) setNotFound(true)
+        else if (status === 410 && err.response?.data?.code === 'REMOVED') setRemoved(true)
         else if (status === 410) setRevoked({ revokedAt: err.response?.data?.revokedAt || null })
         else if (status === 429) setRateLimited(true)
         else setLoadError(true)
@@ -188,10 +217,15 @@ export default function Verify() {
   // unknown → says the check couldn't complete; otherwise it is the score.
   const notChecked  = !!data && data.passed && data.integrityStatus === 'unknown'
   const isModified  = !!data && data.passed && data.integrityStatus === 'modified'
+  // ROUND-3 AUDIT FIX (bug): a page with a PDF that was never fingerprinted (issued before PDF
+  // fingerprinting existed) used to read "Unmodified". 'partial' = the Word file checks out,
+  // the PDF cannot be checked — never a green tick.
+  const isPartial   = !!data && data.passed && data.integrityStatus === 'partial'
 
   const integrityLabel =
     data?.integrityStatus === 'verified' ? 'Unmodified' :
     data?.integrityStatus === 'modified' ? 'Modified'   :
+    data?.integrityStatus === 'partial'  ? 'Partly checked' :
     'Unavailable'
   const integrityClass =
     data?.integrityStatus === 'verified' ? 'text-green-700' :
@@ -242,6 +276,21 @@ export default function Verify() {
           </div>
         )}
 
+        {removed && (
+          <div className="text-center py-20">
+            <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
+              <span className="text-gray-500 text-3xl">⊘</span>
+            </div>
+            <h1 className="text-xl font-bold text-gray-900 mb-2">This verification page was removed</h1>
+            <p className="text-gray-500 text-sm">
+              Its owner deleted it. This is not a mistyped link — the page existed, and is no longer available.
+            </p>
+            <p className="text-xs text-gray-400 mt-4">
+              <a href={reportHref(code, 'removed page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem</a>
+            </p>
+          </div>
+        )}
+
         {revoked && (
           <div className="text-center py-20">
             <div className="w-16 h-16 rounded-full bg-gray-100 flex items-center justify-center mx-auto mb-4">
@@ -251,6 +300,9 @@ export default function Verify() {
             <p className="text-gray-500 text-sm">
               {revoked.revokedAt ? `Revoked on ${formatDate(revoked.revokedAt)}. ` : ''}
               It is no longer valid and cannot be restored from this page.
+            </p>
+            <p className="text-xs text-gray-400 mt-4">
+              <a href={reportHref(code, 'revoked page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem</a>
             </p>
           </div>
         )}
@@ -297,6 +349,8 @@ export default function Verify() {
                   <p className="text-sm text-amber-700 mb-1">
                     {isModified
                       ? 'This file no longer matches what was verified — see Integrity below.'
+                      : isPartial
+                        ? "The Word file checks out, but this page has no fingerprint for its PDF — see Integrity below."
                       : notChecked
                         ? "The integrity check couldn't complete just now — refresh in a moment to re-check."
                         : data.passed
@@ -362,6 +416,8 @@ export default function Verify() {
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
                   : isModified
                     ? "This resume reached the Passthrough Verified score, but the stored file no longer matches its verified fingerprint."
+                    : isPartial
+                      ? "This resume reached the Passthrough Verified score and its Word file is unmodified, but its PDF predates PDF fingerprinting and cannot be checked — so this page does not show a full verification."
                     : notChecked
                       ? "This resume reached the Passthrough Verified score. Its integrity could not be re-checked just now — that is not a sign of tampering."
                       : "This resume was scanned by Passthrough's ATS engine. It did not reach the standard required for Passthrough Verified status."}
@@ -411,6 +467,31 @@ export default function Verify() {
                 </div>
               </div>
             </div>
+
+            {/* ROUND-3 AUDIT (feature gap): the fingerprints were in the JSON all along but the
+                page never showed them — a reader who won't put a file into a browser tool could
+                not compare anything by hand. `shasum -a 256 file` (or certutil on Windows) gives
+                the same value. */}
+            {(data.fingerprints?.docx || data.fingerprints?.pdf) && (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                <h2 className="font-semibold text-gray-900 mb-1">Fingerprints (SHA-256)</h2>
+                <p className="text-sm text-gray-500 mb-3">
+                  Prefer to check by hand? Run <code className="font-mono text-xs">shasum -a 256 &lt;file&gt;</code> (macOS/Linux)
+                  or <code className="font-mono text-xs">certutil -hashfile &lt;file&gt; SHA256</code> (Windows) on the file
+                  you were sent — it should equal one of these.
+                </p>
+                <div className="flex flex-col gap-2">
+                  {data.fingerprints.docx && <Fingerprint label=".docx" hash={data.fingerprints.docx} />}
+                  {data.fingerprints.pdf  && <Fingerprint label="PDF"   hash={data.fingerprints.pdf} />}
+                </div>
+                <p className="text-xs text-gray-400 mt-4">
+                  Have a file but not its link?{' '}
+                  <Link to="/check" className="underline underline-offset-2 hover:text-gray-600">Find its verification page</Link>
+                  {' · '}
+                  <a href={reportHref(code, 'reported page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem with this page</a>
+                </p>
+              </div>
+            )}
 
             {/* SECTION 7 AUDIT (feature gap): check the file YOU were sent, not
                 just our stored copy — this is the only check that can catch a

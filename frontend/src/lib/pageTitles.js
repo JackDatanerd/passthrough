@@ -14,13 +14,18 @@ const ROUTES = [
   [/^\/payment\/success/, 'Payment'],
   [/^\/scan\//, 'Your scan'],
   [/^\/v\//, 'Verified resume'],
+  [/^\/check/, 'Check a resume'],
   [/^\/dashboard\/settings/, 'Settings'],
   [/^\/dashboard/, 'Your scans'],
   [/^\/admin/, 'Admin'],
   [/^\/partner/, 'Partner'],
 ]
 
-const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email)(\/|$)/
+// ROUND-3 AUDIT FIX (bug): `v` was missing, so a candidate's verification page (first name + score)
+// carried no noindex of its own — the only thing keeping it out of search was a header the
+// link-preview Function adds, and only when its API call succeeded in time. public/_headers now
+// sends X-Robots-Tag for /v/* too.
+const PRIVATE = /^\/(scan|dashboard|admin|partner|payment|reset-password|verify-email|v)(\/|$)/
 
 export function titleFor(pathname) {
   const hit = ROUTES.find(([re]) => re.test(pathname))

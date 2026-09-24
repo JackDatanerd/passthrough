@@ -197,6 +197,31 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Pending-payment sweep error:', err.message)
       }
+      // ROUND-3 AUDIT (feature gaps, Section 8): three recoveries that used to depend on
+      // Paystack redelivering, or on a person noticing. Each is independent of the others.
+      try {
+        const r = await require('./controllers/webhooks.controller').redriveStaleEvents(env, ctx)
+        if (r.error) console.error('Webhook re-drive query:', r.error)
+        else if (r.redriven.length || r.exhausted.length || r.heldEscalated.length)
+          console.log(`Webhook re-drive: ${r.redriven.length} re-run, ${r.recovered.length} recovered, ${r.exhausted.length} exhausted, ${r.heldEscalated.length} held escalated`)
+      } catch (err) {
+        console.error('Webhook re-drive error:', err.message)
+      }
+      try {
+        const { sweepReversedPayments } = require('./services/reconcile.service')
+        const r = await sweepReversedPayments(env, getSupabase(env))
+        if (r.error) console.error('Refund reconciliation query:', r.error)
+        else if (r.reversed.length || r.partial.length || r.failed.length)
+          console.log(`Refund reconciliation: checked ${r.checked}, ${r.reversed.length} reversed, ${r.partial.length} partial, ${r.failed.length} failed`)
+      } catch (err) {
+        console.error('Refund reconciliation error:', err.message)
+      }
+      try {
+        const r = await require('./services/fulfillment.service').recoverLostReceipts(env, getSupabase(env))
+        if (r.resent || r.failed) console.log(`Receipt recovery: ${r.resent} re-sent, ${r.failed} failed`)
+      } catch (err) {
+        console.error('Receipt recovery error:', err.message)
+      }
       // webhook_events is an audit log, not an archive.
       try {
         const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()

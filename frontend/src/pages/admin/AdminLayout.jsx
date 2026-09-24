@@ -36,7 +36,8 @@ function TopStrip() {
   // NEW leads are work waiting for a person, the same as an errored scan is —
   // the dashboard computed the number but nothing outside its own page showed it.
   const newLeads = stats.openItems.newLeads || 0
-  const openCount = erroredScansThisWeek + stuckScans + stalePendingPayments + newLeads
+  const webhookAttention = stats.openItems.webhookEventsNeedingAttention || 0
+  const openCount = erroredScansThisWeek + stuckScans + stalePendingPayments + newLeads + webhookAttention
 
   return (
     <div className="flex flex-col gap-2 text-sm">
@@ -77,6 +78,11 @@ function TopStrip() {
           {newLeads > 0 && (
             <Link to="/admin/leads?status=NEW" className="text-amber-800 hover:underline">
               {newLeads} new lead{newLeads === 1 ? '' : 's'} →
+            </Link>
+          )}
+          {webhookAttention > 0 && (
+            <Link to="/admin/webhooks?status=ATTENTION" className="text-amber-800 hover:underline">
+              {webhookAttention} webhook event{webhookAttention === 1 ? '' : 's'} need a look →
             </Link>
           )}
           {stalePendingPayments > 0 && (

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { initializeTransaction, verifyTransaction } from '../src/services/paystack.service.js'
+import { initializeTransaction, verifyTransaction, listRefunds } from '../src/services/paystack.service.js'
 
 // paystack.service.js was previously the one payment-facing module with zero
 // direct test coverage — payments.controller.test.js stubs it out entirely
@@ -95,5 +95,19 @@ describe('verifyTransaction', () => {
   it('throws a generic message on a non-2xx response with no body message', async () => {
     mockFetch(500, {})
     await expect(verifyTransaction(env, 'ref-1')).rejects.toThrow('Paystack verify returned HTTP 500')
+  })
+})
+
+describe('listRefunds', () => {
+  it('GETs /refund for ONE transaction (reference URL-encoded) with the secret key', async () => {
+    mockFetch(200, { status: true, data: [{ status: 'processed', amount: 2900, currency: 'USD' }] })
+    const result = await listRefunds(env, 'ref with spaces')
+    expect(global.fetch.mock.calls[0][0]).toBe('https://api.paystack.co/refund?reference=ref%20with%20spaces&perPage=50')
+    expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer sk_test_123')
+    expect(result.data[0].amount).toBe(2900)
+  })
+  it('throws on a non-2xx response (an outage or a bad key is not "no refunds")', async () => {
+    mockFetch(401, { status: false, message: 'Invalid key' })
+    await expect(listRefunds(env, 'ref-1')).rejects.toThrow('Invalid key')
   })
 })

@@ -95,7 +95,13 @@ module.exports = {
   MAX_UPLOAD_MB:    5,
   FREE_SCANS_PER_DAY:  3,
   ANON_SCAN_TTL_HOURS: 24,
+  // Length of the ORIGINAL 6-character verification codes. Pages issued before the
+  // longer format still use it, so lookups keep accepting it (see lib/verification.js).
   SHORT_CODE_LENGTH: 6,
+  // Length of every NEWLY issued code: 32^10 (~1.1e15) instead of 32^6 (~1.1e9). The
+  // code is the only capability guarding a page's optional .docx/PDF download (a full
+  // resume with contact details), so 30 bits was too small to leave unguarded.
+  VERIFY_CODE_LENGTH: 10,
   SHORT_CODE_CHARS:  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
   EMAIL_TOKEN_EXPIRY_HOURS: 1,
   RESET_TOKEN_EXPIRY_HOURS: 1,

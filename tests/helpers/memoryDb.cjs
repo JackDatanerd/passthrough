@@ -20,6 +20,8 @@ function matches(row, filters) {
       case 'is':  return val === null ? (v === null || v === undefined) : v === val
       // .not(col, op, val) is stored as ['not', col, op, val]
       case 'not': return val === 'is' && val2 === null ? (v !== null && v !== undefined) : v !== val2
+      // jsonb array containment: every wanted object appears (as a subset) in the column's array
+      case 'contains': return Array.isArray(v) && val.every(w => v.some(x => x && typeof x === 'object' && Object.entries(w).every(([k, wv]) => x[k] === wv)))
       case 'gt':  return v > val
       case 'gte': return v >= val
       case 'lt':  return v < val

@@ -78,7 +78,7 @@ export default function AdminDashboard() {
 
       <div>
         <h2 className="font-semibold text-gray-900 mb-3">Needs attention</h2>
-        <div className="grid sm:grid-cols-4 gap-4">
+        <div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <Link to="/admin/scans?status=ERROR" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
             <div className="text-xs text-gray-400">Errored scans (7d)</div>
             <div className={cn('text-xl font-bold', openItems.erroredScansThisWeek > 0 ? 'text-red-600' : 'text-gray-900')}>
@@ -95,6 +95,12 @@ export default function AdminDashboard() {
             <div className="text-xs text-gray-400">Stale pending payments</div>
             <div className={cn('text-xl font-bold', openItems.stalePendingPayments > 0 ? 'text-amber-600' : 'text-gray-900')}>
               {openItems.stalePendingPayments}
+            </div>
+          </Link>
+          <Link to="/admin/webhooks?status=ATTENTION" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
+            <div className="text-xs text-gray-400">Webhook events to look at</div>
+            <div className={cn('text-xl font-bold', openItems.webhookEventsNeedingAttention > 0 ? 'text-amber-600' : 'text-gray-900')}>
+              {openItems.webhookEventsNeedingAttention || 0}
             </div>
           </Link>
           <Link to="/admin/leads?status=NEW" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">

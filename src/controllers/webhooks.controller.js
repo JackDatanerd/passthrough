@@ -41,6 +41,26 @@
 //     take, and the inbox is finally visible/replayable (listWebhookEvents /
 //     replayWebhookEvent, mounted under /api/admin).
 //
+//  7. ROUND-3 AUDIT (sections 7/8):
+//     * outcome notes ("FULFILLED", "reversed"…) are written to a NEW `note` column, not
+//       `error` — the admin table paints `error` red, so every healthy row looked broken;
+//     * `charge.failed` is not an event Paystack sends (its documented list has no such
+//       event), so that handler was dead code and is gone; PENDING→FAILED is the sweeps' job;
+//     * `.remind` events are keyed per hour, not by body hash alone — identical reminders
+//       were being swallowed as duplicates, and the 16-hour dispute clock is the reason
+//       that alert exists;
+//     * refund events with no id no longer collide across unrelated transactions;
+//     * refunds are SUMMED per payment (from the inbox itself): two 50% refunds are a full
+//       refund and reverse the sale, instead of two alerts and nothing else;
+//     * the stored payload no longer keeps the payer's IP address or receipt number;
+//     * the inbox has a payload viewer, reference/type search, "needs attention" filter,
+//       and records who replayed an event; FAILED/RECEIVED events that Paystack has given
+//       up on are re-driven by redriveStaleEvents (hourly cron), HELD ones are escalated once.
+//     * the work before the 200 is still inline on purpose (see #1) but is more than "a
+//       handful of DB calls" now: recordConversion adds several sequential queries. It stays
+//       correct only because every step downstream is idempotent — a slow delivery that
+//       Paystack times out and redelivers runs twice, safely.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -61,12 +81,12 @@ const MAX_BODY_BYTES = 256 * 1024
 const ALERT_COOLDOWN_SECONDS = 30 * 60
 const SIG_ALERT_KEY = 'webhook-alert-cooldown:paystack-sig-mismatch'
 
-async function alertAllowed(env, key) {
+async function alertAllowed(env, key, ttlSeconds = ALERT_COOLDOWN_SECONDS) {
   try {
     const kv = env.RATE_LIMIT_KV
     if (!kv) return true  // no KV bound (some test setups) — fail open to alerting
     if (await kv.get(key)) return false
-    await kv.put(key, '1', { expirationTtl: ALERT_COOLDOWN_SECONDS })
+    await kv.put(key, '1', { expirationTtl: ttlSeconds })
     return true
   } catch (_) {
     return true  // KV hiccup — better to occasionally over-alert than go silent
@@ -95,7 +115,8 @@ function parseIpList(raw) {
 
 // Card/customer detail never needs to live in our DB: authorization carries a
 // reusable card token, customer carries PII.
-const STRIP_KEYS = ['authorization', 'customer', 'log', 'plan', 'subaccount', 'split', 'fees_split', 'connect', 'source']
+// ip_address (the payer's) and receipt_number are personal data the app never reads back.
+const STRIP_KEYS = ['authorization', 'customer', 'log', 'plan', 'subaccount', 'split', 'fees_split', 'connect', 'source', 'ip_address', 'receipt_number']
 function redactEvent(event) {
   try {
     const copy = JSON.parse(JSON.stringify(event))
@@ -106,17 +127,28 @@ function redactEvent(event) {
   } catch (_) { return null }
 }
 
-function eventKeyFor(event, bodyHash) {
+function eventKeyFor(event, bodyHash, now = Date.now()) {
   const d = event.data || {}
-  // Repeated dispute reminders share an id but are genuinely new events.
-  if (event.event.endsWith('.remind')) return `${event.event}:${bodyHash.slice(0, 16)}`
+  // Repeated dispute reminders share an id but are genuinely new events — and, being
+  // reminders of the same unresolved dispute, they can arrive byte-for-byte identical, so
+  // the body hash alone made every one after the first look like a duplicate and swallowed
+  // the alert whose whole point is the 16-hour auto-accept clock. Scoping the key to the
+  // hour keeps a redelivery of the same reminder deduped and lets the next one through.
+  // (A reminder only alerts; running one twice is harmless.)
+  if (event.event.endsWith('.remind')) return `${event.event}:${bodyHash.slice(0, 16)}:${Math.floor(now / 3_600_000)}`
   // Paystack's refund payloads carry no `data.id`, so the old key collapsed to
   // `refund.processed:<transaction_reference>` — a second refund (e.g. the second
   // half of two partial refunds) or a second refund.failed on the same
   // transaction was treated as already-seen and never actioned or alerted.
   if (event.event.startsWith('refund.')) {
     const txRef = d.transaction_reference ?? d.transaction?.reference ?? ''
-    const rk = d.id ?? d.refund_reference ?? (txRef || d.amount != null ? `${txRef}:${d.amount ?? ''}` : bodyHash.slice(0, 16))
+    // With no id of any kind, `:${amount}` alone (no transaction reference either) would
+    // collide across unrelated transactions that refunded the same amount, so that case
+    // falls back to the body hash. Two byte-identical partial refunds on ONE transaction
+    // with no refund_reference still share a key — deliberately: telling a duplicate
+    // delivery from a second refund is impossible, and counting a duplicate as a second
+    // refund could reverse a sale that was only half refunded.
+    const rk = d.id ?? d.refund_reference ?? (txRef ? `${txRef}:${d.amount ?? ''}` : bodyHash.slice(0, 16))
     return `${event.event}:${rk}`
   }
   return `${event.event}:${d.id ?? d.reference ?? d.transaction_reference ?? bodyHash.slice(0, 16)}`
@@ -151,14 +183,46 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload }
   throw error
 }
 
+// Postgres 42703 = undefined_column; PostgREST 'PGRST204' = column not in its schema cache.
+function isColumnMissing(err) {
+  return err?.code === '42703' || err?.code === 'PGRST204' || /column .* (does not exist|of relation)|schema cache/i.test(err?.message || '')
+}
+
+// ROUND-3 AUDIT FIX (bug): outcome notes used to be stored in `error`, which the admin table
+// prints in red — so a healthy PROCESSED row read "FULFILLED" or "reversed" as if it were a
+// failure, and `error` could not be used to find real ones. Notes now live in `note`
+// (migration 0036); `error` is written only for FAILED. Until 0036 is applied the column is
+// missing, and the update falls back to the old shape rather than losing the status change.
 async function markEvent(supabase, inbox, status, note) {
   if (!inbox?.id) return
+  const base = { status, processed_at: new Date().toISOString() }
+  const patch = status === 'FAILED'
+    ? { ...base, error: note || null, note: null }
+    : { ...base, error: null, note: note || null }
   try {
-    await supabase.from('webhook_events')
-      .update({ status, error: note || null, processed_at: new Date().toISOString() }).eq('id', inbox.id)
+    const { error } = await supabase.from('webhook_events').update(patch).eq('id', inbox.id)
+    if (error && isColumnMissing(error)) {
+      const { error: legacyErr } = await supabase.from('webhook_events').update({ ...base, error: note || null }).eq('id', inbox.id)
+      if (legacyErr) console.error('webhook_events status update failed:', legacyErr.message)
+    } else if (error) {
+      console.error('webhook_events status update failed:', error.message)
+    }
   } catch (err) {
     console.error('webhook_events status update failed:', err.message)
   }
+}
+
+// Update an inbox row; columns that only exist after migration 0036 (`optional`) are dropped
+// on the retry if the database says they are not there yet.
+async function updateEvent(supabase, id, patch, optional = []) {
+  let { error } = await supabase.from('webhook_events').update(patch).eq('id', id)
+  if (error && isColumnMissing(error) && optional.some(k => k in patch)) {
+    const slim = { ...patch }
+    for (const k of optional) delete slim[k]
+    ;({ error } = await supabase.from('webhook_events').update(slim).eq('id', id))
+  }
+  if (error) console.error('webhook_events update failed:', error.message)
+  return error || null
 }
 
 // ── event handlers — each returns { status: PROCESSED|IGNORED|HELD, note? } ──
@@ -216,16 +280,22 @@ async function processChargeSuccess(c, supabase, event) {
   return { status: 'PROCESSED', note: result.outcome }
 }
 
-// A declined attempt is routine — no owner alert. Only PENDING rows move: an
-// ABANDONED/SUCCESS row must not be touched, and because settlePayment revives
-// FAILED rows, a later successful retry on the same reference is still honoured.
-async function processChargeFailed(c, supabase, event) {
-  const reference = event.data?.reference
-  if (!reference) return { status: 'IGNORED', note: 'no reference' }
-  const { error } = await supabase.from('payments')
-    .update({ status: 'FAILED' }).eq('paystack_ref', reference).eq('status', 'PENDING')
-  if (error) throw error
-  return { status: 'PROCESSED' }
+// Sum of the refunds already confirmed for this payment: every refund.processed row in the
+// inbox for its transaction that finished as PROCESSED. Returns 0 (and logs) if the inbox
+// cannot be read — the caller then judges the event on its own, as it always did.
+async function refundedSoFar(supabase, payment) {
+  try {
+    const { data, error } = await supabase.from('webhook_events').select('payload')
+      .eq('event_type', 'refund.processed').eq('reference', payment.paystack_ref).eq('status', 'PROCESSED')
+    if (error) { console.error('refundedSoFar: inbox unreadable:', error.message); return 0 }
+    return (data || []).reduce((sum, r) => {
+      const n = Number(r?.payload?.data?.amount)
+      return sum + (Number.isFinite(n) && n > 0 ? n : 0)
+    }, 0)
+  } catch (err) {
+    console.error('refundedSoFar failed:', err.message)
+    return 0
+  }
 }
 
 async function processRefund(c, supabase, event) {
@@ -274,13 +344,23 @@ async function processRefund(c, supabase, event) {
   // Only an unambiguous FULL refund is actioned automatically. A partial (or
   // unstated) amount could mean a goodwill partial refund on a delivered
   // product — revoking the credential there would be wrong.
+  //
+  // ROUND-3 AUDIT FIX (feature gap): each event was judged alone, so two partial refunds that
+  // together return the whole payment (2 × 50%) never reversed anything — just two alerts. The
+  // refunds Paystack has already confirmed for this transaction are in this very inbox, so the
+  // running total is `earlier PROCESSED refund.processed events + this one`. A redelivery of an
+  // event is deduped by its key before it gets here, so it cannot be counted twice.
   const refunded = Number(event.data?.amount)
-  const full = Number.isFinite(refunded) && payment.amount_cents > 0 && refunded >= payment.amount_cents
+  const earlier = payment.status === 'REFUNDED' ? 0 : await refundedSoFar(supabase, payment)
+  const total = (Number.isFinite(refunded) ? refunded : 0) + earlier
+  const full = Number.isFinite(refunded) && payment.amount_cents > 0 && total >= payment.amount_cents
   if (!full) {
     alert(c, 'Paystack refund.processed — partial/unknown amount, NOT actioned',
-      `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\npaid: ${payment.amount_cents}\nrefunded: ${event.data?.amount ?? '(not in payload)'}\n\n` +
-      `Payment left as-is. If this should reverse the sale, use Admin → Payments → Reverse.`, incident)
-    return { status: 'PROCESSED', note: 'partial/unknown refund — alerted' }
+      `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\npaid: ${payment.amount_cents}\nthis refund: ${event.data?.amount ?? '(not in payload)'}\n` +
+      `refunded in total so far (incl. this one): ${total}\n\n` +
+      `Payment left as-is. If this should reverse the sale, use Admin → Payments → Reverse. ` +
+      `(If further partial refunds bring the total up to the amount paid, the sale is reversed automatically.)`, incident)
+    return { status: 'PROCESSED', note: `partial refund — alerted (${total} of ${payment.amount_cents})` }
   }
 
   const done = await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', refundReference: refundRef })
@@ -357,7 +437,6 @@ async function processDispute(c, supabase, event) {
 async function processEvent(c, supabase, event) {
   const type = event.event
   if (type === 'charge.success') return processChargeSuccess(c, supabase, event)
-  if (type === 'charge.failed')  return processChargeFailed(c, supabase, event)
   if (type.startsWith('refund.')) return processRefund(c, supabase, event)
   if (type.startsWith('charge.dispute')) return processDispute(c, supabase, event)
   return { status: 'IGNORED', note: type }
@@ -461,26 +540,83 @@ async function handlePaystack(c) {
 const EVENT_STATUSES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'HELD', 'FAILED']
 // PROCESSED is deliberately not replayable: it already did its work.
 const REPLAYABLE = ['RECEIVED', 'IGNORED', 'HELD', 'FAILED']
+// A RECEIVED row this old was not merely in flight: the Worker died mid-event.
+const STUCK_RECEIVED_MS = 15 * 60 * 1000
 
-// GET /api/admin/webhook-events?status=&page=&pageSize=
+const LIST_COLS_BASE = 'id, event_type, event_key, reference, status, attempts, error, received_at, processed_at'
+const LIST_COLS_FULL = `${LIST_COLS_BASE}, note, replayed_by, replayed_at`
+
+// GET /api/admin/webhook-events?status=&reference=&type=&page=&pageSize=
+//   status=ATTENTION → FAILED + HELD + RECEIVED-for-over-15-minutes (what needs a person)
+//   reference=       → substring of the payment reference (the inbox row's own reference)
+//   type=            → exact event type, e.g. refund.processed
 async function listWebhookEvents(c) {
   const page     = Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1)
   const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('pageSize') || '25', 10) || 25))
   const from = (page - 1) * pageSize
   const status = c.req.query('status')
+  // Letters, digits and the few punctuation marks a Paystack reference / event type uses. Anything
+  // else (commas and parentheses would break PostgREST's filter grammar) is dropped.
+  const clean = v => String(v || '').trim().replace(/[^A-Za-z0-9_.:\-]/g, '').slice(0, 80)
+  const reference = clean(c.req.query('reference'))
+  const type = clean(c.req.query('type'))
 
-  let q = getSupabase(c.env).from('webhook_events')
-    .select('id, event_type, event_key, reference, status, attempts, error, received_at, processed_at', { count: 'exact' })
-    .order('received_at', { ascending: false }).range(from, from + pageSize - 1)
-  if (status && EVENT_STATUSES.includes(status)) q = q.eq('status', status)
-
-  const { data, error, count } = await q
+  const build = cols => {
+    let q = getSupabase(c.env).from('webhook_events').select(cols, { count: 'exact' })
+      .order('received_at', { ascending: false }).range(from, from + pageSize - 1)
+    if (status === 'ATTENTION')
+      q = q.or(`status.in.(FAILED,HELD),and(status.eq.RECEIVED,received_at.lt.${new Date(Date.now() - STUCK_RECEIVED_MS).toISOString()})`)
+    else if (status && EVENT_STATUSES.includes(status)) q = q.eq('status', status)
+    if (reference) q = q.ilike('reference', `%${reference}%`)
+    if (type) q = q.eq('event_type', type)
+    return q
+  }
+  let { data, error, count } = await build(LIST_COLS_FULL)
+  if (error && isColumnMissing(error)) ({ data, error, count } = await build(LIST_COLS_BASE))   // 0036 not applied yet
   if (error) throw error
   return c.json({ success: true, data: (data || []).map(r => ({
     id: r.id, eventType: r.event_type, eventKey: r.event_key, reference: r.reference, status: r.status,
-    attempts: r.attempts, error: r.error, receivedAt: r.received_at, processedAt: r.processed_at,
+    attempts: r.attempts,
+    // `error` is a real failure (FAILED rows) and nothing else. Outcome notes are `note` now; rows
+    // written before migration 0036 still carry theirs in `error`, so those are surfaced as notes.
+    error: r.status === 'FAILED' ? (r.error || null) : null,
+    note:  r.status === 'FAILED' ? (r.note || null) : (r.note || r.error || null),
+    receivedAt: r.received_at, processedAt: r.processed_at,
+    replayedBy: r.replayed_by || null, replayedAt: r.replayed_at || null,
     replayable: REPLAYABLE.includes(r.status),
   })), meta: { page, pageSize, total: count || 0 } })
+}
+
+// GET /api/admin/webhook-events/:id — the stored (redacted) payload, for "what exactly did
+// Paystack send?" without going to SQL.
+async function getWebhookEvent(c) {
+  const { data: row, error } = await getSupabase(c.env).from('webhook_events')
+    .select('id, event_type, event_key, reference, status, attempts, payload, received_at, processed_at')
+    .eq('id', c.req.param('id')).maybeSingle()
+  if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
+  return c.json({ success: true, data: {
+    id: row.id, eventType: row.event_type, eventKey: row.event_key, reference: row.reference, status: row.status,
+    attempts: row.attempts, receivedAt: row.received_at, processedAt: row.processed_at, payload: row.payload || null,
+  } })
+}
+
+// Re-run a stored event through the same handlers a live delivery uses. Shared by the admin
+// replay and the hourly re-drive. `by` (an admin's user id) is recorded when given.
+async function runStoredEvent(c, supabase, row, { by = null } = {}) {
+  const attempts = (row.attempts || 1) + 1
+  const inbox = { id: row.id, attempts }
+  const patch = { status: 'RECEIVED', attempts }
+  if (by) { patch.replayed_by = by; patch.replayed_at = new Date().toISOString() }
+  await updateEvent(supabase, row.id, patch, ['replayed_by', 'replayed_at'])
+  try {
+    const outcome = await processEvent(c, supabase, row.payload)
+    await markEvent(supabase, inbox, outcome.status, outcome.note)
+    return { ok: true, outcome }
+  } catch (err) {
+    await markEvent(supabase, inbox, 'FAILED', err.message)
+    return { ok: false, error: err }
+  }
 }
 
 // POST /api/admin/webhook-events/:id/replay
@@ -496,21 +632,76 @@ async function replayWebhookEvent(c) {
   if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
   if (!REPLAYABLE.includes(row.status))
     return c.json({ success: false, message: `This event is ${row.status} — it already did its work; nothing to replay.` }, 409)
-  const event = row.payload
-  if (!event || typeof event.event !== 'string')
+  if (!row.payload || typeof row.payload.event !== 'string')
     return c.json({ success: false, message: 'No stored payload to replay.' }, 422)
 
-  const inbox = { id: row.id, attempts: (row.attempts || 1) + 1 }
-  await supabase.from('webhook_events').update({ status: 'RECEIVED', attempts: inbox.attempts }).eq('id', row.id)
-  try {
-    const outcome = await processEvent(c, supabase, event)
-    await markEvent(supabase, inbox, outcome.status, outcome.note)
-    return c.json({ success: true, data: { status: outcome.status, note: outcome.note || null,
-      hint: outcome.status === 'HELD' ? 'Still held — an amount/currency mismatch needs Admin → Payments → Recheck (accept amount).' : null } })
-  } catch (err) {
-    await markEvent(supabase, inbox, 'FAILED', err.message)
-    return c.json({ success: false, message: `Replay failed: ${err.message}` }, 500)
-  }
+  const actor = c.get ? c.get('user') : null
+  const r = await runStoredEvent(c, supabase, row, { by: actor?.id || null })
+  if (!r.ok) return c.json({ success: false, message: `Replay failed: ${r.error.message}` }, 500)
+  return c.json({ success: true, data: { status: r.outcome.status, note: r.outcome.note || null,
+    hint: r.outcome.status === 'HELD' ? 'Still held — an amount/currency mismatch needs Admin → Payments → Recheck (accept amount).' : null } })
 }
 
-module.exports = { handlePaystack, listWebhookEvents, replayWebhookEvent, eventKeyFor, MAX_BODY_BYTES }
+// ── dead-letter handling (hourly cron, see index.js) ─────────────────────────
+// ROUND-3 AUDIT (feature gap): everything above depends on Paystack redelivering. After its
+// retry window (about 72 hours) a FAILED event, or one stuck at RECEIVED because the Worker
+// died, was never touched again; the alert fired on the first failure only, and nothing on
+// the dashboard counted them. This re-drives them (safe: handlers are idempotent) up to a cap,
+// says so ONCE when the cap is hit, and escalates a HELD event that has sat for a day — that
+// one needs a human decision, not a retry.
+const REDRIVE_MIN_AGE_MS = 20 * 60 * 1000
+const MAX_REDRIVES = 8
+const HELD_ESCALATE_MS = 24 * 60 * 60 * 1000
+const REDRIVE_PER_RUN = 10
+
+async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
+  const supabase = getSupabase(env)
+  const c = { env, executionCtx: ctx }
+  const result = { redriven: [], recovered: [], exhausted: [], heldEscalated: [], error: null }
+
+  const { data: rows, error } = await supabase.from('webhook_events')
+    .select('id, status, attempts, payload, event_type, reference, received_at')
+    .in('status', ['FAILED', 'RECEIVED'])
+    .lt('received_at', new Date(now - REDRIVE_MIN_AGE_MS).toISOString())
+    .order('received_at', { ascending: true }).limit(REDRIVE_PER_RUN * 3)
+  if (error) { result.error = error.message; return result }
+
+  let ran = 0
+  for (const row of rows || []) {
+    if (ran >= REDRIVE_PER_RUN) break
+    if ((row.attempts || 1) >= MAX_REDRIVES) {
+      if (await alertAllowed(env, `webhook-alert-cooldown:redrive-exhausted:${row.id}`, 7 * 24 * 3600)) {
+        result.exhausted.push(row.id)
+        alert(c, 'Webhook event is stuck — automatic retries exhausted',
+          `event: ${row.event_type}\nreference: ${row.reference || '(none)'}\nstatus: ${row.status}, attempts: ${row.attempts}\n\n` +
+          `Paystack has stopped retrying and so has the hourly re-drive. Open Admin → Webhooks, look at the payload, ` +
+          `and Replay it once the cause (see its error) is fixed.`, `${row.reference || row.id}:stuck`)
+      }
+      continue
+    }
+    if (!row.payload || typeof row.payload.event !== 'string') continue
+    ran++
+    result.redriven.push(row.id)
+    const r = await runStoredEvent(c, supabase, row)
+    if (r.ok) result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
+  }
+
+  if (result.recovered.length)
+    alert(c, `Webhook re-drive recovered ${result.recovered.length} event(s)`,
+      `These events had failed (or been left unfinished) and were re-run successfully:\n\n` +
+      result.recovered.map(r => `${r.event}  ${r.reference || ''}  → ${r.status}`).join('\n'), 'redrive-recovered')
+
+  const { data: held, error: heldErr } = await supabase.from('webhook_events')
+    .select('id, event_type, reference, note, error').eq('status', 'HELD')
+    .lt('received_at', new Date(now - HELD_ESCALATE_MS).toISOString()).limit(10)
+  if (!heldErr) for (const h of held || []) {
+    if (!(await alertAllowed(env, `webhook-alert-cooldown:held-escalate:${h.id}`, 3 * 24 * 3600))) continue
+    result.heldEscalated.push(h.id)
+    alert(c, 'A held payment event has been waiting over a day',
+      `event: ${h.event_type}\nreference: ${h.reference || '(none)'}\nreason: ${h.note || h.error || 'amount/currency mismatch'}\n\n` +
+      `A customer may have paid and received nothing. Admin → Payments → Recheck (accept amount) if the payment is genuine, or refund it.`, `${h.reference || h.id}:held`)
+  }
+  return result
+}
+
+module.exports = { handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, eventKeyFor, redactEvent, MAX_BODY_BYTES }

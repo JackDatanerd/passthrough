@@ -8,7 +8,7 @@ const cryptoLib = require('../lib/crypto')
 
 async function generateShortCode(supabase) {
   for (let i = 0; i < 10; i++) {
-    const code = cryptoLib.randomShortCode(c.SHORT_CODE_LENGTH, c.SHORT_CODE_CHARS)
+    const code = cryptoLib.randomShortCode(c.VERIFY_CODE_LENGTH, c.SHORT_CODE_CHARS)
     const { data, error } = await supabase
       .from('scans')
       .select('id')

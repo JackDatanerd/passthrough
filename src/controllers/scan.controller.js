@@ -45,7 +45,7 @@ const claudeService  = require('../services/claude.service')
 const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
-const { revokeVerification, restoreVerification, REVOKE_REASON } = require('../lib/verification')
+const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
 const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
@@ -1130,7 +1130,7 @@ async function deleteScan(ctx) {
   const supabase = getSupabase(ctx.env)
 
   const { data: row, error } = await supabase.from('scans')
-    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path')
+    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code')
     .eq('id', id).maybeSingle()
   if (error) throw error
   if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
@@ -1150,6 +1150,9 @@ async function deleteScan(ctx) {
     .delete().eq('id', id).eq('user_id', user.id).select('id').maybeSingle()
   if (delErr) throw delErr
   if (!removed) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+
+  // The page it published (if any) now says "removed" instead of "not found".
+  await recordTombstones(supabase, [row.verification_code])
 
   for (const key of [row.resume_path, row.resume_ats_path, row.resume_pdf_path]) {
     if (!key) continue

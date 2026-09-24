@@ -16,6 +16,7 @@ const { z } = require('zod')
 const { revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications, REVOKE_REASON } = require('../lib/verification')
 const { getSupabase } = require('../config/supabase')
 const c = require('../config/constants')
+const cryptoLib = require('../lib/crypto')
 
 // Shared page-param parsing — every list endpoint here is paginated the
 // same way so the frontend can use one generic table component for all of
@@ -86,6 +87,18 @@ async function adminDashboardStats(ctx) {
     .eq('status', 'PENDING').lt('created_at', oneHourAgo)
   if (pendErr) throw pendErr
 
+  // Webhook inbox rows a person has to look at: FAILED (Paystack's own retries run out
+  // after ~72h and nothing re-drives them after that), HELD (an amount/currency mismatch that
+  // only a human can resolve) and RECEIVED for over 15 minutes (the Worker died mid-event).
+  // Until now nothing outside the Webhooks page itself surfaced any of them.
+  const fifteenMinAgo = new Date(now.getTime() - 15 * 60 * 1000).toISOString()
+  const { count: whAttentionCount, error: whErr } = await supabase
+    .from('webhook_events').select('id', { count: 'exact', head: true }).in('status', ['FAILED', 'HELD'])
+  if (whErr) throw whErr
+  const { count: whStuckCount, error: whStuckErr } = await supabase
+    .from('webhook_events').select('id', { count: 'exact', head: true }).eq('status', 'RECEIVED').lt('received_at', fifteenMinAgo)
+  if (whStuckErr) throw whStuckErr
+
   const { count: leadsThisWeekCount, error: leadErr } = await supabase
     .from('employer_leads').select('id', { count: 'exact', head: true }).gte('created_at', startOfWeek)
   if (leadErr) throw leadErr
@@ -125,6 +138,7 @@ async function adminDashboardStats(ctx) {
       erroredScansThisWeek: erroredScansCount || 0,
       stuckScans:           stuckScansCount || 0,
       stalePendingPayments: stalePendingCount || 0,
+      webhookEventsNeedingAttention: (whAttentionCount || 0) + (whStuckCount || 0),
       leadsThisWeek:        leadsThisWeekCount || 0,
       newLeads:             newLeadsCount || 0
     },
@@ -409,7 +423,34 @@ async function adminRequeueFix(ctx) {
   return ctx.json({ success: true, message: 'Re-queued. The customer will be emailed when it is ready.' })
 }
 
+// POST /api/admin/verification/backfill-pdf-hashes
+// Pages issued before migration 0025 have a PDF on file but no fingerprint for it, so the
+// public page can only say the integrity check is "partial" (see verify.controller.js's
+// checkIntegrity). This records a fingerprint of the PDF AS IT IS IN STORAGE NOW for up to
+// 50 such pages per call — trust-on-first-use: it attests what is stored today, it cannot
+// prove the file was never touched before. Run it again until `remaining` is false.
+async function adminBackfillPdfHashes(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: rows, error } = await supabase.from('scans')
+    .select('id, resume_pdf_path')
+    .not('verification_code', 'is', null).not('resume_pdf_path', 'is', null).is('resume_pdf_hash', null)
+    .limit(50)
+  if (error) throw error
+  let filled = 0, missing = 0
+  for (const r of rows || []) {
+    const obj = await ctx.env.RESUMES_BUCKET.get(r.resume_pdf_path)
+    if (!obj) { missing++; continue }
+    const hash = await cryptoLib.sha256Bytes(await obj.arrayBuffer())
+    const { data: done, error: upErr } = await supabase.from('scans')
+      .update({ resume_pdf_hash: hash }).eq('id', r.id).is('resume_pdf_hash', null).select('id')
+    if (upErr) throw upErr
+    if ((done || []).length) filled++
+  }
+  return ctx.json({ success: true, data: { checked: (rows || []).length, filled, missing, remaining: (rows || []).length === 50 } })
+}
+
 module.exports = {
+  adminBackfillPdfHashes,
   adminRequeueFix,
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,

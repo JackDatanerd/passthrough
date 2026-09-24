@@ -96,7 +96,7 @@ describe('admin routes — webhook inbox', () => {
   })
   it('is admin-only: 401 anonymous, 403 for a non-admin, for the list AND the replay', async () => {
     const a = app()
-    for (const [m, p] of [['GET', '/webhook-events'], ['POST', `/webhook-events/${ID}/replay`]]) {
+    for (const [m, p] of [['GET', '/webhook-events'], ['GET', `/webhook-events/${ID}`], ['POST', `/webhook-events/${ID}/replay`]]) {
       current = undefined
       expect((await call(a, m, p, {})).status, `${m} ${p} anonymous`).toBe(401)
       current = { id: 'u1', role: 'USER' }
@@ -106,6 +106,8 @@ describe('admin routes — webhook inbox', () => {
   it('an admin reaches the right handlers, and a malformed id never reaches replay', async () => {
     const a = app(); current = { id: 'a1', role: 'ADMIN' }
     expect((await call(a, 'GET', '/webhook-events')).json.handler).toBe('listWebhookEvents')
+    expect((await call(a, 'GET', `/webhook-events/${ID}`)).json.handler).toBe('getWebhookEvent')
+    expect((await call(a, 'GET', '/webhook-events/not-a-uuid')).status).toBe(400)
     expect((await call(a, 'POST', `/webhook-events/${ID}/replay`, {})).json.handler).toBe('replayWebhookEvent')
     expect((await call(a, 'POST', '/webhook-events/not-a-uuid/replay', {})).status).toBe(400)
   })

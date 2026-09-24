@@ -138,3 +138,42 @@ describe('settlePayment — receipt exactly once', () => {
     expect(t.receipts).toHaveLength(1)
   })
 })
+
+// ── Round 3: a claimed-but-never-delivered receipt is recovered ────────────
+describe('receipt delivery marker + recoverLostReceipts', () => {
+  const tenMinAgo = new Date(NOW - 11 * 60_000).toISOString()
+
+  it('marks receipt_delivered_at only AFTER the send succeeded', async () => {
+    const w = seed(); t = setup(w)
+    await t.settle()
+    expect(w.t.payments[0].receipt_delivered_at).toBeTruthy()
+  })
+
+  it('a claim whose send was cancelled (claimed, never delivered) is re-sent by the sweep — exactly once', async () => {
+    const w = seed(); t = setup(w)
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', receipt_sent_at: tenMinAgo, receipt_delivered_at: null })
+    const a = await t.mod.recoverLostReceipts({}, w.db, { now: NOW })
+    expect(a.resent).toBe(1)
+    expect(t.receipts).toHaveLength(1)
+    const b = await t.mod.recoverLostReceipts({}, w.db, { now: NOW })
+    expect(b.checked).toBe(0)
+    expect(t.receipts).toHaveLength(1)
+  })
+
+  it('leaves a recent claim alone — the original send may simply still be running', async () => {
+    const w = seed(); t = setup(w)
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', receipt_sent_at: new Date(NOW - 60_000).toISOString(), receipt_delivered_at: null })
+    expect((await t.mod.recoverLostReceipts({}, w.db, { now: NOW })).checked).toBe(0)
+    expect(t.receipts).toHaveLength(0)
+  })
+
+  it('a failed re-send is counted and retried later (the fresh claim time defers it 10 minutes)', async () => {
+    console.error = () => {}
+    const w = seed(); t = setup(w, { receiptFails: true })
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', receipt_sent_at: tenMinAgo, receipt_delivered_at: null })
+    const r = await t.mod.recoverLostReceipts({}, w.db, { now: NOW })
+    expect(r.failed).toBe(1)
+    expect(w.t.payments[0].receipt_delivered_at).toBeNull()
+    expect((await t.mod.recoverLostReceipts({}, w.db, { now: NOW })).checked).toBe(0)
+  })
+})

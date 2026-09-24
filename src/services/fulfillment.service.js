@@ -193,6 +193,15 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
   return { ...result, won, payment: row, conversion, source }
 }
 
+// receipt_delivered_at (migration 0036) is set only AFTER the send. receipt_sent_at is a CLAIM
+// taken before it, and the send normally runs inside waitUntil — a task the runtime cancels
+// between the claim and the send used to lose the receipt permanently (the claim only released
+// on a thrown error). A claim with no delivery mark after 10 minutes is retried by
+// recoverLostReceipts below. Best-effort: with the column missing this is a no-op.
+async function markReceiptDelivered(supabase, id) {
+  try { await supabase.from('payments').update({ receipt_delivered_at: new Date().toISOString() }).eq('id', id) } catch (_) { /* best effort */ }
+}
+
 // ── receipt, exactly once ──────────────────────────────────────────────────
 // payments.receipt_sent_at (migration 0033) is claimed with a compare-and-set
 // BEFORE the email goes out, so two deliveries racing (or a redelivery after a
@@ -214,12 +223,13 @@ async function sendReceiptOnce(env, supabase, row, { legacyOk = false } = {}) {
     }
     const emailService = require('./email.service')
     const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
-    if (!buyer?.email) return false
+    if (!buyer?.email) { await markReceiptDelivered(supabase, row.id); return false }   // nothing will ever be sent
     try {
       await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
         fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
         reference: row.paystack_ref, createdAt: row.created_at
       })
+      await markReceiptDelivered(supabase, row.id)
       return true
     } catch (sendErr) {
       console.error('Payment receipt failed:', sendErr && sendErr.message)
@@ -232,6 +242,46 @@ async function sendReceiptOnce(env, supabase, row, { legacyOk = false } = {}) {
     console.error('Payment receipt error:', err && err.message)
     return false
   }
+}
+
+// Hourly (see index.js): re-send receipts that were claimed but never confirmed delivered.
+// The re-claim is a compare-and-set on the old claim time, so two overlapping runs (or a run
+// racing the original send finishing late) cannot both send. Never throws.
+async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10 } = {}) {
+  const result = { checked: 0, resent: 0, failed: 0, error: null }
+  try {
+    const { data: rows, error } = await supabase.from('payments')
+      .select('id, user_id, fix_tier, amount_cents, currency, paystack_ref, created_at, receipt_sent_at')
+      .eq('status', 'SUCCESS').is('receipt_delivered_at', null).not('receipt_sent_at', 'is', null)
+      .lt('receipt_sent_at', new Date(now - 10 * 60 * 1000).toISOString())
+      .gt('created_at', new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString())
+      .limit(limit)
+    if (error) { result.error = error.message; return result }      // migration 0036 not applied yet → nothing to recover
+    result.checked = (rows || []).length
+    const emailService = require('./email.service')
+    for (const row of rows || []) {
+      const { data: claimed, error: claimErr } = await supabase.from('payments')
+        .update({ receipt_sent_at: new Date(now).toISOString() })
+        .eq('id', row.id).eq('receipt_sent_at', row.receipt_sent_at).is('receipt_delivered_at', null).select('id')
+      if (claimErr || !claimed || !claimed.length) continue
+      const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
+      if (!buyer?.email) { await markReceiptDelivered(supabase, row.id); continue }
+      try {
+        await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+          fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
+          reference: row.paystack_ref, createdAt: row.created_at
+        })
+        await markReceiptDelivered(supabase, row.id)
+        result.resent++
+      } catch (err) {
+        console.error('recoverLostReceipts: send failed:', err && err.message)
+        result.failed++      // the fresh claim time makes it eligible again in 10 minutes
+      }
+    }
+  } catch (err) {
+    result.error = err && err.message
+  }
+  return result
 }
 
 // ── owner notification for outcomes that need a human ──────────────────────
@@ -341,6 +391,6 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
 module.exports = {
   REVIVABLE_STATUSES, REENQUEUE_AFTER_MS,
   generatorFor, chargeMismatch,
-  fulfillPayment, settlePayment, notifySettlementProblem,
+  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
 }

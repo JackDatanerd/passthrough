@@ -26,6 +26,7 @@ const { must } = require('../lib/db')
 const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
+const { recordTombstones } = require('../lib/verification')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
 // FEATURE (Auth section round 2): fires the one-time lockout email exactly
@@ -847,12 +848,16 @@ async function deleteAccount(c) {
   // the way the two old error-swallowing branches used to.
   const { data: scans, error: scansErr } = await supabase
     .from('scans')
-    .select('id, resume_path, resume_ats_path, resume_pdf_path')
+    .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code')
     .eq('user_id', user.id)
   if (scansErr) throw scansErr
 
   const { error: scrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
   if (scrubErr) throw scrubErr
+
+  // The scrub nulled every verification_code; leave the codes' tombstones so links already
+  // in circulation read "removed by its owner" rather than "not found".
+  await recordTombstones(supabase, (scans || []).map(s => s.verification_code))
 
   // R2 cleanup happens only after the DB side has durably committed.
   // Object storage isn't part of that (or any) Postgres transaction, so

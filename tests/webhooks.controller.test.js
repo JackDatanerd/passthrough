@@ -61,6 +61,9 @@ const chargeSuccess = (over = {}, id = 111) => ({
           authorization: { authorization_code: 'AUTH_x' }, customer: { email: 'a@b.c' }, ...over },
 })
 
+// The pure helpers need the module loaded, not a world: only the DB client is stubbed.
+const pure = () => loadWithStubs('controllers/webhooks.controller.js', { 'config/supabase.js': { getSupabase: () => null } })
+
 let realConsoleError, t
 beforeEach(() => { realConsoleError = console.error; console.error = () => {} })
 afterEach(() => { console.error = realConsoleError; t?.restore() })
@@ -250,9 +253,8 @@ describe('charge.success — fulfilment', () => {
     expect(t.state.queue).toHaveLength(1)
   })
   it('REGRESSION: a FAILED attempt followed by a successful retry on the same reference is fulfilled', async () => {
-    const w = seed(); t = harness(w)
-    await t.fire({ event: 'charge.failed', data: { id: 5, reference: 'ref-1' } })
-    expect(w.t.payments[0].status).toBe('FAILED')
+    // (FAILED rows come from other paths — Paystack sends no `charge.failed` event, see below.)
+    const w = seed(); w.t.payments[0].status = 'FAILED'; t = harness(w)
     await t.fire(chargeSuccess())
     expect(w.t.payments[0].status).toBe('SUCCESS')
     expect(t.state.queue).toHaveLength(1)
@@ -296,18 +298,17 @@ describe('charge.success — fulfilment', () => {
   })
 })
 
-describe('charge.failed', () => {
-  it('flips a PENDING payment to FAILED — no alert, no fulfilment', async () => {
+describe('charge.failed (not a Paystack event — round 3)', () => {
+  // Paystack's documented webhook list has no charge.failed. The handler for it was dead code;
+  // if one ever arrives it is stored and IGNORED, and touches nothing.
+  it('is stored as IGNORED and never changes a payment', async () => {
     const w = seed(); t = harness(w)
-    await t.fire({ event: 'charge.failed', data: { id: 5, reference: 'ref-1' } })
-    expect(w.t.payments[0].status).toBe('FAILED')
+    const res = await t.fire({ event: 'charge.failed', data: { id: 5, reference: 'ref-1' } })
+    expect(res.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('PENDING')
+    expect(w.t.webhook_events[0]).toMatchObject({ event_type: 'charge.failed', status: 'IGNORED' })
     expect(t.state.alerts).toHaveLength(0)
     expect(t.state.queue).toHaveLength(0)
-  })
-  it('never touches a payment that is no longer PENDING', async () => {
-    const w = seed(); w.t.payments[0].status = 'SUCCESS'; t = harness(w)
-    await t.fire({ event: 'charge.failed', data: { id: 5, reference: 'ref-1' } })
-    expect(w.t.payments[0].status).toBe('SUCCESS')
   })
 })
 
@@ -493,9 +494,31 @@ describe('round 2 — refunds', () => {
   it('REGRESSION: two DIFFERENT partial refunds on one transaction are two events, not one', async () => {
     const w = paidWorld(); t = harness(w)
     const partial = (amount, rf) => ({ event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: rf, amount, currency: 'USD' } })
-    await t.fire(partial('1000', 'rf-1')); await t.fire(partial('1900', 'rf-2'))
+    await t.fire(partial('1000', 'rf-1')); await t.fire(partial('800', 'rf-2'))
     expect(w.t.webhook_events.filter(e => e.event_type === 'refund.processed')).toHaveLength(2)
     expect(t.state.alerts.filter(a => /partial/i.test(a.subject))).toHaveLength(2)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+  })
+  it('ROUND 3: partial refunds are SUMMED — the one that brings the total to the amount paid reverses the sale', async () => {
+    const w = paidWorld(); t = harness(w)
+    const partial = (amount, rf) => ({ event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: rf, amount, currency: 'USD' } })
+    await t.fire(partial('1000', 'rf-1'))
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    await t.fire(partial('1900', 'rf-2'))                       // 1000 + 1900 = 2900 = the amount paid
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(t.state.alerts.some(a => /sale reversed/i.test(a.subject))).toBe(true)
+  })
+  it('ROUND 3: a redelivered partial refund is NOT counted twice toward the total', async () => {
+    const w = paidWorld(); t = harness(w)
+    const ev = { event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: '1500', currency: 'USD' } }
+    await t.fire(ev); await t.fire(ev)                          // 1500 + 1500 would be 3000 >= 2900
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+  })
+  it('ROUND 3: id-less refund events on DIFFERENT transactions with the same amount do not collide', () => {
+    const { mod: mod0, restore } = pure()
+    const a = h => mod0.eventKeyFor({ event: 'refund.processed', data: { amount: '1000' } }, h)
+    expect(a('aaaaaaaaaaaaaaaaaaaa')).not.toBe(a('bbbbbbbbbbbbbbbbbbbb'))
+    restore()
   })
   it('a redelivery of the SAME refund event is still deduped', async () => {
     const w = paidWorld(); t = harness(w)
@@ -556,5 +579,38 @@ describe('round 2 — alert throttle is per incident', () => {
     const n = t.state.alerts.filter(a => /unknown reference/i.test(a.subject)).length
     expect(n).toBeGreaterThan(1)
     expect(n).toBeLessThan(25)
+  })
+})
+
+describe('round 3 — inbox notes, reminders, redaction', () => {
+  it('a healthy outcome is stored in `note`, NOT `error` (the admin table paints `error` red)', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(chargeSuccess())
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED', note: 'FULFILLED', error: null })
+  })
+  it('a FAILED event keeps the failure text in `error` and no note', async () => {
+    const w = seed(); t = harness(w, { queueError: new Error('queue down') })
+    await t.fire(chargeSuccess())
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'FAILED', error: 'queue down', note: null })
+  })
+  it('falls back to the old shape if migration 0036 (the note column) is not applied yet', async () => {
+    const w = seed(); t = harness(w)
+    w.failNext('webhook_events', 'update', { code: '42703', message: 'column "note" of relation "webhook_events" does not exist' })
+    await t.fire(chargeSuccess())
+    expect(w.t.webhook_events[0].status).toBe('PROCESSED')       // the status change was not lost
+  })
+  it('two byte-identical dispute reminders an hour apart are BOTH alerted (they used to dedupe to one)', () => {
+    const { mod: mod0, restore } = pure()
+    const ev = { event: 'charge.dispute.remind', data: { id: 7 } }
+    const h = 'c'.repeat(64)
+    expect(mod0.eventKeyFor(ev, h, 1_000_000_000_000)).not.toBe(mod0.eventKeyFor(ev, h, 1_000_000_000_000 + 3_700_000))
+    expect(mod0.eventKeyFor(ev, h, 1_000_000_000_000)).toBe(mod0.eventKeyFor(ev, h, 1_000_000_000_000 + 1_000))   // same hour = same delivery
+    restore()
+  })
+  it('redaction drops the payer\'s IP address and receipt number along with card data', () => {
+    const { mod: mod0, restore } = pure()
+    const out = mod0.redactEvent({ event: 'charge.success', data: { reference: 'r', amount: 1, ip_address: '1.2.3.4', receipt_number: '99', authorization: { x: 1 }, customer: { email: 'a@b.c' }, transaction: { ip_address: '5.6.7.8' } } })
+    expect(out.data).toEqual({ reference: 'r', amount: 1, transaction: {} })
+    restore()
   })
 })

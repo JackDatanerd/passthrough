@@ -38,6 +38,8 @@ function createFakeSupabase(resolver = () => undefined) {
     }
     for (const f of ['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in', 'is', 'like', 'ilike'])
       api[f] = (col, val) => { q.filters.push([f, col, val]); return api }
+    // .contains(col, [ {..} ]) — jsonb/array containment (@>)
+    api.contains = (col, val) => { q.filters.push(['contains', col, val]); return api }
     api.not = (col, op, val) => { q.filters.push(['not', col, op, val]); return api }
     return api
   }
