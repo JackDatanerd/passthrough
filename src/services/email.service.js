@@ -410,10 +410,19 @@ function escapeHtml(str) {
 // written to alert_logs (emailed=false for the suppressed ones).
 const ALERT_EMAIL_DEDUPE_SECONDS = 600
 
-async function sendOwnerAlert(env, subject, message) {
+// SECTION 8 AUDIT FIX (bug): the email dedupe was keyed on the SUBJECT alone, but
+// several money-critical alerts use one fixed subject for every occurrence
+// ("Payment amount/currency mismatch", "Payment needs attention: DUPLICATE",
+// "Paystack refund processed — sale reversed", …). Two DIFFERENT payments failing
+// within 10 minutes therefore emailed once — the second customer's "refund
+// needed" note existed only as an alert_logs row. `opts.dedupeKey` (e.g. the
+// payment reference) scopes the throttle to the specific incident; callers that
+// don't pass one keep the old subject-only behaviour.
+async function sendOwnerAlert(env, subject, message, opts = {}) {
   const to = env.OWNER_ALERT_EMAIL
   let emailed = false
-  const subjectDigest = (await sha256(String(subject))).slice(0, 32)
+  const dedupeKey = opts && opts.dedupeKey ? `|${String(opts.dedupeKey)}` : ''
+  const subjectDigest = (await sha256(`${String(subject)}${dedupeKey}`)).slice(0, 32)
   const shouldEmail = !!to && await hitQuota(env, `rl:alert:${subjectDigest}`, 1, ALERT_EMAIL_DEDUPE_SECONDS)
   if (shouldEmail) {
     try {

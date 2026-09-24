@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyFingerprint } from '../src/lib/fileFingerprint.js'
+import { classifyFingerprint, fileKindOf } from '../src/lib/fileFingerprint.js'
 
 // SECTION 7 AUDIT (feature gap closed): classifyFingerprint used to collapse
 // a 'previous' match down to a bare status string, discarding which entry
@@ -41,7 +41,13 @@ describe('classifyFingerprint', () => {
   // implementation was correct; only this assertion was wrong.
   it('still reports "previous" when a matched entry has no recorded `at`', () => {
     const fp = { docx: 'cur', pdf: null, previous: [{ kind: 'docx', hash: 'old', at: null }] }
+    // The entry names its file type, so that is carried through even without a date.
     expect(classifyFingerprint('old', fp)).toEqual({ status: 'previous', at: null, kind: 'docx' })
+  })
+
+  it('carries kind: null through when a superseded entry names neither a date nor a type', () => {
+    const fp = { docx: 'cur', pdf: null, previous: [{ hash: 'old' }] }
+    expect(classifyFingerprint('old', fp)).toEqual({ status: 'previous', at: null, kind: null })
   })
 
   it('reports "mismatch" for a hash that matches nothing on file', () => {
@@ -51,5 +57,29 @@ describe('classifyFingerprint', () => {
   it('reports "unavailable" when there are no fingerprints to check against', () => {
     expect(classifyFingerprint('anything', null)).toEqual({ status: 'unavailable', at: null, kind: null })
     expect(classifyFingerprint('anything', { docx: null, pdf: null, previous: [] })).toEqual({ status: 'unavailable', at: null, kind: null })
+  })
+
+  // ROUND-2 AUDIT: a PDF delivered before PDFs were fingerprinted has no pdf hash.
+  it("says 'unavailable' — not 'mismatch' — for a PDF when no PDF fingerprint exists at all", () => {
+    const legacy = { docx: 'cur-docx', pdf: null, previous: [] }
+    expect(classifyFingerprint('some-pdf', legacy, 'pdf')).toEqual({ status: 'unavailable', at: null, kind: null, scope: 'type' })
+    expect(classifyFingerprint('some-docx', legacy, 'docx')).toEqual({ status: 'mismatch', at: null, kind: null })
+    expect(classifyFingerprint('some-pdf', legacy)).toEqual({ status: 'mismatch', at: null, kind: null })
+  })
+
+  it("still says 'mismatch' for a PDF when a PDF fingerprint (current or superseded) exists", () => {
+    expect(classifyFingerprint('x', { docx: 'a', pdf: 'b', previous: [] }, 'pdf').status).toBe('mismatch')
+    expect(classifyFingerprint('x', { docx: 'a', pdf: null, previous: [{ kind: 'pdf', hash: 'old', at: null }] }, 'pdf').status).toBe('mismatch')
+  })
+})
+
+describe('fileKindOf', () => {
+  it('prefers the extension, falls back to the MIME type, else null', () => {
+    expect(fileKindOf({ name: 'Ada-Resume.PDF', type: '' })).toBe('pdf')
+    expect(fileKindOf({ name: 'r.docx', type: '' })).toBe('docx')
+    expect(fileKindOf({ name: 'download', type: 'application/pdf' })).toBe('pdf')
+    expect(fileKindOf({ name: 'download', type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })).toBe('docx')
+    expect(fileKindOf({ name: 'notes.txt', type: 'text/plain' })).toBe(null)
+    expect(fileKindOf(null)).toBe(null)
   })
 })

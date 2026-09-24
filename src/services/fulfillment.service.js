@@ -137,7 +137,7 @@ async function fulfillPayment(env, supabase, payment, { force = false, now = Dat
  * reference, so real money arriving on such a row must still be honoured; the
  * flip used to require PENDING and silently dropped it.
  */
-async function settlePayment(env, supabase, paymentRow, { authCode = null, source = 'unknown' } = {}) {
+async function settlePayment(env, supabase, paymentRow, { authCode = null, source = 'unknown', defer = null } = {}) {
   const referralService = require('./referral.service')
   const patch = { status: 'SUCCESS' }
   if (authCode) patch.paystack_auth_code = authCode
@@ -162,34 +162,76 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
   // (webhook retry, browser verify, admin recheck) lands here and finishes the job.
   const result = await fulfillPayment(env, supabase, row, { source })
 
+  // SECTION 8 AUDIT FIX (bug): the partner commission and the receipt used to be
+  // gated on `won` alone — but `won` is true for exactly ONE caller, and if THAT
+  // caller's fulfillPayment() threw (a queue/DB blip right after the flip), its
+  // redelivery finishes the fulfilment with won === false and therefore skipped
+  // both, permanently: nothing else retries a commission once the scan has moved
+  // on from FIX_PURCHASED (the orphan sweep only sees stuck scans). Reproduced:
+  // delivery #1 flips + throws, delivery #2 REENQUEUES fine, ledger stays empty.
+  // The delivery that actually CLAIMED or RE-ENQUEUED the scan is the one that
+  // finished the job, so it takes over. recordConversion is idempotent (one
+  // original ledger row per payment) and the receipt is claimed atomically below.
+  const finishedJob = result.outcome === 'FULFILLED' || result.outcome === 'REENQUEUED'
+  const settledOk   = finishedJob || result.outcome === 'ALREADY_FULFILLED'
+
   let conversion = null
-  if (won && (result.outcome === 'FULFILLED' || result.outcome === 'ALREADY_FULFILLED' || result.outcome === 'REENQUEUED'))
+  if (settledOk && (won || finishedJob))
     conversion = await referralService.recordConversion(supabase, row, env)
 
-  // AUDIT FIX (feature gap): `won` is true exactly once per payment — the
-  // one caller whose UPDATE...RETURNING actually saw the PENDING/ABANDONED/
-  // FAILED row and flipped it. That makes this the single correct place to
-  // send the payment receipt (see email.service.js's sendPaymentReceipt):
-  // it fires exactly once regardless of which path won (verifyPayment, the
-  // webhook, a sweep, an admin recheck), unlike a receipt sent from any one
-  // of those callers individually, which would either miss the other paths
-  // or double-send on a redelivery. Best-effort and never blocks fulfilment
-  // — a failed receipt email is not a reason to fail a payment that already
-  // went through and was already delivered.
-  if (won) {
-    try {
-      const emailService = require('./email.service')
-      const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
-      if (buyer?.email) {
-        await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
-          fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
-          reference: row.paystack_ref, createdAt: row.created_at
-        }).catch(() => {})
-      }
-    } catch (_) {}
+  // Payment receipt: exactly once per payment, whichever path gets here first.
+  // Best-effort and never blocks fulfilment. `defer` (optional) lets the caller
+  // push the email out of the request (waitUntil) — Paystack asks webhook
+  // handlers to acknowledge quickly, and the mail provider's retries can take
+  // ~30s in the worst case.
+  if (won || finishedJob) {
+    const task = sendReceiptOnce(env, supabase, row, { legacyOk: won })
+    if (typeof defer === 'function') defer(task)
+    else await task
   }
 
   return { ...result, won, payment: row, conversion, source }
+}
+
+// ── receipt, exactly once ──────────────────────────────────────────────────
+// payments.receipt_sent_at (migration 0033) is claimed with a compare-and-set
+// BEFORE the email goes out, so two deliveries racing (or a redelivery after a
+// half-finished first attempt) can never mail two receipts, and a receipt the
+// first attempt never got to is still sent by the delivery that finishes the
+// job. If the send fails, the claim is released so a later path can retry.
+// If the column does not exist yet (migration not applied), behaves like the
+// old code: only the caller that won the status flip sends (`legacyOk`).
+// Never throws.
+async function sendReceiptOnce(env, supabase, row, { legacyOk = false } = {}) {
+  try {
+    const { data: claimed, error: claimErr } = await supabase.from('payments')
+      .update({ receipt_sent_at: new Date().toISOString() })
+      .eq('id', row.id).is('receipt_sent_at', null).select('id')
+    if (claimErr) {
+      if (!legacyOk) return false
+    } else if (!claimed || claimed.length === 0) {
+      return false                       // someone already sent it
+    }
+    const emailService = require('./email.service')
+    const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
+    if (!buyer?.email) return false
+    try {
+      await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+        fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
+        reference: row.paystack_ref, createdAt: row.created_at
+      })
+      return true
+    } catch (sendErr) {
+      console.error('Payment receipt failed:', sendErr && sendErr.message)
+      if (!claimErr) {
+        try { await supabase.from('payments').update({ receipt_sent_at: null }).eq('id', row.id) } catch (_) {}
+      }
+      return false
+    }
+  } catch (err) {
+    console.error('Payment receipt error:', err && err.message)
+    return false
+  }
 }
 
 // ── owner notification for outcomes that need a human ──────────────────────

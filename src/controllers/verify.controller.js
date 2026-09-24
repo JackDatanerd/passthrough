@@ -23,13 +23,19 @@
 //  * Malformed codes are rejected before the DB, and unknown-code misses are
 //    throttled per IP.
 //  * Downloads validate `type` and only advertise files that exist.
+//
+// Round-2 audit additions: verify traffic is exempt from the generic per-IP
+// limiter and has its own (rateLimiter.js verifyRead + scoped miss counters);
+// misses can no longer be spent by an <img> tag or a hostile page; the badge is
+// edge-cached, always a real image, and has its own ceilings; an optional shared
+// secret lets the link-preview Function skip the per-IP limits.
 
 const constants = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const rateLimiter = require('../middleware/rateLimiter')
 const { runInBackground } = require('../lib/background')
-const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey } = require('../lib/verification')
+const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview, isBrowserSubresourceLoad } = require('../lib/verification')
 // SECTION 7 AUDIT FIX (bug): this file used to define its own local
 // `clientIp` (`cf-connecting-ip || x-forwarded-for || 'unknown'`), which
 // trusts the client-supplied X-Forwarded-For header unconditionally — every
@@ -40,7 +46,7 @@ const { STATUS, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey } = r
 // guard (isVerifyMissLimited/recordVerifyMiss below) exists specifically to
 // stop someone guessing across the ~1.07 billion possible verification
 // codes — keying it off a spoofable header defeated the point of having it.
-const { clientIp } = require('../lib/clientIp')
+const { clientIp, rateKeyIp } = require('../lib/clientIp')
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const PAGE_COLUMNS =
@@ -56,24 +62,37 @@ function noStore(c) {
 }
 
 // Shared by all three endpoints. Returns { row } or { response }.
-async function loadByCode(c, { columns = PAGE_COLUMNS } = {}) {
+//
+// ROUND-2 AUDIT (Section 7). What changed here and why:
+//  * misses are counted in a scope: 'page' (30 / 15 min) for the JSON page and
+//    downloads, 'badge' (300 / 15 min, separate counter) for the embeddable image
+//    — an <img> tag pointed at random codes could otherwise exhaust the counter
+//    that also guards real lookups (see rateLimiter.js);
+//  * a code that is not even shaped like one is answered without recording a miss
+//    (it never touches the DB, and nothing can be learned from it);
+//  * a request the browser itself labels as a sub-resource load
+//    (Sec-Fetch-Dest: image, no-cors …) never records a miss — a hostile page must
+//    not be able to spend a visitor's budget;
+//  * the trusted link-preview fetch (shared secret) is exempt from the limiter;
+//  * a 429 says when to come back.
+async function loadByCode(c, { columns = PAGE_COLUMNS, scope = 'page' } = {}) {
   const code = normalizeCode(c.req.param('code'))
   const ip = clientIp(c)
+  const trusted = isTrustedPreview(c)
+  const countable = !trusted && !isBrowserSubresourceLoad(c)
 
-  if (await rateLimiter.isVerifyMissLimited(c.env, ip))
-    return { response: c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429) }
+  if (!trusted && await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, scope))
+    return { response: c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429, { 'Retry-After': '900' }) }
 
-  if (!isPlausibleCode(code)) {
-    await rateLimiter.recordVerifyMiss(c.env, ip)
-    return { response: c.json({ success: false, message: 'Verification not found.' }, 404) }
-  }
+  if (!isPlausibleCode(code))
+    return { response: c.json({ success: false, message: 'Verification not found.' }, 404), notFound: true, code }
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('scans').select(columns).eq('verification_code', code).maybeSingle()
   if (error) throw error
   if (!row) {
-    await rateLimiter.recordVerifyMiss(c.env, ip)
-    return { response: c.json({ success: false, message: 'Verification not found.' }, 404) }
+    if (countable) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, scope)
+    return { response: c.json({ success: false, message: 'Verification not found.' }, 404), notFound: true, code }
   }
   return { row, code, supabase }
 }
@@ -242,19 +261,13 @@ async function downloadVerifiedFile(c) {
 // LinkedIn "featured" link, a portfolio or a README that reflects the page's
 // LIVE state. No view count — embeds get looked at far more than clicked
 // through, and counting every impression as a "view" would inflate the number
-// on the real page. Still cacheable (Cache-Control below).
+// on the real page.
 //
-// SECTION 7 AUDIT FIX (bug): this used to call a resume "Verified" on score
-// alone — the exact bug already fixed on the main page (see `verified` above):
-// a file flagged "Modified" there could still read "Passthrough Verified ✓"
-// on every site it was embedded on, for as long as five minutes at a time.
-// The badge is the one surface people see WITHOUT clicking through, so its
-// claim has to satisfy the same invariant as the page's headline: passed AND
-// integrity verified AND not revoked. This does cost an R2 read + re-hash the
-// original "deliberately cheap" comment traded away — accepted because
-// Cache-Control below already bounds it to at most once per 5 minutes per
-// code at the edge, the same amortization the real page already relies on,
-// so the added cost is not per-impression, just per cache-miss.
+// The badge is the one surface people see WITHOUT clicking through, so its claim
+// has to satisfy the same invariant as the page's headline: passed AND integrity
+// verified AND not revoked (it used to say "Verified" on score alone). That
+// costs an R2 read + re-hash, so the finished badge is cached at the edge with
+// the Cache API — see getBadge below for the caching, quota and not-found rules.
 
 const esc = s => String(s).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
 
@@ -268,13 +281,73 @@ function renderBadge(label, value, color) {
     `<text x="${lw / 2}" y="14">${esc(label)}</text><text x="${lw + vw / 2}" y="14">${esc(value)}</text></g></svg>`
 }
 
+// ROUND-2 AUDIT (Section 7): the badge is now
+//  * cached at the edge with the Cache API (Cloudflare does NOT cache a Worker's
+//    response just because it carries Cache-Control — the old comment's "bounded
+//    to once per 5 minutes per code at the edge" was not true, so every single
+//    impression paid for an R2 read + SHA-256 of both files);
+//  * a real image in every case — an unknown code used to answer JSON, i.e. a
+//    broken image in someone's README, uncacheable, and re-requested forever;
+//  * bounded per IP by its own quota and its own miss counter (see loadByCode).
+const BADGE_TTL_SECONDS = 300
+const BADGE_UNSETTLED_TTL_SECONDS = 60   // an integrity check that could not run must not stick for 5 minutes
+const BADGE_IP_QUOTA = 1200              // per IP per 15 min — cache misses only; a cost ceiling, not a person-limit
+
+function badgeHeaders(ttl) {
+  return {
+    'Content-Type': 'image/svg+xml; charset=utf-8',
+    'Cache-Control': `public, max-age=${ttl}`,
+    'X-Robots-Tag': 'noindex',
+  }
+}
+
+function badgeCache() {
+  try { return typeof caches !== 'undefined' && caches.default ? caches.default : null } catch (_) { return null }
+}
+
+function badgeCacheKey(c) {
+  const url = new URL(c.req.url || 'https://badge.invalid/')
+  url.search = ''
+  url.pathname = url.pathname.replace(/\/([^/]+)\/badge\.svg$/i, (_, code) => `/${normalizeCode(code)}/badge.svg`)
+  return new Request(url.toString())
+}
+
+function sendBadge(c, svg, ttl, cache, key) {
+  const headers = badgeHeaders(ttl)
+  for (const [k, v] of Object.entries(headers)) c.header(k, v)
+  if (cache && key) {
+    try { runInBackground(c, cache.put(key, new Response(svg, { headers }))) } catch (_) { /* best effort */ }
+  }
+  return c.body(svg)
+}
+
 async function getBadge(c) {
-  const loaded = await loadByCode(c, { columns:
+  const cache = badgeCache()
+  const key = cache ? badgeCacheKey(c) : null
+  if (cache) {
+    try {
+      const hit = await cache.match(key)
+      // Re-wrapped: a cached Response's headers can be immutable, and the
+      // security-headers middleware still needs to add its own after us.
+      if (hit) return new Response(hit.body, { status: hit.status, headers: hit.headers })
+    } catch (_) { /* a cache hiccup is just a miss */ }
+  }
+
+  const ip = clientIp(c)
+  if (!isTrustedPreview(c) && !(await rateLimiter.hitQuota(c.env, `rl:verifybadge:${rateKeyIp(ip)}`, BADGE_IP_QUOTA, 15 * 60)))
+    return c.json({ success: false, message: 'Too many requests.' }, 429, { 'Retry-After': '300' })
+
+  const loaded = await loadByCode(c, { scope: 'badge', columns:
     'ats_score, fix_ats_score, verification_status, resume_ats_path, resume_hash, resume_pdf_path, resume_pdf_hash' })
-  if (loaded.response) return loaded.response
+  if (loaded.response) {
+    // A genuine "no such page" is answered with a real (grey) badge and cached;
+    // only a rate-limit (429) stays a plain error.
+    if (loaded.notFound) return sendBadge(c, renderBadge('Passthrough', 'not found', '#6b7280'), BADGE_TTL_SECONDS, cache, key)
+    return loaded.response
+  }
   const { row } = loaded
 
-  let value, color
+  let value, color, ttl = BADGE_TTL_SECONDS
   if (row.verification_status === STATUS.REVOKED) { value = 'revoked'; color = '#6b7280' }
   else {
     const score = row.fix_ats_score ?? row.ats_score
@@ -282,15 +355,13 @@ async function getBadge(c) {
     // Only pay for the integrity check when the score alone could otherwise
     // earn the "Verified" claim — a below-threshold scan is never going to
     // say "Verified" regardless of integrity, so there's nothing to check.
-    const verified = passed && (await checkIntegrity(c.env, row)) === 'verified'
-    if (verified) { value = `${Math.round(score)}/100`; color = '#15803d' }
+    const integrity = passed ? await checkIntegrity(c.env, row) : null
+    if (integrity === 'unknown') ttl = BADGE_UNSETTLED_TTL_SECONDS
+    if (passed && integrity === 'verified') { value = `${Math.round(score)}/100`; color = '#15803d' }
     else { value = score != null ? `scan ${Math.round(score)}/100` : 'scan report'; color = '#b45309' }
   }
   const label = value === 'revoked' || String(value).startsWith('scan') ? 'Passthrough' : 'Passthrough Verified'
-  c.header('Content-Type', 'image/svg+xml; charset=utf-8')
-  c.header('Cache-Control', 'public, max-age=300')
-  c.header('X-Robots-Tag', 'noindex')
-  return c.body(renderBadge(label, value, color))
+  return sendBadge(c, renderBadge(label, value, color), ttl, cache, key)
 }
 
 module.exports = { getVerification, downloadVerifiedFile, getBadge, renderBadge }

@@ -27,7 +27,7 @@ function harness(world, opts = {}) {
   const state = { queue: [], alerts: [], conversions: [], kv: new Map(), order: [] }
   const { mod, restore } = loadWithStubs('controllers/webhooks.controller.js', {
     'config/supabase.js': { getSupabase: () => world.db },
-    'services/email.service.js': { sendOwnerAlert: async (env, subject, message) => { state.alerts.push({ subject, message }); return true } },
+    'services/email.service.js': { sendOwnerAlert: async (env, subject, message, opts) => { state.alerts.push({ subject, message, opts }); return true } },
     'services/referral.service.js': { recordConversion: async (db, payment) => { state.order.push('commission'); state.conversions.push(payment.id); return { ok: true } } },
   })
 
@@ -229,11 +229,17 @@ describe('charge.success — fulfilment', () => {
     expect(t.state.queue).toHaveLength(0)
     expect(w.t.payments[0].status).toBe('PENDING')
   })
-  it('ignores — but ALERTS about — a reference with no payment row (throttled)', async () => {
+  it('ignores — but ALERTS about — a reference with no payment row (once per reference)', async () => {
+    // ROUND-2 AUDIT: this used to assert ONE alert for two different unknown
+    // references (a single global cooldown) — i.e. the second customer's
+    // "money arrived for a payment we cannot find" alert was silently dropped.
     const w = seed(); t = harness(w)
     await t.fire(chargeSuccess({ reference: 'ghost-1' }, 1)); await t.fire(chargeSuccess({ reference: 'ghost-2' }, 2))
     expect(t.state.queue).toHaveLength(0)
-    expect(t.state.alerts.filter(a => /unknown reference/i.test(a.subject))).toHaveLength(1)
+    const unknown = t.state.alerts.filter(a => /unknown reference/i.test(a.subject))
+    expect(unknown).toHaveLength(2)
+    expect(unknown[0].message).toContain('ghost-1')
+    expect(unknown[1].message).toContain('ghost-2')
     expect(w.t.webhook_events.every(e => e.status === 'IGNORED')).toBe(true)
   })
 
@@ -456,5 +462,99 @@ describe('other events', () => {
     expect((await t.fire({ event: 'transfer.success', data: { id: 9 } })).status).toBe(200)
     expect(w.t.webhook_events[0]).toMatchObject({ event_type: 'transfer.success', status: 'IGNORED' })
     expect(t.state.queue).toHaveLength(0)
+  })
+})
+
+// ── ROUND-2 AUDIT (sections 7/8) ────────────────────────────────────────────
+describe('round 2 — refunds', () => {
+  function paidWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', referral_code_id: 'rc1' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  it('refund.needs-attention is ALERTED (Paystack stalls it until bank details are supplied), payment untouched', async () => {
+    const w = paidWorld(); t = harness(w)
+    const res = await t.fire({ event: 'refund.needs-attention', data: { status: 'needs-attention', transaction_reference: 'ref-1', refund_reference: null, amount: '2900', currency: 'USD' } })
+    expect(res.status).toBe(200)
+    const a = t.state.alerts.find(x => /needs attention/i.test(x.subject))
+    expect(a).toBeDefined()
+    expect(a.message).toMatch(/bank/i)
+    expect(a.message).toMatch(/scanId: scan1/)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED' })
+  })
+  it('refund.pending / processing are still just recorded (IGNORED), no alert', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire({ event: 'refund.pending', data: { transaction_reference: 'ref-1', amount: '2900' } })
+    expect(t.state.alerts).toHaveLength(0)
+    expect(w.t.webhook_events[0].status).toBe('IGNORED')
+  })
+  it('REGRESSION: two DIFFERENT partial refunds on one transaction are two events, not one', async () => {
+    const w = paidWorld(); t = harness(w)
+    const partial = (amount, rf) => ({ event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: rf, amount, currency: 'USD' } })
+    await t.fire(partial('1000', 'rf-1')); await t.fire(partial('1900', 'rf-2'))
+    expect(w.t.webhook_events.filter(e => e.event_type === 'refund.processed')).toHaveLength(2)
+    expect(t.state.alerts.filter(a => /partial/i.test(a.subject))).toHaveLength(2)
+  })
+  it('a redelivery of the SAME refund event is still deduped', async () => {
+    const w = paidWorld(); t = harness(w)
+    const ev = { event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: '2900', currency: 'USD' } }
+    await t.fire(ev); await t.fire(ev)
+    expect(w.t.webhook_events).toHaveLength(1)
+    expect(t.state.alerts.filter(a => /sale reversed/i.test(a.subject))).toHaveLength(1)
+  })
+  it('money alerts carry a per-incident dedupe key (the payment reference)', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire({ event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: '2900', currency: 'USD' } })
+    expect(t.state.alerts.find(a => /sale reversed/i.test(a.subject)).opts).toEqual({ dedupeKey: 'ref-1' })
+  })
+})
+
+describe('round 2 — dispute.resolve tells the admin which action applies', () => {
+  function disputedWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'DISPUTED' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  const resolve = (resolution, id) => ({ event: 'charge.dispute.resolve', data: { id, status: 'resolved', resolution, transaction: { reference: 'ref-1' } } })
+  it('merchant-accepted → Reverse', async () => {
+    const w = disputedWorld(); t = harness(w)
+    await t.fire(resolve('merchant-accepted', 1))
+    const m = t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message
+    expect(m).toMatch(/Reverse/); expect(m).toMatch(/ACCEPTED/)
+    expect(w.t.payments[0].status).toBe('DISPUTED')     // still a human's call
+  })
+  it('declined → Clear dispute', async () => {
+    const w = disputedWorld(); t = harness(w)
+    await t.fire(resolve('declined', 2))
+    const m = t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message
+    expect(m).toMatch(/Clear dispute/); expect(m).toMatch(/WON/)
+  })
+  it('an unrecognised resolution says so and names both actions', async () => {
+    const w = disputedWorld(); t = harness(w)
+    await t.fire(resolve('something-new', 3))
+    const m = t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message
+    expect(m).toMatch(/not one this app recognises/); expect(m).toMatch(/Reverse/); expect(m).toMatch(/Clear dispute/)
+  })
+})
+
+describe('round 2 — receipts do not delay the acknowledgement', () => {
+  it('the receipt is handed to waitUntil (deferred), and still exactly one goes out', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(chargeSuccess())
+    expect(w.t.payments[0]).toMatchObject({ status: 'SUCCESS' })
+    expect(w.t.payments[0].receipt_sent_at).toBeTruthy()      // claimed by the winning delivery
+  })
+})
+
+describe('round 2 — alert throttle is per incident', () => {
+  it('a global ceiling still bounds a flood of DIFFERENT unknown references', async () => {
+    const w = seed(); t = harness(w)
+    for (let i = 0; i < 25; i++) await t.fire(chargeSuccess({ reference: `ghost-${i}` }, 5000 + i))
+    const n = t.state.alerts.filter(a => /unknown reference/i.test(a.subject)).length
+    expect(n).toBeGreaterThan(1)
+    expect(n).toBeLessThan(25)
   })
 })

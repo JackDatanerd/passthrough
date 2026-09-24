@@ -22,3 +22,9 @@ RESEND_API_KEY=re_...
 # Local-only overrides (optional — leave unset to use wrangler.toml [vars])
 # FRONTEND_URL=http://localhost:3000
 # PAYSTACK_CALLBACK_URL=http://localhost:3000/payment/success
+
+# Optional — see DEPLOYMENT.md "Optional secrets".
+# Paystack's webhook source IPs (comma-separated); unset = IP not checked.
+# PAYSTACK_WEBHOOK_IPS=52.31.139.75,52.49.173.169,52.214.14.220
+# Shared secret with the /v/:code Pages Function for link previews.
+# VERIFY_PREVIEW_KEY=replace_with_random_hex

@@ -185,7 +185,19 @@ which is the correct state for a real production launch:
 # Restricts /api/webhooks/paystack to Paystack's published outbound IP
 # ranges. Optional defense-in-depth on top of the HMAC signature check
 # webhooks.controller.js already does; unset means IP is not checked.
+#
+# Comma-separated. Paystack's documented webhook source IPs (verify against
+# https://paystack.com/docs/payments/webhooks/ before pinning — they can change):
+#   52.31.139.75,52.49.173.169,52.214.14.220
 wrangler secret put PAYSTACK_WEBHOOK_IPS
+
+# Shared secret between the Worker and the /v/:code Pages Function. When set on
+# BOTH sides (same value; on Pages it is an environment variable named
+# VERIFY_PREVIEW_KEY), the Function's link-preview fetch skips the per-IP verify
+# limits and never counts a crawler's bad-URL probes as lookup "misses" against
+# Cloudflare's shared egress IPs. Unset = previews are limited like any client.
+#   node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
+wrangler secret put VERIFY_PREVIEW_KEY
 
 # Lets specific IPs (comma-separated) skip every rate limiter entirely —
 # for load-testing or manual QA against production limits. Unset = no
@@ -240,6 +252,7 @@ Then redeploy: `npm run deploy`
    |----------|-------|
    | `VITE_API_URL` | `https://api.passthrough.dev/api` |
    | `API_URL`      | `https://api.passthrough.dev/api` |
+   | `VERIFY_PREVIEW_KEY` | *(optional)* same value as the Worker secret of that name — see "Optional secrets" |
 
    Both point at the same Worker, and **both must include the `/api` suffix** —
    every Worker route is mounted under `/api` (e.g. `/api/auth/login`). Both
@@ -275,6 +288,23 @@ Every push to `main` triggers an automatic rebuild and deploy.
    ```bash
    wrangler tail
    ```
+4. Subscribe to at least: `charge.success`, `charge.failed`, `refund.processed`,
+   `refund.failed`, `refund.needs-attention`, `charge.dispute.create`,
+   `charge.dispute.remind`, `charge.dispute.resolve` (Paystack sends every event
+   type to the one URL; anything this app doesn't act on is recorded and ignored).
+   `refund.needs-attention` matters: Paystack stalls that refund until you supply
+   the customer's bank details, and the app emails you when it arrives.
+5. Every verified event is recorded in the `webhook_events` table and is visible —
+   with a **Replay** button for HELD / FAILED / IGNORED ones — under
+   **Admin → Webhooks**.
+
+> **Upgrading an existing deployment:** apply migration
+> `0033_receipts_and_ban_revocation.sql` **before** deploying this version. The
+> receipt guard falls back to the old behaviour without it, but banning an
+> account (which now takes its public verification pages down) needs the new
+> `BAN` revoke reason and will fail its constraint check until it is applied.
+> The hourly cron also now runs the failed-fix sweep, so paid scans stuck at
+> `ERROR` from the last 7 days will be re-queued automatically (up to 10 per run).
 
 ---
 

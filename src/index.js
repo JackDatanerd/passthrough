@@ -113,42 +113,17 @@ async function scheduled(event, env, ctx) {
     (async () => {
       try {
         const supabase = getSupabase(env)
-        // AUDIT FIX (bug — Scan/ATS section audit): this used to compute its
-        // own independent cutoff as `now - 24h` and compare THAT against
-        // anon_expires_at — but anon_expires_at is already the absolute
-        // expiry timestamp (createScan sets it to `now + ANON_SCAN_TTL_HOURS`
-        // at creation time). Comparing `anon_expires_at < now - 24h` is
-        // equivalent to `creation_time + 24h < now - 24h`, i.e.
-        // `creation_time < now - 48h` — the cron was silently re-applying
-        // the same 24h TTL a second time on top of a column that already
-        // had it applied once, doubling real retention to ~48h. The two
-        // numbers only ever looked consistent because both happened to be
-        // hardcoded to 24 — changing ANON_SCAN_TTL_HOURS in constants.js
-        // (the single place the app tells you retention is configured)
-        // would have silently decoupled actual cleanup timing from it
-        // entirely. Comparing directly against `now` is correct: a row's
-        // own anon_expires_at is already the moment it should go.
-        const cutoff = new Date().toISOString()
-        const { data: expired, error } = await supabase
-          .from('scans')
-          .select('id, resume_path')
-          .is('user_id', null)
-          .lt('anon_expires_at', cutoff)
-        if (error) { console.error('Anon cleanup query:', error.message); return }
-
-        for (const s of expired) {
-          if (s.resume_path) {
-            await env.RESUMES_BUCKET.delete(s.resume_path).catch(() => {})
-          }
-        }
-        if (expired.length > 0) {
-          const ids = expired.map(s => s.id)
-          await supabase.from('scans').delete().in('id', ids)
-          console.log(`Cleaned ${expired.length} expired anonymous scans`)
-        }
-
-        // Also recover stuck SCANNING / FIX_GENERATING scans (replaces
-        // the server.js startup recovery — here it runs hourly instead).
+        // ROUND-2 AUDIT FIX (bug, traced from Section 8): this job ALSO purged
+        // expired anonymous scans — the same thing retentionSweep() does, on the
+        // same hourly tick, concurrently. This copy swallowed R2 delete errors
+        // (`.catch(() => {})`) and then deleted the DB rows regardless, which
+        // defeated retention.service.js's deliberate "keep the row if its R2
+        // object could not be deleted, so the next run retries" rule: a failed
+        // delete left an orphaned resume file with personal data and no row
+        // pointing at it. The anon purge now lives ONLY in retention.service.js.
+        //
+        // Recover stuck SCANNING / FIX_GENERATING scans (replaces the server.js
+        // startup recovery — here it runs hourly instead).
         const { data: stuck, error: stuckErr } = await supabase
           .from('scans')
           .update({ status: 'ERROR' })
@@ -159,6 +134,29 @@ async function scheduled(event, env, ctx) {
         if (stuck?.length > 0) console.log(`Recovered ${stuck.length} stuck scan(s) → ERROR`)
       } catch (err) {
         console.error('Scheduled handler error:', err.message)
+      }
+    })()
+  )
+}
+
+// ROUND-2 AUDIT FIX (bug, traced from Section 8): reconcile.service.js's
+// sweepFailedFixes — "paid, but generation FAILED" — was written, exported and
+// tested, and referenced by the dead-letter alert and the admin requeue endpoint
+// as "the automatic sweep", but nothing ever CALLED it. A paying customer whose
+// generation hung or died (the stuck-job recovery above flips it to ERROR with no
+// notification) stayed at ERROR until someone noticed by hand. Its own waitUntil
+// + try/catch, same isolation as every other job here.
+async function failedFixSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const { sweepFailedFixes } = require('./services/reconcile.service')
+        const r = await sweepFailedFixes(env, getSupabase(env))
+        if (r.error) console.error('Failed-fix sweep query:', r.error)
+        else if (r.requeued.length || r.exhausted.length || r.failed.length)
+          console.log(`Failed-fix sweep: ${r.candidates} candidate(s), ${r.requeued.length} re-queued, ${r.exhausted.length} exhausted, ${r.failed.length} failed`)
+      } catch (err) {
+        console.error('Failed-fix sweep error:', err.message)
       }
     })()
   )
@@ -370,7 +368,7 @@ async function retentionSweep(event, env, ctx) {
 
 export default {
   fetch: app.fetch,
-  // One cron trigger, six independent jobs — each isolated by its own
+  // One cron trigger, seven independent jobs — each isolated by its own
   // waitUntil + try/catch, so a failure in any one of them can never skip or
   // crash the others.
   scheduled: (event, env, ctx) => {
@@ -379,6 +377,7 @@ export default {
     pendingSweep(event, env, ctx)
     webhookMaintenanceSweep(event, env, ctx)
     leadMatchSweep(event, env, ctx)
+    failedFixSweep(event, env, ctx)
     return retentionSweep(event, env, ctx)
   },
   queue,

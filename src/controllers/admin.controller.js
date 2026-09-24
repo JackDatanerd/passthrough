@@ -13,7 +13,7 @@
 // flips an EXISTING account's role/status, it can't create the first admin).
 
 const { z } = require('zod')
-const { revokeVerification, restoreVerification, REVOKE_REASON } = require('../lib/verification')
+const { revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications, REVOKE_REASON } = require('../lib/verification')
 const { getSupabase } = require('../config/supabase')
 const c = require('../config/constants')
 
@@ -227,6 +227,15 @@ async function adminUpdateUser(ctx) {
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'User not found.' }, 404)
 
+  // ROUND-2 AUDIT FIX (feature gap, Section 7): a ban used to leave the user's
+  // public verification pages (and any downloadable resume they had exposed)
+  // live. Ban takes every ACTIVE page down under its own reason; un-ban restores
+  // exactly those. Both are idempotent — re-sending the same status repeats them,
+  // and a DB error here throws so the admin sees it and can simply retry.
+  let verification
+  if (body.status === 'BANNED')      verification = { revoked: await revokeUserVerifications(supabase, userId) }
+  else if (body.status === 'ACTIVE') verification = { restored: await restoreUserVerifications(supabase, userId) }
+
   // No extra token-invalidation step needed here: optionalAuth.js re-checks
   // status==='BANNED' and re-reads role fresh from the DB on every single
   // request (it doesn't trust the JWT payload for either) — so a ban or a
@@ -234,7 +243,8 @@ async function adminUpdateUser(ctx) {
   // before their existing 7-day JWT would otherwise expire.
   return ctx.json({ success: true, data: {
     id: data.id, email: data.email, name: data.name, role: data.role, status: data.status,
-    scansToday: data.scans_today, scansDayReset: data.scans_day_reset
+    scansToday: data.scans_today, scansDayReset: data.scans_day_reset,
+    ...(verification ? { verification } : {})
   }})
 }
 

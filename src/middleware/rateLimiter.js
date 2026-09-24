@@ -34,6 +34,7 @@
 // never gets committed to the repo or left on accidentally in a config file.
 
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
+const { isTrustedPreview } = require('../lib/verification')
 
 // Takes `env` directly (not the full Hono context) so this can be reused
 // anywhere a bypass check is needed — not just inside rate-limiter
@@ -200,7 +201,15 @@ const general = makeLimiter({
   // anyone). The route is already protected by HMAC signature verification
   // inside the handler itself, which is a stronger gate than a generic IP
   // counter anyway.
-  skip: c => c.req.path.startsWith('/api/webhooks') || isScanPollRequest(c)
+  //
+  // ROUND-2 AUDIT FIX (bug, Section 7): /api/verify/* is skipped here too. It has
+  // its own, purpose-built limits (verifyRead, the scoped miss counters, the
+  // badge quota) — but this generic 100-per-15-min bucket ALSO applied, keyed by
+  // IP, to a public endpoint whose real callers are shared IPs: image proxies
+  // (GitHub camo, LinkedIn) fetching every embedded badge, and office NATs full
+  // of hiring managers. The miss-limiter comment below promised those were never
+  // punished for each other's lookups; this bucket quietly did exactly that.
+  skip: c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c)
 })
 
 // Scan-status polling: the SPA polls GET /api/scan/:id every ~2.5s while a
@@ -232,6 +241,17 @@ const webhook = makeLimiter({
 const scanPoll = makeLimiter({
   windowSeconds: 15 * 60, max: 600, keyPrefix: 'rl:scanpoll',
   message: msg('Too many requests.')
+})
+
+// Public verification pages + downloads (see routes/verify.routes.js). Each hit
+// costs an R2 read + SHA-256 of up to two files, so this is a cost ceiling per
+// IP — sized well above what a person (or a shared NAT) does, and far below a
+// scraper. The Pages Function's link-preview fetches carry the shared secret and
+// bypass it (isTrustedPreview).
+const verifyRead = makeLimiter({
+  windowSeconds: 5 * 60, max: 240, keyPrefix: 'rl:verifyread',
+  message: msg('Too many lookups. Please wait a few minutes.'),
+  skip: c => isTrustedPreview(c)
 })
 
 const anonScan = makeLimiter({
@@ -499,6 +519,16 @@ async function recordLoginSuccess(env, email) {
 // from `general` so an office NAT full of legitimate readers is never
 // punished for each other's successful lookups.
 const VERIFY_MISS_MAX = 30
+// The embeddable badge gets its own, much higher ceiling AND its own counter.
+// ROUND-2 AUDIT FIX (bug, Section 7): badge misses used to feed the same
+// 30-per-15-min counter as page lookups. A stale or typo'd code in a README is
+// re-requested on every impression, and any web page can load
+// <img src=".../badge.svg"> for random codes — so a proxy IP (or a victim's
+// office NAT) could be locked out of EVERY verify lookup, valid ones included,
+// for 15 minutes. Reproduced: 30 stale-badge hits made a valid page and a valid
+// badge both answer 429. Separate buckets, and a high one for the badge, keep
+// the enumeration brake without letting an <img> tag pull it.
+const VERIFY_BADGE_MISS_MAX = 300
 const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 
 // SECTION 7 AUDIT FIX (bug): every OTHER limiter in this file keys its KV
@@ -510,7 +540,8 @@ const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 // billion possible verification codes, and it was keying on the raw IP —
 // exactly the gap rateKeyIp exists to close, left open on the limiter that
 // most needed it.
-function verifyMissKey(ip) { return `rl:vmiss:${rateKeyIp(ip)}` }
+function verifyMissKey(ip, scope = 'page') { return `${scope === 'badge' ? 'rl:vmissb' : 'rl:vmiss'}:${rateKeyIp(ip)}` }
+const missMax = scope => (scope === 'badge' ? VERIFY_BADGE_MISS_MAX : VERIFY_MISS_MAX)
 
 async function readMissCounter(kv, key, now) {
   const raw = await kv.get(key)
@@ -526,21 +557,21 @@ async function readMissCounter(kv, key, now) {
 
 // true → this IP has already produced too many misses in the window.
 // Fails OPEN on any KV problem (same posture as makeLimiter).
-async function isVerifyMissLimited(env, ip, now = Date.now()) {
+async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page') {
   if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return false
   try {
-    const { count } = await readMissCounter(env.RATE_LIMIT_KV, verifyMissKey(ip), now)
-    return count >= VERIFY_MISS_MAX
+    const { count } = await readMissCounter(env.RATE_LIMIT_KV, verifyMissKey(ip, scope), now)
+    return count >= missMax(scope)
   } catch (err) {
     console.error('Verify miss limiter read failed — failing open:', err.message)
     return false
   }
 }
 
-async function recordVerifyMiss(env, ip, now = Date.now()) {
+async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
   if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return
   try {
-    const key = verifyMissKey(ip)
+    const key = verifyMissKey(ip, scope)
     const cur = await readMissCounter(env.RATE_LIMIT_KV, key, now)
     const remaining = Math.max(Math.ceil(VERIFY_MISS_WINDOW_SECONDS - (now - cur.windowStart) / 1000), 60)
     await env.RATE_LIMIT_KV.put(key, JSON.stringify({ count: cur.count + 1, windowStart: cur.windowStart }), { expirationTtl: remaining })
@@ -551,8 +582,8 @@ async function recordVerifyMiss(env, ip, now = Date.now()) {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, dataExport, webhook, click,
-  partnerRead, partnerWrite, isBypassed,
+  partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
-  isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX,
+  isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, hitQuota, consumeSlot, refundSlot
 }

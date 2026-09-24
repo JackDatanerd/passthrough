@@ -11,13 +11,15 @@
 const { createFakeSupabase } = require('./fakeSupabase.cjs')
 
 function matches(row, filters) {
-  return filters.every(([op, col, val]) => {
+  return filters.every(([op, col, val, val2]) => {
     const v = row[col]
     switch (op) {
       case 'eq':  return v === val
       case 'neq': return v !== val
       case 'in':  return val.includes(v)
       case 'is':  return val === null ? (v === null || v === undefined) : v === val
+      // .not(col, op, val) is stored as ['not', col, op, val]
+      case 'not': return val === 'is' && val2 === null ? (v !== null && v !== undefined) : v !== val2
       case 'gt':  return v > val
       case 'gte': return v >= val
       case 'lt':  return v < val

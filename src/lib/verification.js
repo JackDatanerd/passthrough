@@ -5,7 +5,7 @@ const { rateKeyIp } = require('./clientIp')
 
 const STATUS = Object.freeze({ ACTIVE: 'ACTIVE', REVOKED: 'REVOKED' })
 // Who revoked. OWNER can be undone by the owner; everything else only by an admin.
-const REVOKE_REASON = Object.freeze({ OWNER: 'OWNER', REFUND: 'REFUND', DISPUTE: 'DISPUTE', ADMIN: 'ADMIN' })
+const REVOKE_REASON = Object.freeze({ OWNER: 'OWNER', REFUND: 'REFUND', DISPUTE: 'DISPUTE', ADMIN: 'ADMIN', BAN: 'BAN' })
 
 // Codes are generated from SHORT_CODE_CHARS at SHORT_CODE_LENGTH (badge.service).
 // Anything else can never match a row, so it is rejected before touching the DB.
@@ -42,6 +42,34 @@ function isBotUserAgent(ua) {
 async function visitorKey(code, ip, ua) {
   const h = await cryptoLib.sha256(`${rateKeyIp(ip)}|${ua || ''}`)
   return `vv:${code}:${h.slice(0, 24)}`
+}
+
+// The Pages Function that builds link-preview meta tags fetches
+// /api/verify/:code?preview=1 from Cloudflare's own egress IPs — a small shared
+// pool. Without a way to tell it apart from a stranger, every crawler hitting a
+// bad /v/<garbage> URL was counted as a "miss" against that shared pool, and the
+// pool's legitimate previews were subject to the per-IP limits. Optional shared
+// secret: when VERIFY_PREVIEW_KEY is set on the Worker AND the Function sends it
+// in x-preview-key, the request is exempt from the per-IP limiters and never
+// records a miss. Unset (the default) changes nothing.
+function isTrustedPreview(c) {
+  try {
+    const key = c && c.env && c.env.VERIFY_PREVIEW_KEY
+    if (!key || c.req.query('preview') !== '1') return false
+    return cryptoLib.timingSafeEqual(String(c.req.header('x-preview-key') || ''), String(key))
+  } catch (_) { return false }
+}
+
+// Sec-Fetch-* are forbidden headers a page cannot forge: a request the browser
+// itself reports as a sub-resource load (<img>, <script>, no-cors fetch) is
+// never the SPA's own XHR. Such loads must not be able to spend a visitor's
+// "miss" budget — that is how a hostile page could lock an office NAT out of
+// verification. Non-browser clients send none of these headers and are counted.
+function isBrowserSubresourceLoad(c) {
+  const h = n => (c.req.header(n) || '').toLowerCase()
+  if (h('sec-fetch-mode') === 'no-cors') return true
+  const dest = h('sec-fetch-dest')
+  return !!dest && dest !== 'empty' && dest !== 'document'
 }
 
 // Revoke a scan's public verification page.
@@ -102,8 +130,37 @@ async function restoreVerification(supabase, scanId, { asAdmin = false } = {}) {
   return (data || []).length > 0
 }
 
+// Account ban → take every ACTIVE public page of that user down. ROUND-2 AUDIT
+// (feature gap, Section 7): the verify endpoints never look at the owner, so a
+// banned user's page, badge and any exposed .docx/PDF stayed public. Only pages
+// that are ACTIVE are touched, so a page the owner had already unpublished (or a
+// refund/dispute/admin takedown) keeps its own, stronger-or-equal reason and is
+// not resurrected by an un-ban. Idempotent; throws on a DB error so the admin
+// action can be repeated.
+async function revokeUserVerifications(supabase, userId, now = new Date()) {
+  if (!userId) return 0
+  const { data, error } = await supabase.from('scans')
+    .update({ verification_status: STATUS.REVOKED, verification_revoked_at: now.toISOString(), verification_revoked_reason: REVOKE_REASON.BAN })
+    .eq('user_id', userId).eq('verification_status', STATUS.ACTIVE).not('verification_code', 'is', null)
+    .select('id')
+  if (error) throw error
+  return (data || []).length
+}
+
+// Un-ban: restore exactly what the ban took down (reason BAN) and nothing else.
+async function restoreUserVerifications(supabase, userId) {
+  if (!userId) return 0
+  const { data, error } = await supabase.from('scans')
+    .update({ verification_status: STATUS.ACTIVE, verification_revoked_at: null, verification_revoked_reason: null })
+    .eq('user_id', userId).eq('verification_status', STATUS.REVOKED).eq('verification_revoked_reason', REVOKE_REASON.BAN)
+    .select('id')
+  if (error) throw error
+  return (data || []).length
+}
+
 module.exports = {
   STATUS, REVOKE_REASON, CODE_RE,
   normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey,
-  revokeVerification, restoreVerification,
+  revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications,
+  isTrustedPreview, isBrowserSubresourceLoad,
 }

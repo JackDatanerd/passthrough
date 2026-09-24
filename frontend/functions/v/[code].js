@@ -57,7 +57,13 @@ export async function onRequestGet(context) {
     // visitor's page load, open indefinitely.
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 3000)
-    const apiRes = await fetch(`${apiUrl}/verify/${encodeURIComponent(code)}?preview=1`, { signal: controller.signal })
+    // ROUND-2 AUDIT: optional shared secret (VERIFY_PREVIEW_KEY — set the same value
+    // on the Pages project and on the Worker). This fetch comes from Cloudflare's
+    // egress IPs, a small shared pool; with the key the API exempts it from the
+    // per-IP limits and never counts a crawler's bad-URL probes as "misses" against
+    // that pool. Unset = old behaviour.
+    const headers = env.VERIFY_PREVIEW_KEY ? { 'x-preview-key': env.VERIFY_PREVIEW_KEY } : {}
+    const apiRes = await fetch(`${apiUrl}/verify/${encodeURIComponent(code)}?preview=1`, { signal: controller.signal, headers })
     clearTimeout(timeout)
     if (apiRes.ok) {
       const json = await apiRes.json()
@@ -72,19 +78,19 @@ export async function onRequestGet(context) {
   if (!data) return response
   if (data.code === 'REVOKED' || data.success === false) return response
 
-  // SECTION 7 AUDIT (bug B7-1): `preview=1` responses never claim `verified`
-  // either way (see verify.controller.js) — this only ever describes the
-  // scan-report/verified DISTINCTION for the unfurl copy, never asserts a
-  // "cryptographically verified" claim a crawler can't itself check, so it's
-  // safe to key off the score-only `data.passed` here.
+  // ROUND-2 AUDIT FIX (bug, Section 7): this used to title the card "Passthrough
+  // Verified" whenever the SCORE passed — the exact score-only claim already fixed
+  // on the page and the badge. A preview fetch deliberately skips the integrity
+  // check (it must not cost an R2 read per crawler), so it cannot know whether the
+  // file is still unmodified, and a link card is cached by the platform long after.
+  // The card therefore states only what a preview CAN know — the score — and sends
+  // the reader to the page for the live verified/modified verdict.
   const scoreLine = typeof data.atsScore === 'number' ? ` — ATS score ${data.atsScore}/100` : ''
   const namePrefix = data.candidateFirstName ? `${data.candidateFirstName}: ` : ''
-  const title = data.passed
-    ? `${namePrefix}Passthrough Verified${scoreLine}`
-    : `${namePrefix}Passthrough Scan Report${scoreLine}`
+  const title = `${namePrefix}Passthrough Scan Report${scoreLine}`
   const description = data.passed
-    ? `Scanned and scored by Passthrough's ATS engine${scoreLine}. Open the link to see the live, cryptographically-verified status.`
-    : `Scanned by Passthrough's ATS engine${scoreLine}. Below the Passthrough Verified threshold.`
+    ? `Scanned and scored by Passthrough's ATS engine${scoreLine}. Open the link to see the live, cryptographically-checked verification status.`
+    : `Scanned by Passthrough's ATS engine${scoreLine}. Open the link for the full report.`
   const pageUrl = request.url
 
   class MetaRewriter {

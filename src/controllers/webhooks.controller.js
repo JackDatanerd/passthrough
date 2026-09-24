@@ -33,6 +33,14 @@
 //     body size cap before any crypto, a loud failure when the secret is not
 //     configured, and an OPTIONAL Paystack IP allowlist (PAYSTACK_WEBHOOK_IPS).
 //
+//  6. ROUND-2 AUDIT (sections 7/8): refund.needs-attention is now alerted (Paystack
+//     stalls that refund until the merchant supplies bank details), refund event
+//     keys no longer collapse two refunds on one transaction, money alerts are
+//     throttled PER INCIDENT rather than per subject line, the receipt email is
+//     pushed out of the request, dispute.resolve tells the admin which action to
+//     take, and the inbox is finally visible/replayable (listWebhookEvents /
+//     replayWebhookEvent, mounted under /api/admin).
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -41,6 +49,7 @@ const { getSupabase } = require('../config/supabase')
 const emailService = require('../services/email.service')
 const fulfillment = require('../services/fulfillment.service')
 const { runInBackground } = require('../lib/background')
+const { hitQuota } = require('../middleware/rateLimiter')
 
 // Real Paystack events are a few KB. Anything near this is not one.
 const MAX_BODY_BYTES = 256 * 1024
@@ -64,8 +73,18 @@ async function alertAllowed(env, key) {
   }
 }
 
-function alert(c, subject, message) {
-  return runInBackground(c, emailService.sendOwnerAlert(c.env, subject, message))
+// `incident` (usually the payment reference) scopes sendOwnerAlert's 10-minute
+// email dedupe to THIS incident — see email.service.js.
+function alert(c, subject, message, incident) {
+  return runInBackground(c, emailService.sendOwnerAlert(c.env, subject, message, incident ? { dedupeKey: incident } : undefined))
+}
+
+// Per-reference cooldown (an event for the same reference alerts once per window)
+// plus a global hourly ceiling, so a burst of genuinely different references is
+// still bounded but a second real customer is never silenced by the first.
+async function alertAllowedFor(env, kind, reference, { globalMax = 20 } = {}) {
+  if (!(await alertAllowed(env, `webhook-alert-cooldown:${kind}:${reference || 'none'}`))) return false
+  return hitQuota(env, `webhook-alert-global:${kind}`, globalMax, 60 * 60)
 }
 
 function parseIpList(raw) {
@@ -91,6 +110,15 @@ function eventKeyFor(event, bodyHash) {
   const d = event.data || {}
   // Repeated dispute reminders share an id but are genuinely new events.
   if (event.event.endsWith('.remind')) return `${event.event}:${bodyHash.slice(0, 16)}`
+  // Paystack's refund payloads carry no `data.id`, so the old key collapsed to
+  // `refund.processed:<transaction_reference>` — a second refund (e.g. the second
+  // half of two partial refunds) or a second refund.failed on the same
+  // transaction was treated as already-seen and never actioned or alerted.
+  if (event.event.startsWith('refund.')) {
+    const txRef = d.transaction_reference ?? d.transaction?.reference ?? ''
+    const rk = d.id ?? d.refund_reference ?? (txRef || d.amount != null ? `${txRef}:${d.amount ?? ''}` : bodyHash.slice(0, 16))
+    return `${event.event}:${rk}`
+  }
   return `${event.event}:${d.id ?? d.reference ?? d.transaction_reference ?? bodyHash.slice(0, 16)}`
 }
 
@@ -146,12 +174,12 @@ async function processChargeSuccess(c, supabase, event) {
 
   if (!paymentRow) {
     console.error(`[CRITICAL] charge.success for unknown reference ${reference}`)
-    if (await alertAllowed(c.env, 'webhook-alert-cooldown:unknown-reference'))
+    if (await alertAllowedFor(c.env, 'unknown-reference', reference))
       alert(c, 'Paystack charge.success for an unknown reference',
         `reference: ${reference}\namount: ${data.amount} ${data.currency}\n\n` +
         `No payment row exists for this reference. Either the payments insert failed after ` +
         `Paystack initialised the transaction, or this Paystack account also serves another ` +
-        `product. If money moved for THIS app, create the row and reconcile by hand.`)
+        `product. If money moved for THIS app, create the row and reconcile by hand.`, reference)
     return { status: 'IGNORED', note: 'unknown reference' }
   }
 
@@ -163,12 +191,14 @@ async function processChargeSuccess(c, supabase, event) {
       `expected: ${mismatch.expectedAmount} ${mismatch.expectedCurrency}\n` +
       `received: ${mismatch.receivedAmount} ${mismatch.receivedCurrency}\n\n` +
       `Held for manual review — no fix was generated. If the payment is genuine, use ` +
-      `Admin → Payments → Recheck (accept amount) or POST /api/payments/${reference}/recheck.`)
+      `Admin → Payments → Recheck (accept amount) or POST /api/payments/${reference}/recheck.`, reference)
     return { status: 'HELD', note: 'amount/currency mismatch' }
   }
 
   const result = await fulfillment.settlePayment(c.env, supabase, paymentRow, {
     authCode: data.authorization?.authorization_code, source: 'webhook',
+    // The receipt email runs after the 200 (Paystack: acknowledge quickly).
+    defer: p => runInBackground(c, p),
   })
 
   if (['DUPLICATE', 'SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED'].includes(result.outcome)) {
@@ -178,7 +208,7 @@ async function processChargeSuccess(c, supabase, event) {
       `reference: ${reference}\nscanId: ${paymentRow.scan_id}\n` +
       (result.outcome === 'DUPLICATE'
         ? `A different payment (${result.ownerPaymentId || 'earlier'}) already fulfilled this scan. Nothing was re-generated and no commission was recorded for this one. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED.`
-        : `Nothing was generated. Refund it in Paystack.`))
+        : `Nothing was generated. Refund it in Paystack.`), reference)
     return { status: 'PROCESSED', note: result.outcome }
   }
   if (result.outcome === 'UNKNOWN_REFERENCE') return { status: 'IGNORED', note: 'unknown reference' }
@@ -199,28 +229,45 @@ async function processChargeFailed(c, supabase, event) {
 }
 
 async function processRefund(c, supabase, event) {
+  const payment = await fulfillment.findPaymentForEvent(supabase, event)
+  const refundRef = event.data?.refund_reference || null
+  const incident = payment?.paystack_ref || refundRef || fulfillment.referenceCandidates(event)[0] || null
+
+  // ROUND-2 AUDIT (feature gap): Paystack parks a refund in `needs-attention`
+  // when the processing rails did not return the customer's bank account — it
+  // then waits, indefinitely, for the merchant to call the Retry Refund API
+  // with those details. This used to fall into the IGNORED branch below, so a
+  // customer's money could sit stalled with nobody ever told.
+  if (event.event === 'refund.needs-attention') {
+    alert(c, 'Paystack refund needs attention — bank details required',
+      `payment reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n` +
+      `refund reference: ${refundRef || '(none yet)'}\namount: ${event.data?.amount ?? '?'} ${event.data?.currency || ''}\n\n` +
+      `Paystack could not get the customer's bank account from the original payment, so this refund is STALLED until you ` +
+      `supply one: Paystack dashboard → the refund → provide the customer's bank details, or POST ` +
+      `/refund/retry_with_customer_details/{refund id} (Retry Refund API). The payment here was NOT changed; ` +
+      `when the refund finally completes, refund.processed will reverse the sale.`, incident)
+    return { status: 'PROCESSED', note: 'refund needs attention — alerted' }
+  }
+
   // refund.pending / refund.processing are intermediate — nothing to do yet.
   if (event.event !== 'refund.processed' && event.event !== 'refund.failed')
     return { status: 'IGNORED', note: event.event }
 
-  const payment = await fulfillment.findPaymentForEvent(supabase, event)
-  const refundRef = event.data?.refund_reference || null
-
   if (event.event === 'refund.failed') {
     alert(c, 'Paystack refund.failed',
       `payment reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n\n` +
-      `The refund did not go through. The payment was NOT changed.`)
+      `The refund did not go through. The payment was NOT changed.`, incident)
     return { status: 'PROCESSED', note: 'refund failed — alerted' }
   }
 
   if (!payment) {
     alert(c, 'Paystack refund.processed — payment not found',
-      `Could not match this refund to a payment.\npayload keys: ${Object.keys(event.data || {}).join(', ')}\n\nReview manually.`)
+      `Could not match this refund to a payment.\npayload keys: ${Object.keys(event.data || {}).join(', ')}\n\nReview manually.`, incident)
     return { status: 'PROCESSED', note: 'payment not found' }
   }
   if (!['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status)) {
     alert(c, 'Paystack refund.processed on a payment that was never SUCCESS',
-      `reference: ${payment.paystack_ref}\nstatus: ${payment.status}\n\nNot actioned. Review manually.`)
+      `reference: ${payment.paystack_ref}\nstatus: ${payment.status}\n\nNot actioned. Review manually.`, incident)
     return { status: 'PROCESSED', note: `payment is ${payment.status}` }
   }
 
@@ -232,7 +279,7 @@ async function processRefund(c, supabase, event) {
   if (!full) {
     alert(c, 'Paystack refund.processed — partial/unknown amount, NOT actioned',
       `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\npaid: ${payment.amount_cents}\nrefunded: ${event.data?.amount ?? '(not in payload)'}\n\n` +
-      `Payment left as-is. If this should reverse the sale, use Admin → Payments → Reverse.`)
+      `Payment left as-is. If this should reverse the sale, use Admin → Payments → Reverse.`, incident)
     return { status: 'PROCESSED', note: 'partial/unknown refund — alerted' }
   }
 
@@ -242,7 +289,7 @@ async function processRefund(c, supabase, event) {
     `payment → REFUNDED: ${done.transitioned ? 'yes' : 'already'}\n` +
     `partner commission reversed: ${done.ledger.reversed ? `yes${done.ledger.alreadyPaidOut ? ' (ALREADY PAID OUT — nets against their next payout)' : ''}` : done.ledger.reason}\n` +
     `public verification revoked: ${done.revoked ? 'yes' : 'no (not applicable / already revoked / another payment owns the scan)'}\n\n` +
-    `Downloads were NOT revoked — delete the scan if you want the files gone.`)
+    `Downloads were NOT revoked — delete the scan if you want the files gone.`, incident)
   return { status: 'PROCESSED', note: 'reversed' }
 }
 
@@ -271,8 +318,25 @@ async function processDispute(c, supabase, event) {
     marked = !!(updated && updated.length)
   }
 
+  // ROUND-2 AUDIT (feature gap): dispute.resolve used to say only "no state
+  // change", leaving the admin to work out which of Reverse / Clear applies.
+  // Paystack's resolutions are `merchant-accepted` (money goes back to the
+  // customer — Paystack ALSO auto-accepts after 16 hours) and `declined` (you
+  // won). The irreversible steps still wait for a human, but the alert now says
+  // exactly which one.
+  const resolution = String(d.resolution || '').toLowerCase()
+  const current = payment ? `payment is currently ${payment.status}` : 'no payment could be resolved'
   let detail
-  if (event.event !== 'charge.dispute.create') {
+  if (event.event === 'charge.dispute.resolve') {
+    if (/declin/.test(resolution))
+      detail = `Resolution: DECLINED — you WON. ${current}. Next: Admin → Payments → Clear dispute (puts it back to SUCCESS and into revenue).`
+    else if (/accept/.test(resolution))
+      detail = `Resolution: ACCEPTED — the money went back to the customer. ${current}. Next: Admin → Payments → Reverse (marks it REFUNDED, reverses any partner commission, revokes the public credential).`
+    else
+      detail = `Resolution "${d.resolution || 'unknown'}" is not one this app recognises. ${current}. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won).`
+  } else if (event.event === 'charge.dispute.remind') {
+    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard.`
+  } else if (event.event !== 'charge.dispute.create') {
     detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
   } else if (marked) {
     detail = `The payment is now marked DISPUTED (excluded from revenue). Nothing else was changed: ` +
@@ -285,7 +349,8 @@ async function processDispute(c, supabase, event) {
     detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
   }
 
-  alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`)
+  alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
+    `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
   return { status: 'PROCESSED', note: payment ? undefined : 'payment not found' }
 }
 
@@ -378,7 +443,7 @@ async function handlePaystack(c) {
       alert(c, 'Webhook processing failed — Paystack will retry',
         `event: ${event.event}\nreference: ${reference || '(none)'}\nerror: ${err.message}\n\n` +
         `Answered 500, so Paystack redelivers on its retry schedule and the redelivery re-runs this. ` +
-        `If it keeps failing: POST /api/payments/${reference || '<reference>'}/reconcile or /recheck (admin).`)
+        `If it keeps failing: POST /api/payments/${reference || '<reference>'}/reconcile or /recheck (admin).`, reference)
     return c.text('Processing error', 500)
   }
 
@@ -386,4 +451,66 @@ async function handlePaystack(c) {
   return c.text('OK', 200)
 }
 
-module.exports = { handlePaystack, MAX_BODY_BYTES }
+// ── admin: inbox visibility + replay ───────────────────────────────────────
+// ROUND-2 AUDIT (feature gap): webhook_events was described as "an audit trail…
+// answerable in SQL", and every alert told the owner to "check webhook_events" —
+// but nothing in the app could show it, and a HELD / FAILED / IGNORED row (which
+// recordEvent treats as finished) could never be re-run, not even by Paystack's
+// own "Resend" tool. Mounted under /api/admin (admin-only) — see admin.routes.js.
+
+const EVENT_STATUSES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'HELD', 'FAILED']
+// PROCESSED is deliberately not replayable: it already did its work.
+const REPLAYABLE = ['RECEIVED', 'IGNORED', 'HELD', 'FAILED']
+
+// GET /api/admin/webhook-events?status=&page=&pageSize=
+async function listWebhookEvents(c) {
+  const page     = Math.max(1, parseInt(c.req.query('page') || '1', 10) || 1)
+  const pageSize = Math.min(100, Math.max(1, parseInt(c.req.query('pageSize') || '25', 10) || 25))
+  const from = (page - 1) * pageSize
+  const status = c.req.query('status')
+
+  let q = getSupabase(c.env).from('webhook_events')
+    .select('id, event_type, event_key, reference, status, attempts, error, received_at, processed_at', { count: 'exact' })
+    .order('received_at', { ascending: false }).range(from, from + pageSize - 1)
+  if (status && EVENT_STATUSES.includes(status)) q = q.eq('status', status)
+
+  const { data, error, count } = await q
+  if (error) throw error
+  return c.json({ success: true, data: (data || []).map(r => ({
+    id: r.id, eventType: r.event_type, eventKey: r.event_key, reference: r.reference, status: r.status,
+    attempts: r.attempts, error: r.error, receivedAt: r.received_at, processedAt: r.processed_at,
+    replayable: REPLAYABLE.includes(r.status),
+  })), meta: { page, pageSize, total: count || 0 } })
+}
+
+// POST /api/admin/webhook-events/:id/replay
+// Re-runs the stored (redacted) event through the same handlers a live delivery
+// uses. Safe to repeat: every handler is idempotent (atomic claims, unique ledger
+// index). Note the redaction: card authorisation data is not stored, so a replayed
+// charge.success cannot re-save the reusable card token — nothing else needs it.
+async function replayWebhookEvent(c) {
+  const supabase = getSupabase(c.env)
+  const { data: row, error } = await supabase.from('webhook_events')
+    .select('id, status, attempts, payload, event_type, reference').eq('id', c.req.param('id')).maybeSingle()
+  if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
+  if (!REPLAYABLE.includes(row.status))
+    return c.json({ success: false, message: `This event is ${row.status} — it already did its work; nothing to replay.` }, 409)
+  const event = row.payload
+  if (!event || typeof event.event !== 'string')
+    return c.json({ success: false, message: 'No stored payload to replay.' }, 422)
+
+  const inbox = { id: row.id, attempts: (row.attempts || 1) + 1 }
+  await supabase.from('webhook_events').update({ status: 'RECEIVED', attempts: inbox.attempts }).eq('id', row.id)
+  try {
+    const outcome = await processEvent(c, supabase, event)
+    await markEvent(supabase, inbox, outcome.status, outcome.note)
+    return c.json({ success: true, data: { status: outcome.status, note: outcome.note || null,
+      hint: outcome.status === 'HELD' ? 'Still held — an amount/currency mismatch needs Admin → Payments → Recheck (accept amount).' : null } })
+  } catch (err) {
+    await markEvent(supabase, inbox, 'FAILED', err.message)
+    return c.json({ success: false, message: `Replay failed: ${err.message}` }, 500)
+  }
+}
+
+module.exports = { handlePaystack, listWebhookEvents, replayWebhookEvent, eventKeyFor, MAX_BODY_BYTES }

@@ -9,7 +9,7 @@ import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
-import { sha256Hex, classifyFingerprint } from '../lib/fileFingerprint'
+import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
 import { isRoleCategory } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
 
@@ -17,7 +17,7 @@ import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
 // whole tab to raw JSON. Fetches as a blob so a failure surfaces on the page
 // instead of blanking it, and only ever triggers a save on a real success.
 async function downloadFile(code, type, filename) {
-  const res = await api.get(`/verify/${code}/download`, { params: { type }, responseType: 'blob' })
+  const res = await api.get(`/verify/${encodeURIComponent(code)}/download`, { params: { type }, responseType: 'blob' })
   const url = URL.createObjectURL(res.data)
   const a = document.createElement('a')
   a.href = url; a.download = filename
@@ -36,6 +36,9 @@ export default function Verify() {
   // loading/notFound/data all falsy, so the page silently rendered nothing
   // but the Navbar/Footer with no explanation and no way to retry.
   const [loadError, setLoadError] = useState(false)
+  // ROUND-2 AUDIT: a rate-limited lookup (429) used to fall into the generic
+  // "Something went wrong" — and the visitor had no idea to wait.
+  const [rateLimited, setRateLimited] = useState(false)
   const [downloadErr, setDownloadErr] = useState('')
 
   // Hiring manager soft opt-in
@@ -60,6 +63,10 @@ export default function Verify() {
   // { status: 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error', at, kind } | null
   const [checkResult, setCheckResult] = useState(null)
   const fileInputRef = useRef(null)
+  // ROUND-2 AUDIT (bug): responses used to be applied in whatever order they
+  // arrived, so a slow reply for an earlier code could overwrite the page for the
+  // current one. Only the newest request may write state.
+  const loadSeq = useRef(0)
 
   // SECTION 7 AUDIT (bug): this used to reset only the status flags
   // (notFound/loadError/revoked), never `data` itself. Nothing in this app
@@ -76,12 +83,16 @@ export default function Verify() {
   // (including the hiring-manager lead form, which is scoped to whichever
   // candidate the visitor thinks they're looking at) closes that.
   function load() {
-    setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null); setData(null)
+    const seq = ++loadSeq.current
+    setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setData(null)
     setDownloadErr(''); setCheckResult(null)
     setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setWebsite('')
     setLeadSent(false); setLeadErr('')
-    api.get(`/verify/${code}`)
+    // encodeURIComponent: the code comes straight from the URL; never let it
+    // add path segments or a query string to the API call.
+    api.get(`/verify/${encodeURIComponent(code)}`)
       .then(res => {
+        if (seq !== loadSeq.current) return
         setData(res.data.data)
         setLoading(false)
         // The reader is looking at this candidate, so their field is the most
@@ -90,10 +101,12 @@ export default function Verify() {
         setRole(isRoleCategory(cat) ? cat : '')
       })
       .catch(err => {
+        if (seq !== loadSeq.current) return
         setLoading(false)
         const status = err.response?.status
         if (status === 404) setNotFound(true)
         else if (status === 410) setRevoked({ revokedAt: err.response?.data?.revokedAt || null })
+        else if (status === 429) setRateLimited(true)
         else setLoadError(true)
       })
   }
@@ -137,7 +150,7 @@ export default function Verify() {
   async function handleDownload(type) {
     setDownloadErr('')
     try {
-      await downloadFile(code, type, `Passthrough-${code}.${type}`)
+      await downloadFile(code, type, `Passthrough-${String(code).toUpperCase()}.${type}`)
     } catch (err) {
       setDownloadErr(getErrorMessage(err, 'Could not download that file — please try again.'))
     }
@@ -148,8 +161,12 @@ export default function Verify() {
     if (!file) return
     setChecking(true); setCheckResult(null)
     try {
+      if (file.size > MAX_CHECK_BYTES) {
+        setCheckResult({ status: 'toolarge', at: null, kind: null })
+        return
+      }
       const hash = await sha256Hex(file)
-      setCheckResult(classifyFingerprint(hash, data?.fingerprints))
+      setCheckResult(classifyFingerprint(hash, data?.fingerprints, fileKindOf(file)))
     } catch (_) {
       setCheckResult({ status: 'error', at: null, kind: null })
     } finally {
@@ -163,6 +180,14 @@ export default function Verify() {
   // when the file didn't match its own hash. `data.verified` is the one flag
   // this page is allowed to key its headline off.
   const isVerified = !!data?.verified
+
+  // ROUND-2 AUDIT FIX (bug): "not verified" has THREE causes and this page used
+  // to word all of them as "this file no longer matches" — including a transient
+  // R2/network failure ('unknown'), which accused a candidate's file of being
+  // altered when the check merely could not run. Now: modified → says so;
+  // unknown → says the check couldn't complete; otherwise it is the score.
+  const notChecked  = !!data && data.passed && data.integrityStatus === 'unknown'
+  const isModified  = !!data && data.passed && data.integrityStatus === 'modified'
 
   const integrityLabel =
     data?.integrityStatus === 'verified' ? 'Unmodified' :
@@ -191,7 +216,13 @@ export default function Verify() {
       cls: 'text-amber-600',
     },
     mismatch:    { text: "Doesn't match anything on file — this file has been edited, or didn't come from Passthrough.", cls: 'text-red-600' },
-    unavailable: { text: 'This scan has no fingerprints to check against.', cls: 'text-gray-500' },
+    unavailable: {
+      text: checkResult.scope === 'type'
+        ? "This scan has no fingerprint on file for that type of file, so it can't be checked here."
+        : 'This scan has no fingerprints to check against.',
+      cls: 'text-gray-500',
+    },
+    toolarge:    { text: 'That file is too large to be a resume — pick the .docx or .pdf you were sent.', cls: 'text-gray-500' },
     error:       { text: "Couldn't check that file — please try again.", cls: 'text-gray-500' },
   }[checkResult.status]
 
@@ -221,6 +252,15 @@ export default function Verify() {
               {revoked.revokedAt ? `Revoked on ${formatDate(revoked.revokedAt)}. ` : ''}
               It is no longer valid and cannot be restored from this page.
             </p>
+          </div>
+        )}
+
+        {rateLimited && (
+          <div className="text-center py-20">
+            <p className="text-gray-600 mb-4">
+              Too many lookups from your network just now. Please wait a few minutes and try again.
+            </p>
+            <Button variant="secondary" onClick={load}>Try again</Button>
           </div>
         )}
 
@@ -255,9 +295,13 @@ export default function Verify() {
                     Passthrough Scan Report
                   </h1>
                   <p className="text-sm text-amber-700 mb-1">
-                    {data.passed
+                    {isModified
                       ? 'This file no longer matches what was verified — see Integrity below.'
-                      : `Below the Passthrough Verified threshold (${ATS_BADGE_THRESHOLD}+)`}
+                      : notChecked
+                        ? "The integrity check couldn't complete just now — refresh in a moment to re-check."
+                        : data.passed
+                          ? 'Passthrough Verified status is not confirmed for this file — see Integrity below.'
+                          : `Below the Passthrough Verified threshold (${ATS_BADGE_THRESHOLD}+)`}
                   </p>
                 </>
               )}
@@ -307,7 +351,7 @@ export default function Verify() {
                   )}
                   {data.exposePdf && (
                     <Button onClick={() => handleDownload('pdf')}>
-                      View / Download PDF
+                      Download PDF
                     </Button>
                   )}
                 </div>
@@ -316,7 +360,11 @@ export default function Verify() {
               <p className="text-xs text-gray-400 mt-6">
                 {isVerified
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
-                  : "This resume was scanned by Passthrough's ATS engine. It did not reach (or no longer meets) the standard required for Passthrough Verified status."}
+                  : isModified
+                    ? "This resume reached the Passthrough Verified score, but the stored file no longer matches its verified fingerprint."
+                    : notChecked
+                      ? "This resume reached the Passthrough Verified score. Its integrity could not be re-checked just now — that is not a sign of tampering."
+                      : "This resume was scanned by Passthrough's ATS engine. It did not reach the standard required for Passthrough Verified status."}
               </p>
               <div className="flex items-center justify-center gap-3 mt-4">
                 {typeof data.verificationViews === 'number' && (
@@ -384,7 +432,7 @@ export default function Verify() {
                 {checking && <Spinner size="sm" />}
               </div>
               {checkLabel && (
-                <p className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
+                <p role="status" aria-live="polite" className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
               )}
             </div>
 

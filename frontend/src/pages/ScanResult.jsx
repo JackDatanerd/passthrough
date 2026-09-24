@@ -302,8 +302,12 @@ export default function ScanResult() {
   // bio) and links through to the live page, not just the bare image — an
   // <img> alone loses the click-through that makes the badge worth anything.
   function badgeUrls() {
-    const base = `${api.defaults.baseURL}/verify/${scan.verificationCode}/badge.svg`
-    return { image: base, markdown: `[![Passthrough Verified](${base})](${scan.verificationUrl})` }
+    // Absolute even when the API base is relative (/api) — a pasted README needs a full URL.
+    let root = String(api.defaults.baseURL || '')
+    try { root = new URL(root, window.location.origin).href.replace(/\/+$/, '') } catch (_) { /* keep as is */ }
+    const base = `${root}/verify/${encodeURIComponent(scan.verificationCode)}/badge.svg`
+    // Alt text names the badge, not a state — the image itself says Verified or not.
+    return { image: base, markdown: `[![Passthrough badge](${base})](${scan.verificationUrl})` }
   }
 
   async function handleCopyBadge() {

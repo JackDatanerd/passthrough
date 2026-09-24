@@ -923,23 +923,29 @@ async function updateVerifyVisibility(ctx) {
   if (Object.keys(update).length === 0 && !wantsPublish)
     return ctx.json({ success: false, message: 'Nothing to update — expected exposeDocx, exposePdf, hideName and/or published as booleans.' }, 400)
 
+  // ROUND-2 AUDIT FIX (bug, Section 7): the visibility flags used to be written
+  // BEFORE the republish was decided, so a refused republish (403 — the page was
+  // taken down by Passthrough, not the owner) still saved exposeDocx/exposePdf as
+  // a side effect of an error response, and they would silently go live if an
+  // admin later restored the page. The republish is now decided first; a refusal
+  // changes nothing.
+  let status = scan.verificationStatus || 'ACTIVE'
+  if (wantsPublish && body.published === true && status === 'REVOKED') {
+    // The owner may only undo THEIR OWN unpublish — never a refund/dispute/admin/ban takedown.
+    const restored = await restoreVerification(supabase, scan.id)
+    if (!restored)
+      return ctx.json({ success: false, message: 'This verification page was revoked by Passthrough and cannot be republished. Contact support if you think this is a mistake.' }, 403)
+    status = 'ACTIVE'
+  }
+
   if (Object.keys(update).length > 0) {
     const { error: updateErr } = await supabase.from('scans').update(update).eq('id', scan.id)
     if (updateErr) throw updateErr
   }
 
-  let status = scan.verificationStatus || 'ACTIVE'
-  if (wantsPublish) {
-    if (body.published === false) {
-      await revokeVerification(supabase, scan.id, REVOKE_REASON.OWNER)
-      status = 'REVOKED'
-    } else if (status === 'REVOKED') {
-      // The owner may only undo THEIR OWN unpublish — never a refund/dispute/admin takedown.
-      const restored = await restoreVerification(supabase, scan.id)
-      if (!restored)
-        return ctx.json({ success: false, message: 'This verification page was revoked by Passthrough and cannot be republished. Contact support if you think this is a mistake.' }, 403)
-      status = 'ACTIVE'
-    }
+  if (wantsPublish && body.published === false) {
+    await revokeVerification(supabase, scan.id, REVOKE_REASON.OWNER)
+    status = 'REVOKED'
   }
 
   return ctx.json({ success: true, data: {
@@ -967,6 +973,9 @@ async function downloadFile(ctx) {
     return ctx.json({ success: false, message: 'Verify your email to download.', code: 'EMAIL_NOT_VERIFIED' }, 403)
 
   const type     = ctx.req.query('type')
+  // ROUND-2 AUDIT: any other value used to fall through to the PDF branch.
+  if (type !== 'ats' && type !== 'pdf')
+    return ctx.json({ success: false, message: 'type must be "ats" or "pdf".' }, 400)
   const fileKey  = type === 'ats' ? scan.resumeAtsPath : scan.resumePdfPath
   const filename = type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf'
   if (!fileKey) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)

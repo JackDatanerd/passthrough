@@ -158,6 +158,23 @@ describe('sendOwnerAlert — de-duplicated', () => {
     expect(rows).toHaveLength(3)
     expect(rows.map(r => r.emailed)).toEqual([true, false, true])
   })
+  // ROUND-2 AUDIT (Section 8): the dedupe used to be keyed on the subject alone, so two
+  // DIFFERENT payments raising the same fixed-subject alert within 10 minutes emailed once.
+  it('an incident key scopes the dedupe: same subject + different incident → both emailed; same incident → once', async () => {
+    t = setup()
+    const s = 'Payment amount/currency mismatch — NOT fulfilled'
+    const a = await t.mod.sendOwnerAlert(t.env, s, 'ref-1', { dedupeKey: 'ref-1' })
+    const b = await t.mod.sendOwnerAlert(t.env, s, 'ref-2', { dedupeKey: 'ref-2' })
+    const c = await t.mod.sendOwnerAlert(t.env, s, 'ref-1 again', { dedupeKey: 'ref-1' })
+    expect([a, b, c]).toEqual([true, true, false])
+    expect(t.sent).toHaveLength(2)
+    expect(logs(t.db, 'alert_logs')).toHaveLength(3)          // every occurrence still recorded
+  })
+  it('without an incident key the old subject-only behaviour is unchanged', async () => {
+    t = setup()
+    expect(await t.mod.sendOwnerAlert(t.env, 's', 'a', {})).toBe(true)
+    expect(await t.mod.sendOwnerAlert(t.env, 's', 'b')).toBe(false)
+  })
   it('still writes alert_logs when there is no owner address', async () => {
     t = setup(); delete t.env.OWNER_ALERT_EMAIL
     expect(await t.mod.sendOwnerAlert(t.env, 's', 'm')).toBe(false)
