@@ -275,8 +275,17 @@ describe('automatic retry', () => {
     const api = await loadApi()
     const { adapter, calls } = fakeAdapter([{ error: {} }, { error: {} }])
     const promise = api.get('/scan/history', { adapter })
+    // BUG FIX (audit): a rejection handler must be attached to `promise`
+    // BEFORE the fake clock is advanced. The old order — advance timers,
+    // THEN attach `expect(promise).rejects` — let the request settle
+    // (reject) on a microtask turn where nothing was listening yet, which
+    // Node/Vitest flags as an unhandled rejection. Every assertion in this
+    // test still passed, but the unhandled rejection made the whole test
+    // run exit non-zero, which would silently fail CI regardless of what
+    // the actual test suite reported.
+    const assertion = expect(promise).rejects.toBeTruthy()
     await vi.advanceTimersByTimeAsync(800)
-    await expect(promise).rejects.toBeTruthy()
+    await assertion
     expect(calls.length).toBe(2) // original + exactly one retry, not more
   })
 })

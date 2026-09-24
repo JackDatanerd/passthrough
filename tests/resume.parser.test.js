@@ -80,6 +80,19 @@ describe('serializeResumeData', () => {
 // ── zip-bomb defence ───────────────────────────────────────────────────────
 describe('extractText — zip bomb', () => {
   const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+  // BUG FIX (audit): this test's own fixture — compressing a 300MB buffer
+  // with JSZip at DEFLATE level 9, just to build the malicious input —
+  // is CPU-bound work that isn't part of what's being tested, and on a
+  // slower machine or a loaded CI runner it alone took ~5.3s, blowing past
+  // Vitest's default 5000ms per-test timeout before extractText() was even
+  // called. That's a false failure of the TEST, not a regression in the
+  // zip-bomb defence: extractText()'s own elapsed time is measured
+  // separately below (t0 starts after the fixture exists) and asserted
+  // under 5s on its own — that assertion is what actually verifies the
+  // defence is fast, and is untouched. The explicit 20s timeout here only
+  // gives the (irrelevant-to-correctness) fixture-generation step enough
+  // headroom to finish on a slow box without the test's real assertions
+  // ever being allowed to loosen.
   it('abandons a 300MB-inflating .docx immediately instead of inflating it (bounded memory, fast)', async () => {
     const z = new JSZip()
     // ~300MB of "A" compresses to a few hundred KB — a valid archive well under the 5MB upload cap.
@@ -94,9 +107,9 @@ describe('extractText — zip bomb', () => {
     const grew = process.memoryUsage().rss - before
 
     expect(text).toBe('')                                 // rejected → the scan reports an unparseable resume
-    expect(elapsed).toBeLessThan(5000)
+    expect(elapsed).toBeLessThan(5000)                    // the actual defence, still held to its original bar
     expect(grew).toBeLessThan(150 * 1024 * 1024)          // nowhere near the 300MB (or more) it claimed
-  })
+  }, 20_000)
   it('still extracts an ordinary .docx', async () => {
     const z = new JSZip()
     z.file('word/document.xml', '<w:document><w:body><w:p><w:r><w:t>' + 'Senior engineer with real experience building systems. '.repeat(5) + '</w:t></w:r></w:p></w:body></w:document>')

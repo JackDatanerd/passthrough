@@ -3,6 +3,7 @@ import { useSearchParams, Link } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
+import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
@@ -122,7 +123,7 @@ export default function PartnerPayoutDetails() {
                 </button>
               </div>
 
-              <div className="flex flex-col gap-4">
+              <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 {method === 'BANK' ? (
                   <>
                     <Input label="Bank name" value={bankName} onChange={e => setBankName(e.target.value)} />
@@ -139,10 +140,10 @@ export default function PartnerPayoutDetails() {
 
                 {error && <p className="text-sm text-red-600">{error}</p>}
 
-                <Button onClick={handleSubmit} loading={saving} className="w-full">
+                <Button type="submit" loading={saving} className="w-full">
                   Save payout details
                 </Button>
-              </div>
+              </Form>
             </>
           )}
         </div>
