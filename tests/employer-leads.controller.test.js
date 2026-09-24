@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { createHash } from 'node:crypto'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 
@@ -8,17 +9,22 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 const ID1 = '11111111-1111-4111-8111-111111111111'
 const ID2 = '22222222-2222-4222-8222-222222222222'
 const HOURS = h => h * 60 * 60 * 1000
+const SECRET = 'test-secret-'.padEnd(40, 'x')
+const sha = (email) => createHash('sha256').update(email).digest('hex')
 
-function setup({ leads = [], supply, kv = {} } = {}) {
-  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], inserts: 0, kv }
+function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true } = {}) {
+  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], inserts: 0, kv,
+    suppressed: new Set(suppressed), audit: [] }
   let seq = 0
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
       const rows = state.leads
-      const match = r => q.filters.every(([op, col, val]) => {
+      const match = r => q.filters.every((f) => {
+        const [op, col, val] = f
         if (op === 'eq') return r[col] === val
         if (op === 'in') return val.includes(r[col])
         if (op === 'is') return (r[col] ?? null) === val
+        if (op === 'not') return f[2] === 'is' ? (r[col] ?? null) !== f[3] : true
         return true
       })
       if (q.op === 'insert') {
@@ -51,6 +57,13 @@ function setup({ leads = [], supply, kv = {} } = {}) {
         return { error: { code: 'PGRST103', message: 'Requested range not satisfiable' } }
       return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : undefined), count: filtered.length, error: null }
     }
+    if (q.table === 'employer_lead_suppressions') {
+      const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
+      if (q.op === 'upsert') { state.suppressed.add(q.values.email_hash); return { data: null, error: null } }
+      if (q.op === 'delete') { state.suppressed.delete(h); return { data: null, error: null } }
+      return { data: state.suppressed.has(h) ? { email_hash: h } : null, error: null }
+    }
+    if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     if (q.op === 'rpc' && q.name === 'verified_candidate_counts')
       return supply === 'error' ? { error: { message: 'no such function' } } : { data: supply || [], error: null }
     return undefined
@@ -60,14 +73,16 @@ function setup({ leads = [], supply, kv = {} } = {}) {
     'services/email.service.js': {
       sendOwnerNotice: async (env, subject, message) => { state.notices.push({ subject, message }) },
       sendOwnerAlert: async (...a) => { state.alerts.push(a) },
-      sendEmployerLeadAck: async (env, sb, to, name, field) => { state.acks.push({ to, name, field }) },
+      sendEmployerLeadAck: async (env, sb, to, name, field, links) => { state.acks.push({ to, name, field }); state.ackLinks.push(links); return ackResult },
     },
   })
-  const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } } }
+  const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev' }
   const c = (over = {}) => {
     const waits = []
     return {
       env,
+      get: (k) => k === 'user' ? { id: 'admin-1', role: 'ADMIN' } : undefined,
       executionCtx: { waitUntil: p => waits.push(p) },
       req: { json: async () => over.body, param: k => (over.params || {})[k], query: k => (over.query || {})[k] },
       json: (body, status = 200) => ({ body, status }),
@@ -132,11 +147,18 @@ describe('createLead — new lead', () => {
     await expect(submit(valid({ company: '\n\t' }))).rejects.toBeTruthy()
   })
 
-  it('drops an unusable verification code and unknown sources instead of trusting them', async () => {
+  it('drops an unusable verification code, and an unknown source falls back to the default instead of losing the lead', async () => {
     t = setup()
-    await expect(submit(valid({ source: 'evil' }))).rejects.toBeTruthy()
-    await submit(valid({ verificationCode: 'not a code!!' }))
+    await submit(valid({ source: 'evil', verificationCode: 'not a code!!' }))
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.leads[0].source).toBe('verification_page')
     expect(t.state.leads[0].source_code).toBeNull()
+  })
+  it('a non-string source (a number, an object) is also just dropped', async () => {
+    t = setup()
+    await submit(valid({ source: 42 }))
+    await submit(valid({ email: 'b@acme.com', source: { $ne: 1 } }))
+    expect(t.state.leads.map(l => l.source)).toEqual(['verification_page', 'verification_page'])
   })
 
   it('a filled honeypot looks successful but stores and sends nothing', async () => {
@@ -369,10 +391,32 @@ describe('createLead — acknowledgement to the submitter', () => {
     await submit(valid({ roleCategory: 'data_science' }))
     expect(t.state.acks).toEqual([{ to: 'dana@acme.com', name: 'Dana', field: 'Data Science' }])
   })
-  it('never re-sends on a resubmission, or for a honeypot hit', async () => {
-    t = setup({ leads: [mkLead({ email: 'dana@acme.com', last_submitted_at: new Date(Date.now() - HOURS(30)).toISOString() })] })
+  it('carries a signed confirm link and a signed remove link that verify only for their own purpose and address', async () => {
+    t = setup()
+    await submit(valid())
+    const { confirmUrl, removeUrl } = t.state.ackLinks[0]
+    expect(confirmUrl).toMatch(/^https:\/\/passthrough\.dev\/employer\/confirm\?token=[\w.-]+$/)
+    expect(removeUrl).toMatch(/^https:\/\/passthrough\.dev\/employer\/remove\?token=[\w.-]+$/)
+    const { verifyLeadToken } = await import('../src/lib/leadTokens.js')
+    const confirmTok = new URL(confirmUrl).searchParams.get('token')
+    const removeTok = new URL(removeUrl).searchParams.get('token')
+    expect(await verifyLeadToken(SECRET, 'confirm', confirmTok)).toBe('dana@acme.com')
+    expect(await verifyLeadToken(SECRET, 'remove', removeTok)).toBe('dana@acme.com')
+    expect(await verifyLeadToken(SECRET, 'remove', confirmTok)).toBeNull()   // purposes are not interchangeable
+  })
+  it('never re-sends for a CONFIRMED lead resubmitting, or for a honeypot hit', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: '2026-02-01T00:00:00.000Z', last_submitted_at: new Date(Date.now() - HOURS(30)).toISOString() })] })
     await submit(valid())
     await submit(valid({ email: 'bot@x.com', website: 'http://spam' }))
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('re-sends the confirmation when an UNCONFIRMED lead resubmits — but not for a dismissed (ARCHIVED) one', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    await submit(valid())
+    expect(t.state.acks).toHaveLength(1)
+    t.restore()
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', status: 'ARCHIVED' })] })
+    await submit(valid())
     expect(t.state.acks).toHaveLength(0)
   })
   it('has its own hourly budget, and a failing send never fails the submission', async () => {
@@ -487,5 +531,239 @@ describe('adminBulkUpdateLeads', () => {
       { ids: Array.from({ length: 101 }, () => ID1), action: 'delete' },
     ]) await expect(t.mod.adminBulkUpdateLeads(t.c({ body }))).rejects.toBeTruthy()
     expect(t.db.calls).toHaveLength(0)
+  })
+})
+
+// ── Fix round: address confirmation, one-click removal, audit trail ──────────
+
+const tokenFor = async (purpose, email) => (await import('../src/lib/leadTokens.js')).signLeadToken(SECRET, purpose, email)
+const postToken = (fn, token) => fn(t.c({ body: { token } }))
+
+describe('createLead — do-not-contact list', () => {
+  it('silently ignores a suppressed address: same success response, nothing stored, nobody emailed', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    const res = await submit(valid())
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.notices).toHaveLength(0)
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('matches case-insensitively (the address is lowercased before hashing)', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    await submit(valid({ email: 'DANA@ACME.COM' }))
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('a deployment that has not run migration 0034 yet still captures the lead (fails open, loudly) instead of 500ing the form', async () => {
+    t = setup()
+    t.restore()
+    const inner = createFakeSupabase(q => {
+      if (q.table === 'employer_lead_suppressions') return { error: { code: '42P01', message: 'relation does not exist' } }
+      if (q.table === 'employer_leads' && q.op === 'insert') return { data: null, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => inner }, 'services/email.service.js': { sendOwnerNotice: async () => {}, sendEmployerLeadAck: async () => true } })
+    t.restore = restore
+    const ctx = t.c({ body: valid() })
+    const res = await mod.createLead(ctx); await Promise.all(ctx._waits)
+    expect(res.body.success).toBe(true)
+    expect(inner.calls.some(q => q.table === 'employer_leads' && q.op === 'insert')).toBe(true)
+  })
+  it('a real (non-missing-table) lookup error is thrown, not treated as "not suppressed"', async () => {
+    t = setup()
+    t.restore()
+    const inner = createFakeSupabase(q => q.table === 'employer_lead_suppressions' ? { error: { code: '08006', message: 'connection failure' } } : undefined)
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => inner }, 'services/email.service.js': {} })
+    t.restore = restore
+    await expect(mod.createLead(t.c({ body: valid() }))).rejects.toBeTruthy()
+  })
+  it('does not affect other addresses', async () => {
+    t = setup({ suppressed: [sha('someone-else@acme.com')] })
+    await submit(valid())
+    expect(t.state.leads).toHaveLength(1)
+  })
+})
+
+describe('confirmLead', () => {
+  it('marks the lead confirmed, tells the owner, and reports the status', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const ctx = t.c({ body: { token: await tokenFor('confirm', 'dana@acme.com') } })
+    const res = await t.mod.confirmLead(ctx); await Promise.all(ctx._waits)
+    expect(res.body).toMatchObject({ success: true, status: 'confirmed' })
+    expect(t.state.leads[0].confirmed_at).toBeTruthy()
+    expect(t.state.notices.map(n => n.subject)).toEqual(['Employer lead confirmed'])
+  })
+  it('is idempotent: a second click changes nothing and says so', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: '2026-02-01T00:00:00.000Z' })] })
+    const res = await postToken(t.mod.confirmLead, await tokenFor('confirm', 'dana@acme.com'))
+    expect(res.body).toMatchObject({ success: true, status: 'already' })
+    expect(t.state.leads[0].confirmed_at).toBe('2026-02-01T00:00:00.000Z')
+    expect(t.state.notices).toHaveLength(0)
+  })
+  it('says not_found for an address with no lead (deleted / removed) rather than claiming a confirmation', async () => {
+    t = setup()
+    const res = await postToken(t.mod.confirmLead, await tokenFor('confirm', 'gone@acme.com'))
+    expect(res.body).toMatchObject({ success: true, status: 'not_found' })
+  })
+  it('rejects a removal token, a forged token, garbage and a token signed with another secret', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const { signLeadToken } = await import('../src/lib/leadTokens.js')
+    for (const bad of [
+      await tokenFor('remove', 'dana@acme.com'),
+      (await tokenFor('confirm', 'dana@acme.com')).slice(0, -2) + 'AA',
+      await signLeadToken('another-secret-'.padEnd(40, 'y'), 'confirm', 'dana@acme.com'),
+      'not-a-token-at-all',
+    ]) {
+      const res = await postToken(t.mod.confirmLead, bad)
+      expect(res.status).toBe(400)
+    }
+    expect(t.state.leads[0].confirmed_at).toBeUndefined()
+  })
+  it('a token for one address cannot confirm another', async () => {
+    t = setup({ leads: [mkLead({ email: 'victim@acme.com' })] })
+    const res = await postToken(t.mod.confirmLead, await tokenFor('confirm', 'attacker@evil.com'))
+    expect(res.body.status).toBe('not_found')
+    expect(t.state.leads[0].confirmed_at).toBeUndefined()
+  })
+  it('a missing or oversize token is a validation error, not a crash', async () => {
+    t = setup()
+    await expect(postToken(t.mod.confirmLead, undefined)).rejects.toBeTruthy()
+    await expect(postToken(t.mod.confirmLead, 'a'.repeat(5000))).rejects.toBeTruthy()
+  })
+})
+
+describe('removeLead', () => {
+  it('deletes the lead AND records the do-not-contact hash (hash first, so a half-failure retries safely)', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const res = await postToken(t.mod.removeLead, await tokenFor('remove', 'dana@acme.com'))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+    const ops = t.db.calls.map(q => `${q.table}:${q.op}`)
+    expect(ops.indexOf('employer_lead_suppressions:upsert')).toBeLessThan(ops.indexOf('employer_leads:delete'))
+  })
+  it('works even when the lead is already gone (an old email, an admin delete), and is repeatable', async () => {
+    t = setup()
+    const token = await tokenFor('remove', 'dana@acme.com')
+    expect((await postToken(t.mod.removeLead, token)).body.success).toBe(true)
+    expect((await postToken(t.mod.removeLead, token)).body.success).toBe(true)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+  })
+  it('after removal, resubmitting the form does not bring them back', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    await postToken(t.mod.removeLead, await tokenFor('remove', 'dana@acme.com'))
+    await submit(valid())
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('rejects a confirm token and a forged one, removing nothing', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    expect((await postToken(t.mod.removeLead, await tokenFor('confirm', 'dana@acme.com'))).status).toBe(400)
+    expect((await postToken(t.mod.removeLead, 'abcdefghij.klmnopqrst.uvwxyz')).status).toBe(400)
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.suppressed.size).toBe(0)
+  })
+})
+
+describe('adminCreateLead — confirmation and do-not-contact', () => {
+  const body = (over = {}) => ({ name: 'Ann', company: 'Co', email: 'ann@co.com', ...over })
+  it('an admin-entered lead is stored as already confirmed', async () => {
+    t = setup()
+    const res = await t.mod.adminCreateLead(t.c({ body: body() }))
+    expect(res.status).toBe(201)
+    expect(t.state.leads[0].confirmed_at).toBeTruthy()
+    expect(res.body.data.confirmedAt).toBeTruthy()
+  })
+  it('refuses an address on the do-not-contact list with a machine-readable code', async () => {
+    t = setup({ suppressed: [sha('ann@co.com')] })
+    const res = await t.mod.adminCreateLead(t.c({ body: body() }))
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('REMOVAL_REQUESTED')
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('adds it anyway on an explicit override, and lifts the suppression', async () => {
+    t = setup({ suppressed: [sha('ann@co.com')] })
+    const res = await t.mod.adminCreateLead(t.c({ body: body({ overrideRemoval: true }) }))
+    expect(res.status).toBe(201)
+    expect(t.state.suppressed.size).toBe(0)
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.create', detail: { liftedRemoval: true } })
+  })
+})
+
+describe('adminRequestConfirmation', () => {
+  it('sends the confirmation to an unconfirmed lead (bypassing only the public form budget) and audits it', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', role_category: 'legal' })], kv: { [`rl:leadack:${Math.floor(Date.now() / 3_600_000)}`]: '30' } })
+    const res = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.acks).toEqual([{ to: 'dana@acme.com', name: 'A', field: 'Legal' }])
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.request_confirmation', target_id: ID1, detail: { sent: true } })
+  })
+  it('409s an already-confirmed lead, 404s an unknown one, 400s a bad id', async () => {
+    t = setup({ leads: [mkLead({ confirmed_at: '2026-02-01T00:00:00.000Z' })] })
+    expect((await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))).status).toBe(409)
+    expect((await t.mod.adminRequestConfirmation(t.c({ params: { id: ID2 } }))).status).toBe(404)
+    expect((await t.mod.adminRequestConfirmation(t.c({ params: { id: 'nope' } }))).status).toBe(400)
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('reports a throttled / failed send honestly instead of claiming success', async () => {
+    t = setup({ leads: [mkLead()], ackResult: false })
+    const res = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
+    expect(res.status).toBe(429)
+    expect(res.body.success).toBe(false)
+  })
+})
+
+describe('adminListLeads / export — confirmation state', () => {
+  const mixed = () => [
+    mkLead({ email: 'yes@x.com', confirmed_at: '2026-02-01T00:00:00.000Z' }),
+    mkLead({ id: ID2, email: 'no@x.com' }),
+  ]
+  it('filters by confirmed=yes / confirmed=no and ignores anything else', async () => {
+    t = setup({ leads: mixed() })
+    expect((await t.mod.adminListLeads(t.c({ query: { confirmed: 'yes' } }))).body.data.map(l => l.email)).toEqual(['yes@x.com'])
+    expect((await t.mod.adminListLeads(t.c({ query: { confirmed: 'no' } }))).body.data.map(l => l.email)).toEqual(['no@x.com'])
+    expect((await t.mod.adminListLeads(t.c({ query: { confirmed: 'maybe' } }))).body.data).toHaveLength(2)
+  })
+  it('reports how many leads are unconfirmed, whatever filter is active', async () => {
+    t = setup({ leads: mixed() })
+    const res = await t.mod.adminListLeads(t.c({ query: { confirmed: 'yes' } }))
+    expect(res.body.meta.unconfirmed).toBe(1)
+  })
+  it('the CSV has an "Email confirmed at" column', async () => {
+    t = setup({ leads: mixed() })
+    const res = await t.mod.adminExportLeads(t.c({}))
+    expect(res.raw).toContain('"Email confirmed at"')
+    expect(res.raw).toContain('2026-02-01T00:00:00.000Z')
+  })
+})
+
+describe('admin audit trail', () => {
+  it('records update / delete / bulk / export with ids, counts and field NAMES — never the values typed', async () => {
+    t = setup({ leads: [mkLead(), mkLead({ id: ID2, email: 'b@b.com' })] })
+    await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { status: 'CONTACTED', notes: 'secret note', name: 'New Name' } }))
+    await t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID1, ID2], action: 'setStatus', status: 'ARCHIVED' } }))
+    await t.mod.adminExportLeads(t.c({ query: { search: 'someone@corp.com', status: 'NEW' } }))
+    await t.mod.adminDeleteLead(t.c({ params: { id: ID2 } }))
+    await t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID1], action: 'delete' } }))
+    expect(t.state.audit.map(a => a.action)).toEqual(['lead.update', 'lead.bulk_status', 'lead.export', 'lead.delete', 'lead.bulk_delete'])
+    expect(t.state.audit.every(a => a.actor_id === 'admin-1')).toBe(true)
+    expect(t.state.audit[0].detail).toEqual({ fields: ['status', 'notes', 'name'], status: 'CONTACTED' })
+    expect(t.state.audit[1].detail).toEqual({ status: 'ARCHIVED', ids: [ID1, ID2] })
+    expect(t.state.audit[2].detail).toMatchObject({ searched: true, filters: { status: 'NEW' } })
+    const blob = JSON.stringify(t.state.audit)
+    for (const secret of ['secret note', 'New Name', 'someone@corp.com', 'b@b.com']) expect(blob).not.toContain(secret)
+  })
+  it('an audit-write failure never fails the admin action that already happened', async () => {
+    t = setup({ leads: [mkLead()] })
+    t.restore()
+    const inner = createFakeSupabase(q => {
+      if (q.table === 'admin_audit_log') return { error: { message: 'audit table missing' } }
+      if (q.table === 'employer_leads' && q.op === 'delete') return { data: { id: ID1 }, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => inner }, 'services/email.service.js': {} })
+    t.restore = restore
+    const res = await mod.adminDeleteLead(t.c({ params: { id: ID1 } }))
+    expect(res.status).toBe(200)
   })
 })

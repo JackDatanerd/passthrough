@@ -37,11 +37,16 @@ describe('employer-leads routes', () => {
   const app = () => mount('routes/employer-leads.routes.js', 'controllers/employer-leads.controller.js')
   const adminRoutes = [
     ['GET', ''], ['GET', '/export.csv'], ['POST', '/manual'], ['POST', '/bulk'],
-    [`PATCH`, `/${ID}`], [`DELETE`, `/${ID}`],
+    [`PATCH`, `/${ID}`], [`DELETE`, `/${ID}`], [`POST`, `/${ID}/request-confirmation`],
   ]
   it('the public form needs no login', async () => {
     const a = app()
     expect(await call(a, 'POST', '', { name: 'x' })).toEqual({ status: 200, json: { handler: 'createLead' } })
+  })
+  it('the confirm / remove links from the acknowledgement email need no login either', async () => {
+    const a = app()
+    expect(await call(a, 'POST', '/confirm', { token: 'x' })).toEqual({ status: 200, json: { handler: 'confirmLead' } })
+    expect(await call(a, 'POST', '/remove', { token: 'x' })).toEqual({ status: 200, json: { handler: 'removeLead' } })
   })
   it('every admin route rejects anonymous callers (401) and non-admins (403)', async () => {
     const a = app()
@@ -58,6 +63,7 @@ describe('employer-leads routes', () => {
     expect((await call(a, 'POST', '/bulk', {})).json.handler).toBe('adminBulkUpdateLeads')
     expect((await call(a, 'GET', '/export.csv')).json.handler).toBe('adminExportLeads')
     expect((await call(a, 'PATCH', `/${ID}`, {})).json.handler).toBe('adminUpdateLeadStatus')
+    expect((await call(a, 'POST', `/${ID}/request-confirmation`, {})).json.handler).toBe('adminRequestConfirmation')
     expect((await call(a, 'PATCH', '/bulk', {})).status).toBe(400)   // a malformed :id, not the bulk handler
   })
 })

@@ -5,23 +5,25 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 const NOW = Date.parse('2026-09-24T12:00:00Z')
 const DAY = 86400000
 
-function setup({ supply = [], leads = [], state = null, rpcError = null, leadError = null } = {}) {
+function setup({ supply = [], leads = [], state = null, rpcError = null, leadError = null, delivered = true } = {}) {
   const notices = []
   const store = new Map()
   if (state) store.set('leadmatch:state', JSON.stringify(state))
   const db = createFakeSupabase(q => {
-    if (q.op === 'rpc') return rpcError ? { error: rpcError } : { data: supply, error: null }
-    if (q.table === 'employer_leads') return leadError ? { error: leadError } : { data: leads, error: null }
+    if (q.op === 'rpc' && q.name === 'verified_candidate_counts') return rpcError ? { error: rpcError } : { data: supply, error: null }
+    if (q.op === 'rpc' && q.name === 'open_lead_counts') return leadError ? { error: leadError } : { data: leads, error: null }
   })
   const { mod, restore } = loadWithStubs('services/lead-match.service.js', {
-    'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }) } },
+    'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }); return delivered } },
   })
   const kv = { get: async k => store.get(k) ?? null, put: async (k, v) => { store.set(k, v) } }
   const env = { RATE_LIMIT_KV: kv, FRONTEND_URL: 'https://passthrough.dev' }
   return { mod, restore, notices, store, db, env, saved: () => JSON.parse(store.get('leadmatch:state')) }
 }
 const sup = (cat, n) => ({ role_category: cat, candidate_count: String(n) })
-const waiting = (...cats) => cats.map(role_category => ({ role_category }))
+// open_lead_counts() rows: one per field, already tallied by the database.
+const waiting = (...cats) => Object.entries(cats.reduce((m, c) => ({ ...m, [c]: (m[c] || 0) + 1 }), {}))
+  .map(([role_category, n]) => ({ role_category, lead_count: String(n) }))
 
 let t
 afterEach(() => t?.restore())
@@ -49,13 +51,24 @@ describe('runLeadMatchSweep', () => {
     expect(t.notices[0].message).not.toContain('Design')
     expect(t.saved()).toEqual({ supply: { sales: 2 }, sentAt: NOW })
   })
-  it('only counts open (NEW/CONTACTED) leads that have a field', async () => {
+  it('takes waiting-lead counts from the database (open_lead_counts) instead of tallying a capped row fetch', async () => {
     t = setup({ supply: [sup('sales', 1)], leads: [] })
     await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
-    const q = t.db.calls.find(c => c.table === 'employer_leads')
-    expect(q.filters.find(f => f[0] === 'in' && f[1] === 'status')[2]).toEqual(['NEW', 'CONTACTED'])
-    expect(q.filters.find(f => f[0] === 'not' && f[1] === 'role_category')).toBeTruthy()
+    expect(t.db.calls.some(c => c.op === 'rpc' && c.name === 'open_lead_counts')).toBe(true)
+    expect(t.db.calls.some(c => c.table === 'employer_leads')).toBe(false)
     expect(t.notices).toHaveLength(0)
+  })
+  it('counts every waiting lead, however many (a tally of 1500 is not clipped at a 1000-row response cap)', async () => {
+    t = setup({ supply: [sup('sales', 1)], leads: [{ role_category: 'sales', lead_count: '1500' }] })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices[0].message).toContain('Sales: 1500 open leads')
+  })
+  it('records nothing when the owner notice was NOT delivered (no owner inbox), so a later run still announces it', async () => {
+    t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), delivered: false })
+    expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW)).toEqual({ announced: 0, pending: 1 })
+    expect(t.store.get('leadmatch:state')).toBeUndefined()      // baseline and sentAt untouched
+    t.restore(); t = setup({ supply: [sup('sales', 2)], leads: waiting('sales') })
+    expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW + 3600_000)).toEqual({ announced: 1, pending: 0 })
   })
   it('does not repeat itself when supply has not grown', async () => {
     t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), state: { supply: { sales: 2 }, sentAt: NOW - 3 * DAY } })

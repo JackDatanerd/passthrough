@@ -440,7 +440,7 @@ export default function Verify() {
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
               {leadSent ? (
                 <p className="text-sm text-green-700 font-medium">
-                  You're on the list.
+                  Almost there — check your inbox for an email from us and click the link to confirm your address.
                 </p>
               ) : !hmExpanded ? (
                 /* Collapsed trigger */

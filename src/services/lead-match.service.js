@@ -18,8 +18,6 @@ const emailService = require('./email.service')
 const STATE_KEY = 'leadmatch:state'
 const MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
 const STATE_TTL_SECONDS = 400 * 24 * 60 * 60
-const OPEN_STATUSES = ['NEW', 'CONTACTED']
-const LEAD_SCAN_LIMIT = 5000
 
 const label = (cat) => cat.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
 
@@ -53,11 +51,12 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
   if (rpcErr) return { error: rpcErr.message }
   const supply = Object.fromEntries((rows || []).map(r => [r.role_category, Number(r.candidate_count)]))
 
-  const { data: leads, error: leadErr } = await supabase
-    .from('employer_leads').select('role_category').in('status', OPEN_STATUSES).not('role_category', 'is', null).limit(LEAD_SCAN_LIMIT)
+  // Counted in the database (open = NEW or CONTACTED, with a field). This used
+  // to SELECT up to 5000 rows and tally in JS, but PostgREST answers at most
+  // its max-rows (1000 by default), so the count silently stopped there.
+  const { data: leadRows, error: leadErr } = await supabase.rpc('open_lead_counts')
   if (leadErr) return { error: leadErr.message }
-  const waiting = {}
-  for (const l of leads || []) waiting[l.role_category] = (waiting[l.role_category] || 0) + 1
+  const waiting = Object.fromEntries((leadRows || []).map(r => [r.role_category, Number(r.lead_count)]))
 
   const state = await loadState(kv)
 
@@ -76,12 +75,21 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
     const lines = due.map(a =>
       `${label(a.cat)}: ${a.leads} open lead${a.leads === 1 ? '' : 's'} · ${a.candidates} verified candidate${a.candidates === 1 ? '' : 's'}` +
       `${a.before ? ` (was ${a.before})` : ''}\n  ${base}/admin/leads?field=${a.cat}`)
-    await emailService.sendOwnerNotice(env, 'Verified candidates now available for waiting leads',
+    const delivered = await emailService.sendOwnerNotice(env, 'Verified candidates now available for waiting leads',
       `Fields where leads are waiting and verified supply has grown:\n\n${lines.join('\n\n')}`)
-    for (const a of due) state.supply[a.cat] = a.candidates
-    state.sentAt = now
-    sent = true
-    dirty = true
+    // sendOwnerNotice answers false (it does not throw) when there is no owner
+    // inbox configured. Recording the announcement anyway would swallow it for
+    // good — adding OWNER_ALERT_EMAIL later would never re-announce fields
+    // whose supply had already been "announced" to nobody. Not delivered =
+    // not announced: state stays put and the next sweep tries again.
+    if (delivered) {
+      for (const a of due) state.supply[a.cat] = a.candidates
+      state.sentAt = now
+      sent = true
+      dirty = true
+    } else {
+      console.warn('lead-match: digest not delivered (no owner inbox configured?) — will retry on the next sweep')
+    }
   }
   if (dirty) await kv.put(STATE_KEY, JSON.stringify(state), { expirationTtl: STATE_TTL_SECONDS })
   return { announced: sent ? due.length : 0, pending: sent ? 0 : due.length }

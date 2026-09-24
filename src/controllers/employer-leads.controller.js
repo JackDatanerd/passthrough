@@ -6,6 +6,9 @@ const constants = require('../config/constants')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const { normalizeCode, isPlausibleCode } = require('../lib/verification')
 const { isRangeError } = require('../lib/db')
+const { sha256 } = require('../lib/crypto')
+const { signLeadToken, verifyLeadToken } = require('../lib/leadTokens')
+const { logAdminAction } = require('../lib/adminAudit')
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 // Statuses match lead_status_enum (migration 0018). Sources are whitelisted
@@ -55,7 +58,10 @@ const schema = z.object({
   // which it is. `roleTitle` is the free-text job title.
   roleCategory: text(100).nullish(),
   roleTitle:    text(100).nullish(),
-  source:       z.enum(LEAD_SOURCES).optional(),
+  // A value outside the whitelist (a stale cached client, a renamed form) is
+  // dropped to the default below rather than rejecting the whole submission:
+  // a mislabelled source is a reporting blemish, a lost lead is a lost lead.
+  source:       z.unknown().transform(v => (typeof v === 'string' && LEAD_SOURCES.includes(v)) ? v : undefined),
   // Which candidate's verification page the form was on. Attribution only —
   // validated against the SAME code-shape check lib/verification.js uses for
   // the public /v/:code route itself (SHORT_CODE_CHARS/SHORT_CODE_LENGTH),
@@ -88,12 +94,13 @@ function resolveRole(data) {
 // flooding the owner's inbox; the leads are still stored and counted in the
 // admin list either way.
 //
-// The submitter gets ONE acknowledgement, and only for a brand-new lead: it
-// confirms the request landed, tells them how to be removed, and makes a
-// mistyped address visible (it bounces in the mail log). The form is public,
-// so the recipient can be anyone — hence: new leads only (a resubmission never
-// re-sends), a per-recipient monthly cap in email.service.js, and its own
-// hourly budget here.
+// The submitter gets an acknowledgement that doubles as the address
+// confirmation: a signed "confirm" link (proof the inbox is theirs) and a
+// signed one-click "remove me" link. The form is public, so the recipient can
+// be anyone — hence: sent for a brand-new lead, and again only when an
+// UNCONFIRMED lead resubmits (a person who never saw the first one); a
+// per-recipient monthly cap in email.service.js; and its own hourly budget
+// here. A confirmed lead's resubmission never re-sends anything.
 const NOTICE_BUDGET_PER_HOUR = 20
 const ACK_BUDGET_PER_HOUR = 30
 const RESUBMIT_NOTICE_COOLDOWN_MS = 24 * 60 * 60 * 1000
@@ -122,15 +129,31 @@ async function sendNotice(env, subject, message) {
 
 const fieldLabel = (cat) => cat ? cat.replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()) : ''
 
-async function sendAck(env, row) {
+// The two links every acknowledgement carries. Built here (not in the email
+// service) because signing needs the secret and the frontend origin.
+async function leadLinks(env, email) {
+  const [confirmTok, removeTok] = await Promise.all([
+    signLeadToken(env.JWT_SECRET, 'confirm', email),
+    signLeadToken(env.JWT_SECRET, 'remove', email)
+  ])
+  return {
+    confirmUrl: `${env.FRONTEND_URL}/employer/confirm?token=${confirmTok}`,
+    removeUrl:  `${env.FRONTEND_URL}/employer/remove?token=${removeTok}`
+  }
+}
+
+// Returns true only when the email actually went out.
+async function sendAck(env, row, { skipBudget = false } = {}) {
   try {
-    if (!(await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR))) {
+    if (!skipBudget && !(await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR))) {
       console.warn(`Employer-lead acknowledgement budget (${ACK_BUDGET_PER_HOUR}/h) exhausted — skipped`)
-      return
+      return false
     }
-    await emailService.sendEmployerLeadAck(env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category))
+    return await emailService.sendEmployerLeadAck(
+      env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email))
   } catch (err) {
     console.error('Employer-lead acknowledgement failed:', err.message)
+    return false
   }
 }
 
@@ -155,6 +178,26 @@ async function announceNewLead(c, row) {
 
 const ok = (c) => c.json({ success: true, message: "We'll be in touch." })
 
+// An address that used its "remove me" link is never re-added by the public
+// form (see removeLead). The address is stored only as a SHA-256 hash.
+//
+// Deploy-order safety: if the migration that creates the table (0034) has not
+// run yet, capturing the lead matters more than honouring a list that cannot
+// exist yet — log it loudly and carry on rather than 500 the public form.
+const MISSING_RELATION = ['42P01', 'PGRST205']
+async function isSuppressed(supabase, email) {
+  const { data, error } = await supabase
+    .from('employer_lead_suppressions').select('email_hash').eq('email_hash', await sha256(email)).maybeSingle()
+  if (error) {
+    if (MISSING_RELATION.includes(error.code)) {
+      console.error('employer_lead_suppressions does not exist — run migration 0034. Treating the address as not suppressed.')
+      return false
+    }
+    throw error
+  }
+  return !!data
+}
+
 // POST /api/employer-leads — public, rate-limited.
 //
 // Resubmissions (same email) never rewrite what's already on the lead: the
@@ -170,6 +213,9 @@ async function createLead(c) {
   if (data.website) return ok(c)   // honeypot tripped: pretend success, store nothing
 
   const supabase = getSupabase(c.env)
+  // Asked to be removed: pretend success, store and send nothing (same
+  // response as any other submission, so the form reveals nothing).
+  if (await isSuppressed(supabase, data.email)) return ok(c)
   const row = {
     name:    data.name,
     company: data.company,
@@ -227,6 +273,10 @@ async function createLead(c) {
     return ok(c)
   }
 
+  // Never confirmed and not dismissed: they may simply not have seen the first
+  // email, so send it again (capped per recipient in email.service.js).
+  if (!existing.confirmed_at && existing.status !== 'ARCHIVED') await runInBackground(c, sendAck(c.env, existing))
+
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
   const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
@@ -262,15 +312,19 @@ function parseFilters(c) {
     search: sanitizeSearchTerm(c.req.query('search')),
     status: LEAD_STATUSES.includes(status) ? status : null,
     field:  FIELD_FILTERS.includes(field) ? field : null,
+    // yes = the address was confirmed, no = still unconfirmed.
+    confirmed: ['yes', 'no'].includes(c.req.query('confirmed')) ? c.req.query('confirmed') : null,
     sort
   }
 }
 
-function applyFilters(query, { search, status, field }) {
+function applyFilters(query, { search, status, field, confirmed }) {
   if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%,role_title.ilike.%${search}%`)
   if (status) query = query.eq('status', status)
   if (field === 'none') query = query.is('role_category', null)
   else if (field) query = query.eq('role_category', field)
+  if (confirmed === 'yes') query = query.not('confirmed_at', 'is', null)
+  else if (confirmed === 'no') query = query.is('confirmed_at', null)
   return query
 }
 
@@ -322,6 +376,14 @@ async function adminListLeads(c) {
     counts[s] = n || 0
   }))
 
+  // How many leads still have an unconfirmed address (also unaffected by the
+  // current filters) — the number worth acting on before anyone is emailed.
+  // Optional garnish like the supply figure: a deployment that has not run
+  // migration 0034 yet must still get its list.
+  const { count: unconfirmed, error: uErr } = await supabase
+    .from('employer_leads').select('id', { count: 'exact', head: true }).is('confirmed_at', null)
+  if (uErr) console.error('employer-leads: could not count unconfirmed leads:', uErr.message)
+
   // Verified-candidate supply per field. Optional garnish: if the migration
   // that defines it hasn't run, the list must still load.
   let supply = null
@@ -332,7 +394,7 @@ async function adminListLeads(c) {
   } catch (_) { supply = null }
 
   return c.json({ success: true, data: (data || []).map(leadRowToCamel),
-    meta: { page, pageSize, total: count || 0, counts, candidateSupply: supply } })
+    meta: { page, pageSize, total: count || 0, counts, unconfirmed: uErr ? null : (unconfirmed || 0), candidateSupply: supply } })
 }
 
 // CSV cells are always quoted, and any cell that starts with a character a
@@ -350,7 +412,8 @@ const CSV_COLUMNS = [
   ['Source', r => r.source], ['Verification page', r => r.source_code],
   ['Status', r => r.status], ['Notes', r => r.notes],
   ['Submissions', r => r.submission_count], ['First received', r => r.created_at],
-  ['Last submitted', r => r.last_submitted_at], ['Contacted at', r => r.contacted_at]
+  ['Last submitted', r => r.last_submitted_at], ['Contacted at', r => r.contacted_at],
+  ['Email confirmed at', r => r.confirmed_at]
 ]
 const EXPORT_CHUNK = 1000
 const EXPORT_MAX_ROWS = 50_000
@@ -377,6 +440,12 @@ async function adminExportLeads(c) {
     if (data.length < EXPORT_CHUNK) break
   }
   if (rows.length >= EXPORT_MAX_ROWS) console.warn(`Employer-lead export hit the ${EXPORT_MAX_ROWS}-row cap — the file is truncated`)
+  // Exporting every lead's name and email is exactly what an audit trail is for.
+  await logAdminAction(c, supabase, 'lead.export', 'employer_leads', null, {
+    rows: rows.length,
+    filters: Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && k !== 'search')),
+    searched: !!filters.search
+  })
   const lines = [CSV_COLUMNS.map(([h]) => csvCell(h)).join(',')]
   for (const r of rows) lines.push(CSV_COLUMNS.map(([, get]) => csvCell(get(r))).join(','))
   return c.body(CSV_BOM + lines.join('\r\n') + '\r\n', 200, {
@@ -400,7 +469,10 @@ const manualSchema = z.object({
   roleCategory: z.enum(ROLE_CATEGORIES).nullish(),
   roleTitle:    text(100).nullish(),
   notes:        z.string().max(2000).transform(cleanNotes).nullish(),
-  status:       z.enum(LEAD_STATUSES).optional()
+  status:       z.enum(LEAD_STATUSES).optional(),
+  // An address that used its "remove me" link is refused unless the admin
+  // says the person has since asked to be added (see adminCreateLead).
+  overrideRemoval: z.boolean().optional()
 })
 
 async function adminCreateLead(c) {
@@ -411,14 +483,32 @@ async function adminCreateLead(c) {
     name: d.name, company: d.company, email: d.email,
     role_category: d.roleCategory || null, role_title: d.roleTitle || null,
     notes: d.notes || null, status: d.status || 'NEW', source: 'manual',
-    contacted_at: d.status === 'CONTACTED' ? now : null
+    contacted_at: d.status === 'CONTACTED' ? now : null,
+    // Typed in by an admin from a conversation they had — not a stranger's
+    // claim to an inbox — so there is nothing left to confirm.
+    confirmed_at: now
   }
+
+  const suppressed = await isSuppressed(supabase, d.email)
+  if (suppressed && !d.overrideRemoval)
+    return c.json({
+      success: false, code: 'REMOVAL_REQUESTED',
+      message: 'This address asked to be removed and is on the do-not-contact list. Only add it again if they have since asked you to.'
+    }, 409)
+
   const { data, error } = await supabase.from('employer_leads').insert(row).select().single()
   if (error) {
     if (error.code === '23505')
       return c.json({ success: false, message: 'A lead with that email already exists.' }, 409)
     throw error
   }
+  if (suppressed) {
+    // Explicitly re-added: lift the suppression so the public form and the
+    // acknowledgement flow treat them like any other lead again.
+    const { error: liftErr } = await supabase.from('employer_lead_suppressions').delete().eq('email_hash', await sha256(d.email))
+    if (liftErr) throw liftErr
+  }
+  await logAdminAction(c, supabase, 'lead.create', 'employer_lead', data.id, { liftedRemoval: !!suppressed })
   return c.json({ success: true, data: leadRowToCamel(data) }, 201)
 }
 
@@ -461,6 +551,11 @@ async function adminUpdateLeadStatus(c) {
     .from('employer_leads').update(patch).eq('id', id).select().maybeSingle()
   if (error) throw error
   if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
+  // Field NAMES and the status transition only — never the values typed.
+  await logAdminAction(c, supabase, 'lead.update', 'employer_lead', id, {
+    fields: Object.keys(d).filter(k => d[k] !== undefined),
+    ...(d.status !== undefined ? { status: d.status } : {})
+  })
   return c.json({ success: true, data: leadRowToCamel(data) })
 }
 
@@ -480,6 +575,7 @@ async function adminBulkUpdateLeads(c) {
   if (action === 'delete') {
     const { data, error } = await supabase.from('employer_leads').delete().in('id', ids).select('id')
     if (error) throw error
+    await logAdminAction(c, supabase, 'lead.bulk_delete', 'employer_lead', null, { ids: (data || []).map(r => r.id) })
     return c.json({ success: true, affected: (data || []).length })
   }
 
@@ -492,6 +588,7 @@ async function adminBulkUpdateLeads(c) {
       .from('employer_leads').update({ contacted_at: now }).in('id', ids).is('contacted_at', null)
     if (stampErr) throw stampErr
   }
+  await logAdminAction(c, supabase, 'lead.bulk_status', 'employer_lead', null, { status, ids: (data || []).map(r => r.id) })
   return c.json({ success: true, affected: (data || []).length })
 }
 
@@ -507,11 +604,82 @@ async function adminDeleteLead(c) {
     .from('employer_leads').delete().eq('id', id).select().maybeSingle()
   if (error) throw error
   if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
+  await logAdminAction(c, supabase, 'lead.delete', 'employer_lead', id)
   return c.json({ success: true, message: 'Lead deleted.' })
 }
 
+// ── Public: confirm / remove (the links in the acknowledgement email) ───────
+// Both are POSTs, and the frontend only calls remove on a button press: mail
+// scanners and link previewers follow GET links (and some run scripts), and an
+// unsubscribe that fires on a preview would remove people who never asked.
+// Neither reveals whether an address is (still) on the list beyond what the
+// token holder — the inbox owner — already knows.
+const tokenBodySchema = z.object({ token: z.string().min(10).max(700) })
+const INVALID_LINK = { success: false, message: 'This link is not valid. Use the link from the most recent email we sent you.' }
+
+// POST /api/employer-leads/confirm { token }
+async function confirmLead(c) {
+  const { token } = tokenBodySchema.parse(await c.req.json())
+  const email = await verifyLeadToken(c.env.JWT_SECRET, 'confirm', token)
+  if (!email) return c.json(INVALID_LINK, 400)
+
+  const supabase = getSupabase(c.env)
+  const { data: lead, error } = await supabase
+    .from('employer_leads').select('*').eq('email', email).maybeSingle()
+  if (error) throw error
+  if (!lead) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  if (lead.confirmed_at) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
+
+  const now = new Date().toISOString()
+  const { error: updErr } = await supabase
+    .from('employer_leads').update({ confirmed_at: now, updated_at: now }).eq('id', lead.id).is('confirmed_at', null)
+  if (updErr) throw updErr
+  // A confirmed lead is a real one — worth telling the owner.
+  await notifyOwner(c, 'Employer lead confirmed', describeLead(lead))
+  return c.json({ success: true, status: 'confirmed', message: "Thanks — your email is confirmed. We'll be in touch when there are Verified candidates in your field." })
+}
+
+// POST /api/employer-leads/remove { token }
+// Records the do-not-contact hash FIRST, then deletes the lead: if the second
+// step fails the caller retries and the operation is idempotent, whereas the
+// other order could leave a deleted lead the public form re-creates.
+async function removeLead(c) {
+  const { token } = tokenBodySchema.parse(await c.req.json())
+  const email = await verifyLeadToken(c.env.JWT_SECRET, 'remove', token)
+  if (!email) return c.json(INVALID_LINK, 400)
+
+  const supabase = getSupabase(c.env)
+  const { error: supErr } = await supabase
+    .from('employer_lead_suppressions').upsert({ email_hash: await sha256(email) }, { onConflict: 'email_hash', ignoreDuplicates: true })
+  if (supErr) throw supErr
+  const { error: delErr } = await supabase.from('employer_leads').delete().eq('email', email)
+  if (delErr) throw delErr
+  return c.json({ success: true, message: "You've been removed. We won't contact you again." })
+}
+
+// POST /api/employer-leads/:id/request-confirmation — admin only. Leads that
+// arrived before address confirmation existed have no confirm link in any
+// email they hold; this sends them one. Goes through the same per-recipient
+// cap as every acknowledgement, so it cannot be used to mail-bomb an address.
+async function adminRequestConfirmation(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
+
+  const supabase = getSupabase(c.env)
+  const { data: lead, error } = await supabase.from('employer_leads').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
+  if (lead.confirmed_at) return c.json({ success: false, message: 'This address is already confirmed.' }, 409)
+
+  const sent = await sendAck(c.env, lead, { skipBudget: true })
+  await logAdminAction(c, supabase, 'lead.request_confirmation', 'employer_lead', id, { sent })
+  if (!sent) return c.json({ success: false, message: 'The email was not sent (this address has reached its email limit, or delivery failed). Try again later.' }, 429)
+  return c.json({ success: true, message: 'Confirmation email sent.' })
+}
+
 module.exports = {
-  createLead, adminListLeads, adminExportLeads, adminCreateLead,
-  adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead,
+  createLead, confirmLead, removeLead,
+  adminListLeads, adminExportLeads, adminCreateLead,
+  adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   LEAD_STATUSES, LEAD_SOURCES
 }

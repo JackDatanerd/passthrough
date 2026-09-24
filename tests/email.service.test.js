@@ -219,30 +219,41 @@ describe('sendOwnerNotice — employer leads', () => {
 })
 
 describe('sendEmployerLeadAck', () => {
-  it('sends the acknowledgement with the name, field, removal address and both content and plain-text parts', async () => {
+  const links = { confirmUrl: 'https://passthrough.dev/employer/confirm?token=C.T', removeUrl: 'https://passthrough.dev/employer/remove?token=R.T' }
+
+  it('sends the confirmation with the name, field, both signed links, support address and both content and plain-text parts', async () => {
     t = setup()
-    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana <b>', 'Sales')).toBe(true)
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana <b>', 'Sales', links)).toBe(true)
     const m = t.sent[0]
     expect(m.to).toBe('dana@acme.com')
-    expect(m.subject).toMatch(/early-access list/)
+    expect(m.subject).toMatch(/Confirm your email/)
     expect(m.html).toContain('Dana &lt;b&gt;')          // escaped like every template value
     expect(m.html).toContain('in Sales')
+    expect(m.html).toContain('href="https://passthrough.dev/employer/confirm?token=C.T"')
+    expect(m.html).toContain('href="https://passthrough.dev/employer/remove?token=R.T"')
     expect(m.html).toContain('support@passthrough.dev')
     expect(m.html).not.toMatch(/{{/)                     // no unfilled placeholder
-    expect(m.text).toContain('support@passthrough.dev')
+    expect(m.text).toContain('https://passthrough.dev/employer/confirm?token=C.T')
+    expect(m.text).toContain('https://passthrough.dev/employer/remove?token=R.T')
     expect(logs(t.db).map(l => l.status)).toEqual(['sent'])
   })
   it('omits the field phrase when none was given', async () => {
     t = setup()
-    await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana', '')
+    await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana', '', links)
     expect(t.sent[0].html).toContain('Passthrough Verified candidates.')
   })
-  it('is capped to one per address per month, whatever route reaches it', async () => {
+  it('refuses to send with a missing link rather than mailing an unfilled placeholder', async () => {
     t = setup()
-    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'victim@example.com', 'V', '')).toBe(true)
-    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'Victim@Example.com', 'V', '')).toBe(false)
-    expect(t.sent).toHaveLength(1)
-    expect(logs(t.db).map(l => l.status)).toEqual(['sent', 'throttled'])
+    await expect(t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana', '')).rejects.toThrow('confirmUrl')
+    expect(t.sent).toHaveLength(0)
+  })
+  it('is capped to two per address per month (the original + one reminder), whatever route reaches it', async () => {
+    t = setup()
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'victim@example.com', 'V', '', links)).toBe(true)
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'Victim@Example.com', 'V', '', links)).toBe(true)
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'VICTIM@example.com', 'V', '', links)).toBe(false)
+    expect(t.sent).toHaveLength(2)
+    expect(logs(t.db).map(l => l.status)).toEqual(['sent', 'sent', 'throttled'])
   })
 })
 

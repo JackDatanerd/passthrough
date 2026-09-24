@@ -31,10 +31,14 @@ export default function AdminLeads() {
   const field  = searchParams.get('field') || ''
   const search = searchParams.get('search') || ''
   const sort   = searchParams.get('sort') === 'activity' ? 'activity' : 'created'
+  // Whether the lead's email address was confirmed from the acknowledgement
+  // mail: '' = all, 'yes', 'no'.
+  const confirmed = ['yes', 'no'].includes(searchParams.get('confirmed')) ? searchParams.get('confirmed') : ''
 
   const [leads, setLeads] = useState([])
   const [total, setTotal] = useState(0)
   const [counts, setCounts] = useState({})
+  const [unconfirmed, setUnconfirmed] = useState(0)
   const [candidateSupply, setCandidateSupply] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
@@ -84,7 +88,7 @@ export default function AdminLeads() {
     if (!silent) setLoading(true)
     try {
       const res = await api.get('/employer-leads', {
-        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, sort }
+        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, confirmed: confirmed || undefined, sort }
       })
       if (id !== requestId.current) return
       const meta = res.data.meta
@@ -95,6 +99,7 @@ export default function AdminLeads() {
       setLeads(res.data.data)
       setTotal(meta.total)
       setCounts(meta.counts || {})
+      setUnconfirmed(meta.unconfirmed ?? 0)
       setCandidateSupply(meta.candidateSupply)
       setSelected(new Set())
     } catch (err) {
@@ -103,7 +108,7 @@ export default function AdminLeads() {
       if (id === requestId.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, status, field, sort])
+  }, [page, search, status, field, confirmed, sort])
 
   useEffect(() => { load() }, [load])
   const refresh = () => load({ silent: true })
@@ -129,6 +134,20 @@ export default function AdminLeads() {
       setLeads(prev => prev.map(l => l.id === lead.id ? res.data.data : l))
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Failed to save note.'), type: 'error' })
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  // Leads that arrived before address confirmation existed hold no confirm
+  // link in any email; this sends them one.
+  async function requestConfirmation(lead) {
+    setBusyId(lead.id)
+    try {
+      await api.post(`/employer-leads/${lead.id}/request-confirmation`)
+      toast({ message: `Confirmation email sent to ${lead.email}.`, type: 'success' })
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Could not send the confirmation email.'), type: 'error' })
     } finally {
       setBusyId(null)
     }
@@ -169,7 +188,7 @@ export default function AdminLeads() {
     setExporting(true)
     try {
       const res = await api.get('/employer-leads/export.csv', {
-        params: { search: search || undefined, status: status || undefined, field: field || undefined, sort },
+        params: { search: search || undefined, status: status || undefined, field: field || undefined, confirmed: confirmed || undefined, sort },
         responseType: 'blob'
       })
       const url = URL.createObjectURL(res.data)
@@ -226,6 +245,14 @@ export default function AdminLeads() {
                 {label}{candidateSupply ? ` — ${candidateSupply[key] || 0} verified` : ''}
               </option>
             ))}
+          </select>
+        </div>
+        <div className="flex flex-col gap-1">
+          <label htmlFor="lead-confirmed" className="text-sm font-medium text-gray-700">Email</label>
+          <select id="lead-confirmed" value={confirmed} onChange={e => setParams({ confirmed: e.target.value })} className={selectClass}>
+            <option value="">All addresses</option>
+            <option value="yes">Confirmed</option>
+            <option value="no">Unconfirmed ({unconfirmed})</option>
           </select>
         </div>
         <div className="flex flex-col gap-1">
@@ -286,6 +313,9 @@ export default function AdminLeads() {
                   <td className="px-4 py-3 text-gray-600">{l.company}</td>
                   <td className="px-4 py-3 text-gray-600">
                     <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
+                    {l.confirmedAt
+                      ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}`}>✓ confirmed</span>
+                      : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
                   </td>
                   <td className="px-4 py-3 text-gray-500">
                     {l.roleCategory ? (
@@ -347,6 +377,11 @@ export default function AdminLeads() {
                     />
                   </td>
                   <td className="px-4 py-3 text-right whitespace-nowrap">
+                    {!l.confirmedAt && l.status !== 'ARCHIVED' && (
+                      <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => requestConfirmation(l)} className="mr-2">
+                        Send confirm link
+                      </Button>
+                    )}
                     <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
                       Edit
                     </Button>
@@ -401,10 +436,14 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
   const [form, setForm] = useState({ name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '' })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
+  // The server refuses an address that used its "remove me" link (409,
+  // code REMOVAL_REQUESTED) unless the admin confirms the person has since
+  // asked to be added.
+  const [needsOverride, setNeedsOverride] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setError('')
+    setError(''); setNeedsOverride(false)
     setForm(mode === 'edit' && lead
       ? { name: lead.name, company: lead.company, email: lead.email, roleCategory: lead.roleCategory || '', roleTitle: lead.roleTitle || '', notes: '' }
       : { name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '' })
@@ -412,7 +451,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
-  async function submit() {
+  async function submit({ override = false } = {}) {
     if (!form.name.trim() || !form.company.trim() || (mode === 'add' && !form.email.trim()))
       return setError(mode === 'add' ? 'Name, company and email are required.' : 'Name and company are required.')
     setSaving(true); setError('')
@@ -420,7 +459,8 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
       if (mode === 'add') {
         await api.post('/employer-leads/manual', {
           name: form.name, company: form.company, email: form.email,
-          roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null, notes: form.notes || null
+          roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null, notes: form.notes || null,
+          ...(override ? { overrideRemoval: true } : {})
         })
       } else {
         await api.patch(`/employer-leads/${lead.id}`, {
@@ -430,6 +470,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
       }
       onSaved()
     } catch (err) {
+      setNeedsOverride(err.response?.data?.code === 'REMOVAL_REQUESTED')
       setError(getErrorMessage(err, 'Could not save the lead.'))
     } finally {
       setSaving(false)
@@ -438,7 +479,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
 
   return (
     <Modal open={open} onClose={onClose} title={mode === 'add' ? 'Add lead' : 'Edit lead'} dismissible={!saving}>
-      <Form onSubmit={submit} className="flex flex-col gap-3">
+      <Form onSubmit={() => submit()} className="flex flex-col gap-3">
         <Input label="Name" value={form.name} onChange={set('name')} />
         <Input label="Company" value={form.company} onChange={set('company')} />
         {mode === 'add'
@@ -459,7 +500,12 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
               className="rounded-md border border-gray-300 px-3 py-2 text-sm" />
           </div>
         )}
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
+        {needsOverride && (
+          <Button variant="danger" onClick={() => submit({ override: true })} disabled={saving}>
+            They've asked me to add them — add anyway
+          </Button>
+        )}
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
           <Button type="submit" loading={saving}>{mode === 'add' ? 'Add lead' : 'Save'}</Button>

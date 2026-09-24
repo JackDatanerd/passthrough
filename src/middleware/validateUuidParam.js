@@ -8,8 +8,9 @@
 // and lands in errorHandler.js's generic branch: an uncaught 500 instead of
 // a clean 400, for something as mundane as a typo'd or truncated URL.
 //
-// Scoped deliberately narrow: this only checks the /:id/... family of scan
-// routes (the endpoints that motivated tracing this in the first place).
+// It started out scoped to the scan routes that motivated it; it is now the
+// shared guard for any route with a `:id` uuid param (scan, admin and
+// employer-lead routes all use it).
 // profile.controller.js's own scanId (a JSON body field, not a route param)
 // is validated inline in saveProfile instead, since this middleware only
 // speaks to route params.

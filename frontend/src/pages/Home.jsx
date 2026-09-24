@@ -118,7 +118,7 @@ function EmployerLeadForm() {
   if (sent) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8 text-center">
-        <p className="text-sm text-green-700 font-medium">You're on the list — we'll reach out when we have candidates matching your needs.</p>
+        <p className="text-sm text-green-700 font-medium">Almost there — check your inbox for an email from us and click the link to confirm your address. Then we'll reach out when we have candidates matching your needs.</p>
       </div>
     )
   }

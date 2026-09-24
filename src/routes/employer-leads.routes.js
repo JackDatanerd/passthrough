@@ -7,6 +7,10 @@ const c     = require('../controllers/employer-leads.controller')
 const router = new Hono()
 
 router.post('/', rl.employerLead, c.createLead)
+// The two links in the acknowledgement email (confirm the address / remove it).
+// Public; rate-limited like the form itself. Signed tokens, no session.
+router.post('/confirm', rl.employerLead, c.confirmLead)
+router.post('/remove',  rl.employerLead, c.removeLead)
 
 // AUDIT FIX (Section 5): the retrieval side of the lead-capture gap — leads
 // were being written with no way for anyone to ever read them back short of
@@ -28,6 +32,7 @@ router.post('/bulk',   admin, c.adminBulkUpdateLeads)
 // admin.routes.js route, but not here): a malformed :id was falling through
 // to `.eq('id', ...)` against a uuid column and surfacing as an uncaught 500
 // via errorHandler.js's generic branch instead of a clean 400.
+router.post(  '/:id/request-confirmation', admin, validateUuidParam(), c.adminRequestConfirmation)
 router.patch( '/:id', admin, validateUuidParam(), c.adminUpdateLeadStatus)
 router.delete('/:id', admin, validateUuidParam(), c.adminDeleteLead)
 

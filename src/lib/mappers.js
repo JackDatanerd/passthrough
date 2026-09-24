@@ -364,6 +364,7 @@ function leadRowToCamel(row) {
     submissionCount: row.submission_count ?? 1,
     lastSubmittedAt: row.last_submitted_at ?? row.created_at,
     contactedAt:  row.contacted_at ?? null,
+    confirmedAt:  row.confirmed_at ?? null,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }
