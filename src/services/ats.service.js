@@ -91,7 +91,16 @@ function normalizeTechTerms(text) {
     // of skills" — so "Go to market", "R&D", "Plan C" and "Jane R. Doe" are
     // not misread as programming languages.
     .replace(new RegExp(LIST_PREV + String.raw`Go(?=[ \t]*(?:[,;:/)|]|$)|[ \t]+(?:and|or|&)[ \t])`, 'gm'), ' golang ')
-    .replace(new RegExp(LIST_PREV + String.raw`C(?=[ \t]*[,;:/)|])`, 'gm'), ' clang ')
+    // BUG FIX (Scan/ATS section audit): unlike the Go pattern immediately
+    // above (whose lookahead explicitly includes `|$`), this lookahead only
+    // ever matched a following delimiter — so "C" as the LAST item in a list
+    // ("Skills: Go, R, C", "Required: C++, C") was silently left as a bare,
+    // un-normalized "C" and then dropped entirely by keepToken() (single
+    // letters aren't kept unless allowlisted), meaning the extremely common
+    // case of C being the final language named in a list never counted as a
+    // match on either side (resume or JD). Added the same end-of-line/
+    // end-of-string alternative Go already had.
+    .replace(new RegExp(LIST_PREV + String.raw`C(?=[ \t]*(?:[,;:/)|]|$))`, 'gm'), ' clang ')
     // "... Go and R." — a sentence-final R is still the language when it sits in
     // a list ("," / "and" / "or" / "/" before it); a bare "R. " is otherwise
     // treated as a middle initial ("Jane R. Doe").

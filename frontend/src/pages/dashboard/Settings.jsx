@@ -124,6 +124,13 @@ export default function Settings() {
   const [pwError,   setPwError  ] = useState('')
   const [pwSuccess, setPwSuccess] = useState(false)
 
+  // FEATURE (Auth section audit): previously the only way to kill sessions
+  // on other devices was as a side effect of changing the password — no
+  // option for "just sign out that lost/stolen phone, nothing else wrong".
+  const [signOutLoading, setSignOutLoading] = useState(false)
+  const [signOutError,   setSignOutError  ] = useState('')
+  const [signOutSuccess, setSignOutSuccess] = useState(false)
+
   // PHASE 4 — saved profile management. Closes the consent loop: saving a
   // profile (ScanResult.jsx / SaveProfilePrompt) is an explicit opt-in, so
   // removing it needs to be just as easy, without going all the way to
@@ -218,6 +225,24 @@ export default function Settings() {
       setPwError(getErrorMessage(err, 'Failed to update password.'))
     } finally {
       setPwLoading(false)
+    }
+  }
+
+  async function handleSignOutOtherSessions() {
+    setSignOutLoading(true); setSignOutError(''); setSignOutSuccess(false)
+    try {
+      const res = await api.post('/auth/sessions/revoke-others')
+      // Same reasoning as handleChangePassword's own token swap above: this
+      // bumps token_version too, so the current tab needs the fresh token
+      // the endpoint hands back or its very next request 401s and bounces
+      // to /login right after this screen said everything was fine.
+      const token = res.data?.data?.token
+      if (token) localStorage.setItem('passthrough_token', token)
+      setSignOutSuccess(true)
+    } catch (err) {
+      setSignOutError(getErrorMessage(err, 'Failed to sign out other sessions.'))
+    } finally {
+      setSignOutLoading(false)
     }
   }
 
@@ -328,6 +353,25 @@ export default function Settings() {
               Update password
             </Button>
           </Form>
+        </div>
+
+        {/* Sign out other sessions */}
+        {/* FEATURE (Auth section audit): previously the only way to kill
+            sessions on other devices was as a side effect of changing the
+            password — no option for "just sign out that lost/stolen phone,
+            nothing else wrong". */}
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-900 mb-1">Sign out other sessions</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Signs every other device and browser out, without changing your password.
+            This browser stays signed in.
+          </p>
+          {signOutError   && <p className="text-sm text-red-600 mb-3">{signOutError}</p>}
+          {signOutSuccess && <p className="text-sm text-green-700 mb-3">Other sessions signed out.</p>}
+          <Button type="button" loading={signOutLoading} variant="secondary"
+            onClick={handleSignOutOtherSessions}>
+            Sign out other sessions
+          </Button>
         </div>
 
         {/* Saved profile */}

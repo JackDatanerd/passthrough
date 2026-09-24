@@ -370,7 +370,18 @@ async function resetPassword(c) {
     password_hash:      await bcrypt.hash(newPassword, 10),
     reset_token:        null,
     reset_token_expiry: null,
-    token_version:       user.tokenVersion + 1  // kills all existing sessions
+    token_version:       user.tokenVersion + 1,  // kills all existing sessions
+    // BUG FIX (Auth section audit): changePassword already clears a pending
+    // email change on the reasoning "shouldn't survive proving you know the
+    // current password" — this endpoint proves an even STRONGER form of
+    // identity (control of the actual inbox) but never applied the same
+    // clearing. Concretely: if an email change was staged in flight (by the
+    // real owner, or by whoever got in some other way) and the owner
+    // recovers the account via this exact flow, the pending change survived
+    // untouched — whoever holds pending_email_token could still confirm it
+    // later and take over the account's email, right through the recovery
+    // flow that was supposed to lock them out.
+    pending_email: null, pending_email_token: null, pending_email_expiry: null
   }).eq('id', user.id), 'reset password')
 
   // BUG FIX (account lockout, section audit round 2): proving control of the
@@ -554,6 +565,31 @@ async function changePassword(c) {
   return c.json({ success: true, message: 'Password updated. Other sessions signed out.', data: { token } })
 }
 
+// POST /api/auth/sessions/revoke-others
+// FEATURE (Auth section audit): the only way to kill outstanding sessions
+// was as a side effect of changing the password, resetting it, or deleting
+// the account — someone who just wants to sign a lost/stolen device out
+// (nothing else wrong, no reason to also pick a new password) had no way to
+// do that. Bumps token_version on its own, same as those flows do as a
+// side effect, and reissues a fresh token for THIS session for the same
+// reason changePassword's own reissue above does: the tab that clicked the
+// button shouldn't get logged out along with everything else. No password
+// re-confirmation needed — this only narrows what the caller's own,
+// already-verified session can do (sign other copies of itself out), it
+// doesn't touch the credential or any other account data.
+async function signOutOtherSessions(c) {
+  const sessionUser = c.get('user')
+  const supabase = getSupabase(c.env)
+  const newTokenVersion = sessionUser.tokenVersion + 1
+
+  must(await supabase.from('users').update({
+    token_version: newTokenVersion
+  }).eq('id', sessionUser.id), 'sign out other sessions')
+
+  const token = await issueJWT(c.env, { id: sessionUser.id, tokenVersion: newTokenVersion })
+  return c.json({ success: true, message: 'Other sessions signed out.', data: { token } })
+}
+
 // PATCH /api/auth/name
 // AUDIT FIX (Section 6): Settings displayed Name as static text with no way
 // to ever change it — no endpoint existed anywhere in the app. Low-risk
@@ -725,7 +761,15 @@ async function confirmEmailChange(c) {
     pending_email:         null,
     pending_email_token:   null,
     pending_email_expiry:  null,
-    token_version:         newTokenVersion
+    token_version:         newTokenVersion,
+    // BUG FIX (Auth section audit): the account's identity is changing here,
+    // same as a password change — resetPassword's own comment (see above)
+    // establishes that a credential left over from BEFORE the identity check
+    // shouldn't survive it. A reset_token issued earlier (e.g. from a briefly
+    // -compromised old inbox, before the owner moved to a new address) stays
+    // valid for its full window even after the email it was tied to has
+    // moved on, unless cleared here.
+    reset_token: null, reset_token_expiry: null
   }).eq('id', user.id).select().single()
   if (updateErr) throw updateErr
   const updated = userRowToCamel(updatedRow)
@@ -903,6 +947,6 @@ async function claimScan(c) {
 
 module.exports = {
   register, login, getMe, forgotPassword, resetPassword,
-  verifyEmail, resendVerification, changePassword, updateName, updateEmail,
+  verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
   confirmEmailChange, deleteAccount, claimScan
 }

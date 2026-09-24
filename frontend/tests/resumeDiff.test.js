@@ -58,4 +58,23 @@ describe('buildResumeDiff', () => {
     const rewritten = { experience: [{ company: 123, title: 'Engineer', bullets: ['ok', 'new'] }] }
     expect(() => buildResumeDiff(original, rewritten)).not.toThrow()
   })
+
+  // BUG FIX (Scan/ATS section audit): diffExperience's length-mismatch
+  // fallback path (used whenever the original/rewritten experience arrays
+  // have different lengths) accessed `r.company`/`job.company` directly with
+  // no null-guard, unlike every other field in this file. A `null` entry in
+  // either array — valid JSON, and nothing upstream validates that every
+  // experience element is a well-formed object — threw "Cannot read
+  // properties of null" and blanked the whole delivered-fix page. Covers a
+  // null on both sides, and specifically in the MISMATCHED-length path (a
+  // same-length array of 1 wouldn't exercise the buggy branch at all).
+  it('never throws when a null entry sits in a length-mismatched experience array', () => {
+    const originalWithNull = { experience: [{ company: 'Acme' }, null, { company: 'Globex' }] }
+    const rewrittenShorter = { experience: [{ company: 'Globex', bullets: ['ok'] }] }
+    expect(() => buildResumeDiff(originalWithNull, rewrittenShorter)).not.toThrow()
+
+    const originalShorter = { experience: [{ company: 'Acme' }] }
+    const rewrittenWithNull = { experience: [null, { company: 'Acme', bullets: ['ok'] }] }
+    expect(() => buildResumeDiff(originalShorter, rewrittenWithNull)).not.toThrow()
+  })
 })

@@ -17,6 +17,10 @@ router.post('/reset-password',      rl.auth, c.resetPassword)
 router.get( '/verify-email',        rl.authVerify, c.verifyEmail)
 router.post('/resend-verification', auth, rl.authVerify, c.resendVerification)
 router.patch('/password',           auth, rl.auth, c.changePassword)
+// FEATURE (Auth section audit): no password required — see the controller's
+// comment — so this stays on the general per-route limit only, same
+// posture as /name below.
+router.post('/sessions/revoke-others', auth, c.signOutOtherSessions)
 // AUDIT FIX (Section 6): Settings had no way to change name or email —
 // no route existed for either. /email shares the tighter `rl.auth`
 // credential-adjacent bucket with /password and /account since it also

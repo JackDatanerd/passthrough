@@ -377,6 +377,25 @@ describe('resetPassword', () => {
     const newPassword = 'é'.repeat(72)
     await expect(t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword } }))).rejects.toBeTruthy()
   })
+
+  // BUG FIX (Auth section audit): changePassword already clears a pending
+  // email change on the reasoning "shouldn't survive proving you know the
+  // current password" — this endpoint proves an even STRONGER identity check
+  // (control of the actual inbox) but never applied the same clearing, so a
+  // pending email change staged before the reset could still be confirmed
+  // afterward, right through the recovery flow meant to lock that out.
+  it('also clears any pending email change on success, same as changePassword', async () => {
+    t = await setup({ userRow: baseUserRow({
+      reset_token: 'hashed', reset_token_expiry: FUTURE(),
+      pending_email: 'new@example.com', pending_email_token: 'x', pending_email_expiry: FUTURE(),
+    }) })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    expect(res.status).toBe(200)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toMatchObject({
+      pending_email: null, pending_email_token: null, pending_email_expiry: null,
+    })
+  })
 })
 
 describe('verifyEmail', () => {
@@ -486,6 +505,27 @@ describe('changePassword', () => {
       reset_token: null, reset_token_expiry: null,
       pending_email: null, pending_email_token: null, pending_email_expiry: null,
     })
+  })
+})
+
+describe('signOutOtherSessions', () => {
+  // FEATURE (Auth section audit): bumps token_version on its own — no
+  // password change involved — for someone who just wants to sign a lost/
+  // stolen device out.
+  it('bumps token_version and returns a fresh token valid under the NEW version', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 5, email: 'user@example.com' } })
+    const res = await t.mod.signOutOtherSessions(t.c())
+    expect(res.status).toBe(200)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toEqual({ token_version: 6 })
+    expect(res.body.data.token).toBeTypeOf('string')
+  })
+  it('requires no password and touches nothing but token_version', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, email: 'user@example.com' } })
+    const res = await t.mod.signOutOtherSessions(t.c({ body: {} }))
+    expect(res.status).toBe(200)
+    expect(t.state.updates).toHaveLength(1)
+    expect(Object.keys(t.state.updates[0].patch)).toEqual(['token_version'])
   })
 })
 
@@ -602,6 +642,20 @@ describe('confirmEmailChange', () => {
       pending_email: null, pending_email_token: null, pending_email_expiry: null,
       token_version: 5,
     })
+  })
+  // BUG FIX (Auth section audit): the account's identity is changing here,
+  // same as a password change — resetPassword's own comment establishes that
+  // a credential issued BEFORE an identity change shouldn't survive it. A
+  // reset_token issued earlier (e.g. from a briefly-compromised old inbox,
+  // before the owner moved to this new address) stayed valid for its full
+  // window even after the email it was tied to had moved on.
+  it('also clears any outstanding password-reset token on success', async () => {
+    const row = await pendingRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() })
+    t = await setup({ userRow: row, pendingLookupRow: row })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW } }))
+    expect(res.status).toBe(200)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch).toMatchObject({ reset_token: null, reset_token_expiry: null })
   })
   it('400s if the pending email was claimed by someone else in the meantime, and clears the stale pending_* fields', async () => {
     const row = await pendingRow()

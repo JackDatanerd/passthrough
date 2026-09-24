@@ -39,6 +39,23 @@ describe('tech-term tokenising', () => {
       expect(t).not.toContain('clang')
     }
   })
+  // BUG FIX (Scan/ATS section audit): C's list-context regex was missing the
+  // end-of-line/end-of-string alternative Go and R both already had, so "C"
+  // as the LAST language named in a list — an extremely common way to write
+  // one — silently failed to normalize and then got dropped entirely by
+  // keepToken() (bare single letters aren't kept). Verified against every
+  // position in a list, not just mid-list, since that's exactly the case the
+  // old regex missed.
+  it('recognises a trailing "C" as the language at the END of a list (not just mid-list)', () => {
+    for (const listText of ['Skills: Go, R, C', 'Required: C++, C', 'Languages: Python, Java, C']) {
+      expect(tokenizeRaw(listText)).toContain('clang')
+    }
+    // Still mid-list and still not in ordinary prose — unaffected by the fix.
+    expect(tokenizeRaw('Skills: C, Python, Java')).toContain('clang')
+    for (const prose of ['Plan C is ready', 'Proficient in C.', 'Vitamin C']) {
+      expect(tokenizeRaw(prose)).not.toContain('clang')
+    }
+  })
   it('keeps unicode letters intact (no "ing" + "nieur" fragments)', () => {
     const t = tokenizeRaw('ingénieur logiciel développement gestión')
     for (const w of ['ingénieur', 'développement', 'gestión']) expect(t).toContain(w)

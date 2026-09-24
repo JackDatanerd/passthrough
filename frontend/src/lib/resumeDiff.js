@@ -79,9 +79,23 @@ function diffExperience(originalJobs, rewrittenJobs) {
       usedRewrittenIdx.add(i)
     })
   } else {
+    // BUG FIX (Scan/ATS section audit): this file's own header comment
+    // declares that every AI-sourced field gets coerced via str()/optional-
+    // chaining so a wrong-typed or missing value degrades gracefully instead
+    // of throwing — diffJob does that correctly (original?.company etc.), but
+    // this fallback matching path didn't: `r.company`/`job.company` were
+    // accessed directly, with no null-guard. Nothing upstream guarantees
+    // every element of a rewritten/original experience array is a well-
+    // formed object (the envelope check in claude.service.js only validates
+    // that the top-level `resume` is an object, not each nested entry), so a
+    // single `null` entry in either array — valid JSON, not excluded by
+    // anything before this point — threw "Cannot read properties of null"
+    // and blanked the entire delivered-fix results page for a scan the user
+    // already paid for. `?.` here matches the null-safety this file already
+    // applies everywhere else.
     originalJobs.forEach(job => {
       const idx = rewrittenJobs.findIndex(
-        (r, i) => !usedRewrittenIdx.has(i) && normCompany(r.company) === normCompany(job.company)
+        (r, i) => !usedRewrittenIdx.has(i) && normCompany(r?.company) === normCompany(job?.company)
       )
       if (idx !== -1) {
         matched.push({ original: job, rewritten: rewrittenJobs[idx] })
