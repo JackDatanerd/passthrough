@@ -10,34 +10,45 @@ const ID2 = '22222222-2222-4222-8222-222222222222'
 const HOURS = h => h * 60 * 60 * 1000
 
 function setup({ leads = [], supply, kv = {} } = {}) {
-  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], inserts: 0, kv }
+  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], inserts: 0, kv }
   let seq = 0
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
       const rows = state.leads
-      const match = r => q.filters.every(([op, col, val]) => op !== 'eq' || r[col] === val)
+      const match = r => q.filters.every(([op, col, val]) => {
+        if (op === 'eq') return r[col] === val
+        if (op === 'in') return val.includes(r[col])
+        if (op === 'is') return (r[col] ?? null) === val
+        return true
+      })
       if (q.op === 'insert') {
         if (rows.some(r => r.email.toLowerCase() === q.values.email.toLowerCase()))
           return { error: { code: '23505', message: 'duplicate key' } }
         state.inserts++
-        rows.push({ id: `gen-${++seq}`, status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
-          last_submitted_at: new Date().toISOString(), notes: null, contacted_at: null, ...q.values })
-        return { data: null, error: null }
+        const row = { id: `gen-${++seq}`, status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
+          last_submitted_at: new Date().toISOString(), notes: null, contacted_at: null, ...q.values }
+        rows.push(row)
+        return { data: q.returning ? { ...row } : null, error: null }
       }
       if (q.op === 'update') {
-        const r = rows.find(match); if (!r) return { data: null, error: null }
-        Object.assign(r, q.patch); return { data: { ...r }, error: null }
+        const hit = rows.filter(match)
+        hit.forEach(r => Object.assign(r, q.patch))
+        if (q.maybe || q.single) return { data: hit[0] ? { ...hit[0] } : null, error: null }
+        return { data: hit.map(r => ({ ...r })), error: null }
       }
       if (q.op === 'delete') {
-        const i = rows.findIndex(match); if (i < 0) return { data: null, error: null }
-        return { data: rows.splice(i, 1)[0], error: null }
+        const hit = rows.filter(match)
+        hit.forEach(r => rows.splice(rows.indexOf(r), 1))
+        if (q.maybe || q.single) return { data: hit[0] || null, error: null }
+        return { data: hit, error: null }
       }
       // select
-      if (q.selectOpts?.head) {
-        return { count: rows.filter(r => q.filters.every(([op, col, val]) => op !== 'eq' || r[col] === val)).length, error: null }
-      }
+      if (q.selectOpts?.head) return { count: rows.filter(match).length, error: null }
       if (q.maybe) return { data: rows.find(match) ? { ...rows.find(match) } : null, error: null }
       const filtered = rows.filter(match)
+      // PostgREST answers an offset past the end with 416 when a count was requested.
+      if (q.range && q.range[0] > 0 && q.range[0] >= filtered.length && q.selectOpts?.count)
+        return { error: { code: 'PGRST103', message: 'Requested range not satisfiable' } }
       return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : undefined), count: filtered.length, error: null }
     }
     if (q.op === 'rpc' && q.name === 'verified_candidate_counts')
@@ -46,7 +57,11 @@ function setup({ leads = [], supply, kv = {} } = {}) {
   })
   const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
     'config/supabase.js': { getSupabase: () => db },
-    'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { state.notices.push({ subject, message }) }, sendOwnerAlert: async (...a) => { state.alerts.push(a) } },
+    'services/email.service.js': {
+      sendOwnerNotice: async (env, subject, message) => { state.notices.push({ subject, message }) },
+      sendOwnerAlert: async (...a) => { state.alerts.push(a) },
+      sendEmployerLeadAck: async (env, sb, to, name, field) => { state.acks.push({ to, name, field }) },
+    },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } } }
   const c = (over = {}) => {
@@ -227,11 +242,19 @@ describe('adminListLeads', () => {
 
   it('strips characters that would break the .or() filter or act as wildcards, and ignores a bogus status', async () => {
     t = setup()
-    await t.mod.adminListLeads(t.c({ query: { search: 'a,b(c)%_"\\*d', status: 'HACKED' } }))
+    await t.mod.adminListLeads(t.c({ query: { search: 'a,b(c)%"\\*d', status: 'HACKED' } }))
     const q = t.db.calls.find(x => x.or)
     expect(q.or[0]).toContain('name.ilike.%abcd%')
-    expect(q.or[0]).not.toMatch(/[%_].*[%_]\s*,.*\\/)
+    expect(q.or[0]).not.toMatch(/\\/)
     expect(q.filters.some(f => f[1] === 'status')).toBe(false)
+  })
+
+  // `_` is an ilike single-char wildcard, so leaving it in can only widen a
+  // match; stripping it made "john_doe@corp.com" unfindable.
+  it('keeps underscores so an address containing one can be found', async () => {
+    t = setup()
+    await t.mod.adminListLeads(t.c({ query: { search: 'john_doe@corp.com' } }))
+    expect(t.db.calls.find(x => x.or).or[0]).toContain('email.ilike.%john_doe@corp.com%')
   })
 
   it('sorts by last activity on request', async () => {
@@ -258,7 +281,9 @@ describe('adminExportLeads', () => {
     const res = await t.mod.adminExportLeads(t.c({}))
     expect(res.headers['Content-Type']).toContain('text/csv')
     expect(res.headers['Content-Disposition']).toContain('employer-leads.csv')
-    const [head, row] = res.raw.split('\r\n')
+    // Excel needs the byte-order mark to read the file as UTF-8.
+    expect(res.raw.charCodeAt(0)).toBe(0xFEFF)
+    const [head, row] = res.raw.slice(1).split('\r\n')
     expect(head.startsWith('"Name","Company","Email"')).toBe(true)
     expect(row).toContain(`"'=HYPERLINK(""http://evil"")"`)
     expect(row).toContain('"A, ""B"" Inc"')
@@ -288,7 +313,7 @@ describe('adminUpdateLeadStatus', () => {
     expect(t.state.leads[0]).toMatchObject({ notes: 'left voicemail', status: 'NEW' })
     await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { notes: '   ' } }))
     expect(t.state.leads[0].notes).toBeNull()
-    await expect(t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: {} }))).rejects.toBeTruthy()
+    await expect(t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: {} }))).rejects.toThrow(/Nothing to update/)
     await expect(t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { status: 'BOGUS' } }))).rejects.toBeTruthy()
   })
   it('404s an unknown lead', async () => {
@@ -305,5 +330,162 @@ describe('adminDeleteLead', () => {
     expect((await t.mod.adminDeleteLead(t.c({ params: { id: ID2 } }))).status).toBe(404)
     expect((await t.mod.adminDeleteLead(t.c({ params: { id: ID1 } }))).status).toBe(200)
     expect(t.state.leads).toHaveLength(0)
+  })
+})
+
+// ── Third pass (Section 5) ──────────────────────────────────────────────────
+
+const mkLead = (over = {}) => ({
+  id: ID1, name: 'A', company: 'B', email: 'a@b.com', status: 'NEW', notes: null, contacted_at: null,
+  role_category: null, role_title: null, source: 'homepage', submission_count: 1,
+  created_at: '2026-01-01T00:00:00.000Z', last_submitted_at: '2026-01-01T00:00:00.000Z', ...over,
+})
+
+describe('createLead — invisible characters and empty-looking values', () => {
+  it('rejects a name or company made only of zero-width characters, and one with no letter or digit', async () => {
+    t = setup()
+    await expect(submit(valid({ name: '\u200b\u200b' }))).rejects.toBeTruthy()
+    await expect(submit(valid({ company: '\u2060\ufeff' }))).rejects.toBeTruthy()
+    await expect(submit(valid({ company: '---' }))).rejects.toBeTruthy()
+    await expect(submit(valid({ name: '🙂' }))).rejects.toBeTruthy()
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('removes bidi overrides and zero-width spaces but keeps ZWJ/ZWNJ that real scripts need', async () => {
+    t = setup()
+    await submit(valid({ name: 'Eve\u202Elin\u200bk', company: 'می\u200cخواهم Ltd' }))
+    expect(t.state.leads[0].name).toBe('Evelink')
+    expect(t.state.leads[0].company).toBe('می\u200cخواهم Ltd')
+  })
+  it('accepts null for the optional fields (a client that serialises "empty" as null)', async () => {
+    t = setup()
+    await submit(valid({ roleCategory: null, roleTitle: null, verificationCode: null, website: null }))
+    expect(t.state.leads).toHaveLength(1)
+  })
+})
+
+describe('createLead — acknowledgement to the submitter', () => {
+  it('sends exactly one, for a brand-new lead, with the field label', async () => {
+    t = setup()
+    await submit(valid({ roleCategory: 'data_science' }))
+    expect(t.state.acks).toEqual([{ to: 'dana@acme.com', name: 'Dana', field: 'Data Science' }])
+  })
+  it('never re-sends on a resubmission, or for a honeypot hit', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', last_submitted_at: new Date(Date.now() - HOURS(30)).toISOString() })] })
+    await submit(valid())
+    await submit(valid({ email: 'bot@x.com', website: 'http://spam' }))
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('has its own hourly budget, and a failing send never fails the submission', async () => {
+    t = setup({ kv: { [`rl:leadack:${Math.floor(Date.now() / 3_600_000)}`]: '30' } })
+    const res = await submit(valid())
+    expect(res.body.success).toBe(true)
+    expect(t.state.acks).toHaveLength(0)
+    expect(t.state.leads).toHaveLength(1)
+  })
+})
+
+describe('adminListLeads — field filter, ordering, stale pages', () => {
+  it('filters by field, by "none" (uncategorised), and ignores a value outside the taxonomy', async () => {
+    t = setup({ leads: [mkLead({ role_category: 'sales' }), mkLead({ id: ID2, email: 'b@b.com' })] })
+    let res = await t.mod.adminListLeads(t.c({ query: { field: 'sales' } }))
+    expect(res.body.data.map(l => l.email)).toEqual(['a@b.com'])
+    res = await t.mod.adminListLeads(t.c({ query: { field: 'none' } }))
+    expect(res.body.data.map(l => l.email)).toEqual(['b@b.com'])
+    t.db.calls.length = 0
+    await t.mod.adminListLeads(t.c({ query: { field: 'nonsense' } }))
+    expect(t.db.calls.some(q => q.filters.some(f => f[1] === 'role_category'))).toBe(false)
+  })
+  it('orders by id last so rows on a page boundary have one stable position', async () => {
+    t = setup()
+    await t.mod.adminListLeads(t.c({}))
+    const q = t.db.calls.find(x => x.selectOpts?.count === 'exact' && !x.selectOpts.head)
+    expect(q.orders.map(o => o[0])).toEqual(['created_at', 'id'])
+  })
+  it('a page past the end is an empty page with the real total, not an error', async () => {
+    t = setup({ leads: [mkLead(), mkLead({ id: ID2, email: 'b@b.com' })] })
+    const res = await t.mod.adminListLeads(t.c({ query: { page: '9' } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data).toEqual([])
+    expect(res.body.meta).toMatchObject({ page: 9, total: 2 })
+  })
+})
+
+describe('adminExportLeads — field filter', () => {
+  it('exports only the selected field', async () => {
+    t = setup({ leads: [mkLead({ role_category: 'sales' }), mkLead({ id: ID2, email: 'b@b.com', role_category: 'legal' })] })
+    const res = await t.mod.adminExportLeads(t.c({ query: { field: 'legal' } }))
+    expect(res.raw).toContain('b@b.com')
+    expect(res.raw).not.toContain('a@b.com')
+  })
+})
+
+describe('adminCreateLead', () => {
+  const body = (over = {}) => ({ name: ' Sam  Ng ', company: 'Initech', email: 'SAM@Initech.com', roleCategory: 'finance', ...over })
+  it('stores a manual lead cleaned like a public one, with no owner notice or acknowledgement', async () => {
+    t = setup()
+    const res = await t.mod.adminCreateLead(t.c({ body: body({ notes: ' met at conf ' }) }))
+    expect(res.status).toBe(201)
+    expect(t.state.leads[0]).toMatchObject({ name: 'Sam Ng', email: 'sam@initech.com', source: 'manual', role_category: 'finance', notes: 'met at conf', status: 'NEW' })
+    expect(res.body.data.email).toBe('sam@initech.com')
+    expect(t.state.notices).toHaveLength(0)
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('stamps contacted_at when created as CONTACTED', async () => {
+    t = setup()
+    await t.mod.adminCreateLead(t.c({ body: body({ status: 'CONTACTED' }) }))
+    expect(t.state.leads[0].contacted_at).toBeTruthy()
+  })
+  it('409s a duplicate email and rejects bad input', async () => {
+    t = setup({ leads: [mkLead({ email: 'sam@initech.com' })] })
+    const res = await t.mod.adminCreateLead(t.c({ body: body() }))
+    expect(res.status).toBe(409)
+    await expect(t.mod.adminCreateLead(t.c({ body: body({ email: 'nope' }) }))).rejects.toBeTruthy()
+    await expect(t.mod.adminCreateLead(t.c({ body: body({ roleCategory: 'astronaut' }) }))).rejects.toBeTruthy()
+  })
+})
+
+describe('adminUpdateLeadStatus — editing fields', () => {
+  it('corrects name/company and categorises a lead; a blank title clears it; email is not editable', async () => {
+    t = setup({ leads: [mkLead({ role_title: 'Old' })] })
+    const res = await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 },
+      body: { name: ' New  Name ', company: 'Newco', roleCategory: 'sales', roleTitle: '', email: 'hijack@x.com' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.leads[0]).toMatchObject({ name: 'New Name', company: 'Newco', role_category: 'sales', role_title: null, email: 'a@b.com' })
+  })
+  it('null clears the category; an unknown category and a blank name are rejected', async () => {
+    t = setup({ leads: [mkLead({ role_category: 'sales' })] })
+    await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { roleCategory: null } }))
+    expect(t.state.leads[0].role_category).toBeNull()
+    await expect(t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { roleCategory: 'astronaut' } }))).rejects.toBeTruthy()
+    await expect(t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { name: '  ' } }))).rejects.toBeTruthy()
+  })
+})
+
+describe('adminBulkUpdateLeads', () => {
+  const two = () => [mkLead(), mkLead({ id: ID2, email: 'b@b.com', contacted_at: '2026-02-02T00:00:00.000Z' })]
+  it('sets a status on the chosen leads only, and stamps contacted_at only where it was empty', async () => {
+    t = setup({ leads: [...two(), mkLead({ id: '33333333-3333-4333-8333-333333333333', email: 'c@b.com' })] })
+    const res = await t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID1, ID2], action: 'setStatus', status: 'CONTACTED' } }))
+    expect(res.body).toEqual({ success: true, affected: 2 })
+    const [a, b, other] = t.state.leads
+    expect([a.status, b.status, other.status]).toEqual(['CONTACTED', 'CONTACTED', 'NEW'])
+    expect(a.contacted_at).toBeTruthy()
+    expect(b.contacted_at).toBe('2026-02-02T00:00:00.000Z')
+    expect(other.contacted_at).toBeNull()
+  })
+  it('deletes the chosen leads', async () => {
+    t = setup({ leads: two() })
+    const res = await t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID1], action: 'delete' } }))
+    expect(res.body.affected).toBe(1)
+    expect(t.state.leads.map(l => l.id)).toEqual([ID2])
+  })
+  it('validates ids, action, the status requirement and the batch size before touching the DB', async () => {
+    t = setup({ leads: two() })
+    for (const body of [
+      { ids: ['nope'], action: 'delete' }, { ids: [], action: 'delete' }, { ids: [ID1], action: 'explode' },
+      { ids: [ID1], action: 'setStatus' }, { ids: [ID1], action: 'setStatus', status: 'BOGUS' },
+      { ids: Array.from({ length: 101 }, () => ID1), action: 'delete' },
+    ]) await expect(t.mod.adminBulkUpdateLeads(t.c({ body }))).rejects.toBeTruthy()
+    expect(t.db.calls).toHaveLength(0)
   })
 })

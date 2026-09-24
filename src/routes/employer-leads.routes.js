@@ -15,6 +15,11 @@ router.get('/', admin, c.adminListLeads)
 // Must not be shadowed by a future GET /:id.
 router.get('/export.csv', admin, c.adminExportLeads)
 
+// Admin-only writes that are not keyed by an :id, registered before the /:id
+// routes so 'manual' / 'bulk' can never be read as an id.
+router.post('/manual', admin, c.adminCreateLead)
+router.post('/bulk',   admin, c.adminBulkUpdateLeads)
+
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —
 // the leads list was read-only with no way to track outreach or clear spam.
 //

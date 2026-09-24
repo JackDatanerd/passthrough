@@ -37,6 +37,7 @@ const { getSupabase } = require('./config/supabase')
 const { scanRowToCamel } = require('./lib/mappers')
 const emailService = require('./services/email.service')
 const { runRetention } = require('./services/retention.service')
+const { runLeadMatchSweep } = require('./services/lead-match.service')
 const { handleDeadLetterBatch } = require('./services/deadletter.service')
 
 const app = new Hono()
@@ -327,6 +328,24 @@ async function queue(batch, env, ctx) {
 // expiry sitting readable in the users row. runRetention (own isolated
 // waitUntil, same as every job above) purges/clears all of that on the same
 // hourly cron — see services/retention.service.js.
+// Owner digest: fields where employer leads are waiting and verified-candidate
+// supply has grown (see services/lead-match.service.js). Same hourly cron, own
+// waitUntil + try/catch; the service itself limits how often it actually
+// sends (one digest per day at most).
+async function leadMatchSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const r = await runLeadMatchSweep(env, getSupabase(env))
+        if (r.error) console.error('Lead-match sweep:', r.error)
+        else if (r.announced) console.log(`Lead-match sweep: digest sent for ${r.announced} field(s)`)
+      } catch (err) {
+        console.error('Lead-match sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 async function retentionSweep(event, env, ctx) {
   ctx.waitUntil(
     (async () => {
@@ -338,9 +357,10 @@ async function retentionSweep(event, env, ctx) {
         // was added to its own sweep) was missing from this summary line —
         // the sweep itself was already clearing them correctly, this was
         // purely a wrangler-tail visibility gap.
-        console.log(`Retention sweep: ${r.anon.deleted} anon scan(s), ${r.logs.emailLogs} email_logs, ${r.logs.alertLogs} alert_logs, ${r.tokens.resetTokens} reset + ${r.tokens.verifyTokens} verify + ${r.tokens.pendingEmailTokens} pending-email token(s) cleared`)
+        console.log(`Retention sweep: ${r.anon.deleted} anon scan(s), ${r.logs.emailLogs} email_logs, ${r.logs.alertLogs} alert_logs, ${r.tokens.resetTokens} reset + ${r.tokens.verifyTokens} verify + ${r.tokens.pendingEmailTokens} pending-email token(s) cleared, ${r.leads.deleted} archived lead(s) purged`)
         for (const e of [...(r.logs.errors || []), ...(r.tokens.errors || [])]) console.error('Retention sweep:', e)
         if (r.anon.error) console.error('Retention sweep (anon):', r.anon.error)
+        if (r.leads.error) console.error('Retention sweep (leads):', r.leads.error)
       } catch (err) {
         console.error('Retention sweep error:', err.message)
       }
@@ -350,7 +370,7 @@ async function retentionSweep(event, env, ctx) {
 
 export default {
   fetch: app.fetch,
-  // One cron trigger, five independent jobs — each isolated by its own
+  // One cron trigger, six independent jobs — each isolated by its own
   // waitUntil + try/catch, so a failure in any one of them can never skip or
   // crash the others.
   scheduled: (event, env, ctx) => {
@@ -358,6 +378,7 @@ export default {
     reconcileSweep(event, env, ctx)
     pendingSweep(event, env, ctx)
     webhookMaintenanceSweep(event, env, ctx)
+    leadMatchSweep(event, env, ctx)
     return retentionSweep(event, env, ctx)
   },
   queue,

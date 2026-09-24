@@ -53,7 +53,7 @@ const emailService        = require('../services/email.service')
 const referralService      = require('../services/referral.service')
 const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp }         = require('../lib/clientIp')
-const { must, warnOnError } = require('../lib/db')
+const { must, warnOnError, isRangeError } = require('../lib/db')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -1016,7 +1016,9 @@ async function getScanHistory(ctx) {
   // status filter, even though every comparable admin list (AdminUsers,
   // AdminLeads) already has both. Same sanitize-then-ilike / allowlisted-
   // status pattern as those.
-  const search = String(ctx.req.query('search') || '').trim().replace(/[,()]/g, '')
+  // Same stripping as the employer-leads search: everything with meaning inside
+  // a PostgREST .or() string or an ilike pattern (`_` stays — it only widens a match).
+  const search = String(ctx.req.query('search') || '').replace(/[,()"%\\*]/g, '').trim()
   const status = ctx.req.query('status')
 
   const supabase = getSupabase(ctx.env)
@@ -1042,9 +1044,21 @@ async function getScanHistory(ctx) {
   if (search) query = query.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
   if (status && SCAN_STATUSES.includes(status)) query = query.eq('status', status)
 
-  const { data: rows, error, count } = await query
+  let { data: rows, error, count } = await query
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })   // total order: created_at ties must not shuffle rows between pages
     .range(from, to)
+  if (isRangeError(error)) {
+    // A page past the end (scans since removed, a stale bookmark, a hand-edited
+    // ?page=): an empty page with the real total, so the dashboard can step
+    // back to the last real page instead of dead-ending on an error.
+    let head = supabase.from('scans').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
+    if (search) head = head.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
+    if (status && SCAN_STATUSES.includes(status)) head = head.eq('status', status)
+    const totals = await head
+    if (totals.error) throw totals.error
+    rows = []; count = totals.count; error = null
+  }
   if (error) throw error
 
   const scans = rows.map(r => ({
@@ -1057,6 +1071,73 @@ async function getScanHistory(ctx) {
   }))
 
   return ctx.json({ success: true, data: { scans, page, limit, total: count } })
+}
+
+// DELETE /api/scan/:id
+// A user could only ever remove their scans by deleting the whole account: the
+// resume file, job description, structured data and rewritten documents of
+// every scan stayed until then. This removes ONE scan and everything stored
+// for it.
+//
+//  * Owner only — and a scan that isn't yours is a 404, same as one that
+//    doesn't exist, so the endpoint can't be used to probe scan ids.
+//  * Not while the scan is being worked on: the background job writes its
+//    results when it finishes, which would recreate data (and re-upload files)
+//    for a scan the user just deleted. Untouched for an hour = the job died
+//    (the hourly cron flips those to ERROR), so it never blocks deletion for
+//    good. The same goes for a payment still in flight on the scan.
+//  * A paid scan CAN be deleted — its verification page stops existing with
+//    it, which the UI says before confirming. payments.scan_id is
+//    `on delete set null`, so the receipt and its history survive.
+//  * The saved profile is a separate copy the user chose to keep; only its
+//    "view source scan" pointer is cleared.
+//  * R2 objects go after the row, best-effort and logged: object storage is
+//    not part of the DB transaction, and a leaked object is visible in logs
+//    (the row is gone, so nothing else can ever refer to it).
+const SCAN_IN_FLIGHT_STATUSES = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
+const SCAN_IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000
+
+async function deleteScan(ctx) {
+  const user = ctx.get('user')
+  const id = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: row, error } = await supabase.from('scans')
+    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path')
+    .eq('id', id).maybeSingle()
+  if (error) throw error
+  if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+
+  const since = new Date(Date.now() - SCAN_IN_FLIGHT_WINDOW_MS).toISOString()
+  if (SCAN_IN_FLIGHT_STATUSES.includes(row.status) && row.updated_at > since)
+    return ctx.json({ success: false, message: 'This scan is still being processed. Try again in a few minutes.' }, 409)
+
+  const { count: pendingPayments, error: payErr } = await supabase.from('payments')
+    .select('id', { count: 'exact', head: true })
+    .eq('scan_id', id).eq('status', 'PENDING').gt('created_at', since)
+  if (payErr) throw payErr
+  if (pendingPayments > 0)
+    return ctx.json({ success: false, message: 'A payment for this scan is still in progress. Try again in a few minutes.' }, 409)
+
+  const { data: removed, error: delErr } = await supabase.from('scans')
+    .delete().eq('id', id).eq('user_id', user.id).select('id').maybeSingle()
+  if (delErr) throw delErr
+  if (!removed) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+
+  for (const key of [row.resume_path, row.resume_ats_path, row.resume_pdf_path]) {
+    if (!key) continue
+    try { await ctx.env.RESUMES_BUCKET.delete(key) }
+    catch (e) { console.error(`deleteScan: failed to delete R2 object ${key} for scan ${id}:`, e.message) }
+  }
+
+  try {
+    const { data: u } = await supabase.from('users').select('saved_profile').eq('id', user.id).maybeSingle()
+    if (u?.saved_profile?.sourceScanId === id)
+      warnOnError(await supabase.from('users')
+        .update({ saved_profile: { ...u.saved_profile, sourceScanId: null } }).eq('id', user.id), 'deleteScan: clear saved-profile source')
+  } catch (e) { console.error('deleteScan: saved-profile pointer:', e.message) }
+
+  return ctx.json({ success: true, message: 'Scan deleted.' })
 }
 
 // ─── helper: replaces Prisma's `include: { user: true }` ─────────────────
@@ -1780,7 +1861,7 @@ async function generateBadge(env, supabase, scanId) {
 }
 
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, updateVerifyVisibility, downloadFile, getScanHistory,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData, downloadDraft,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

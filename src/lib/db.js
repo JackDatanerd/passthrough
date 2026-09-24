@@ -34,4 +34,17 @@ function warnOnError(result, label) {
   return true
 }
 
-module.exports = { must, warnOnError }
+// PostgREST answers an offset past the end of the result set with 416
+// (PGRST103, "Requested range not satisfiable") whenever a count was asked
+// for — which supabase-js surfaces as `{ error }`, and the callers' usual
+// `if (error) throw error` turns into a 500. A page number that has outlived
+// its data (rows deleted, a stale bookmark, a hand-edited ?page=) is a normal
+// thing for a client to send: the right answer is an empty page that still
+// reports the real total, not a server error. Callers check this, then fetch
+// the total with a head-only count.
+function isRangeError(error) {
+  if (!error) return false
+  return error.code === 'PGRST103' || /range not satisfiable/i.test(String(error.message || ''))
+}
+
+module.exports = { must, warnOnError, isRangeError }

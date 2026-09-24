@@ -188,14 +188,44 @@ describe('sendOwnerNotice — employer leads', () => {
     await t.mod.sendOwnerNotice(t.env, 'New employer lead', 'b')
     expect(t.sent).toHaveLength(2)
   })
-  it('no-ops without throwing when there is no owner address configured', async () => {
+  it('no-ops without throwing when there is no owner address configured — but says so in the log', async () => {
     t = setup(); delete t.env.OWNER_ALERT_EMAIL
-    expect(await t.mod.sendOwnerNotice(t.env, 's', 'm')).toBe(false)
+    const warns = []; const realWarn = console.warn; console.warn = (...a) => warns.push(a.join(' '))
+    try { expect(await t.mod.sendOwnerNotice(t.env, 's', 'm')).toBe(false) } finally { console.warn = realWarn }
     expect(t.sent).toHaveLength(0)
+    expect(warns.join('\n')).toMatch(/OWNER_ALERT_EMAIL is not set/)
   })
   it('propagates a send failure rather than swallowing it — the caller (employer-leads.controller.js) owns that try/catch', async () => {
     t = setup({ sendFails: true })
     await expect(t.mod.sendOwnerNotice(t.env, 's', 'm')).rejects.toThrow('Resend down')
+  })
+})
+
+describe('sendEmployerLeadAck', () => {
+  it('sends the acknowledgement with the name, field, removal address and both content and plain-text parts', async () => {
+    t = setup()
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana <b>', 'Sales')).toBe(true)
+    const m = t.sent[0]
+    expect(m.to).toBe('dana@acme.com')
+    expect(m.subject).toMatch(/early-access list/)
+    expect(m.html).toContain('Dana &lt;b&gt;')          // escaped like every template value
+    expect(m.html).toContain('in Sales')
+    expect(m.html).toContain('support@passthrough.dev')
+    expect(m.html).not.toMatch(/{{/)                     // no unfilled placeholder
+    expect(m.text).toContain('support@passthrough.dev')
+    expect(logs(t.db).map(l => l.status)).toEqual(['sent'])
+  })
+  it('omits the field phrase when none was given', async () => {
+    t = setup()
+    await t.mod.sendEmployerLeadAck(t.env, t.db, 'dana@acme.com', 'Dana', '')
+    expect(t.sent[0].html).toContain('Passthrough Verified candidates.')
+  })
+  it('is capped to one per address per month, whatever route reaches it', async () => {
+    t = setup()
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'victim@example.com', 'V', '')).toBe(true)
+    expect(await t.mod.sendEmployerLeadAck(t.env, t.db, 'Victim@Example.com', 'V', '')).toBe(false)
+    expect(t.sent).toHaveLength(1)
+    expect(logs(t.db).map(l => l.status)).toEqual(['sent', 'throttled'])
   })
 })
 

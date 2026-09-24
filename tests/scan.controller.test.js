@@ -343,8 +343,13 @@ describe('downloadFile', () => {
 })
 
 describe('getScanHistory', () => {
-  function setup(rows, count = 0) {
-    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: rows, error: null, count } : undefined))
+  function setup(rows, count = 0, over = {}) {
+    const db = createFakeSupabase(q => {
+      if (q.table !== 'scans') return undefined
+      if (q.selectOpts?.head) return { count: over.total ?? count, error: null }
+      if (over.rangeError) return { data: null, error: { code: 'PGRST103', message: 'Requested range not satisfiable' } }
+      return { data: rows, error: null, count }
+    })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     return { mod, restore, db }
   }
@@ -386,6 +391,22 @@ describe('getScanHistory', () => {
     expect(call.filters.find(f => f[1] === 'status')[2]).toBe('FIX_DELIVERED')
   })
 
+  it('a page past the end is an empty page with the real total, not a 500', async () => {
+    t = setup([], 0, { rangeError: true, total: 7 })
+    const res = await t.mod.getScanHistory(baseCtx({ query: { page: '9', limit: '10', status: 'FIX_DELIVERED' } }))
+    expect(res.body.data.scans).toEqual([])
+    expect(res.body.data.total).toBe(7)
+    const head = t.db.calls.find(c => c.selectOpts?.head)
+    expect(head.filters.find(f => f[0] === 'eq' && f[1] === 'user_id')[2]).toBe('u1')
+    expect(head.filters.find(f => f[1] === 'status')[2]).toBe('FIX_DELIVERED')
+  })
+
+  it('breaks created_at ties by id so a row cannot land on two pages or none', async () => {
+    t = setup([], 0)
+    await t.mod.getScanHistory(baseCtx({}))
+    expect(t.db.calls.find(c => c.table === 'scans').orders.map(o => o[0])).toEqual(['created_at', 'id'])
+  })
+
   it('sanitizes the search term before building the .or() filter', async () => {
     t = setup([], 0)
     await t.mod.getScanHistory(baseCtx({ query: { search: 'jo,(hn' } }))
@@ -393,5 +414,81 @@ describe('getScanHistory', () => {
     const orExpr = (call.or || []).join(',')
     expect(orExpr).toContain('%john%')
     expect(orExpr).not.toContain('(hn')
+  })
+})
+
+describe('deleteScan', () => {
+  const HOUR = 3600_000
+  function setup(opts = {}) {
+    const r2 = { deleted: [], failOn: opts.r2Fail }
+    const state = { deleted: 0, profileUpdates: [] }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', updated_at: new Date(Date.now() - 5 * HOUR).toISOString(), resume_path: 'r/1.pdf', resume_ats_path: 'r/1-ats.docx', resume_pdf_path: 'r/1.out.pdf' }, error: null }
+      if (q.table === 'payments') return { count: opts.pendingPayments ?? 0, error: null }
+      if (q.table === 'scans' && q.op === 'delete') { state.deleted++; return { data: opts.deleteReturnsNothing ? null : { id: 's1' }, error: opts.deleteError || null } }
+      if (q.table === 'users' && q.op === 'select') return { data: { saved_profile: opts.savedProfile ?? null }, error: null }
+      if (q.table === 'users' && q.op === 'update') { state.profileUpdates.push(q.patch); return { error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const ctx = () => baseCtx({ env: { RESUMES_BUCKET: { delete: async k => { if (r2.failOn === k) throw new Error('r2 down'); r2.deleted.push(k) } } } })
+    return { mod, restore, db, r2, state, ctx }
+  }
+
+  it('deletes the row scoped to the owner, then every R2 object stored for it', async () => {
+    t = setup()
+    const res = await t.mod.deleteScan(t.ctx())
+    expect(res).toEqual({ body: { success: true, message: 'Scan deleted.' }, status: 200 })
+    const del = t.db.calls.find(c => c.table === 'scans' && c.op === 'delete')
+    expect(del.filters.filter(f => f[0] === 'eq')).toEqual([['eq', 'id', 's1'], ['eq', 'user_id', 'u1']])
+    expect(t.r2.deleted.sort()).toEqual(['r/1-ats.docx', 'r/1.out.pdf', 'r/1.pdf'])
+  })
+  it('404s a scan that is not yours exactly like one that does not exist, touching nothing', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'someone-else', status: 'COMPLETE_PASS', updated_at: '2020-01-01' } })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(404)
+    t.restore(); t = setup({ scan: null })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(404)
+    expect(t.state.deleted).toBe(0)
+    expect(t.r2.deleted).toEqual([])
+  })
+  it('409s while a job is still working on the scan, but not once it has been silent for an hour', async () => {
+    for (const status of ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']) {
+      t = setup({ scan: { id: 's1', user_id: 'u1', status, updated_at: new Date().toISOString(), resume_path: 'r' } })
+      const res = await t.mod.deleteScan(t.ctx())
+      expect(res.status, status).toBe(409)
+      expect(t.state.deleted).toBe(0)
+      t.restore()
+    }
+    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'SCANNING', updated_at: new Date(Date.now() - 2 * HOUR).toISOString(), resume_path: 'r' } })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(200)
+  })
+  it('409s while a payment for the scan is in flight', async () => {
+    t = setup({ pendingPayments: 1 })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(409)
+    expect(t.state.deleted).toBe(0)
+  })
+  it('a paid scan can be deleted — the receipt survives via payments.scan_id on delete set null', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, verification_code: 'ABC', updated_at: '2020-01-01', resume_path: 'r/1.pdf' } })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(200)
+    expect(t.db.calls.some(c => c.table === 'payments' && c.op !== 'select')).toBe(false)
+  })
+  it('a failing R2 delete never fails the request or skips the other objects', async () => {
+    t = setup({ r2Fail: 'r/1-ats.docx' })
+    const res = await t.mod.deleteScan(t.ctx())
+    expect(res.status).toBe(200)
+    expect(t.r2.deleted.sort()).toEqual(['r/1.out.pdf', 'r/1.pdf'])
+  })
+  it('a database error deleting the row propagates and no file is removed', async () => {
+    t = setup({ deleteError: { message: 'db down' } })
+    await expect(t.mod.deleteScan(t.ctx())).rejects.toBeTruthy()
+    expect(t.r2.deleted).toEqual([])
+  })
+  it('clears the saved profile\'s source-scan pointer only when it pointed at this scan, keeping the profile itself', async () => {
+    const profile = { resumeData: { name: 'J' }, sourceScanId: 's1', savedAt: 't' }
+    t = setup({ savedProfile: profile })
+    await t.mod.deleteScan(t.ctx())
+    expect(t.state.profileUpdates).toEqual([{ saved_profile: { ...profile, sourceScanId: null } }])
+    t.restore(); t = setup({ savedProfile: { ...profile, sourceScanId: 'other' } })
+    await t.mod.deleteScan(t.ctx())
+    expect(t.state.profileUpdates).toEqual([])
   })
 })

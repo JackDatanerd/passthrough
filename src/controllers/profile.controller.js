@@ -34,9 +34,18 @@ async function getProfile(c) {
   if (error) throw error
 
   const saved = data.saved_profile
-  const summary = saved?.resumeData ? {
-    name:         saved.resumeData.name || null,
-    roleCategory: saved.roleCategory || null
+  // Enough to tell what is actually saved without shipping the resume itself
+  // (contact details, full history) over this endpoint: who, which field, the
+  // most recent title, and how much is in there.
+  const rd = saved?.resumeData
+  const count = (v) => Array.isArray(v) ? v.length : 0
+  const summary = rd ? {
+    name:         rd.name || null,
+    roleCategory: saved.roleCategory || null,
+    latestTitle:  (Array.isArray(rd.experience) && rd.experience[0]?.title) || null,
+    jobCount:     count(rd.experience),
+    educationCount: count(rd.education),
+    skillCount:   count(rd.skills)
   } : null
 
   return c.json({ success: true, data: {
@@ -50,9 +59,13 @@ async function getProfile(c) {
 // POST /api/profile/save  { scanId }
 async function saveProfile(c) {
   const user = c.get('user')
-  const body = await c.req.json()
-  const scanId = body.scanId
+  // `null`, an array or a bare string are all valid JSON: reading `.scanId`
+  // off them used to throw a TypeError and answer 500 for a client mistake.
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  const scanId = body && typeof body === 'object' ? body.scanId : undefined
   if (!scanId) return c.json({ success: false, message: 'scanId required.' }, 400)
+  if (typeof scanId !== 'string') return c.json({ success: false, message: 'Invalid scanId.' }, 400)
   // BUG FIX (Section 6, traced cross-cutting to scan.routes.js — see
   // validateUuidParam.js): scanId here is a JSON body field rather than a
   // route param, so the route-level middleware doesn't cover it — same
@@ -94,4 +107,58 @@ async function deleteProfile(c) {
   return c.json({ success: true, message: 'Saved profile removed.' })
 }
 
-module.exports = { getProfile, saveProfile, deleteProfile }
+// GET /api/profile/export — the account's own data as one JSON download
+// (access / portability). Explicit column lists, camelCased by hand: this is a
+// file the user keeps and forwards, so nothing credential-shaped (password
+// hash, tokens, Paystack codes, anonymous-scan tokens) may ever ride along by
+// accident when a column is added to a table later.
+const EXPORT_MAX_SCANS = 1000
+const EXPORT_MAX_PAYMENTS = 1000
+const EXPORT_SCAN_COLUMNS =
+  'id, status, input_mode, created_at, scan_completed_at, resume_original_name, role_category, seniority_level, ' +
+  'ats_score, passed, keyword_score, format_score, sections_score, content_score, ' +
+  'job_description_text, job_description_url, raw_brain_dump_text, cover_letter_text, ' +
+  'original_resume_data, rewritten_resume_data, fix_purchased, fix_tier, fix_ats_score, fix_generated_at, ' +
+  'verification_code, verification_status, verified_at, verification_revoked_at'
+const EXPORT_PAYMENT_COLUMNS =
+  'id, paystack_ref, amount_cents, currency, fix_tier, status, scan_id, referral_code, created_at, refunded_at, disputed_at'
+
+async function exportMyData(c) {
+  const user = c.get('user')
+  const supabase = getSupabase(c.env)
+
+  const { data: account, error: accErr } = await supabase.from('users')
+    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile').eq('id', user.id).single()
+  if (accErr) throw accErr
+
+  const { data: scans, error: scanErr } = await supabase.from('scans')
+    .select(EXPORT_SCAN_COLUMNS).eq('user_id', user.id)
+    .order('created_at', { ascending: false }).limit(EXPORT_MAX_SCANS)
+  if (scanErr) throw scanErr
+
+  const { data: payments, error: payErr } = await supabase.from('payments')
+    .select(EXPORT_PAYMENT_COLUMNS).eq('user_id', user.id)
+    .order('created_at', { ascending: false }).limit(EXPORT_MAX_PAYMENTS)
+  if (payErr) throw payErr
+
+  const camel = (row) => Object.fromEntries(Object.entries(row).map(([k, v]) =>
+    [k.replace(/_([a-z])/g, (_, ch) => ch.toUpperCase()), v]))
+
+  const payload = {
+    exportedAt: new Date().toISOString(),
+    account: {
+      name: account.name, email: account.email, emailVerified: account.email_verified,
+      freeFixCredits: account.free_fix_credits, createdAt: account.created_at
+    },
+    savedProfile: account.saved_profile || null,
+    scans: (scans || []).map(camel),
+    payments: (payments || []).map(camel),
+    truncated: (scans || []).length >= EXPORT_MAX_SCANS || (payments || []).length >= EXPORT_MAX_PAYMENTS
+  }
+  return c.body(JSON.stringify(payload, null, 2), 200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Content-Disposition': 'attachment; filename="passthrough-my-data.json"'
+  })
+}
+
+module.exports = { getProfile, saveProfile, deleteProfile, exportMyData }

@@ -23,6 +23,8 @@ router.post('/:id/redeem-credit', auth, rl.payment, validateUuidParam(), c.redee
 router.post('/:id/retry-fix',    auth, rl.payment, validateUuidParam(), c.retryFix)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
+// Owner-only removal of one scan and everything stored for it (see deleteScan).
+router.delete('/:id',            auth,        validateUuidParam(), c.deleteScan)
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
 // deliberately NOT behind `auth` — ownership is enforced inside the
 // controllers via anon_token (same model as GET /:id above), since an

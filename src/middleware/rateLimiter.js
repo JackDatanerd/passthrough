@@ -288,6 +288,14 @@ const resumeEdit = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// Backs GET /api/profile/export — one request reads every scan and payment the
+// account has (JD text, structured resumes and all), so it is capped tightly;
+// a person downloading their own data needs it a handful of times, not more.
+const dataExport = makeLimiter({
+  windowSeconds: 60 * 60, max: 5, keyPrefix: 'rl:export',
+  message: msg('Too many export requests. Please try again later.')
+})
+
 const employerLead = makeLimiter({
   windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:lead',
   message: msg('Slow down.')
@@ -542,7 +550,7 @@ async function recordVerifyMiss(env, ip, now = Date.now()) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, webhook, click,
+  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, dataExport, webhook, click,
   partnerRead, partnerWrite, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX,

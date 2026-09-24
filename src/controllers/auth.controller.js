@@ -363,12 +363,15 @@ async function resetPassword(c) {
 
   if (!user) return c.json({ success: false, message: 'Reset link invalid or expired.' }, 400)
 
-  await supabase.from('users').update({
+  // Checked (see lib/db.js): supabase-js never throws, so an unchecked failed
+  // write here told the user their password was reset when nothing had been
+  // written — and left the old password, and every old session, working.
+  must(await supabase.from('users').update({
     password_hash:      await bcrypt.hash(newPassword, 10),
     reset_token:        null,
     reset_token_expiry: null,
     token_version:       user.tokenVersion + 1  // kills all existing sessions
-  }).eq('id', user.id)
+  }).eq('id', user.id), 'reset password')
 
   // BUG FIX (account lockout, section audit round 2): proving control of the
   // account's inbox — clicking a time-limited, single-use emailed link — is a
@@ -442,6 +445,20 @@ async function resendVerification(c) {
   return c.json({ success: true, message: 'Verification email sent.' })
 }
 
+// Scan statuses that mean a background job is (or should be) writing to the
+// row, and how long without an update before we assume the job is dead.
+const IN_FLIGHT_SCAN_STATUSES = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
+const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000
+
+async function countInFlightScans(supabase, { userId }) {
+  const since = new Date(Date.now() - IN_FLIGHT_WINDOW_MS).toISOString()
+  const { count, error } = await supabase.from('scans')
+    .select('id', { count: 'exact', head: true })
+    .eq('user_id', userId).in('status', IN_FLIGHT_SCAN_STATUSES).gt('updated_at', since)
+  if (error) throw error
+  return count || 0
+}
+
 // PATCH /api/auth/password
 async function changePassword(c) {
   const sessionUser = c.get('user')
@@ -487,7 +504,12 @@ async function changePassword(c) {
   await recordLoginSuccess(c.env, sessionUser.email)
 
   const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
-  await supabase.from('users').update({
+  // Checked (see lib/db.js): this write used to be fire-and-forget. If it
+  // failed, the handler carried on — reported "Password updated", sent the
+  // "your password was changed" email, and minted a token carrying a
+  // tokenVersion that was never stored, which killed the user's own session
+  // while the password stayed exactly as it was.
+  must(await supabase.from('users').update({
     password_hash: await bcrypt.hash(newPassword, 10),
     token_version:  newTokenVersion,
     // BUG FIX (Section 6, second fixing-time pass): token_version above
@@ -507,7 +529,7 @@ async function changePassword(c) {
     // verification link for no security benefit.
     reset_token: null, reset_token_expiry: null,
     pending_email: null, pending_email_token: null, pending_email_expiry: null
-  }).eq('id', user.id)
+  }).eq('id', user.id), 'update password')
 
   // BUG FIX: token_version bump above invalidates ALL outstanding JWTs for
   // this user — including the token this very request was authenticated
@@ -607,9 +629,9 @@ async function updateEmail(c) {
 
   if (newEmail === user.email) {
     if (cancelPending && user.pendingEmail) {
-      await supabase.from('users').update({
+      must(await supabase.from('users').update({
         pending_email: null, pending_email_token: null, pending_email_expiry: null
-      }).eq('id', user.id)
+      }).eq('id', user.id), 'cancel pending email change')
       return c.json({ success: true, message: 'Email change canceled.' })
     }
     return c.json({ success: false, message: 'That is already your email address.' }, 400)
@@ -683,9 +705,9 @@ async function confirmEmailChange(c) {
     .from('users').select('id').eq('email', user.pendingEmail).neq('id', user.id).is('deleted_at', null).maybeSingle()
   if (existingErr) throw existingErr
   if (existing) {
-    await supabase.from('users').update({
+    must(await supabase.from('users').update({
       pending_email: null, pending_email_token: null, pending_email_expiry: null
-    }).eq('id', user.id)
+    }).eq('id', user.id), 'clear conflicting pending email')
     return c.json({ success: false, message: 'That email address is already in use.' }, 400)
   }
 
@@ -739,6 +761,20 @@ async function deleteAccount(c) {
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
+
+  // A scan or fix still being produced in the background writes its results
+  // (structured resume data, report, rewritten files) when it finishes. Run
+  // after the scrub below, that job would put personal data straight back onto
+  // a deleted account's scan — and re-upload files after the R2 cleanup below
+  // has already run — and the retention sweep only ever purges anonymous scans.
+  // So: not while work is in flight. Anything untouched for an hour is a job
+  // that died (the hourly cron flips those to ERROR), and must never make an
+  // account undeletable.
+  const inFlight = await countInFlightScans(supabase, { userId: user.id })
+  if (inFlight > 0) {
+    return c.json({ success: false,
+      message: 'One of your scans is still being processed. Please try again in a few minutes.' }, 409)
+  }
 
   // Captured before scrub_account_data overwrites both columns with
   // placeholder values (see migration 0022) — needed below to send the
@@ -822,7 +858,13 @@ async function deleteAccount(c) {
   // the confirmation email above has already been sent-and-logged or
   // failed outright, so nothing further will be written for this address.
   try {
-    const { error: logErr } = await supabase.from('email_logs').delete().eq('to', preScrubEmail)
+    // scrub_account_data has already renamed this account's earlier log rows
+    // to the placeholder address (0029), so purging by the real address alone
+    // only ever caught the deletion confirmation's own row — everything mailed
+    // before it survived under `deleted-<id>@…`, which still ties it to the
+    // account's id. Purge both.
+    const { error: logErr } = await supabase.from('email_logs').delete()
+      .in('to', [preScrubEmail, `deleted-${user.id}@passthrough.dev`])
     if (logErr) console.error('deleteAccount: email_logs purge failed:', logErr.message)
   } catch (e) { console.error('deleteAccount: email_logs purge failed:', e.message) }
 

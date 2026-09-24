@@ -8,8 +8,9 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, statusLabel } from '../../lib/utils'
-import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
+import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
 // .js's SCAN_STATUSES allowlist, for the filter dropdown below.
@@ -34,6 +35,17 @@ function scanLabel(scan) {
 }
 
 const SCANS_PER_PAGE = 20
+// Statuses where a background job is still writing to the scan; the server
+// refuses to delete these (deleting would race the job), so the button waits.
+const IN_FLIGHT = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
+
+// What deleting this particular scan takes with it, said before confirming.
+function deleteMessage(scan) {
+  const paid = scan.fixPurchased || !!scan.verificationCode
+  return 'Permanently delete this scan? Its resume file, job description and any rewritten documents are removed.' +
+    (paid ? `\n\nThis scan has a purchased fix${scan.verificationCode ? ' and a public verification page — that page will stop working' : ''}. Your payment record is kept.` : '') +
+    '\n\nYour saved profile (Settings) is a separate copy and is not affected.'
+}
 
 export default function DashboardIndex() {
   const { user, refreshUser } = useAuth()
@@ -41,6 +53,10 @@ export default function DashboardIndex() {
   const [loading,  setLoading ] = useState(true)
   const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
+  const [resendError, setResendError] = useState('')
+  const [pendingDelete, setPendingDelete] = useState(null)   // scan awaiting confirmation
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
 
   // FEATURE GAP CLOSED (Section 6, fixing-time pass): page/search/status now
   // live in the URL instead of plain component state — refreshing or
@@ -106,18 +122,30 @@ export default function DashboardIndex() {
     })
   }
 
+  // Only the newest request may write state: a quick filter change or page
+  // click used to let a slower, older response land last and replace the list
+  // the user was actually looking at.
   useEffect(() => {
+    let cancelled = false
     setLoading(true); setLoadError('')
     api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: search || undefined, status: status || undefined } })
       .then(res => {
-        setScans(res.data.data.scans)
-        setTotal(res.data.data.total ?? 0)
+        if (cancelled) return
+        const data = res.data.data
+        // A page past the end (scans removed since, a stale bookmark, a hand-
+        // edited ?page=): step back to the last page that exists.
+        const lastPage = Math.max(Math.ceil((data.total ?? 0) / SCANS_PER_PAGE), 1)
+        if (page > lastPage) { setPage(lastPage); return }
+        setScans(data.scans)
+        setTotal(data.total ?? 0)
         setLoading(false)
       })
       .catch(err => {
+        if (cancelled) return
         setLoadError(getErrorMessage(err, "Couldn't load your scans."))
         setLoading(false)
       })
+    return () => { cancelled = true }
   }, [page, search, status, reloadTick])
 
   useEffect(() => {
@@ -136,7 +164,7 @@ export default function DashboardIndex() {
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
   async function resendVerification() {
-    setResending(true)
+    setResending(true); setResendError('')
     try {
       await api.post('/auth/resend-verification')
       setResentOk(true)
@@ -145,8 +173,26 @@ export default function DashboardIndex() {
       // cache just hadn't caught up, which previously looked identical to
       // "resend isn't working" since the banner never went away either way.
       refreshUser()
-    } catch (_) {}
+    } catch (err) {
+      // Was swallowed: a rate limit or a mail outage left a button that did
+      // nothing and said nothing.
+      setResendError(getErrorMessage(err, 'Could not resend the verification email.'))
+    }
     setResending(false)
+  }
+
+  async function confirmDeleteScan() {
+    setDeleting(true); setDeleteError('')
+    try {
+      await api.delete(`/scan/${pendingDelete.id}`)
+      setPendingDelete(null)
+      setReloadTick(t => t + 1)   // the page may now be short or empty; the load effect steps back if so
+    } catch (err) {
+      setDeleteError(getErrorMessage(err, 'Could not delete that scan.'))
+      setPendingDelete(null)
+    } finally {
+      setDeleting(false)
+    }
   }
 
   const hasFilters = !!(search || status)
@@ -180,9 +226,12 @@ export default function DashboardIndex() {
             {resentOk ? (
               <span className="text-xs text-green-700 bg-green-100 px-3 py-1.5 rounded-md">Sent!</span>
             ) : (
-              <Button size="sm" variant="secondary" onClick={resendVerification} loading={resending}>
-                Resend email
-              </Button>
+              <div className="flex flex-col items-start sm:items-end gap-1">
+                <Button size="sm" variant="secondary" onClick={resendVerification} loading={resending}>
+                  Resend email
+                </Button>
+                {resendError && <p role="alert" className="text-xs text-red-600">{resendError}</p>}
+              </div>
             )}
           </div>
         )}
@@ -218,6 +267,10 @@ export default function DashboardIndex() {
               </select>
             </div>
           </div>
+        )}
+
+        {deleteError && (
+          <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">{deleteError}</div>
         )}
 
         {loading && (
@@ -264,10 +317,11 @@ export default function DashboardIndex() {
         {!loading && !loadError && scans.length > 0 && (
           <div className="flex flex-col gap-3">
             {scans.map(scan => (
+              <div key={scan.id}
+                className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-colors flex items-stretch">
               <Link
-                key={scan.id}
                 to={`/scan/${scan.id}`}
-                className="bg-white rounded-lg border border-gray-200 px-5 py-4 hover:border-blue-300 transition-colors flex flex-col sm:flex-row sm:items-center gap-3"
+                className="flex-1 min-w-0 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3"
               >
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-900 truncate">
@@ -295,7 +349,7 @@ export default function DashboardIndex() {
                     return (
                       <>
                         {displayScore != null && (
-                          <span className={`text-sm font-bold ${displayScore >= 75 ? 'text-green-700' : displayScore >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
+                          <span className={`text-sm font-bold ${displayScore >= ATS_PASS_THRESHOLD ? 'text-green-700' : displayScore >= 50 ? 'text-amber-600' : 'text-red-600'}`}>
                             {displayScore}/100
                           </span>
                         )}
@@ -312,6 +366,15 @@ export default function DashboardIndex() {
                   })()}
                 </div>
               </Link>
+              <button type="button"
+                onClick={() => { setDeleteError(''); setPendingDelete(scan) }}
+                disabled={IN_FLIGHT.includes(scan.status)}
+                title={IN_FLIGHT.includes(scan.status) ? 'Available once processing finishes' : 'Delete this scan'}
+                aria-label={`Delete ${scanLabel(scan)}`}
+                className="px-4 text-xs text-gray-400 hover:text-red-600 border-l border-gray-100 disabled:opacity-40 disabled:hover:text-gray-400 disabled:cursor-not-allowed">
+                Delete
+              </button>
+              </div>
             ))}
           </div>
         )}
@@ -328,6 +391,16 @@ export default function DashboardIndex() {
           />
         )}
       </div>
+
+      <ConfirmDialog
+        open={!!pendingDelete}
+        title="Delete scan"
+        message={pendingDelete ? deleteMessage(pendingDelete) : ''}
+        confirmLabel="Delete scan"
+        loading={deleting}
+        onConfirm={confirmDeleteScan}
+        onCancel={() => setPendingDelete(null)}
+      />
     </DashboardLayout>
   )
 }

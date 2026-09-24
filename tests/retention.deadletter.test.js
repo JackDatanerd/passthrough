@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
-import { runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens } from '../src/services/retention.service.js'
+import { runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, ARCHIVED_LEAD_RETENTION_DAYS } from '../src/services/retention.service.js'
 import { handleDeadLetterBatch } from '../src/services/deadletter.service.js'
 
 const NOW = Date.parse('2026-09-21T12:00:00Z')
@@ -67,7 +67,26 @@ describe('purgeOldLogs / clearExpiredTokens', () => {
   it('runRetention runs every step and never throws', async () => {
     const db = createFakeSupabase(() => ({ data: [], error: null }))
     const r = await runRetention({ RESUMES_BUCKET: { delete: async () => {} } }, db, NOW)
-    expect(Object.keys(r).sort()).toEqual(['anon', 'logs', 'tokens'])
+    expect(Object.keys(r).sort()).toEqual(['anon', 'leads', 'logs', 'tokens'])
+  })
+})
+
+describe('purgeArchivedLeads', () => {
+  it('deletes only ARCHIVED leads untouched for the retention window', async () => {
+    const db = createFakeSupabase(() => ({ data: [{ id: 'l1' }, { id: 'l2' }], error: null }))
+    const r = await purgeArchivedLeads(db, NOW)
+    expect(r).toEqual({ deleted: 2 })
+    const q = db.calls[0]
+    expect(q.table).toBe('employer_leads')
+    expect(q.op).toBe('delete')
+    expect(eqValue(q, 'status')).toBe('ARCHIVED')
+    expect(q.filters.find(f => f[0] === 'lt' && f[1] === 'updated_at')[2])
+      .toBe(new Date(NOW - ARCHIVED_LEAD_RETENTION_DAYS * DAY).toISOString())
+    expect(ARCHIVED_LEAD_RETENTION_DAYS).toBe(90)
+  })
+  it('reports a failure instead of throwing', async () => {
+    const db = createFakeSupabase(() => ({ error: { message: 'db down' } }))
+    expect(await purgeArchivedLeads(db, NOW)).toEqual({ deleted: 0, error: 'db down' })
   })
 })
 

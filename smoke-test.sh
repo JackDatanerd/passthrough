@@ -81,9 +81,14 @@ body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n1)
 check "verify bogus code -> 404" "404" "$code" "$body"
 
 # 7. Employer lead submission
+# The default BASE is production, and a real submission would store a permanent
+# "employer-smoketest@example.com" lead there (and page the owner, then bump
+# its resubmission count on every later run). Filling the honeypot field makes
+# the endpoint validate the payload, answer 200 and store/send nothing — which
+# still proves the route, the body parsing and the rate limiter are alive.
 resp=$(curl -s -w "\n%{http_code}" -X POST "$API/employer-leads" \
   -H "Content-Type: application/json" \
-  -d '{"name":"Smoke Test","company":"Acme QA","email":"employer-smoketest@example.com"}')
+  -d '{"name":"Smoke Test","company":"Acme QA","email":"employer-smoketest@example.com","website":"smoke-test"}')
 body=$(echo "$resp" | head -n -1); code=$(echo "$resp" | tail -n1)
 check "employer-leads create" "200" "$code" "$body"
 

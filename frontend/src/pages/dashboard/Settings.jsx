@@ -19,6 +19,9 @@ export default function Settings() {
   const [nameLoading,  setNameLoading ] = useState(false)
   const [nameError,    setNameError   ] = useState('')
   const [nameSuccess,  setNameSuccess ] = useState(false)
+  // A background refreshUser() (mount, or after another save) must not
+  // overwrite text the user is in the middle of typing.
+  const [nameDirty,    setNameDirty   ] = useState(false)
 
   const [newEmail,      setNewEmail     ] = useState('')
   const [emailPassword, setEmailPassword] = useState('')
@@ -47,14 +50,15 @@ export default function Settings() {
   }
 
   useEffect(() => {
-    if (user?.name) setName(user.name)
-  }, [user?.name])
+    if (user?.name && !nameDirty) setName(user.name)
+  }, [user?.name, nameDirty])
 
   async function handleUpdateName() {
     if (!name.trim()) return setNameError('Name is required.')
     setNameLoading(true); setNameError(''); setNameSuccess(false)
     try {
       await api.patch('/auth/name', { name: name.trim() })
+      setNameDirty(false)
       await refreshUser()
       setNameSuccess(true)
     } catch (err) {
@@ -85,16 +89,28 @@ export default function Settings() {
     }
   }
 
+  // Cancelling asks for the password again, like the change itself. It used to
+  // be a window.prompt(), which shows what you type in clear text, can't be
+  // masked, and is silently blocked in some in-app browsers.
+  const [cancelOpen,       setCancelOpen      ] = useState(false)
+  const [cancelPassword,   setCancelPassword  ] = useState('')
+  const [cancelError,      setCancelError     ] = useState('')
   const [cancelingPending, setCancelingPending] = useState(false)
+
+  function closeCancel() {
+    if (cancelingPending) return
+    setCancelOpen(false); setCancelPassword(''); setCancelError('')
+  }
+
   async function handleCancelPendingEmail() {
-    const password = window.prompt('Enter your password to cancel this email change:')
-    if (!password) return
-    setCancelingPending(true); setEmailError('')
+    if (!cancelPassword) return setCancelError('Password required.')
+    setCancelingPending(true); setCancelError('')
     try {
-      await api.patch('/auth/email', { newEmail: user.email, password, cancelPending: true })
+      await api.patch('/auth/email', { newEmail: user.email, password: cancelPassword, cancelPending: true })
       await refreshUser()
+      setCancelOpen(false); setCancelPassword('')
     } catch (err) {
-      setEmailError(getErrorMessage(err, 'Failed to cancel.'))
+      setCancelError(getErrorMessage(err, 'Failed to cancel.'))
     } finally {
       setCancelingPending(false)
     }
@@ -152,6 +168,26 @@ export default function Settings() {
       setRemoveError(getErrorMessage(err, 'Failed to remove saved profile.'))
     } finally {
       setRemoving(false)
+    }
+  }
+
+  // Download everything the account holds, as one JSON file.
+  const [exporting,   setExporting  ] = useState(false)
+  const [exportError, setExportError] = useState('')
+
+  async function handleExport() {
+    setExporting(true); setExportError('')
+    try {
+      const res = await api.get('/profile/export', { responseType: 'blob' })
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      a.href = url; a.download = 'passthrough-my-data.json'
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (err) {
+      setExportError(getErrorMessage(err, 'Could not export your data.'))
+    } finally {
+      setExporting(false)
     }
   }
 
@@ -237,7 +273,7 @@ export default function Settings() {
             </div>
 
             <Form onSubmit={handleUpdateName} className="flex flex-col sm:flex-row gap-2 sm:items-end">
-              <Input label="Name" value={name} autoComplete="name" onChange={e => { setName(e.target.value); setNameSuccess(false) }} />
+              <Input label="Name" value={name} autoComplete="name" onChange={e => { setName(e.target.value); setNameDirty(true); setNameSuccess(false) }} />
               <Button type="submit" loading={nameLoading} variant="secondary" size="sm">
                 Save
               </Button>
@@ -256,7 +292,7 @@ export default function Settings() {
               {user?.pendingEmail && (
                 <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2 flex items-center justify-between gap-2 flex-wrap">
                   <span>Confirmation pending for <strong>{user.pendingEmail}</strong> — check that inbox.</span>
-                  <Button type="button" size="sm" variant="ghost" loading={cancelingPending} onClick={handleCancelPendingEmail}>
+                  <Button type="button" size="sm" variant="ghost" onClick={() => setCancelOpen(true)}>
                     Cancel
                   </Button>
                 </div>
@@ -280,12 +316,12 @@ export default function Settings() {
           <h2 className="font-semibold text-gray-900 mb-4">Change password</h2>
           <Form onSubmit={handleChangePassword} className="flex flex-col gap-3">
             <Input label="Current password" type="password" value={current}
-              onChange={e => setCurrent(e.target.value)} autoComplete="current-password" />
+              onChange={e => { setCurrent(e.target.value); setPwSuccess(false) }} autoComplete="current-password" />
             <Input label="New password" type="password" value={newPass}
-              onChange={e => setNewPass(e.target.value)} autoComplete="new-password"
+              onChange={e => { setNewPass(e.target.value); setPwSuccess(false) }} autoComplete="new-password"
               placeholder="Min. 8 characters" />
             <Input label="Confirm new password" type="password" value={confirm}
-              onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+              onChange={e => { setConfirm(e.target.value); setPwSuccess(false) }} autoComplete="new-password" />
             {pwError   && <p className="text-sm text-red-600">{pwError}</p>}
             {pwSuccess && <p className="text-sm text-green-700">Password updated. Other sessions signed out.</p>}
             <Button type="submit" loading={pwLoading} variant="secondary" className="self-start">
@@ -299,7 +335,7 @@ export default function Settings() {
           <h2 className="font-semibold text-gray-900 mb-1">Saved profile</h2>
           <p className="text-sm text-gray-500 mb-4">
             Used to translate your background against a new job description in one step,
-            without re-uploading a resume.
+            without re-uploading a resume. Saving another scan's profile replaces this one.
           </p>
           {profileLoading ? (
             <p className="text-sm text-gray-400">Loading…</p>
@@ -313,6 +349,16 @@ export default function Settings() {
                     <span className="text-gray-400"> ({profileSummary.roleCategory.replace(/_/g, ' ').toLowerCase()})</span>
                   )}
                 </p>
+                {profileSummary && (
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    {[
+                      profileSummary.latestTitle && `Latest role: ${profileSummary.latestTitle}`,
+                      profileSummary.jobCount > 0 && `${profileSummary.jobCount} job${profileSummary.jobCount === 1 ? '' : 's'}`,
+                      profileSummary.educationCount > 0 && `${profileSummary.educationCount} education entr${profileSummary.educationCount === 1 ? 'y' : 'ies'}`,
+                      profileSummary.skillCount > 0 && `${profileSummary.skillCount} skill${profileSummary.skillCount === 1 ? '' : 's'}`,
+                    ].filter(Boolean).join(' · ')}
+                  </p>
+                )}
                 {sourceScanId && (
                   <Link to={`/scan/${sourceScanId}`} className="text-xs text-blue-600 hover:underline">
                     View source scan
@@ -331,11 +377,22 @@ export default function Settings() {
           {removeError && <p className="text-sm text-red-600 mt-2">{removeError}</p>}
         </div>
 
+        {/* Your data */}
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Download a copy of what we hold for your account — profile, scans (including job descriptions and
+            resume data), and payment history — as a single JSON file.
+          </p>
+          <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting}>Download my data</Button>
+          {exportError && <p className="text-sm text-red-600 mt-2">{exportError}</p>}
+        </div>
+
         {/* Danger zone */}
         <div className="bg-white rounded-lg border border-red-200 p-6">
           <h2 className="font-semibold text-red-800 mb-2">Danger zone</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Permanently delete your account and all associated data. This cannot be undone.
+            Permanently delete your account and the data attached to it. This cannot be undone.
           </p>
           <Button variant="danger" onClick={() => setDeleteOpen(true)}>
             Delete account
@@ -343,10 +400,35 @@ export default function Settings() {
         </div>
       </div>
 
-      <Modal open={deleteOpen} onClose={closeDelete} title="Delete account" dismissible={!deleteLoading}>
+      <Modal open={cancelOpen} onClose={closeCancel} title="Cancel email change" dismissible={!cancelingPending}>
         <p className="text-sm text-gray-600 mb-4">
-          This will permanently delete your account. Enter your password to confirm.
+          Enter your password to cancel the pending change{user?.pendingEmail ? <> to <strong>{user.pendingEmail}</strong></> : ''}.
         </p>
+        <Form onSubmit={handleCancelPendingEmail} className="flex flex-col gap-3">
+          <Input type="password" placeholder="Your password" value={cancelPassword}
+            autoComplete="current-password" onChange={e => setCancelPassword(e.target.value)} />
+          {cancelError && <p className="text-sm text-red-600">{cancelError}</p>}
+          <div className="flex gap-3">
+            <Button variant="secondary" onClick={closeCancel} disabled={cancelingPending} className="flex-1">
+              Keep the change
+            </Button>
+            <Button type="submit" loading={cancelingPending} className="flex-1">Cancel change</Button>
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal open={deleteOpen} onClose={closeDelete} title="Delete account" dismissible={!deleteLoading}>
+        <div className="text-sm text-gray-600 mb-4 flex flex-col gap-2">
+          <p>This permanently deletes your account, your scans, resumes and rewritten documents, and your saved profile.</p>
+          <ul className="list-disc pl-5 flex flex-col gap-1">
+            <li>Any public verification link you purchased stops working.</li>
+            {user?.freeFixCredits > 0 && (
+              <li>Your {user.freeFixCredits} unused free fix credit{user.freeFixCredits === 1 ? '' : 's'} will be lost.</li>
+            )}
+            <li>Payment records are kept for accounting, as described in our Privacy Policy.</li>
+          </ul>
+          <p>Want a copy first? Close this and use “Download my data”. Enter your password to confirm.</p>
+        </div>
         <Form onSubmit={handleDeleteAccount} className="flex flex-col gap-3">
           <Input type="password" placeholder="Your password" value={deletePass}
             autoComplete="current-password" onChange={e => setDeletePass(e.target.value)} />

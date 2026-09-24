@@ -63,6 +63,11 @@ async function setup(opts = {}) {
       state.updates.push({ table: 'users', patch: q.patch, id: eqValue(q, 'id') })
       return { data: opts.updatedUserRow ?? { ...userRow, ...q.patch }, error: opts.userUpdateError || null }
     }
+    if (q.table === 'scans' && q.op === 'select' && q.selectOpts?.head) {
+      // deleteAccount's in-flight-work guard: a head-only count.
+      state.inFlightQueries = (state.inFlightQueries || 0) + 1
+      return { count: opts.inFlightCount ?? 0, error: null }
+    }
     if (q.table === 'scans' && q.op === 'select') {
       // claimScan's lookup uses .maybeSingle() (a single row or null);
       // deleteAccount's uses a plain array select — same table+op, so
@@ -76,7 +81,7 @@ async function setup(opts = {}) {
     // sendAccountDeleted stub below pushes onto, so a test can assert the
     // confirmation email is actually sent-and-logged BEFORE this purge runs,
     // not just that both eventually happen.
-    if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(eqValue(q, 'to')); state.callOrder.push('log-purge'); return { error: null } }
+    if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(q.filters.find(f => f[0] === 'in' && f[1] === 'to')?.[2] ?? eqValue(q, 'to')); state.callOrder.push('log-purge'); return { error: null } }
     if (q.op === 'rpc') { state.rpcCalls.push({ name: q.name, args: q.args }); return { data: null, error: opts.rpcError || null } }
     return undefined
   })
@@ -743,7 +748,10 @@ describe('deleteAccount — email_logs purge', () => {
     t = await setup({ scans: [] })
     const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
     expect(res.status).toBe(200)
-    expect(t.state.logPurges).toEqual(['user@example.com'])
+    // Both the real address (the confirmation's own row) and the placeholder
+    // scrub_account_data renamed every EARLIER row to — purging only the real
+    // address left all of those behind.
+    expect(t.state.logPurges).toEqual([['user@example.com', 'deleted-u1@passthrough.dev']])
   })
   it('a failed scrub purges nothing (the account was not actually deleted)', async () => {
     t = await setup({ scans: [], rpcError: { message: 'constraint violation' } })
@@ -764,5 +772,49 @@ describe('deleteAccount — email_logs purge', () => {
     const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
     expect(res.status).toBe(200)
     expect(t.state.callOrder).toEqual(['account-deleted-email', 'log-purge'])
+  })
+})
+
+// ── Section 6 traces: unchecked writes + deleting while work is in flight ───
+
+describe('password / pending-email writes are checked (lib/db.js\'s own rule)', () => {
+  const dbErr = new Error('connection reset by peer')
+  it('changePassword: a failed write is an error — no success, no "password changed" email, no token', async () => {
+    t = await setup({ userUpdateError: dbErr })
+    await expect(t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'longenough' } }))).rejects.toThrow()
+    expect(t.state.emails.filter(e => e.type === 'password_changed')).toHaveLength(0)
+  })
+  it('resetPassword: a failed write is an error, not "password reset"', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }), userUpdateError: dbErr })
+    await expect(t.mod.resetPassword(t.c({ body: { token: 'raw', newPassword: 'longenough' } }))).rejects.toThrow()
+    expect(t.state.emails.filter(e => e.type === 'password_changed')).toHaveLength(0)
+  })
+  it('updateEmail cancelPending: a failed write is an error, not "Email change canceled."', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      pending_email: 'new@example.com', pending_email_token: 'x', pending_email_expiry: FUTURE(),
+    }), userUpdateError: dbErr })
+    await expect(t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password', cancelPending: true } }))).rejects.toThrow()
+  })
+})
+
+describe('deleteAccount — work in flight', () => {
+  it('409s, and touches nothing, while a scan or fix is still being produced', async () => {
+    t = await setup({ scans: [], inFlightCount: 1 })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(409)
+    expect(res.body.message).toMatch(/still being processed/)
+    expect(t.state.rpcCalls).toHaveLength(0)
+    expect(t.state.bucketDeletes).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('checks only recent work, so a dead job can never make an account undeletable', async () => {
+    t = await setup({ scans: [] })
+    await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    const q = t.db.calls.find(c => c.table === 'scans' && c.selectOpts?.head)
+    expect(q.filters.find(f => f[0] === 'in')[2]).toEqual(['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING'])
+    const since = q.filters.find(f => f[0] === 'gt' && f[1] === 'updated_at')[2]
+    expect(Date.now() - Date.parse(since)).toBeGreaterThan(59 * 60 * 1000)
+    expect(Date.now() - Date.parse(since)).toBeLessThan(61 * 60 * 1000)
   })
 })

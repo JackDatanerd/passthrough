@@ -44,10 +44,10 @@ queue              = "passthrough-fix-jobs-dlq"
 max_batch_size     = 10
 max_batch_timeout  = 30
 
-# ── Cron: hourly — drives all four scheduled jobs in index.js's `scheduled`
+# ── Cron: hourly — drives all scheduled jobs in index.js's `scheduled`
 #    export (anon-scan cleanup, orphaned-payment sweep, stale-pending sweep,
-#    pending-payment/webhook_events maintenance, data retention). One
-#    trigger, five jobs. ──
+#    pending-payment/webhook_events maintenance, lead-match digest, data retention). One
+#    trigger, six jobs. ──
 [triggers]
 crons = ["0 * * * *"]
 

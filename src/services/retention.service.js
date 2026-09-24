@@ -6,6 +6,8 @@
 //   * email_logs        — every recipient address + subject we ever mailed
 //   * alert_logs        — operational history; useful for weeks, not years
 //   * spent auth tokens — hashed reset/verify tokens that outlive their expiry
+//   * dismissed employer leads — a stranger's name/company/email, archived by an
+//                           admin, kept until someone remembered to delete it
 //
 // Each step is independent and never throws (one failing purge must not stop
 // the others, or the rest of the cron). All return counts for the cron's log.
@@ -15,6 +17,11 @@ const c = require('../config/constants')
 const EMAIL_LOG_RETENTION_DAYS = 90
 const ALERT_LOG_RETENTION_DAYS = 180
 const ANON_BATCH = 500
+// An ARCHIVED lead is one the admin decided not to pursue (spam, wrong fit).
+// It is kept for a while so a resubmission is still recognised as the same
+// dismissed lead, then removed. Any resubmission bumps updated_at, so a lead
+// that keeps coming back is never purged out from under the dedupe.
+const ARCHIVED_LEAD_RETENTION_DAYS = 90
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -94,16 +101,29 @@ async function clearExpiredTokens(supabase, now = Date.now()) {
   return out
 }
 
+async function purgeArchivedLeads(supabase, now = Date.now()) {
+  try {
+    const cutoff = new Date(now - ARCHIVED_LEAD_RETENTION_DAYS * DAY).toISOString()
+    const { data, error } = await supabase.from('employer_leads')
+      .delete().eq('status', 'ARCHIVED').lt('updated_at', cutoff).select('id')
+    if (error) return { deleted: 0, error: error.message }
+    return { deleted: data?.length || 0 }
+  } catch (err) {
+    return { deleted: 0, error: err.message }
+  }
+}
+
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens] = await Promise.all([
+  const [anon, logs, tokens, leads] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
+    purgeArchivedLeads(supabase, now),
   ])
-  return { anon, logs, tokens }
+  return { anon, logs, tokens, leads }
 }
 
 module.exports = {
-  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens,
-  EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
+  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads,
+  EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

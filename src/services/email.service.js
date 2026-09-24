@@ -67,6 +67,11 @@ const RECIPIENT_LIMITS = {
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
   email_change_confirm:   { max: 5, windowSeconds: 3600 },
+  // One acknowledgement per address per month: the form is public, so the
+  // recipient is whatever a stranger typed. A repeat submission never sends a
+  // second one (the controller only sends for a NEW lead); this is the
+  // backstop for the delete-and-resubmit path.
+  employer_lead_ack:      { max: 1, windowSeconds: 30 * 24 * 3600 },
 }
 
 async function recipientAllowed(env, to, template) {
@@ -468,7 +473,13 @@ async function sendOwnerAlert(env, subject, message) {
 // submission still succeeds.)
 async function sendOwnerNotice(env, subject, message) {
   const to = env.OWNER_ALERT_EMAIL
-  if (!to) return false
+  if (!to) {
+    // Not an error (a deployment may deliberately have no owner inbox), but it
+    // must not be silent: this is the same "the notification quietly never
+    // arrives" shape as the missing-function bug this function was added for.
+    console.warn(`OWNER_ALERT_EMAIL is not set — owner notice not sent: ${subject}`)
+    return false
+  }
   await sendViaResend(env, {
     from: env.EMAIL_FROM,
     to,
@@ -478,8 +489,20 @@ async function sendOwnerNotice(env, subject, message) {
   return true
 }
 
+// Acknowledgement to an employer who just joined the early-access list. Sent
+// once per NEW lead (see employer-leads.controller.js): it tells them the
+// request landed, states what "Verified" means, and — since the address on a
+// public form is whatever a stranger typed — says how to be removed.
+async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel) {
+  return send(env, supabase, email, "You're on the Passthrough early-access list", 'employer_lead_ack', {
+    NAME:          name,
+    FIELD_PHRASE:  fieldLabel ? ` in ${fieldLabel}` : '',
+    SUPPORT_EMAIL: 'support@passthrough.dev'
+  })
+}
+
 module.exports = {
-  htmlToPlainText, fmtMoney,
+  htmlToPlainText, fmtMoney, sendEmployerLeadAck,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,

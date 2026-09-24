@@ -53,8 +53,11 @@ export default function Privacy() {
           <p>
             <strong>Employer inquiries:</strong> if you're a hiring manager and submit the "Get
             early access" form (on the homepage or on a candidate's verification page), we collect
-            your name, company, work email, and, optionally, the role you're hiring for — so we can
-            follow up. This is stored separately from candidate accounts.
+            your name, company, work email, and, optionally, the field and job title you're hiring
+            for — so we can follow up. If you submit from a candidate's verification page we also
+            note which page, so we know where the request came from (it isn't shown to the
+            candidate). We send you one confirmation email when you join. This is stored separately
+            from candidate accounts.
           </p>
         </Section>
 
@@ -96,6 +99,10 @@ export default function Privacy() {
             request deletion at any time (Section 7).
           </p>
           <p>
+            <strong>Employer inquiries</strong> are kept until you ask us to remove them (email us
+            — see Section 7). Inquiries we've dismissed are deleted automatically after 90 days.
+          </p>
+          <p>
             <strong>Payment records</strong> are retained for accounting and legal purposes even
             after account deletion, as required for financial record-keeping.
           </p>
@@ -116,11 +123,13 @@ export default function Privacy() {
           <ul className="list-disc pl-5 flex flex-col gap-1">
             <li>Access the personal data we hold about you</li>
             <li>Correct inaccurate data (via your account settings, or by contacting us)</li>
-            <li>Request deletion of your account and associated data</li>
+            <li>Delete your account and associated data, or delete individual scans</li>
             <li>Export your data in a portable format</li>
           </ul>
           <p>
-            To exercise any of these, email{' '}
+            If you have an account, you can do most of this yourself: “Download my data” and
+            “Delete account” are in Settings, and each scan on your dashboard can be deleted.
+            For anything else — including employer inquiries, or if you don't have an account — email{' '}
             <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
               support@passthrough.dev
             </a>. We'll respond within a reasonable timeframe — if you're in a jurisdiction with a

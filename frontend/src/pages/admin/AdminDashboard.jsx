@@ -97,9 +97,12 @@ export default function AdminDashboard() {
               {openItems.stalePendingPayments}
             </div>
           </Link>
-          <Link to="/admin/leads" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
-            <div className="text-xs text-gray-400">New leads (7d)</div>
-            <div className="text-xl font-bold text-gray-900">{openItems.leadsThisWeek}</div>
+          <Link to="/admin/leads?status=NEW" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
+            <div className="text-xs text-gray-400">Leads to work (new)</div>
+            <div className={cn('text-xl font-bold', openItems.newLeads > 0 ? 'text-amber-600' : 'text-gray-900')}>
+              {openItems.newLeads}
+            </div>
+            <div className="text-xs text-gray-400 mt-0.5">{openItems.leadsThisWeek} arrived in the last 7 days</div>
           </Link>
         </div>
       </div>

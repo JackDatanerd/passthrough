@@ -32,7 +32,10 @@ function TopStrip() {
   if (!stats) return <div className="h-10" />
 
   const { erroredScansThisWeek, stuckScans, stalePendingPayments } = stats.openItems
-  const openCount = erroredScansThisWeek + stuckScans + stalePendingPayments
+  // NEW leads are work waiting for a person, the same as an errored scan is —
+  // the dashboard computed the number but nothing outside its own page showed it.
+  const newLeads = stats.openItems.newLeads || 0
+  const openCount = erroredScansThisWeek + stuckScans + stalePendingPayments + newLeads
 
   return (
     <div className="flex flex-col gap-2 text-sm">
@@ -68,6 +71,11 @@ function TopStrip() {
           {stuckScans > 0 && (
             <Link to="/admin/scans" className="text-amber-800 hover:underline">
               {stuckScans} stuck scan{stuckScans === 1 ? '' : 's'} (sort by Updated) →
+            </Link>
+          )}
+          {newLeads > 0 && (
+            <Link to="/admin/leads?status=NEW" className="text-amber-800 hover:underline">
+              {newLeads} new lead{newLeads === 1 ? '' : 's'} →
             </Link>
           )}
           {stalePendingPayments > 0 && (

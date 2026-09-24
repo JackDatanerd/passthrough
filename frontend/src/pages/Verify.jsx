@@ -10,15 +10,8 @@ import Footer from '../components/layout/Footer'
 import { formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint } from '../lib/fileFingerprint'
-
-// FEATURE GAP CLOSED (Section 5): the "role you're hiring for" field used
-// to always start blank, even though this page already fetches and shows
-// data.roleCategory for the exact candidate being viewed — asking a hiring
-// manager to retype what's already on the screen was pure friction.
-function humanizeRoleCategory(cat) {
-  if (!cat) return ''
-  return cat.replace(/_/g, ' ').toLowerCase().replace(/\b\w/g, ch => ch.toUpperCase())
-}
+import { isRoleCategory } from '../lib/roleCategories'
+import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
 
 // Downloads used window.location.href — on a 403/404 that just navigates the
 // whole tab to raw JSON. Fetches as a blob so a failure surfaces on the page
@@ -49,7 +42,8 @@ export default function Verify() {
   const [hmExpanded,  setHmExpanded ] = useState(false)
   const [name,        setName       ] = useState('')
   const [company,     setCompany    ] = useState('')
-  const [role,        setRole       ] = useState('')
+  const [role,        setRole       ] = useState('')   // taxonomy key ('' = not given)
+  const [roleTitle,   setRoleTitle  ] = useState('')
   const [email,       setEmail      ] = useState('')
   const [leadSent,    setLeadSent   ] = useState(false)
   const [leadErr,     setLeadErr    ] = useState('')
@@ -84,13 +78,16 @@ export default function Verify() {
   function load() {
     setLoading(true); setNotFound(false); setLoadError(false); setRevoked(null); setData(null)
     setDownloadErr(''); setCheckResult(null)
-    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setEmail(''); setWebsite('')
+    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setWebsite('')
     setLeadSent(false); setLeadErr('')
     api.get(`/verify/${code}`)
       .then(res => {
         setData(res.data.data)
         setLoading(false)
-        setRole(humanizeRoleCategory(res.data.data.roleCategory))
+        // The reader is looking at this candidate, so their field is the most
+        // likely answer — pre-selected, but a plain dropdown they can change.
+        const cat = res.data.data.roleCategory
+        setRole(isRoleCategory(cat) ? cat : '')
       })
       .catch(err => {
         setLoading(false)
@@ -113,6 +110,7 @@ export default function Verify() {
         company,
         email,
         roleCategory: role || undefined,
+        roleTitle: roleTitle || undefined,
         source: 'verification_page',
         // SECTION 7 AUDIT (feature gap): which candidate's page this lead came
         // from, so the admin list isn't just an undifferentiated pile.
@@ -424,17 +422,14 @@ export default function Verify() {
                     value={company}
                     onChange={e => setCompany(e.target.value)}
                   />
-                  <Input
-                    placeholder="Role you're hiring for (e.g. Senior Engineer)"
-                    value={role}
-                    onChange={e => setRole(e.target.value)}
-                  />
+                  <RoleFields category={role} onCategory={setRole} title={roleTitle} onTitle={setRoleTitle} />
                   <Input
                     type="email"
                     placeholder="Work email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                   />
+                  <LeadConsentNote />
                   {leadErr && <p className="text-xs text-red-600">{leadErr}</p>}
                   {/* Honeypot: invisible to a real person, tempting to a bot filling
                       every field it finds. Off-screen rather than display:none/hidden —

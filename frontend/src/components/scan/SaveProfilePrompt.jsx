@@ -1,6 +1,7 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
+import { formatDate } from '../../lib/utils'
 
 // Phase 4 — explicit opt-in only. Profile data (name, email, phone, work
 // history) is PII; nothing in this app persists it beyond a single scan's
@@ -18,18 +19,36 @@ import Button from '../ui/Button'
 export default function SaveProfilePrompt({ scanId }) {
   const [status, setStatus] = useState('idle') // idle | saving | saved | error
   const [error,  setError ] = useState('')
+  // What is already saved (if anything). Saving overwrites it — one profile per
+  // account — so the prompt says so, and says when THIS scan is already it,
+  // instead of offering an unexplained button every visit.
+  const [existing, setExisting] = useState(null)   // { savedAt, sourceScanId } | null
+
+  useEffect(() => {
+    let cancelled = false
+    api.get('/profile')
+      .then(res => {
+        const d = res.data.data
+        if (!cancelled && d.hasSavedProfile) setExisting({ savedAt: d.savedAt, sourceScanId: d.sourceScanId })
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [scanId])
 
   async function handleSave() {
     setStatus('saving')
     setError('')
     try {
       await api.post('/profile/save', { scanId })
+      setExisting({ savedAt: new Date().toISOString(), sourceScanId: scanId })
       setStatus('saved')
     } catch (err) {
       setError(getErrorMessage(err, 'Could not save profile.'))
       setStatus('error')
     }
   }
+
+  const alreadyThis = !!existing && existing.sourceScanId === scanId
 
   if (status === 'saved') {
     return (
@@ -44,12 +63,16 @@ export default function SaveProfilePrompt({ scanId }) {
       <div>
         <p className="text-sm font-medium text-gray-800">Save this profile for next time</p>
         <p className="text-xs text-gray-500 mt-0.5">
-          Reuse your background against a new job description in one step — no re-uploading.
+          {alreadyThis
+            ? `This scan is your saved profile (saved ${formatDate(existing.savedAt)}). Save again to pick up any edits you've made since.`
+            : existing
+              ? `Reuse your background against a new job description in one step. This replaces the profile you saved on ${formatDate(existing.savedAt)}.`
+              : 'Reuse your background against a new job description in one step — no re-uploading.'}
         </p>
         {status === 'error' && <p className="text-xs text-red-600 mt-1">{error}</p>}
       </div>
       <Button onClick={handleSave} loading={status === 'saving'} variant="secondary" size="sm" className="shrink-0">
-        Save profile
+        {alreadyThis ? 'Save again' : existing ? 'Replace saved profile' : 'Save profile'}
       </Button>
     </div>
   )

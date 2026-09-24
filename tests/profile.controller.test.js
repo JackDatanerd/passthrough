@@ -18,6 +18,7 @@ function setup(resolver) {
     get: () => ({ id: over.userId ?? 'u1' }),
     req: { json: async () => over.body ?? {} },
     json: (body, status = 200) => ({ body, status }),
+    body: (raw, status = 200, headers = {}) => ({ raw, status, headers }),
   })
   return { mod, restore, c, db }
 }
@@ -39,9 +40,23 @@ describe('getProfile', () => {
     const res = await t.mod.getProfile(t.c())
     expect(res.body.data).toEqual({
       hasSavedProfile: true, savedAt: 't1', sourceScanId: 's1',
-      summary: { name: 'Jane Doe', roleCategory: 'engineering' },
+      summary: { name: 'Jane Doe', roleCategory: 'engineering', latestTitle: null, jobCount: 0, educationCount: 0, skillCount: 0 },
     })
     expect(res.body.data.summary.email).toBeUndefined()
+  })
+
+  it('says what is in the saved profile — latest title and counts — without shipping the resume itself', async () => {
+    t = setup(q => (q.table === 'users' ? {
+      data: { saved_profile: { resumeData: {
+        name: 'Jane Doe', email: 'jane@x.com', phone: '555',
+        experience: [{ title: 'Staff Engineer', company: 'A', bullets: ['x'] }, { title: 'Engineer', company: 'B' }],
+        education: [{ institution: 'U' }], skills: ['a', 'b', 'c'],
+      }, savedAt: 't1', sourceScanId: 's1', roleCategory: 'software_engineering' } },
+      error: null,
+    } : undefined))
+    const { summary } = (await t.mod.getProfile(t.c())).body.data
+    expect(summary).toEqual({ name: 'Jane Doe', roleCategory: 'software_engineering', latestTitle: 'Staff Engineer', jobCount: 2, educationCount: 1, skillCount: 3 })
+    expect(JSON.stringify(summary)).not.toMatch(/555|jane@x\.com|bullets/)
   })
 
   it('scopes the lookup to the requesting user', async () => {
@@ -141,5 +156,61 @@ describe('deleteProfile', () => {
   it('propagates a database error', async () => {
     t = setup(q => (q.table === 'users' && q.op === 'update' ? { data: null, error: new Error('db down') } : undefined))
     await expect(t.mod.deleteProfile(t.c())).rejects.toThrow('db down')
+  })
+})
+
+describe('saveProfile — malformed bodies are a 400, never a 500', () => {
+  const withJson = (json) => { const ctx = t.c(); ctx.req.json = json; return ctx }
+  it('a JSON null / array / bare string body', async () => {
+    t = setup(() => undefined)
+    for (const value of [null, [], 'abc', 5]) {
+      const res = await t.mod.saveProfile(withJson(async () => value))
+      expect(res.status).toBe(400)
+    }
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('an unparseable body and a non-string scanId', async () => {
+    t = setup(() => undefined)
+    expect((await t.mod.saveProfile(withJson(async () => { throw new SyntaxError('bad json') }))).status).toBe(400)
+    const res = await t.mod.saveProfile(t.c({ body: { scanId: { $ne: null } } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toBe('Invalid scanId.')
+    expect(t.db.calls).toHaveLength(0)
+  })
+})
+
+describe('exportMyData', () => {
+  const rows = {
+    users: { data: { name: 'Jane', email: 'jane@x.com', email_verified: true, free_fix_credits: 2, created_at: 'c1', saved_profile: { resumeData: { name: 'Jane' } } }, error: null },
+    scans: { data: [{ id: 's1', status: 'COMPLETE_PASS', ats_score: 81, job_description_text: 'jd', original_resume_data: { name: 'Jane' }, verification_code: 'ABC' }], error: null },
+    payments: { data: [{ id: 'p1', amount_cents: 1900, fix_tier: 'FIX', status: 'SUCCESS', scan_id: 's1' }], error: null },
+  }
+  it('returns the account\'s own data as a JSON attachment, camelCased', async () => {
+    t = setup(q => rows[q.table])
+    const res = await t.mod.exportMyData(t.c())
+    expect(res.status).toBe(200)
+    expect(res.headers['Content-Disposition']).toContain('attachment')
+    expect(res.headers['Content-Type']).toContain('application/json')
+    const out = JSON.parse(res.raw)
+    expect(out.account).toMatchObject({ name: 'Jane', email: 'jane@x.com', emailVerified: true, freeFixCredits: 2 })
+    expect(out.scans[0]).toMatchObject({ id: 's1', atsScore: 81, jobDescriptionText: 'jd', verificationCode: 'ABC' })
+    expect(out.payments[0]).toMatchObject({ id: 'p1', amountCents: 1900, scanId: 's1' })
+    expect(out.savedProfile).toEqual({ resumeData: { name: 'Jane' } })
+    expect(out.truncated).toBe(false)
+  })
+  it('only ever reads the requesting user\'s rows, with explicit columns (never select *)', async () => {
+    t = setup(q => rows[q.table])
+    await t.mod.exportMyData(t.c({ userId: 'u42' }))
+    for (const table of ['users', 'scans', 'payments']) {
+      const q = t.db.calls.find(c => c.table === table)
+      expect(q.filters.find(f => f[0] === 'eq')).toEqual(['eq', table === 'users' ? 'id' : 'user_id', 'u42'])
+      expect(q.cols).not.toBe('*')
+    }
+    const secretish = t.db.calls.map(c => c.cols).join(',')
+    expect(secretish).not.toMatch(/password|token|paystack_customer|paystack_auth|anon/)
+  })
+  it('propagates a database error rather than exporting a partial file', async () => {
+    t = setup(q => (q.table === 'scans' ? { data: null, error: new Error('db down') } : rows[q.table]))
+    await expect(t.mod.exportMyData(t.c())).rejects.toThrow('db down')
   })
 })
