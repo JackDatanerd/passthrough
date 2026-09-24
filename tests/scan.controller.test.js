@@ -285,6 +285,17 @@ describe('updateVerifyVisibility', () => {
     expect(res.body.message).toMatch(/cannot be republished/i)
   })
 
+  // ROUND-2 AUDIT FIX under test: a refused republish must change nothing —
+  // previously the visibility flags in the SAME request body were written
+  // before the republish was decided, so a 403 here could still silently
+  // flip exposeDocx/exposePdf live.
+  it('a refused republish (restore fails) writes NOTHING — visibility flags in the same request are not persisted as a side effect', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', verification_code: 'ABC123', verification_status: 'REVOKED' }, restored: false })
+    const res = await t.mod.updateVerifyVisibility(baseCtx({ body: { published: true, exposeDocx: true, exposePdf: true } }))
+    expect(res.status).toBe(403)
+    expect(t.state.updates).toHaveLength(0)
+  })
+
   it('published:true on an already-ACTIVE page is a no-op restore call (status stays ACTIVE, no error)', async () => {
     t = setup()   // verification_status: 'ACTIVE'
     const res = await t.mod.updateVerifyVisibility(baseCtx({ body: { published: true } }))
@@ -339,6 +350,14 @@ describe('downloadFile', () => {
     const ctx = baseCtx({ query: { type: 'ats' }, env: { RESUMES_BUCKET: { get: async key => { requestedKey = key; return { body: 'filedata' } } } } })
     await t.mod.downloadFile(ctx)
     expect(requestedKey).toBe('ats-key')
+  })
+
+  // ROUND-2 AUDIT FIX under test: any type other than the two valid ones
+  // used to silently fall through to the PDF branch instead of rejecting.
+  it('400s an invalid ?type= instead of silently falling through to the PDF branch', async () => {
+    t = setup()
+    const res = await t.mod.downloadFile(baseCtx({ query: { type: 'exe' } }))
+    expect(res.status).toBe(400)
   })
 })
 
@@ -985,5 +1004,395 @@ describe('runAtsScan', () => {
     // itself must not throw back out to its caller (createScan's own
     // .catch just logs; a throw here would still be "handled" but the
     // point of the top-level try/catch is that nothing escapes it).
+  })
+})
+// ─── generateFix (background job — AI rewrite + DOCX + PDF + credential) ──
+
+describe('generateFix', () => {
+  function setup(opts = {}) {
+    const state = { scanUpdates: [], r2Puts: [], r2Deletes: [], credits: [], alerts: [], emails: [] }
+    const scan = 'scan' in opts ? opts.scan : {
+      id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
+      job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 0, role_category: null,
+    }
+    const userRow = 'userRow' in opts ? opts.userRow : { id: 'u1', name: 'Jane', email: 'jane@x.com' }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'users' && q.op === 'select') return { data: userRow, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.deliverError ? null : [{ id: 's1' }], error: opts.deliverError || null } }
+      if (q.op === 'rpc' && q.name === 'increment_free_fix_credits') { state.credits.push(q.args); return { data: true, error: opts.creditErr || null } }
+    })
+    const rewriteCalls = []
+    let rewriteCallIdx = 0
+    const env = { RESUMES_BUCKET: {
+      get: async () => opts.r2Object ?? { arrayBuffer: async () => new Uint8Array([1]).buffer },
+      put: async (key, bytes, meta) => { state.r2Puts.push({ key, meta }) },
+      delete: async key => { state.r2Deletes.push(key) },
+    } }
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/resume.parser.js': {
+        parse: async () => opts.fileParseResult ?? { resumeData: { name: 'Jane' }, parseError: false },
+        extractText: async () => opts.extractedText ?? 'x'.repeat(150),
+      },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
+      'services/ats.service.js': {
+        // Indexed by rewriteCallIdx - 1 (clamped at 0): by the time
+        // scoreResume runs for a given attempt, rewriteResumeContent for
+        // THAT SAME attempt has already incremented rewriteCallIdx, so the
+        // post-increment value is one ahead of "this attempt's" index.
+        scoreResume: () => { const idx = Math.max(0, Math.min(rewriteCallIdx - 1, (opts.scoreSequence || []).length - 1)); const r = opts.scoreSequence ? opts.scoreSequence[idx] : (opts.score ?? 90); return { score: r, detail: {} } },
+        describeWeakAreas: () => ['weak area'],
+      },
+      'services/claude.service.js': {
+        rewriteResumeContent: async (...a) => {
+          rewriteCalls.push(a)
+          const idx = rewriteCallIdx++
+          if (opts.rewriteSequence) return opts.rewriteSequence[Math.min(idx, opts.rewriteSequence.length - 1)]
+          return opts.rewriteResult ?? { success: true, data: { name: 'Jane Rewritten' }, quantificationOpportunities: [] }
+        },
+        generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false },
+      },
+      'services/badge.service.js': {
+        generateShortCode: async () => 'NEWCODE1',
+        buildVerificationUrl: (env2, code) => `https://passthrough.dev/v/${code}`,
+        hashBytes: async () => 'hash123',
+      },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/pdf.service.js': { generateResumePDF: opts.pdfImpl ?? (async () => Buffer.from('fake-pdf')) },
+      'services/email.service.js': {
+        sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }),
+        sendFixDeliveredPlain: async (...a) => state.emails.push({ fn: 'sendFixDeliveredPlain', a }),
+        sendFixFailed: async (...a) => state.emails.push({ fn: 'sendFixFailed', a }),
+        sendOwnerAlert: async (...a) => state.alerts.push(a),
+      },
+    })
+    return { mod, restore, state, db, env, rewriteCalls, getRewriteCallCount: () => rewriteCallIdx }
+  }
+
+  it('marks the scan FIX_GENERATING immediately', async () => {
+    t = setup()
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.scanUpdates[0]).toEqual({ status: 'FIX_GENERATING' })
+  })
+
+  it('brain_dump/saved_profile with no structured data fails into the top-level catch (ERROR + owner alert)', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: null, fix_tier: 'FIX', fix_retry_count: 0 } })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+    expect(t.state.alerts.length).toBe(1)
+  })
+
+  it('file-mode: pulls from R2 and parses; a parse failure also fails into the catch', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', fix_tier: 'FIX', fix_retry_count: 0 }, fileParseResult: { parseError: true, parseErrorMessage: 'bad file' } })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+  })
+
+  it('a retry (fixRetryCount > 0) rewrites from the previously delivered rewrittenResumeData, not the original', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.rewriteCalls[0][1]).toEqual({ name: 'Previously Rewritten' })
+  })
+
+  it('FIX_PLAIN never generates a verification code or URL', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX_PLAIN', fix_retry_count: 0 } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.verification_code).toBe(null)
+    expect(finalUpdate.verification_url).toBe(null)
+    expect(finalUpdate.resume_hash).toBe(null)
+  })
+
+  it('reuses an existing verification code/url rather than minting a new one (idempotent redelivery)', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX', fix_retry_count: 0, verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.verification_code).toBe('EXIST01')
+  })
+
+  it('generates a fresh code when the scan has none yet', async () => {
+    t = setup()
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.verification_code).toBe('NEWCODE1')
+  })
+
+  it('stops attempting once a candidate reaches the badge threshold, without using all MAX_FIX_ATTEMPTS', async () => {
+    t = setup({ scoreSequence: [90] })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.getRewriteCallCount()).toBe(1)
+  })
+
+  it('keeps the best-scoring candidate across attempts even if a later one scores lower', async () => {
+    t = setup({ scoreSequence: [70, 50, 65] })   // never reaches 80, so all 3 attempts run
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.fix_ats_score).toBe(70)
+  })
+
+  it('FABRICATION_DETECTED is not fatal — it continues to the next attempt (unlike a hard API failure)', async () => {
+    t = setup({
+      rewriteSequence: [
+        { success: false, error: 'FABRICATION_DETECTED' },
+        { success: true, data: { name: 'Clean rewrite' }, quantificationOpportunities: [] },
+      ],
+      scoreSequence: [90],
+    })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    expect(t.getRewriteCallCount()).toBe(2)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.rewrite_failed).toBe(false)
+  })
+
+  it('a hard failure (e.g. PARSE_FAIL) stops the loop immediately rather than burning remaining attempts', async () => {
+    t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.getRewriteCallCount()).toBe(1)
+  })
+
+  it('total rewrite failure (every attempt hard-failed): delivers the ORIGINAL resume, marks rewrite_failed, and grants a free credit', async () => {
+    t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.rewrite_failed).toBe(true)
+    expect(finalUpdate.rewritten_resume_data).toEqual({ name: 'Jane' })  // == original, unchanged
+    expect(t.state.credits).toEqual([{ p_user_id: 'u1' }])
+  })
+
+  it('a credit-grant failure on total rewrite failure alerts the owner but does not abort delivery', async () => {
+    t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' }, creditErr: new Error('rpc down') })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    expect(t.state.alerts.some(a => /credit NOT granted/i.test(a[1]))).toBe(true)
+  })
+
+  it('exhausted retries still below the badge threshold grants a free credit (and total-failure branch does NOT also fire)', async () => {
+    t = setup({
+      scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, rewritten_resume_data: { name: 'Prev' }, fix_retry_count: 2, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'C1', verification_url: 'https://x/v/C1' },
+      scoreSequence: [65],
+    })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.credits).toEqual([{ p_user_id: 'u1' }])
+  })
+
+  it('below-threshold delivery keeps the verification link but marks the docx call as unverified', async () => {
+    let docxArgs = null
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX', fix_retry_count: 0 }, error: null }
+      if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
+      if (q.table === 'scans' && q.op === 'update') return { data: [{ id: 's1' }], error: null }
+    })
+    const env = { RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
+    const loaded = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/docx.service.js': { generateAtsDocx: async (data, url, opts2) => { docxArgs = opts2; return Buffer.from('x') } },
+      'services/resume.parser.js': { extractText: async () => 'x'.repeat(150) },
+      'services/ats.service.js': { scoreResume: () => ({ score: 50, detail: {} }), describeWeakAreas: () => [] },
+      'services/claude.service.js': { rewriteResumeContent: async () => ({ success: true, data: { name: 'R' }, quantificationOpportunities: [] }), generateBeautifulResumeHTML: async () => ({ success: false }) },
+      'services/badge.service.js': { generateShortCode: async () => 'C1', buildVerificationUrl: () => 'https://x/v/C1', hashBytes: async () => 'h' },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },
+      'services/email.service.js': { sendFixDelivered: async () => {}, sendFixDeliveredPlain: async () => {}, sendFixFailed: async () => {}, sendOwnerAlert: async () => {} },
+    })
+    await loaded.mod.generateFix(env, db, 's1')
+    expect(docxArgs).toEqual({ verified: false })
+    loaded.restore()
+  })
+
+  it('a PDF generation failure does not block delivery — the scan still delivers with pdfKey/pdfHash null', async () => {
+    t = setup({ htmlResult: { success: true, data: '<html></html>' }, pdfImpl: async () => { throw new Error('pdf boom') } })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.resume_pdf_path).toBe(null)
+    expect(finalUpdate.resume_pdf_hash).toBe(null)
+  })
+
+  it('the final DB write failing throws into the top-level catch (ERROR + sendFixFailed)', async () => {
+    t = setup({ deliverError: new Error('save boom') })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
+    expect(t.state.alerts.length).toBe(1)
+  })
+
+  it('sends the plain-tier email for FIX_PLAIN and the credentialed email otherwise', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX_PLAIN', fix_retry_count: 0 } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendFixDeliveredPlain')
+    t.restore()
+
+    t = setup()
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendFixDelivered')
+  })
+
+  it('an anonymous scan (no user) never attempts to send a delivery email', async () => {
+    t = setup({ scan: { id: 's1', user_id: null, input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX', fix_retry_count: 0 }, userRow: null })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.emails).toHaveLength(0)
+  })
+})
+
+// ─── generateBadge (background job — credential only, no AI rewrite) ──────
+
+describe('generateBadge', () => {
+  function setup(opts = {}) {
+    const state = { scanUpdates: [], credits: [], alerts: [], emails: [] }
+    const scan = 'scan' in opts ? opts.scan : {
+      id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
+      ats_score: 85, role_category: null,
+    }
+    const userRow = 'userRow' in opts ? opts.userRow : { id: 'u1', name: 'Jane', email: 'jane@x.com' }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'users' && q.op === 'select') return { data: userRow, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.deliverError ? null : [{ id: 's1' }], error: opts.deliverError || null } }
+    })
+    const env = { RESUMES_BUCKET: {
+      get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1]).buffer }),
+      put: async () => {},
+      delete: async () => {},
+    } }
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/resume.parser.js': {
+        parse: async () => opts.fileParseResult ?? { resumeData: { name: 'Jane From File' }, parseError: false },
+        extractText: async () => opts.extractedText ?? 'python java sql aws docker kubernetes react node express postgres redis kafka terraform',
+      },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/claude.service.js': { generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false } },
+      'services/badge.service.js': {
+        generateShortCode: async () => 'NEWCODE1',
+        buildVerificationUrl: (env2, code) => `https://passthrough.dev/v/${code}`,
+        hashBytes: async () => 'hash123',
+      },
+      'services/pdf.service.js': { generateResumePDF: opts.pdfImpl ?? (async () => Buffer.from('fake-pdf')) },
+      'services/email.service.js': {
+        sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }),
+        sendFixFailed: async (...a) => state.emails.push({ fn: 'sendFixFailed', a }),
+        sendOwnerAlert: async (...a) => state.alerts.push(a),
+      },
+    })
+    return { mod, restore, state, db, env }
+  }
+
+  it('marks the scan FIX_GENERATING immediately', async () => {
+    t = setup()
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(t.state.scanUpdates[0]).toEqual({ status: 'FIX_GENERATING' })
+  })
+
+  it('never rewrites content — the AI rewrite service is never invoked, and rewritten_resume_data is never written', async () => {
+    t = setup()
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.original_resume_data).toEqual({ name: 'Jane' })
+    expect('rewritten_resume_data' in finalUpdate).toBe(false)
+  })
+
+  it('brain_dump/saved_profile: falls back to an empty-shell candidate rather than crashing when structured data is missing', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'saved_profile', original_resume_data: null, ats_score: 85 } })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.original_resume_data.name).toBe('Candidate')
+  })
+
+  it('file-mode: throws into the top-level catch when the R2 object is missing', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', ats_score: 85 }, r2Object: null })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+  })
+
+  it('file-mode: uses the freshly parsed resumeData when parsing succeeds', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', ats_score: 85 } })
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.original_resume_data).toEqual({ name: 'Jane From File' })
+  })
+
+  it('file-mode: a parse failure never crashes — falls back to a skills-from-raw-text shell instead', async () => {
+    t = setup({
+      scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', ats_score: 85 },
+      fileParseResult: { parseError: true },
+    })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.original_resume_data.name).toBe('Candidate')
+    expect(finalUpdate.original_resume_data.skills.length).toBeGreaterThan(0)
+  })
+
+  it('reuses an existing verification code rather than minting a new one', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, verification_code: 'EXIST01' } })
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.verification_code).toBe('EXIST01')
+  })
+
+  it('persists fix_ats_score from the scan\'s existing atsScore (no new scoring happens for a badge)', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 91 } })
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.fix_ats_score).toBe(91)
+  })
+
+  it('always renders the credentialed (verified:true) HTML — a badge purchase requires being at/above threshold already', async () => {
+    t = setup()
+    let htmlArgs = null
+    t.restore()
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85 }, error: null }
+      if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
+      if (q.table === 'scans' && q.op === 'update') return { data: [{ id: 's1' }], error: null }
+    })
+    const env = { RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
+    const loaded = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('x') },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { htmlArgs = a; return { success: false } } },
+      'services/badge.service.js': { generateShortCode: async () => 'C1', buildVerificationUrl: () => 'https://x/v/C1', hashBytes: async () => 'h' },
+      'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },
+      'services/email.service.js': { sendFixDelivered: async () => {}, sendFixFailed: async () => {}, sendOwnerAlert: async () => {} },
+    })
+    await loaded.mod.generateBadge(env, db, 's1')
+    expect(htmlArgs[4]).toEqual({ verified: true })
+    loaded.restore()
+  })
+
+  it('a PDF generation failure does not block delivery', async () => {
+    t = setup({ htmlResult: { success: true, data: '<html></html>' }, pdfImpl: async () => { throw new Error('pdf boom') } })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.resume_pdf_path).toBe(null)
+    expect(finalUpdate.resume_pdf_hash).toBe(null)
+  })
+
+  it('the final DB write failing throws into the top-level catch (ERROR + sendFixFailed + owner alert)', async () => {
+    t = setup({ deliverError: new Error('save boom') })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
+    expect(t.state.alerts.length).toBe(1)
+  })
+
+  it('sends the delivered-credential email to a logged-in user', async () => {
+    t = setup()
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendFixDelivered')
+  })
+
+  it('an anonymous scan never attempts to send an email', async () => {
+    t = setup({ scan: { id: 's1', user_id: null, input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85 }, userRow: null })
+    await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(t.state.emails).toHaveLength(0)
   })
 })
