@@ -322,3 +322,26 @@ describe('verify-miss limiter', () => {
     expect(await rl.isVerifyMissLimited(env, '2001:db8:aaaa:cccc::1')).toBe(false)
   })
 })
+
+describe('dataExport limiter — budget belongs to the account, not the network address', () => {
+  const asUser = (id, ip, env) => ctx({ ip, env, user: { id }, path: '/api/profile/export' })
+  it('two different accounts behind the same IP (shared NAT) each get their own budget', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 12; i++) expect((await hit(rl.dataExport, asUser('u1', '9.9.9.9', env))).passed).toBe(true)
+    expect((await hit(rl.dataExport, asUser('u1', '9.9.9.9', env))).passed).toBe(false)     // u1 is spent…
+    expect((await hit(rl.dataExport, asUser('u2', '9.9.9.9', env))).passed).toBe(true)      // …u2 on the same IP is not
+  })
+  it('one account is one budget however many addresses it comes from', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 12; i++) await hit(rl.dataExport, asUser('u1', `1.1.1.${i + 1}`, env))
+    const over = await hit(rl.dataExport, asUser('u1', '2.2.2.2', env))
+    expect(over.passed).toBe(false)
+    expect(over.res.status).toBe(429)
+  })
+  it('falls back to the IP when there is no signed-in user', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 12; i++) await hit(rl.dataExport, ctx({ ip: '3.3.3.3', env }))
+    expect((await hit(rl.dataExport, ctx({ ip: '3.3.3.3', env }))).passed).toBe(false)
+    expect((await hit(rl.dataExport, ctx({ ip: '4.4.4.4', env }))).passed).toBe(true)
+  })
+})

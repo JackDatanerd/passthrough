@@ -8,6 +8,7 @@ import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
 import { formatDate } from '../../lib/utils'
+import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -43,7 +44,7 @@ export default function Settings() {
       setResentOk(true)
       refreshUser()
     } catch (err) {
-      setResendError(err.response?.data?.message || 'Could not resend verification email.')
+      setResendError(getErrorMessage(err, 'Could not resend verification email.'))
     } finally {
       setResending(false)
     }
@@ -136,6 +137,10 @@ export default function Settings() {
   // removing it needs to be just as easy, without going all the way to
   // deleting the whole account.
   const [profileLoading, setProfileLoading] = useState(true)
+  // A failed load used to be swallowed and fell through to "No saved profile
+  // yet" — for someone who HAS one, that hid the only control for removing
+  // stored personal data, and said something untrue about what we hold.
+  const [profileError, setProfileError] = useState('')
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
   const [savedAt,         setSavedAt        ] = useState(null)
   // FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used
@@ -148,19 +153,25 @@ export default function Settings() {
   const [removing,        setRemoving       ] = useState(false)
   const [removeError,     setRemoveError    ] = useState('')
 
-  useEffect(() => {
-    api.get('/profile')
+  function loadProfile() {
+    setProfileLoading(true); setProfileError('')
+    return api.get('/profile')
       .then(res => {
         setHasSavedProfile(!!res.data.data.hasSavedProfile)
         setSavedAt(res.data.data.savedAt)
         setSourceScanId(res.data.data.sourceScanId)
         setProfileSummary(res.data.data.summary)
       })
-      .catch(() => {})
+      .catch(err => setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")))
       .finally(() => setProfileLoading(false))
+  }
+
+  useEffect(() => {
+    loadProfile()
 
     // Same stale-cache fix as Dashboard/Index.jsx — see that file's comment.
     refreshUser()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   async function handleRemoveProfile() {
@@ -178,25 +189,35 @@ export default function Settings() {
     }
   }
 
-  // Download everything the account holds, as one JSON file.
+  // Download everything the account holds as JSON. A large account is split into
+  // several files (the server caps each part); part 1 is downloaded first and the
+  // rest are offered as buttons, so nobody is handed an incomplete export
+  // without being told.
   const [exporting,   setExporting  ] = useState(false)
   const [exportError, setExportError] = useState('')
+  const [exportParts, setExportParts] = useState(0)          // 0 until a first part has been downloaded
+  const [exportedParts, setExportedParts] = useState([])
+  const [exportingPart, setExportingPart] = useState(0)
 
-  async function handleExport() {
-    setExporting(true); setExportError('')
+  async function downloadExportPart(part) {
+    setExportError('')
+    part === 1 ? setExporting(true) : setExportingPart(part)
     try {
-      const res = await api.get('/profile/export', { responseType: 'blob' })
+      const res = await api.get('/profile/export', { params: { part }, responseType: 'blob' })
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
-      a.href = url; a.download = 'passthrough-my-data.json'
+      a.href = url; a.download = exportFileName(part)
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
+      if (part === 1) { setExportParts(await exportPartsFrom(res)); setExportedParts([1]) }
+      else setExportedParts(prev => prev.includes(part) ? prev : [...prev, part])
     } catch (err) {
       setExportError(getErrorMessage(err, 'Could not export your data.'))
     } finally {
-      setExporting(false)
+      setExporting(false); setExportingPart(0)
     }
   }
+  const handleExport = () => downloadExportPart(1)
 
   // Delete account
   const [deleteOpen,    setDeleteOpen   ] = useState(false)
@@ -292,7 +313,7 @@ export default function Settings() {
                       Resend verification email
                     </Button>
                   )}
-                  {resendError && <p className="text-sm text-red-600">{resendError}</p>}
+                  {resendError && <p role="alert" className="text-sm text-red-600">{resendError}</p>}
                 </div>
               )}
             </div>
@@ -303,8 +324,8 @@ export default function Settings() {
                 Save
               </Button>
             </Form>
-            {nameError   && <p className="text-sm text-red-600">{nameError}</p>}
-            {nameSuccess && <p className="text-sm text-green-700">Name updated.</p>}
+            {nameError   && <p role="alert" className="text-sm text-red-600">{nameError}</p>}
+            {nameSuccess && <p role="status" className="text-sm text-green-700">Name updated.</p>}
 
             <Form onSubmit={handleUpdateEmail} className="flex flex-col gap-2 pt-2 border-t border-gray-100">
               <p className="text-sm text-gray-600"><span className="font-medium">Current email:</span> {user?.email}</p>
@@ -327,8 +348,8 @@ export default function Settings() {
               <Input label="Password" type="password" value={emailPassword}
                 onChange={e => { setEmailPassword(e.target.value); setEmailSuccess(false) }}
                 autoComplete="current-password" />
-              {emailError   && <p className="text-sm text-red-600">{emailError}</p>}
-              {emailSuccess && <p className="text-sm text-green-700">Confirmation email sent to your new address. Your current email stays active until you confirm.</p>}
+              {emailError   && <p role="alert" className="text-sm text-red-600">{emailError}</p>}
+              {emailSuccess && <p role="status" className="text-sm text-green-700">Confirmation email sent to your new address. Your current email stays active until you confirm.</p>}
               <Button type="submit" loading={emailLoading} variant="secondary" size="sm" className="self-start">
                 {user?.pendingEmail ? 'Request a different change' : 'Update email'}
               </Button>
@@ -347,8 +368,8 @@ export default function Settings() {
               placeholder="Min. 8 characters" />
             <Input label="Confirm new password" type="password" value={confirm}
               onChange={e => { setConfirm(e.target.value); setPwSuccess(false) }} autoComplete="new-password" />
-            {pwError   && <p className="text-sm text-red-600">{pwError}</p>}
-            {pwSuccess && <p className="text-sm text-green-700">Password updated. Other sessions signed out.</p>}
+            {pwError   && <p role="alert" className="text-sm text-red-600">{pwError}</p>}
+            {pwSuccess && <p role="status" className="text-sm text-green-700">Password updated. Other sessions signed out.</p>}
             <Button type="submit" loading={pwLoading} variant="secondary" className="self-start">
               Update password
             </Button>
@@ -366,8 +387,8 @@ export default function Settings() {
             Signs every other device and browser out, without changing your password.
             This browser stays signed in.
           </p>
-          {signOutError   && <p className="text-sm text-red-600 mb-3">{signOutError}</p>}
-          {signOutSuccess && <p className="text-sm text-green-700 mb-3">Other sessions signed out.</p>}
+          {signOutError   && <p role="alert" className="text-sm text-red-600 mb-3">{signOutError}</p>}
+          {signOutSuccess && <p role="status" className="text-sm text-green-700 mb-3">Other sessions signed out.</p>}
           <Button type="button" loading={signOutLoading} variant="secondary"
             onClick={handleSignOutOtherSessions}>
             Sign out other sessions
@@ -383,6 +404,11 @@ export default function Settings() {
           </p>
           {profileLoading ? (
             <p className="text-sm text-gray-400">Loading…</p>
+          ) : profileError ? (
+            <div role="alert" className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <p className="text-sm text-red-600">{profileError}</p>
+              <Button variant="secondary" size="sm" onClick={loadProfile}>Try again</Button>
+            </div>
           ) : hasSavedProfile ? (
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
@@ -418,7 +444,7 @@ export default function Settings() {
               No saved profile yet — you can save one from any completed scan.
             </p>
           )}
-          {removeError && <p className="text-sm text-red-600 mt-2">{removeError}</p>}
+          {removeError && <p role="alert" className="text-sm text-red-600 mt-2">{removeError}</p>}
         </div>
 
         {/* Your data */}
@@ -426,10 +452,30 @@ export default function Settings() {
           <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
           <p className="text-sm text-gray-500 mb-4">
             Download a copy of what we hold for your account — profile, scans (including job descriptions and
-            resume data), and payment history — as a single JSON file.
+            the text and structured data of your resumes), and payment history — as JSON. The uploaded resume
+            files and generated documents themselves aren't included; the data extracted from them is. Accounts
+            with many scans are split into several files.
           </p>
-          <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting}>Download my data</Button>
-          {exportError && <p className="text-sm text-red-600 mt-2">{exportError}</p>}
+          <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting}>
+            {exportParts > 1 ? 'Download part 1 again' : 'Download my data'}
+          </Button>
+          {exportParts > 1 && (
+            <div role="status" className="mt-4 text-sm text-gray-600">
+              <p className="mb-2">
+                Your data is split into <strong>{exportParts} files</strong> — each one holds up to 500 scans, and the first also holds your
+                account, saved profile and payments. Part 1 is downloaded; download the rest to have everything:
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {Array.from({ length: exportParts - 1 }, (_, i) => i + 2).map(part => (
+                  <Button key={part} variant="secondary" size="sm" loading={exportingPart === part}
+                    disabled={exportingPart !== 0} onClick={() => downloadExportPart(part)}>
+                    {exportedParts.includes(part) ? `✓ Part ${part} of ${exportParts}` : `Part ${part} of ${exportParts}`}
+                  </Button>
+                ))}
+              </div>
+            </div>
+          )}
+          {exportError && <p role="alert" className="text-sm text-red-600 mt-2">{exportError}</p>}
         </div>
 
         {/* Danger zone */}
@@ -451,7 +497,7 @@ export default function Settings() {
         <Form onSubmit={handleCancelPendingEmail} className="flex flex-col gap-3">
           <Input type="password" placeholder="Your password" value={cancelPassword}
             autoComplete="current-password" onChange={e => setCancelPassword(e.target.value)} />
-          {cancelError && <p className="text-sm text-red-600">{cancelError}</p>}
+          {cancelError && <p role="alert" className="text-sm text-red-600">{cancelError}</p>}
           <div className="flex gap-3">
             <Button variant="secondary" onClick={closeCancel} disabled={cancelingPending} className="flex-1">
               Keep the change
@@ -476,7 +522,7 @@ export default function Settings() {
         <Form onSubmit={handleDeleteAccount} className="flex flex-col gap-3">
           <Input type="password" placeholder="Your password" value={deletePass}
             autoComplete="current-password" onChange={e => setDeletePass(e.target.value)} />
-          {deleteError && <p className="text-sm text-red-600">{deleteError}</p>}
+          {deleteError && <p role="alert" className="text-sm text-red-600">{deleteError}</p>}
           <div className="flex gap-3">
             <Button variant="secondary" onClick={closeDelete} disabled={deleteLoading} className="flex-1">
               Cancel

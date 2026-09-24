@@ -131,14 +131,19 @@ async function hitQuota(env, key, max, windowSeconds) {
 // 4xx/5xx the slot is handed back, up to maxRefunds per window. Used by
 // anonScan: a wrong file type, an oversized upload, or a server hiccup must not
 // burn the one anonymous scan an hour that the visitor never actually got.
-function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund }) {
+// `keyBy(c)` (optional) names who the budget belongs to when that should not be
+// the network address — a falsy return falls back to the IP. Anything behind
+// `auth` that is genuinely per-account (a heavy personal export) should key on
+// the account: on carrier-grade NAT, campus and office networks many unrelated
+// people share one IP and would otherwise share (and exhaust) one budget.
+function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, keyBy }) {
   return async (c, next) => {
     if (skip && skip(c)) return next()
 
     const ip = clientIp(c)
     if (isBypassed(c.env, ip)) return next()
 
-    const key = `${keyPrefix}:${rateKeyIp(ip)}`
+    const key = `${keyPrefix}:${(keyBy && keyBy(c)) || rateKeyIp(ip)}`
     const kv  = c.env.RATE_LIMIT_KV
 
     let slot
@@ -311,8 +316,12 @@ const resumeEdit = makeLimiter({
 // Backs GET /api/profile/export — one request reads every scan and payment the
 // account has (JD text, structured resumes and all), so it is capped tightly;
 // a person downloading their own data needs it a handful of times, not more.
+// Per ACCOUNT, not per IP (see makeLimiter's keyBy). Parts of one multi-part
+// export are separate requests, so the ceiling leaves room for a large
+// account to fetch all of its parts more than once.
 const dataExport = makeLimiter({
-  windowSeconds: 60 * 60, max: 5, keyPrefix: 'rl:export',
+  windowSeconds: 60 * 60, max: 12, keyPrefix: 'rl:export',
+  keyBy: (c) => { const id = c.get && c.get('user')?.id; return id ? `u:${id}` : null },
   message: msg('Too many export requests. Please try again later.')
 })
 

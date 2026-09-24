@@ -23,6 +23,7 @@ const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
 const { must } = require('../lib/db')
+const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
@@ -145,11 +146,12 @@ function passwordSchema(minMessage) {
 async function register(c) {
   const body = await c.req.json()
   const { name, email, password } = z.object({
-    // BUG FIX: unlike updateName's schema (below), this never trimmed —
-    // a name of pure whitespace passed `min(1)` (whitespace still counts
-    // toward length) and got stored/emailed verbatim as a blank-looking
-    // name. updateName rejects that same input; register let it through.
-    name:     z.string().trim().min(1).max(100),
+    // One shared definition with updateName (lib/text.js): control characters
+    // and zero-width filler are stripped, and a name with no letter or digit
+    // in it ("\u200b", "---") is refused — trim() alone let a name made only
+    // of zero-width characters through, which then rendered as a blank
+    // "Hi ," in every email and an empty heading in the app.
+    name:     nameSchema,
     email:    emailSchema,
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
@@ -597,7 +599,7 @@ async function signOutOtherSessions(c) {
 async function updateName(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
-  const { name } = z.object({ name: z.string().trim().min(1).max(100) }).parse(body)
+  const { name } = z.object({ name: nameSchema }).parse(body)
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase

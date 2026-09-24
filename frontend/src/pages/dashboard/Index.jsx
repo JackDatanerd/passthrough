@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import { useAuth } from '../../hooks/useAuth'
@@ -11,6 +11,8 @@ import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, statusLabel } from '../../lib/utils'
 import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
+import { createPoller } from '../../lib/poller'
+import { isLive, canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
 // .js's SCAN_STATUSES allowlist, for the filter dropdown below.
@@ -24,20 +26,12 @@ function scanBadgeVariant(status) {
   return 'gray'
 }
 
-// PHASE 1/4 — a scan's list label depends on how it was created; there's no
-// resumeOriginalName for brain-dump or saved-profile scans since neither
-// involves an uploaded file.
-function scanLabel(scan) {
-  if (scan.resumeOriginalName) return scan.resumeOriginalName
-  if (scan.inputMode === 'brain_dump') return 'Built from scratch'
-  if (scan.inputMode === 'saved_profile') return 'From saved profile'
-  return 'Resume'
-}
-
 const SCANS_PER_PAGE = 20
-// Statuses where a background job is still writing to the scan; the server
-// refuses to delete these (deleting would race the job), so the button waits.
-const IN_FLIGHT = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
+// How often (ms) the list checks scans that are still being processed. Status
+// requests have their own rate-limit budget (unlike the history list, which
+// shares the general one), and only a few rows are ever in flight at once.
+const LIVE_POLL_MS = 5000
+const LIVE_POLL_MAX_SCANS = 5
 
 // What deleting this particular scan takes with it, said before confirming.
 function deleteMessage(scan) {
@@ -78,9 +72,18 @@ export default function DashboardIndex() {
   // and told a user with 50 scans "No scans yet — scan your first resume".
   const [loadError, setLoadError] = useState('')
   const [reloadTick, setReloadTick] = useState(0)
+  // A background refresh (a scan finished) re-reads the list WITHOUT the
+  // spinner replacing what the person is looking at.
+  const [softTick, setSoftTick] = useState(0)
+  const softRef = useRef(false)
 
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
   // path back into the scan form with that profile pre-selected.
+  // true / false, or null when the check itself failed. Not knowing is not the
+  // same as "no": hiding the button on a failed request quietly removed the
+  // feature for someone who has a saved profile. The server answers a
+  // saved-profile scan without one with a clear message, so showing it when
+  // unsure is the safe direction.
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
 
   const search = searchParams.get('search') || ''
@@ -127,7 +130,9 @@ export default function DashboardIndex() {
   // the user was actually looking at.
   useEffect(() => {
     let cancelled = false
-    setLoading(true); setLoadError('')
+    const soft = softRef.current
+    softRef.current = false
+    if (!soft) { setLoading(true); setLoadError('') }
     api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: search || undefined, status: status || undefined } })
       .then(res => {
         if (cancelled) return
@@ -142,16 +147,38 @@ export default function DashboardIndex() {
       })
       .catch(err => {
         if (cancelled) return
+        if (soft) return   // a failed background refresh keeps the list as it was
         setLoadError(getErrorMessage(err, "Couldn't load your scans."))
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [page, search, status, reloadTick])
+  }, [page, search, status, reloadTick, softTick])
+
+  // Scans still being processed used to sit at "Scanning" until the page was
+  // reloaded by hand. Poll each live one's status (its own rate-limit bucket,
+  // adaptive and paused in a background tab — lib/poller.js) and re-read the
+  // list once when any of them changes. Stops on its own when none are live.
+  useEffect(() => {
+    const live = scans.filter(s => isLive(s)).slice(0, LIVE_POLL_MAX_SCANS)
+    if (live.length === 0) return
+    const poller = createPoller(async () => {
+      const latest = await Promise.all(live.map(s =>
+        api.get(`/scan/status/${s.id}`).then(res => res.data.data.status, () => null)))
+      if (latest.some(st => st === null)) return false   // a failed tick: the poller backs off
+      if (latest.some((st, i) => st !== live[i].status)) {
+        softRef.current = true
+        setSoftTick(t => t + 1)
+      }
+      return true
+    }, { schedule: [[Infinity, LIVE_POLL_MS]] })
+    poller.start({ immediate: false })
+    return () => poller.stop()
+  }, [scans])
 
   useEffect(() => {
     api.get('/profile')
       .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
-      .catch(() => {})
+      .catch(() => setHasSavedProfile(null))
 
     // Re-sync cached user state (emailVerified in particular) every time the
     // dashboard is visited — not just on app mount. Without this, verifying
@@ -203,7 +230,7 @@ export default function DashboardIndex() {
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h1 className="text-xl font-bold text-gray-900">Your scans</h1>
           <div className="flex items-center gap-3">
-            {hasSavedProfile && (
+            {hasSavedProfile !== false && (
               <Link to="/?mode=savedProfile"
                 className="text-sm bg-white border border-gray-300 text-gray-700 px-4 py-2 rounded-md hover:bg-gray-50 transition-colors">
                 Rescan with new JD
@@ -256,11 +283,11 @@ export default function DashboardIndex() {
             controls below. */}
         {(total > 0 || hasFilters) && (
           <div className="flex gap-3 flex-wrap items-end">
-            <Input placeholder="Search by filename or name" value={searchInput}
+            <Input placeholder="Search by job, filename or name" value={searchInput}
               onChange={e => setSearchInput(e.target.value)} className="w-64" />
             <div className="flex flex-col gap-1">
-              <label className="text-xs font-medium text-gray-500">Status</label>
-              <select value={status} onChange={e => setStatus(e.target.value)}
+              <label htmlFor="scan-status-filter" className="text-xs font-medium text-gray-500">Status</label>
+              <select id="scan-status-filter" value={status} onChange={e => setStatus(e.target.value)}
                 className="rounded-md border border-gray-300 px-3 py-2 text-sm">
                 <option value="">All</option>
                 {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
@@ -325,9 +352,11 @@ export default function DashboardIndex() {
               >
                 <div className="flex-1 min-w-0">
                   <p className="font-medium text-gray-900 truncate">
-                    {scanLabel(scan)}
+                    {scanHeading(scan)}
                   </p>
-                  <p className="text-xs text-gray-400 mt-0.5">{formatDate(scan.createdAt)}</p>
+                  <p className="text-xs text-gray-400 mt-0.5 truncate">
+                    {[...scanDetails(scan), formatDate(scan.createdAt)].join(' · ')}
+                  </p>
                 </div>
                 {/* BUG FIX (Section 6, second fixing-time pass): this showed the
                     ORIGINAL score even for a delivered fix (the number that
@@ -368,9 +397,9 @@ export default function DashboardIndex() {
               </Link>
               <button type="button"
                 onClick={() => { setDeleteError(''); setPendingDelete(scan) }}
-                disabled={IN_FLIGHT.includes(scan.status)}
-                title={IN_FLIGHT.includes(scan.status) ? 'Available once processing finishes' : 'Delete this scan'}
-                aria-label={`Delete ${scanLabel(scan)}`}
+                disabled={!canDeleteScan(scan)}
+                title={!canDeleteScan(scan) ? 'Available once processing finishes' : 'Delete this scan'}
+                aria-label={`Delete ${scanHeading(scan)}`}
                 className="px-4 text-xs text-gray-400 hover:text-red-600 border-l border-gray-100 disabled:opacity-40 disabled:hover:text-gray-400 disabled:cursor-not-allowed">
                 Delete
               </button>

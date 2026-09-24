@@ -16,7 +16,7 @@ function setup(resolver) {
   const c = (over = {}) => ({
     env: {},
     get: () => ({ id: over.userId ?? 'u1' }),
-    req: { json: async () => over.body ?? {} },
+    req: { json: async () => over.body ?? {}, query: k => over.query?.[k] },
     json: (body, status = 200) => ({ body, status }),
     body: (raw, status = 200, headers = {}) => ({ raw, status, headers }),
   })
@@ -196,7 +196,16 @@ describe('exportMyData', () => {
     expect(out.scans[0]).toMatchObject({ id: 's1', atsScore: 81, jobDescriptionText: 'jd', verificationCode: 'ABC' })
     expect(out.payments[0]).toMatchObject({ id: 'p1', amountCents: 1900, scanId: 's1' })
     expect(out.savedProfile).toEqual({ resumeData: { name: 'Jane' } })
-    expect(out.truncated).toBe(false)
+    expect(out.paymentsTruncated).toBe(false)
+    expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 1, scansPerPart: 500 })
+    expect(res.headers['X-Export-Parts']).toBe('1')
+    expect(res.headers['Content-Disposition']).toContain('passthrough-my-data.json')
+  })
+  it('includes the per-scan facts about how a person is shown publicly (name, privacy flags) — data the account holds about them', async () => {
+    t = setup(q => rows[q.table])
+    await t.mod.exportMyData(t.c())
+    const cols = t.db.calls.find(c => c.table === 'scans').cols
+    for (const col of ['candidate_first_name', 'verify_hide_name', 'verify_expose_docx', 'verify_expose_pdf']) expect(cols).toContain(col)
   })
   it('only ever reads the requesting user\'s rows, with explicit columns (never select *)', async () => {
     t = setup(q => rows[q.table])
@@ -208,6 +217,66 @@ describe('exportMyData', () => {
     }
     const secretish = t.db.calls.map(c => c.cols).join(',')
     expect(secretish).not.toMatch(/password|token|paystack_customer|paystack_auth|anon/)
+  })
+  describe('parts', () => {
+    const scanRows = n => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, status: 'COMPLETE_PASS' }))
+    const many = (total, data) => q => q.table === 'scans' ? { data, count: total, error: null } : rows[q.table]
+    it('reads scans 500 at a time in a stable order (created_at desc, id as the tiebreak) and asks for the exact total', async () => {
+      t = setup(many(1200, scanRows(500)))
+      await t.mod.exportMyData(t.c())
+      const q = t.db.calls.find(c => c.table === 'scans')
+      expect(q.range).toEqual([0, 499])
+      expect(q.selectOpts).toMatchObject({ count: 'exact' })
+      expect(q.orders.map(o => o[0])).toEqual(['created_at', 'id'])
+    })
+    it('part 1 of 3 says so, carries the account, saved profile and payments, and points at the other parts', async () => {
+      t = setup(many(1200, scanRows(500)))
+      const res = await t.mod.exportMyData(t.c())
+      const out = JSON.parse(res.raw)
+      expect(out.export).toEqual({ part: 1, parts: 3, totalScans: 1200, scansPerPart: 500 })
+      expect(res.headers['X-Export-Parts']).toBe('3')
+      expect(out.scans).toHaveLength(500)
+      expect(out.account.name).toBe('Jane')
+      expect(out.savedProfile).toBeTruthy()
+      expect(out.payments).toHaveLength(1)
+    })
+    it('a later part reads its own slice, is named part-N, and carries scans only (no payments or saved profile repeated)', async () => {
+      t = setup(many(1200, scanRows(200)))
+      const res = await t.mod.exportMyData(t.c({ query: { part: '3' } }))
+      const out = JSON.parse(res.raw)
+      expect(t.db.calls.find(c => c.table === 'scans').range).toEqual([1000, 1499])
+      expect(out.export).toEqual({ part: 3, parts: 3, totalScans: 1200, scansPerPart: 500 })
+      expect(res.headers['Content-Disposition']).toContain('passthrough-my-data-part-3.json')
+      expect(out.account).toEqual({ email: 'jane@x.com' })
+      expect(out.payments).toBeUndefined()
+      expect(out.savedProfile).toBeUndefined()
+      expect(t.db.calls.some(c => c.table === 'payments')).toBe(false)
+    })
+    it('404s a part past the end (said by the database or by an empty page) instead of returning an empty file', async () => {
+      t = setup(many(1200, []))
+      expect((await t.mod.exportMyData(t.c({ query: { part: '4' } }))).status).toBe(404)
+      t.restore()
+      t = setup(q => q.table === 'scans'
+        ? (q.selectOpts?.head ? { count: 3, error: null } : { data: null, error: { code: 'PGRST103', message: 'Requested range not satisfiable' } })
+        : rows[q.table])
+      const res = await t.mod.exportMyData(t.c({ query: { part: '9' } }))
+      expect(res.status).toBe(404)
+      expect(res.body.message).toContain('1 part')
+    })
+    it('treats a garbage or non-positive ?part as part 1', async () => {
+      for (const part of ['abc', '0', '-2', '', undefined]) {
+        t = setup(many(10, scanRows(10)))
+        const res = await t.mod.exportMyData(t.c({ query: { part } }))
+        expect(JSON.parse(res.raw).export.part).toBe(1)
+        t.restore()
+      }
+    })
+    it('an account with no scans still gets one (empty) part', async () => {
+      t = setup(many(0, []))
+      const out = JSON.parse((await t.mod.exportMyData(t.c())).raw)
+      expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 0, scansPerPart: 500 })
+      expect(out.scans).toEqual([])
+    })
   })
   it('propagates a database error rather than exporting a partial file', async () => {
     t = setup(q => (q.table === 'scans' ? { data: null, error: new Error('db down') } : rows[q.table]))

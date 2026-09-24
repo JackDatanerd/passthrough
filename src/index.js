@@ -65,6 +65,10 @@ app.use('*', async (c, next) => {
   const corsMiddleware = cors({
     origin:      c.env.FRONTEND_URL,
     credentials: true,
+    // Readable by the frontend: how many parts the account's data export has
+    // (GET /api/profile/export) — a cross-origin response hides custom
+    // headers unless they are exposed here.
+    exposeHeaders: ['X-Export-Parts'],
   })
   return corsMiddleware(c, next)
 })
@@ -122,12 +126,16 @@ async function scheduled(event, env, ctx) {
         // delete left an orphaned resume file with personal data and no row
         // pointing at it. The anon purge now lives ONLY in retention.service.js.
         //
-        // Recover stuck SCANNING / FIX_GENERATING scans (replaces the server.js
+        // Recover stuck PENDING / SCANNING / FIX_GENERATING scans (replaces the server.js
         // startup recovery — here it runs hourly instead).
         const { data: stuck, error: stuckErr } = await supabase
           .from('scans')
           .update({ status: 'ERROR' })
-          .in('status', ['SCANNING', 'FIX_GENERATING'])
+          // PENDING too: a scan whose background job died before it could even
+          // mark itself SCANNING (a deploy or eviction in that window) sat at
+          // PENDING forever — nothing recovered it, and the dashboard could
+          // never offer to delete it.
+          .in('status', ['PENDING', 'SCANNING', 'FIX_GENERATING'])
           .lt('updated_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()) // stuck > 30 min
           .select('id')
         if (stuckErr) { console.error('Stuck scan recovery:', stuckErr.message); return }

@@ -54,6 +54,7 @@ const referralService      = require('../services/referral.service')
 const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp }         = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
+const { deriveJobTitle } = require('../lib/jobTitle')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -243,6 +244,14 @@ async function createScan(ctx) {
       id: scanId,
       job_description_text: jdText,
       job_description_url:  fields.jobDescriptionUrl || null,
+      // What the dashboard tells scans apart by. A person who rescans one resume
+      // against ten job descriptions used to see ten identical rows. Derived
+      // from the JD text (best effort, may be null) plus the role category and
+      // seniority the same text implies — both were previously only set once a
+      // badge was generated, i.e. null for most scans.
+      job_title:            deriveJobTitle(jdText),
+      role_category:        atsService.detectRoleCategory(jdText),
+      seniority_level:      atsService.detectSeniority(jdText),
     }
   }
 
@@ -1004,6 +1013,12 @@ const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 
 // request. That was already fixed there; it wasn't fixed here.
 const MAX_SCAN_HISTORY_LIMIT = 100
 
+// What the dashboard search box matches: the uploaded file's name, the
+// candidate's first name (brain-dump / saved-profile scans have no file), and
+// the job title taken from the JD — so "Google" or "analyst" finds the scan.
+const HISTORY_SEARCH = (term) =>
+  `resume_original_name.ilike.%${term}%,candidate_first_name.ilike.%${term}%,job_title.ilike.%${term}%`
+
 async function getScanHistory(ctx) {
   const user = ctx.get('user')
   // Clamped to at least 1 — a page of 0 or negative previously reached
@@ -1039,7 +1054,7 @@ async function getScanHistory(ctx) {
   // second round trip.
   let query = supabase
     .from('scans')
-    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, keyword_score, format_score, sections_score, content_score', { count: 'exact' })
+    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, keyword_score, format_score, sections_score, content_score, job_title, role_category, seniority_level, updated_at', { count: 'exact' })
     .eq('user_id', user.id)
   // BUG FIX (audit): this comment previously claimed candidate_first_name
   // was "populated at scoring time for every scan (see runAtsScan)" — it
@@ -1050,7 +1065,7 @@ async function getScanHistory(ctx) {
   // runAtsScan now sets it at scoring time for those two modes (see above) —
   // file-mode doesn't need it here since it already has resume_original_name
   // to search on instead.
-  if (search) query = query.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
+  if (search) query = query.or(HISTORY_SEARCH(search))
   if (status && SCAN_STATUSES.includes(status)) query = query.eq('status', status)
 
   let { data: rows, error, count } = await query
@@ -1062,7 +1077,7 @@ async function getScanHistory(ctx) {
     // ?page=): an empty page with the real total, so the dashboard can step
     // back to the last real page instead of dead-ending on an error.
     let head = supabase.from('scans').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
-    if (search) head = head.or(`resume_original_name.ilike.%${search}%,candidate_first_name.ilike.%${search}%`)
+    if (search) head = head.or(HISTORY_SEARCH(search))
     if (status && SCAN_STATUSES.includes(status)) head = head.eq('status', status)
     const totals = await head
     if (totals.error) throw totals.error
@@ -1076,7 +1091,10 @@ async function getScanHistory(ctx) {
     fixPurchased: r.fix_purchased, fixTier: r.fix_tier, verificationCode: r.verification_code,
     verificationStatus: r.verification_status, fixAtsScore: r.fix_ats_score,
     keywordScore: r.keyword_score, formatScore: r.format_score,
-    sectionsScore: r.sections_score, contentScore: r.content_score
+    sectionsScore: r.sections_score, contentScore: r.content_score,
+    // Label + the deletion rule's clock (see deleteScan's in-flight window).
+    jobTitle: r.job_title ?? null, roleCategory: r.role_category ?? null,
+    seniorityLevel: r.seniority_level ?? null, updatedAt: r.updated_at
   }))
 
   return ctx.json({ success: true, data: { scans, page, limit, total: count } })

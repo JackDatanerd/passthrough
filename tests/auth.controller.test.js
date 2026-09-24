@@ -872,3 +872,24 @@ describe('deleteAccount — work in flight', () => {
     expect(Date.now() - Date.parse(since)).toBeLessThan(61 * 60 * 1000)
   })
 })
+
+// Names: one shared definition (lib/text.js) for register and updateName.
+describe('name validation (register + updateName)', () => {
+  const register = (name) => t.mod.register(t.c({ body: { name, email: 'ada@example.com', password: 'longenough' } }))
+  it('updateName stores the cleaned name: control characters and zero-width filler gone, spaces collapsed', async () => {
+    t = await setup()
+    await t.mod.updateName(t.c({ body: { name: '  Ada \u200b  Lovelace\u0007 ' } }))
+    expect(t.state.updates.find(u => u.table === 'users').patch).toEqual({ name: 'Ada Lovelace' })
+  })
+  it('register still accepts an ordinary name with the same cleaning applied', async () => {
+    t = await setup()
+    expect((await register('  Ada \u200b  Lovelace ')).status).toBe(201)
+  })
+  it('register and updateName both refuse a name with no letter or digit in it (zero-width only, punctuation only)', async () => {
+    t = await setup()
+    for (const bad of ['\u200b', '\u200b\ufeff', '---', '   ']) {
+      await expect(register(bad)).rejects.toBeTruthy()
+      await expect(t.mod.updateName(t.c({ body: { name: bad } }))).rejects.toBeTruthy()
+    }
+  })
+})
