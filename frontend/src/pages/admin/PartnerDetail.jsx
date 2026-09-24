@@ -12,12 +12,9 @@ import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, cn, copyToClipboard } from '../../lib/utils'
 
-function PayoutDetailsSummary({ partner }) {
-  if (!partner.payoutMethod) {
-    return <span className="text-sm text-gray-400 italic">Not submitted yet</span>
-  }
-  const d = partner.payoutDetails || {}
-  if (partner.payoutMethod === 'BANK') {
+function PayoutDetailsFields({ method, details }) {
+  const d = details || {}
+  if (method === 'BANK') {
     return (
       <div className="text-sm text-gray-700">
         <div>{d.bankName}</div>
@@ -29,6 +26,60 @@ function PayoutDetailsSummary({ partner }) {
     <div className="text-sm text-gray-700">
       <div>{d.provider}</div>
       <div>{d.accountName} — {d.phoneNumber}</div>
+    </div>
+  )
+}
+
+function PayoutDetailsSummary({ partner }) {
+  if (!partner.payoutMethod) {
+    return <span className="text-sm text-gray-400 italic">Not submitted yet</span>
+  }
+  return <PayoutDetailsFields method={partner.payoutMethod} details={partner.payoutDetails} />
+}
+
+// AUDIT FIX (feature gap): payoutDetailsSnapshot — the account a payout
+// actually went to, captured at the moment it was recorded — has existed in
+// adminRecordPayout since this table was built, but nothing anywhere ever
+// showed it: only the partner's CURRENT payout details were ever
+// displayed, anywhere. If a partner changes their bank/mobile-money details
+// after a payout (the whole reason this file treats such a change as a
+// fraud signal worth emailing both the partner and the owner about — see
+// submitPayoutDetails), there was no way to look back and confirm what
+// account a specific past payout actually reached. Collapsed by default —
+// this is only needed when actually investigating a specific payout, not
+// for routine scanning of the list.
+function PayoutRow({ payout }) {
+  const [open, setOpen] = useState(false)
+  const hasSnapshot = payout.payoutDetailsSnapshot && Object.keys(payout.payoutDetailsSnapshot).length > 0
+  return (
+    <div className="p-3 text-sm">
+      <div className="flex items-center justify-between gap-3">
+        <div>
+          <span className="font-medium text-gray-900">{formatCents(payout.amountCents, payout.currency)}</span>
+          <span className="text-gray-400 ml-2">{formatDate(payout.paidAt || payout.createdAt)}</span>
+          {payout.periodStart && (
+            <span className="text-gray-400 ml-2">· {formatDate(payout.periodStart)}–{formatDate(payout.periodEnd)}</span>
+          )}
+          {payout.note && <span className="text-gray-400 ml-2">({payout.note})</span>}
+        </div>
+        {hasSnapshot && (
+          <button
+            type="button"
+            onClick={() => setOpen(o => !o)}
+            className="text-xs text-gray-400 underline underline-offset-2 hover:text-gray-600 whitespace-nowrap"
+          >
+            {open ? 'Hide' : 'Paid to'}
+          </button>
+        )}
+      </div>
+      {open && hasSnapshot && (
+        <div className="mt-2 pt-2 border-t border-gray-100">
+          <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">
+            Account this payout was sent to
+          </div>
+          <PayoutDetailsFields method={payout.payoutMethod} details={payout.payoutDetailsSnapshot} />
+        </div>
+      )}
     </div>
   )
 }
@@ -444,16 +495,7 @@ function CyclesTab({ partner, onChanged }) {
         ) : (
           <div className="border border-gray-200 rounded-lg bg-white divide-y divide-gray-100">
             {partner.payouts.map(payout => (
-              <div key={payout.id} className="p-3 flex items-center justify-between gap-3 text-sm">
-                <div>
-                  <span className="font-medium text-gray-900">{formatCents(payout.amountCents, payout.currency)}</span>
-                  <span className="text-gray-400 ml-2">{formatDate(payout.paidAt || payout.createdAt)}</span>
-                  {payout.periodStart && (
-                    <span className="text-gray-400 ml-2">· {formatDate(payout.periodStart)}–{formatDate(payout.periodEnd)}</span>
-                  )}
-                  {payout.note && <span className="text-gray-400 ml-2">({payout.note})</span>}
-                </div>
-              </div>
+              <PayoutRow key={payout.id} payout={payout} />
             ))}
           </div>
         )}

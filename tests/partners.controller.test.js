@@ -421,6 +421,21 @@ describe('adminGetPartner', () => {
     expect(res.body.data.pendingCommissionCents).toBe(1225)
   })
 
+  // AUDIT FIX (feature gap) under test: payout_details_snapshot is written by
+  // adminRecordPayout specifically to preserve which account a payout
+  // actually went to, independent of whatever the partner's payout_details
+  // says NOW — it was never selected back anywhere until this fix.
+  it('surfaces each payout\'s point-in-time payoutDetailsSnapshot', async () => {
+    t = setupGet({
+      id: 'p1', name: 'Coach K', payouts: [
+        { id: 'po1', partner_id: 'p1', amount_cents: 5000, currency: 'USD', payout_method: 'BANK', status: 'PAID', created_at: new Date().toISOString(), payout_details_snapshot: { bankName: 'Old Bank', accountNumber: '0001' } },
+      ],
+      referral_codes: [], commission_ledger: [],
+    })
+    const res = await t.mod.adminGetPartner(t.c)
+    expect(res.body.data.payouts[0].payoutDetailsSnapshot).toEqual({ bankName: 'Old Bank', accountNumber: '0001' })
+  })
+
   it('orders payouts/referral_codes/commission_ledger newest-first', async () => {
     t = setupGet({ id: 'p1', name: 'X', payouts: [], referral_codes: [], commission_ledger: [] })
     await t.mod.adminGetPartner(t.c)

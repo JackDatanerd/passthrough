@@ -82,7 +82,12 @@ function CodeCard({ code }) {
       </div>
       <ShareLink code={code.code} />
       <div className="text-sm text-gray-500 mt-3">
-        {prices.map(([tier, cents]) => `${tier}: $${(cents / 100).toFixed(0)}`).join(' · ')}
+        {/* AUDIT FIX (bug): this hardcoded '$' instead of using fmtCents like
+            every other amount on this page (and the rest of the app) —
+            exactly the currency-drift bug already fixed elsewhere for the
+            checkout price tags. If PAYSTACK_CURRENCY is ever not USD, a
+            partner would see the wrong symbol on their own promo prices. */}
+        {prices.map(([tier, cents]) => `${tier}: ${fmtCents(cents)}`).join(' · ')}
       </div>
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}

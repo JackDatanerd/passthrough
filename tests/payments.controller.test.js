@@ -139,6 +139,42 @@ describe('initializePayment — stale PENDING cleanup', () => {
     expect(t.state.paymentUpdates).toHaveLength(0)
     expect(t.state.paymentInserts).toHaveLength(0)
   })
+
+  // AUDIT FIX (bug): a fresh same-tier PENDING row used to be resumed
+  // regardless of referral code — silently reusing whatever price the FIRST
+  // attempt was created with, even if the customer applied/changed a
+  // referral code afterward and the checkout button was now showing a
+  // different price. Same-tier + same-code still resumes; same-tier +
+  // different-code now blocks with a 409 instead of silently charging the
+  // stale price.
+  it('does NOT resume a same-tier PENDING row created with a DIFFERENT referral code — blocks with 409', async () => {
+    t = setupInit({
+      existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'OLDCODE', created_at: new Date().toISOString() },
+    })
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
+    expect(res.status).toBe(409)
+    expect(res.body.data.reference).toBe('fresh-ref')
+    expect(t.state.paymentUpdates).toHaveLength(0)
+    expect(t.state.paymentInserts).toHaveLength(0)
+  })
+
+  it('does NOT resume a same-tier PENDING row created WITHOUT a referral code when one is now supplied — blocks with 409', async () => {
+    t = setupInit({
+      existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
+    })
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
+    expect(res.status).toBe(409)
+  })
+
+  it('DOES resume a same-tier PENDING row when the referral code matches (case/whitespace-insensitive)', async () => {
+    t = setupInit({
+      existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'SAMECODE', created_at: new Date().toISOString() },
+    })
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: '  samecode  ' } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.reference).toBe('fresh-ref')
+    expect(t.state.paymentInserts).toHaveLength(0)
+  })
 })
 
 describe('verifyPayment', () => {

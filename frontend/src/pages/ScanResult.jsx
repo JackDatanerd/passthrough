@@ -70,6 +70,19 @@ export default function ScanResult() {
   // this holds it so the error message can offer a real "cancel that
   // payment" action instead of leaving the user stuck for up to 30 minutes.
   const [stuckPayment, setStuckPayment] = useState(null)
+  // AUDIT FIX (feature gap): the inline Paystack popup script loads at
+  // runtime from Paystack's own domain (see index.html — nothing local or
+  // bundled backs it up). An ad blocker, corporate proxy, or blocked/slow
+  // network can leave it never opening anything, with no guarantee any of
+  // onSuccess/onCancel/onError ever fires (those are for a completed/failed
+  // CHARGE, not a script that never loaded) — the customer was just stuck on
+  // a spinner forever. The backend already builds everything a redirect-based
+  // fallback needs (PAYSTACK_CALLBACK_URL -> /payment/success, which already
+  // verifies+polls on its own); this is what actually wires it up. Holds the
+  // fallback checkout URL once one becomes available; null means no fallback
+  // is being offered (either nothing's stuck, or the popup already resolved).
+  const [popupFallbackUrl, setPopupFallbackUrl] = useState(null)
+  const popupFallbackTimerRef = useRef(null)
   const [dlError,     setDlError   ] = useState('')
   const [visibilityError, setVisibilityError] = useState('')
   const [publishLoading, setPublishLoading] = useState(false)
@@ -172,6 +185,9 @@ export default function ScanResult() {
     return () => pollRef.current?.stop()
   }, [id])
 
+  // Don't let the fallback timer fire (and setState) after this page unmounts.
+  useEffect(() => () => clearTimeout(popupFallbackTimerRef.current), [])
+
   // Storage stays the source of truth ACROSS page loads/navigation;
   // this state is the source of truth WITHIN this page's lifetime, so a
   // manually-typed code (FixBanner's entry field) is reflected instantly
@@ -189,39 +205,62 @@ export default function ScanResult() {
     // taking effect could still double-fire.
     if (payLoading) return
     setPayLoading(true); setPayingTier(fixTier); setPayError(''); setStuckPayment(null)
+    clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null)
     try {
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined
       })
       const { access_code, reference } = res.data.data
 
-      const popup = new PaystackPop()
-      popup.resumeTransaction(access_code, {
-        onSuccess: async () => {
-          try {
-            // Same verify endpoint the old redirect-based flow used — just
-            // called directly here instead of via a callback_url redirect.
-            // The webhook (webhooks.controller.js) still fires independently
-            // as a redundant confirmation path either way.
-            await api.get(`/payments/verify?reference=${reference}`)
-          } catch (_) {
-            // Swallow — the webhook will still confirm this independently
-            // even if this specific client-side call fails (e.g. the tab
-            // closing right after payment). Not worth blocking on.
+      // access_code works two ways: the inline popup below, or a plain
+      // redirect to Paystack's own hosted checkout page for it — same
+      // transaction either way, and PAYSTACK_CALLBACK_URL already brings the
+      // customer back to /payment/success (which verifies + polls on its
+      // own) if the redirect path is used. Only ever offered — never
+      // auto-redirected to — so a popup that's just slow to render (or one
+      // the customer is genuinely mid-payment in) is never yanked away.
+      const fallbackUrl = `https://checkout.paystack.com/${access_code}`
+      popupFallbackTimerRef.current = setTimeout(() => setPopupFallbackUrl(fallbackUrl), 8000)
+
+      const clearFallback = () => { clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null) }
+
+      try {
+        const popup = new PaystackPop()
+        popup.resumeTransaction(access_code, {
+          onSuccess: async () => {
+            clearFallback()
+            try {
+              // Same verify endpoint the old redirect-based flow used — just
+              // called directly here instead of via a callback_url redirect.
+              // The webhook (webhooks.controller.js) still fires independently
+              // as a redundant confirmation path either way.
+              await api.get(`/payments/verify?reference=${reference}`)
+            } catch (_) {
+              // Swallow — the webhook will still confirm this independently
+              // even if this specific client-side call fails (e.g. the tab
+              // closing right after payment). Not worth blocking on.
+            }
+            // Status just moved past COMPLETE_PASS/COMPLETE_FAIL, which are
+            // in POLLING_STOP — no page reload here (unlike the old redirect
+            // flow) to naturally restart polling, so it has to be explicit.
+            await fetchScan()
+            restartPolling()
+            setPayLoading(false); setPayingTier(null)
+          },
+          onCancel: () => { clearFallback(); setPayLoading(false); setPayingTier(null) },
+          onError: () => {
+            clearFallback()
+            setPayError('Payment failed. Please try again.')
+            setPayLoading(false); setPayingTier(null)
           }
-          // Status just moved past COMPLETE_PASS/COMPLETE_FAIL, which are
-          // in POLLING_STOP — no page reload here (unlike the old redirect
-          // flow) to naturally restart polling, so it has to be explicit.
-          await fetchScan()
-          restartPolling()
-          setPayLoading(false); setPayingTier(null)
-        },
-        onCancel: () => { setPayLoading(false); setPayingTier(null) },
-        onError: () => {
-          setPayError('Payment failed. Please try again.')
-          setPayLoading(false); setPayingTier(null)
-        }
-      })
+        })
+      } catch (popupErr) {
+        // Synchronous setup failure (e.g. the script was outright blocked) —
+        // no ambiguity here, so offer the fallback immediately instead of
+        // waiting out the timer.
+        clearTimeout(popupFallbackTimerRef.current)
+        setPopupFallbackUrl(fallbackUrl)
+      }
     } catch (err) {
       // AUDIT FIX (feature gap): a 409 here means initializePayment found an
       // existing fresh PENDING payment for a different tier and refused to
@@ -745,6 +784,17 @@ export default function ScanResult() {
                         Cancel that payment and choose again
                       </button>
                     )}
+                  </div>
+                )}
+                {/* AUDIT FIX (feature gap): only appears if the inline popup
+                    hasn't opened after a generous wait, or failed outright to
+                    set up — see popupFallbackUrl's comment above. */}
+                {popupFallbackUrl && (
+                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <p>Payment window not opening? This can happen with ad blockers or restrictive networks.</p>
+                    <a href={popupFallbackUrl} className="mt-1 inline-block underline underline-offset-2 hover:text-amber-900">
+                      Continue to payment on Paystack's page →
+                    </a>
                   </div>
                 )}
                 <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} />

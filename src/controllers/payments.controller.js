@@ -60,27 +60,46 @@ async function initializePayment(c2) {
   // idempotency check in verifyPayment/webhooks.controller.js (neither
   // would find a PENDING row left to flip to SUCCESS), leaving a
   // genuinely-paid customer charged with no fix ever delivered. Instead:
-  //   - same tier, still fresh  -> resume the exact same checkout
-  //   - different tier, fresh   -> block with a clear message
+  //   - same tier, same referral code, still fresh -> resume the exact same checkout
+  //   - different tier OR different referral code, fresh -> block with a clear message
   //   - stale (access code has long since expired anyway) -> fall through,
   //     the old row is harmless dead weight at that point
   const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
   const { data: existingPending, error: pendingErr } = await supabase
     .from('payments')
-    .select('paystack_ref, paystack_access_code, fix_tier, created_at')
+    .select('paystack_ref, paystack_access_code, fix_tier, referral_code, created_at')
     .eq('scan_id', scanId).eq('status', 'PENDING')
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (pendingErr) throw pendingErr
 
+  // AUDIT FIX (bug): this used to compare fix_tier alone. A PENDING row
+  // already has its price (and therefore its referral code, if any) locked
+  // in on Paystack's side — resuming it just hands back the SAME access_code,
+  // which opens Paystack's popup at whatever amount was set when that row
+  // was first created. If a referral code was applied (or changed) AFTER
+  // that abandoned/incomplete attempt — a very normal flow: open checkout,
+  // back out, find/type a code, click Pay again — the tier-only check let
+  // this silently resume the OLD, un-discounted (or differently-discounted)
+  // checkout while /api/pricing and the checkout button had already moved
+  // on to showing the NEW price. The customer sees one price on the button
+  // and a different one in the Paystack popup, with no error anywhere. A
+  // code mismatch is now treated exactly like a tier mismatch: block with
+  // the same 409 + cancel-the-old-one path, rather than silently reusing
+  // pricing the request no longer matches.
+  const requestedCode = referralCode ? String(referralCode).trim().toUpperCase() : null
   if (existingPending && (Date.now() - Date.parse(existingPending.created_at)) < PENDING_REUSE_WINDOW_MS) {
-    if (existingPending.fix_tier === fixTier && existingPending.paystack_access_code) {
+    const sameTier = existingPending.fix_tier === fixTier
+    const sameCode = (existingPending.referral_code || null) === requestedCode
+    if (sameTier && sameCode && existingPending.paystack_access_code) {
       return c2.json({ success: true, data: {
         access_code: existingPending.paystack_access_code,
         reference:   existingPending.paystack_ref
       }})
     }
     return c2.json({ success: false,
-      message: 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.',
+      message: sameTier
+        ? 'A payment is already in progress for this resume at a different price — a referral code changed since you started it. Please finish or cancel it before continuing.'
+        : 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.',
       // AUDIT FIX (feature gap): this message told the user to "cancel it"
       // with no way to actually do that anywhere in the app — see
       // cancelPayment below. Surfacing the reference here is what lets the

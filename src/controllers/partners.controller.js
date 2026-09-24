@@ -241,10 +241,21 @@ async function adminGetPartner(ctx) {
     .from('partners')
     .select(`
       *,
-      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at),
+      payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at, payout_details_snapshot),
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
       commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at)
     `)
+    // AUDIT FIX (feature gap): adminRecordPayout writes payout_details_snapshot
+    // — a copy of the partner's bank/mobile-money details AT THE MOMENT a
+    // specific payout was recorded — precisely so a later account-details
+    // change (which this file already treats as a fraud signal: see
+    // submitPayoutDetails' and adminUpdatePartner's security-alert emails)
+    // doesn't erase the record of what account an already-paid payout
+    // actually went to. It was captured on every payout but never selected
+    // back anywhere, admin included — this is the one place it should be:
+    // admin-only, alongside the payout it belongs to, never on the
+    // partner-facing getPartnerDashboard below (which intentionally never
+    // exposes bank/mobile-money details at all, current or historical).
     .eq('id', partnerId)
     .order('paid_at',    { foreignTable: 'payouts',         ascending: false })
     .order('created_at', { foreignTable: 'referral_codes',  ascending: false })
