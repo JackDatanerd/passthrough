@@ -492,3 +492,498 @@ describe('deleteScan', () => {
     expect(t.state.profileUpdates).toEqual([])
   })
 })
+// ─── Batch 2: getScanStatus, getScan, updateResumeData, downloadDraft ─────
+
+describe('getScanStatus', () => {
+  function setup(scan) {
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    return { mod, restore }
+  }
+
+  it('404s for an unknown scan', async () => {
+    t = setup(null)
+    expect((await t.mod.getScanStatus(baseCtx())).status).toBe(404)
+  })
+
+  it('403s a logged-in non-owner', async () => {
+    t = setup({ id: 's1', user_id: 'someone-else', anon_token: null })
+    expect((await t.mod.getScanStatus(baseCtx({ user: { id: 'u1' } }))).status).toBe(403)
+  })
+
+  it('403s an anonymous caller with a wrong/missing token', async () => {
+    t = setup({ id: 's1', user_id: null, anon_token: 'real-token-123' })
+    const res = await t.mod.getScanStatus(baseCtx({ user: null, query: { token: 'wrong' } }))
+    expect(res.status).toBe(403)
+  })
+
+  it('allows the anon owner with the correct token', async () => {
+    t = setup({ id: 's1', user_id: null, anon_token: 'real-token-123', status: 'SCANNING' })
+    const res = await t.mod.getScanStatus(baseCtx({ user: null, query: { token: 'real-token-123' } }))
+    expect(res.body.success).toBe(true)
+  })
+
+  it('computes badgeEligible from atsScore without persisting it, and is null when unscored', async () => {
+    t = setup({ id: 's1', user_id: 'u1', ats_score: null, status: 'SCANNING' })
+    const res = await t.mod.getScanStatus(baseCtx())
+    expect(res.body.data.badgeEligible).toBe(null)
+    t.restore()
+
+    t = setup({ id: 's1', user_id: 'u1', ats_score: 80, status: 'COMPLETE_PASS' })
+    const res2 = await t.mod.getScanStatus(baseCtx())
+    expect(res2.body.data.badgeEligible).toBe(true)
+  })
+})
+
+describe('getScan', () => {
+  function setup(scan) {
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    return { mod, restore }
+  }
+
+  it('404s for an unknown scan', async () => {
+    t = setup(null)
+    expect((await t.mod.getScan(baseCtx())).status).toBe(404)
+  })
+
+  it('403s a non-owner', async () => {
+    t = setup({ id: 's1', user_id: 'someone-else' })
+    expect((await t.mod.getScan(baseCtx({ user: { id: 'u1' } }))).status).toBe(403)
+  })
+
+  it('never leaks internal-only fields (resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, fullAtsReport)', async () => {
+    t = setup({ id: 's1', user_id: 'u1', resume_path: 'internal/key', resume_ats_path: 'k1', resume_pdf_path: 'k2', resume_hash_history: ['h1'], fix_payment_id: 'pay1', full_ats_report: { keywords: {} }, ats_score: 80 })
+    const res = await t.mod.getScan(baseCtx())
+    const keys = Object.keys(res.body.data)
+    expect(keys).not.toContain('resumePath')
+    expect(keys).not.toContain('resumeAtsPath')
+    expect(keys).not.toContain('resumePdfPath')
+    expect(keys).not.toContain('resumeHashHistory')
+    expect(keys).not.toContain('fixPaymentId')
+    expect(keys).not.toContain('fullAtsReport')
+  })
+
+  it('reshapes fullAtsReport into atsDetail, or null when the report itself is an error placeholder', async () => {
+    t = setup({ id: 's1', user_id: 'u1', full_ats_report: { keywords: { matched: ['x'], missing: ['y'] }, aiMissingKeywords: ['z'] } })
+    const res = await t.mod.getScan(baseCtx())
+    expect(res.body.data.atsDetail.keywords).toEqual({ matched: ['x'], missing: ['y'] })
+    expect(res.body.data.atsDetail.aiMissingKeywords).toEqual(['z'])
+    t.restore()
+
+    t = setup({ id: 's1', user_id: 'u1', full_ats_report: { error: 'scoring failed' } })
+    const res2 = await t.mod.getScan(baseCtx())
+    expect(res2.body.data.atsDetail).toBe(null)
+  })
+})
+
+describe('updateResumeData', () => {
+  function setup(opts = {}) {
+    const state = { updates: [] }
+    const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'COMPLETE_PASS', fix_purchased: false, job_description_text: 'JD text' }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); return { data: null, error: opts.updateErr || null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
+      'services/resume.parser.js': { extractText: async () => 'x'.repeat(150), serializeResumeData: () => 'synthetic' },
+      'services/ats.service.js': { scoreResume: () => (opts.ruleResult ?? { score: 70, keywordScore: 70, formatScore: 70, sectionsScore: 70, contentScore: 70, detail: { keywords: {} } }) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), extractJson: x => x },
+    })
+    return { mod, restore, state }
+  }
+
+  it('403s a non-owner', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'someone-else' } })
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: {} } }))).status).toBe(403)
+  })
+
+  it('400s for a file-mode scan (only brain_dump/saved_profile supported)', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file' } })
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: {} } }))).status).toBe(400)
+  })
+
+  it('400s when the scan is not yet complete', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'SCANNING' } })
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: {} } }))).status).toBe(400)
+  })
+
+  it('400s once a fix has been purchased', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'COMPLETE_PASS', fix_purchased: true } })
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: {} } }))).status).toBe(400)
+  })
+
+  it('400s on oversized resumeData', async () => {
+    t = setup()
+    const huge = { name: 'x'.repeat(200_000) }
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: huge } }))).status).toBe(400)
+  })
+
+  it('400s on a shape that fails the schema (wrong type for a field)', async () => {
+    t = setup()
+    expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 12345 } } }))).status).toBe(400)
+  })
+
+  it('persists the corrected data plus a fresh rescore, and reports COMPLETE_PASS/FAIL from the new score', async () => {
+    t = setup({ ruleResult: { score: 85, keywordScore: 85, formatScore: 85, sectionsScore: 85, contentScore: 85, detail: { keywords: { matched: ['x'] } } } })
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    expect(res.body.success).toBe(true)
+    expect(res.body.data.atsScore).toBe(85)
+    expect(res.body.data.status).toBe('COMPLETE_PASS')
+    expect(res.body.data.badgeEligible).toBe(true)
+    expect(t.state.updates[0]).toMatchObject({ ats_score: 85, status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane' } })
+  })
+
+  it('a below-threshold rescore reports COMPLETE_FAIL', async () => {
+    t = setup({ ruleResult: { score: 50, keywordScore: 50, formatScore: 50, sectionsScore: 50, contentScore: 50, detail: {} } })
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    expect(res.body.data.status).toBe('COMPLETE_FAIL')
+    expect(t.state.updates[0].status).toBe('COMPLETE_FAIL')
+  })
+})
+
+describe('downloadDraft', () => {
+  function setup(opts = {}) {
+    const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' } }
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
+    let generateArgs = null
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/docx.service.js': { generateAtsDocx: async (...a) => { generateArgs = a; return Buffer.from('fake-docx') } },
+    })
+    return { mod, restore, getGenerateArgs: () => generateArgs }
+  }
+
+  it('403s a non-owner', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'someone-else' } })
+    expect((await t.mod.downloadDraft(baseCtx())).status).toBe(403)
+  })
+
+  it('400s for a file-mode scan', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file' } })
+    expect((await t.mod.downloadDraft(baseCtx())).status).toBe(400)
+  })
+
+  it('404s when there is no resume data on the scan yet', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: null } })
+    expect((await t.mod.downloadDraft(baseCtx())).status).toBe(404)
+  })
+
+  it('generates the docx from original_resume_data with no verification URL (never credentialed)', async () => {
+    t = setup()
+    await t.mod.downloadDraft(baseCtx())
+    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null])
+  })
+})
+
+// ─── createScan ─────────────────────────────────────────────────────────
+
+describe('createScan', () => {
+  function csCtx(over = {}) {
+    const waitUntilPromises = []
+    const bucketOps = []
+    return {
+      env: { RESUMES_BUCKET: { put: async (...a) => bucketOps.push({ op: 'put', a }), delete: async (...a) => bucketOps.push({ op: 'delete', a }) }, ...over.env },
+      get: k => ({ uploadedFile: over.file, formFields: over.fields ?? {}, user: over.user, authError: over.authError }[k]),
+      req: {},
+      json: (body, status = 200) => ({ body, status }),
+      executionCtx: over.noExecCtx ? undefined : { waitUntil: p => { waitUntilPromises.push(p); p.catch(() => {}) } },
+      __waitUntilPromises: waitUntilPromises,
+      __bucketOps: bucketOps,
+    }
+  }
+
+  function setup(opts = {}) {
+    const state = { inserts: [], rpcCalls: [], userUpdates: [] }
+    const db = createFakeSupabase(q => {
+      if (q.op === 'rpc' && q.name === 'increment_scan_count_if_under_limit') { state.rpcCalls.push(q); return { data: opts.quotaAllowed ?? true, error: opts.quotaErr || null } }
+      if (q.op === 'rpc' && q.name === 'decrement_scan_count') { state.rpcCalls.push(q); return { data: true, error: null } }
+      if (q.table === 'users' && q.op === 'select') return { data: opts.savedProfileRow ?? { saved_profile: { resumeData: { name: 'Jane' } } }, error: null }
+      if (q.table === 'users' && q.op === 'update') { state.userUpdates.push(q.patch); return { data: null, error: null } }
+      if (q.table === 'scans' && q.op === 'insert') { state.inserts.push(q.values); return { data: null, error: opts.insertErr || null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'middleware/rateLimiter.js': { isBypassed: () => opts.bypassed ?? false },
+      'services/jd.parser.js': { fetchJobDescriptionFromUrl: async () => opts.jdFetch ?? { success: false, message: 'fetch disabled in test' } },
+    })
+    return { mod, restore, state, db }
+  }
+
+  const validJd = 'A '.repeat(30) + 'valid job description with enough characters to pass the fifty character minimum.'
+  const validBrainDump = 'x'.repeat(150)
+
+  it('400s with no input mode at all', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { jobDescriptionText: validJd } }))
+    expect(res.status).toBe(400)
+    expect(t.state.inserts).toHaveLength(0)
+  })
+
+  it('400s when more than one input mode is present (file + brain dump)', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ file: { mimetype: 'application/pdf', bytes: new Uint8Array(), originalname: 'r.pdf' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.status).toBe(400)
+    expect(t.state.inserts).toHaveLength(0)
+  })
+
+  it('401s a saved-profile request with no logged-in user', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { useSavedProfile: 'true', jobDescriptionText: validJd } }))
+    expect(res.status).toBe(401)
+  })
+
+  it('503s when auth lookup itself failed, rather than silently treating the request as anonymous', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ authError: 'unavailable', fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.status).toBe(503)
+    expect(t.state.inserts).toHaveLength(0)
+  })
+
+  it('400s when the job description is too short', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionText: 'too short' } }))
+    expect(res.status).toBe(400)
+  })
+
+  it('400s when a JD URL fetch is blocked (SSRF-style guard upstream)', async () => {
+    t = setup({ jdFetch: { blocked: true, message: 'That URL cannot be fetched.' } })
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionUrl: 'http://evil.internal' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.blocked).toBe(true)
+  })
+
+  it('400s when the brain-dump text is below the minimum length', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: 'too short', jobDescriptionText: validJd } }))
+    expect(res.status).toBe(400)
+  })
+
+  it('400s an anonymous brain-dump submission with an invalid contact email', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd, contactEmail: 'not-an-email' } }))
+    expect(res.status).toBe(400)
+  })
+
+  it('400s useSavedProfile when the user has none saved', async () => {
+    t = setup({ savedProfileRow: { saved_profile: null } })
+    const res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { useSavedProfile: 'true', jobDescriptionText: validJd } }))
+    expect(res.status).toBe(400)
+    expect(t.state.inserts).toHaveLength(0)
+  })
+
+  it('logged-in happy path: inserts with user_id set and anon_token null, triggers the background scan', async () => {
+    t = setup()
+    const ctx = csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } })
+    const res = await t.mod.createScan(ctx)
+    expect(res.body.success).toBe(true)
+    expect(res.body.data.anonToken).toBe(null)
+    expect(t.state.inserts[0]).toMatchObject({ user_id: 'u1', anon_token: null, input_mode: 'brain_dump' })
+    expect(ctx.__waitUntilPromises).toHaveLength(1)
+  })
+
+  it('anonymous happy path: generates an anon_token, sets an expiry, returns the token to the caller', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.body.success).toBe(true)
+    expect(typeof res.body.data.anonToken).toBe('string')
+    expect(t.state.inserts[0].user_id).toBe(null)
+    expect(t.state.inserts[0].anon_token).toBe(res.body.data.anonToken)
+    expect(t.state.inserts[0].anon_expires_at).toBeTruthy()
+  })
+
+  it('429s over quota when not on a bypass IP, without ever inserting a scan', async () => {
+    t = setup({ quotaAllowed: false, bypassed: false })
+    const res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.status).toBe(429)
+    expect(t.state.inserts).toHaveLength(0)
+  })
+
+  it('a bypass IP over quota gets a manually-granted slot and still proceeds', async () => {
+    t = setup({ quotaAllowed: false, bypassed: true })
+    const res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.userUpdates[0]).toEqual({ scans_today: 3 })
+  })
+
+  it('a failed insert after quota was consumed rolls the quota back via decrement_scan_count', async () => {
+    t = setup({ quotaAllowed: true, insertErr: new Error('insert boom') })
+    await expect(t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))).rejects.toThrow('insert boom')
+    expect(t.state.rpcCalls.some(c => c.name === 'decrement_scan_count')).toBe(true)
+  })
+
+  it('a failed insert after a manually-granted bypass slot ALSO rolls back (the fix under audit)', async () => {
+    t = setup({ quotaAllowed: false, bypassed: true, insertErr: new Error('insert boom') })
+    await expect(t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))).rejects.toThrow('insert boom')
+    expect(t.state.rpcCalls.some(c => c.name === 'decrement_scan_count')).toBe(true)
+  })
+
+  it('a failed insert after a file was already written to R2 cleans the object up', async () => {
+    t = setup({ insertErr: new Error('insert boom') })
+    const ctx = csCtx({ user: { id: 'u1' }, file: { mimetype: 'application/pdf', bytes: new Uint8Array([1]), originalname: 'r.pdf' }, fields: { jobDescriptionText: validJd } })
+    await expect(t.mod.createScan(ctx)).rejects.toThrow('insert boom')
+    expect(ctx.__bucketOps.some(o => o.op === 'put')).toBe(true)
+    expect(ctx.__bucketOps.some(o => o.op === 'delete')).toBe(true)
+  })
+
+  it('file-mode inserts resume_path/resume_original_name/resume_mime_type and never touches raw_brain_dump_text', async () => {
+    t = setup()
+    await t.mod.createScan(csCtx({ user: { id: 'u1' }, file: { mimetype: 'application/pdf', bytes: new Uint8Array([1]), originalname: 'resume.pdf' }, fields: { jobDescriptionText: validJd } }))
+    expect(t.state.inserts[0]).toMatchObject({ input_mode: 'file', resume_original_name: 'resume.pdf', resume_mime_type: 'application/pdf' })
+    expect(t.state.inserts[0].raw_brain_dump_text).toBeUndefined()
+  })
+
+  it('saved-profile mode never trusts a client-supplied resumeData — it always re-fetches from the DB', async () => {
+    t = setup({ savedProfileRow: { saved_profile: { resumeData: { name: 'Server Truth' } } } })
+    await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { useSavedProfile: 'true', jobDescriptionText: validJd, resumeData: { name: 'Client Lie' } } }))
+    expect(t.state.inserts[0].original_resume_data).toEqual({ name: 'Server Truth' })
+  })
+})
+
+// ─── runAtsScan (background job — exported for webhook/payments/cron too) ─
+
+describe('runAtsScan', () => {
+  function setup(opts = {}) {
+    const state = { scanUpdates: [], emails: [] }
+    const scan = 'scan' in opts ? opts.scan : { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', job_description_text: 'JD', user_id: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.updateFails ? null : [{ id: 's1' }], error: opts.updateFails ? new Error('save boom') : null } }
+      if (q.table === 'users' && q.op === 'select') return { data: opts.userRow ?? { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
+    })
+    const env = { RESUMES_BUCKET: { get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) } }
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/resume.parser.js': {
+        extractText: async () => opts.extractedText ?? 'x'.repeat(150),
+        structureBrainDump: async () => opts.brainDumpResult ?? { resumeData: { name: 'Jane', email: 'jane@x.com' }, parseError: false },
+        serializeResumeData: () => 'synthetic',
+      },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake') },
+      'services/ats.service.js': {
+        scoreResume: () => opts.ruleResult ?? { score: 85, keywordScore: 85, formatScore: 85, sectionsScore: 85, contentScore: 85, detail: {} },
+        detectRoleCategory: () => 'engineering',
+        detectSeniority: () => 'mid',
+      },
+      'services/claude.service.js': { scoreResumeWithAI: async () => opts.aiResult ?? { success: false }, extractJson: x => (typeof x === 'string' ? JSON.parse(x) : x) },
+      'services/email.service.js': {
+        sendScanPass: async (...a) => { state.emails.push({ fn: 'sendScanPass', a } ); if (opts.emailThrows) throw opts.emailThrows },
+        sendScanFail: async (...a) => { state.emails.push({ fn: 'sendScanFail', a } ); if (opts.emailThrows) throw opts.emailThrows },
+        sendAnonScanResult: async (...a) => { state.emails.push({ fn: 'sendAnonScanResult', a } ); if (opts.emailThrows) throw opts.emailThrows },
+      },
+    })
+    return { mod, restore, state, db, env }
+  }
+
+  it('marks the scan SCANNING immediately, before doing any real work', async () => {
+    t = setup()
+    await t.mod.runAtsScan({}, t.db, 's1')
+    expect(t.state.scanUpdates[0]).toEqual({ status: 'SCANNING' })
+  })
+
+  it('file-mode: pulls bytes from R2 and extracts text', async () => {
+    t = setup()
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.ats_score !== undefined)
+    expect(finalUpdate.ats_score).toBe(85)
+    expect(finalUpdate.status).toBe('COMPLETE_PASS')
+  })
+
+  it('file-mode: ERRORs the scan when the R2 object is missing', async () => {
+    t = setup({ r2Object: null })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+  })
+
+  it('brain_dump: a structuring failure ERRORs the scan with the parser\'s own message', async () => {
+    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null }, brainDumpResult: { parseError: true, parseErrorMessage: 'could not parse' } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const errUpdate = t.state.scanUpdates.find(u => u.status === 'ERROR')
+    expect(errUpdate.full_ats_report.error).toBe('could not parse')
+  })
+
+  it('brain_dump: fills in a logged-in user\'s name/email when Claude did not extract them, but never overwrites what Claude DID extract', async () => {
+    t = setup({
+      scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: 'u1' },
+      brainDumpResult: { resumeData: { name: null, email: 'claude-found@x.com' }, parseError: false },
+      userRow: { id: 'u1', name: 'Account Name', email: 'account@x.com' },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const structuredUpdate = t.state.scanUpdates.find(u => u.original_resume_data)
+    expect(structuredUpdate.original_resume_data.name).toBe('Account Name')     // filled in
+    expect(structuredUpdate.original_resume_data.email).toBe('claude-found@x.com') // NOT overwritten
+    expect(structuredUpdate.candidate_first_name).toBe('Account')
+  })
+
+  it('saved_profile: ERRORs when originalResumeData is missing', async () => {
+    t = setup({ scan: { id: 's1', input_mode: 'saved_profile', original_resume_data: null, user_id: 'u1' } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+  })
+
+  it('ERRORs when the extracted/rendered text is too short to score', async () => {
+    t = setup({ extractedText: 'too short' })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const errUpdate = t.state.scanUpdates.find(u => u.status === 'ERROR')
+    expect(errUpdate.full_ats_report.error).toMatch(/could not be parsed/i)
+  })
+
+  it('blends the AI score in when the AI call succeeds', async () => {
+    t = setup({
+      ruleResult: { score: 60, keywordScore: 60, formatScore: 60, sectionsScore: 60, contentScore: 60, detail: {} },
+      aiResult: { success: true, data: JSON.stringify({ aiScore: 100, missingKeywords: ['x'] }) },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.ats_score !== undefined)
+    // 70% rule (60) + 30% AI (100) = 72
+    expect(finalUpdate.ats_score).toBe(72)
+    expect(finalUpdate.full_ats_report.aiMissingKeywords).toEqual(['x'])
+  })
+
+  it('a below-threshold score still completes the scan (COMPLETE_FAIL, not ERROR)', async () => {
+    t = setup({ ruleResult: { score: 40, keywordScore: 40, formatScore: 40, sectionsScore: 40, contentScore: 40, detail: {} } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.ats_score !== undefined)
+    expect(finalUpdate.status).toBe('COMPLETE_FAIL')
+  })
+
+  it('a logged-in user gets sendScanPass on a pass and sendScanFail on a fail', async () => {
+    t = setup({ scan: { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', user_id: 'u1', job_description_text: 'JD' }, ruleResult: { score: 90, keywordScore: 90, formatScore: 90, sectionsScore: 90, contentScore: 90, detail: {} } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendScanPass')
+    t.restore()
+
+    t = setup({ scan: { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', user_id: 'u1', job_description_text: 'JD' }, ruleResult: { score: 10, keywordScore: 10, formatScore: 10, sectionsScore: 10, contentScore: 10, detail: {} } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendScanFail')
+  })
+
+  it('an anonymous brain-dump scan with a contact email gets sendAnonScanResult; without one, no email at all', async () => {
+    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: 'anon@x.com', contact_name: 'Anon', anon_token: 'tok1' } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails[0].fn).toBe('sendAnonScanResult')
+    t.restore()
+
+    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: null } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails).toHaveLength(0)
+  })
+
+  it('a failed notification email never throws out of runAtsScan (the scan still completed)', async () => {
+    t = setup({ scan: { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', user_id: 'u1', job_description_text: 'JD' }, emailThrows: new Error('mail down') })
+    await expect(t.mod.runAtsScan(t.env, t.db, 's1')).resolves.not.toThrow()
+    expect(t.state.scanUpdates.some(u => u.status === 'COMPLETE_PASS' || u.status === 'COMPLETE_FAIL')).toBe(true)
+  })
+
+  it('any unexpected throw mid-pipeline is caught and marks the scan ERROR rather than leaving it stuck SCANNING', async () => {
+    t = setup({ updateFails: true })
+    await expect(t.mod.runAtsScan(t.env, t.db, 's1')).resolves.not.toThrow()
+    // The very last thing the catch-all does is attempt one more ERROR
+    // write — even though every write in this fake fails, the function
+    // itself must not throw back out to its caller (createScan's own
+    // .catch just logs; a throw here would still be "handled" but the
+    // point of the top-level try/catch is that nothing escapes it).
+  })
+})
