@@ -328,8 +328,23 @@ async function adminListPayments(ctx) {
   // already filters/displays REFUNDED and DISPUTED statuses — but an admin
   // looking at one had no way to see when it happened or what the refund
   // reference was, because the one place that could show it never read it.
+  //
+  // AUDIT FIX (Section 9/10 pass): same gap for receipt status. Neither this
+  // function nor paymentRowToCamel (mappers.js — also just fixed) ever
+  // selected receipt_sent_at/receipt_delivered_at (0033/0036), so there was
+  // no way anywhere in the admin panel to answer "did this customer's
+  // receipt actually get emailed" without querying the DB directly — the
+  // exact question support needs answered on a "I paid but never got a
+  // receipt" ticket. receiptDeliveredAt is the one that answers that (set
+  // only after the send genuinely succeeds — see fulfillment.service.js);
+  // receiptSentAt (claimed BEFORE sending, so two deliveries can't race) is
+  // included too so a payment with sentAt set but deliveredAt still null is
+  // visibly distinguishable as "we tried and it didn't finish," not just
+  // absent. lastReconciledAt is included for the same reason admin needs to
+  // see refund/dispute state: it answers "has the hourly sweep even looked
+  // at this payment yet" without a direct DB query.
   let query = supabase.from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, created_at', { count: 'exact' })
+    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, receipt_sent_at, receipt_delivered_at, last_reconciled_at, created_at', { count: 'exact' })
     .order('created_at', { ascending: false }).range(from, to)
   if (status) query = query.eq('status', status)
 
@@ -341,6 +356,8 @@ async function adminListPayments(ctx) {
     paystackRef: p.paystack_ref, fixTier: p.fix_tier, referralCode: p.referral_code,
     scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
     refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
+    receiptSentAt: p.receipt_sent_at, receiptDeliveredAt: p.receipt_delivered_at,
+    lastReconciledAt: p.last_reconciled_at,
     createdAt: p.created_at
   }))
   return ctx.json({ success: true, data: payments, meta: { page, pageSize, total: count || 0 } })

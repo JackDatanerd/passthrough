@@ -75,7 +75,17 @@ const schema = z.object({
 
 function resolveRole(data) {
   const raw = data.roleCategory || ''
-  const key = raw.toLowerCase().replace(/[\s-]+/g, '_')
+  // AUDIT FIX (Section 9/10 pass): trims before normalizing, matching
+  // migration 0032's one-time SQL cleanup (`btrim(role_title)` before its
+  // own equivalent regexp_replace). Without the trim, a taxonomy value sent
+  // with leading/trailing whitespace (" Sales ") normalized to "_sales_" —
+  // one character off from every entry in ROLE_CATEGORIES — and silently
+  // fell through to the "not a taxonomy value" branch below instead of
+  // matching. Every reachable UI path sends this from a fixed <select>
+  // today, so this was likely unreachable in practice, but the SQL
+  // migration this function is supposed to mirror was already more
+  // defensive than the code it was modeled on.
+  const key = raw.trim().toLowerCase().replace(/[\s-]+/g, '_')
   if (ROLE_CATEGORIES.includes(key))
     return { role_category: key, role_title: data.roleTitle || null }
   // Not a taxonomy value: an older client sending a job title in this field.

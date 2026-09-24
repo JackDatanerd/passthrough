@@ -72,6 +72,19 @@ function scanRowToCamel(row) {
     fullAtsReport:       row.full_ats_report,
     scanCompletedAt:     row.scan_completed_at,
     candidateFirstName:  row.candidate_first_name,
+    // AUDIT FIX (Section 9/10 pass, live bug): job_title (migration 0035,
+    // src/lib/jobTitle.js) was missing here despite scanRowToCamel being the
+    // read path for getScan and every other single-scan controller
+    // function — unlike the other "latent, no current caller" gaps this
+    // file's comments flag elsewhere, this one is live: frontend/src/lib/
+    // scanDisplay.js reads scan.jobTitle directly to decide what to show on
+    // the scan detail view, and every call site got undefined instead,
+    // silently falling through to the role/source fallback every single
+    // time. The list view (scan.controller.js's own hand-rolled search/
+    // history mapping) was unaffected — it never went through this
+    // function — which is why this had shipped without failing anything
+    // that exercises the list.
+    jobTitle:            row.job_title ?? null,
     fixPurchased:        row.fix_purchased,
     fixTier:             row.fix_tier,
     resumeAtsPath:       row.resume_ats_path,
@@ -147,6 +160,22 @@ function paymentRowToCamel(row) {
     refundedAt:          row.refunded_at,
     refundReference:     row.refund_reference,
     disputedAt:          row.disputed_at,
+    // AUDIT FIX (Section 9/10 pass): receipt_sent_at (migration 0033) and
+    // last_reconciled_at/receipt_delivered_at (migration 0036) were missing
+    // here — same latent-drop shape as refunded_at/refund_reference/
+    // disputed_at above, but this one wasn't just latent: adminListPayments
+    // (admin.controller.js) hand-rolls its own select/field list rather
+    // than going through this mapper, and it had ALSO never picked these
+    // up, so there was genuinely no way — anywhere in the admin panel or
+    // any API response — to see whether a payment's receipt had actually
+    // been emailed. receiptSentAt is claimed BEFORE sending (see
+    // fulfillment.service.js) so a task cancelled mid-send can leave it set
+    // with no email actually delivered; receiptDeliveredAt is the one that
+    // answers "did the customer get it" and is what adminListPayments now
+    // surfaces (see that function).
+    receiptSentAt:       row.receipt_sent_at,
+    receiptDeliveredAt:  row.receipt_delivered_at,
+    lastReconciledAt:    row.last_reconciled_at,
     createdAt:           row.created_at,
     updatedAt:           row.updated_at
   }
@@ -221,7 +250,13 @@ const SCAN_FIELD_MAP = {
   // same reasoning, matching the scanRowToCamel fix above. The only current
   // writer is the claim_errored_fix RPC, called directly, never through
   // this map.
-  fixErrorRecoveries: 'fix_error_recoveries'
+  fixErrorRecoveries: 'fix_error_recoveries',
+  // AUDIT FIX (Section 9/10 pass): jobTitle (migration 0035) had no reverse-
+  // map entry either — scan.controller.js's one writer (createScan) builds
+  // a raw snake_case insert object rather than going through
+  // camelToSnake(SCAN_FIELD_MAP), so this half was latent, not live, unlike
+  // the scanRowToCamel read-side gap fixed above.
+  jobTitle: 'job_title'
 }
 
 const PAYMENT_FIELD_MAP = {
@@ -233,7 +268,14 @@ const PAYMENT_FIELD_MAP = {
   // refunded_at/refund_reference/disputed_at (0024/0025) had no reverse-map
   // entry either. webhooks.controller.js and payments.controller.js write
   // these today via raw snake_case updates, so this was latent, not live.
-  refundedAt: 'refunded_at', refundReference: 'refund_reference', disputedAt: 'disputed_at'
+  refundedAt: 'refunded_at', refundReference: 'refund_reference', disputedAt: 'disputed_at',
+  // AUDIT FIX (Section 9/10 pass): same gap as paymentRowToCamel above —
+  // receipt_sent_at/receipt_delivered_at/last_reconciled_at (0033/0036) had
+  // no reverse-map entry either. fulfillment.service.js and
+  // reconcile.service.js write these today via raw snake_case updates, so
+  // this half was latent, not live.
+  receiptSentAt: 'receipt_sent_at', receiptDeliveredAt: 'receipt_delivered_at',
+  lastReconciledAt: 'last_reconciled_at'
 }
 
 // AUDIT FIX (Section 10 build-out): needed for the new admin

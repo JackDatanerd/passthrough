@@ -209,6 +209,32 @@ export default function AdminPayments() {
                     {p.status === 'DISPUTED' && p.disputedAt && (
                       <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
                     )}
+                    {/* AUDIT FIX (Section 9/10 pass): receipt_sent_at/receipt_delivered_at
+                        (migrations 0033/0036) were captured by fulfillment.service.js but never
+                        surfaced anywhere admin could see — no way to answer a "I paid but never
+                        got a receipt" ticket without querying the DB directly. receiptDeliveredAt
+                        is the one that means the email genuinely went out; receiptSentAt alone
+                        (claimed before sending) with no deliveredAt means the send was claimed but
+                        never confirmed finished — a real, actionable warning, since that column
+                        only exists on the new tracked code path.
+                        Deliberately NOT a warning when BOTH are null: sendReceiptOnce's own
+                        comment confirms receipt-sending predates this tracking (0033 added
+                        idempotency to an already-live send, not the send itself) — a payment from
+                        before that migration shipped correctly has both columns null even though
+                        its receipt really did go out via the old, untracked path. Flagging that as
+                        "No receipt sent" would be a false alarm on every pre-migration row, not a
+                        real signal. Shown as neutral, not amber, for that reason. Only shown for
+                        SUCCESS payments — a REFUNDED/DISPUTED row's own line above already covers
+                        what matters for it. */}
+                    {p.status === 'SUCCESS' && (
+                      p.receiptDeliveredAt ? (
+                        <div className="text-xs text-gray-400 mt-0.5">Receipt sent {formatDate(p.receiptDeliveredAt)}</div>
+                      ) : p.receiptSentAt ? (
+                        <div className="text-xs text-amber-600 mt-0.5">Receipt send unconfirmed ({formatDate(p.receiptSentAt)})</div>
+                      ) : (
+                        <div className="text-xs text-gray-400 mt-0.5">Receipt not tracked</div>
+                      )
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-500">{p.fixTier || '—'}</td>
                   <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.referralCode || '—'}</td>
