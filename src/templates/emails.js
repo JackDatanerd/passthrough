@@ -72,6 +72,15 @@ const TEMPLATES = {
   partner_payout_details_request: "<h2>Set up your payout details</h2>\n<p>Hi {{NAME}}, welcome to the Passthrough partner program.</p>\n<p>Click below to tell us where to send your payouts \u2014 bank account or\nmobile money, whichever you prefer.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Add Payout Details \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">This link is unique to you \u2014 don't share it. You can come back and\nupdate these details anytime.</p>\n",
   payout_sent: "<h2>Payout sent \u2713</h2>\n<p>Hi {{NAME}}, we've sent you a payout of {{AMOUNT}}.</p>\n<p>It should reflect in your account shortly, depending on your bank or\nmobile money provider's processing time.</p>\n<p>Thanks for partnering with Passthrough.</p>\n",
   referral_code_created: "<h2>Your referral code is live</h2>\n<p>Hi {{NAME}}, your Passthrough referral code is ready to share:</p>\n<p style=\"font-size:28px;font-weight:700;letter-spacing:1px;color:#1E40AF\">{{CODE}}</p>\n<p>Anyone who uses it gets a discounted price, and you earn a commission on\nevery sale it brings in.</p>\n<a href=\"{{DASHBOARD_URL}}\" class=\"btn\">View Your Dashboard \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">Your dashboard shows clicks, conversions, and earnings for every code\nyou have \u2014 bookmark the link above.</p>\n",
+  // AUDIT FIX (Section 3/4 pass, feature gap): every OTHER partner-facing
+  // event in this file gets an email — a payout sent, payout details
+  // changed, a code created, a link reset — but a conversion itself never
+  // did, so a partner had no way to know their code was working short of
+  // periodically revisiting their dashboard. Sent once per commission (see
+  // referral.service.js's notifyPartnerConversion), not batched — conversion
+  // volume per partner is low enough that this mirrors payout_sent's
+  // one-email-per-event pattern rather than needing a digest.
+  partner_conversion_earned: "<h2>You just earned a commission \u2713</h2>\n<p>Hi {{NAME}}, someone used your code <strong>{{CODE}}</strong> and you've earned {{AMOUNT}}.</p>\n<a href=\"{{DASHBOARD_URL}}\" class=\"btn\">View Your Dashboard \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">Your dashboard shows running totals and payout history for every code you have.</p>\n",
   // Sent to the PARTNER whenever their payout method/details are
   // added or changed via the token-gated form, so a change to where their
   // money goes is never silent to them either \u2014 if they didn't make this

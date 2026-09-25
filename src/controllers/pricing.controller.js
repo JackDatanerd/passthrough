@@ -14,12 +14,23 @@ const referralService = require('../services/referral.service')
 // stays the pre-referral (promo/standard) price either way, so the frontend
 // can always show a consistent strikethrough regardless of which discount
 // (site-wide promo, referral code, or both layered) is actually in effect.
+const TIERS = ['FIX', 'BADGE', 'FIX_PLAIN']
+
 async function getPricing(ctx) {
   const promoActive = c.isPromoActive(ctx.env)
   const referralCode = ctx.req.query('ref')
   const supabase = referralCode ? getSupabase(ctx.env) : null
 
-  const tiers = await Promise.all(['FIX', 'BADGE', 'FIX_PLAIN'].map(async tier => {
+  // AUDIT FIX (Section 3/4 pass, perf): used to call referralService.
+  // resolvePrice() once per tier below, each doing its own independent
+  // referral_codes lookup for the same code — three DB round trips per
+  // request instead of one. resolvePricesForTiers does the single lookup
+  // and returns all three tiers' prices from it.
+  const priced = referralCode
+    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode)
+    : null
+
+  const tiers = TIERS.map(tier => {
     // BUGFIX: originalAmount used to be c.priceForTier(tier, ctx.env), which
     // is ALREADY promo-adjusted — so without a referral code, amount and
     // originalAmount were always identical and the frontend's `amount !==
@@ -30,11 +41,10 @@ async function getPricing(ctx) {
     // "was $X" anchor regardless of whether a referral code is present.
     const originalAmount = c.standardPriceForTier(tier)
     const currentAmount  = c.priceForTier(tier, ctx.env)
-    if (!referralCode) return { tier, amount: currentAmount, originalAmount, referralApplied: false }
+    if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false }
 
-    const priced = await referralService.resolvePrice(supabase, tier, ctx.env, referralCode)
-    return { tier, amount: priced.amount, originalAmount, referralApplied: priced.referralApplied }
-  }))
+    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied }
+  })
 
   return ctx.json({ success: true, data: {
     // AUDIT FIX: was hardcoded c.CURRENCY ('USD'), while every place that

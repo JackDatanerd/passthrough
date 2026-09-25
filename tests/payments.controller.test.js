@@ -177,6 +177,75 @@ describe('initializePayment — stale PENDING cleanup', () => {
   })
 })
 
+// AUDIT FIX (Section 3/4 pass, bug): payments_scan_id_pending_uidx (migration
+// 0037) turns the SELECT-then-INSERT race at the top of initializePayment
+// into a catchable 23505 instead of two live checkouts silently coexisting.
+// Needs its own harness (not setupInit above) because the two payments
+// SELECTs in a single request must answer differently: the first (before
+// Paystack/the insert) finds nothing, the second (after a 23505) finds what
+// the concurrent winner just created.
+describe('initializePayment — concurrent-insert race (payments_scan_id_pending_uidx)', () => {
+  function setupRace(opts = {}) {
+    const state = { paymentInserts: [], alerts: [], selectCount: 0 }
+    const scan = { id: 's1', user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
+
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'payments' && q.op === 'select') {
+        state.selectCount += 1
+        // First lookup (before the insert): nothing pending yet. Second
+        // lookup (the 23505-recovery re-query): the concurrent winner's row.
+        return { data: state.selectCount === 1 ? null : opts.winnerRow, error: null }
+      }
+      if (q.table === 'payments' && q.op === 'insert') {
+        state.paymentInserts.push(q.values)
+        return { error: { code: '23505', message: 'duplicate key value violates unique constraint "payments_scan_id_pending_uidx"' } }
+      }
+      return undefined
+    })
+
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+      'services/paystack.service.js': {
+        initializeTransaction: async () => ({ access_code: 'AC_LOSER', authorization_url: 'https://paystack.test/pay/AC_LOSER' }),
+        verifyTransaction: async () => ({}),
+      },
+    })
+
+    const c = (over = {}) => ({
+      env: {},
+      get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
+      req: { json: async () => (over.body ?? { scanId: 's1', fixTier: 'FIX' }) },
+      json: (body, status = 200) => ({ body, status }),
+    })
+    return { mod, restore, state, db, c }
+  }
+
+  it('folds a losing concurrent insert into resuming the winner\'s checkout (same tier/code)', async () => {
+    t = setupRace({ winnerRow: { paystack_ref: 'winner-ref', paystack_access_code: 'winner-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.reference).toBe('winner-ref')   // the OTHER request's checkout, not this one's
+    expect(t.state.alerts).toHaveLength(0)                // expected conflict, not an outage — no owner page
+  })
+
+  it('folds a losing concurrent insert into a 409 when the winner used a different tier', async () => {
+    t = setupRace({ winnerRow: { paystack_ref: 'winner-ref', paystack_access_code: 'winner-ac', fix_tier: 'BADGE', referral_code: null, created_at: new Date().toISOString() } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.data.reference).toBe('winner-ref')
+    expect(t.state.alerts).toHaveLength(0)
+  })
+
+  it('still pages the owner if the 23505 recovery finds no pending row at all (already resolved/expired)', async () => {
+    t = setupRace({ winnerRow: null })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(502)
+    expect(t.state.alerts).toHaveLength(1)   // genuinely unexplained insert failure — worth paging
+  })
+})
+
 describe('verifyPayment', () => {
   it('400s without a reference', async () => {
     t = setup()

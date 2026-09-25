@@ -80,12 +80,19 @@ export default function AdminPartners() {
         <div className="grid sm:grid-cols-3 gap-4">
           <div className="border border-gray-200 rounded-lg p-4 bg-white">
             <div className="text-xs uppercase tracking-wide text-gray-400">Ready to pay now</div>
-            <div className="text-2xl font-bold text-amber-600">{formatCents(totalReadyToPay)}</div>
+            {/* AUDIT FIX (Section 3/4 pass, bug): formatCents(totalReadyToPay)
+                with no currency argument always rendered as USD regardless of
+                env.PAYSTACK_CURRENCY — commission_ledger has no currency
+                column of its own, so this now comes from the partner rows,
+                which all carry the one platform-wide currency (see
+                adminListPartners). Same convention as currentCycleLabel
+                below. */}
+            <div className="text-2xl font-bold text-amber-600">{formatCents(totalReadyToPay, partners[0]?.currency)}</div>
             <div className="text-xs text-gray-400 mt-1">Completed cycles, unpaid</div>
           </div>
           <div className="border border-gray-200 rounded-lg p-4 bg-white">
             <div className="text-xs uppercase tracking-wide text-gray-400">Still accruing</div>
-            <div className="text-2xl font-bold text-gray-900">{formatCents(totalAccruing)}</div>
+            <div className="text-2xl font-bold text-gray-900">{formatCents(totalAccruing, partners[0]?.currency)}</div>
             <div className="text-xs text-gray-400 mt-1">Current cycle, not yet payable</div>
           </div>
           <div className="border border-gray-200 rounded-lg p-4 bg-white">
@@ -125,11 +132,11 @@ export default function AdminPartners() {
                   <td className="px-4 py-3 text-gray-600">{(p.commissionRate * 100).toFixed(0)}%</td>
                   <td className="px-4 py-3 text-right">
                     <span className={p.readyToPayCents > 0 ? 'font-semibold text-amber-600' : 'text-gray-400'}>
-                      {formatCents(p.readyToPayCents || 0)}
+                      {formatCents(p.readyToPayCents || 0, p.currency)}
                     </span>
                   </td>
                   <td className="px-4 py-3 text-right text-gray-500">
-                    {formatCents(p.currentCycleAccruedCents || 0)}
+                    {formatCents(p.currentCycleAccruedCents || 0, p.currency)}
                   </td>
                   <td className="px-4 py-3 text-right">
                     <Link to={`/admin/partners/${p.id}`} className="text-blue-600 hover:underline text-xs font-medium">

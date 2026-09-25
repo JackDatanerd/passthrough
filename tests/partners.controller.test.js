@@ -250,6 +250,41 @@ describe('getPartnerDashboard', () => {
     expect(r.body.data.stats.totalConversions).toBe(1)
     restore()
   })
+
+  // AUDIT FIX (Section 3/4 pass, bug): getPartnerDashboard never selected or
+  // returned the partner's own status, so a paused partner's dashboard had
+  // no way to reflect it — PartnerDashboard.jsx's isCodeLive showed every
+  // code as fully live regardless. `active` now mirrors isCodeUsable's
+  // partner-status check (referral.service.js) for the frontend to use.
+  it('returns active: true for an ACTIVE partner and active: false for a PAUSED one', async () => {
+    const activeCase = setupDashboard({ name: 'Coach K', commission_rate: 0.2, status: 'ACTIVE', referral_codes: [], commission_ledger: [], payouts: [] })
+    const activeRes = await activeCase.mod.getPartnerDashboard(activeCase.c)
+    expect(activeRes.body.data.active).toBe(true)
+    activeCase.restore()
+
+    const pausedCase = setupDashboard({ name: 'Coach K', commission_rate: 0.2, status: 'PAUSED', referral_codes: [], commission_ledger: [], payouts: [] })
+    const pausedRes = await pausedCase.mod.getPartnerDashboard(pausedCase.c)
+    expect(pausedRes.body.data.active).toBe(false)
+    pausedCase.restore()
+  })
+
+  // AUDIT FIX (Section 3/4 pass, bug): commission_ledger has no currency
+  // column, and every commission-derived figure on this page (Pending, Paid
+  // to date, per-tier prices) used to render via formatCents with no
+  // currency argument, always defaulting to USD regardless of what's
+  // actually configured.
+  it('returns env.PAYSTACK_CURRENCY as currency, defaulting to USD when unset', async () => {
+    const { mod, restore, c } = setupDashboard({ name: 'Coach K', commission_rate: 0.2, referral_codes: [], commission_ledger: [], payouts: [] })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.currency).toBe('USD')
+    restore()
+
+    const kes = setupDashboard({ name: 'Coach K', commission_rate: 0.2, referral_codes: [], commission_ledger: [], payouts: [] })
+    kes.c.env = { PAYSTACK_CURRENCY: 'KES' }
+    const r2 = await kes.mod.getPartnerDashboard(kes.c)
+    expect(r2.body.data.currency).toBe('KES')
+    kes.restore()
+  })
 })
 
 // SECTION 12 AUDIT: the remaining 9 of 15 functions in this file had zero
@@ -393,6 +428,24 @@ describe('adminListPartners', () => {
     expect(res.body.data[0].pendingCommissionCents).toBe(0)
     expect(res.body.data[0].readyToPayCents).toBe(0)
   })
+
+  // AUDIT FIX (Section 3/4 pass, bug): commission_ledger has no currency
+  // column — every commission-derived figure here (readyToPayCents,
+  // currentCycleAccruedCents, pendingCommissionCents) used to render via
+  // AdminPartners.jsx's formatCents with no currency argument, always
+  // defaulting to USD regardless of what's actually configured.
+  it('carries env.PAYSTACK_CURRENCY as each partner\'s currency, defaulting to USD', async () => {
+    const rows = [{ id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500', payouts: [], referral_codes: [], commission_ledger: [] }]
+    t = setupList(rows)
+    const res = await t.mod.adminListPartners(t.c)
+    expect(res.body.data[0].currency).toBe('USD')
+
+    const db2 = createFakeSupabase(q => (q.table === 'partners' ? { data: rows, error: null } : undefined))
+    const kes = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db2 } })
+    const res2 = await kes.mod.adminListPartners({ env: { PAYSTACK_CURRENCY: 'KES' }, req: {}, json: (body, status = 200) => ({ body, status }) })
+    expect(res2.body.data[0].currency).toBe('KES')
+    kes.restore()
+  })
 })
 
 describe('adminGetPartner', () => {
@@ -445,6 +498,23 @@ describe('adminGetPartner', () => {
       ['created_at', { foreignTable: 'referral_codes', ascending: false }],
       ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
     ])
+  })
+
+  // AUDIT FIX (Section 3/4 pass, bug): same currency-drift gap as
+  // adminListPartners above — commissionLedger/pendingCommissionCents/
+  // cyclesSummary figures here rendered via PartnerDetail.jsx's formatCents
+  // with no currency argument, always defaulting to USD.
+  it('returns env.PAYSTACK_CURRENCY as currency, defaulting to USD when unset', async () => {
+    t = setupGet({ id: 'p1', name: 'X', payouts: [], referral_codes: [], commission_ledger: [] })
+    const res = await t.mod.adminGetPartner(t.c)
+    expect(res.body.data.currency).toBe('USD')
+
+    const row = { id: 'p1', name: 'X', payouts: [], referral_codes: [], commission_ledger: [] }
+    const db2 = createFakeSupabase(q => (q.table === 'partners' ? { data: row, error: null } : undefined))
+    const kes = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db2 } })
+    const res2 = await kes.mod.adminGetPartner({ env: { PAYSTACK_CURRENCY: 'KES' }, req: { param: () => 'p1' }, json: (body, status = 200) => ({ body, status }) })
+    expect(res2.body.data.currency).toBe('KES')
+    kes.restore()
   })
 })
 

@@ -13,6 +13,7 @@
 //     just a counter increment.
 
 const { z } = require('zod')
+const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const emailService = require('../services/email.service')
@@ -215,7 +216,7 @@ async function adminListPartners(ctx) {
     const camel = partnerRowToCamel(row)
     const ledger = row.commission_ledger || []
     const cycles = buildCyclesSummary(ledger, 2)  // [current, previous]
-    const currentCycle = cycles.find(c => c.isCurrent)
+    const currentCycle = cycles.find(cyc => cyc.isCurrent)
 
     camel.pendingCommissionCents  = pendingCents(ledger)
     // "Ready to pay" excludes the current, still-accruing cycle — that
@@ -225,6 +226,16 @@ async function adminListPartners(ctx) {
     camel.currentCycleAccruedCents = currentCycle ? currentCycle.unpaidCents : 0
     camel.readyToPayCents          = camel.pendingCommissionCents - camel.currentCycleAccruedCents
     camel.currentCycleLabel        = currentCycle ? currentCycle.label : null
+    // AUDIT FIX (Section 3/4 pass, bug): commission_ledger has no currency
+    // column of its own (unlike payouts, which does and is threaded through
+    // correctly elsewhere) — every commission-derived figure above was
+    // rendered via AdminPartners.jsx's formatCents(cents) with NO currency
+    // argument, silently defaulting to a hardcoded "$"/USD label regardless
+    // of the platform's actual configured currency. There's only one
+    // currency for the whole platform (env.PAYSTACK_CURRENCY), so attaching
+    // it per-row here (mirroring how payouts already carry their own
+    // `currency`) is what the frontend needs to stop assuming USD.
+    camel.currency                 = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
     delete camel.commissionLedger  // never present here — see the select() above; defensive only
     return camel
   })
@@ -269,6 +280,9 @@ async function adminGetPartner(ctx) {
   camel.pendingCommissionCents = pendingCents(ledger)
   camel.commissionLedger = ledger.map(commissionLedgerRowToCamel)
   camel.cyclesSummary = buildCyclesSummary(ledger, 12)
+  // AUDIT FIX (Section 3/4 pass, bug): see the matching fix in
+  // adminListPartners above — same currency-drift gap, same fix.
+  camel.currency = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
 
   return ctx.json({ success: true, data: camel })
 }
@@ -696,7 +710,7 @@ async function getPartnerDashboard(ctx) {
   const { data: partner, error } = await supabase
     .from('partners')
     .select(`
-      name, commission_rate,
+      name, commission_rate, status,
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
       commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at),
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, period_start, period_end, paid_at, created_at)
@@ -719,6 +733,23 @@ async function getPartnerDashboard(ctx) {
   return ctx.json({ success: true, data: {
     name:           partner.name,
     commissionRate: partner.commission_rate,
+    // AUDIT FIX (Section 3/4 pass, bug): getPartnerDashboard never selected
+    // (let alone returned) the partner's own status, so PartnerDashboard.jsx
+    // had no way to know a PAUSED partner is paused. isCodeLive there mirrors
+    // isCodeUsable (referral.service.js)'s active/expiry/usage-limit checks —
+    // but not its fourth check, `partners.status !== 'ACTIVE'`, because this
+    // response never carried the data needed to check it. A paused partner's
+    // own dashboard showed every code as fully live ("Anyone who visits your
+    // link gets the discount automatically") when in fact isCodeUsable had
+    // already silently zeroed every one of them out server-side the moment
+    // they were paused — the exact failure mode isCodeLive's own comment says
+    // it exists to prevent, just for the one cause it didn't check.
+    active:         partner.status === 'ACTIVE',
+    // Single platform-wide currency (env.PAYSTACK_CURRENCY) — see the matching
+    // fix in adminListPartners/adminGetPartner above. Without this,
+    // PartnerDashboard.jsx's Pending/Paid stats and per-tier prices always
+    // rendered as USD regardless of what's actually configured.
+    currency:       ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
     referralCodes:  codes.map(referralCodeRowToCamel),
     commissionLedger: ledger.map(commissionLedgerRowToCamel),
     payouts:        (partner.payouts || []).map(payoutRowToCamel),

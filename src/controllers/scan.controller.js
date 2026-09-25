@@ -789,10 +789,22 @@ async function redeemCredit(ctx) {
   try {
     // Recorded as a $0 payment so payment history stays complete and
     // consistent — same shape as a real transaction, just free.
+    // AUDIT FIX (Section 3/4 pass, bug): fix_tier was never set here, unlike
+    // every real (paid) payment row — payments.controller.js's initializePayment
+    // stores fix_tier on the payment row itself as the documented single
+    // source of truth for exactly this reason (see its top-of-file comment).
+    // A free-credit redemption always grants the 'FIX' tier (see the scans
+    // update right below, which DOES set it), so leaving it off here was
+    // pure oversight, not a different tier semantics. Consumed today by
+    // getPaymentHistory (payments.controller.js) → PaymentHistory.jsx, whose
+    // Item column showed a bare "—" instead of "Fix + Credential" for every
+    // free-credit purchase, since TIER_LABEL[null] and p.fixTier are both
+    // falsy.
     const { data: creditPayment, error: paymentErr } = await supabase.from('payments').insert({
       amount_cents: 0,
       currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
       status:       'SUCCESS',
+      fix_tier:     'FIX',
       paystack_ref: `credit:${scan.id}:${Date.now()}`,
       user_id:      user.id,
       scan_id:      scan.id

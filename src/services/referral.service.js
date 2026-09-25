@@ -58,7 +58,13 @@ function isCodeUsable(row) {
  * a URL or an old screenshot should never block checkout; it should just
  * not apply, exactly like an expired promo would elsewhere in this app.
  */
-async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
+// Shared core: given a tier and an ALREADY-RESOLVED codeRow (or null/
+// undefined — no code, not found, whatever), compute that tier's price.
+// Factored out so resolvePrice (one tier, one lookup — initializePayment's
+// shape) and resolvePricesForTiers (all three tiers, one shared lookup —
+// getPricing's shape) reduce to the exact same tier-price math and can never
+// independently drift on what "the price for this code+tier" means.
+function priceForResolvedCode(fixTier, env, codeRow) {
   const standard = c.priceForTier(fixTier, env)
   // AUDIT FIX: this used to hardcode c.CURRENCY ('USD') in all three returns
   // below, while the actual charge (paystack.service.js, payments.controller.js's
@@ -66,11 +72,6 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
   // pricing.controller.js's getPricing — if PAYSTACK_CURRENCY is ever set,
   // the quoted currency here would silently disagree with what gets charged.
   const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
-
-  if (!rawReferralCode)
-    return { amount: standard, currency, referralApplied: false, referralCode: null }
-
-  const codeRow = await lookupCode(supabase, rawReferralCode)
   const tierPrice = codeRow?.tier_prices?.[fixTier]
 
   if (!isCodeUsable(codeRow) || tierPrice == null)
@@ -88,6 +89,28 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
   // on whatever amount actually gets charged, they just don't out-charge
   // an active promo.
   return { amount: Math.min(tierPrice, standard), currency, referralApplied: true, referralCode: codeRow }
+}
+
+async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
+  if (!rawReferralCode) return priceForResolvedCode(fixTier, env, null)
+  const codeRow = await lookupCode(supabase, rawReferralCode)
+  return priceForResolvedCode(fixTier, env, codeRow)
+}
+
+// AUDIT FIX (Section 3/4 pass, perf): pricing.controller.js's getPricing
+// used to call resolvePrice() once per tier (FIX/BADGE/FIX_PLAIN) whenever a
+// ?ref= code was present, each call independently doing its own lookupCode()
+// — three DB round trips for the exact same referral_codes row, on every
+// load of a public, unauthenticated, uncached endpoint hit by both the
+// marketing pricing page and the post-scan checkout screen. One lookup here,
+// reused for all three tiers via the same priceForResolvedCode() core
+// resolvePrice itself uses above, so a quoted multi-tier price can never
+// compute a tier differently than a single-tier resolvePrice call would.
+async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode) {
+  if (!rawReferralCode)
+    return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, null)]))
+  const codeRow = await lookupCode(supabase, rawReferralCode)
+  return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow)]))
 }
 
 /**
@@ -132,7 +155,7 @@ async function recordConversionInner(supabase, payment, env) {
 
   try {
     const codeRes = await withOneRetry(() => supabase
-      .from('referral_codes').select('id, partner_id').eq('id', payment.referral_code_id).maybeSingle())
+      .from('referral_codes').select('id, partner_id, code').eq('id', payment.referral_code_id).maybeSingle())
     if (codeRes.error) {
       console.error('recordConversion code lookup:', codeRes.error.message)
       return { ok: false, recorded: false, reason: 'code-lookup', error: codeRes.error.message }
@@ -141,7 +164,7 @@ async function recordConversionInner(supabase, payment, env) {
     if (!codeRow) return { ok: true, recorded: false, reason: 'code-not-found' }
 
     const partnerRes = await withOneRetry(() => supabase
-      .from('partners').select('commission_rate').eq('id', codeRow.partner_id).maybeSingle())
+      .from('partners').select('name, email, commission_rate, payout_details_token').eq('id', codeRow.partner_id).maybeSingle())
     if (partnerRes.error) {
       console.error('recordConversion partner lookup:', partnerRes.error.message)
       return { ok: false, recorded: false, reason: 'partner-lookup', error: partnerRes.error.message }
@@ -185,6 +208,19 @@ async function recordConversionInner(supabase, payment, env) {
     // recordConversion's comment) means it stays quiet on a retry, same as
     // notifyConversionFailure just above.
     if (env) await warnIfOverLimit(supabase, env, codeRow.id)
+    // AUDIT FIX (Section 3/4 pass, feature gap): a partner gets emailed for
+    // every OTHER account-adjacent event this file/partners.controller.js
+    // handles — a payout sent, payout details changed, a new code created,
+    // their payout link reset — but never for the one event they'd most want
+    // to know about: someone actually used their code and they just earned a
+    // commission. Same `env`-gating as warnIfOverLimit just above: only the
+    // live fulfilment paths (verifyPayment, the webhook, the sweeps) pass
+    // `env` and therefore notify; the admin reconcile endpoint's deliberate
+    // omission of it means retrying a recovery stays quiet, same reasoning
+    // as notifyConversionFailure. Best-effort — a failed/throttled
+    // notification must never affect the (already-succeeded) commission
+    // record itself, so this never changes the returned `ok`/`recorded`.
+    if (env) await notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, payment.currency)
     return { ok: true, recorded: true }
   } catch (err) {
     console.error('recordConversion unexpected:', err.message)
@@ -239,4 +275,19 @@ async function notifyConversionFailure(env, payment, result, source) {
   } catch (_) {}
 }
 
-module.exports = { resolvePrice, recordConversion, notifyConversionFailure, isCodeUsable }
+// AUDIT FIX (Section 3/4 pass, feature gap): see the call site's comment in
+// recordConversionInner. Deliberately swallows everything — a partner with
+// no email on file, a throttled/failed send, or a missing payout_details_
+// token (no dashboard link to send them yet) must never turn an already-
+// successful commission record into a failure response.
+async function notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, currency) {
+  if (!partner?.email || !partner?.payout_details_token) return
+  try {
+    const emailService = require('./email.service')
+    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.payout_details_token}`
+    await emailService.sendPartnerConversionEarned(env, supabase, partner.email, partner.name,
+      codeRow.code, commissionAmountCents, currency || c.CURRENCY, dashboardUrl)
+  } catch (_) {}
+}
+
+module.exports = { resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable }

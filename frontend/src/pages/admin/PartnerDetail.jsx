@@ -195,7 +195,15 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
-        currency: 'USD',
+        // AUDIT FIX (Section 3/4 pass, bug): hardcoded 'USD' regardless of
+        // the platform's actual configured currency (env.PAYSTACK_CURRENCY)
+        // — the backend (recordPayoutSchema) already accepts any 3-letter
+        // currency and only defaults to USD when none is sent, so every
+        // payout recorded under a non-USD deployment was being written to
+        // payouts.currency as USD anyway, contaminating the actual payout
+        // record, not just a display label. partner.currency comes from
+        // adminGetPartner (partners.controller.js).
+        currency: partner.currency || 'USD',
         note: note || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
       }), { fallback: 'Failed to record payout.' })
@@ -225,10 +233,10 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           <PayoutDetailsSummary partner={partner} />
           <div className="text-sm text-gray-600 border-t border-gray-200 pt-2">
             {cycle ? `Owed for ${cycle.label}` : 'Total unpaid balance'}:{' '}
-            <span className="font-semibold">{formatCents(defaultCents || 0)}</span>
+            <span className="font-semibold">{formatCents(defaultCents || 0, partner.currency)}</span>
           </div>
         </div>
-        <Input label="Amount sent (USD)" type="number" step="0.01" value={amount}
+        <Input label={`Amount sent (${partner.currency || 'USD'})`} type="number" step="0.01" value={amount}
           onChange={e => setAmount(e.target.value)} placeholder="45.00" />
         <p className="text-xs text-gray-400 -mt-2">
           {cycle
@@ -418,7 +426,7 @@ function ReferralCodesTab({ partner, onChanged }) {
                 </span>
                 <div className="text-xs text-gray-400 mt-0.5">
                   {['FIX', 'BADGE', 'FIX_PLAIN'].filter(t => code.tierPrices?.[t] != null).map(t =>
-                    `${t}: ${formatCents(code.tierPrices[t])}`).join(' · ')}
+                    `${t}: ${formatCents(code.tierPrices[t], partner.currency)}`).join(' · ')}
                 </div>
                 {code.expiresAt && (
                   <div className={cn('text-xs mt-0.5', new Date(code.expiresAt) < new Date() ? 'text-red-500' : 'text-gray-400')}>
@@ -468,16 +476,16 @@ function CyclesTab({ partner, onChanged }) {
                   {c.isCurrent && <Badge variant="blue">Current — still accruing</Badge>}
                 </div>
                 <div className="text-xs text-gray-400">
-                  {c.ledgerCount} conversion{c.ledgerCount === 1 ? '' : 's'} · {formatCents(c.commissionCents)} commission
-                  {c.paidCents > 0 && ` · ${formatCents(c.paidCents)} already paid`}
+                  {c.ledgerCount} conversion{c.ledgerCount === 1 ? '' : 's'} · {formatCents(c.commissionCents, partner.currency)} commission
+                  {c.paidCents > 0 && ` · ${formatCents(c.paidCents, partner.currency)} already paid`}
                 </div>
               </div>
               <div className="flex items-center gap-3">
                 {c.unpaidCents > 0 ? (
                   c.isCurrent ? (
-                    <span className="text-sm text-gray-400">{formatCents(c.unpaidCents)} (not payable yet)</span>
+                    <span className="text-sm text-gray-400">{formatCents(c.unpaidCents, partner.currency)} (not payable yet)</span>
                   ) : (
-                    <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents)}</Button>
+                    <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents, partner.currency)}</Button>
                   )
                 ) : (
                   <span className="text-sm text-gray-400 italic">{c.ledgerCount > 0 ? 'Settled' : 'Nothing owed'}</span>
@@ -531,9 +539,9 @@ function ConversionsTab({ partner }) {
           {ledger.map(l => (
             <tr key={l.id}>
               <td className="px-4 py-3 text-gray-600">{formatDate(l.createdAt)}</td>
-              <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents)}</td>
+              <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, partner.currency)}</td>
               <td className="px-4 py-3 text-right text-gray-400">{(l.commissionRate * 100).toFixed(0)}%</td>
-              <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents)}</td>
+              <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents, partner.currency)}</td>
               <td className="px-4 py-3">
                 <Badge variant={l.payoutId ? 'green' : 'amber'}>{l.payoutId ? 'Paid' : 'Unpaid'}</Badge>
               </td>
@@ -646,7 +654,7 @@ export default function PartnerDetail() {
       <div className="grid sm:grid-cols-3 gap-4">
         <div className="border border-gray-200 rounded-lg p-4 bg-white">
           <div className="text-xs uppercase tracking-wide text-gray-400">Total pending</div>
-          <div className="text-xl font-bold text-amber-600">{formatCents(partner.pendingCommissionCents || 0)}</div>
+          <div className="text-xl font-bold text-amber-600">{formatCents(partner.pendingCommissionCents || 0, partner.currency)}</div>
         </div>
         <div className="border border-gray-200 rounded-lg p-4 bg-white">
           <div className="text-xs uppercase tracking-wide text-gray-400">Commission rate</div>

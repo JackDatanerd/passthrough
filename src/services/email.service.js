@@ -328,6 +328,26 @@ async function sendReferralCodeCreated(env, supabase, email, name, code, dashboa
   })
 }
 
+// AUDIT FIX (Section 3/4 pass, feature gap): every other partner-facing event
+// in this file gets an email — a payout sent, payout details changed, a code
+// created, a link reset — but a conversion itself never did, so a partner's
+// only way to know their link was working was to remember to revisit their
+// dashboard. Called from referral.service.js's recordConversionInner, once
+// per successfully-recorded commission (not batched — see that file's
+// comment on why per-event mirrors payout_sent's own pattern here). Goes
+// through send() like every other partner email, so it inherits the
+// per-recipient throttle and awaited email_logs write from the Section
+// 9/10 hardening.
+async function sendPartnerConversionEarned(env, supabase, email, name, code, commissionAmountCents, currency, dashboardUrl) {
+  const amount = `${(commissionAmountCents / 100).toFixed(2)} ${currency}`
+  return send(env, supabase, email, 'You just earned a commission', 'partner_conversion_earned', {
+    NAME:          name,
+    CODE:          code,
+    AMOUNT:        amount,
+    DASHBOARD_URL: dashboardUrl
+  })
+}
+
 // Confirms a change to a partner's payout destination BACK TO the partner
 // themselves — see partners.controller.js's submitPayoutDetails, which
 // previously sent no notification to anyone when this happened. This is
@@ -526,5 +546,5 @@ module.exports = {
   sendPaymentReceipt,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
-  sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged
+  sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned
 }

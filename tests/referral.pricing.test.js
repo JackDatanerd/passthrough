@@ -194,6 +194,16 @@ describe('recordConversion', () => {
     expect(r.recorded).toBe(true)
     expect(r.reason).toBe('usage-increment')
   })
+  // AUDIT FIX (Section 3/4 pass, feature gap): recordConversionInner now
+  // notifies the partner by email on a successful conversion when `env` is
+  // passed (see notifyPartnerConversion) — but must never let a partner
+  // record with no email on file (or no payout_details_token yet, i.e. they
+  // never finished onboarding) turn an already-successful commission record
+  // into a failure. db()'s default partner fixture has neither field.
+  it('still reports ok:true when env is passed and the partner has no email/token to notify', async () => {
+    const r = await recordConversion(db(), payment, {})
+    expect(r).toEqual({ ok: true, recorded: true })
+  })
   it('rejects a nonsensical commission rate rather than writing a bad ledger row', async () => {
     for (const rate of ['abc', -1, null, undefined, 1.5]) {
       const d = db({ partner: { commission_rate: rate } })

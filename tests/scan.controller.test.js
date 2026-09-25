@@ -123,7 +123,11 @@ describe('redeemCredit', () => {
     const ctx = baseCtx()
     const res = await t.mod.redeemCredit(ctx)
     expect(res.body.success).toBe(true)
-    expect(t.state.paymentInserts[0]).toMatchObject({ amount_cents: 0, status: 'SUCCESS', scan_id: 's1', user_id: 'u1' })
+    // AUDIT FIX (Section 3/4 pass, bug): fix_tier must be set on the credit
+    // payment row itself, not just the scans row — see the matching comment
+    // in scan.controller.js. Regression test for getPaymentHistory/
+    // PaymentHistory.jsx showing "—" instead of "Fix + Credential".
+    expect(t.state.paymentInserts[0]).toMatchObject({ amount_cents: 0, status: 'SUCCESS', fix_tier: 'FIX', scan_id: 's1', user_id: 'u1' })
     expect(t.state.scanUpdates[0].patch).toMatchObject({ fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX' })
     // the claim guard: must be scoped to fix_purchased still being false
     expect(t.state.scanUpdates[0].filters.some(f => f[0] === 'eq' && f[1] === 'fix_purchased' && f[2] === false)).toBe(true)

@@ -87,13 +87,21 @@ async function initializePayment(c2) {
   // the same 409 + cancel-the-old-one path, rather than silently reusing
   // pricing the request no longer matches.
   const requestedCode = referralCode ? String(referralCode).trim().toUpperCase() : null
-  if (existingPending && (Date.now() - Date.parse(existingPending.created_at)) < PENDING_REUSE_WINDOW_MS) {
-    const sameTier = existingPending.fix_tier === fixTier
-    const sameCode = (existingPending.referral_code || null) === requestedCode
-    if (sameTier && sameCode && existingPending.paystack_access_code) {
+
+  // AUDIT FIX (Section 3/4 pass, bug): extracted from an inline block so the
+  // exact same resume-or-block decision can also be reached from the
+  // insert's unique-violation branch below, once payments_scan_id_pending_uidx
+  // (migration 0037) exists to actually make that branch reachable. Returns
+  // null (never resume, never block) for a missing or stale pending row —
+  // the caller falls through to a fresh checkout in that case.
+  function respondForExistingPending(pendingRow) {
+    if (!pendingRow || (Date.now() - Date.parse(pendingRow.created_at)) >= PENDING_REUSE_WINDOW_MS) return null
+    const sameTier = pendingRow.fix_tier === fixTier
+    const sameCode = (pendingRow.referral_code || null) === requestedCode
+    if (sameTier && sameCode && pendingRow.paystack_access_code) {
       return c2.json({ success: true, data: {
-        access_code: existingPending.paystack_access_code,
-        reference:   existingPending.paystack_ref
+        access_code: pendingRow.paystack_access_code,
+        reference:   pendingRow.paystack_ref
       }})
     }
     return c2.json({ success: false,
@@ -104,9 +112,12 @@ async function initializePayment(c2) {
       // with no way to actually do that anywhere in the app — see
       // cancelPayment below. Surfacing the reference here is what lets the
       // frontend offer a real cancel action instead of a 30-minute wait.
-      data: { reference: existingPending.paystack_ref, fixTier: existingPending.fix_tier }
+      data: { reference: pendingRow.paystack_ref, fixTier: pendingRow.fix_tier }
     }, 409)
   }
+
+  const pendingResponse = respondForExistingPending(existingPending)
+  if (pendingResponse) return pendingResponse
 
   // AUDIT FIX (feature gap): pay_status_enum defines FAILED and ABANDONED
   // (migration 0001) but nothing anywhere ever wrote either value — a
@@ -210,6 +221,28 @@ async function initializePayment(c2) {
   // "every payment attempt fails until this is resolved" case the Paystack-
   // init failure branch above already treats as page-worthy.
   if (insertErr) {
+    // AUDIT FIX (Section 3/4 pass, bug): payments_scan_id_pending_uidx
+    // (migration 0037) turns the check-then-act race this function's top
+    // comment describes into a real, catchable conflict instead of two live
+    // checkouts silently coexisting. A 23505 here means a concurrent
+    // initializePayment call for this exact scan won the insert between our
+    // SELECT above and this INSERT (double-click, two tabs) — that's the
+    // guard doing its job, not an outage, so no owner page. Fold back into
+    // the exact same resume-or-block decision made against whatever that
+    // other call just created.
+    if (insertErr.code === '23505') {
+      const { data: freshPending, error: reErr } = await supabase
+        .from('payments')
+        .select('paystack_ref, paystack_access_code, fix_tier, referral_code, created_at')
+        .eq('scan_id', scanId).eq('status', 'PENDING')
+        .order('created_at', { ascending: false }).limit(1).maybeSingle()
+      const racedResponse = !reErr && respondForExistingPending(freshPending)
+      if (racedResponse) return racedResponse
+      // Couldn't find what won the race (already resolved/expired by the
+      // time we looked back), or the re-select itself failed — fall through
+      // to the generic failure response below rather than claiming success
+      // for a payment that was never actually recorded for THIS request.
+    }
     console.error(`[CRITICAL] payments insert failed after Paystack initialize succeeded (scan ${scanId}, ref ${reference}):`, insertErr.message)
     try {
       await emailService.sendOwnerAlert(c2.env,

@@ -57,4 +57,23 @@ describe('getPricing', () => {
     expect(byTier('FIX_PLAIN').amount).toBe(3900)
     expect(res.body.data.referralApplied).toBe(false)
   })
+
+  // AUDIT FIX (Section 3/4 pass, perf): used to call referral.service.js's
+  // resolvePrice() once per tier, each doing its own independent
+  // referral_codes lookup for the identical code — three DB round trips per
+  // request. resolvePricesForTiers does the lookup once and reuses it for
+  // all three tiers.
+  it('looks up a referral code exactly once, not once per tier', async () => {
+    t = setup({
+      codeRow: { id: 'rc1', active: true, tier_prices: { FIX: 1900, BADGE: 1500, FIX_PLAIN: 1200 }, partners: { status: 'ACTIVE' } },
+    })
+    const res = await t.mod.getPricing(t.c({ query: { ref: 'coach20' } }))
+    const referralLookups = t.db.calls.filter(c => c.table === 'referral_codes' && c.op === 'select')
+    expect(referralLookups).toHaveLength(1)
+    // And the single lookup's result was actually applied to all three tiers.
+    const byTier = tier => res.body.data.tiers.find(x => x.tier === tier)
+    expect(byTier('FIX').amount).toBe(1900)
+    expect(byTier('BADGE').amount).toBe(1500)
+    expect(byTier('FIX_PLAIN').amount).toBe(1200)
+  })
 })

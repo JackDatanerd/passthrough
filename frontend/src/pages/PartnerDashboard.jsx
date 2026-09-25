@@ -61,16 +61,27 @@ function ShareLink({ code }) {
 // still saw "gets the discount automatically" and kept promoting a dead
 // link, with only a small badge above (easy to miss) telling a different
 // story. Mirrors isCodeUsable's checks in referral.service.js.
-function isCodeLive(code) {
+//
+// AUDIT FIX (Section 3/4 pass, bug): that mirror was incomplete — it never
+// checked isCodeUsable's fourth condition, `partners.status !== 'ACTIVE'`,
+// because getPartnerDashboard never returned the partner's own status in the
+// first place. A partner whose account was PAUSED (fraud hold, a dispute,
+// anything short of their code itself expiring) saw every one of their codes
+// as fully live, with no way to know their links had silently stopped
+// working the moment they were paused. `partnerActive` now comes from
+// data.active (partners.controller.js) — see the account-level banner in the
+// main component below for the other half of this fix.
+function isCodeLive(code, partnerActive) {
+  if (!partnerActive) return false
   if (!code.active) return false
   if (code.expiresAt && new Date(code.expiresAt) < new Date()) return false
   if (code.usageLimit != null && (code.usesSoFar || 0) >= code.usageLimit) return false
   return true
 }
 
-function CodeCard({ code }) {
+function CodeCard({ code, partnerActive, currency }) {
   const prices = Object.entries(code.tierPrices || {})
-  const live = isCodeLive(code)
+  const live = isCodeLive(code, partnerActive)
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -87,7 +98,7 @@ function CodeCard({ code }) {
             exactly the currency-drift bug already fixed elsewhere for the
             checkout price tags. If PAYSTACK_CURRENCY is ever not USD, a
             partner would see the wrong symbol on their own promo prices. */}
-        {prices.map(([tier, cents]) => `${tier}: ${fmtCents(cents)}`).join(' · ')}
+        {prices.map(([tier, cents]) => `${tier}: ${fmtCents(cents, currency)}`).join(' · ')}
       </div>
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
@@ -98,6 +109,9 @@ function CodeCard({ code }) {
           <>Anyone who visits your link gets the discount automatically. They can also just tell
           people the code <span className="font-mono">{code.code}</span> directly — there's a
           "have a code?" box at checkout too.</>
+        ) : !partnerActive ? (
+          <>Your partner account is currently paused, so this link is not applying the discount or
+          earning commission right now — contact us if you weren't expecting that.</>
         ) : (
           <>This code isn't live anymore — links using it will fall back to standard pricing and
           won't earn you commission. Ask us about setting up a new one.</>
@@ -148,11 +162,22 @@ export default function PartnerDashboard() {
               </Link>
             </div>
 
+            {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
+                this is the account-level half of that fix. Without it, a
+                paused partner had no indication anywhere on their own
+                dashboard that their links had stopped working. */}
+            {!data.active && (
+              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                Your partner account is currently paused. Your links won't apply discounts or earn
+                commission until it's reactivated — contact us if you weren't expecting that.
+              </div>
+            )}
+
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
               <StatCard label="Clicks" value={data.stats.totalClicks} />
               <StatCard label="Conversions" value={data.stats.totalConversions} />
-              <StatCard label="Pending" value={fmtCents(data.stats.pendingCents)} />
-              <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents)} />
+              <StatCard label="Pending" value={fmtCents(data.stats.pendingCents, data.currency)} />
+              <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents, data.currency)} />
             </div>
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Your codes</h2>
@@ -162,7 +187,9 @@ export default function PartnerDashboard() {
               </p>
             ) : (
               <div className="flex flex-col gap-3 mb-8">
-                {data.referralCodes.map(code => <CodeCard key={code.id} code={code} />)}
+                {data.referralCodes.map(code => (
+                  <CodeCard key={code.id} code={code} partnerActive={data.active} currency={data.currency} />
+                ))}
               </div>
             )}
 
