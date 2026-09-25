@@ -131,10 +131,16 @@ export default function ScanForm() {
       // listing pages, Workday). Every other JD-URL fetch failure — a 404,
       // a timeout, a page that just didn't extract enough text — left the
       // UI sitting in URL mode with the same URL, even though the error
-      // message itself says "paste instead" either way. Now any failure
-      // that happened while submitting a URL (not a pasted-text submission)
-      // switches back to paste mode, so the message and the UI agree.
-      if (useUrl) setUseUrl(false)
+      // message itself says "paste instead" either way.
+      //
+      // AUDIT FIX (Auth/Scan round): that fix over-corrected — it flipped out
+      // of URL mode on ANY failure while useUrl was on, including ones that
+      // have nothing to do with the URL at all: a 429 (rate limit / daily
+      // scan cap) or a 413 (file too large) on the whole submission. Losing
+      // URL mode there just discarded a URL that was never actually the
+      // problem. A JD-URL fetch failure is always a 400 (see createScan in
+      // scan.controller.js) — only that status means the URL itself failed.
+      if (useUrl && err.response?.status === 400) setUseUrl(false)
       setError(msg)
     } finally {
       setLoading(false)

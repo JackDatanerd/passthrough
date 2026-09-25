@@ -192,6 +192,85 @@ function htmlToText(html) {
     .trim()
 }
 
+// ── Structured job data (schema.org JobPosting, JSON-LD) ─────────────────────
+// FEATURE GAP CLOSED (Auth/Scan round): every <script> block was thrown away
+// unread. But Google for Jobs REQUIRES a posting to publish its full
+// description as a JSON-LD JobPosting, so nearly every real board (Greenhouse,
+// Lever, Ashby, Workable, SmartRecruiters, and Workday's public pages) embeds
+// the clean, complete job text there — including the client-rendered pages
+// whose visible HTML is an empty shell and which this reader previously
+// rejected as "unreadable" (Workday was even hard-coded as unsupported).
+// Extraction is linear-time like the rest of this file: literal searches
+// only, no lazy regexes over attacker-controlled input.
+function extractJsonLdBlocks(html) {
+  const out = []
+  const MAX_BLOCK = 300_000
+  let pos = 0
+  const lower = html.toLowerCase()
+  for (let guard = 0; guard < 200; guard++) {
+    const open = lower.indexOf('<script', pos)
+    if (open === -1) break
+    const tagEnd = lower.indexOf('>', open)
+    if (tagEnd === -1) break
+    const close = lower.indexOf('</script', tagEnd)
+    if (close === -1) break
+    const openTag = lower.slice(open, Math.min(tagEnd, open + 300))
+    if (/type\s*=\s*["']?application\/ld\+json/.test(openTag) && close - tagEnd <= MAX_BLOCK)
+      out.push(html.slice(tagEnd + 1, close))
+    pos = close + 8
+  }
+  return out
+}
+
+function collectJobPostings(node, found, depth = 0) {
+  if (!node || depth > 6 || found.length > 5) return
+  if (Array.isArray(node)) { for (const n of node) collectJobPostings(n, found, depth + 1); return }
+  if (typeof node !== 'object') return
+  const t = node['@type']
+  if (t === 'JobPosting' || (Array.isArray(t) && t.includes('JobPosting'))) { found.push(node); return }
+  if (node['@graph']) collectJobPostings(node['@graph'], found, depth + 1)
+  if (node.itemListElement) collectJobPostings(node.itemListElement, found, depth + 1)
+  if (node.item) collectJobPostings(node.item, found, depth + 1)
+}
+
+function fieldText(v) {
+  if (typeof v === 'string') return v
+  if (Array.isArray(v)) return v.map(fieldText).filter(Boolean).join(', ')
+  if (v && typeof v === 'object') return fieldText(v.name || v.description || v.value || '')
+  return ''
+}
+
+// Returns the flattened posting text, or null when the page has no JobPosting
+// — or has SEVERAL (a listing page, which must not be mistaken for one job).
+function extractJobPostingText(html) {
+  let postings = []
+  for (const raw of extractJsonLdBlocks(html)) {
+    let data
+    try { data = JSON.parse(raw) } catch (_) { continue }
+    collectJobPostings(data, postings)
+  }
+  // Same posting repeated across blocks is still one posting.
+  const seen = new Set()
+  postings = postings.filter(p => { const k = `${p.title}|${p.identifier?.value || p.url || ''}`; if (seen.has(k)) return false; seen.add(k); return true })
+  if (postings.length !== 1) return null
+  const p = postings[0]
+  const desc = String(p.description || '').slice(0, 30_000)
+  // Some boards double-escape the markup ("&lt;p&gt;").
+  const body = htmlToText(/&lt;\/?[a-z]/i.test(desc) ? decodeHtmlEntities(desc) : desc)
+  const parts = [
+    fieldText(p.title),
+    fieldText(p.hiringOrganization) && `Company: ${fieldText(p.hiringOrganization)}`,
+    body,
+    fieldText(p.responsibilities) && `Responsibilities: ${htmlToText(fieldText(p.responsibilities))}`,
+    fieldText(p.qualifications) && `Qualifications: ${htmlToText(fieldText(p.qualifications))}`,
+    fieldText(p.skills) && `Skills: ${htmlToText(fieldText(p.skills))}`,
+    fieldText(p.experienceRequirements) && `Experience: ${htmlToText(fieldText(p.experienceRequirements))}`,
+    fieldText(p.educationRequirements) && `Education: ${htmlToText(fieldText(p.educationRequirements))}`,
+  ].filter(Boolean)
+  const text = parts.join('\n').replace(/[ \t]+/g, ' ').trim()
+  return text.length >= 200 ? text : null
+}
+
 async function fetchJobDescriptionFromUrl(url) {
   let parsed
   try { parsed = new URL(url) } catch (_) {
@@ -248,6 +327,11 @@ async function fetchJobDescriptionFromUrl(url) {
     // 5000 chars by boilerplate ahead of it, or leaving a truncated
     // boilerplate fragment behind. Doing it here, on the full flattened
     // text, avoids both.
+    // Structured data first: when the page declares exactly one JobPosting,
+    // its text IS the job description (no nav, footer or "similar jobs").
+    const structured = extractJobPostingText(html)
+    if (structured) return { success: true, blocked: false, text: structured.slice(0, 5000) }
+
     let text = htmlToText(html)
 
     text = stripPlatformBoilerplate(parsed.hostname, text)
@@ -290,4 +374,4 @@ async function fetchJobDescriptionFromUrl(url) {
   }
 }
 
-module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage }
+module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractJobPostingText }

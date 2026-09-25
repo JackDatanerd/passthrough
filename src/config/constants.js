@@ -90,10 +90,19 @@ module.exports = {
   // 1 free fix credit (see generateFix / retryFix in scan.controller.js).
   MAX_FIX_RETRIES: 2,
   MAX_JD_CHARS:     5000,
+  // Brain-dump input box (the frontend mirrors this value).
   MAX_RESUME_CHARS: 8000,
+  // Text extracted from an UPLOADED resume, for scoring and structuring. Much
+  // larger than the brain-dump cap: 8000 chars silently truncated any resume
+  // beyond ~2.5 pages.
+  MAX_RESUME_TEXT_CHARS: 24000,
   MIN_BRAIN_DUMP_CHARS: 100,   // Phase 1 — brain-dump entry path minimum length
   MAX_UPLOAD_MB:    5,
   FREE_SCANS_PER_DAY:  3,
+  // Ceiling on scans per IP per 24h across ALL accounts (five accounts' worth) —
+  // stops throwaway-account farming of the free tier. SCAN_IP_DAILY_CAP env var
+  // overrides it; 0 disables the ceiling.
+  FREE_SCANS_PER_IP_PER_DAY: 15,
   ANON_SCAN_TTL_HOURS: 24,
   // Length of the ORIGINAL 6-character verification codes. Pages issued before the
   // longer format still use it, so lookups keep accepting it (see lib/verification.js).
@@ -104,6 +113,11 @@ module.exports = {
   VERIFY_CODE_LENGTH: 10,
   SHORT_CODE_CHARS:  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
   EMAIL_TOKEN_EXPIRY_HOURS: 1,
+
+  // Version of the Terms of Service / Privacy Policy a new account accepts at
+  // sign-up (stored on users.terms_version). Bump when either document changes
+  // materially so acceptance can be told apart per version.
+  TERMS_VERSION: '2026-09',
   RESET_TOKEN_EXPIRY_HOURS: 1,
   ROLE_CATEGORIES: [
     'software_engineering','product_management','design','data_science',

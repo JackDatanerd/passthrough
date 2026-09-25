@@ -69,12 +69,39 @@ function TagList({ items, variant }) {
   )
 }
 
+// AUDIT FIX (Auth/Scan round): education/projects reuse the same job-row
+// layout as Experience (via a shared status label), since they carry the
+// same shape (an institution/name, a title/degree, dates).
+function EntryHeader({ label, status }) {
+  if (status === 'added') return <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded px-1.5 py-0.5">new entry</span>
+  if (status === 'removed') return <span className="text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">removed entry</span>
+  return null
+}
+
+function ContactRow({ field, before, after }) {
+  const labels = { name: 'Name', email: 'Email', phone: 'Phone', location: 'Location', linkedin: 'LinkedIn', portfolio: 'Portfolio' }
+  return (
+    <div className="text-xs mb-1">
+      <span className="text-gray-500 mr-2">{labels[field] || field}:</span>
+      <span className="text-gray-400 line-through mr-2">{before || '(none)'}</span>
+      <span className="text-gray-700">{after || '(none)'}</span>
+    </div>
+  )
+}
+
 function DiffContent({ diff }) {
   const hasSkillChanges = diff.skills.added.length > 0 || diff.skills.removed.length > 0
   const hasCertChanges  = diff.certifications.added.length > 0 || diff.certifications.removed.length > 0
 
   return (
     <div className="flex flex-col gap-6">
+      {diff.contact.changed.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800 mb-2">Contact details</h4>
+          {diff.contact.changed.map(f => <ContactRow key={f.field} {...f} />)}
+        </div>
+      )}
+
       {diff.skills.added.length > 0 && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
           Skills marked "added" below were introduced by the AI rewrite based on your experience.
@@ -140,6 +167,65 @@ function DiffContent({ diff }) {
             <TagList items={diff.certifications.unchanged} variant="unchanged" />
             <TagList items={diff.certifications.added} variant="added" />
             <TagList items={diff.certifications.removed} variant="removed" />
+          </div>
+        </div>
+      )}
+
+      {diff.education?.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800 mb-3">Education</h4>
+          <div className="flex flex-col gap-3">
+            {diff.education.map((e, i) => (
+              <div key={i} className="border-l-2 border-gray-100 pl-4">
+                <div className="flex flex-wrap items-baseline gap-x-2 mb-1">
+                  <span className="text-sm font-medium text-gray-900">{e.company}</span>
+                  <EntryHeader status={e.entryStatus} />
+                </div>
+                {e.titleChanged ? (
+                  <div className="text-xs mb-1">
+                    <span className="text-gray-400 line-through mr-2">{e.beforeTitle}</span>
+                    <span className="text-gray-600">{e.afterTitle}</span>
+                  </div>
+                ) : (
+                  <div className="text-xs text-gray-500 mb-1">{e.afterTitle}</div>
+                )}
+                {e.datesChanged && (
+                  <div className="text-xs">
+                    <span className="text-gray-400 line-through mr-2">{e.beforeDates}</span>
+                    <span className="text-gray-600">{e.afterDates}</span>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {diff.projects?.length > 0 && (
+        <div>
+          <h4 className="text-sm font-semibold text-gray-800 mb-3">Projects</h4>
+          <div className="flex flex-col gap-3">
+            {diff.projects.map((p, i) => (
+              <div key={i} className="border-l-2 border-gray-100 pl-4">
+                <div className="flex flex-wrap items-baseline gap-x-2 mb-1">
+                  <span className="text-sm font-medium text-gray-900">{p.name}</span>
+                  <EntryHeader status={p.entryStatus} />
+                </div>
+                {p.descChanged && (
+                  <div className="text-xs mb-1">
+                    <div className="text-gray-400 line-through">{p.beforeDesc || '(none)'}</div>
+                    <div className="text-gray-700">{p.afterDesc}</div>
+                  </div>
+                )}
+                {(p.technologies.added.length > 0 || p.technologies.removed.length > 0 || p.technologies.unchanged.length > 0) && (
+                  <div className="flex flex-col gap-1.5">
+                    <TagList items={p.technologies.unchanged} variant="unchanged" />
+                    <TagList items={p.technologies.added} variant="added" />
+                    <TagList items={p.technologies.removed} variant="removed" />
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

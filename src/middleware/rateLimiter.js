@@ -492,7 +492,15 @@ async function recordLoginFailure(env, email, ip) {
     } catch (_) { failCount = 0; ips = []; wasLocked = false }
     failCount += 1
 
-    const normalizedIp = String(ip || 'unknown')
+    // AUDIT FIX (Auth/Scan round): the distinct-IP tally used the raw address,
+    // but every per-IP limiter (rl.auth included) buckets an IPv6 client by
+    // its /64 (rateKeyIp). A single attacker owns a whole /64, so two
+    // addresses inside it satisfied LOCKOUT_MIN_DISTINCT_IPS from ONE
+    // machine — within rl.auth's 10-per-15-minutes budget — reopening the
+    // exact lone-attacker lockout DoS the distinct-IP bar exists to close.
+    // Tally by the same bucket the limiters use, so "distinct" means
+    // distinct clients, not distinct addresses in one client's subnet.
+    const normalizedIp = rateKeyIp(String(ip || 'unknown'))
     if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
     if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
 

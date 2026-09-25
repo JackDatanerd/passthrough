@@ -11,7 +11,25 @@ const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx')
 // false is used when the final score is under the Verified threshold — the link
 // still points at the (honest) scan-report page, but the document must not
 // claim a credential the page will not confirm.
+// AUDIT FIX (Auth/Scan round): the docx library escapes & < > but writes any
+// other character verbatim, including XML-1.0-illegal control characters
+// (form feed / vertical tab / NUL and lone surrogates) that PDF text
+// extraction and pasted text can carry into a resume. Word refuses a document
+// containing one ("unreadable content") — a paid deliverable that won't open.
+// Verified against the docx library: U+000B / U+0000 / U+000C reach
+// word/document.xml unchanged. Every string is cleaned before it is used.
+function xmlSafe(v) {
+  if (typeof v === 'string')
+    return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
+  if (Array.isArray(v)) return v.map(xmlSafe)
+  if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, xmlSafe(x)]))
+  return v
+}
+
 async function generateAtsDocx(resumeData, verificationUrl, { verified = true } = {}) {
+  resumeData = xmlSafe(resumeData)
+  verificationUrl = xmlSafe(verificationUrl)
   const children = []
 
   children.push(new Paragraph({
@@ -150,4 +168,4 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   return Packer.toBuffer(doc)
 }
 
-module.exports = { generateAtsDocx }
+module.exports = { generateAtsDocx, xmlSafe }

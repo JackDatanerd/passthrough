@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import CsvInput from './CsvInput'
 import api, { getErrorMessage } from '../../lib/api'
 import { downloadBlob } from '../../lib/utils'
 import Button from '../ui/Button'
@@ -166,8 +167,8 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
             renderItem={(item, i) => (
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 mb-2">
                 <Input placeholder="Project name" value={item.name || ''} onChange={e => updateListItem('projects', i, 'name', e.target.value)} />
-                <Input placeholder="Technologies (comma-separated)" value={(item.technologies || []).join(', ')}
-                  onChange={e => updateListItem('projects', i, 'technologies', e.target.value.split(',').map(s => s.trim()).filter(Boolean))} />
+                <CsvInput placeholder="Technologies (comma-separated)" value={item.technologies}
+                  onChange={arr => updateListItem('projects', i, 'technologies', arr)} />
                 <Textarea className="sm:col-span-2" rows={2} placeholder="What it does / your role"
                   value={item.description || ''} onChange={e => updateListItem('projects', i, 'description', e.target.value)} />
                 <Input className="sm:col-span-2" placeholder="Link (optional)" value={item.link || ''} onChange={e => updateListItem('projects', i, 'link', e.target.value)} />
@@ -175,16 +176,8 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
             )}
           />
 
-          <Input
-            label="Skills (comma-separated)"
-            value={(draft.skills || []).join(', ')}
-            onChange={e => updateField('skills', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-          />
-          <Input
-            label="Certifications (comma-separated)"
-            value={(draft.certifications || []).join(', ')}
-            onChange={e => updateField('certifications', e.target.value.split(',').map(s => s.trim()).filter(Boolean))}
-          />
+          <CsvInput label="Skills (comma-separated)" value={draft.skills} onChange={arr => updateField('skills', arr)} />
+          <CsvInput label="Certifications (comma-separated)" value={draft.certifications} onChange={arr => updateField('certifications', arr)} />
 
           {saveError && (
             <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{saveError}</p>

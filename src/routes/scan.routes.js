@@ -21,6 +21,8 @@ router.get( '/:id',         rl.scanPoll,      validateUuidParam(), c.getScan)
 router.post('/:id/initiate-fix', auth,        validateUuidParam(), c.initiateFix)
 router.post('/:id/redeem-credit', auth, rl.payment, validateUuidParam(), c.redeemCredit)
 router.post('/:id/retry-fix',    auth, rl.payment, validateUuidParam(), c.retryFix)
+// FEATURE (Auth/Scan round): re-render a PDF that failed to generate at delivery.
+router.post('/:id/regenerate-pdf', auth, rl.resumeEdit, validateUuidParam(), c.regeneratePdf)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
 // Owner-only removal of one scan and everything stored for it (see deleteScan).

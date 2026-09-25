@@ -30,8 +30,16 @@ export function AuthProvider({ children }) {
   // explicitly logged out and back in, no matter how many times they
   // reloaded the page or re-visited the dashboard.
   async function refreshUser() {
+    // AUDIT FIX (Auth/Scan round): an /auth/me still in flight when the person
+    // clicked Sign out (or another tab signed in as someone else) used to
+    // resolve afterwards and write its user — and any renewed token — back
+    // into storage, silently resurrecting the session that had just ended.
+    // The response only counts if the session it was requested under is
+    // still the current one.
+    const tokenAtStart = localStorage.getItem('passthrough_token')
     try {
       const res = await api.get('/auth/me')
+      if (localStorage.getItem('passthrough_token') !== tokenAtStart) return null
       const fresh = res.data.data.user
       // AUDIT FIX (feature gap): getMe() now silently reissues a token when
       // the current one is within 24h of expiring (see auth.controller.js).

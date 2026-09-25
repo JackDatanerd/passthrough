@@ -587,6 +587,20 @@ describe('getScan', () => {
     expect(keys).not.toContain('fullAtsReport')
   })
 
+  // AUDIT FIX (Auth/Scan round): storage keys stay hidden, but the page needs to
+  // know whether each deliverable exists (a failed PDF render is silent).
+  it('reports whether a DOCX and a PDF exist without exposing their keys', async () => {
+    t = setup({ id: 's1', user_id: 'u1', resume_ats_path: 'k1', resume_pdf_path: null })
+    let d = (await t.mod.getScan(baseCtx())).body.data
+    expect(d.hasDocx).toBe(true)
+    expect(d.hasPdf).toBe(false)
+    t.restore()
+    t = setup({ id: 's1', user_id: 'u1', resume_ats_path: 'k1', resume_pdf_path: 'k2' })
+    d = (await t.mod.getScan(baseCtx())).body.data
+    expect(d.hasPdf).toBe(true)
+    expect(JSON.stringify(d)).not.toContain('k2')
+  })
+
   it('reshapes fullAtsReport into atsDetail, or null when the report itself is an error placeholder', async () => {
     t = setup({ id: 's1', user_id: 'u1', full_ats_report: { keywords: { matched: ['x'], missing: ['y'] }, aiMissingKeywords: ['z'] } })
     const res = await t.mod.getScan(baseCtx())
@@ -602,11 +616,11 @@ describe('getScan', () => {
 
 describe('updateResumeData', () => {
   function setup(opts = {}) {
-    const state = { updates: [] }
+    const state = { updates: [], updateFilters: [] }
     const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'COMPLETE_PASS', fix_purchased: false, job_description_text: 'JD text' }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
-      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); return { data: null, error: opts.updateErr || null } }
+      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); state.updateFilters.push(q.filters); return { data: 'updateReturn' in opts ? opts.updateReturn : null, error: opts.updateErr || null } }
     })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
@@ -657,6 +671,24 @@ describe('updateResumeData', () => {
     expect(res.body.data.status).toBe('COMPLETE_PASS')
     expect(res.body.data.badgeEligible).toBe(true)
     expect(t.state.updates[0]).toMatchObject({ ats_score: 85, status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane' } })
+  })
+
+  // AUDIT FIX (Auth/Scan round): the checks run before a multi-second Claude call.
+  it('the write only applies while the scan is still unpurchased and complete — a purchase landing mid-edit gets a 409, not a silent overwrite', async () => {
+    t = setup({ updateReturn: [] })
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    expect(res.status).toBe(409)
+    const f = t.state.updateFilters[0]
+    expect(f).toContainEqual(['eq', 'fix_purchased', false])
+    expect(f).toContainEqual(['in', 'status', ['COMPLETE_PASS', 'COMPLETE_FAIL']])
+  })
+  it('drops blank bullets / skills / certifications the editor sends for untouched lines', async () => {
+    t = setup()
+    await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go', '', '  '], certifications: [''], experience: [{ company: 'A', title: 'T', dates: '2020', bullets: ['Did x', '', '   '] }] } } }))
+    const saved = t.state.updates[0].original_resume_data
+    expect(saved.skills).toEqual(['Go'])
+    expect(saved.certifications).toEqual([])
+    expect(saved.experience[0].bullets).toEqual(['Did x'])
   })
 
   it('a below-threshold rescore reports COMPLETE_FAIL', async () => {
@@ -729,7 +761,7 @@ describe('createScan', () => {
     })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'middleware/rateLimiter.js': { isBypassed: () => opts.bypassed ?? false },
+      'middleware/rateLimiter.js': { isBypassed: () => opts.bypassed ?? false, hitQuota: async (env, key) => { (state.ipCapKeys = state.ipCapKeys || []).push(key); return !opts.ipCapExceeded } },
       'services/jd.parser.js': { fetchJobDescriptionFromUrl: async () => opts.jdFetch ?? { success: false, message: 'fetch disabled in test' } },
     })
     return { mod, restore, state, db }
@@ -824,6 +856,34 @@ describe('createScan', () => {
     expect(t.state.inserts).toHaveLength(0)
   })
 
+  // FEATURE GAP CLOSED (Auth/Scan round): per-IP ceiling across accounts.
+  it('a per-IP daily ceiling across accounts refuses with 429, hands the account slot back, and never inserts', async () => {
+    t = setup({ ipCapExceeded: true })
+    const res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.status).toBe(429)
+    expect(res.body.message).toMatch(/network/i)
+    expect(t.state.inserts).toHaveLength(0)
+    expect(t.state.rpcCalls.some(c => c.name === 'decrement_scan_count')).toBe(true)
+  })
+  it('the ceiling is keyed per IP bucket and only spent after the account quota said yes', async () => {
+    t = setup({ quotaAllowed: false, bypassed: false })
+    await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(t.state.ipCapKeys).toBeUndefined()   // over the ACCOUNT quota -> never touched the IP budget
+    t.restore()
+    t = setup()
+    await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(t.state.ipCapKeys).toEqual(['rl:scanip:unknown'])
+  })
+  it('SCAN_IP_DAILY_CAP=0 disables the ceiling; bypass IPs are exempt', async () => {
+    t = setup({ ipCapExceeded: true })
+    let res = await t.mod.createScan(csCtx({ env: { SCAN_IP_DAILY_CAP: '0' }, user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.body.success).toBe(true)
+    t.restore()
+    t = setup({ ipCapExceeded: true, bypassed: true })
+    res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
+    expect(res.body.success).toBe(true)
+  })
+
   it('a bypass IP over quota gets a manually-granted slot and still proceeds', async () => {
     t = setup({ quotaAllowed: false, bypassed: true })
     const res = await t.mod.createScan(csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } }))
@@ -869,12 +929,13 @@ describe('createScan', () => {
 
 describe('runAtsScan', () => {
   function setup(opts = {}) {
-    const state = { scanUpdates: [], emails: [] }
+    const state = { scanUpdates: [], emails: [], rpcs: [] }
     const scan = 'scan' in opts ? opts.scan : { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', job_description_text: 'JD', user_id: null }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.updateFails ? null : [{ id: 's1' }], error: opts.updateFails ? new Error('save boom') : null } }
       if (q.table === 'users' && q.op === 'select') return { data: opts.userRow ?? { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
+      if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: null, error: null } }
     })
     const env = { RESUMES_BUCKET: { get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) } }
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
@@ -899,6 +960,46 @@ describe('runAtsScan', () => {
     })
     return { mod, restore, state, db, env }
   }
+
+  // AUDIT FIX (Auth/Scan round): a scan that ends in ERROR through no fault of the
+  // person gives the free-scan slot back (created today only; account scans only).
+  describe('free-scan slot refund on failure', () => {
+    const today = () => new Date().toISOString()
+    const owned = (over = {}) => ({ id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', job_description_text: 'JD', user_id: 'u1', created_at: today(), ...over })
+    const refunds = () => t.state.rpcs.filter(r => r.name === 'decrement_scan_count')
+    it('an unparseable resume (nothing produced, no Claude call made) is refunded', async () => {
+      t = setup({ scan: owned(), extractedText: '' })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toEqual([{ name: 'decrement_scan_count', args: { p_user_id: 'u1' } }])
+    })
+    it('an unexpected error mid-pipeline is refunded', async () => {
+      t = setup({ scan: owned(), r2Object: null })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(1)
+    })
+    it('a failure of OUR structuring call is refunded; "tell us more" (too little text) is not', async () => {
+      t = setup({ scan: owned({ input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150) }), brainDumpResult: { parseError: true, parseErrorMessage: 'Could not structure your background (PARSE_FAIL).' } })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(1)
+      t.restore()
+      t = setup({ scan: owned({ input_mode: 'brain_dump', raw_brain_dump_text: 'short' }), brainDumpResult: { parseError: true, parseErrorMessage: 'Tell us a bit more about your background — at least a few sentences.' } })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(0)
+    })
+    it('never refunds an anonymous scan, or a scan from before today\'s reset, or a successful scan', async () => {
+      t = setup({ scan: owned({ user_id: null }), extractedText: '' })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(0)
+      t.restore()
+      t = setup({ scan: owned({ created_at: new Date(Date.now() - 3 * 86400000).toISOString() }), extractedText: '' })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(0)
+      t.restore()
+      t = setup({ scan: owned() })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(refunds()).toHaveLength(0)
+    })
+  })
 
   it('marks the scan SCANNING immediately, before doing any real work', async () => {
     t = setup()
@@ -956,13 +1057,48 @@ describe('runAtsScan', () => {
   it('blends the AI score in when the AI call succeeds', async () => {
     t = setup({
       ruleResult: { score: 60, keywordScore: 60, formatScore: 60, sectionsScore: 60, contentScore: 60, detail: {} },
-      aiResult: { success: true, data: JSON.stringify({ aiScore: 100, missingKeywords: ['x'] }) },
+      aiResult: { success: true, data: JSON.stringify({ aiScore: 80, missingKeywords: ['x'] }) },
     })
     await t.mod.runAtsScan(t.env, t.db, 's1')
     const finalUpdate = t.state.scanUpdates.find(u => u.ats_score !== undefined)
-    // 70% rule (60) + 30% AI (100) = 72
-    expect(finalUpdate.ats_score).toBe(72)
+    // 70% rule (60) + 30% AI (80) = 66
+    expect(finalUpdate.ats_score).toBe(66)
     expect(finalUpdate.full_ats_report.aiMissingKeywords).toEqual(['x'])
+  })
+
+  // AUDIT FIX (Auth/Scan round): the AI number is untrusted — it can be
+  // hallucinated or steered by text hidden in the resume/JD.
+  it('clamps an absurd AI score: 1000 cannot produce a perfect 100 (0-100, and at most rule+25)', async () => {
+    t = setup({
+      ruleResult: { score: 60, keywordScore: 60, formatScore: 60, sectionsScore: 60, contentScore: 60, detail: {} },
+      aiResult: { success: true, data: JSON.stringify({ aiScore: 1000, missingKeywords: [] }) },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const finalUpdate = t.state.scanUpdates.find(u => u.ats_score !== undefined)
+    // AI capped to 60+25 = 85 -> 0.7*60 + 0.3*85 = 67.5 -> 68
+    expect(finalUpdate.ats_score).toBe(68)
+  })
+  it('ignores a non-finite / non-numeric AI score and a negative one is floored at 0', async () => {
+    t = setup({
+      ruleResult: { score: 60, keywordScore: 60, formatScore: 60, sectionsScore: 60, contentScore: 60, detail: {} },
+      aiResult: { success: true, data: JSON.stringify({ aiScore: '100', missingKeywords: [] }) },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.ats_score !== undefined).ats_score).toBe(60)   // rule-only
+    t.restore()
+    t = setup({
+      ruleResult: { score: 60, keywordScore: 60, formatScore: 60, sectionsScore: 60, contentScore: 60, detail: {} },
+      aiResult: { success: true, data: JSON.stringify({ aiScore: -500, missingKeywords: [] }) },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.ats_score !== undefined).ats_score).toBe(42)   // 0.7*60 + 0
+  })
+  it('drops over-long or non-string AI keyword suggestions', async () => {
+    t = setup({
+      aiResult: { success: true, data: JSON.stringify({ aiScore: 60, missingKeywords: ['kubernetes', 'x'.repeat(200), 5, '  terraform  '] }) },
+    })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.ats_score !== undefined).full_ats_report.aiMissingKeywords).toEqual(['kubernetes', 'terraform'])
   })
 
   it('a below-threshold score still completes the scan (COMPLETE_FAIL, not ERROR)', async () => {
@@ -1056,6 +1192,10 @@ describe('generateFix', () => {
           return opts.rewriteResult ?? { success: true, data: { name: 'Jane Rewritten' }, quantificationOpportunities: [] }
         },
         generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false },
+        // AUDIT FIX (Auth/Scan round): the fix pipeline now scores candidates
+        // like a fresh scan does (rule score blended with the AI opinion).
+        scoreResumeWithAI: async () => opts.aiResult ?? { success: false },
+        extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': {
         generateShortCode: async () => 'NEWCODE1',
@@ -1241,6 +1381,176 @@ describe('generateFix', () => {
   })
 })
 
+describe('generateFix — Auth/Scan audit round', () => {
+  // Reuses generateFix's own setup() via a fresh copy: same stubs, same helpers.
+  function fixSetup(opts = {}) {
+    const state = { scanUpdates: [], r2Puts: [], credits: [], alerts: [], emails: [], rpcs: [], parseCalls: 0, html: 0, pdfCalls: 0 }
+    const scan = opts.scan
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: [{ id: 's1' }], error: opts.deliverError || null } }
+      if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: true, error: null } }
+    })
+    const rewriteCalls = []
+    const env = { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }), put: async (key) => { state.r2Puts.push(key) }, delete: async () => {} } }
+    const loaded = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/resume.parser.js': { parse: async () => { state.parseCalls++; return { resumeData: { name: 'Parsed' }, parseError: false } }, extractText: async () => 'x'.repeat(150) },
+      'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
+      'services/ats.service.js': { scoreResume: () => ({ score: opts.ruleScore ?? 70, detail: {} }), describeWeakAreas: () => ['weak'] },
+      'services/claude.service.js': {
+        rewriteResumeContent: async (...a) => { rewriteCalls.push(a); if (opts.throwOnRewrite) throw new Error('claude exploded'); return { success: true, data: { name: 'Rewritten' }, quantificationOpportunities: [] } },
+        generateBeautifulResumeHTML: async () => { state.html++; return opts.htmlResult ?? { success: true, data: '<html></html>' } },
+        scoreResumeWithAI: async () => opts.aiResult ?? { success: false },
+        extractJson: s => JSON.parse(s),
+      },
+      'services/badge.service.js': { generateShortCode: async () => 'NEWCODE1', buildVerificationUrl: (e, code) => `https://x/v/${code}`, hashBytes: async () => 'h' },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/pdf.service.js': { generateResumePDF: async () => { state.pdfCalls++; if (opts.pdfFailTimes && state.pdfCalls <= opts.pdfFailTimes) throw new Error('browser busy'); return Buffer.from('pdf') } },
+      'services/email.service.js': {
+        sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }), sendFixDeliveredPlain: async () => {},
+        sendFixFailed: async (...a) => state.emails.push({ fn: 'sendFixFailed', a }), sendOwnerAlert: async (...a) => state.alerts.push(a),
+      },
+    })
+    return { ...loaded, state, db, env, rewriteCalls }
+  }
+  const base = { id: 's1', user_id: 'u1', input_mode: 'brain_dump', job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 0 }
+
+  it('a retry keeps the user\'s ORIGINAL in original_resume_data (not the previous rewrite) and guards fabrication against that original', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Round1' }, fix_retry_count: 1, fix_ats_score: 60, verification_code: 'C1', verification_url: 'https://x/v/C1' } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.rewriteCalls[0][1]).toEqual({ name: 'Round1' })          // builds on the last rewrite
+    expect(t.rewriteCalls[0][4]).toEqual({ name: 'Original' })        // ...but is checked against the original
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.original_resume_data).toEqual({ name: 'Original' })
+    expect(finalUpdate.rewritten_resume_data).toEqual({ name: 'Rewritten' })
+  })
+  it('file mode: a scan that already has structured data does not pay for another Claude parse', async () => {
+    t = fixSetup({ scan: { ...base, input_mode: 'file', resume_path: 'k', resume_mime_type: 'application/pdf', original_resume_data: { name: 'Stored' }, fix_retry_count: 1, rewritten_resume_data: { name: 'R1' }, fix_ats_score: 60 } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.parseCalls).toBe(0)
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').original_resume_data).toEqual({ name: 'Stored' })
+  })
+  it('file mode, first run: parses once and persists that structure as the original', async () => {
+    t = fixSetup({ scan: { ...base, input_mode: 'file', resume_path: 'k', resume_mime_type: 'application/pdf', original_resume_data: null } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.parseCalls).toBe(1)
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').original_resume_data).toEqual({ name: 'Parsed' })
+  })
+  it('scores fix candidates on the SAME blended scale as a scan (rule 70% + AI 30%), so before/after and the tiers agree', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, ruleScore: 70, aiResult: { success: true, data: JSON.stringify({ aiScore: 90 }) } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    // 0.7*70 + 0.3*90 = 76 (rule-only would have been 70)
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').fix_ats_score).toBe(76)
+  })
+  it('falls back to the rule score when the AI scorer is unavailable', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, ruleScore: 70 })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').fix_ats_score).toBe(70)
+  })
+  it('a crash on a RETRY round reverts via revert_fix_retry (status back to FIX_DELIVERED AND the retry handed back) — not ERROR, no "failed" email — and still alerts the owner', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' }, rewritten_resume_data: { name: 'R1' }, resume_ats_path: 'old.docx', fix_retry_count: 1, fix_ats_score: 60 }, throwOnRewrite: true })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(false)
+    expect(t.state.rpcs).toEqual([{ name: 'revert_fix_retry', args: { p_scan_id: 's1' } }])
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(false)
+    expect(t.state.alerts.length).toBe(1)
+  })
+  it('a crash on the FIRST run is still ERROR + failure email', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, throwOnRewrite: true })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
+  })
+  it('a transient PDF render failure is retried once before giving up', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, pdfFailTimes: 1 })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.pdfCalls).toBe(2)
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').resume_pdf_path).toMatch(/pdf|beautiful/i)
+  })
+})
+
+describe('regeneratePdf', () => {
+  function pdfSetup(opts = {}) {
+    const state = { updates: [], updateFilters: [], r2Puts: [], r2Deletes: [], htmlArgs: null }
+    const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 85, rewritten_resume_data: { name: 'Rewritten' }, original_resume_data: { name: 'Orig' }, verification_url: 'https://x/v/C1', resume_pdf_path: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); state.updateFilters.push(q.filters); return { data: 'updateReturn' in opts ? opts.updateReturn : [{ id: 's1' }], error: opts.updateErr || null } }
+    })
+    const env = { RESUMES_BUCKET: { put: async k => { state.r2Puts.push(k) }, delete: async k => { state.r2Deletes.push(k) } } }
+    const loaded = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return opts.htmlResult ?? { success: true, data: '<html></html>' } } },
+      'services/badge.service.js': { hashBytes: async () => 'pdfhash' },
+      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/pdf.service.js': { generateResumePDF: async () => { if (opts.pdfThrows) throw new Error('browser down'); return Buffer.from('pdf') } },
+    })
+    return { ...loaded, state, db, env }
+  }
+  const call = (o = {}) => ({ env: t.env, get: k => ({ user: { id: 'u1' } }[k]), req: { param: () => 's1' }, json: (body, status = 200) => ({ body, status }), ...o })
+
+  it('403s someone else\'s scan; 400s before delivery; 400s with nothing stored', async () => {
+    t = pdfSetup({ scan: { id: 's1', user_id: 'other', fix_purchased: true, status: 'FIX_DELIVERED' } })
+    expect((await t.mod.regeneratePdf(call())).status).toBe(403)
+    t.restore()
+    t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_GENERATING' } })
+    expect((await t.mod.regeneratePdf(call())).status).toBe(400)
+    t.restore()
+    t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', rewritten_resume_data: null, original_resume_data: null } })
+    expect((await t.mod.regeneratePdf(call())).status).toBe(400)
+  })
+  it('is a no-op success when a PDF already exists (never spends a render)', async () => {
+    t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', resume_pdf_path: 'have.pdf' } })
+    const res = await t.mod.regeneratePdf(call())
+    expect(res.body.data.alreadyAvailable).toBe(true)
+    expect(t.state.htmlArgs).toBe(null)
+  })
+  it('renders from the REWRITTEN data with the credential wording the score earns, stores the PDF and attaches it only where none exists', async () => {
+    t = pdfSetup()
+    const res = await t.mod.regeneratePdf(call())
+    expect(res.body.success).toBe(true)
+    expect(res.body.data.alreadyAvailable).toBe(false)
+    expect(t.state.htmlArgs[1]).toEqual({ name: 'Rewritten' })
+    expect(t.state.htmlArgs[3]).toBe('https://x/v/C1')
+    expect(t.state.htmlArgs[4]).toEqual({ verified: true })
+    expect(t.state.updates[0]).toMatchObject({ resume_pdf_hash: 'pdfhash' })
+    expect(t.state.updates[0].resume_pdf_path).toBeTypeOf('string')
+    expect(t.state.updateFilters[0]).toContainEqual(['is', 'resume_pdf_path', null])
+    expect(Object.keys(t.state.updates[0]).sort()).toEqual(['resume_pdf_hash', 'resume_pdf_path'])   // touches nothing else
+  })
+  it('FIX_PLAIN: no verification link, no credential, no hash', async () => {
+    t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX_PLAIN', fix_ats_score: 90, rewritten_resume_data: { name: 'R' }, verification_url: 'https://x/v/C1' } })
+    await t.mod.regeneratePdf(call())
+    expect(t.state.htmlArgs[3]).toBe(null)
+    expect(t.state.htmlArgs[4]).toEqual({ verified: false })
+    expect(t.state.updates[0].resume_pdf_hash).toBe(null)
+  })
+  it('a below-threshold delivery is labelled honestly (verified:false), same rule generateFix uses', async () => {
+    t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 60, rewritten_resume_data: { name: 'R' }, verification_url: 'https://x/v/C1' } })
+    await t.mod.regeneratePdf(call())
+    expect(t.state.htmlArgs[4]).toEqual({ verified: false })
+  })
+  it('a render failure is a 502 that changes nothing', async () => {
+    t = pdfSetup({ pdfThrows: true })
+    const res = await t.mod.regeneratePdf(call())
+    expect(res.status).toBe(502)
+    expect(t.state.updates).toHaveLength(0)
+    t.restore()
+    t = pdfSetup({ htmlResult: { success: false, error: 'RESPONSE_TRUNCATED' } })
+    expect((await t.mod.regeneratePdf(call())).status).toBe(502)
+  })
+  it('losing the race (another request attached a PDF first) deletes the orphan and reports success', async () => {
+    t = pdfSetup({ updateReturn: [] })
+    const res = await t.mod.regeneratePdf(call())
+    expect(res.body.data.alreadyAvailable).toBe(true)
+    expect(t.state.r2Deletes).toHaveLength(1)
+    expect(t.state.r2Deletes[0]).toBe(t.state.r2Puts[0])
+  })
+})
+
 // ─── generateBadge (background job — credential only, no AI rewrite) ──────
 
 describe('generateBadge', () => {
@@ -1299,12 +1609,16 @@ describe('generateBadge', () => {
     expect('rewritten_resume_data' in finalUpdate).toBe(false)
   })
 
-  it('brain_dump/saved_profile: falls back to an empty-shell candidate rather than crashing when structured data is missing', async () => {
+  // AUDIT FIX (Auth/Scan round): the empty-"Candidate"-shell fallback delivered a
+  // paid, "Passthrough Verified" document that was not the person's resume.
+  it('brain_dump/saved_profile with no structured data FAILS (ERROR + failure email + owner alert) — it never ships an empty "Candidate" shell', async () => {
     t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'saved_profile', original_resume_data: null, ats_score: 85 } })
     const res = await t.mod.generateBadge(t.env, t.db, 's1')
-    expect(res.success).toBe(true)
-    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
-    expect(finalUpdate.original_resume_data.name).toBe('Candidate')
+    expect(res.success).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'FIX_DELIVERED')).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(true)
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
+    expect(t.state.alerts.length).toBe(1)
   })
 
   it('file-mode: throws into the top-level catch when the R2 object is missing', async () => {
@@ -1320,16 +1634,22 @@ describe('generateBadge', () => {
     expect(finalUpdate.original_resume_data).toEqual({ name: 'Jane From File' })
   })
 
-  it('file-mode: a parse failure never crashes — falls back to a skills-from-raw-text shell instead', async () => {
+  it('file-mode: a parse failure FAILS the job (retryable via the sweep) instead of delivering a skills-from-raw-text shell', async () => {
     t = setup({
       scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', ats_score: 85 },
-      fileParseResult: { parseError: true },
+      fileParseResult: { parseError: true, parseErrorMessage: 'Could not extract resume structure (PARSE_FAIL).' },
     })
     const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(res.error).toMatch(/PARSE_FAIL/)
+    expect(t.state.scanUpdates.some(u => u.status === 'FIX_DELIVERED')).toBe(false)
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
+  })
+  it('file-mode: reuses structured data persisted by an earlier run instead of re-parsing', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', ats_score: 85, original_resume_data: { name: 'Stored' } }, fileParseResult: { parseError: true } })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
     expect(res.success).toBe(true)
-    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
-    expect(finalUpdate.original_resume_data.name).toBe('Candidate')
-    expect(finalUpdate.original_resume_data.skills.length).toBeGreaterThan(0)
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').original_resume_data).toEqual({ name: 'Stored' })
   })
 
   it('reuses an existing verification code rather than minting a new one', async () => {

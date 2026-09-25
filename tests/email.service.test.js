@@ -31,6 +31,23 @@ describe('email send — per-recipient throttle', () => {
     expect(t.sent).toHaveLength(3)
     expect(logs(t.db).map(l => l.status)).toEqual(['sent', 'sent', 'sent', 'throttled'])
   })
+  // AUDIT FIX (Auth/Scan round): callers that rotate a single-use link token
+  // reserve the slot themselves, BEFORE rotating, and pass slotReserved so the
+  // slot isn't spent a second time inside send().
+  it('reserveRecipientSlot spends the same budget send() does, and slotReserved sends without spending another', async () => {
+    t = setup()
+    const granted = []
+    for (let i = 0; i < 4; i++) granted.push(await t.mod.reserveRecipientSlot(t.env, 'Victim@Example.com', 'password_reset'))
+    expect(granted).toEqual([true, true, true, false])                          // 3/hour, case-insensitive — same key as send()
+    // a reserved send goes out regardless of what the budget says now (it was already paid for)
+    expect(await t.mod.sendPasswordReset(t.env, t.db, 'victim@example.com', 'V', 'tok', { slotReserved: true })).toBe(true)
+    // ...but an ordinary, unreserved send is still throttled
+    expect(await t.mod.sendPasswordReset(t.env, t.db, 'victim@example.com', 'V', 'tok')).toBe(false)
+  })
+  it('reserveRecipientSlot on an unthrottled template always grants', async () => {
+    t = setup()
+    for (let i = 0; i < 10; i++) expect(await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'password_changed')).toBe(true)
+  })
   it('is per recipient and case-insensitive', async () => {
     t = setup()
     for (let i = 0; i < 3; i++) await t.mod.sendPasswordReset(t.env, t.db, 'Victim@Example.com', 'V', 't')

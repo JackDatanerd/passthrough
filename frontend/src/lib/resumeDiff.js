@@ -146,6 +146,64 @@ function diffList(before, after) {
   }
 }
 
+// AUDIT FIX (Auth/Scan round): education and projects went through the same
+// rewrite and the same fabrication guard (claude.service.js's detectFabrication
+// now checks degree level and dates on education too) as experience, but this
+// file never diffed them — a promoted degree or an added/removed project was
+// invisible on the one screen meant to show the person everything the AI
+// changed. Reuses the same job-diff shape (institution/name stands in for
+// company) since a degree entry has no bullet list.
+function diffEducation(original, rewritten) {
+  const company     = str(original?.institution) || str(rewritten?.institution)
+  const beforeTitle = str(original?.degree)
+  const afterTitle  = rewritten?.degree !== undefined ? str(rewritten.degree) : beforeTitle
+  const beforeDates = str(original?.dates)
+  const afterDates  = rewritten?.dates !== undefined ? str(rewritten.dates) : beforeDates
+  return {
+    company,
+    beforeTitle, afterTitle, titleChanged: beforeTitle.trim() !== afterTitle.trim(),
+    beforeDates, afterDates, datesChanged: beforeDates.trim() !== afterDates.trim(),
+    entryStatus: !original ? 'added' : !rewritten ? 'removed' : 'matched',
+  }
+}
+function diffEntryList(originalList, rewrittenList, diffFn, matchKey) {
+  const matched = []
+  const used = new Set()
+  if (originalList.length === rewrittenList.length) {
+    originalList.forEach((item, i) => { matched.push({ original: item, rewritten: rewrittenList[i] }); used.add(i) })
+  } else {
+    originalList.forEach(item => {
+      const idx = rewrittenList.findIndex((r, i) => !used.has(i) && normCompany(matchKey(r)) === normCompany(matchKey(item)))
+      if (idx !== -1) { matched.push({ original: item, rewritten: rewrittenList[idx] }); used.add(idx) }
+      else matched.push({ original: item, rewritten: null })
+    })
+    rewrittenList.forEach((r, i) => { if (!used.has(i)) matched.push({ original: null, rewritten: r }) })
+  }
+  return matched.map(({ original, rewritten }) => diffFn(original, rewritten))
+}
+function diffProject(original, rewritten) {
+  const name = str(original?.name) || str(rewritten?.name)
+  const beforeDesc = str(original?.description)
+  const afterDesc  = rewritten?.description !== undefined ? str(rewritten.description) : beforeDesc
+  return {
+    name,
+    descChanged: beforeDesc.trim() !== afterDesc.trim(), beforeDesc, afterDesc,
+    technologies: diffList(Array.isArray(original?.technologies) ? original.technologies : [], Array.isArray(rewritten?.technologies) ? rewritten.technologies : []),
+    entryStatus: !original ? 'added' : !rewritten ? 'removed' : 'matched',
+  }
+}
+
+// AUDIT FIX (Auth/Scan round): the rewrite prompt is told the header (name,
+// email, phone, location, links) must stay in the same schema, but nothing
+// ever compared it — a wrong or dropped contact detail (the one thing that
+// actually breaks an employer's ability to reach the candidate) had no
+// visibility on this screen at all.
+function diffContact(original, rewritten) {
+  const fields = ['name', 'email', 'phone', 'location', 'linkedin', 'portfolio']
+  const changed = fields.map(f => ({ field: f, ...diffText(original?.[f], rewritten?.[f]) })).filter(f => f.changed)
+  return { changed }
+}
+
 /**
  * buildResumeDiff(original, rewritten) -> diff object | null
  * Returns null if there's no original data to diff against at all (should
@@ -154,8 +212,11 @@ function diffList(before, after) {
 export function buildResumeDiff(original, rewritten) {
   if (!original) return null
   return {
+    contact:        diffContact(original, rewritten),
     summary:        diffText(original.summary, rewritten?.summary),
     experience:     diffExperience(original.experience || [], rewritten?.experience || []),
+    education:      diffEntryList(original.education || [], rewritten?.education || [], diffEducation, e => e?.institution),
+    projects:       diffEntryList(original.projects || [], rewritten?.projects || [], diffProject, p => p?.name),
     skills:         diffList(original.skills || [], rewritten?.skills || []),
     certifications: diffList(original.certifications || [], rewritten?.certifications || [])
   }

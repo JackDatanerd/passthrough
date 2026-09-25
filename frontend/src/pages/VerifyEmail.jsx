@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
@@ -12,11 +12,19 @@ export default function VerifyEmail() {
   const [params] = useSearchParams()
   const { refreshUser } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
+  const ran = useRef(false)
 
   useEffect(() => {
+    // AUDIT FIX (Auth/Scan round): ConfirmEmailChange already guards against the
+    // effect running twice (StrictMode in dev); this page didn't, so the second
+    // request hit an already-used link and replaced the success screen with
+    // "Verification failed". (The API also now answers a replayed link with
+    // "already verified", covering double clicks and link scanners.)
+    if (ran.current) return
+    ran.current = true
     const token = params.get('token')
     if (!token) { setStatus('error'); return }
-    api.get(`/auth/verify-email?token=${token}`)
+    api.get(`/auth/verify-email?token=${encodeURIComponent(token)}`)
       .then(() => {
         setStatus('success')
         // If this browser happens to already be logged in (e.g. the link

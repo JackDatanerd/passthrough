@@ -52,7 +52,7 @@ const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
 const referralService      = require('../services/referral.service')
 const rateLimiter          = require('../middleware/rateLimiter')
-const { clientIp }         = require('../lib/clientIp')
+const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
 
@@ -328,6 +328,28 @@ async function createScan(ctx) {
       bypassGranted = true
     }
 
+    // FEATURE GAP CLOSED (Auth/Scan round): the free quota is per ACCOUNT, and
+    // an account needs nothing but an email address — no verification is
+    // required to scan — so N throwaway accounts were N x 3 free scans, each
+    // one a paid Claude call. A per-IP ceiling across all accounts closes the
+    // farm without touching normal use (default 15 scans/day/IP, i.e. five
+    // accounts' worth; SCAN_IP_DAILY_CAP overrides it, 0 disables it; the
+    // testing-bypass IPs are exempt). The slot is only spent AFTER the account
+    // quota said yes, and the account slot is handed back if this refuses.
+    {
+      const ip = clientIp(ctx)
+      const envCap = parseInt(ctx.env.SCAN_IP_DAILY_CAP, 10)
+      const ipCap = Number.isFinite(envCap) ? envCap : c.FREE_SCANS_PER_IP_PER_DAY
+      if (ipCap > 0 && !rateLimiter.isBypassed(ctx.env, ip)) {
+        const ipOk = await rateLimiter.hitQuota(ctx.env, `rl:scanip:${rateKeyIp(ip)}`, ipCap, 24 * 3600)
+        if (!ipOk) {
+          warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: user.id }), 'scan quota rollback (ip cap)')
+          await cleanupFile()
+          return ctx.json({ success: false, message: 'Too many scans from this network today. Please try again tomorrow.' }, 429)
+        }
+      }
+    }
+
     try {
       await putFileIfNeeded()
 
@@ -477,16 +499,55 @@ function buildAtsDetail(fullAtsReport) {
 // discarded, at both call sites. Blends the score exactly as before and
 // also returns whatever missing-keyword list Claude provided, for the
 // caller to persist onto full_ats_report.aiMissingKeywords.
+// Removes empty strings the editor sends for untouched lines: blank bullets,
+// blank skills / certifications / technologies.
+function dropBlankEntries(rd) {
+  const keep = arr => (Array.isArray(arr) ? arr.filter(x => typeof x !== 'string' || x.trim()) : arr)
+  return {
+    ...rd,
+    skills: keep(rd.skills),
+    certifications: keep(rd.certifications),
+    experience: Array.isArray(rd.experience) ? rd.experience.map(e => ({ ...e, bullets: keep(e.bullets) })) : rd.experience,
+    projects: Array.isArray(rd.projects) ? rd.projects.map(p => ({ ...p, technologies: keep(p.technologies) })) : rd.projects,
+  }
+}
+
+// AUDIT FIX (Auth/Scan round): a scan that ends in ERROR because of a fault on
+// OUR side (or one that produced nothing at all) used to keep the free-scan
+// slot it consumed — the person lost one of their 3 daily scans and got no
+// result for it. Handed back here, but only when the scan was created today
+// (after the daily reset the counter already belongs to a different day) and
+// never for a failure that is the person's own doing while still costing us
+// money (see the call sites).
+async function refundScanQuota(supabase, scan, label) {
+  if (!scan || !scan.userId || !scan.createdAt) return
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  if (new Date(scan.createdAt) < startOfToday) return
+  warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: scan.userId }), label)
+}
+
+// AUDIT FIX (Auth/Scan round): the AI's number went into the blend unchecked.
+// An aiScore of 1000 — from a hallucination, or from text hidden in the resume
+// or JD telling the model what to answer — produced a flat 100 and unlocked
+// the "Verified" credential. The AI opinion is now (1) required to be a finite
+// number, (2) clamped to 0-100, and (3) allowed to sit at most
+// AI_MAX_ABOVE_RULE points above the deterministic score: an AI verdict far
+// ABOVE what the rules measure is exactly what injection looks like, while
+// honest disagreement stays within a normal range.
+const AI_MAX_ABOVE_RULE = 25
 function blendAiScore(ruleScore, aiResult, logLabel) {
   let finalScore = ruleScore
   let aiMissingKeywords = []
   if (aiResult.success) {
     try {
       const parsed = claudeService.extractJson(aiResult.data)
-      if (typeof parsed.aiScore === 'number')
-        finalScore = Math.round((ruleScore * c.ATS_RULE_WEIGHT) + (parsed.aiScore * c.ATS_AI_WEIGHT))
+      if (typeof parsed.aiScore === 'number' && Number.isFinite(parsed.aiScore)) {
+        const ai = Math.min(Math.max(parsed.aiScore, 0), 100, ruleScore + AI_MAX_ABOVE_RULE)
+        finalScore = Math.round((ruleScore * c.ATS_RULE_WEIGHT) + (ai * c.ATS_AI_WEIGHT))
+      }
       if (Array.isArray(parsed.missingKeywords))
-        aiMissingKeywords = parsed.missingKeywords.filter(k => typeof k === 'string' && k.trim()).slice(0, 15)
+        aiMissingKeywords = parsed.missingKeywords
+          .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 15)
     } catch (parseErr) {
       // Non-fatal by design — falls back to rule-only score — but log it
       // so a silent AI-scoring degradation is at least visible in tail.
@@ -512,7 +573,12 @@ async function getScan(ctx) {
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   const atsDetail = buildAtsDetail(fullAtsReport)
-  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail } })
+  // AUDIT FIX (Auth/Scan round): the storage keys are (rightly) not exposed —
+  // but that also hid whether a PDF EXISTS. A failed PDF render is silent by
+  // design (the DOCX still delivers), so the page kept offering "Download PDF"
+  // forever, answering "File not ready yet." to every click. These two flags
+  // let the UI show what is really there and offer a regeneration.
+  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail, hasDocx: !!resumeAtsPath, hasPdf: !!resumePdfPath } })
 }
 
 // Loosely mirrors the shape claude.service.js's parseResumeStructure /
@@ -610,7 +676,10 @@ async function updateResumeData(ctx) {
   const parsedBody = resumeDataSchema.safeParse(body?.resumeData)
   if (!parsedBody.success)
     return ctx.json({ success: false, message: 'Resume data is not in the expected shape.' }, 400)
-  const resumeData = parsedBody.data
+  // AUDIT FIX (Auth/Scan round): the editor sends a bullet/skill for every
+  // line the person typed, including blank ones; blanks were saved and became
+  // empty "•" lines in the delivered documents.
+  const resumeData = dropBlankEntries(parsedBody.data)
 
   // Same WYSIWYG scoring basis as runAtsScan's own brain_dump/saved_profile
   // branches (see renderStructuredResumeText above) and the same AI/rule
@@ -619,14 +688,20 @@ async function updateResumeData(ctx) {
   // cheaper approximation that could disagree with it for reasons that have
   // nothing to do with the actual edit.
   const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
-  const rawResumeText = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_CHARS)
+  const rawResumeText = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_TEXT_CHARS)
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
   const aiResult = await claudeService.scoreResumeWithAI(ctx.env, rawResumeText, jdText)
   const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
   const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
 
-  const { error: updErr } = await supabase.from('scans').update({
+  // AUDIT FIX (Auth/Scan round): the write was keyed on id alone, but the
+  // checks above were made BEFORE a multi-second Claude call. A payment that
+  // landed in that window (status -> FIX_PURCHASED, fix_purchased -> true) was
+  // then overwritten: status silently reverted to COMPLETE_*, and the paid
+  // fix could be generated from data edited after the purchase. The write now
+  // only applies while the scan is still exactly what was checked.
+  const { data: updated, error: updErr } = await supabase.from('scans').update({
     original_resume_data: resumeData,
     ats_score:       finalScore,
     passed:          finalScore >= c.ATS_PASS_THRESHOLD,
@@ -636,8 +711,10 @@ async function updateResumeData(ctx) {
     content_score:   ruleResult.contentScore,
     full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
     status
-  }).eq('id', scan.id)
+  }).eq('id', scan.id).eq('fix_purchased', false).in('status', ['COMPLETE_PASS', 'COMPLETE_FAIL']).select('id')
   if (updErr) throw updErr
+  if (Array.isArray(updated) && updated.length === 0)
+    return ctx.json({ success: false, message: 'This scan changed while you were editing (a purchase may be in progress). Refresh the page and try again.' }, 409)
 
   return ctx.json({ success: true, data: {
     originalResumeData: resumeData,
@@ -1217,11 +1294,13 @@ async function getScanWithUser(supabase, scanId) {
 // a stale comment.
 
 async function runAtsScan(env, supabase, scanId) {
+  let scanForRefund = null
   try {
     warnOnError(await supabase.from('scans').update({ status: 'SCANNING' }).eq('id', scanId), 'runAtsScan: mark SCANNING')
     const { data: row, error } = await supabase.from('scans').select('*').eq('id', scanId).single()
     if (error) throw error
     const scan = scanRowToCamel(row)
+    scanForRefund = scan
 
     let rawResumeText
 
@@ -1237,6 +1316,10 @@ async function runAtsScan(env, supabase, scanId) {
           status: 'ERROR',
           full_ats_report: { error: parseErrorMessage || 'Could not structure background.' }
         }).eq('id', scanId)
+        // Only a failure of OUR structuring call is refunded — "tell us more"
+        // (too little text) is the person's to fix, and refunding those would
+        // make an unlimited free retry loop.
+        if (/could not structure/i.test(parseErrorMessage || '')) await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (structure failure)')
         return
       }
       // People describing their own career rarely think to state their own
@@ -1294,6 +1377,7 @@ async function runAtsScan(env, supabase, scanId) {
           status: 'ERROR',
           full_ats_report: { error: 'Saved profile data missing.' }
         }).eq('id', scanId)
+        await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (saved profile missing)')
         return
       }
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
@@ -1319,10 +1403,17 @@ async function runAtsScan(env, supabase, scanId) {
       await supabase.from('scans').update({
         status: 'ERROR', full_ats_report: { error: 'Resume could not be parsed.' }
       }).eq('id', scanId)
+      // No Claude call was made and no result was produced — give the slot back
+      // so the person can retry with a usable file.
+      await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (unparseable resume)')
       return
     }
 
-    const resumeText = rawResumeText.slice(0, c.MAX_RESUME_CHARS)
+    // AUDIT FIX (Auth/Scan round): was MAX_RESUME_CHARS (8000 — the brain-dump
+    // box size). A 3-page resume is 8-10k characters; everything past the cap
+    // (Education, Skills, older roles) was invisible to scoring and the
+    // section check reported it missing (measured: sections 85 -> 43).
+    const resumeText = rawResumeText.slice(0, c.MAX_RESUME_TEXT_CHARS)
     const jdText     = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     const ruleResult = atsService.scoreResume(resumeText, jdText)
 
@@ -1396,7 +1487,58 @@ async function runAtsScan(env, supabase, scanId) {
     try {
       await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
     } catch (_) {}
+    // An unexpected throw mid-pipeline is our fault, not the person's.
+    try { await refundScanQuota(supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)') } catch (_) {}
   }
+}
+
+// POST /api/scan/:id/regenerate-pdf
+// FEATURE GAP CLOSED (Auth/Scan round): a failed PDF render is deliberately
+// non-fatal (the DOCX is delivered and paid for) — but nothing ever recorded
+// it, surfaced it, or let the customer recover it. The PDF is the file most
+// candidates actually send to employers, so a person whose render failed was
+// stuck: the page offered "Download PDF" and answered "File not ready yet."
+// forever. This re-renders the PDF from the delivered structured data, adds
+// it to the existing delivery, and touches nothing else (the DOCX, its hash,
+// the verification code and the score are unchanged).
+async function regeneratePdf(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your resume must be delivered before a PDF can be generated.' }, 400)
+  if (scan.resumePdfPath)
+    return ctx.json({ success: true, data: { alreadyAvailable: true } })
+  const data = scan.rewrittenResumeData || scan.originalResumeData
+  if (!data)
+    return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
+
+  const isPlain = scan.fixTier === 'FIX_PLAIN'
+  const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
+  const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
+  const version = cryptoLib.randomToken(6)
+  const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
+  if (!pdfKey)
+    return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute.', detail: pdfError }, 502)
+
+  // Only attach it if nobody else did in the meantime (double-click, two tabs).
+  const { data: updated, error: updErr } = await supabase.from('scans')
+    .update({ resume_pdf_path: pdfKey, resume_pdf_hash: pdfHash })
+    .eq('id', scan.id).is('resume_pdf_path', null).select('id')
+  if (updErr) {
+    await deleteSuperseded(ctx.env, [pdfKey], [])
+    throw updErr
+  }
+  if (Array.isArray(updated) && updated.length === 0) {
+    await deleteSuperseded(ctx.env, [pdfKey], [])
+    return ctx.json({ success: true, data: { alreadyAvailable: true } })
+  }
+  return ctx.json({ success: true, data: { alreadyAvailable: false } })
 }
 
 // ─── generateFix — AI rewrite + ATS DOCX + beautiful PDF + credential ────────
@@ -1423,12 +1565,66 @@ async function deleteSuperseded(env, oldKeys, keepKeys) {
   }
 }
 
+// Scores a candidate resume text the SAME way a fresh scan does: rule score
+// blended with the AI opinion (same weights, same clamping). AUDIT FIX
+// (Auth/Scan round): the fix pipeline used to score candidates rule-ONLY while
+// the number the customer saw before paying (ats_score) is the 70/30 blend —
+// so "before" and "after" were on different scales, and "Verified" meant
+// different things by tier (BADGE: blended >= 80; FIX: rule-only >= 80). One
+// resume could be eligible for the credential through one route and not the
+// other. If the AI call fails this degrades to rule-only, exactly as a scan does.
+async function scoreLikeScan(env, text, jdText, logLabel) {
+  const rule = atsService.scoreResume(text, jdText)
+  let aiResult = { success: false }
+  try { aiResult = await claudeService.scoreResumeWithAI(env, text, jdText) }
+  catch (e) { console.error(`${logLabel} AI score call failed, using rule-only score:`, e.message) }
+  const { finalScore } = blendAiScore(rule.score, aiResult, logLabel)
+  return { ...rule, score: finalScore, ruleScore: rule.score }
+}
+
+// Renders the designed PDF for a delivered resume and stores it. Shared by
+// generateFix, generateBadge and regeneratePdf so all three behave alike. A
+// failure never throws (the DOCX is already delivered and paid for) but IS
+// reported, and the PDF render itself gets one retry — Browser Rendering
+// sessions fail transiently (concurrency limits, cold starts).
+async function renderDeliveredPdf(env, scanId, data, designTokens, verificationUrl, verified, version, { hash }) {
+  const htmlResult = await claudeService.generateBeautifulResumeHTML(env, data, designTokens, verificationUrl, { verified })
+  if (!htmlResult.success) {
+    console.error(`[WARN] HTML resume generation failed for ${scanId}: ${htmlResult.error || 'unknown'}`)
+    return { pdfKey: null, pdfHash: null, error: htmlResult.error || 'HTML generation failed' }
+  }
+  let lastErr = null
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const pdfBytes = await pdfService.generateResumePDF(env, htmlResult.data)
+      const pdfKey = storage.beautifulPdfKey(scanId, version)
+      await env.RESUMES_BUCKET.put(pdfKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
+      // The PDF is the file candidates email to hiring managers — it needs a
+      // fingerprint too, or the file employers actually receive is unverifiable.
+      return { pdfKey, pdfHash: hash ? await badgeService.hashBytes(pdfBytes) : null, error: null }
+    } catch (pdfErr) {
+      lastErr = pdfErr
+      // PDF failure must not kill delivery — DOCX is already generated and paid for
+      console.error(`[WARN] PDF generation failed for ${scanId} (attempt ${attempt}):`, pdfErr.message)
+    }
+  }
+  return { pdfKey: null, pdfHash: null, error: lastErr ? lastErr.message : 'PDF generation failed' }
+}
+
 async function generateFix(env, supabase, scanId) {
+  // True once this scan already HAS a delivered fix and this run is a retry on
+  // top of it — a crash then must not take the delivered fix away (see catch).
+  let priorDelivery = false
   try {
     await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
     const { scan, user } = await getScanWithUser(supabase, scanId)
+    priorDelivery = !!scan.resumeAtsPath && scan.fixRetryCount > 0
 
-    let resumeData
+    // `originalData` is what the resume WAS — the user's own content. It is
+    // what gets persisted as original_resume_data and what the fabrication
+    // guard compares against, on EVERY round. `resumeData` is only what this
+    // round's rewrite starts FROM (the previous rewrite, on a retry).
+    let originalData
 
     if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
       // PHASE 1 (brain_dump) / PHASE 4 (saved_profile): both non-file modes
@@ -1438,9 +1634,15 @@ async function generateFix(env, supabase, scanId) {
       // modes differ only in HOW that data got there (a structuring Claude
       // call vs a direct copy from users.saved_profile); by this point the
       // sourcing logic is identical either way.
-      resumeData = scan.originalResumeData
-      if (!resumeData)
+      originalData = scan.originalResumeData
+      if (!originalData)
         throw new Error(`${scan.inputMode} scan has no structured data — runAtsScan did not complete successfully`)
+    } else if (scan.originalResumeData) {
+      // AUDIT FIX (Auth/Scan round): a retry (or an at-least-once queue
+      // redelivery) re-fetched the file and paid for a fresh Claude parse
+      // whose result was then thrown away. The structure persisted by the
+      // first run IS the original — reuse it.
+      originalData = scan.originalResumeData
     } else {
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
@@ -1448,7 +1650,7 @@ async function generateFix(env, supabase, scanId) {
 
       const parsed = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
       if (parsed.parseError || !parsed.resumeData) throw new Error(parsed.parseErrorMessage || 'Parse failed')
-      resumeData = parsed.resumeData
+      originalData = parsed.resumeData
     }
 
     // Retries build on the LATEST delivered rewrite, not the original
@@ -1456,7 +1658,13 @@ async function generateFix(env, supabase, scanId) {
     // plus feedback" means in practice. isRetry is just "has this scan's
     // retry counter already been incremented past 0" (see retryFix below,
     // which increments it before enqueueing).
+    //
+    // AUDIT FIX (Auth/Scan round): this used to REASSIGN the one variable that
+    // was later written back as original_resume_data — so after any retry the
+    // "original" stored (and shown by DiffView, and offered to "save profile")
+    // was the previous rewrite, not the user's resume.
     const isRetry = scan.fixRetryCount > 0
+    let resumeData = originalData
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
@@ -1519,6 +1727,7 @@ async function generateFix(env, supabase, scanId) {
     if (isRetry && typeof scan.fixAtsScore === 'number') {
       const startingDocxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
       const startingText = await resumeParser.extractText(startingDocxBytes, DOCX_MIME)
+      // Rule-based only on purpose: this is just to regenerate the weak-areas text.
       const startingScore = atsService.scoreResume(startingText, jdText)
       lastFeedback = {
         score: scan.fixAtsScore,
@@ -1528,7 +1737,7 @@ async function generateFix(env, supabase, scanId) {
     }
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
-      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback)
+      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, originalData)
       if (!rewriteResult.success) {
         // AUDIT FIX: FABRICATION_DETECTED used to hit the same `break` as a
         // genuine API/parse failure — but it isn't one. It means THIS ONE
@@ -1549,7 +1758,7 @@ async function generateFix(env, supabase, scanId) {
           lastFeedback = {
             score: null,
             threshold: c.ATS_BADGE_THRESHOLD,
-            weakAreas: ['Previous attempt included a company, title, or institution not present in the original resume, or dropped one that was. Rewrite using ONLY the employers/institutions already present — do not add, remove, or substitute any.']
+            weakAreas: ['Previous attempt changed facts it must not: it added or dropped a company, institution or project, gave a job a higher or different title, changed employment/education dates, upgraded a degree, or added a certification. Rewrite using ONLY the employers, institutions, titles, dates, degrees and certifications already present — do not add, remove, or alter any.']
           }
           continue
         }
@@ -1562,7 +1771,7 @@ async function generateFix(env, supabase, scanId) {
       // see the WYSIWYG comment above.
       const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl)
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
-      const candidateScore = atsService.scoreResume(candidateText, jdText)
+      const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
 
       if (candidateScore.score > bestScore) {
         bestScore = candidateScore.score
@@ -1611,10 +1820,12 @@ async function generateFix(env, supabase, scanId) {
     const rewriteFailed = bestScore < 0
     const fixAtsScore = bestScore >= 0
       ? bestScore
-      : atsService.scoreResume(
+      : (await scoreLikeScan(
+          env,
           await resumeParser.extractText(await docxService.generateAtsDocx(resumeData, verificationUrl), DOCX_MIME),
-          jdText
-        ).score
+          jdText,
+          'generateFix (original fallback)'
+        )).score
 
     if (rewriteFailed && scan.userId) {
       // A total rewrite failure, not a quality shortfall — compensate every
@@ -1679,25 +1890,7 @@ async function generateFix(env, supabase, scanId) {
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
-    let pdfKey = null
-    let pdfHash = null
-    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl, { verified: credentialVerified })
-    if (htmlResult.success) {
-      try {
-        const pdfBytes = await pdfService.generateResumePDF(env, htmlResult.data)
-        const pdfCandidateKey = storage.beautifulPdfKey(scanId, version)
-        await env.RESUMES_BUCKET.put(pdfCandidateKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
-        pdfKey = pdfCandidateKey
-        // The PDF is the file candidates email to hiring managers — it needs a
-        // fingerprint too, or the file employers actually receive is unverifiable.
-        pdfHash = isPlain ? null : await badgeService.hashBytes(pdfBytes)
-      } catch (pdfErr) {
-        // PDF failure must not kill delivery — DOCX is already generated and paid for
-        console.error(`[WARN] PDF generation failed for ${scanId}:`, pdfErr.message)
-        pdfKey = null
-        pdfHash = null
-      }
-    }
+    const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
@@ -1724,7 +1917,7 @@ async function generateFix(env, supabase, scanId) {
       // rewrite failed and generateFix fell back to the original content —
       // in that fallback case the two objects are identical and the diff
       // view will correctly render "no changes," which is the honest signal.
-      original_resume_data:  resumeData,
+      original_resume_data:  originalData,
       rewritten_resume_data: finalData,
       // PHASE 3: static suggestions only — no regeneration loop in v1. See
       // QuantificationPrompts.jsx for how these render.
@@ -1753,6 +1946,23 @@ async function generateFix(env, supabase, scanId) {
     } catch (_) {}
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
+    if (priorDelivery) {
+      // AUDIT FIX (Auth/Scan round): a crash during a RETRY round used to set
+      // ERROR on a scan whose previous fix was already delivered — the results
+      // page hides everything for ERROR, and (for a paid scan) told the person
+      // the scan "failed", although their delivered files were still there.
+      // The earlier delivery is untouched (a retry only repoints the row on
+      // success), so put the status back AND hand the retry back — the same
+      // atomic revert retryFix uses when it can't enqueue. The owner alert
+      // above still fires.
+      try {
+        must(await supabase.rpc('revert_fix_retry', { p_scan_id: scanId }), 'revert fix retry (failed retry round)')
+      } catch (revertErr) {
+        console.error(`[CRITICAL] generateFix ${scanId}: revert_fix_retry failed:`, revertErr.message)
+        try { await supabase.from('scans').update({ status: 'FIX_DELIVERED' }).eq('id', scanId) } catch (_) {}
+      }
+      return { success: false, error: err.message }
+    }
     try {
       await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
     } catch (_) {}
@@ -1776,40 +1986,30 @@ async function generateBadge(env, supabase, scanId) {
 
     let finalData
 
+    // AUDIT FIX (Auth/Scan round): this used to fall back to an empty
+    // "Candidate" shell — or, for a file, a shell whose skills were the first
+    // 20 raw words — whenever structured data was missing or the parse failed,
+    // and then deliver THAT as the paid, "Passthrough Verified" resume (score
+    // 80+, hash and all) with no error and no alert. A credential attached to
+    // a document that is not the person's resume is worse than a failed job:
+    // it is now a failure, which takes the normal path — status ERROR, the
+    // failure email, the owner alert, and the payment-sweep requeue.
     if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
-      // PHASE 1 (brain_dump) / PHASE 4 (saved_profile): same source as
-      // generateFix above. Falls back to an empty shell rather than
-      // throwing if something upstream went wrong — badge generation must
-      // never crash, same guarantee file-mode has via its parse-fallback
-      // branch below.
       finalData = scan.originalResumeData
-      if (!finalData) {
-        finalData = {
-          name: 'Candidate', email: '', phone: null, location: null, summary: null,
-          experience: [], education: [], skills: [], certifications: []
-        }
-        console.warn(`generateBadge: missing originalResumeData for ${scan.inputMode} scan ${scanId}`)
-      }
+      if (!finalData)
+        throw new Error(`${scan.inputMode} scan has no structured data — runAtsScan did not complete successfully`)
+    } else if (scan.originalResumeData) {
+      // Reuse the structure persisted by an earlier run (redelivery) instead
+      // of paying for another Claude parse.
+      finalData = scan.originalResumeData
     } else {
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
       const resumeBytes = new Uint8Array(await obj.arrayBuffer())
 
-      const { resumeData, parseError } = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
-
-      // Parse fallback — badge cannot crash if Claude parse fails
-      if (parseError || !resumeData) {
-        const rawText = await resumeParser.extractText(resumeBytes, scan.resumeMimeType)
-        finalData = {
-          name: 'Candidate', email: '', phone: null, location: null, summary: null,
-          experience: [], education: [],
-          skills: rawText.slice(0, 500).split(/\s+/).slice(0, 20),
-          certifications: []
-        }
-        console.warn(`generateBadge: parse fallback for ${scanId}`)
-      } else {
-        finalData = resumeData
-      }
+      const { resumeData, parseError, parseErrorMessage } = await resumeParser.parse(env, resumeBytes, scan.resumeMimeType)
+      if (parseError || !resumeData) throw new Error(parseErrorMessage || 'Parse failed')
+      finalData = resumeData
     }
 
     // Use finalData.name — correct source after fallback
@@ -1829,25 +2029,9 @@ async function generateBadge(env, supabase, scanId) {
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
-    let pdfKey = null
-    let pdfHash = null
     // A badge purchase requires a score at/above the threshold (initiateFix), so
     // the credential wording is always the verified one here.
-    const htmlResult = await claudeService.generateBeautifulResumeHTML(env, finalData, designTokens, verificationUrl, { verified: true })
-    if (htmlResult.success) {
-      try {
-        const pdfBytes = await pdfService.generateResumePDF(env, htmlResult.data)
-        const pdfCandidateKey = storage.beautifulPdfKey(scanId, version)
-        await env.RESUMES_BUCKET.put(pdfCandidateKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
-        pdfKey = pdfCandidateKey
-        pdfHash = await badgeService.hashBytes(pdfBytes)
-      } catch (pdfErr) {
-        // PDF failure must not kill delivery — DOCX is already generated and paid for
-        console.error(`[WARN] PDF generation failed for ${scanId}:`, pdfErr.message)
-        pdfKey = null
-        pdfHash = null
-      }
-    }
+    const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, true, version, { hash: true })
 
     const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
@@ -1862,8 +2046,8 @@ async function generateBadge(env, supabase, scanId) {
       resume_hash:           resumeHash,
       verified_at:            new Date().toISOString(),
       // PHASE 2: persist the structured content for the diff view. Note the
-      // naming here — `finalData` in this function is the ORIGINAL content
-      // (possibly the parse-fallback shell), never a rewrite: generateBadge
+      // naming here — `finalData` in this function is the ORIGINAL content,
+      // never a rewrite: generateBadge
       // never calls rewriteResumeContent, by design, since badge-only
       // purchases don't include the AI rewrite. rewritten_resume_data is
       // deliberately left untouched (stays null) — DiffView.jsx uses that
@@ -1903,7 +2087,7 @@ async function generateBadge(env, supabase, scanId) {
 }
 
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData, downloadDraft,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

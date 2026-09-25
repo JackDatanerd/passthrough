@@ -78,3 +78,40 @@ describe('buildResumeDiff', () => {
     expect(() => buildResumeDiff(originalShorter, rewrittenWithNull)).not.toThrow()
   })
 })
+
+describe('buildResumeDiff — education, projects, contact (Auth/Scan round)', () => {
+  it('diffs a promoted degree and an invented date on education', () => {
+    const original = { education: [{ institution: 'Cape Town University', degree: 'BSc Computer Science', dates: '2015 - 2018' }] }
+    const rewritten = { education: [{ institution: 'Cape Town University', degree: 'MSc Computer Science', dates: '2013 - 2018' }] }
+    const diff = buildResumeDiff(original, rewritten)
+    expect(diff.education[0].titleChanged).toBe(true)
+    expect(diff.education[0].datesChanged).toBe(true)
+    expect(diff.education[0].entryStatus).toBe('matched')
+  })
+  it('flags an added or removed education entry', () => {
+    const original = { education: [{ institution: 'A', degree: 'BSc', dates: '2018' }] }
+    const rewritten = { education: [{ institution: 'A', degree: 'BSc', dates: '2018' }, { institution: 'B', degree: 'MSc', dates: '2020' }] }
+    const diff = buildResumeDiff(original, rewritten)
+    expect(diff.education.find(e => e.company === 'B').entryStatus).toBe('added')
+  })
+  it('diffs a project description and its technologies', () => {
+    const original = { projects: [{ name: 'Tracker', description: 'A simple tracker', technologies: ['React'] }] }
+    const rewritten = { projects: [{ name: 'Tracker', description: 'A tracker for teams', technologies: ['React', 'Node'] }] }
+    const diff = buildResumeDiff(original, rewritten)
+    expect(diff.projects[0].descChanged).toBe(true)
+    expect(diff.projects[0].technologies.added).toEqual(['Node'])
+    expect(diff.projects[0].technologies.unchanged).toEqual(['React'])
+  })
+  it('diffs contact fields, reporting only the ones that changed', () => {
+    const original = { name: 'Jane', email: 'jane@x.com', phone: '555-1234', linkedin: null }
+    const rewritten = { name: 'Jane', email: 'jane@new.com', phone: '555-1234', linkedin: 'linkedin.com/in/jane' }
+    const diff = buildResumeDiff(original, rewritten)
+    expect(diff.contact.changed.map(f => f.field)).toEqual(['email', 'linkedin'])
+    expect(diff.contact.changed.find(f => f.field === 'email')).toMatchObject({ before: 'jane@x.com', after: 'jane@new.com' })
+  })
+  it('never throws on malformed education/project entries', () => {
+    const original = { education: [null, { institution: 123, degree: undefined }], projects: [{ name: 'P', technologies: 'not-an-array' }] }
+    const rewritten = { education: [{ institution: 123, degree: 'BSc' }], projects: [null] }
+    expect(() => buildResumeDiff(original, rewritten)).not.toThrow()
+  })
+})

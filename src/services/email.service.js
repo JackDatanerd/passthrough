@@ -122,10 +122,20 @@ function globalVars(env) {
 
 // PATCH 1 (carried over): FRONTEND_URL injected automatically so base.html's
 // header link is always correct. Individual send calls do not need to pass it.
-async function send(env, supabase, to, subject, template, vars) {
+//
+// AUDIT FIX (Auth/Scan round): `opts.slotReserved` means the caller already
+// spent this recipient's throttle slot itself (reserveRecipientSlot below) —
+// so the check here must not spend a second one. Callers that rotate a
+// single-use link token (password reset, verification, email change) MUST
+// reserve first and only then rotate: rotating first and letting send()
+// discover the throttle afterwards left the database holding a token whose
+// raw value was never mailed, killing the link already sitting in the
+// person's inbox (and, for a stranger triggering "forgot password" four
+// times, denying the real owner their reset).
+async function send(env, supabase, to, subject, template, vars, opts = {}) {
   let status = 'sent', error = null
 
-  if (!(await recipientAllowed(env, to, template))) {
+  if (!opts.slotReserved && !(await recipientAllowed(env, to, template))) {
     status = 'throttled'
     error  = 'per-recipient limit reached'
     console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
@@ -159,18 +169,18 @@ async function sendWelcome(env, supabase, email, name) {
   return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name })
 }
 
-async function sendVerification(env, supabase, email, name, rawToken) {
+async function sendVerification(env, supabase, email, name, rawToken, opts) {
   return send(env, supabase, email, 'Verify your Passthrough email', 'email_verification', {
     NAME:       name,
     VERIFY_URL: `${env.FRONTEND_URL}/verify-email?token=${rawToken}`
-  })
+  }, opts)
 }
 
-async function sendPasswordReset(env, supabase, email, name, rawToken) {
+async function sendPasswordReset(env, supabase, email, name, rawToken, opts) {
   return send(env, supabase, email, 'Reset your Passthrough password', 'password_reset', {
     NAME:      name,
     RESET_URL: `${env.FRONTEND_URL}/reset-password?token=${rawToken}`
-  })
+  }, opts)
 }
 
 // AUDIT FIX (feature gap, Auth section round 2): mirrors the existing
@@ -192,11 +202,11 @@ async function sendPasswordChanged(env, supabase, email, name) {
 // Companion to sendEmailChangedOldAddress below, which now fires at
 // REQUEST time (see that function's own comment) rather than after an
 // actual change — this is the function that makes the change actual.
-async function sendEmailChangeConfirmation(env, supabase, newEmail, name, rawToken) {
+async function sendEmailChangeConfirmation(env, supabase, newEmail, name, rawToken, opts) {
   return send(env, supabase, newEmail, 'Confirm your new Passthrough email', 'email_change_confirm', {
     NAME:        name,
     CONFIRM_URL: `${env.FRONTEND_URL}/confirm-email-change?token=${rawToken}`
-  })
+  }, opts)
 }
 
 async function sendEmailChangedOldAddress(env, supabase, oldEmail, name, newEmail) {
@@ -540,6 +550,7 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
 
 module.exports = {
   htmlToPlainText, fmtMoney, sendEmployerLeadAck,
+  reserveRecipientSlot: recipientAllowed,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,

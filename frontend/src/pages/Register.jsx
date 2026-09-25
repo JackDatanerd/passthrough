@@ -16,6 +16,9 @@ export default function Register() {
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
   const [confirm,  setConfirm ] = useState('')
+  // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for consent to
+  // the Terms / Privacy Policy. The API requires it and records the version.
+  const [acceptTerms, setAcceptTerms] = useState(false)
   const { loading, error, execute } = useApi()
 
   function fail(message) {
@@ -26,9 +29,10 @@ export default function Register() {
     if (!name || !email || !password) return fail('All fields required.')
     if (password.length < 8) return fail('Password must be at least 8 characters.')
     if (password !== confirm) return fail('Passwords do not match.')
+    if (!acceptTerms) return fail('Please accept the Terms of Service and Privacy Policy to continue.')
     try {
       await execute(async () => {
-        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password })
+        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true })
         const { token, user } = res.data.data
         const scanId = await postRegisterActions(token, user)
         // If there was a pending anon scan, go to it — otherwise dashboard
@@ -56,6 +60,17 @@ export default function Register() {
               placeholder="Min. 8 characters" />
             <Input label="Confirm password" type="password" value={confirm}
               onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
+
+            <label className="flex items-start gap-2 text-sm text-gray-600">
+              <input type="checkbox" checked={acceptTerms} onChange={e => setAcceptTerms(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+              <span>
+                I agree to the{' '}
+                <Link to="/terms" target="_blank" className="text-blue-600 hover:underline">Terms of Service</Link>
+                {' '}and{' '}
+                <Link to="/privacy" target="_blank" className="text-blue-600 hover:underline">Privacy Policy</Link>.
+              </span>
+            </label>
 
             {error && <p className="text-sm text-red-600">{error}</p>}
 

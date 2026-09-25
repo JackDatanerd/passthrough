@@ -141,12 +141,44 @@ function passwordSchema(minMessage) {
     .refine(pw => new TextEncoder().encode(pw).length <= PASSWORD_MAX_BYTES, {
       message: 'Password is too long (max 72 bytes — some characters, like emoji or accented letters, count as more than one byte).'
     })
+    .refine(pw => !COMMON_PASSWORDS.has(pw.toLowerCase()), {
+      message: 'That password is too common — choose something harder to guess.'
+    })
+}
+
+// FEATURE GAP CLOSED (Auth/Scan round): the only password rule was "8+
+// characters", so "password" / "12345678" were accepted for an account that
+// holds a resume, contact details and payment history. A deliberately small
+// deny-list of the most-used 8+ character passwords (the ones credential
+// stuffing tries first) plus a "not your own email" check — no composition
+// rules, which are known to make passwords worse, not better.
+const COMMON_PASSWORDS = new Set([
+  'password', 'password1', 'password12', 'password123', 'password1234', 'passw0rd', 'p@ssw0rd', 'p@ssword',
+  '12345678', '123456789', '1234567890', '11111111', '00000000', '88888888', '87654321', '123123123',
+  'qwertyui', 'qwerty12', 'qwerty123', 'qwertyuiop', 'asdfghjk', 'asdfghjkl', 'zxcvbnm1', '1q2w3e4r', '1qaz2wsx',
+  'iloveyou', 'iloveyou1', 'letmein1', 'welcome1', 'welcome123', 'admin123', 'administrator', 'changeme', 'trustno1',
+  'abc12345', 'abcd1234', 'abcdefgh', 'monkey123', 'dragon123', 'football1', 'baseball1', 'superman1', 'sunshine1',
+])
+// Returns a user-facing message when the password is just the account's own
+// email (or its local part) — checked where the email is known.
+function passwordEmailProblem(password, email) {
+  if (!email) return null
+  const pw = String(password).toLowerCase()
+  const e = String(email).trim().toLowerCase()
+  const local = e.split('@')[0]
+  if (pw === e || (local.length >= 6 && pw === local)) return 'Your password can\'t be your email address.'
+  return null
 }
 
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
   const { name, email, password } = z.object({
+    // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for — or
+    // recorded — acceptance of the Terms/Privacy Policy. Required now, and
+    // stored with the version accepted so a later terms change can tell who
+    // agreed to what (see the 0037 migration).
+    acceptTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the Terms of Service and Privacy Policy to create an account.' }) }),
     // One shared definition with updateName (lib/text.js): control characters
     // and zero-width filler are stripped, and a name with no letter or digit
     // in it ("\u200b", "---") is refused — trim() alone let a name made only
@@ -163,6 +195,9 @@ async function register(c) {
     password: passwordSchema()
   }).parse(body)
 
+  const emailProblem = passwordEmailProblem(password, email)
+  if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
+
   const supabase = getSupabase(c.env)
   const passwordHash = await bcrypt.hash(password, 10)
   const raw    = cryptoLib.randomToken(32)
@@ -171,8 +206,20 @@ async function register(c) {
 
   const { data: row, error } = await supabase
     .from('users')
-    .insert({ name, email, password_hash: passwordHash, email_verify_token: stored, email_verify_expiry: exp })
+    .insert({
+      name, email, password_hash: passwordHash, email_verify_token: stored, email_verify_expiry: exp,
+      terms_accepted_at: new Date().toISOString(), terms_version: constants.TERMS_VERSION,
+    })
     .select().single()
+  // AUDIT FIX (Auth/Scan round): a duplicate email fell to errorHandler's
+  // generic 23505 branch — "Already exists." — which tells a person filling
+  // in a sign-up form nothing about WHAT exists or what to do next. This is
+  // the same fact updateEmail already reports in plain words (and the
+  // unique index makes the response race-free either way).
+  if (error && error.code === '23505') {
+    return c.json({ success: false, code: 'EMAIL_TAKEN',
+      message: 'An account with this email already exists. Try signing in — or reset your password if you have forgotten it.' }, 409)
+  }
   if (error) throw error
   const user = userRowToCamel(row)
 
@@ -297,33 +344,48 @@ async function forgotPassword(c) {
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (user) {
-    const raw    = cryptoLib.randomToken(32)
-    const stored = await cryptoLib.sha256(raw)
-    const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
+  // AUDIT FIX (Auth/Scan round): the per-recipient email throttle (see
+  // email.service.js RECIPIENT_LIMITS — 3 reset emails per address per hour)
+  // used to be discovered by send() AFTER this handler had already
+  // overwritten reset_token. The fourth request in an hour therefore stored
+  // a token whose raw value was never mailed: the link already in the
+  // owner's inbox died, and the owner's own new request was silently
+  // swallowed — and since this endpoint is unauthenticated, four requests
+  // from a stranger were enough to do that to anyone. Now the slot is
+  // reserved FIRST; a throttled request rotates nothing, so the last link
+  // that actually reached the inbox keeps working.
+  //
+  // Timing: every branch performs one KV slot operation and one users-table
+  // UPDATE before answering (the real ones, or no-op equivalents for an
+  // unknown email / a throttled one), so none of them is distinguishable by
+  // latency.
+  const raw    = cryptoLib.randomToken(32)
+  const stored = await cryptoLib.sha256(raw)
+  const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
 
+  let allowed = false
+  try {
+    allowed = await emailService.reserveRecipientSlot(c.env, user ? email : `${cryptoLib.uuid()}@timing.invalid`, 'password_reset')
+  } catch (e) {
+    console.error('forgotPassword slot reservation:', e.message)
+  }
+
+  if (user && allowed) {
     // Checked: mailing a reset link whose token was never stored gives the user a dead link.
     must(await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id), 'store reset token')
     // waitUntil, not fire-and-forget — see register()'s comment for why.
     c.executionCtx.waitUntil(
-      emailService.sendPasswordReset(c.env, supabase, email, user.name, raw)
+      emailService.sendPasswordReset(c.env, supabase, email, user.name, raw, { slotReserved: true })
         .catch(e => console.error('Reset email:', e.message))
     )
   } else {
     // HARDENING (Auth section audit, fresh pass): login() burns a comparable
     // bcrypt.compare when no matching user exists (see getDummyPasswordHash()
     // above) so "no such email" and "wrong password" can't be told apart by
-    // response latency — but this handler's own non-enumeration comment below
-    // was only ever true of the response BODY. The `user` branch pays for a
-    // full network round-trip to Supabase (the reset-token UPDATE) before
-    // responding; this branch previously paid for nothing extra at all, which
-    // is a bigger, easier-to-measure tell than the bcrypt gap login() was
-    // fixed for. Issuing an equivalent UPDATE here — filtered on a random
-    // uuid that can never match a real row, so it's a genuine no-op — costs
-    // the same round trip and index lookup without touching any data.
-    const raw    = cryptoLib.randomToken(32)
-    const stored = await cryptoLib.sha256(raw)
-    const exp    = expiry(constants.RESET_TOKEN_EXPIRY_HOURS)
+    // response latency. An equivalent UPDATE filtered on a random uuid that
+    // can never match a real row costs the same round trip and index lookup
+    // without touching any data — used for an unknown email AND for a
+    // throttled real one.
     try {
       await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', cryptoLib.uuid())
     } catch (e) {
@@ -366,11 +428,19 @@ async function resetPassword(c) {
 
   if (!user) return c.json({ success: false, message: 'Reset link invalid or expired.' }, 400)
 
+  const emailProblem = passwordEmailProblem(newPassword, user.email)
+  if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
+
   // Checked (see lib/db.js): supabase-js never throws, so an unchecked failed
   // write here told the user their password was reset when nothing had been
   // written — and left the old password, and every old session, working.
   must(await supabase.from('users').update({
     password_hash:      await bcrypt.hash(newPassword, 10),
+    // Following an emailed single-use link proves control of this inbox —
+    // the same fact verification establishes — so the address is verified
+    // too (previously someone who reset their password via the link stayed
+    // "unverified" and still had to click a second, redundant link).
+    email_verified:     true,
     reset_token:        null,
     reset_token_expiry: null,
     token_version:       user.tokenVersion + 1,  // kills all existing sessions
@@ -410,6 +480,25 @@ async function resetPassword(c) {
   return c.json({ success: true, message: 'Password reset. Please log in.' })
 }
 
+// GET /api/auth/reset-password/validate?token=xxx
+// FEATURE GAP CLOSED (Auth/Scan round): the reset page couldn't tell a dead
+// link from a live one until AFTER the person had typed and submitted a new
+// password — the worst place to learn "expired". Read-only and side-effect
+// free; the answer is only about the caller's own 256-bit token, so it
+// reveals nothing about any account.
+async function checkResetToken(c) {
+  const token = c.req.query('token')
+  if (!token) return c.json({ success: true, data: { valid: false } })
+  const supabase = getSupabase(c.env)
+  const stored = await cryptoLib.sha256(token)
+  const { data: row, error } = await supabase
+    .from('users').select('id').eq('reset_token', stored)
+    .gt('reset_token_expiry', new Date().toISOString())
+    .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
+  if (error) throw error
+  return c.json({ success: true, data: { valid: !!row } })
+}
+
 // GET /api/auth/verify-email?token=xxx
 async function verifyEmail(c) {
   const token = c.req.query('token')
@@ -427,10 +516,24 @@ async function verifyEmail(c) {
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!user) return c.json({ success: false, message: 'Verification link invalid or expired.' }, 400)
+  if (!user) {
+    // AUDIT FIX (Auth/Scan round): the token was single-use AND deleted on
+    // success, so a SECOND visit to the same link (a double click, a link
+    // scanner or mail client that loads the page first, the SPA effect
+    // running twice) got "invalid or expired" for an address that IS
+    // verified. The hash is now kept after success, so a replay of an
+    // already-used link is answered truthfully. It can only ever report
+    // "already verified" — no state changes on this path.
+    const { data: doneRow, error: doneErr } = await supabase
+      .from('users').select('id').eq('email_verify_token', stored).eq('email_verified', true)
+      .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
+    if (doneErr) throw doneErr
+    if (doneRow) return c.json({ success: true, message: 'Email already verified.' })
+    return c.json({ success: false, message: 'Verification link invalid or expired.' }, 400)
+  }
 
   must(await supabase.from('users').update({
-    email_verified: true, email_verify_token: null, email_verify_expiry: null
+    email_verified: true, email_verify_expiry: null
   }).eq('id', user.id), 'verify email')
 
   return c.json({ success: true, message: 'Email verified.' })
@@ -446,13 +549,23 @@ async function resendVerification(c) {
   const stored = await cryptoLib.sha256(raw)
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
 
+  // AUDIT FIX (Auth/Scan round): reserve the per-recipient email slot BEFORE
+  // rotating the token — see forgotPassword() for the full reasoning. Here
+  // the caller is signed in, so being honest about the limit costs nothing:
+  // the alternative was rotating the token, mailing nothing, and leaving the
+  // person with only a dead link (their latest email's token was gone).
+  if (!(await emailService.reserveRecipientSlot(c.env, user.email, 'email_verification'))) {
+    return c.json({ success: false,
+      message: 'We\'ve already sent several verification emails to this address in the last hour. Please check your inbox (and spam folder) for the latest one, or try again later.' }, 429)
+  }
+
   must(await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id), 'store verify token')
   // waitUntil, not fire-and-forget — see register()'s comment for why. This
   // was the exact cause of "resend verification never arrives": the request
   // returned successfully, but the actual Resend API call was getting
   // silently cancelled before it completed, since nothing protected it.
   c.executionCtx.waitUntil(
-    emailService.sendVerification(c.env, supabase, user.email, user.name, raw)
+    emailService.sendVerification(c.env, supabase, user.email, user.name, raw, { slotReserved: true })
       .catch(e => console.error('Resend verify:', e.message))
   )
 
@@ -516,6 +629,12 @@ async function changePassword(c) {
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
   }
   await recordLoginSuccess(c.env, sessionUser.email)
+
+  const emailProblem = passwordEmailProblem(newPassword, user.email)
+  if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
+  if (newPassword === currentPassword) {
+    return c.json({ success: false, message: 'Your new password must be different from your current one.' }, 400)
+  }
 
   const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
   // Checked (see lib/db.js): this write used to be fire-and-forget. If it
@@ -691,6 +810,14 @@ async function updateEmail(c) {
   const stored = await cryptoLib.sha256(raw)
   const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
 
+  // AUDIT FIX (Auth/Scan round): reserve the per-recipient slot before
+  // staging a new confirmation token — same reasoning as forgotPassword():
+  // a throttled send must not replace a link that was already mailed.
+  if (!(await emailService.reserveRecipientSlot(c.env, newEmail, 'email_change_confirm'))) {
+    return c.json({ success: false,
+      message: 'Too many confirmation emails have been sent to that address recently. Please check its inbox for the latest one, or try again later.' }, 429)
+  }
+
   const { error: updateErr } = await supabase.from('users').update({
     pending_email:        newEmail,
     pending_email_token:  stored,
@@ -699,7 +826,7 @@ async function updateEmail(c) {
   if (updateErr) throw updateErr
 
   c.executionCtx.waitUntil(
-    emailService.sendEmailChangeConfirmation(c.env, supabase, newEmail, user.name, raw)
+    emailService.sendEmailChangeConfirmation(c.env, supabase, newEmail, user.name, raw, { slotReserved: true })
       .catch(e => console.error('Email-change confirm email:', e.message))
   )
   // AUDIT FIX (feature gap, Auth section round 2): the OLD address — the one
@@ -953,7 +1080,7 @@ async function claimScan(c) {
 }
 
 module.exports = {
-  register, login, getMe, forgotPassword, resetPassword,
+  register, login, getMe, forgotPassword, resetPassword, checkResetToken,
   verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
   confirmEmailChange, deleteAccount, claimScan
 }

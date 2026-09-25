@@ -87,15 +87,16 @@ function readEntryCapped(entry, maxBytes) {
 // every OOXML edge case mammoth's full HTML conversion handles (tables,
 // headers/footers, text boxes) — it targets standard resume body text,
 // which is what actually needs to reach the ATS scorer and Claude.
-async function extractDocxText(bytes) {
-  const zip = await JSZip.loadAsync(bytes)
-  const docXml = zip.file('word/document.xml')
-  if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
-  // Capped streaming inflate — see the ZIP-BOMB DEFENCE comment above.
-  const xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
-
-  const paragraphs = xml.match(/<w:p\b[^>]*>[\s\S]*?<\/w:p>/g) || []
-  const lines = paragraphs.map(p => {
+// Turns one WordprocessingML part (document/header/footer XML) into text lines.
+function docxXmlToLines(xml) {
+  // AUDIT FIX (Auth/Scan round): text boxes are stored TWICE — a DrawingML
+  // copy (mc:Choice) and a VML copy (mc:Fallback) — and both contain <w:p>
+  // text, so every text-box resume duplicated its content. Keep one copy.
+  xml = xml.replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '')
+  // `<w:p ... />` (an empty, self-closed paragraph) must not open a match that
+  // swallows the NEXT paragraph's closing tag.
+  const paragraphs = xml.match(/<w:p\b[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g) || []
+  return paragraphs.map(p => {
     // Convert tabs/line-breaks within a paragraph before stripping tags, so
     // cell/line structure isn't just silently collapsed into one run. These
     // get matched alongside <w:t> content below (not separately extracted
@@ -107,11 +108,58 @@ async function extractDocxText(bytes) {
     for (const m of withBreaks.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|[\t\n]/g)) {
       parts.push(m[1] !== undefined ? m[1] : m[0])
     }
-    return parts.join('')
-      .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    // AUDIT FIX (Auth/Scan round): entity decoding ran &amp; FIRST, so the
+    // literal text "&lt;" (stored as "&amp;lt;") came out as "<"; numeric
+    // references (&#8211; &#x2013;) were never decoded at all. &amp; is last.
+    const text = parts.join('')
+      .replace(/&#(\d+);/g, (_, n) => String.fromCodePoint(Math.min(parseInt(n, 10), 0x10ffff)))
+      .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)))
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>')
       .replace(/&quot;/g, '"').replace(/&apos;/g, "'")
+      .replace(/&amp;/g, '&')
+    // AUDIT FIX (Auth/Scan round) — the single biggest scoring defect found:
+    // a Word bullet or numbered item is NOT text. The marker lives in
+    // numbering.xml and the paragraph only carries <w:numPr> (or a List*
+    // style), so a resume with ordinary Word bullets extracted as bare lines
+    // with no bullet character at all. The content scorer found zero bullets,
+    // Content collapsed to 0, and the same resume scored 73 instead of 89
+    // (measured; this app's own generated DOCX emits a literal "•" for
+    // exactly this reason). List paragraphs now get a "• " marker.
+    const isListItem =
+      (/<w:numPr>[\s\S]*?<\/w:numPr>/.test(p) && !/<w:numId\b[^>]*w:val="0"/.test(p)) ||
+      /<w:pStyle\b[^>]*w:val="List(?:Bullet|Number|Continue)\d?"/i.test(p)
+    return isListItem && text.trim() ? `• ${text}` : text
   })
-  return lines.filter(Boolean).join('\n')
+}
+
+// Contact details in a Word HEADER (name / phone / email / links — a very
+// common template design) live in word/header*.xml, not document.xml.
+// AUDIT FIX (Auth/Scan round): they were never read, so such a resume was
+// flagged "Contact missing" (-21 points) and the parse could not find the
+// email or phone. Headers are read in full; footers only for lines that carry
+// contact information, so page-number boilerplate doesn't add noise.
+const CONTACT_LINE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{7,}/i
+
+async function extractDocxText(bytes) {
+  const zip = await JSZip.loadAsync(bytes)
+  const docXml = zip.file('word/document.xml')
+  if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
+  // Capped streaming inflate — see the ZIP-BOMB DEFENCE comment above.
+  const xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
+  const body = docxXmlToLines(xml).filter(Boolean)
+
+  const readParts = async re => {
+    const out = []
+    for (const entry of (zip.file(re) || []).slice(0, 6)) {
+      try { out.push(...docxXmlToLines(new TextDecoder('utf-8').decode(await readEntryCapped(entry, MAX_DOCX_XML_BYTES))).filter(Boolean)) }
+      catch (_) { /* a broken header part must never fail the whole extraction */ }
+    }
+    return out
+  }
+  const seen = new Set(body)
+  const header = (await readParts(/^word\/header\d*\.xml$/)).filter(l => !seen.has(l) && seen.add(l))
+  const footer = (await readParts(/^word\/footer\d*\.xml$/)).filter(l => CONTACT_LINE.test(l) && !seen.has(l) && seen.add(l))
+  return [...header, ...body, ...footer].join('\n')
 }
 
 async function extractText(bytes, mimeType) {
@@ -141,7 +189,13 @@ async function parse(env, bytes, mimeType) {
       parseError: true,
       parseErrorMessage: 'Resume could not be parsed. Upload a text-based PDF or .docx.'
     }
-  const truncated = text.slice(0, c.MAX_RESUME_CHARS)
+  // AUDIT FIX (Auth/Scan round): was c.MAX_RESUME_CHARS (8000 — sized for the
+  // brain-dump box). A 3-page resume is 8-10k characters, so everything past
+  // char 8000 (Education, Skills, older roles) was silently cut BEFORE the
+  // structuring step — and the paid rewrite is built from that structure, so
+  // the delivered resume permanently lacked it. Uploaded files get their own,
+  // larger cap.
+  const truncated = text.slice(0, c.MAX_RESUME_TEXT_CHARS)
   const claude    = require('./claude.service')
   const result    = await claude.parseResumeStructure(env, truncated)
   if (!result.success)

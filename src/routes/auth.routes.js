@@ -10,6 +10,9 @@ router.post('/login',               rl.auth, c.login)
 router.get( '/me',                  auth,    c.getMe)
 router.post('/forgot-password',     rl.auth, c.forgotPassword)
 router.post('/reset-password',      rl.auth, c.resetPassword)
+// FEATURE (Auth/Scan round): lets the reset page report a dead link up front.
+// Link-click posture (not credential guessing) — same looser bucket as /verify-email.
+router.get( '/reset-password/validate', rl.authVerify, c.checkResetToken)
 // HARDENING: moved off the shared 10/15min `rl.auth` credential bucket onto
 // the looser `rl.authVerify` bucket — these are link-click/resend flows,
 // not credential guessing, and were previously eating into the same budget

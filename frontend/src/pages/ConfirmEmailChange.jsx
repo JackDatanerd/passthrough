@@ -24,6 +24,7 @@ export default function ConfirmEmailChange() {
   const { postAuthActions } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
   const [message, setMessage] = useState('')
+  const [keptOtherSession, setKeptOtherSession] = useState(false)
   const ran = useRef(false)
 
   useEffect(() => {
@@ -34,7 +35,19 @@ export default function ConfirmEmailChange() {
     api.post('/auth/email/confirm', { token })
       .then(async res => {
         const { user, token: sessionToken } = res.data.data
-        if (sessionToken && user) await postAuthActions(sessionToken, user)
+        // AUDIT FIX (Auth/Scan round): this used to adopt the returned session
+        // unconditionally — so following a confirmation link in a browser
+        // that was signed in as a DIFFERENT account silently swapped that
+        // session for this one (and claimed the browser's anonymous scans
+        // into it). Adopt it only when nobody is signed in, or the browser is
+        // already this same account; otherwise leave the existing session
+        // alone and say to sign in.
+        let signedInAs = null
+        try { signedInAs = JSON.parse(localStorage.getItem('passthrough_user'))?.id ?? null } catch (_) { /* ignore */ }
+        const hasSession = !!localStorage.getItem('passthrough_token')
+        const sameAccount = signedInAs && user && signedInAs === user.id
+        if (sessionToken && user && (!hasSession || sameAccount)) await postAuthActions(sessionToken, user)
+        else setKeptOtherSession(true)
         setStatus('success')
       })
       .catch(err => {
@@ -59,7 +72,9 @@ export default function ConfirmEmailChange() {
               <div className="text-green-500 text-4xl mb-3">✓</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Email updated</h1>
               <p className="text-sm text-gray-500 mb-6">
-                Your account now uses this email address.
+                {keptOtherSession
+                  ? 'The account now uses this email address. You are signed in to a different account in this browser, so sign out and sign in with the new email to use it.'
+                  : 'Your account now uses this email address.'}
               </p>
               <Link to="/dashboard/settings"
                 className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">

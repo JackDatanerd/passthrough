@@ -28,24 +28,41 @@ const STOP_WORDS = new Set([
 
 // Lightweight heuristic stemmer — NOT a full Porter/Snowball stemmer, but
 // covers the inflections that actually matter for resume/JD matching:
-// plurals (-s/-ies), gerunds (-ing), past tense (-ed), and agent nouns
-// (-er/-or, so "developer" matches "develop", "manager" matches "manage").
-// This deliberately doesn't attempt full derivational morphology (e.g.
-// "management" won't stem to match "manage") — that's a much harder
-// problem, and this covers the large majority of real-world cases at a
-// fraction of the complexity. Verified against 12+ common word-pair tests
-// plus a false-positive check against common English words before shipping.
+// plurals (-s/-es/-ies), gerunds (-ing), past tense (-ed), agent nouns
+// (-er/-or) and -ment (so "manager", "managers", "managed", "managing" and
+// "management" all meet at one stem, as do "engineer"/"engineers"/
+// "engineering").
+//
+// AUDIT FIX (Auth/Scan round): this used to pick exactly ONE suffix rule
+// (an else-if chain), so the plural was never removed before the agent-noun
+// rule ran. "manager" -> "manag" but "managers" -> "manager"; "customer" ->
+// "custom" but "customers" -> "customer"; "engineering" -> "engineer" but
+// "engineer" -> "engin". Of 35 common agent nouns, 29 failed to match their
+// own plural, so a JD asking for "engineers" scored ZERO against a resume
+// saying "engineer" (and the reverse) — up to 35 points of keyword score lost
+// for identical wording. Rules now run in order on the same word: plural
+// first, then the verb/agent/-ment suffixes, then a trailing "e".
+//
+// Deliberately still NOT full derivational morphology ("coordination" won't
+// meet "coordinate").
 function stem(word) {
   if (PROTECTED_TOKENS.has(word)) return word
   let w = word
+  // 1. plural
+  if (w.length > 4 && w.endsWith('ies'))                          w = w.slice(0, -3) + 'y'
+  else if (w.length > 5 && /(?:ch|sh|x|z|ss)es$/.test(w))         w = w.slice(0, -2)
+  else if (w.length > 4 && w.endsWith('s') && !/(?:ss|us|is)$/.test(w)) w = w.slice(0, -1)
+  // 2. derivational suffixes, applied to the singular form
   if (w.length > 5 && w.endsWith('ational')) w = w.slice(0, -5)
   if (w.length > 6 && w.endsWith('ization')) w = w.slice(0, -4)
-  if (w.length > 5 && w.endsWith('ies'))      w = w.slice(0, -3) + 'y'
-  else if (w.length > 5 && (w.endsWith('er') || w.endsWith('or'))) w = w.slice(0, -2)
-  else if (w.length > 5 && w.endsWith('ing')) w = w.slice(0, -3)
+  if (w.length > 6 && w.endsWith('ment'))    w = w.slice(0, -4)
+  const before = w
+  if (w.length > 5 && w.endsWith('ing'))      w = w.slice(0, -3)
   else if (w.length > 5 && w.endsWith('ed'))  w = w.slice(0, -2)
-  else if (w.length > 5 && w.endsWith('es'))  w = w.slice(0, -2)
-  else if (w.length > 4 && w.endsWith('s') && !w.endsWith('ss')) w = w.slice(0, -1)
+  // "planning" -> "plann" -> "plan", "programming" -> "program" (but never
+  // "adding" -> "ad", or "installing" -> "instal": l/s/z/f and short stems are exempt)
+  if (w.length > 5 && (w.endsWith('er') || w.endsWith('or'))) w = w.slice(0, -2)
+  if (w !== before && w.length > 4 && /([bdgmnprt])\1$/.test(w)) w = w.slice(0, -1)
   if (w.length > 4 && w.endsWith('e')) w = w.slice(0, -1)
   return w
 }
@@ -279,6 +296,26 @@ const ACTION_VERBS = new Set([
 // match against the past-tense form.
 const ACTION_VERB_STEMS = new Set([...ACTION_VERBS].map(stem))
 
+// AUDIT FIX (Auth/Scan round): the bullet-glyph class was •, -, *, ◦, ▪, ‣, ·.
+// Word/PDF exports commonly produce others — ● ○ ■ – — ➢ ➤ ✓ and, from
+// Symbol/Wingdings list fonts, the private-use glyphs U+F0B7 / U+F0A7. A
+// resume using any of them had ZERO recognised bullets, so Content scored 0
+// (a 16-point swing on the overall score, measured). One shared set now
+// feeds both the style-consistency check and the content scorer.
+const BULLET_GLYPHS = '•●○◦▪▫■□◆◇►▸▶➢➤➔✓✔–—·∙‣⁃\\-\\*\\uf0b7\\uf0a7\\uf076\\uf0d8\\uf0fc'
+const BULLET_START = new RegExp(`^\\s*[${BULLET_GLYPHS}]`, 'mg')
+const BULLET_LINE  = new RegExp(`^\\s*(?:[${BULLET_GLYPHS}]|[0-9]+[.)]|[A-Za-z][.)])\\s`)
+// Glyphs that are the same visual style collapse to one "type" for the
+// inconsistent-bullet check (an extractor turning • into U+F0B7 is not the
+// author mixing styles).
+function bulletFamily(ch) {
+  if ('•●∙·\uf0b7\uf0a7\uf076\uf0d8\uf0fc'.includes(ch)) return '•'
+  if ('-–—'.includes(ch)) return '-'
+  if ('○◦'.includes(ch)) return '○'
+  if ('■□▪▫'.includes(ch)) return '■'
+  return ch
+}
+
 function scoreFormat(resumeText) {
   if (!resumeText || resumeText.trim().length < 100)
     return { score: 0, detail: { issues: ['Resume could not be parsed'] } }
@@ -296,7 +333,7 @@ function scoreFormat(resumeText) {
   // would need to inspect the raw DOCX XML for <w:tbl> presence before
   // extraction discards that structure — a real future improvement, but a
   // meaningfully different (and bigger) change than tuning this heuristic.
-  const bTypes = new Set((resumeText.match(/^[\s]*[•\-\*◦▪‣·]/mg) || []).map(b => b.trim()[0]))
+  const bTypes = new Set((resumeText.match(BULLET_START) || []).map(b => bulletFamily(b.trim()[0])))
   if (bTypes.size > 2)
     { score -= 15; issues.push('Inconsistent bullet style') }
   // AUDIT FIX: this fired on ordinary, well-formatted single-column resumes.
@@ -338,7 +375,7 @@ function scoreSections(resumeText) {
   // still tracked below for informational purposes, just no longer
   // penalized numerically.
   const summaryPatterns  = ['summary','objective','profile']
-  const certPatterns     = ['certification','licenses','awards']
+  const certPatterns     = ['certification','certifications','certificates','licenses','licences','awards']
   // AUDIT FIX (section audit — "generate a resume from scratch"): Projects
   // is new to the schema (see claude.service.js) and, like Certifications,
   // genuinely field-dependent — most candidates with solid formal Experience
@@ -355,10 +392,32 @@ function scoreSections(resumeText) {
   // real body content (Experience/Education) would start.
   const lines20  = lower.split('\n').slice(0, 20).join(' ')
   const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines20)
-  const foundReq = required.filter(s => s.patterns ? s.patterns.some(p => lower.includes(p)) : hasEmail)
-  const hasSummary  = summaryPatterns.some(p => lower.includes(p))
-  const hasCerts    = certPatterns.some(p => lower.includes(p))
-  const hasProjects = projectPatterns.some(p => lower.includes(p))
+
+  // AUDIT FIX (Auth/Scan round): every section used to be detected with
+  // lower.includes('experience') / ('education') / ('skills') / ('profile') /
+  // ('objective') anywhere in the text — so a resume with NO section headings
+  // at all scored 100% ("years of experience", "strong education", "my
+  // skills", "LinkedIn profile" in ordinary prose each counted as a whole
+  // section) and the "missing sections" feedback could essentially never fire
+  // for its real target: ATS parsers segment a resume by its headings. A
+  // section now counts when a short heading-shaped LINE carries the word.
+  // Text with no line structure (a single-line extraction) keeps the old
+  // substring behaviour rather than reporting every section missing.
+  const rawLines = resumeText.split('\n')
+  const structured = rawLines.filter(l => l.trim()).length >= 6
+  const headings = rawLines
+    .map(l => l.trim())
+    .filter(l => l && l.length <= 50 && !/[.!?]$/.test(l) && !/^\d/.test(l) && !/\byears?\b/i.test(l))
+    .map(l => l.toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter(l => l && l.split(' ').length <= 6)
+  const hasSection = patterns => structured
+    ? headings.some(h => patterns.some(pt => new RegExp(`(?:^| )${pt}(?: |$)`).test(h)))
+    : patterns.some(pt => lower.includes(pt))
+
+  const foundReq = required.filter(s => s.patterns ? hasSection(s.patterns) : hasEmail)
+  const hasSummary  = hasSection(summaryPatterns)
+  const hasCerts    = hasSection(certPatterns)
+  const hasProjects = hasSection(projectPatterns)
 
   return {
     score: Math.min(100, Math.round((foundReq.length / 4) * 85 + (hasSummary ? 15 : 0))),
@@ -398,8 +457,18 @@ function scoreContent(resumeText) {
   // — real numbered/lettered list markers are always one of these two
   // shapes, while every common title/name abbreviation ("Sr.", "Dr.",
   // "Mr.", "St.") is 2+ letters and no longer matches.
-  const BULLET_LINE = /^\s*(?:[•\-\*◦▪‣·]|[0-9]+[.)]|[A-Za-z][.)])\s/
-  const bullets = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
+  let bullets = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
+  // AUDIT FIX (Auth/Scan round): when the source format carries NO bullet
+  // characters at all (a DOCX whose list numbering isn't text, a PDF whose
+  // bullet glyphs the extractor dropped) fewer than 3 marked lines are found
+  // in a resume that plainly has bullet-style lines, and the score collapsed
+  // to 0. Fall back to substantial sentence-like lines below the header block.
+  if (bullets.length < 3) {
+    const candidates = resumeText.split('\n').slice(6)
+      .map(l => l.trim())
+      .filter(l => l.length >= 30 && l.length <= 500 && /^[A-Z]/.test(l) && l.split(/\s+/).length >= 5 && !/[:]$/.test(l))
+    if (candidates.length >= 3) bullets = candidates
+  }
   const total   = bullets.length || 1
   const actionCount = bullets.filter(b => {
     const words = b.trim().replace(BULLET_LINE, '').trim().toLowerCase().split(/\s+/)
@@ -424,32 +493,76 @@ function scoreContent(resumeText) {
   }
 }
 
+// AUDIT FIX (Auth/Scan round): detectRoleCategory returned the FIRST category
+// whose keyword appeared ANYWHERE in the JD as a raw substring, in map order.
+// "engineer"/"software" are checked first, so a Product Manager JD that says
+// "partner with engineers" was software_engineering, a nurse JD mentioning
+// "charting software" likewise, and 'ops' matched "desktops"/"workshops".
+// This value feeds employer-lead supply counts, so those mislabels leak into
+// what employers are told. Now: whole-word matches, scored per category with
+// heavy weight on the title area (first ~200 chars) and only light weight
+// (capped) on body mentions; non-software engineering disciplines are not
+// software; a category needs a minimum score or the answer is 'other'.
+const NON_SOFTWARE_ENGINEER = '(?:civil|mechanical|electrical|chemical|structural|industrial|biomedical|manufacturing|hardware|field|sales|process|mining|petroleum|environmental|quality|network|audio|systems?)\\s+'
+const ROLE_SIGNALS = {
+  software_engineering: [`(?<!${NON_SOFTWARE_ENGINEER})engineer`, 'developer', 'programmer', 'software', 'backend', 'back-end', 'frontend', 'front-end', 'full.?stack', 'devops', 'sre'],
+  product_management:   ['product manager', 'product owner', 'product management', 'roadmap', 'sprint'],
+  design:               ['designer', 'ui/ux', 'ux', 'figma', 'user experience', 'visual design'],
+  data_science:         ['data scientist', 'machine learning', 'data analyst', 'data science', 'data engineer'],
+  marketing:            ['marketing', 'growth marketing', 'seo', 'content marketing', 'content strategy', 'copywriter', 'social media', 'brand'],
+  sales:                ['sales', 'account executive', 'business development', 'quota', 'account manager'],
+  operations:           ['operations', 'ops', 'supply chain', 'logistics', 'project manager', 'program manager'],
+  finance:              ['finance', 'accounting', 'accountant', 'financial analyst', 'audit', 'bookkeep'],
+  healthcare:           ['nurse', 'nursing', 'doctor', 'physician', 'clinical', 'medical', 'patient'],
+  legal:                ['lawyer', 'attorney', 'paralegal', 'legal counsel', 'legal'],
+  education:            ['teacher', 'professor', 'instructor', 'curriculum', 'lecturer'],
+}
+const ROLE_REGEXES = Object.fromEntries(Object.entries(ROLE_SIGNALS).map(([cat, kws]) => [
+  cat, kws.map(k => new RegExp(`\\b${k}${/^[a-z]+$/.test(k) && k.length <= 3 ? '\\b' : ''}`, 'g')),
+]))
 function detectRoleCategory(jdText) {
-  const lower = jdText.toLowerCase()
-  const map = {
-    software_engineering: ['engineer','developer','programmer','software','backend','frontend','devops'],
-    product_management:   ['product manager','product owner','roadmap','sprint'],
-    design:               ['designer','ui/ux','figma','user experience'],
-    data_science:         ['data scientist','machine learning','data analyst'],
-    marketing:            ['marketing','growth','seo','content','brand'],
-    sales:                ['sales','account executive','business development','revenue'],
-    operations:           ['operations','ops','supply chain','logistics','project manager'],
-    finance:              ['finance','accounting','financial analyst','audit'],
-    healthcare:           ['nurse','doctor','clinical','medical','patient'],
-    legal:                ['lawyer','attorney','legal','compliance'],
-    education:            ['teacher','professor','instructor','curriculum'],
+  const lower = String(jdText || '').toLowerCase()
+  const title = lower.trim().slice(0, 200)
+  let best = 'other', bestScore = 0
+  for (const [cat, regexes] of Object.entries(ROLE_REGEXES)) {
+    let score = 0
+    for (const re of regexes) {
+      re.lastIndex = 0
+      if (re.test(title)) score += 10
+      re.lastIndex = 0
+      score += Math.min((lower.match(re) || []).length, 2)
+    }
+    if (score > bestScore) { best = cat; bestScore = score }
   }
-  for (const [cat, kws] of Object.entries(map))
-    if (kws.some(k => lower.includes(k))) return cat
-  return 'other'
+  return bestScore >= 2 ? best : 'other'
 }
 
+// AUDIT FIX (Auth/Scan round): the old detector (a) never matched "Sr."/"Jr."
+// because `\b(sr\.)\b` needs a word character AFTER the dot, and (b) looked
+// at the whole JD, so "reports to the VP of Sales" made an account-manager
+// role 'executive' and "works with the Director of Engineering" made an
+// engineer 'lead'. The level now comes from the title area (first ~200
+// chars); the body is consulted only for an explicit years-of-experience
+// requirement, and never for reporting-line mentions.
+const SENIORITY_PATTERNS = [
+  ['executive', /\b(?:vp|vice president|cto|ceo|coo|cfo|cmo|chief)\b/],
+  ['lead',      /\b(?:head of|director|principal|staff|lead)\b(?!\s+gen)/],
+  ['senior',    /\b(?:senior|sr)\b/],
+  ['junior',    /\b(?:junior|jr|entry.?level|associate|intern(?:ship)?|graduate|trainee|apprentice)\b/],
+]
+// "reports to the VP of Sales" / "works closely with the Director of X" name
+// somebody ELSE's level, not the role's own.
+const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with)\b[^.;\n]{0,60}/g
 function detectSeniority(jdText) {
-  const lower = jdText.toLowerCase()
-  if (/\b(vp|vice president|cto|ceo|coo|chief)\b/.test(lower)) return 'executive'
-  if (/\b(head of|director|principal|staff engineer)\b/.test(lower)) return 'lead'
-  if (/\b(senior|sr\.)\b/.test(lower)) return 'senior'
-  if (/\b(junior|jr\.|entry.?level|associate|intern)\b/.test(lower)) return 'junior'
+  const lower = String(jdText || '').toLowerCase()
+  const title = lower.trim().slice(0, 200).replace(OTHER_PERSON_CLAUSE, ' ')
+  for (const [level, re] of SENIORITY_PATTERNS) if (re.test(title)) return level
+  const m = lower.match(/\b(\d{1,2})\s*\+?\s*(?:-|to)?\s*(?:\d{1,2})?\s*\+?\s*years?\b/)
+  if (m) {
+    const years = parseInt(m[1], 10)
+    if (years >= 8) return 'senior'
+    if (years <= 2) return 'junior'
+  }
   return 'mid'
 }
 

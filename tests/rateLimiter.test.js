@@ -94,6 +94,20 @@ describe('account lockout — checkAccountLockout / recordLoginFailure / recordL
     expect(status.locked).toBe(false)
   })
 
+  // AUDIT FIX (Auth/Scan round): distinctness is tallied per limiter bucket, so
+  // two addresses inside ONE IPv6 /64 (one machine) are still one client.
+  it('does NOT lock when the "distinct" IPs are all inside one IPv6 /64 (one client)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    const a = '2001:db8:1:2:aaaa::1', b = '2001:db8:1:2:bbbb::2'
+    for (let i = 0; i < 8; i++) await rl.recordLoginFailure(env, 'victim@example.com', i % 2 ? a : b)
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)
+  })
+  it('still locks when the IPv6 clients really are in different /64s', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 8; i++) await rl.recordLoginFailure(env, 'victim@example.com', i % 2 ? '2001:db8:1:2::1' : '2001:db8:9:9::1')
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(true)
+  })
+
   it('locks once failures reach the threshold AND span >= 2 distinct IPs', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
     // 7 failures from one IP, then a couple more from a second IP —

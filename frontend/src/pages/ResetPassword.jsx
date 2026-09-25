@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
+import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
@@ -17,13 +18,45 @@ export default function ResetPassword() {
   const [success,     setSuccess    ] = useState(false)
   const { loading, error, execute } = useApi()
 
-  if (!token) {
+  // FEATURE GAP CLOSED (Auth/Scan round): the page used to find out the link
+  // was dead only AFTER the person had typed a new password and submitted.
+  // If the check itself can't be answered (network blip, 5xx) the form is
+  // shown anyway — the submit is still the real authority.
+  const [tokenStatus, setTokenStatus] = useState(token ? 'checking' : 'invalid') // checking | valid | invalid
+  useEffect(() => {
+    if (!token) return
+    let cancelled = false
+    api.get(`/auth/reset-password/validate?token=${encodeURIComponent(token)}`)
+      .then(res => { if (!cancelled) setTokenStatus(res.data?.data?.valid ? 'valid' : 'invalid') })
+      .catch(() => { if (!cancelled) setTokenStatus('valid') })
+    return () => { cancelled = true }
+  }, [token])
+  // Don't navigate after the person has already left this page.
+  const redirectTimer = useRef(null)
+  useEffect(() => () => clearTimeout(redirectTimer.current), [])
+
+  if (tokenStatus === 'checking') {
     return (
       <div className="min-h-screen flex flex-col bg-gray-50">
         <Navbar />
         <main className="flex-1 flex items-center justify-center px-4">
           <div className="text-center">
-            <p className="text-gray-600 mb-4">Invalid or missing reset link.</p>
+            <Spinner size="lg" className="mx-auto mb-4" />
+            <p className="text-gray-600">Checking your reset link…</p>
+          </div>
+        </main>
+        <Footer />
+      </div>
+    )
+  }
+
+  if (!token || tokenStatus === 'invalid') {
+    return (
+      <div className="min-h-screen flex flex-col bg-gray-50">
+        <Navbar />
+        <main className="flex-1 flex items-center justify-center px-4">
+          <div className="text-center">
+            <p className="text-gray-600 mb-4">This reset link is invalid, has already been used, or has expired.</p>
             <Link to="/forgot-password" className="text-blue-600 hover:underline text-sm">
               Request a new one
             </Link>
@@ -46,7 +79,7 @@ export default function ResetPassword() {
       await execute(() => api.post('/auth/reset-password', { token, newPassword }),
         { fallback: 'Reset failed. Link may have expired.' })
       setSuccess(true)
-      setTimeout(() => navigate('/login'), 2000)
+      redirectTimer.current = setTimeout(() => navigate('/login'), 2000)
     } catch (_) { /* error already captured by useApi */ }
   }
 

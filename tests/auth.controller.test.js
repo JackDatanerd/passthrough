@@ -32,7 +32,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
+  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -50,6 +50,10 @@ async function setup(opts = {}) {
       // confirmEmailChange's proactive duplicate-email check) needs the
       // opt-in opts.existingEmailUser.
       if (q.maybe) {
+        // AUDIT FIX (Auth/Scan round): verifyEmail's "already used link" replay
+        // lookup is the one email_verify_token query WITHOUT an expiry filter.
+        if (q.filters.some(f => f[1] === 'email_verify_token') && !q.filters.some(f => f[0] === 'gt' && f[1] === 'email_verify_expiry'))
+          return { data: opts.replayRow ?? null, error: null }
         if (q.filters.some(f => f[1] === 'pending_email_token'))
           return { data: 'pendingLookupRow' in opts ? opts.pendingLookupRow : null, error: null }
         const byEmail = q.filters.find(f => f[1] === 'email')
@@ -89,9 +93,13 @@ async function setup(opts = {}) {
   const { mod, restore } = loadWithStubs('controllers/auth.controller.js', {
     'config/supabase.js': { getSupabase: () => db },
     'services/email.service.js': {
-      sendWelcome:       async (...a) => { state.emails.push({ type: 'welcome', to: a[2] }) },
-      sendVerification:  async (...a) => { state.emails.push({ type: 'verify', to: a[2], raw: a[4] }) },
-      sendPasswordReset: async (...a) => { state.emails.push({ type: 'reset', to: a[2], raw: a[4] }) },
+      // AUDIT FIX (Auth/Scan round): per-recipient slot reserved BEFORE a
+      // single-use link token is rotated; opts.slotDenied simulates the
+      // throttle being exhausted. Every send* stub returns true (= "sent").
+      reserveRecipientSlot: async (env, to, template) => { state.slots.push({ to, template }); return !opts.slotDenied },
+      sendWelcome:       async (...a) => { state.emails.push({ type: 'welcome', to: a[2] }); return true },
+      sendVerification:  async (...a) => { state.emails.push({ type: 'verify', to: a[2], raw: a[4], opts: a[5] }); return true },
+      sendPasswordReset: async (...a) => { state.emails.push({ type: 'reset', to: a[2], raw: a[4], opts: a[5] }); return true },
       // FEATURE (Auth section round 2): confirmation/notification emails for
       // auth's own sensitive account changes — see auth.controller.js's
       // callers and email.service.js's real implementations for what each
@@ -117,7 +125,7 @@ async function setup(opts = {}) {
         state.callOrder.push('account-deleted-email')
       },
       sendAccountLockoutAlert:    async (...a) => { state.emails.push({ type: 'lockout_alert', to: a[2] }) },
-      sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4] }) },
+      sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4], opts: a[5] }); return true },
     },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
@@ -170,7 +178,7 @@ afterEach(() => { console.error = realErr; t?.restore() })
 describe('register', () => {
   it('creates the user, sends welcome + verification email via waitUntil, and never leaks the password hash', async () => {
     t = await setup()
-    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'Ada@Example.com', password: 'longenough' } }))
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'Ada@Example.com', password: 'longenough', acceptTerms: true } }))
     expect(res.status).toBe(201)
     expect(res.body.data.token).toBeTypeOf('string')
     expect(res.body.data.user.passwordHash).toBeUndefined()
@@ -180,7 +188,7 @@ describe('register', () => {
 
   it('rejects a password under 8 characters before ever touching the DB', async () => {
     t = await setup()
-    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'short' } }))).rejects.toBeTruthy()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'short', acceptTerms: true } }))).rejects.toBeTruthy()
     expect(t.db.calls).toHaveLength(0)
   })
 
@@ -193,14 +201,42 @@ describe('register', () => {
   it('rejects a password within the character-count cap but over 72 UTF-8 bytes', async () => {
     t = await setup()
     const password = 'é'.repeat(72) // .length === 72, but 144 bytes in UTF-8
-    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password } }))).rejects.toBeTruthy()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password, acceptTerms: true } }))).rejects.toBeTruthy()
     expect(t.db.calls).toHaveLength(0)
   })
 
+  // FEATURE GAP CLOSED (Auth/Scan round)
+  it('requires accepting the Terms/Privacy Policy, and records the version accepted', async () => {
+    t = await setup()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'longenough' } }))).rejects.toBeTruthy()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: false } }))).rejects.toBeTruthy()
+    expect(t.db.calls).toHaveLength(0)
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true } }))
+    expect(res.status).toBe(201)
+    const insert = t.db.calls.find(q => q.table === 'users' && q.op === 'insert')
+    expect(insert.values.terms_accepted_at).toBeTypeOf('string')
+    expect(insert.values.terms_version).toBeTypeOf('string')
+  })
+  it('rejects a very common password and a password equal to the email address', async () => {
+    t = await setup()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'Password123', acceptTerms: true } }))).rejects.toBeTruthy()
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'someone@example.com', password: 'someone@example.com', acceptTerms: true } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/email/i)
+    expect(t.db.calls.filter(q => q.op === 'insert')).toHaveLength(0)
+  })
+  it('a duplicate email is a clear 409 EMAIL_TAKEN, not a generic "Already exists."', async () => {
+    t = await setup({ insertError: { code: '23505', message: 'duplicate key' } })
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true } }))
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('EMAIL_TAKEN')
+    expect(res.body.message).toMatch(/already exists/i)
+    expect(t.state.emails).toHaveLength(0)
+  })
   it('accepts a password made of multi-byte characters as long as it fits in 72 bytes', async () => {
     t = await setup()
     const password = 'é'.repeat(36) // 36 chars, exactly 72 UTF-8 bytes
-    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password } }))
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password, acceptTerms: true } }))
     expect(res.status).toBe(201)
   })
 })
@@ -323,7 +359,27 @@ describe('forgotPassword — non-enumeration', () => {
     t = await setup()
     const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
     expect(res.body.message).toMatch(/if that email is registered/i)
-    expect(t.state.emails).toEqual([{ type: 'reset', to: 'user@example.com', raw: expect.any(String) }])
+    expect(t.state.emails).toEqual([{ type: 'reset', to: 'user@example.com', raw: expect.any(String), opts: { slotReserved: true } }])
+  })
+  // AUDIT FIX (Auth/Scan round): a throttled request must rotate NOTHING —
+  // otherwise the fourth request in an hour replaced the stored token with
+  // one that was never mailed, killing the link already in the inbox (and
+  // letting a stranger do that to anyone).
+  it('when the per-recipient email slot is exhausted, the stored reset token is NOT rotated and nothing is sent — same response', async () => {
+    t = await setup({ slotDenied: true })
+    const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
+    expect(res.status).toBe(200)
+    expect(res.body.message).toMatch(/if that email is registered/i)
+    expect(t.state.emails).toHaveLength(0)
+    const userUpdates = t.state.updates.filter(u => u.table === 'users')
+    expect(userUpdates.every(u => u.id !== 'u1')).toBe(true)   // only the no-op timing-equalizer UPDATE
+  })
+  it('reserves the slot first, then sends with slotReserved so the throttle is not spent twice', async () => {
+    t = await setup()
+    await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
+    expect(t.state.slots).toEqual([{ to: 'user@example.com', template: 'password_reset' }])
+    expect(t.state.emails[0].opts).toEqual({ slotReserved: true })
+    expect(t.state.updates.some(u => u.table === 'users' && u.id === 'u1' && u.patch.reset_token)).toBe(true)
   })
   // HARDENING (Auth section audit, fresh pass): the known-email branch pays
   // for a real network round trip to Supabase (the reset-token UPDATE)
@@ -398,6 +454,33 @@ describe('resetPassword', () => {
   })
 })
 
+describe('resetPassword — additions (Auth/Scan round)', () => {
+  it('marks the email verified: following the emailed link proves control of the inbox', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE(), email_verified: false }) })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'a-fresh-passphrase' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.updates.find(u => u.table === 'users').patch.email_verified).toBe(true)
+  })
+  it('refuses a new password that is just the account\'s own email address', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'user@example.com' } }))
+    expect(res.status).toBe(400)
+    expect(t.state.updates).toHaveLength(0)
+  })
+})
+
+describe('checkResetToken', () => {
+  it('reports valid for a live token, invalid otherwise, with no side effects', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(true)
+    expect(t.state.updates).toHaveLength(0)
+    t.restore()
+    t = await setup({ userRow: null })
+    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(false)
+    expect((await t.mod.checkResetToken(t.c({ query: {} }))).body.data.valid).toBe(false)
+  })
+})
+
 describe('verifyEmail', () => {
   it('400s with no token', async () => {
     t = await setup()
@@ -411,11 +494,34 @@ describe('verifyEmail', () => {
     t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false }) })
     const res = await t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))
     expect(res.status).toBe(200)
-    expect(t.state.updates[0].patch).toEqual({ email_verified: true, email_verify_token: null, email_verify_expiry: null })
+    expect(t.state.updates[0].patch).toEqual({ email_verified: true, email_verify_expiry: null })
+  })
+})
+
+describe('verifyEmail — replay of an already-used link', () => {
+  // AUDIT FIX (Auth/Scan round)
+  it('answers success ("already verified") instead of "invalid or expired", changing nothing', async () => {
+    t = await setup({ userRow: null, replayRow: { id: 'u1' } })
+    const res = await t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))
+    expect(res.status).toBe(200)
+    expect(res.body.message).toMatch(/already verified/i)
+    expect(t.state.updates).toHaveLength(0)
+  })
+  it('a genuinely unknown token is still a 400', async () => {
+    t = await setup({ userRow: null })
+    expect((await t.mod.verifyEmail(t.c({ query: { token: 'nope' } }))).status).toBe(400)
   })
 })
 
 describe('resendVerification', () => {
+  // AUDIT FIX (Auth/Scan round)
+  it('when the recipient slot is exhausted: 429, and the stored token is NOT rotated, nothing sent', async () => {
+    t = await setup({ slotDenied: true, sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: false, email: 'user@example.com', name: 'Ada' } })
+    const res = await t.mod.resendVerification(t.c())
+    expect(res.status).toBe(429)
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
   it('400s when already verified — and sends nothing', async () => {
     t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: true } })
     const res = await t.mod.resendVerification(t.c())
@@ -435,6 +541,14 @@ describe('changePassword', () => {
     t = await setup()
     const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
     expect(res.status).toBe(400)
+  })
+  it('refuses a "new" password identical to the current one, or equal to the account\'s email', async () => {
+    t = await setup()
+    let res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'correct-password' } }))
+    expect(res.status).toBe(400)
+    res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'user@example.com' } }))
+    expect(res.status).toBe(400)
+    expect(t.state.updates).toHaveLength(0)
   })
   // BUG FIX being locked in: the response must hand back a token that is
   // valid under the NEW token_version, so the very session that changed the
@@ -566,9 +680,17 @@ describe('updateEmail', () => {
     expect('email' in update.patch).toBe(false)
     expect('email_verified' in update.patch).toBe(false)
     expect(t.state.emails).toEqual(expect.arrayContaining([
-      { type: 'change_confirm', to: 'new@example.com', raw: expect.any(String) },
+      { type: 'change_confirm', to: 'new@example.com', raw: expect.any(String), opts: { slotReserved: true } },
       { type: 'email_changed_old_address', to: 'user@example.com', newEmail: 'new@example.com' },
     ]))
+  })
+  // AUDIT FIX (Auth/Scan round)
+  it('when the NEW address\'s confirmation slot is exhausted: 429, no pending token staged, nothing sent', async () => {
+    t = await setup({ slotDenied: true })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'correct-password' } }))
+    expect(res.status).toBe(429)
+    expect(t.state.updates.filter(u => u.table === 'users')).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
   })
   // FEATURE FIX being locked in — same password-guessing-oracle shape as
   // changePassword above: `password` here is a live bcrypt.compare too.
@@ -875,7 +997,7 @@ describe('deleteAccount — work in flight', () => {
 
 // Names: one shared definition (lib/text.js) for register and updateName.
 describe('name validation (register + updateName)', () => {
-  const register = (name) => t.mod.register(t.c({ body: { name, email: 'ada@example.com', password: 'longenough' } }))
+  const register = (name) => t.mod.register(t.c({ body: { name, email: 'ada@example.com', password: 'longenough', acceptTerms: true } }))
   it('updateName stores the cleaned name: control characters and zero-width filler gone, spaces collapsed', async () => {
     t = await setup()
     await t.mod.updateName(t.c({ body: { name: '  Ada \u200b  Lovelace\u0007 ' } }))
