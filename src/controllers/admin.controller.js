@@ -154,7 +154,13 @@ async function adminDashboardStats(ctx) {
 // the client" discipline optionalAuth.js already applies, just enforced
 // here by simply never selecting those columns in the first place.
 
-const USER_LIST_FIELDS = 'id, email, name, role, status, email_verified, scans_today, scans_day_reset, created_at'
+// FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
+// (migration 0038) were captured at signup but surfaced nowhere in the app —
+// not the user's own session, not here. Added to both the list and detail
+// responses below so an admin can actually answer "did this account accept
+// the current Terms, and which version" — the entire reason the column is
+// versioned in the first place (see constants.js's TERMS_VERSION comment).
+const USER_LIST_FIELDS = 'id, email, name, role, status, email_verified, scans_today, scans_day_reset, created_at, terms_accepted_at, terms_version'
 
 async function adminListUsers(ctx) {
   const supabase = getSupabase(ctx.env)
@@ -175,7 +181,8 @@ async function adminListUsers(ctx) {
   const users = data.map(u => ({
     id: u.id, email: u.email, name: u.name, role: u.role, status: u.status,
     emailVerified: u.email_verified, scansToday: u.scans_today, scansDayReset: u.scans_day_reset,
-    createdAt: u.created_at
+    createdAt: u.created_at,
+    termsAcceptedAt: u.terms_accepted_at, termsVersion: u.terms_version
   }))
   return ctx.json({ success: true, data: users, meta: { page, pageSize, total: count || 0 } })
 }
@@ -202,6 +209,7 @@ async function adminGetUserDetail(ctx) {
     id: user.id, email: user.email, name: user.name, role: user.role, status: user.status,
     emailVerified: user.email_verified, scansToday: user.scans_today, scansDayReset: user.scans_day_reset,
     createdAt: user.created_at,
+    termsAcceptedAt: user.terms_accepted_at, termsVersion: user.terms_version,
     scans: (scans || []).map(s => ({
       id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased,
       fixTier: s.fix_tier, resumeOriginalName: s.resume_original_name, createdAt: s.created_at

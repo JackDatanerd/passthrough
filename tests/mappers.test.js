@@ -162,6 +162,23 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     expect(camelToSnake({ fixErrorRecoveries: 1 }, SCAN_FIELD_MAP)).toEqual({ fix_error_recoveries: 1 })
   })
 
+  // AUDIT FIX (Section 9/10 re-audit): terms_accepted_at/terms_version
+  // (migration 0038) were written at registration but silently dropped by
+  // userRowToCamel — the one read path getMe()/admin both go through — so
+  // there was no way anywhere in the app to see whether/when an account
+  // accepted the Terms. NULL (not undefined) for a pre-migration account,
+  // consistent with every other ?? null default this file already uses.
+  it('userRowToCamel maps terms_accepted_at/terms_version and defaults both to null when absent', () => {
+    expect(userRowToCamel({ id: 'u1', terms_accepted_at: 't1', terms_version: '2026-09' }))
+      .toMatchObject({ termsAcceptedAt: 't1', termsVersion: '2026-09' })
+    expect(userRowToCamel({ id: 'u1' })).toMatchObject({ termsAcceptedAt: null, termsVersion: null })
+  })
+
+  it('USER_FIELD_MAP round-trips termsAcceptedAt/termsVersion', () => {
+    expect(camelToSnake({ termsAcceptedAt: 't1', termsVersion: '2026-09' }, USER_FIELD_MAP))
+      .toEqual({ terms_accepted_at: 't1', terms_version: '2026-09' })
+  })
+
   it('paymentRowToCamel includes fixTier and referralCode (Section 9 fix)', () => {
     const mapped = paymentRowToCamel({
       id: 'pay1', amount_cents: 2900, currency: 'USD', status: 'SUCCESS',

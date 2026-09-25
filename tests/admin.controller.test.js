@@ -109,6 +109,18 @@ describe('adminListUsers', () => {
     expect(call.filters.find(f => f[1] === 'status')[2]).toBe('BANNED')
     expect(call.filters.find(f => f[1] === 'role')[2]).toBe('ADMIN')
   })
+
+  // AUDIT FIX (Section 9/10 re-audit, feature gap): terms_accepted_at/
+  // terms_version (migration 0038) were captured at signup but surfaced
+  // nowhere admin-facing — the only place in the app that could ever answer
+  // "did this account accept the current Terms, and which version."
+  it('surfaces termsAcceptedAt/termsVersion (Section 9/10 fix)', async () => {
+    t = setup(q => (q.table === 'users'
+      ? { data: [{ id: 'u1', email: 'a@b.com', name: 'A', role: 'SEEKER', status: 'ACTIVE', email_verified: true, scans_today: 1, scans_day_reset: 't', created_at: 't', terms_accepted_at: 't0', terms_version: '2026-09' }], error: null, count: 1 }
+      : undefined))
+    const res = await t.mod.adminListUsers(t.c())
+    expect(res.body.data[0]).toMatchObject({ termsAcceptedAt: 't0', termsVersion: '2026-09' })
+  })
 })
 
 describe('adminGetUserDetail', () => {
@@ -121,13 +133,14 @@ describe('adminGetUserDetail', () => {
 
   it('returns the user plus their recent scans and payments, mapped to camelCase', async () => {
     t = setup(q => {
-      if (q.table === 'users') return { data: { id: 'u1', email: 'a@b.com', name: 'A', role: 'SEEKER', status: 'ACTIVE', email_verified: true, scans_today: 0, scans_day_reset: 't', created_at: 't' }, error: null }
+      if (q.table === 'users') return { data: { id: 'u1', email: 'a@b.com', name: 'A', role: 'SEEKER', status: 'ACTIVE', email_verified: true, scans_today: 0, scans_day_reset: 't', created_at: 't', terms_accepted_at: 't0', terms_version: '2026-09' }, error: null }
       if (q.table === 'scans') return { data: [{ id: 's1', status: 'DONE', ats_score: 80, fix_purchased: true, fix_tier: 'FIX', resume_original_name: 'r.pdf', created_at: 't' }], error: null }
       if (q.table === 'payments') return { data: [{ id: 'p1', amount_cents: 4900, currency: 'USD', status: 'SUCCESS', fix_tier: 'FIX', referral_code: null, created_at: 't' }], error: null }
     })
     const res = await t.mod.adminGetUserDetail(t.c())
     expect(res.body.data.scans[0]).toMatchObject({ id: 's1', atsScore: 80, fixPurchased: true })
     expect(res.body.data.payments[0]).toMatchObject({ id: 'p1', amountCents: 4900 })
+    expect(res.body.data).toMatchObject({ termsAcceptedAt: 't0', termsVersion: '2026-09' })
   })
 })
 

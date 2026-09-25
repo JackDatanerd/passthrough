@@ -30,6 +30,15 @@ function userRowToCamel(row) {
     paystackCustomerCode:  row.paystack_customer_code,
     paystackAuthCode:      row.paystack_auth_code,
     savedProfile:          row.saved_profile,
+    // FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
+    // (migration 0038) are written at registration (auth.controller.js) but
+    // were never read back anywhere — this mapper is the one read path every
+    // user-row consumer goes through (getMe, admin), so omitting them meant
+    // there was no way, anywhere in the app, to see whether/when/which
+    // version of the Terms an account accepted. NULL for any account created
+    // before 0038 shipped — that's correct, not a bug (see that migration).
+    termsAcceptedAt:       row.terms_accepted_at ?? null,
+    termsVersion:          row.terms_version ?? null,
     createdAt:             row.created_at,
     updatedAt:             row.updated_at
   }
@@ -215,7 +224,12 @@ const USER_FIELD_MAP = {
   // camelToSnake(USER_FIELD_MAP) to update any of these three would have
   // silently no-opped exactly like the freeFixCredits case did.
   pendingEmail: 'pending_email', pendingEmailToken: 'pending_email_token',
-  pendingEmailExpiry: 'pending_email_expiry'
+  pendingEmailExpiry: 'pending_email_expiry',
+  // FIX (Section 9/10 audit): same read-side gap as userRowToCamel above —
+  // no current writer needs this (registration builds a raw snake_case
+  // insert), but the reverse map should reflect the full row like every
+  // other field here, not silently no-op a future admin-correction write.
+  termsAcceptedAt: 'terms_accepted_at', termsVersion: 'terms_version'
 }
 
 const SCAN_FIELD_MAP = {

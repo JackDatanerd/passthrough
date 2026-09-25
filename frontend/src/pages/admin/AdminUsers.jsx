@@ -101,6 +101,12 @@ export default function AdminUsers() {
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3 text-right">Scans today</th>
                 <th className="px-4 py-3">Joined</th>
+                {/* FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
+                    (migration 0038) were captured at signup but never shown anywhere —
+                    not here, not on the user's own account. This is the compliance-
+                    facing read path: which version, and when. Pre-migration accounts
+                    show "—" (they signed up before the checkbox existed, not an error). */}
+                <th className="px-4 py-3">Terms</th>
                 <th className="px-4 py-3"></th>
               </tr>
             </thead>
@@ -120,6 +126,16 @@ export default function AdminUsers() {
                   </td>
                   <td className="px-4 py-3 text-right text-gray-600">{u.scansToday}</td>
                   <td className="px-4 py-3 text-gray-500">{formatDate(u.createdAt)}</td>
+                  <td className="px-4 py-3 text-gray-500">
+                    {u.termsAcceptedAt ? (
+                      <span title={u.termsVersion ? `Version ${u.termsVersion}` : undefined}>
+                        {formatDate(u.termsAcceptedAt)}
+                        {u.termsVersion && <span className="text-xs text-gray-400 ml-1">({u.termsVersion})</span>}
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-400">—</span>
+                    )}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex gap-2 justify-end flex-wrap">
                       <Button size="sm" variant="secondary" disabled={busyId === u.id}
