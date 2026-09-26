@@ -367,8 +367,9 @@ describe('adminUpdatePartner', () => {
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': {
-        sendPartnerEmailChanged: async (...a) => state.notifications.push({ type: 'emailChanged', to: a[2] }),
-        sendOwnerAlert:          async (...a) => state.notifications.push({ type: 'ownerAlert' }),
+        sendPartnerEmailChanged:  async (...a) => state.notifications.push({ type: 'emailChanged', to: a[2] }),
+        sendPartnerStatusChanged: async (...a) => state.notifications.push({ type: 'statusChanged', to: a[2], status: a[4] }),
+        sendOwnerAlert:           async (...a) => state.notifications.push({ type: 'ownerAlert', subject: a[1] }),
       },
     })
     const c = (over = {}) => ({ env: {}, req: { param: () => 'p1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
@@ -408,6 +409,43 @@ describe('adminUpdatePartner', () => {
     t = setupUpdate({ updated: { id: 'p1', email: 'old@x.co', name: 'X' } })
     await t.mod.adminUpdatePartner(t.c({ body: { status: 'ACTIVE' } }))
     expect(t.state.notifications).toHaveLength(0)
+  })
+
+  // AUDIT FIX (feature gap): status (ACTIVE/PAUSED) previously had no
+  // notification at all, unlike every other account-affecting change in
+  // this endpoint (email). Mirrors the email-change tests above.
+  it('notifies the partner and the owner when status actually changes', async () => {
+    t = setupUpdate({ before: { email: 'k@x.co', status: 'ACTIVE' }, updated: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'PAUSED' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'PAUSED' } }))
+    const statusNotif = t.state.notifications.find(n => n.type === 'statusChanged')
+    expect(statusNotif).toMatchObject({ to: 'k@x.co', status: 'PAUSED' })
+    expect(t.state.notifications.some(n => n.type === 'ownerAlert' && /Partner status changed/.test(n.subject))).toBe(true)
+  })
+
+  it('does not notify on status when it is provided but unchanged', async () => {
+    t = setupUpdate({ before: { email: 'k@x.co', status: 'ACTIVE' }, updated: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'ACTIVE' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'ACTIVE', commissionRate: 0.3 } }))
+    expect(t.state.notifications.filter(n => n.type === 'statusChanged')).toHaveLength(0)
+  })
+
+  it('a failed status-change notification never fails the update itself', async () => {
+    t = setupUpdate({ before: { email: 'k@x.co', status: 'ACTIVE' }, updated: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'PAUSED' } })
+    t.restore()
+    const state = t.state
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: { email: 'k@x.co', status: 'ACTIVE' }, error: null }
+      if (q.table === 'partners' && q.op === 'update') return { data: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'PAUSED' }, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendPartnerStatusChanged: async () => { throw new Error('resend down') },
+        sendOwnerAlert:           async () => { throw new Error('resend down') },
+      },
+    })
+    const res = await mod.adminUpdatePartner({ env: {}, req: { param: () => 'p1', json: async () => ({ status: 'PAUSED' }) }, json: (body, status = 200) => ({ body, status }) })
+    expect(res.body.success).toBe(true)
+    restore()
   })
 
   it('rejects a commissionRate outside 0-1', async () => {

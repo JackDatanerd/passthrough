@@ -151,11 +151,11 @@ async function adminUpdatePartner(ctx) {
   const body = updatePartnerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
 
-  // AUDIT FIX (feature gap): need the OLD email before it's overwritten, so
-  // a change can be confirmed to both addresses — see the notification
-  // below. Best-effort — if this read fails, fall through to the update
-  // exactly as before, just without the notification.
-  const { data: before } = await supabase.from('partners').select('email').eq('id', partnerId).maybeSingle()
+  // AUDIT FIX (feature gap): need the OLD email AND status before they're
+  // overwritten, so both notifications below have something to compare
+  // against. Best-effort — if this read fails, fall through to the update
+  // exactly as before, just without either notification.
+  const { data: before } = await supabase.from('partners').select('email, status').eq('id', partnerId).maybeSingle()
 
   const patch = camelToSnake(body, PARTNER_FIELD_MAP)  // status, commissionRate
   if (body.name !== undefined)  patch.name = body.name
@@ -184,6 +184,27 @@ async function adminUpdatePartner(ctx) {
         'Partner email changed',
         `partner: ${data.name}\nold email: ${before.email}\nnew email: ${data.email}\ntime: ${new Date().toISOString()}\n\n` +
         `If this wasn't expected, verify with the partner directly before their next payout or referral-code notification.`
+      ).catch(() => {})
+    ])
+  }
+
+  // AUDIT FIX (feature gap): status (ACTIVE/PAUSED) was the one
+  // account-affecting change in this endpoint with no notification at all —
+  // a paused partner previously found out only by noticing their commission
+  // had stopped, or by happening to check their own dashboard (which does
+  // show a banner — see PartnerDashboard.jsx). Silence here cuts both ways:
+  // it's not just unhelpful to a partner paused for a legitimate reason,
+  // it's also a blind spot symmetric to the email-change case above — a
+  // compromised or careless admin session could quietly cut off a partner's
+  // referral links and nobody, partner or owner, would have a paper trail.
+  // Best-effort, like every other notification in this file — never blocks
+  // or fails the save itself.
+  if (body.status !== undefined && before?.status && before.status !== data.status) {
+    await Promise.all([
+      emailService.sendPartnerStatusChanged(ctx.env, supabase, data.email, data.name, data.status).catch(() => {}),
+      emailService.sendOwnerAlert(ctx.env,
+        `Partner status changed: ${before.status} -> ${data.status}`,
+        `partner: ${data.name}\nemail: ${data.email}\nold status: ${before.status}\nnew status: ${data.status}\ntime: ${new Date().toISOString()}`
       ).catch(() => {})
     ])
   }

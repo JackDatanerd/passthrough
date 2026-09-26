@@ -29,7 +29,7 @@ export default function Pricing() {
   // Same initialize-from-storage pattern ScanResult.jsx already uses for
   // the identical reason.
   const [referralCode] = useState(getStoredReferralCode())
-  const { pricing, byTier, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
+  const { pricing, byTier, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
@@ -41,6 +41,25 @@ export default function Pricing() {
           {referralCode && pricing?.referralApplied && (
             <p className="text-sm font-medium text-emerald-700 mb-4">
               ✓ Referral code <span className="font-mono">{referralCode}</span> applied — prices below reflect your discount.
+            </p>
+          )}
+          {/* AUDIT FIX (feature gap): usePricing()'s pricingFailed signal was
+              exported but never consumed anywhere in the app. byTier()'s
+              fallback to the correct standard price means a failed fetch
+              looks identical to a normal load — fine on its own, but if a
+              referral code was supposed to apply and the fetch that would
+              confirm it never came back, a visitor would just see full
+              standard pricing with nothing telling them their code wasn't
+              actually checked. Mirrors the same notice now shown at
+              checkout (FixBanner.jsx). */}
+          {pricingFailed && (
+            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4 inline-block">
+              {referralCode
+                ? "We couldn't verify your referral discount just now — prices below are standard pricing. "
+                : "We couldn't load current promotions just now — prices below are standard pricing. "}
+              <button type="button" onClick={refreshPricing} className="underline font-medium hover:text-amber-900">
+                Try again
+              </button>
             </p>
           )}
           {pricing?.promoActive && pricing.promoEndsAt && (

@@ -86,6 +86,28 @@ function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
   )
 }
 
+// AUDIT FIX (feature gap): usePricing() has always reported a `pricingFailed`
+// flag for exactly this situation, but nothing ever read it — byTier()'s
+// fallback to the correct standard price is silent, so a failed /api/pricing
+// fetch used to look identical to a normal, successful, no-discount load.
+// That's fine when there's no referral code in play, but if one IS set and
+// the fetch that would confirm/apply it never came back, the customer would
+// simply be charged full price with no indication anything went wrong —
+// the one case where "degrade quietly" is the wrong default for a
+// money-shaped page. Now surfaced with a one-click retry.
+function PricingFailedNotice({ referralCode, onRetry }) {
+  return (
+    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
+      {referralCode
+        ? "We couldn't verify your referral discount just now — showing standard pricing below. "
+        : "We couldn't load current pricing just now — showing standard pricing below. "}
+      <button type="button" onClick={onRetry} className="underline font-medium hover:text-amber-900">
+        Try again
+      </button>
+    </p>
+  )
+}
+
 export default function FixBanner({
   scan, onPay, onRedeemCredit, freeFixCredits = 0,
   referralCode = '', onApplyReferralCode = () => {},
@@ -98,7 +120,7 @@ export default function FixBanner({
   payLoading = false, payingTier = null
 }) {
   const navigate = useNavigate()
-  const { byTier, pricing } = usePricing(referralCode)
+  const { byTier, pricing, pricingFailed, refresh: refreshPricing } = usePricing(referralCode)
   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
   if (scan.fixPurchased) return null
 
@@ -141,6 +163,7 @@ export default function FixBanner({
             You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
           </p>
         )}
+        {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
         <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
         <div className="flex flex-wrap gap-2 mt-3">
           {hasCredit && (
@@ -173,6 +196,7 @@ export default function FixBanner({
           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
         </p>
       )}
+      {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
       <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
       <div className="flex flex-col sm:flex-row gap-3">
         <Button onClick={() => onPay('BADGE')} variant="secondary" disabled={payLoading} loading={payingTier === 'BADGE'}>

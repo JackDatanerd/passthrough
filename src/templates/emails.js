@@ -94,7 +94,13 @@ const TEMPLATES = {
   partner_email_changed: "<h2>Your partner account email was changed</h2>\n<p>Hi {{NAME}}, the email address on file for your Passthrough partner account was just changed from {{OLD_EMAIL}} to {{NEW_EMAIL}}.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't request this, reply to this email or contact support@passthrough.dev immediately \u2014 future payout links, payout confirmations, and referral-code notifications will go to the new address.</p>\n",
   // Sent when an admin regenerates a partner's payout-details link \u2014
   // the OLD link stops working the moment this is sent.
-  partner_link_regenerated: "<h2>Your payout link has been reset</h2>\n<p>Hi {{NAME}}, for security your Passthrough payout-details link has been reset.</p>\n<p>Your previous link no longer works. Use the new one below \u2014 it's unique to you, so don't share it.</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Open Your Payout Details \u2192</a>\n",
+  // AUDIT FIX (feature gap): every OTHER partner-facing account change in
+  // this file gets an email (payout sent, payout details changed, a code
+  // created, email changed) — status (PAUSED/ACTIVE) previously didn't. A
+  // paused partner had no proactive notice at all, only a banner on their
+  // own dashboard they'd have to think to go check — see
+  // partners.controller.js's adminUpdatePartner.
+  partner_status_changed: "<h2>{{HEADING}}</h2>\n<p>Hi {{NAME}}, {{BODY}}</p>\n<p style=\"color:#9ca3af;font-size:13px\">If this wasn't expected, reply to this email or contact support@passthrough.dev.</p>\n",
 }
 
 // Every var gets HTML-entity-escaped before substitution. NAME in

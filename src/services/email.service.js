@@ -322,6 +322,22 @@ async function sendPartnerEmailChanged(env, supabase, to, name, oldEmail, newEma
   })
 }
 
+// AUDIT FIX (feature gap): the one account-affecting partner change with no
+// proactive notification at all — see partners.controller.js's
+// adminUpdatePartner. `status` is only ever 'ACTIVE' or 'PAUSED'.
+async function sendPartnerStatusChanged(env, supabase, email, name, status) {
+  const paused = status === 'PAUSED'
+  return send(env, supabase, email,
+    paused ? 'Your Passthrough partner account has been paused' : 'Your Passthrough partner account is active again',
+    'partner_status_changed', {
+      NAME:    name,
+      HEADING: paused ? 'Your partner account is paused' : 'Your partner account is active again',
+      BODY:    paused
+        ? "your Passthrough partner account has been paused. Your referral links won't apply discounts or earn commission until it's reactivated."
+        : 'your Passthrough partner account is active again \u2014 your referral links are back to applying discounts and earning commission.'
+    })
+}
+
 async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
   const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
   return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
@@ -557,5 +573,6 @@ module.exports = {
   sendPaymentReceipt,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
-  sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned
+  sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
+  sendPartnerStatusChanged
 }
