@@ -11,6 +11,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatDateTime } from '../../lib/utils'
 import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
 import { passwordProblem } from '../../lib/passwordRules'
+import { roleLabel } from '../../lib/roleCategories'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -454,7 +455,14 @@ export default function Settings() {
                   Saved {savedAt ? formatDate(savedAt) : ''}
                   {profileSummary?.name && <> — <span className="font-medium">{profileSummary.name}</span></>}
                   {profileSummary?.roleCategory && (
-                    <span className="text-gray-400"> ({profileSummary.roleCategory.replace(/_/g, ' ').toLowerCase()})</span>
+                    // BUG FIX (fresh audit pass, Section 6): hand-rolled
+                    // `.replace(/_/g, ' ').toLowerCase()` here instead of using
+                    // roleLabel() — every other place in the app that shows a
+                    // role category (e.g. dashboard/Index.jsx's scan rows, via
+                    // scanDisplay.js's roleLine()) uses roleLabel() and gets
+                    // "Data Science"; this alone showed "data science" for
+                    // every saved profile with a category.
+                    <span className="text-gray-400"> ({roleLabel(profileSummary.roleCategory)})</span>
                   )}
                 </p>
                 {profileSummary && (
