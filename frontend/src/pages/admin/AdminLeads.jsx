@@ -9,6 +9,7 @@ import Form from '../../components/ui/Form'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Pagination from '../../components/ui/Pagination'
+import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel } from '../../lib/roleCategories'
@@ -17,8 +18,6 @@ const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', AR
 const STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
 const PAGE_SIZE = 25
 const SEARCH_DEBOUNCE_MS = 350
-
-const selectClass = 'rounded-md border border-gray-300 px-3 py-2 text-sm bg-white'
 
 // Filters, sort and page live in the URL (like Payments and Scans), so the
 // dashboard's "N new leads" link can open the list already filtered, a
@@ -251,41 +250,32 @@ export default function AdminLeads() {
       <div className="flex gap-3 flex-wrap items-end">
         <Input label="Search" placeholder="Name, company, email, or role" value={searchInput}
           onChange={e => setSearchInput(e.target.value)} className="w-64" />
-        <div className="flex flex-col gap-1">
-          <label htmlFor="lead-field" className="text-sm font-medium text-gray-700">Field</label>
-          <select id="lead-field" value={field} onChange={e => setParams({ field: e.target.value })} className={selectClass}>
-            <option value="">All fields</option>
-            <option value="none">Uncategorised</option>
-            {ROLE_CATEGORIES.map(([key, label]) => (
-              <option key={key} value={key}>
-                {label}{candidateSupply ? ` — ${candidateSupply[key] || 0} verified` : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="lead-confirmed" className="text-sm font-medium text-gray-700">Email</label>
-          <select id="lead-confirmed" value={confirmed} onChange={e => setParams({ confirmed: e.target.value })} className={selectClass}>
-            <option value="">All addresses</option>
-            <option value="yes">Confirmed</option>
-            <option value="no">Unconfirmed ({unconfirmed})</option>
-          </select>
-        </div>
-        <div className="flex flex-col gap-1">
-          <label htmlFor="lead-sort" className="text-sm font-medium text-gray-700">Sort</label>
-          <select id="lead-sort" value={sort} onChange={e => setParams({ sort: e.target.value })} className={selectClass}>
-            <option value="created">Newest first</option>
-            <option value="activity">Most recently active</option>
-          </select>
-        </div>
+        <Select id="lead-field" label="Field" value={field} onChange={e => setParams({ field: e.target.value })}>
+          <option value="">All fields</option>
+          <option value="none">Uncategorised</option>
+          {ROLE_CATEGORIES.map(([key, label]) => (
+            <option key={key} value={key}>
+              {label}{candidateSupply ? ` — ${candidateSupply[key] || 0} verified` : ''}
+            </option>
+          ))}
+        </Select>
+        <Select id="lead-confirmed" label="Email" value={confirmed} onChange={e => setParams({ confirmed: e.target.value })}>
+          <option value="">All addresses</option>
+          <option value="yes">Confirmed</option>
+          <option value="no">Unconfirmed ({unconfirmed})</option>
+        </Select>
+        <Select id="lead-sort" label="Sort" value={sort} onChange={e => setParams({ sort: e.target.value })}>
+          <option value="created">Newest first</option>
+          <option value="activity">Most recently active</option>
+        </Select>
       </div>
 
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
           <span className="font-medium text-blue-900">{selected.size} selected</span>
-          <select aria-label="Set status for selected leads" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} className={selectClass}>
+          <Select aria-label="Set status for selected leads" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} className="w-auto">
             {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+          </Select>
           <Button size="sm" variant="secondary" loading={bulkBusy}
             onClick={() => runBulk({ action: 'setStatus', status: bulkStatus }, 'Status updated')}>
             Set status
@@ -365,15 +355,16 @@ export default function AdminLeads() {
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <Badge variant={STATUS_VARIANT[l.status] || 'gray'}>{l.status}</Badge>
-                      <select
+                      <Select
                         aria-label={`Status for ${l.email}`}
                         value={l.status}
                         disabled={busyId === l.id}
                         onChange={e => changeStatus(l, e.target.value)}
-                        className="rounded-md border border-gray-300 px-2 py-1 text-xs"
+                        size="sm"
+                        className="w-auto"
                       >
                         {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </select>
+                      </Select>
                     </div>
                     {l.contactedAt && (
                       <div className="text-xs text-gray-400 mt-1">Contacted {formatDate(l.contactedAt)}</div>
@@ -501,13 +492,10 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         {mode === 'add'
           ? <Input label="Email" type="email" value={form.email} onChange={set('email')} />
           : <p className="text-sm text-gray-500">Email: {form.email}</p>}
-        <div className="flex flex-col gap-1">
-          <label htmlFor="lead-form-field" className="text-sm font-medium text-gray-700">Field</label>
-          <select id="lead-form-field" value={form.roleCategory} onChange={set('roleCategory')} className={selectClass}>
-            <option value="">Uncategorised</option>
-            {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-          </select>
-        </div>
+        <Select id="lead-form-field" label="Field" value={form.roleCategory} onChange={set('roleCategory')}>
+          <option value="">Uncategorised</option>
+          {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+        </Select>
         <Input label="Role title (optional)" value={form.roleTitle} onChange={set('roleTitle')} />
         {mode === 'add' && (
           <div className="flex flex-col gap-1">

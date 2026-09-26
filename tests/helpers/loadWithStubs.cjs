@@ -9,13 +9,25 @@
 //   })
 //   ...
 //   afterEach(restore)
+//
+// Stub keys are normally paths relative to src/. A key that doesn't resolve
+// there (no src/<key>.js on disk) is instead resolved as a plain package
+// specifier via Node's own require resolution — e.g. '@cloudflare/puppeteer'
+// for pdf.service.js, which requires it directly, same as any src/ path.
+const fs = require('fs')
 const path = require('path')
 const SRC = path.resolve(__dirname, '../../src')
+
+function resolveStubTarget(rel) {
+  const asSrcPath = path.join(SRC, rel)
+  if (fs.existsSync(asSrcPath) || fs.existsSync(`${asSrcPath}.js`)) return require.resolve(asSrcPath)
+  return require.resolve(rel)
+}
 
 function loadWithStubs(targetRel, stubs = {}) {
   const stubbed = []
   for (const [rel, exports] of Object.entries(stubs)) {
-    const p = require.resolve(path.join(SRC, rel))
+    const p = resolveStubTarget(rel)
     stubbed.push(p)
     require.cache[p] = { id: p, filename: p, loaded: true, exports, children: [], paths: [] }
   }

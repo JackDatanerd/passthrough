@@ -6,6 +6,7 @@ import DashboardLayout from '../../components/layout/DashboardLayout'
 import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
+import Select from '../../components/ui/Select'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -285,14 +286,10 @@ export default function DashboardIndex() {
           <div className="flex gap-3 flex-wrap items-end">
             <Input placeholder="Search by job, filename or name" value={searchInput}
               onChange={e => setSearchInput(e.target.value)} className="w-64" />
-            <div className="flex flex-col gap-1">
-              <label htmlFor="scan-status-filter" className="text-xs font-medium text-gray-500">Status</label>
-              <select id="scan-status-filter" value={status} onChange={e => setStatus(e.target.value)}
-                className="rounded-md border border-gray-300 px-3 py-2 text-sm">
-                <option value="">All</option>
-                {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-              </select>
-            </div>
+            <Select id="scan-status-filter" label="Status" value={status} onChange={e => setStatus(e.target.value)}>
+              <option value="">All</option>
+              {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+            </Select>
           </div>
         )}
 

@@ -9,6 +9,7 @@ import Form from '../../components/ui/Form'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, cn, copyToClipboard } from '../../lib/utils'
 
@@ -652,18 +653,13 @@ export default function PartnerDetail() {
       </div>
 
       <div className="grid sm:grid-cols-3 gap-4">
-        <div className="border border-gray-200 rounded-lg p-4 bg-white">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Total pending</div>
-          <div className="text-xl font-bold text-amber-600">{formatCents(partner.pendingCommissionCents || 0, partner.currency)}</div>
-        </div>
-        <div className="border border-gray-200 rounded-lg p-4 bg-white">
-          <div className="text-xs uppercase tracking-wide text-gray-400">Commission rate</div>
-          <div className="text-xl font-bold text-gray-900">{(partner.commissionRate * 100).toFixed(0)}%</div>
-        </div>
-        <div className="border border-gray-200 rounded-lg p-4 bg-white">
-          <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">Payout details</div>
+        <StatCard label="Total pending" size="md" valueClassName="text-amber-600"
+          value={formatCents(partner.pendingCommissionCents || 0, partner.currency)} />
+        <StatCard label="Commission rate" size="md"
+          value={`${(partner.commissionRate * 100).toFixed(0)}%`} />
+        <StatCard label="Payout details" size="md">
           <PayoutDetailsSummary partner={partner} />
-        </div>
+        </StatCard>
       </div>
 
       <div className="flex gap-2 flex-wrap">

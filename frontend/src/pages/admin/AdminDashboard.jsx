@@ -5,16 +5,7 @@ import { useApi } from '../../hooks/useApi'
 import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
 import { formatCents, formatDate, cn } from '../../lib/utils'
-
-function StatCard({ label, value, sub }) {
-  return (
-    <div className="border border-gray-200 rounded-lg p-4 bg-white">
-      <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">{label}</div>
-      <div className="text-2xl font-bold text-gray-900">{value}</div>
-      {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
-    </div>
-  )
-}
+import StatCard from '../../components/ui/StatCard'
 
 export default function AdminDashboard() {
   const [data, setData] = useState(null)

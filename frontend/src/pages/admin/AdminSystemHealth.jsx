@@ -3,6 +3,7 @@ import api from '../../lib/api'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 
@@ -36,12 +37,12 @@ function EmailLogsSection() {
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-semibold text-gray-900">Email delivery log</h2>
-        <select value={status} onChange={e => { setPage(1); setStatus(e.target.value) }}
-          className="rounded-md border border-gray-300 px-2 py-1 text-xs">
+        <Select aria-label="Filter email delivery log by status" size="sm" className="w-auto"
+          value={status} onChange={e => { setPage(1); setStatus(e.target.value) }}>
           <option value="">All statuses</option>
           <option value="sent">Sent</option>
           <option value="failed">Failed</option>
-        </select>
+        </Select>
       </div>
       {loading ? (
         <div className="flex justify-center py-8"><Spinner size="sm" /></div>

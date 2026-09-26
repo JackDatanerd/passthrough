@@ -5,6 +5,7 @@ import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
@@ -98,15 +99,11 @@ export default function AdminWebhooks() {
       <h1 className="text-2xl font-bold text-gray-900">Webhook events</h1>
 
       <div className="flex flex-wrap items-end gap-4">
-        <div className="flex flex-col gap-1">
-          <label htmlFor="wh-status" className="text-sm font-medium text-gray-700">Status</label>
-          <select id="wh-status" value={status} onChange={e => setStatus(e.target.value)}
-            className="rounded-md border border-gray-300 px-3 py-2 text-sm w-56">
-            <option value="">All</option>
-            <option value="ATTENTION">Needs attention</option>
-            {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
-        </div>
+        <Select id="wh-status" label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+          <option value="">All</option>
+          <option value="ATTENTION">Needs attention</option>
+          {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </Select>
         <form className="flex flex-wrap items-end gap-3" onSubmit={e => { e.preventDefault(); applyFilters({ reference: refDraft.trim(), type: typeDraft.trim() }) }}>
           <div className="flex flex-col gap-1">
             <label htmlFor="wh-ref" className="text-sm font-medium text-gray-700">Payment reference</label>

@@ -1,5 +1,6 @@
 import { Link } from 'react-router-dom'
 import Input from '../ui/Input'
+import Select from '../ui/Select'
 import { ROLE_CATEGORIES } from '../../lib/roleCategories'
 
 // The role part of the employer early-access form, shared by the homepage and
@@ -12,14 +13,10 @@ import { ROLE_CATEGORIES } from '../../lib/roleCategories'
 export function RoleFields({ category, onCategory, title, onTitle }) {
   return (
     <>
-      <div className="flex flex-col gap-1">
-        <label htmlFor="lead-role-category" className="sr-only">Field you are hiring in</label>
-        <select id="lead-role-category" value={category} onChange={e => onCategory(e.target.value)}
-          className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-700">
-          <option value="">What field are you hiring in? (optional)</option>
-          {ROLE_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-        </select>
-      </div>
+      <Select id="lead-role-category" aria-label="Field you are hiring in" value={category} onChange={e => onCategory(e.target.value)}>
+        <option value="">What field are you hiring in? (optional)</option>
+        {ROLE_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+      </Select>
       <Input placeholder="Job title (optional, e.g. Senior Engineer)" value={title} maxLength={100}
         onChange={e => onTitle(e.target.value)} />
     </>

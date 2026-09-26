@@ -4,6 +4,7 @@ import api from '../../lib/api'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, statusLabel, scoreColor } from '../../lib/utils'
 
@@ -63,14 +64,10 @@ export default function AdminScans() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Scans</h1>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-sm font-medium text-gray-700">Status</label>
-        <select value={status} onChange={e => setStatus(e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm w-56">
-          <option value="">All</option>
-          {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-        </select>
-      </div>
+      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+        <option value="">All</option>
+        {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+      </Select>
 
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>

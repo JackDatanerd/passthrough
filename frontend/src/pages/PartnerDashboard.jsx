@@ -3,6 +3,7 @@ import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { copyToClipboard, formatCents } from '../lib/utils'
 import Spinner from '../components/ui/Spinner'
+import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
@@ -18,15 +19,6 @@ import Footer from '../components/layout/Footer'
 // (PartnerDetail.jsx, AdminPartners.jsx) — one currency formatter instead of
 // a second, divergent copy.
 const fmtCents = formatCents
-
-function StatCard({ label, value }) {
-  return (
-    <div className="rounded-lg border border-gray-200 bg-white p-4">
-      <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">{label}</div>
-      <div className="text-2xl font-bold text-gray-900">{value}</div>
-    </div>
-  )
-}
 
 // The link itself — built client-side from window.location.origin, since
 // this page is served from the same domain the link should point at. This

@@ -5,6 +5,7 @@ import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
@@ -154,14 +155,10 @@ export default function AdminPayments() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Payments</h1>
 
-      <div className="flex flex-col gap-1">
-        <label className="text-sm font-medium text-gray-700">Status</label>
-        <select value={status} onChange={e => setStatus(e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm w-56">
-          <option value="">All</option>
-          {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-        </select>
-      </div>
+      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+        <option value="">All</option>
+        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+      </Select>
 
       {status === 'PENDING' && (
         <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
