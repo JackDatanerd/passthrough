@@ -475,9 +475,20 @@ async function adminUpdateReferralCode(ctx) {
 // it didn't really claim — and the owner is alerted, since that only
 // happens when two payout-recording calls genuinely overlapped.
 
+// AUDIT FIX (bug): `currency` used to default to a hardcoded 'USD' here —
+// the one money-shaped field in this file that DIDN'T derive from the
+// platform's actual configured currency (env.PAYSTACK_CURRENCY), unlike
+// adminListPartners/adminGetPartner/getPartnerDashboard, which all
+// explicitly attach it for this exact reason. On a non-USD deployment, any
+// caller of this endpoint that omits `currency` — a future admin surface,
+// a script, anything other than the one frontend page that currently knows
+// to work around this by always sending partner.currency explicitly —
+// would silently record a payout mislabeled as USD, contaminating the
+// books. `currency` is now optional here; the server itself resolves the
+// real default in adminRecordPayout, the same way the rest of this file does.
 const recordPayoutSchema = z.object({
   amountCents:  z.number().int().positive().optional(),
-  currency:     z.string().length(3).default('USD'),
+  currency:     z.string().length(3).optional(),
   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
   note:         z.string().max(500).optional(),
   periodStart:  z.string().datetime().optional(),
@@ -527,11 +538,12 @@ async function adminRecordPayout(ctx) {
       ? `Net owed is negative (${owedCents} cents) because of refund/chargeback reversals — nothing to pay. It will net against this partner's future commission.`
       : 'Nothing owed for this scope.' }, 400)
   const amountCents = body.amountCents ?? owedCents
+  const currency = body.currency || ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
 
   const { data: payout, error } = await supabase.from('payouts').insert({
     partner_id:              partnerId,
     amount_cents:            amountCents,
-    currency:                body.currency,
+    currency,
     payout_method:           payoutMethod,
     payout_details_snapshot: partner.payout_details || {},
     note:                    body.note || null,
@@ -619,7 +631,7 @@ async function adminRecordPayout(ctx) {
   // clicking this) — an email failure here must not roll back or hide the
   // recorded payout, only the notification.
   const emailed = await emailService.sendPayoutSent(
-    ctx.env, supabase, partner.email, partner.name, payoutRow.amount_cents, body.currency
+    ctx.env, supabase, partner.email, partner.name, payoutRow.amount_cents, payoutRow.currency
   ).catch(() => false)
 
   return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout, ledgerSettlementFailed })

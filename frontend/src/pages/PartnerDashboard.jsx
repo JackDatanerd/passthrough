@@ -74,7 +74,17 @@ function ShareLink({ code }) {
 function isCodeLive(code, partnerActive) {
   if (!partnerActive) return false
   if (!code.active) return false
-  if (code.expiresAt && new Date(code.expiresAt) < new Date()) return false
+  // AUDIT FIX (bug): this is meant to mirror referral.service.js's
+  // isCodeUsable() so a partner never sees "live" for a code the backend
+  // has actually stopped honoring. `new Date(code.expiresAt) < new Date()`
+  // silently fails OPEN on an unparseable date — Invalid Date compared with
+  // < is always false, the same trap isCodeUsable() was already patched
+  // for on the backend. Use Date.parse + Number.isNaN so a corrupt
+  // expiresAt reads as expired here too, not as "never expires."
+  if (code.expiresAt) {
+    const expiresMs = Date.parse(code.expiresAt)
+    if (Number.isNaN(expiresMs) || expiresMs < Date.now()) return false
+  }
   if (code.usageLimit != null && (code.usesSoFar || 0) >= code.usageLimit) return false
   return true
 }

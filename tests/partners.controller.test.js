@@ -182,6 +182,30 @@ describe('adminRecordPayout', () => {
     const res = await t.mod.adminRecordPayout(t.c())
     expect(res.status).toBe(404)
   })
+
+  // AUDIT FIX (Section 3/4 pass, bug): currency used to hardcode-default to
+  // 'USD' regardless of the platform's actual configured currency, unlike
+  // every other money-shaped field in this controller (adminGetPartner,
+  // adminListPartners, getPartnerDashboard all derive it from
+  // env.PAYSTACK_CURRENCY). It's now resolved the same way here too.
+  it('defaults currency to env.PAYSTACK_CURRENCY, not a hardcoded USD, when the caller omits it', async () => {
+    t = setupPayout()
+    const call = t.c()
+    call.env.PAYSTACK_CURRENCY = 'KES'
+    const res = await t.mod.adminRecordPayout(call)
+    expect(res.body.success).toBe(true)
+    expect(t.state.payoutInserts.at(-1).currency).toBe('KES')
+    expect(t.state.sendPayoutSentCalls.at(-1).currency).toBe('KES')
+  })
+
+  it('still respects an explicitly-supplied currency over the platform default', async () => {
+    t = setupPayout()
+    const call = t.c({ body: { currency: 'NGN' } })
+    call.env.PAYSTACK_CURRENCY = 'KES'
+    const res = await t.mod.adminRecordPayout(call)
+    expect(res.body.success).toBe(true)
+    expect(t.state.payoutInserts.at(-1).currency).toBe('NGN')
+  })
 })
 
 // AUDIT FIX (feature gap): getPartnerDashboard's referral_codes /

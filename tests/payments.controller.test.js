@@ -302,6 +302,20 @@ describe('verifyPayment', () => {
     expect(t.state.alerts.some(a => /amount mismatch/i.test(a.subject))).toBe(true)
   })
 
+  // AUDIT FIX (bug): a currency mismatch on an otherwise-SUCCESSFUL payment
+  // used to be silently folded into the same branch as a routine declined
+  // payment — no [CRITICAL] log, no owner alert, unlike the amount-mismatch
+  // case just above. Real money moving in the wrong currency must never be
+  // indistinguishable from an ordinary "card declined."
+  it('refuses to fulfil on a currency mismatch (status success), and alerts — distinctly from an amount mismatch', async () => {
+    t = setup({ paystack: { data: { status: 'success', currency: 'NGN', amount: 2900 } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(400)
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.state.scanUpdates).toHaveLength(0)
+    expect(t.state.alerts.some(a => /currency mismatch/i.test(a.subject))).toBe(true)
+  })
+
   it('is idempotent: if the webhook already processed it (0 rows), reports success without re-fulfilling', async () => {
     t = setup({ updatedRows: [] })
     const res = await t.mod.verifyPayment(t.c())

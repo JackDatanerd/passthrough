@@ -351,6 +351,9 @@ async function verifyPayment(c2) {
       message: 'Your payment is still processing — this can take a minute or two, especially for mobile money. Check back shortly.'
     }, 202)
 
+  if (pResult.data?.status !== 'success')
+    return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
+
   // BUGFIX: previously compared against the CURRENT env config
   // (c2.env.PAYSTACK_CURRENCY || c.CURRENCY) rather than what THIS payment
   // was actually initialized with. webhooks.controller.js's handlePaystack
@@ -359,8 +362,34 @@ async function verifyPayment(c2) {
   // PAYSTACK_CURRENCY is ever changed between initialize and verify (a
   // mid-flight config change or redeploy). Now both paths trust the same
   // source of truth: what was actually stored on the payment row.
-  if (pResult.data?.status !== 'success' || pResult.data?.currency !== paymentRow.currency)
+  //
+  // AUDIT FIX (bug): this mismatch used to be folded into the plain
+  // status-check above — `status !== 'success' || currency !== paymentRow.
+  // currency` in one condition, both returning the same generic "Payment
+  // verification failed." That's correct for an ordinary decline (routine,
+  // no alert needed), but wrong for THIS case: Paystack reporting
+  // status:'success' in the wrong currency means real money already moved,
+  // just not for the currency this row expects — exactly the same "hold it
+  // for a human, don't silently fulfil, don't silently drop it" situation
+  // as the amount mismatch handled a few lines below (and as
+  // webhooks.controller.js's processChargeSuccess already treats a
+  // currency mismatch via fulfillment.chargeMismatch). Split into its own
+  // branch so it gets the same [CRITICAL] log + owner alert + "left
+  // PENDING for manual review" treatment the amount-mismatch case already
+  // has, instead of looking identical to a routine declined payment with
+  // nobody ever told that money moved.
+  if (pResult.data?.currency !== paymentRow.currency) {
+    console.error(`[CRITICAL] Currency mismatch on ${reference}: expected ${paymentRow.currency}, Paystack reports ${pResult.data?.currency}`)
+    try {
+      await emailService.sendOwnerAlert(c2.env,
+        'Payment currency mismatch — NOT fulfilled',
+        `reference: ${reference}\nscanId: ${paymentRow.scan_id}\nexpected: ${paymentRow.currency}\nreceived: ${pResult.data?.currency}\n\n` +
+        `Payment left PENDING for manual review — no fix was generated. A currency mismatch can never be ` +
+        `auto-accepted (see POST /api/payments/${reference}/recheck) — verify by hand in Paystack first.`
+      )
+    } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
+  }
 
   // Amount check — defense in depth. Paystack's hosted checkout won't let a
   // user pay a different amount than what initializePayment set, but we've
