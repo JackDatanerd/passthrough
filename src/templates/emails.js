@@ -21,6 +21,13 @@ const TEMPLATES = {
   // after BOTH changePassword and resetPassword succeed, since either one
   // means the password is now different.
   password_changed: "<h2>Your password was changed</h2>\n<p>Hi {{NAME}}, this confirms your Passthrough password was just changed. Every other signed-in session has been signed out.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't make this change, reset your password immediately and contact support@passthrough.dev \u2014 your account may be compromised.</p>\n",
+  // AUDIT FIX (feature gap, Auth section audit): account_lockout_alert only
+  // fires on repeated FAILED sign-ins — a successful one, from a network that
+  // looks nothing like usual, previously produced no signal at all. Sent from
+  // auth.controller.js's recordLoginMetadata, throttled to at most one per
+  // NEW_LOGIN_ALERT_THROTTLE_HOURS regardless of how many times the IP
+  // actually changes in that window (see that function's own comment for why).
+  new_login_alert: "<h2>New sign-in to your account</h2>\n<p>Hi {{NAME}}, your Passthrough account was just signed into from a network we haven't seen recently.</p>\n<table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n  <tr><td style=\"padding:8px 0;color:#374151\">When</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600\">{{WHEN}}</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">IP address</td>\n      <td style=\"padding:8px 0;text-align:right;font-family:monospace;font-size:13px\">{{IP}}</td></tr>\n</table>\n<p>If this was you, no action is needed.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If it wasn't, change your password and use \"Sign out other sessions\" on the <a href=\"{{SETTINGS_URL}}\">Settings</a> page — that signs out every device except the one you're reading this on.</p>\n",
   // Sent to the OLD address when updateEmail() succeeds \u2014 the new address
   // already gets a verification email (email_verification, above), but the
   // old one previously heard nothing at all. This is the one place a real

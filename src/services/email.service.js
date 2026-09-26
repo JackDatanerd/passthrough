@@ -67,6 +67,21 @@ const RECIPIENT_LIMITS = {
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
   email_change_confirm:   { max: 5, windowSeconds: 3600 },
+  // A successful login DOES prove identity (the correct password), so by
+  // this file's own rule above this template wouldn't normally need a limit
+  // here at all. It gets one anyway, for the same reason account_lockout_alert
+  // does despite being closer to "proven": knowing a leaked password once is
+  // enough to keep triggering this for as long as it stays valid, by logging
+  // in repeatedly from alternating IPs specifically to spam the real owner's
+  // inbox — proving identity once doesn't mean every consequence of doing it
+  // repeatedly should go unthrottled. auth.controller.js's recordLoginMetadata
+  // already throttles this to one per NEW_LOGIN_ALERT_THROTTLE_HOURS (6h) per
+  // ACCOUNT via last_login_alert_at, which is the tighter and more accurate
+  // bound in ordinary operation; this is the same belt-and-suspenders backstop
+  // pattern as reserveRecipientSlot elsewhere — sized looser than that so it's
+  // not the normally-binding constraint, only a hard ceiling if that logic
+  // ever has a bug.
+  new_login_alert:        { max: 6, windowSeconds: 24 * 3600 },
   // Two per address per month: the form is public, so the recipient is
   // whatever a stranger typed. The first goes out for a new lead; the second
   // covers an UNCONFIRMED lead that resubmits (or an admin re-requesting the
@@ -228,6 +243,20 @@ async function sendAccountLockoutAlert(env, supabase, email, name, lockoutMinute
   return send(env, supabase, email, 'Passthrough: repeated failed sign-in attempts', 'account_lockout_alert', {
     NAME:             name,
     LOCKOUT_MINUTES:  lockoutMinutes
+  })
+}
+
+// AUDIT FIX (feature gap, Auth section audit): the one successful-login
+// counterpart to sendAccountLockoutAlert above — see auth.controller.js's
+// recordLoginMetadata for when this actually fires (new-looking network,
+// throttled) and new_login_alert's own comment in templates/emails.js for
+// why it's rate-limited despite following a correct password.
+async function sendNewSignInAlert(env, supabase, email, name, { ip, when }) {
+  return send(env, supabase, email, 'New sign-in to your Passthrough account', 'new_login_alert', {
+    NAME:         name,
+    IP:           ip,
+    WHEN:         new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+    SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
   })
 }
 
@@ -569,6 +598,7 @@ module.exports = {
   reserveRecipientSlot: recipientAllowed,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
+  sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendPaymentReceipt,
   sendOwnerAlert, sendOwnerNotice,

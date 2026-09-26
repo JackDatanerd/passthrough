@@ -119,6 +119,14 @@ module.exports = {
   // materially so acceptance can be told apart per version.
   TERMS_VERSION: '2026-09',
   RESET_TOKEN_EXPIRY_HOURS: 1,
+  // Auth section, feature-gap-closing pass: minimum gap between "new sign-in"
+  // alert emails for the same account, regardless of how many times the IP
+  // actually changes in that window (see auth.controller.js's
+  // recordLoginMetadata). A phone reconnecting to a new cell tower gets a new
+  // IP on nearly every handoff — without a floor like this, that alone would
+  // fire an email per handoff, which trains the account owner to ignore the
+  // one that eventually matters instead of helping them notice it.
+  NEW_LOGIN_ALERT_THROTTLE_HOURS: 6,
   ROLE_CATEGORIES: [
     'software_engineering','product_management','design','data_science',
     'marketing','sales','operations','finance','healthcare','legal','education','other'

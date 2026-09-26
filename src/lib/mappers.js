@@ -39,6 +39,18 @@ function userRowToCamel(row) {
     // before 0038 shipped — that's correct, not a bug (see that migration).
     termsAcceptedAt:       row.terms_accepted_at ?? null,
     termsVersion:          row.terms_version ?? null,
+    // FEATURE (Auth section, feature-gap-closing pass — migration 0040):
+    // last_login_*/previous_login_* let auth.controller.js's login() decide
+    // whether a sign-in looks like a new network (comparing the incoming
+    // request's IP against lastLoginIp, read BEFORE this login overwrites
+    // it) and give Settings something real to show ("your previous sign-in
+    // was..."). lastLoginAlertAt is bookkeeping only — see safeUser() below,
+    // which strips it before anything reaches the frontend.
+    lastLoginAt:           row.last_login_at ?? null,
+    lastLoginIp:           row.last_login_ip ?? null,
+    previousLoginAt:       row.previous_login_at ?? null,
+    previousLoginIp:       row.previous_login_ip ?? null,
+    lastLoginAlertAt:      row.last_login_alert_at ?? null,
     createdAt:             row.created_at,
     updatedAt:             row.updated_at
   }
@@ -229,7 +241,15 @@ const USER_FIELD_MAP = {
   // no current writer needs this (registration builds a raw snake_case
   // insert), but the reverse map should reflect the full row like every
   // other field here, not silently no-op a future admin-correction write.
-  termsAcceptedAt: 'terms_accepted_at', termsVersion: 'terms_version'
+  termsAcceptedAt: 'terms_accepted_at', termsVersion: 'terms_version',
+  // FIX (Auth section, feature-gap-closing pass): same completeness
+  // discipline as termsAcceptedAt/pendingEmail above — no current writer
+  // needs this via camelToSnake(USER_FIELD_MAP) (auth.controller.js builds
+  // raw snake_case update objects for all five), but the reverse map should
+  // mirror the full row, not silently no-op a future caller.
+  lastLoginAt: 'last_login_at', lastLoginIp: 'last_login_ip',
+  previousLoginAt: 'previous_login_at', previousLoginIp: 'previous_login_ip',
+  lastLoginAlertAt: 'last_login_alert_at'
 }
 
 const SCAN_FIELD_MAP = {

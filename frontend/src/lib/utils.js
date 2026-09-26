@@ -17,6 +17,18 @@ export function formatDate(dateStr) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+// Auth section, feature-gap-closing pass: formatDate() above drops the time
+// of day, which is the one piece that actually matters for "does that match
+// what you did?" (Settings.jsx's previous-sign-in display). Always a real
+// timestamp (never a date-only string), so no parseDate() local-midnight
+// handling is needed here.
+export function formatDateTime(dateStr) {
+  if (!dateStr) return '—'
+  const d = new Date(dateStr)
+  if (Number.isNaN(d.getTime())) return '—'
+  return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
+}
+
 // ── Money ────────────────────────────────────────────────────────────────────
 // null / undefined / NaN used to render "$NaN" (or "$0.00" for null). A missing
 // amount is "unknown", not zero dollars.

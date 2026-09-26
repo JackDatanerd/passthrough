@@ -43,6 +43,75 @@ function maybeSendLockoutAlert(c, result, user) {
   }
 }
 
+// FEATURE (Auth section, feature-gap-closing pass): a failed login that
+// trips the lockout gets the owner an email (maybeSendLockoutAlert above),
+// but a SUCCESSFUL one — the one that matters if a password actually
+// leaked — left no trace anywhere the owner could see, and "Sign out other
+// sessions" (Settings) had nothing behind it to tell them WHY they might
+// want to click it. Deliberately short of a real session/device table: this
+// app's tokens carry a single global token_version, not a per-session id, so
+// there is no way today to list or individually revoke "sessions" — that's a
+// genuine re-architecture (per-token jti + a lookup on every authenticated
+// request), not a small addition here, and out of scope for this pass. What
+// this buys instead, migration 0040's columns:
+//   - previousLoginAt/previousLoginIp: shown in Settings as "your previous
+//     sign-in" — deliberately the login BEFORE this one, not this one, since
+//     "last sign-in: just now" (which is what showing the current session's
+//     own values would always read) tells you nothing.
+//   - a "new sign-in" email when the incoming IP's network genuinely looks
+//     different from last time, throttled to at most one per
+//     NEW_LOGIN_ALERT_THROTTLE_HOURS (constants.js) regardless of how many
+//     times the IP flips inside that window — a phone changing cell towers
+//     gets a new IP on nearly every handoff, and alerting on each one trains
+//     the owner to ignore the one that eventually matters.
+// rateKeyIp is reused here for the "different network" comparison for the
+// same reason rateLimiter.js/scan.controller.js already use it: an IPv6
+// client rotates its low bits on every connection under privacy extensions,
+// so a raw string compare would call that "new" on nearly every login too.
+//
+// Called fire-and-forget from login() (not awaited) but the DB write is NOT
+// truly fire-and-forget — like every other background task in this file, it
+// has to be wrapped in waitUntil() or Workers can cancel it mid-flight the
+// instant the response is sent (see register()'s comment). It's also not
+// awaited before responding: this is bookkeeping for NEXT time, not
+// something the current login should be slowed down by or fail over if it
+// errors — a DB hiccup here must never turn into "couldn't sign in".
+function recordLoginMetadata(c, user) {
+  const supabase = getSupabase(c.env)
+  const newIp = clientIp(c)
+  const prevIp = user.lastLoginIp
+  // No prevIp means either this account has never logged in through this
+  // code path before (pre-migration-0040 account, or the very next login
+  // after register() seeded it) — never alert off a null baseline, or every
+  // existing account would get a "new sign-in" email the moment this ships.
+  const isNewNetwork = !!prevIp && rateKeyIp(prevIp) !== rateKeyIp(newIp)
+  const throttleMs = constants.NEW_LOGIN_ALERT_THROTTLE_HOURS * 60 * 60 * 1000
+  const alertDue = isNewNetwork &&
+    (!user.lastLoginAlertAt || Date.now() - new Date(user.lastLoginAlertAt).getTime() > throttleMs)
+  const now = new Date().toISOString()
+
+  c.executionCtx.waitUntil((async () => {
+    try {
+      must(await supabase.from('users').update({
+        previous_login_at:   user.lastLoginAt,
+        previous_login_ip:   user.lastLoginIp,
+        last_login_at:       now,
+        last_login_ip:       newIp,
+        ...(alertDue ? { last_login_alert_at: now } : {})
+      }).eq('id', user.id), 'record login metadata')
+    } catch (err) {
+      console.error('record login metadata:', err.message)
+    }
+    if (alertDue) {
+      try {
+        await emailService.sendNewSignInAlert(c.env, supabase, user.email, user.name, { ip: newIp, when: now })
+      } catch (err) {
+        console.error('New sign-in alert email:', err.message)
+      }
+    }
+  })())
+}
+
 // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now needs the
 // requester's IP (see rateLimiter.js's LOCKOUT_MIN_DISTINCT_IPS comment) —
 // same header precedence scan.controller.js's quota-bypass check already
@@ -51,7 +120,7 @@ function maybeSendLockoutAlert(c, result, user) {
 // rateLimiter.js/scan.controller.js): it only trusts x-forwarded-for outside
 // production, so a spoofable header can't pick its own lockout-tracking IP
 // in prod, which a local copy of this helper would not have gotten right.
-const { clientIp } = require('../lib/clientIp')
+const { clientIp, rateKeyIp } = require('../lib/clientIp')
 
 async function issueJWT(env, user) {
   const expiresIn = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
@@ -63,6 +132,11 @@ function safeUser(user) {
     passwordHash, paystackAuthCode, paystackCustomerCode,
     resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry,
     pendingEmailToken, pendingEmailExpiry,
+    // lastLoginAlertAt is purely internal throttle bookkeeping for
+    // recordLoginMetadata below (migration 0040) — nothing in the frontend
+    // has any use for it, unlike previousLoginAt/previousLoginIp, which
+    // Settings.jsx shows.
+    lastLoginAlertAt,
     savedProfile, ...safe
   } = user
   return safe
@@ -209,6 +283,14 @@ async function register(c) {
     .insert({
       name, email, password_hash: passwordHash, email_verify_token: stored, email_verify_expiry: exp,
       terms_accepted_at: new Date().toISOString(), terms_version: constants.TERMS_VERSION,
+      // FEATURE (Auth section, feature-gap-closing pass): seeds last_login_*
+      // with THIS request's own sign-up, rather than leaving it null until a
+      // separate login() call. Without this, the account's real first
+      // login() (which might not be the real owner's, if credentials leaked
+      // between registration and their first actual sign-in) would find
+      // lastLoginIp null and — per recordLoginMetadata's own comment — never
+      // alert off a null baseline. Seeding here closes exactly that window.
+      last_login_at: new Date().toISOString(), last_login_ip: clientIp(c),
     })
     .select().single()
   // AUDIT FIX (Auth/Scan round): a duplicate email fell to errorHandler's
@@ -296,6 +378,12 @@ async function login(c) {
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
 
   await recordLoginSuccess(c.env, email)
+  // Backgrounded (see recordLoginMetadata's own comment) and given the `user`
+  // object fetched at the TOP of this request, before any of its own writes —
+  // the response below must keep reporting THIS user object either way, so
+  // there's no ordering hazard even though the update below is still in
+  // flight when safeUser(user) is serialized a line down.
+  recordLoginMetadata(c, user)
   return c.json({ success: true, data: { token: await issueJWT(c.env, user), user: safeUser(user) } })
 }
 

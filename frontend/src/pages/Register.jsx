@@ -8,6 +8,7 @@ import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import { passwordProblem } from '../lib/passwordRules'
 
 export default function Register() {
   const navigate = useNavigate()
@@ -27,7 +28,11 @@ export default function Register() {
 
   async function handleSubmit() {
     if (!name || !email || !password) return fail('All fields required.')
-    if (password.length < 8) return fail('Password must be at least 8 characters.')
+    // FEATURE (Auth section, feature-gap-closing pass): was `.length < 8`
+    // only — see passwordRules.js for why this now mirrors the server's
+    // fuller rules instead of a person only finding out after submitting.
+    const pwProblem = passwordProblem(password, email)
+    if (pwProblem) return fail(pwProblem)
     if (password !== confirm) return fail('Passwords do not match.')
     if (!acceptTerms) return fail('Please accept the Terms of Service and Privacy Policy to continue.')
     try {

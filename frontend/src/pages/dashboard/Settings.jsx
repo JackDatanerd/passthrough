@@ -8,8 +8,9 @@ import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
-import { formatDate } from '../../lib/utils'
+import { formatDate, formatDateTime } from '../../lib/utils'
 import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
+import { passwordProblem } from '../../lib/passwordRules'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -246,7 +247,11 @@ export default function Settings() {
 
   async function handleChangePassword() {
     if (!current || !newPass) return setPwError('All fields required.')
-    if (newPass.length < 8) return setPwError('New password must be at least 8 characters.')
+    // FEATURE (Auth section, feature-gap-closing pass): was `.length < 8`
+    // only — see passwordRules.js.
+    const pwProblem = passwordProblem(newPass, user?.email)
+    if (pwProblem) return setPwError(pwProblem)
+    if (newPass === current) return setPwError('Your new password must be different from your current one.')
     if (newPass !== confirm) return setPwError('Passwords do not match.')
     setPwLoading(true); setPwError(''); setPwSuccess(false)
     try {
@@ -406,6 +411,20 @@ export default function Settings() {
             Signs every other device and browser out, without changing your password.
             This browser stays signed in.
           </p>
+          {/* FEATURE (Auth section, feature-gap-closing pass): pairs the
+              button above with the one signal that actually helps someone
+              decide whether to click it. Deliberately "previous" sign-in,
+              not "last" — by the time this page loads, "last" is always
+              THIS session, which would always read "just now" and tell you
+              nothing. Absent (older accounts, or someone's very first sign-in
+              since this shipped) means there's nothing to compare against yet. */}
+          {user?.previousLoginAt && (
+            <p className="text-xs text-gray-500 mb-4">
+              Previous sign-in: {formatDateTime(user.previousLoginAt)}
+              {user?.previousLoginIp && <> from <span className="font-mono">{user.previousLoginIp}</span></>}
+              . Don't recognize it? Change your password below, then sign out other sessions.
+            </p>
+          )}
           {signOutError   && <p role="alert" className="text-sm text-red-600 mb-3">{signOutError}</p>}
           {signOutSuccess && <p role="status" className="text-sm text-green-700 mb-3">Other sessions signed out.</p>}
           <Button type="button" loading={signOutLoading} variant="secondary"

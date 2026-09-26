@@ -125,6 +125,10 @@ async function setup(opts = {}) {
         state.callOrder.push('account-deleted-email')
       },
       sendAccountLockoutAlert:    async (...a) => { state.emails.push({ type: 'lockout_alert', to: a[2] }) },
+      // FEATURE (Auth section, feature-gap-closing pass): a[4] is the
+      // { ip, when } object — captured so tests can assert the alert fired
+      // with the actual incoming IP, not just that it fired at all.
+      sendNewSignInAlert:         async (...a) => { state.emails.push({ type: 'new_login_alert', to: a[2], ip: a[4]?.ip }) },
       sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4], opts: a[5] }); return true },
     },
     'middleware/rateLimiter.js': {
@@ -239,6 +243,24 @@ describe('register', () => {
     const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password, acceptTerms: true } }))
     expect(res.status).toBe(201)
   })
+
+  // FEATURE (Auth section, feature-gap-closing pass — migration 0040):
+  // without this, the account's real first login() call would find
+  // lastLoginIp null and — per recordLoginMetadata's own comment — never
+  // alert off it, even if that first login() was an attacker's, using
+  // credentials that leaked between registration and the real owner's own
+  // first sign-in. Seeding here closes exactly that window.
+  it('seeds last_login_at/last_login_ip from the registration request itself', async () => {
+    t = await setup()
+    const res = await t.mod.register(t.c({
+      body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true },
+      headers: { 'cf-connecting-ip': '198.51.100.9' }
+    }))
+    expect(res.status).toBe(201)
+    const insert = t.db.calls.find(q => q.table === 'users' && q.op === 'insert')
+    expect(insert.values.last_login_ip).toBe('198.51.100.9')
+    expect(insert.values.last_login_at).toBeTypeOf('string')
+  })
 })
 
 describe('login', () => {
@@ -332,6 +354,139 @@ describe('login', () => {
     t = await setup({ userRow: null, justLocked: true })
     await t.mod.login(t.c({ body: { email: 'ghost@example.com', password: 'whatever' } }))
     expect(t.state.emails).toHaveLength(0)
+  })
+})
+
+// FEATURE (Auth section, feature-gap-closing pass — migration 0040):
+// recordLoginMetadata is called fire-and-forget (not awaited) from login(),
+// wrapped in its own waitUntil — same shape as maybeSendLockoutAlert, but
+// with a real `await` (the users-table update) before the point these tests
+// check, unlike that simpler one-await case. The test harness's fake
+// `executionCtx.waitUntil: p => p` doesn't await the promise it's given
+// either — it only starts it — so a flush past every pending microtask is
+// needed before asserting on t.state.updates/t.state.emails, or these tests
+// would pass or fail depending on exactly how many microtask ticks
+// issueJWT's real Web Crypto call happens to take relative to the fake
+// Supabase client's .then() chain. A macrotask boundary (setTimeout)
+// guarantees every microtask queued before it has already run.
+const flush = () => new Promise(resolve => setTimeout(resolve, 0))
+
+describe('login — new sign-in visibility + alert (migration 0040)', () => {
+  it('on an account with no prior recorded login, seeds last_login_at/ip and does not alert', async () => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), last_login_at: null, last_login_ip: null }) })
+    const res = await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '9.9.9.9' }
+    }))
+    expect(res.status).toBe(200)
+    await flush()
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch.last_login_ip).toBe('9.9.9.9')
+    expect(update.patch.last_login_at).toBeTypeOf('string')
+    expect(update.patch.previous_login_at).toBeNull()
+    expect(update.patch.previous_login_ip).toBeNull()
+    expect(update.patch).not.toHaveProperty('last_login_alert_at')
+    expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(0)
+  })
+
+  it('does not alert when signing in again from the same network, but still shifts previous/last', async () => {
+    const priorAt = PAST()
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: priorAt, last_login_ip: '9.9.9.9', last_login_alert_at: null,
+    }) })
+    await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '9.9.9.9' }
+    }))
+    await flush()
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch.previous_login_at).toBe(priorAt)
+    expect(update.patch.previous_login_ip).toBe('9.9.9.9')
+    expect(update.patch.last_login_ip).toBe('9.9.9.9')
+    expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(0)
+  })
+
+  it('alerts when the network looks different and no alert has recently gone out — and the response still reports the OLD ip, not the new one', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: PAST(), last_login_ip: '9.9.9.9', last_login_alert_at: null,
+    }) })
+    const res = await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '55.55.55.55' }
+    }))
+    // The response was built from the user row fetched at the TOP of the
+    // request, before recordLoginMetadata's own (still in-flight) write —
+    // it must report last sign-in as it was BEFORE this one, same reasoning
+    // as Settings.jsx showing "previous", never "current".
+    expect(res.body.data.user.lastLoginIp).toBe('9.9.9.9')
+    await flush()
+    expect(t.state.emails).toEqual([{ type: 'new_login_alert', to: 'user@example.com', ip: '55.55.55.55' }])
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch.last_login_alert_at).toBeTypeOf('string')
+  })
+
+  it('throttles: no alert if one already went out recently, even from a different network — but previous/last still shift', async () => {
+    const recentAlert = new Date(Date.now() - 60 * 60 * 1000).toISOString() // 1h ago, under the 6h floor
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: PAST(), last_login_ip: '9.9.9.9', last_login_alert_at: recentAlert,
+    }) })
+    await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '55.55.55.55' }
+    }))
+    await flush()
+    expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(0)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch.last_login_ip).toBe('55.55.55.55') // still recorded
+    expect(update.patch).not.toHaveProperty('last_login_alert_at') // not re-stamped
+  })
+
+  it('an IPv6 login from the same /64 (different low bits) is NOT treated as a new network', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: PAST(), last_login_ip: '2001:db8:1234:5678:aaaa:bbbb:cccc:dddd', last_login_alert_at: null,
+    }) })
+    await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '2001:db8:1234:5678:1111:2222:3333:4444' }
+    }))
+    await flush()
+    expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(0)
+  })
+
+  it('an IPv6 login from a genuinely different /64 IS treated as a new network', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: PAST(), last_login_ip: '2001:db8:1234:5678::1', last_login_alert_at: null,
+    }) })
+    await t.mod.login(t.c({
+      body: { email: 'user@example.com', password: 'correct-password' },
+      headers: { 'cf-connecting-ip': '2001:db8:9999:0000::1' }
+    }))
+    await flush()
+    expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(1)
+  })
+
+  // A DB hiccup recording this bookkeeping must never surface as a failed
+  // sign-in — this is genuinely background, unlike the credential checks
+  // earlier in login().
+  it('a failure writing last-login metadata does not affect the (already-sent) login response', async () => {
+    t = await setup({ userRow: baseUserRow({
+      password_hash: await bcrypt.hash('correct-password', 10),
+      last_login_at: PAST(), last_login_ip: '9.9.9.9',
+    }), userUpdateError: { message: 'db down' } })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    await flush()
+  })
+
+  it('never leaks lastLoginAlertAt (internal throttle bookkeeping) in the login response', async () => {
+    t = await setup()
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(res.body.data.user.lastLoginAlertAt).toBeUndefined()
   })
 })
 

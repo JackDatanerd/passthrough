@@ -179,6 +179,31 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
       .toEqual({ terms_accepted_at: 't1', terms_version: '2026-09' })
   })
 
+  // FEATURE (Auth section, feature-gap-closing pass — migration 0040): same
+  // shape as the terms_accepted_at case just above.
+  it('userRowToCamel maps the last/previous login columns and defaults each to null when absent', () => {
+    expect(userRowToCamel({
+      id: 'u1', last_login_at: 't1', last_login_ip: '1.2.3.4',
+      previous_login_at: 't0', previous_login_ip: '5.6.7.8', last_login_alert_at: 't2',
+    })).toMatchObject({
+      lastLoginAt: 't1', lastLoginIp: '1.2.3.4',
+      previousLoginAt: 't0', previousLoginIp: '5.6.7.8', lastLoginAlertAt: 't2',
+    })
+    expect(userRowToCamel({ id: 'u1' })).toMatchObject({
+      lastLoginAt: null, lastLoginIp: null, previousLoginAt: null, previousLoginIp: null, lastLoginAlertAt: null,
+    })
+  })
+
+  it('USER_FIELD_MAP round-trips the last/previous login columns', () => {
+    expect(camelToSnake({
+      lastLoginAt: 't1', lastLoginIp: '1.2.3.4', previousLoginAt: 't0',
+      previousLoginIp: '5.6.7.8', lastLoginAlertAt: 't2',
+    }, USER_FIELD_MAP)).toEqual({
+      last_login_at: 't1', last_login_ip: '1.2.3.4', previous_login_at: 't0',
+      previous_login_ip: '5.6.7.8', last_login_alert_at: 't2',
+    })
+  })
+
   it('paymentRowToCamel includes fixTier and referralCode (Section 9 fix)', () => {
     const mapped = paymentRowToCamel({
       id: 'pay1', amount_cents: 2900, currency: 'USD', status: 'SUCCESS',

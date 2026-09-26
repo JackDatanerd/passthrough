@@ -8,6 +8,7 @@ import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import { passwordProblem } from '../lib/passwordRules'
 
 export default function ResetPassword() {
   const navigate  = useNavigate()
@@ -73,7 +74,12 @@ export default function ResetPassword() {
 
   async function handleSubmit() {
     if (!newPassword) return fail('Password required.')
-    if (newPassword.length < 8) return fail('Password must be at least 8 characters.')
+    // FEATURE (Auth section, feature-gap-closing pass): was `.length < 8`
+    // only. No email known client-side here (the reset token itself doesn't
+    // reveal it, by design) — passwordProblem() without one just skips the
+    // "not your own email" check, same as it would with no email anywhere.
+    const pwProblem = passwordProblem(newPassword)
+    if (pwProblem) return fail(pwProblem)
     if (newPassword !== confirm) return fail('Passwords do not match.')
     try {
       await execute(() => api.post('/auth/reset-password', { token, newPassword }),
