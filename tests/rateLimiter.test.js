@@ -66,6 +66,33 @@ describe('general limiter', () => {
   })
 })
 
+// AUDIT FIX (Section 3/4 re-audit, bug): /initialize and /:reference/cancel
+// used to share `rl.payment`'s bucket — a user retrying a checkout could burn
+// the budget the self-serve cancel endpoint needed to unstick them. Locks in
+// that payment and paymentCancel are now independent, same-IP budgets.
+describe('payment vs paymentCancel — independent budgets (no fate-sharing)', () => {
+  it('exhausting the payment limiter does not touch paymentCancel\'s budget', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 3; i++) await hit(rl.payment, ctx({ env }))
+    const overPayment = await hit(rl.payment, ctx({ env }))
+    expect(overPayment.passed).toBe(false)
+    expect(overPayment.res.status).toBe(429)
+    // Same IP, same env/KV — paymentCancel is unaffected.
+    const cancelStillWorks = await hit(rl.paymentCancel, ctx({ env }))
+    expect(cancelStillWorks.passed).toBe(true)
+  })
+
+  it('paymentCancel has its own, more generous ceiling (10 per 5 minutes)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    let last
+    for (let i = 0; i < 10; i++) last = await hit(rl.paymentCancel, ctx({ env }))
+    expect(last.passed).toBe(true)
+    const over = await hit(rl.paymentCancel, ctx({ env }))
+    expect(over.passed).toBe(false)
+    expect(over.res.status).toBe(429)
+  })
+})
+
 describe('scanPoll limiter', () => {
   it('has a far larger ceiling than the general limiter (600 vs 100)', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }

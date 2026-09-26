@@ -72,6 +72,19 @@ async function initializePayment(c2) {
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (pendingErr) throw pendingErr
 
+  // Single source of truth for the amount — same resolver the public
+  // /api/pricing quote goes through (pricing.controller.js), so whatever
+  // price the checkout screen showed is exactly what gets charged here.
+  // An invalid/expired/exhausted code silently falls through to normal
+  // promo/standard pricing rather than blocking the payment.
+  //
+  // AUDIT FIX (Section 3/4 re-audit, bug): moved up from just before the
+  // Paystack call so respondForExistingPending (right below) can compare
+  // against the RESOLVED current code instead of the raw request body
+  // field — see that function's comment for why the raw value was wrong
+  // to compare against.
+  const priced = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode)
+
   // AUDIT FIX (bug): this used to compare fix_tier alone. A PENDING row
   // already has its price (and therefore its referral code, if any) locked
   // in on Paystack's side — resuming it just hands back the SAME access_code,
@@ -86,7 +99,24 @@ async function initializePayment(c2) {
   // code mismatch is now treated exactly like a tier mismatch: block with
   // the same 409 + cancel-the-old-one path, rather than silently reusing
   // pricing the request no longer matches.
-  const requestedCode = referralCode ? String(referralCode).trim().toUpperCase() : null
+  //
+  // AUDIT FIX (Section 3/4 re-audit, bug): this compared the pending row's
+  // STORED referral_code (a snapshot of the RESOLVED code at creation time —
+  // priceForResolvedCode/referral.service.js writes null there for any code
+  // that didn't actually resolve: invalid, expired, exhausted, wrong tier)
+  // against the CURRENT request's raw, unresolved referralCode field. That's
+  // an apples-to-oranges comparison: a request re-submitting the exact same
+  // invalid/typo'd code twice in a row (nothing actually changed) compared a
+  // stored `null` against a non-null raw string and wrongly concluded the
+  // code had changed, blocking a resume that would have charged the exact
+  // same price. Comparing against `priced.referralCode?.code` — the code as
+  // THIS request just resolved it, through the identical resolver that wrote
+  // the stored value in the first place — makes both sides of the
+  // comparison the same kind of thing: "the code that will actually affect
+  // price," not "whatever string happened to be in the request." A resolved
+  // code that genuinely differs (a new, valid code entered; the old code no
+  // longer resolving the same way) still blocks exactly as before.
+  const resolvedRequestedCode = priced.referralCode?.code || null
 
   // AUDIT FIX (Section 3/4 pass, bug): extracted from an inline block so the
   // exact same resume-or-block decision can also be reached from the
@@ -97,7 +127,7 @@ async function initializePayment(c2) {
   function respondForExistingPending(pendingRow) {
     if (!pendingRow || (Date.now() - Date.parse(pendingRow.created_at)) >= PENDING_REUSE_WINDOW_MS) return null
     const sameTier = pendingRow.fix_tier === fixTier
-    const sameCode = (pendingRow.referral_code || null) === requestedCode
+    const sameCode = (pendingRow.referral_code || null) === resolvedRequestedCode
     if (sameTier && sameCode && pendingRow.paystack_access_code) {
       return c2.json({ success: true, data: {
         access_code: pendingRow.paystack_access_code,
@@ -144,12 +174,8 @@ async function initializePayment(c2) {
     }
   }
 
-  // Single source of truth for the amount — same resolver the public
-  // /api/pricing quote goes through (pricing.controller.js), so whatever
-  // price the checkout screen showed is exactly what gets charged here.
-  // An invalid/expired/exhausted code silently falls through to normal
-  // promo/standard pricing rather than blocking the payment.
-  const priced   = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode)
+  // `priced` was already resolved above (needed earlier for the pending-row
+  // comparison) — reused here as the actual charge amount, unchanged.
   const amount    = priced.amount
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 

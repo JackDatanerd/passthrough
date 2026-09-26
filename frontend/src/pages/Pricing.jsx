@@ -21,6 +21,9 @@ function PriceBlock({ tier, currency }) {
   )
 }
 
+// The three paid tiers this page prices, in the order they're rendered below.
+const PAID_TIERS = ['BADGE', 'FIX_PLAIN', 'FIX']
+
 export default function Pricing() {
   // AUDIT FIX (feature gap): this page used to call usePricing() with no
   // code at all, so a visitor referred via ?ref=CODE — captured globally by
@@ -31,6 +34,16 @@ export default function Pricing() {
   const [referralCode] = useState(getStoredReferralCode())
   const { pricing, byTier, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
 
+  // AUDIT FIX (Section 3/4 re-audit, bug): pricing.referralApplied (from
+  // pricing.controller.js) is true if the code discounts ANY ONE of the
+  // three tiers — a partner's tier_prices can legitimately cover only some
+  // of them (see referral.service.js). The banner used to read that single
+  // flag and claim "prices below reflect your discount" unconditionally,
+  // which overstated things whenever the code only discounted one or two of
+  // the three plans shown here. Count which tiers are actually discounted
+  // and word the banner to match.
+  const discountedTierCount = PAID_TIERS.filter(t => byTier(t).referralApplied).length
+
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
@@ -40,7 +53,11 @@ export default function Pricing() {
           <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
           {referralCode && pricing?.referralApplied && (
             <p className="text-sm font-medium text-emerald-700 mb-4">
-              ✓ Referral code <span className="font-mono">{referralCode}</span> applied — prices below reflect your discount.
+              ✓ Referral code <span className="font-mono">{referralCode}</span> applied — {
+                discountedTierCount >= PAID_TIERS.length
+                  ? 'prices below reflect your discount.'
+                  : 'reflected in the discounted plan(s) below.'
+              }
             </p>
           )}
           {/* AUDIT FIX (feature gap): usePricing()'s pricingFailed signal was

@@ -242,17 +242,58 @@ describe('getPartnerDashboard', () => {
     restore()
   })
 
-  it('returns commissionLedger (not just aggregated stats) for the frontend to render', async () => {
+  // AUDIT FIX (Section 3/4 re-audit, feature gap + minor data-exposure bug):
+  // this data used to be shipped as a raw commissionLedgerRowToCamel pass-
+  // through under `commissionLedger` — fetched every time, never rendered by
+  // PartnerDashboard.jsx, and carrying paymentId/partnerId internal ids with
+  // no partner-facing purpose. It's now `conversions`: the same rows, but
+  // trimmed to partner-relevant fields, with referral_code_id resolved to
+  // the actual code string (useful for a partner running more than one
+  // code) instead of exposed as a bare id.
+  it('returns conversions (not just aggregated stats) for the frontend to render, with internal ids trimmed', async () => {
     const { mod, restore, c } = setupDashboard({
       name: 'Coach K', commission_rate: 0.2,
-      referral_codes: [{ id: 'rc1', clicks: 5 }],
+      referral_codes: [{ id: 'rc1', code: 'COACHK10', clicks: 5 }],
       commission_ledger: [{ id: 'l1', payment_id: 'p1', partner_id: 'pt1', referral_code_id: 'rc1',
         gross_amount_cents: 2900, commission_rate: 0.2, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' }],
       payouts: [],
     })
     const r = await mod.getPartnerDashboard(c)
-    expect(r.body.data.commissionLedger).toHaveLength(1)
-    expect(r.body.data.commissionLedger[0]).toMatchObject({ grossAmountCents: 2900, commissionAmountCents: 580 })
+    expect(r.body.data.commissionLedger).toBeUndefined()
+    expect(r.body.data.conversions).toHaveLength(1)
+    expect(r.body.data.conversions[0]).toMatchObject({
+      id: 'l1', code: 'COACHK10', grossAmountCents: 2900, commissionAmountCents: 580, paid: false, isReversal: false
+    })
+    expect(r.body.data.conversions[0].paymentId).toBeUndefined()
+    expect(r.body.data.conversions[0].partnerId).toBeUndefined()
+    expect(r.body.data.conversions[0].referralCodeId).toBeUndefined()
+    restore()
+  })
+
+  it('conversions: a reversal row resolves its own code, is marked isReversal, and carries the reason', async () => {
+    const { mod, restore, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2,
+      referral_codes: [{ id: 'rc1', code: 'COACHK10', clicks: 5 }],
+      commission_ledger: [
+        { id: 'l1', referral_code_id: 'rc1', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' },
+        { id: 'l2', referral_code_id: 'rc1', reverses_ledger_id: 'l1', reversal_reason: 'refunded', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: null, created_at: '2026-09-02T00:00:00Z' },
+      ],
+      payouts: [],
+    })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.conversions[1]).toMatchObject({ code: 'COACHK10', isReversal: true, reversalReason: 'refunded', commissionAmountCents: -580 })
+    restore()
+  })
+
+  it('conversions: paid reflects whether a payout_id is set', async () => {
+    const { mod, restore, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2,
+      referral_codes: [],
+      commission_ledger: [{ id: 'l1', referral_code_id: null, gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: 'payout1', created_at: '2026-09-01T00:00:00Z' }],
+      payouts: [],
+    })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.conversions[0]).toMatchObject({ code: null, paid: true })
     restore()
   })
 

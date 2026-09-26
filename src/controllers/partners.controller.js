@@ -763,6 +763,37 @@ async function getPartnerDashboard(ctx) {
   const ledger = partner.commission_ledger || []
   const codes  = partner.referral_codes || []
 
+  // AUDIT FIX (Section 3/4 re-audit, feature gap + minor data-exposure bug):
+  // this response has always fetched and shipped the FULL commission ledger
+  // to the browser — but PartnerDashboard.jsx never rendered it, only the
+  // aggregates (stats/cyclesSummary) computed from it below. The admin side
+  // has a full per-conversion list (PartnerDetail.jsx's ConversionsTab, fed
+  // by this exact same table) — a partner had no equivalent way to see WHICH
+  // referrals converted, only totals. The commissionLedgerRowToCamel shape
+  // used for the admin view also isn't right to hand a partner as-is: it
+  // carries paymentId and partnerId, two internal ids with no partner-facing
+  // purpose that this endpoint had no reason to disclose (this is the one
+  // partner-facing endpoint in the file that's otherwise deliberately
+  // careful about this — see the "never exposes bank/mobile-money details"
+  // note below on payout_details_snapshot). referralCodeId is resolved to
+  // the actual code string here instead — useful for a partner running more
+  // than one code to see which one a given conversion came through — rather
+  // than exposed as a raw id with nothing to look it up against.
+  const codeTextById = new Map(codes.map(row => [row.id, row.code]))
+  const conversions = ledger.map(row => ({
+    id:                    row.id,
+    code:                  codeTextById.get(row.referral_code_id) || null,
+    grossAmountCents:      row.gross_amount_cents,
+    commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
+    commissionAmountCents: row.commission_amount_cents,
+    paid:                  !!row.payout_id,
+    // A reversal is a NEGATIVE row undoing an earlier conversion (refund /
+    // lost dispute) — see referral.service.js's reverseCommission.
+    isReversal:            !!row.reverses_ledger_id,
+    reversalReason:        row.reversal_reason ?? null,
+    createdAt:             row.created_at
+  }))
+
   return ctx.json({ success: true, data: {
     name:           partner.name,
     commissionRate: partner.commission_rate,
@@ -784,7 +815,7 @@ async function getPartnerDashboard(ctx) {
     // rendered as USD regardless of what's actually configured.
     currency:       ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
     referralCodes:  codes.map(referralCodeRowToCamel),
-    commissionLedger: ledger.map(commissionLedgerRowToCamel),
+    conversions,
     payouts:        (partner.payouts || []).map(payoutRowToCamel),
     // Last 3 cycles (current + 2 prior) — enough for a partner to see
     // "here's what's still accruing" vs. "here's what's queued for the

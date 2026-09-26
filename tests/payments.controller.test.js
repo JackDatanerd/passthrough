@@ -54,6 +54,13 @@ function setupInit(opts = {}) {
     : { id: 's1', user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
   const existingPending = 'existingPending' in opts ? opts.existingPending : null
 
+  // Referral codes this scenario knows how to resolve — keyed by the
+  // UPPER-CASED code string, same normalization referral.service.js's
+  // lookupCode applies before querying. Defaults to "nothing resolves" (every
+  // code is treated as invalid/not-found), matching the previous, implicit
+  // behavior of every test that doesn't care about referral-code pricing.
+  const referralCodes = opts.referralCodes || {}
+
   const db = createFakeSupabase(q => {
     if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
     if (q.table === 'payments' && q.op === 'select') return { data: existingPending, error: null }
@@ -62,6 +69,7 @@ function setupInit(opts = {}) {
       return { data: [{}], error: opts.abandonError || null }
     }
     if (q.table === 'payments' && q.op === 'insert') { state.paymentInserts.push(q.values); return { error: opts.insertError || null } }
+    if (q.table === 'referral_codes') return { data: referralCodes[eqValue(q, 'code')] || null, error: null }
     return undefined
   })
 
@@ -145,11 +153,21 @@ describe('initializePayment — stale PENDING cleanup', () => {
   // attempt was created with, even if the customer applied/changed a
   // referral code afterward and the checkout button was now showing a
   // different price. Same-tier + same-code still resumes; same-tier +
-  // different-code now blocks with a 409 instead of silently charging the
-  // stale price.
-  it('does NOT resume a same-tier PENDING row created with a DIFFERENT referral code — blocks with 409', async () => {
+  // a code that resolves to a genuinely different price now blocks with a
+  // 409 instead of silently charging the stale price.
+  //
+  // A real, resolvable NEWCODE is used here (not just a different string) —
+  // see the "re-audit" tests below for why the comparison has to be against
+  // what a code actually RESOLVES to, not the raw string.
+  const usableCode = (over = {}) => ({
+    active: true, usage_limit: null, uses_so_far: 0, expires_at: null,
+    tier_prices: { FIX: 1500 }, partners: { status: 'ACTIVE' }, ...over
+  })
+
+  it('does NOT resume a same-tier PENDING row created with a DIFFERENT (resolvable) referral code — blocks with 409', async () => {
     t = setupInit({
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'OLDCODE', created_at: new Date().toISOString() },
+      referralCodes: { NEWCODE: usableCode({ code: 'NEWCODE' }) },
     })
     const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
     expect(res.status).toBe(409)
@@ -158,9 +176,10 @@ describe('initializePayment — stale PENDING cleanup', () => {
     expect(t.state.paymentInserts).toHaveLength(0)
   })
 
-  it('does NOT resume a same-tier PENDING row created WITHOUT a referral code when one is now supplied — blocks with 409', async () => {
+  it('does NOT resume a same-tier PENDING row created WITHOUT a referral code when a DIFFERENT (resolvable) one is now supplied — blocks with 409', async () => {
     t = setupInit({
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
+      referralCodes: { NEWCODE: usableCode({ code: 'NEWCODE' }) },
     })
     const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
     expect(res.status).toBe(409)
@@ -169,11 +188,48 @@ describe('initializePayment — stale PENDING cleanup', () => {
   it('DOES resume a same-tier PENDING row when the referral code matches (case/whitespace-insensitive)', async () => {
     t = setupInit({
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'SAMECODE', created_at: new Date().toISOString() },
+      referralCodes: { SAMECODE: usableCode({ code: 'SAMECODE' }) },
     })
     const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: '  samecode  ' } }))
     expect(res.status).toBe(200)
     expect(res.body.data.reference).toBe('fresh-ref')
     expect(t.state.paymentInserts).toHaveLength(0)
+  })
+
+  // AUDIT FIX (Section 3/4 re-audit, bug): the pending row's stored
+  // referral_code is a snapshot of the RESOLVED code (referral.service.js's
+  // priceForResolvedCode writes null for anything that doesn't actually
+  // resolve — invalid, expired, exhausted, wrong partner status). Comparing
+  // that against the current request's raw, unresolved string meant
+  // resubmitting the exact same invalid/typo'd code twice in a row — nothing
+  // about the price actually changed — read as "the code changed" and
+  // wrongly blocked a resume that would have charged the identical price.
+  describe('re-audit: comparing against the RESOLVED code, not the raw request field', () => {
+    it('DOES resume when the SAME unresolvable code is submitted twice (price never actually changed)', async () => {
+      t = setupInit({
+        // First attempt's code never resolved (typo, expired, whatever) — the
+        // stored snapshot is null, exactly like a no-code checkout.
+        existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
+        // No referralCodes entry for 'TYPOCODE' — it does not resolve this time either.
+      })
+      const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'TYPOCODE' } }))
+      expect(res.status).toBe(200)
+      expect(res.body.data.reference).toBe('fresh-ref')
+      expect(t.state.paymentInserts).toHaveLength(0)
+    })
+
+    it('DOES resume when a code that used to resolve no longer does, as long as the request repeats the SAME string (both resolve to standard pricing now)', async () => {
+      t = setupInit({
+        // Stored snapshot is null because the code had already stopped
+        // resolving by the time the first attempt priced it (e.g. it hit its
+        // usage limit moments earlier) — same shape as the case above.
+        existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
+        referralCodes: { EXPIREDCODE: usableCode({ code: 'EXPIREDCODE', active: false }) },
+      })
+      const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'EXPIREDCODE' } }))
+      expect(res.status).toBe(200)
+      expect(res.body.data.reference).toBe('fresh-ref')
+    })
   })
 })
 

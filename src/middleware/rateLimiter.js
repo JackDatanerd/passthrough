@@ -304,6 +304,27 @@ const payment = makeLimiter({
   message: msg('Payment in progress. Wait.')
 })
 
+// AUDIT FIX (Section 3/4 re-audit, bug — no live incident, hardening only):
+// payments.routes.js used to run POST /:reference/cancel through this same
+// `payment` limiter — same KV bucket (`rl:payment:<ip>`), not just the same
+// numbers. That's exactly the fate-sharing anti-pattern already fixed
+// elsewhere in this file (`click` vs `employerLead`, `partnerRead` vs
+// `partnerWrite`): initializePayment's own comments describe double-click,
+// two open tabs, and retrying after a slow Paystack popup as NORMAL usage —
+// precisely the traffic pattern that burns through a 3-per-minute budget.
+// A customer who used up that budget just trying to check out could then
+// find cancelPayment — the self-serve escape hatch initializePayment's 409
+// response explicitly points them to — blocked too, with no way to clear
+// their own stuck PENDING row for another minute. cancelPayment already
+// does its own atomic ownership + status check (UPDATE ... WHERE user_id =
+// ... AND status = 'PENDING'), so it isn't the sensitive operation `payment`
+// exists to throttle; it just needs its own budget so it can't be starved
+// by attempts at the thing it's meant to unstick.
+const paymentCancel = makeLimiter({
+  windowSeconds: 5 * 60, max: 10, keyPrefix: 'rl:paymentcancel',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 // Backs PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
 // (scan.controller.js's updateResumeData/downloadDraft). Reachable by
 // anonymous visitors too (ownership is enforced via anon_token, not the
@@ -604,7 +625,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, resumeEdit, employerLead, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, employerLead, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

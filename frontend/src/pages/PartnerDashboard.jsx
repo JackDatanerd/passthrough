@@ -123,6 +123,42 @@ function CodeCard({ code, partnerActive, currency }) {
   )
 }
 
+// AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard has
+// always fetched and returned the full per-conversion ledger (see
+// partners.controller.js) — used to build the stats/cyclesSummary above —
+// but nothing on this page ever rendered the individual rows. A partner
+// could see totals ("3 conversions, $58.00 pending") but had no way to see
+// WHICH referrals converted, for how much, or whether a given one had since
+// been refunded — despite the admin side having exactly this view
+// (PartnerDetail.jsx's Conversions tab) for the same underlying data.
+function ConversionRow({ conversion, currency }) {
+  const isRefund = conversion.commissionAmountCents < 0 || conversion.isReversal
+  return (
+    <li className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+      <div>
+        <div>
+          {new Date(conversion.createdAt).toLocaleDateString()}
+          {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
+        </div>
+        {conversion.isReversal && (
+          <div className="text-xs text-red-600 mt-0.5">
+            Refunded{conversion.reversalReason ? ` — ${conversion.reversalReason}` : ''}
+          </div>
+        )}
+      </div>
+      <div className="flex items-center gap-2 shrink-0">
+        <span className={`font-medium ${isRefund ? 'text-red-600' : 'text-gray-900'}`}>
+          {fmtCents(conversion.commissionAmountCents, currency)}
+        </span>
+        <span className={`text-xs px-2 py-0.5 rounded-full ${
+          conversion.paid ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+          {conversion.paid ? 'Paid' : 'Unpaid'}
+        </span>
+      </div>
+    </li>
+  )
+}
+
 export default function PartnerDashboard() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -193,6 +229,19 @@ export default function PartnerDashboard() {
                   <CodeCard key={code.id} code={code} partnerActive={data.active} currency={data.currency} />
                 ))}
               </div>
+            )}
+
+            <h2 className="text-lg font-semibold text-gray-900 mb-3">Recent conversions</h2>
+            {(data.conversions || []).length === 0 ? (
+              <p className="text-sm text-gray-500 mb-8">
+                No conversions yet — once someone buys through your link, it'll show up here.
+              </p>
+            ) : (
+              <ul className="flex flex-col gap-2 mb-8">
+                {data.conversions.map(cv => (
+                  <ConversionRow key={cv.id} conversion={cv} currency={data.currency} />
+                ))}
+              </ul>
             )}
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
