@@ -7,10 +7,15 @@ const c     = require('../controllers/employer-leads.controller')
 const router = new Hono()
 
 router.post('/', rl.employerLead, c.createLead)
-// The two links in the acknowledgement email (confirm the address / remove it).
-// Public; rate-limited like the form itself. Signed tokens, no session.
-router.post('/confirm', rl.employerLead, c.confirmLead)
-router.post('/remove',  rl.employerLead, c.removeLead)
+// The two links in the acknowledgement email (confirm the address / remove
+// it). Public; signed tokens, no session.
+//
+// BUG FIX (fresh audit pass, Section 5): these used to share the `employerLead`
+// bucket with the form above (`rl:lead:<ip>`) — see rateLimiter.js's
+// `employerLeadLink` comment for why that's the same fate-sharing mistake
+// already fixed for partner click-tracking. Given their own dedicated bucket.
+router.post('/confirm', rl.employerLeadLink, c.confirmLead)
+router.post('/remove',  rl.employerLeadLink, c.removeLead)
 
 // AUDIT FIX (Section 5): the retrieval side of the lead-capture gap — leads
 // were being written with no way for anyone to ever read them back short of
@@ -23,6 +28,14 @@ router.get('/export.csv', admin, c.adminExportLeads)
 // routes so 'manual' / 'bulk' can never be read as an id.
 router.post('/manual', admin, c.adminCreateLead)
 router.post('/bulk',   admin, c.adminBulkUpdateLeads)
+
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way to learn an
+// address was suppressed used to be trying to re-add it via /manual and
+// reading the 409 — see the controller's own comment above adminCheckSuppression.
+// Registered before the /:id routes for the same "never read as an id" reason
+// as /manual and /bulk above.
+router.post(  '/suppressions/check', admin, c.adminCheckSuppression)
+router.delete('/suppressions',       admin, c.adminLiftSuppression)
 
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —
 // the leads list was read-only with no way to track outreach or clear spam.

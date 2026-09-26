@@ -37,6 +37,7 @@ describe('employer-leads routes', () => {
   const app = () => mount('routes/employer-leads.routes.js', 'controllers/employer-leads.controller.js')
   const adminRoutes = [
     ['GET', ''], ['GET', '/export.csv'], ['POST', '/manual'], ['POST', '/bulk'],
+    ['POST', '/suppressions/check'], ['DELETE', '/suppressions'],
     [`PATCH`, `/${ID}`], [`DELETE`, `/${ID}`], [`POST`, `/${ID}/request-confirmation`],
   ]
   it('the public form needs no login', async () => {
@@ -65,6 +66,26 @@ describe('employer-leads routes', () => {
     expect((await call(a, 'PATCH', `/${ID}`, {})).json.handler).toBe('adminUpdateLeadStatus')
     expect((await call(a, 'POST', `/${ID}/request-confirmation`, {})).json.handler).toBe('adminRequestConfirmation')
     expect((await call(a, 'PATCH', '/bulk', {})).status).toBe(400)   // a malformed :id, not the bulk handler
+    // FEATURE GAP CLOSED (fresh audit pass, Section 5): 'suppressions' must
+    // never be read as an :id either, same reasoning as 'manual' and 'bulk'.
+    expect((await call(a, 'POST', '/suppressions/check', {})).json.handler).toBe('adminCheckSuppression')
+    expect((await call(a, 'DELETE', '/suppressions', {})).json.handler).toBe('adminLiftSuppression')
+  })
+  // BUG FIX (fresh audit pass, Section 5): confirm/remove used to share the
+  // exact `employerLead` bucket with the public form (POST /). Stubs each
+  // rate-limiter export with a distinguishable marker (rather than the
+  // blanket passThrough every other test here uses) so this can tell WHICH
+  // limiter a route actually goes through, not just that some limiter ran.
+  it('confirm/remove use their own rate limiter, not the public form\'s', async () => {
+    const hit = []
+    const taggedLimiter = (name) => async (c, next) => { hit.push(name); return next() }
+    const a = mount('routes/employer-leads.routes.js', 'controllers/employer-leads.controller.js', {
+      'middleware/rateLimiter.js': { employerLead: taggedLimiter('employerLead'), employerLeadLink: taggedLimiter('employerLeadLink') },
+    })
+    await call(a, 'POST', '', { name: 'x' })
+    await call(a, 'POST', '/confirm', { token: 'x' })
+    await call(a, 'POST', '/remove', { token: 'x' })
+    expect(hit).toEqual(['employerLead', 'employerLeadLink', 'employerLeadLink'])
   })
 })
 

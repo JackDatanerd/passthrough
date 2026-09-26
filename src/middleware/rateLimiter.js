@@ -354,6 +354,23 @@ const employerLead = makeLimiter({
   message: msg('Slow down.')
 })
 
+// BUG FIX (fresh audit pass, Section 5): confirm/remove used to share this
+// exact `employerLead` bucket (`rl:lead:<ip>`) with the public lead FORM —
+// the identical fate-sharing mistake diagnosed and fixed for partner
+// click-tracking below (`click`). 10/hr is sized for "a stranger filling out
+// a form," not "an inbox owner clicking a link in an email" — a shared
+// office/NAT IP that fills that quota submitting leads would also start
+// getting 429s on unrelated confirm/remove clicks from the same address.
+// That's a worse failure mode for `removeLead` specifically: blocking
+// someone's one-click opt-out is worse than blocking a form submission.
+// Both actions require a valid signed token (leadTokens.js) to do anything
+// at all, so this bucket exists for general abuse hygiene, not to stop
+// guessing — sized generously relative to `employerLead` accordingly.
+const employerLeadLink = makeLimiter({
+  windowSeconds: 60 * 60, max: 30, keyPrefix: 'rl:leadlink',
+  message: msg('Slow down.')
+})
+
 // AUDIT FIX (Payments & Pricing / Partners re-audit, bug — no live incident,
 // hardening only): partners.routes.js's three public, TOKEN-gated endpoints
 // (GET /payout-details, POST /payout-details, GET /dashboard) had no rate
@@ -625,7 +642,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, employerLead, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, employerLead, employerLeadLink, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

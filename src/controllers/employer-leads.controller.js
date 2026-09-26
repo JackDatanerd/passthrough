@@ -406,25 +406,39 @@ function sanitizeSearchTerm(term) {
 // categorise by hand); otherwise a taxonomy key.
 const FIELD_FILTERS = [...ROLE_CATEGORIES, 'none']
 
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): `source`/`source_code`
+// were captured meticulously (see the schema comments above) and reached the
+// CSV export, but there was no way to filter or count by source anywhere in
+// the live admin list — the reporting half of the feature was never
+// finished. LEAD_SOURCES itself stays the narrower submitter-facing
+// whitelist (only values a public form may claim); ALL_LEAD_SOURCES adds
+// 'manual' (adminCreateLead's own source value) since an admin browsing or
+// counting leads needs to be able to select every source that actually
+// exists in the table, not just the ones a stranger could have typed.
+const ALL_LEAD_SOURCES = [...LEAD_SOURCES, 'manual']
+
 function parseFilters(c) {
   const status = c.req.query('status')
   const field  = c.req.query('field')
+  const source = c.req.query('source')
   const sort   = c.req.query('sort') === 'activity' ? 'activity' : 'created'
   return {
     search: sanitizeSearchTerm(c.req.query('search')),
     status: LEAD_STATUSES.includes(status) ? status : null,
     field:  FIELD_FILTERS.includes(field) ? field : null,
+    source: ALL_LEAD_SOURCES.includes(source) ? source : null,
     // yes = the address was confirmed, no = still unconfirmed.
     confirmed: ['yes', 'no'].includes(c.req.query('confirmed')) ? c.req.query('confirmed') : null,
     sort
   }
 }
 
-function applyFilters(query, { search, status, field, confirmed }) {
+function applyFilters(query, { search, status, field, source, confirmed }) {
   if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%,role_title.ilike.%${search}%`)
   if (status) query = query.eq('status', status)
   if (field === 'none') query = query.is('role_category', null)
   else if (field) query = query.eq('role_category', field)
+  if (source) query = query.eq('source', source)
   if (confirmed === 'yes') query = query.not('confirmed_at', 'is', null)
   else if (confirmed === 'no') query = query.is('confirmed_at', null)
   return query
@@ -478,6 +492,17 @@ async function adminListLeads(c) {
     counts[s] = n || 0
   }))
 
+  // FEATURE GAP CLOSED (fresh audit pass, Section 5): same shape as `counts`
+  // above, but by source — same "unaffected by the current filters" reasoning,
+  // so the breakdown always reflects the whole table, not just what's on screen.
+  const sourceCounts = {}
+  await Promise.all(ALL_LEAD_SOURCES.map(async (s) => {
+    const { count: n, error: cErr } = await supabase
+      .from('employer_leads').select('id', { count: 'exact', head: true }).eq('source', s)
+    if (cErr) throw cErr
+    sourceCounts[s] = n || 0
+  }))
+
   // How many leads still have an unconfirmed address (also unaffected by the
   // current filters) — the number worth acting on before anyone is emailed.
   // Optional garnish like the supply figure: a deployment that has not run
@@ -485,6 +510,15 @@ async function adminListLeads(c) {
   const { count: unconfirmed, error: uErr } = await supabase
     .from('employer_leads').select('id', { count: 'exact', head: true }).is('confirmed_at', null)
   if (uErr) console.error('employer-leads: could not count unconfirmed leads:', uErr.message)
+
+  // FEATURE GAP CLOSED (fresh audit pass, Section 5): total size of the
+  // do-not-contact list. Same "optional garnish" posture as `unconfirmed` —
+  // a deployment that hasn't run migration 0034 yet must still get its list.
+  let suppressed = null
+  const { count: suppressedCount, error: sErr } = await supabase
+    .from('employer_lead_suppressions').select('email_hash', { count: 'exact', head: true })
+  if (sErr && !MISSING_RELATION.includes(sErr.code)) console.error('employer-leads: could not count suppressions:', sErr.message)
+  else if (!sErr) suppressed = suppressedCount || 0
 
   // Verified-candidate supply per field. Optional garnish: if the migration
   // that defines it hasn't run, the list must still load.
@@ -496,7 +530,7 @@ async function adminListLeads(c) {
   } catch (_) { supply = null }
 
   return c.json({ success: true, data: (data || []).map(leadRowToCamel),
-    meta: { page, pageSize, total: count || 0, counts, unconfirmed: uErr ? null : (unconfirmed || 0), candidateSupply: supply } })
+    meta: { page, pageSize, total: count || 0, counts, sourceCounts, unconfirmed: uErr ? null : (unconfirmed || 0), suppressed, candidateSupply: supply } })
 }
 
 // CSV cells are always quoted, and any cell that starts with a character a
@@ -733,9 +767,20 @@ async function confirmLead(c) {
   if (lead.confirmed_at) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
 
   const now = new Date().toISOString()
-  const { error: updErr } = await supabase
-    .from('employer_leads').update({ confirmed_at: now, updated_at: now }).eq('id', lead.id).is('confirmed_at', null)
+  // BUG FIX (fresh audit pass, Section 5): the `.is('confirmed_at', null)`
+  // guard is optimistic concurrency against a double-click or a mail client
+  // retrying the POST — but the old code never checked whether the update
+  // actually matched a row. The loser of that race updated 0 rows (no
+  // error — Postgres doesn't treat "matched nothing" as one), and still
+  // unconditionally called notifyOwner() right after, so the owner got the
+  // same "Employer lead confirmed" email twice. `.select('id').maybeSingle()`
+  // makes the outcome checkable, mirroring the same guard
+  // mergeIntoExistingLead already uses for exactly this class of race.
+  const { data: updated, error: updErr } = await supabase
+    .from('employer_leads').update({ confirmed_at: now, updated_at: now })
+    .eq('id', lead.id).is('confirmed_at', null).select('id').maybeSingle()
   if (updErr) throw updErr
+  if (!updated) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
   // A confirmed lead is a real one — worth telling the owner.
   await notifyOwner(c, 'Employer lead confirmed', describeLead(lead))
   return c.json({ success: true, status: 'confirmed', message: "Thanks — your email is confirmed. We'll be in touch when there are Verified candidates in your field." })
@@ -757,6 +802,46 @@ async function removeLead(c) {
   const { error: delErr } = await supabase.from('employer_leads').delete().eq('email', email)
   if (delErr) throw delErr
   return c.json({ success: true, message: "You've been removed. We won't contact you again." })
+}
+
+// ── Admin: do-not-contact list ──────────────────────────────────────────────
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way an admin
+// could learn an address was suppressed used to be trying to re-add it via
+// adminCreateLead and reading the 409. There was no way to check a specific
+// address up front (e.g. answering a "why can't I sign up again" support
+// email) or to lift a suppression without also recreating the lead right
+// then. A browsable LIST of suppressions isn't meaningful here — only a
+// SHA-256 hash is stored (see removeLead's comment above), so a list of rows
+// would just be opaque hashes with no address to show next to them. What's
+// actually useful instead: look up one known address, and lift it on its own.
+const emailBodySchema = z.object({ email: z.string().trim().toLowerCase().max(254).email() })
+
+// POST /api/employer-leads/suppressions/check { email } — admin only.
+async function adminCheckSuppression(c) {
+  const { email } = emailBodySchema.parse(await c.req.json())
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase
+    .from('employer_lead_suppressions').select('created_at').eq('email_hash', await sha256(email)).maybeSingle()
+  if (error) throw error
+  return c.json({ success: true, data: { suppressed: !!data, since: data?.created_at || null } })
+}
+
+// DELETE /api/employer-leads/suppressions { email } — admin only. Lifts a
+// suppression without recreating the lead (adminCreateLead's
+// `overrideRemoval` does both at once, for the common "yes, add them back
+// too" case; this is for "lift it, but they haven't asked to be re-added").
+async function adminLiftSuppression(c) {
+  const { email } = emailBodySchema.parse(await c.req.json())
+  const supabase = getSupabase(c.env)
+  const hash = await sha256(email)
+  const { data, error } = await supabase
+    .from('employer_lead_suppressions').delete().eq('email_hash', hash).select('email_hash').maybeSingle()
+  if (error) throw error
+  if (!data) return c.json({ success: false, message: 'That address is not on the do-not-contact list.' }, 404)
+  // target_id is the hash, not the address — the audit trail may record
+  // WHICH suppression was lifted without ever holding the address itself.
+  await logAdminAction(c, supabase, 'lead.suppression_lift', 'employer_lead_suppression', hash)
+  return c.json({ success: true, message: 'Suppression lifted. The address can be added or can resubmit again.' })
 }
 
 // POST /api/employer-leads/:id/request-confirmation — admin only. Leads that
@@ -783,5 +868,6 @@ module.exports = {
   createLead, confirmLead, removeLead,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
+  adminCheckSuppression, adminLiftSuppression,
   LEAD_STATUSES, LEAD_SOURCES
 }

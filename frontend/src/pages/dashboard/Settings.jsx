@@ -7,6 +7,7 @@ import Button from '../../components/ui/Button'
 import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate } from '../../lib/utils'
 import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
 
@@ -152,6 +153,13 @@ export default function Settings() {
   const [profileSummary, setProfileSummary ] = useState(null)
   const [removing,        setRemoving       ] = useState(false)
   const [removeError,     setRemoveError    ] = useState('')
+  // FEATURE GAP CLOSED (fresh audit pass, Section 6): "Remove saved profile"
+  // used to fire on a single click with no confirmation at all — unlike scan
+  // deletion (Index.jsx's ConfirmDialog) and account deletion (the password-
+  // gated modal below), both of which confirm before doing something the
+  // person can't undo. Removing a saved profile is just as permanent, so it
+  // gets the same ConfirmDialog treatment as scan deletion.
+  const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
 
   function loadProfile() {
     setProfileLoading(true); setProfileError('')
@@ -182,8 +190,10 @@ export default function Settings() {
       setSavedAt(null)
       setSourceScanId(null)
       setProfileSummary(null)
+      setRemoveConfirmOpen(false)
     } catch (err) {
       setRemoveError(getErrorMessage(err, 'Failed to remove saved profile.'))
+      setRemoveConfirmOpen(false)
     } finally {
       setRemoving(false)
     }
@@ -444,7 +454,7 @@ export default function Settings() {
                   </Link>
                 )}
               </div>
-              <Button variant="secondary" onClick={handleRemoveProfile} loading={removing} size="sm">
+              <Button variant="secondary" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
                 Remove saved profile
               </Button>
             </div>
@@ -498,6 +508,16 @@ export default function Settings() {
           </Button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={removeConfirmOpen}
+        title="Remove saved profile"
+        message="Remove your saved profile? You'll need to save it again from a completed scan to reuse it for a rescan."
+        confirmLabel="Remove"
+        loading={removing}
+        onConfirm={handleRemoveProfile}
+        onCancel={() => setRemoveConfirmOpen(false)}
+      />
 
       <Modal open={cancelOpen} onClose={closeCancel} title="Cancel email change" dismissible={!cancelingPending}>
         <p className="text-sm text-gray-600 mb-4">

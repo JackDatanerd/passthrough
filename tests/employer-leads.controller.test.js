@@ -60,7 +60,16 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true 
     if (q.table === 'employer_lead_suppressions') {
       const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
       if (q.op === 'upsert') { state.suppressed.add(q.values.email_hash); return { data: null, error: null } }
-      if (q.op === 'delete') { state.suppressed.delete(h); return { data: null, error: null } }
+      // TEST FIX (fresh audit pass, Section 5): adminLiftSuppression chains
+      // .select().maybeSingle() onto the delete to learn whether a row was
+      // actually removed (real Postgres/Supabase returns the deleted row);
+      // this used to always answer `data: null`, which made a real deletion
+      // indistinguishable from "nothing to delete."
+      if (q.op === 'delete') {
+        const existed = state.suppressed.has(h)
+        state.suppressed.delete(h)
+        return { data: existed ? { email_hash: h } : null, error: null }
+      }
       return { data: state.suppressed.has(h) ? { email_hash: h } : null, error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
@@ -579,6 +588,33 @@ describe('adminListLeads — field filter, ordering, stale pages', () => {
     await t.mod.adminListLeads(t.c({ query: { field: 'nonsense' } }))
     expect(t.db.calls.some(q => q.filters.some(f => f[1] === 'role_category'))).toBe(false)
   })
+  // FEATURE GAP CLOSED (fresh audit pass, Section 5): source/source_code were
+  // captured meticulously and reached the CSV export, but there was no way to
+  // filter or count by source anywhere in the live admin list.
+  it('filters by source, ignores a value outside the whitelist, and accepts "manual" (not in the public LEAD_SOURCES)', async () => {
+    t = setup({ leads: [
+      mkLead({ source: 'homepage' }),
+      mkLead({ id: ID2, email: 'b@b.com', source: 'verification_page' }),
+      mkLead({ id: 'gen-manual', email: 'c@b.com', source: 'manual' }),
+    ] })
+    let res = await t.mod.adminListLeads(t.c({ query: { source: 'homepage' } }))
+    expect(res.body.data.map(l => l.email)).toEqual(['a@b.com'])
+    res = await t.mod.adminListLeads(t.c({ query: { source: 'manual' } }))
+    expect(res.body.data.map(l => l.email)).toEqual(['c@b.com'])
+    t.db.calls.length = 0
+    await t.mod.adminListLeads(t.c({ query: { source: 'not-a-real-source' } }))
+    const mainQuery = t.db.calls.find(x => x.selectOpts?.count === 'exact' && !x.selectOpts.head)
+    expect(mainQuery.filters.some(f => f[1] === 'source')).toBe(false)
+  })
+  it('reports per-source counts unaffected by the current filters', async () => {
+    t = setup({ leads: [
+      mkLead({ source: 'homepage' }),
+      mkLead({ id: ID2, email: 'b@b.com', source: 'homepage' }),
+      mkLead({ id: 'gen-manual', email: 'c@b.com', source: 'manual' }),
+    ] })
+    const res = await t.mod.adminListLeads(t.c({ query: { source: 'manual' } }))
+    expect(res.body.meta.sourceCounts).toMatchObject({ homepage: 2, verification_page: 0, manual: 1 })
+  })
   it('orders by id last so rows on a page boundary have one stable position', async () => {
     t = setup()
     await t.mod.adminListLeads(t.c({}))
@@ -740,6 +776,34 @@ describe('confirmLead', () => {
     expect(t.state.leads[0].confirmed_at).toBe('2026-02-01T00:00:00.000Z')
     expect(t.state.notices).toHaveLength(0)
   })
+  // BUG FIX (fresh audit pass, Section 5): the update used to run
+  // `.is('confirmed_at', null)` with no check on whether it actually matched a
+  // row, so a request that lost this exact race (read confirmed_at=null, but
+  // another request confirmed the lead first) still unconditionally told the
+  // owner. Simulated the same way the createLead race tests above do — a
+  // custom step sequence, since a genuine concurrent DB race isn't
+  // reproducible against an in-memory fake.
+  it('does not notify the owner twice when two confirm requests race (loses to a concurrent confirm)', async () => {
+    const lead = mkLead({ email: 'dana@acme.com', confirmed_at: null })
+    let step = 0
+    const notices = []
+    const db = createFakeSupabase(q => {
+      step++
+      if (step === 1) return { data: { ...lead }, error: null }   // read: still unconfirmed
+      if (step === 2) return { data: null, error: null }          // update: 0 rows — someone else won the race
+      throw new Error(`unexpected call #${step}: ${q.op}`)
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }) } },
+    })
+    const ctx = { env: { JWT_SECRET: SECRET }, executionCtx: { waitUntil: p => p }, req: { json: async () => ({ token: await tokenFor('confirm', 'dana@acme.com') }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.confirmLead(ctx)
+    restore()
+    expect(res.body).toMatchObject({ success: true, status: 'already' })
+    expect(notices).toHaveLength(0)   // the winner's own request sends the one real notice; this is the loser
+    expect(step).toBe(2)
+  })
   it('says not_found for an address with no lead (deleted / removed) rather than claiming a confirmation', async () => {
     t = setup()
     const res = await postToken(t.mod.confirmLead, await tokenFor('confirm', 'gone@acme.com'))
@@ -802,6 +866,53 @@ describe('removeLead', () => {
     expect((await postToken(t.mod.removeLead, 'abcdefghij.klmnopqrst.uvwxyz')).status).toBe(400)
     expect(t.state.leads).toHaveLength(1)
     expect(t.state.suppressed.size).toBe(0)
+  })
+})
+
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way an admin
+// could learn an address was suppressed used to be trying to re-add it via
+// adminCreateLead and reading the 409. A browsable list isn't meaningful —
+// only a SHA-256 hash is stored, never the address — so these are a
+// check-one-address lookup and a lift-in-place action instead.
+describe('adminCheckSuppression', () => {
+  it('reports a suppressed address with when it was suppressed', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    const res = await t.mod.adminCheckSuppression(t.c({ body: { email: 'DANA@Acme.com' } }))
+    expect(res.body).toMatchObject({ success: true, data: { suppressed: true } })
+  })
+  it('reports an address that is not suppressed', async () => {
+    t = setup()
+    const res = await t.mod.adminCheckSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    expect(res.body).toMatchObject({ success: true, data: { suppressed: false, since: null } })
+  })
+  it('rejects a malformed email before touching the DB', async () => {
+    t = setup()
+    await expect(t.mod.adminCheckSuppression(t.c({ body: { email: 'not-an-email' } }))).rejects.toBeTruthy()
+  })
+})
+
+describe('adminLiftSuppression', () => {
+  it('lifts a suppression and audits it by hash, never by address', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    const res = await t.mod.adminLiftSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    expect(res.body).toMatchObject({ success: true })
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(false)
+    expect(t.state.audit).toHaveLength(1)
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.suppression_lift', target_id: sha('dana@acme.com') })
+    expect(JSON.stringify(t.state.audit[0])).not.toContain('dana@acme.com')
+  })
+  it('404s an address that is not on the list, and lifts nothing', async () => {
+    t = setup()
+    const res = await t.mod.adminLiftSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    expect(res.status).toBe(404)
+    expect(t.state.audit).toHaveLength(0)
+  })
+  it('after lifting, the address can be added again and the public form works for it', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    await t.mod.adminLiftSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    const res = await submit(valid({ email: 'dana@acme.com' }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(1)
   })
 })
 
