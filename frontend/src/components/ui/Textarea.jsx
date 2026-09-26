@@ -5,7 +5,10 @@ import { cn } from '../../lib/utils'
 const Textarea = forwardRef(function Textarea({ label, error, hint, className, id, rows = 5, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
-  const describedBy = [error && `${inputId}-error`, hint && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
+  // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
+  // reference `${inputId}-hint` even when the hint <p> wasn't rendered
+  // (it only renders when `hint && !error`), a dangling ARIA reference.
+  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   return (

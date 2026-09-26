@@ -33,7 +33,10 @@ const sizes = {
 const Select = forwardRef(function Select({ label, error, hint, className, id, size = 'md', children, ...props }, ref) {
   const autoId = useId()
   const selectId = id || autoId
-  const describedBy = [error && `${selectId}-error`, hint && `${selectId}-hint`].filter(Boolean).join(' ') || undefined
+  // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
+  // reference `${selectId}-hint` even when the hint <p> wasn't rendered
+  // (it only renders when `hint && !error`), a dangling ARIA reference.
+  const describedBy = [error && `${selectId}-error`, hint && !error && `${selectId}-hint`].filter(Boolean).join(' ') || undefined
 
   return (
     <div className="flex flex-col gap-1">

@@ -13,7 +13,13 @@ import { cn } from '../../lib/utils'
 const Input = forwardRef(function Input({ label, error, hint, className, id, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
-  const describedBy = [error && `${inputId}-error`, hint && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
+  // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
+  // whenever `hint` was truthy, with no check for `error` — but the hint
+  // <p> below only renders when `hint && !error`. Passing both props at
+  // once (no call site does yet, but nothing stopped a future one) left
+  // aria-describedby pointing at an id that didn't exist in the DOM: a
+  // dangling ARIA reference, exactly what axe/screen readers flag.
+  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   return (
