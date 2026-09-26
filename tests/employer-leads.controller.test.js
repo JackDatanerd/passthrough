@@ -250,6 +250,146 @@ describe('createLead — resubmission of a known email', () => {
   })
 })
 
+// BUG FIX (fresh audit pass, Section 5): a second collision on the same
+// email — the row disappearing again, or another concurrent request winning
+// the unique-email race a second time — used to just answer success having
+// stored and sent nothing, silently dropping the submission. createLead now
+// retries against the database's actual current state instead of giving up.
+describe('createLead — resilience to a second collision on the same email', () => {
+  it('merges into the lead instead of silently dropping the submission when the email races twice in a row', async () => {
+    t = setup()
+    t.restore()
+    const freshExisting = {
+      id: ID2, name: 'Dana', company: 'Acme', email: 'dana@acme.com', role_category: null, role_title: null,
+      source_code: null, source: 'homepage', status: 'NEW', submission_count: 1, contacted_at: null,
+      confirmed_at: new Date().toISOString(),   // already confirmed — no ack flow needed for this test
+      updated_at: '2020-01-01T00:00:00.000Z',
+      last_submitted_at: new Date(Date.now() - HOURS(48)).toISOString(),
+      created_at: new Date(Date.now() - HOURS(72)).toISOString()
+    }
+    let step = 0
+    const notices = []
+    const db = createFakeSupabase(q => {
+      if (q.table !== 'employer_leads') return { data: null, error: null }   // suppression check: not suppressed
+      step++
+      if (step === 1) return { error: { code: '23505', message: 'duplicate key' } }  // insert: email already taken
+      if (step === 2) return { data: null, error: null }                             // select: gone (admin deleted it)
+      if (step === 3) return { error: { code: '23505', message: 'duplicate key' } }   // retry insert: SOMEONE ELSE won this time
+      if (step === 4) return { data: { ...freshExisting }, error: null }              // select: their row is now readable
+      if (step === 5) return { data: { id: freshExisting.id }, error: null }          // merge update: succeeds
+      throw new Error(`unexpected employer_leads call #${step}: ${q.op}`)
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }) },
+        sendEmployerLeadAck: async () => true,
+      },
+    })
+    t.restore = restore
+    const ctx = t.c({ body: valid({ email: 'dana@acme.com' }) })
+    const res = await mod.createLead(ctx)
+    await Promise.all(ctx._waits)
+    expect(res.body.success).toBe(true)
+    // The submission was actually applied, not dropped: the owner gets the
+    // resubmission notice the merge is supposed to produce...
+    expect(notices).toHaveLength(1)
+    expect(notices[0].subject).toBe('Employer lead resubmitted')
+    // ...via exactly the insert/select/insert/select/update sequence above —
+    // proving it reached the merge rather than bailing out early.
+    expect(step).toBe(5)
+  })
+
+  it('gives up gracefully (still answers success) if every retry keeps racing', async () => {
+    let step = 0
+    const db = createFakeSupabase(q => {
+      if (q.table !== 'employer_leads') return { data: null, error: null }
+      step++
+      // Every insert conflicts, every select comes back empty — a
+      // pathological, unending race. Never throws, never hangs.
+      if (q.op === 'insert') return { error: { code: '23505', message: 'duplicate key' } }
+      return { data: null, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendOwnerNotice: async () => {}, sendEmployerLeadAck: async () => true },
+    })
+    t = setup()
+    const ctx = t.c({ body: valid() })
+    t.restore()
+    t.restore = restore
+    const res = await mod.createLead(ctx)
+    expect(res.body.success).toBe(true)
+    // Bounded: 3 attempts, insert then select each time.
+    expect(step).toBe(6)
+  })
+})
+
+// BUG FIX (fresh audit pass, Section 5): the hourly notice/ack budget used to
+// be spent the instant a send was ATTEMPTED and never given back if the send
+// then actually failed — a Resend outage during real traffic would burn the
+// whole budget with nothing delivered, then keep starving legitimate leads
+// for the rest of that hour even after the provider recovered.
+describe('notice/ack budget: refunded when the send does not actually go out', () => {
+  it('refunds the notice-budget slot on a thrown send failure, so the next lead is not starved', async () => {
+    const hourBucket = Math.floor(Date.now() / 3_600_000)
+    const key = `rl:leadnotice:${hourBucket}`
+    t = setup({ kv: { [key]: JSON.stringify({ count: 19, refunds: 0 }) } })
+    const { db, c, state } = t
+    t.restore()
+    let call = 0
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendOwnerNotice: async () => { call++; if (call === 1) throw new Error('Resend is down') },
+        sendEmployerLeadAck: async () => true,
+      },
+    })
+    t.restore = restore
+
+    const ctx1 = c({ body: valid({ email: 'first@corp.com' }) })
+    await mod.createLead(ctx1)
+    await Promise.all(ctx1._waits)
+    expect(JSON.parse(state.kv[key])).toMatchObject({ count: 19, refunds: 1 })   // back to where it started
+
+    // Same hour, a genuinely new lead: still has budget BECAUSE of the
+    // refund — proves this isn't just bookkeeping, a real notice goes out.
+    const ctx2 = c({ body: valid({ email: 'second@corp.com' }) })
+    await mod.createLead(ctx2)
+    await Promise.all(ctx2._waits)
+    expect(call).toBe(2)
+    expect(JSON.parse(state.kv[key])).toMatchObject({ count: 20 })   // this one succeeded, so it stays spent
+  })
+
+  it('refunds the ack-budget slot when the acknowledgement does not actually go out', async () => {
+    const hourBucket = Math.floor(Date.now() / 3_600_000)
+    const key = `rl:leadack:${hourBucket}`
+    t = setup({ kv: { [key]: JSON.stringify({ count: 29, refunds: 0 }) } })
+    const { db, c, state } = t
+    t.restore()
+    let call = 0
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendOwnerNotice: async () => {},
+        sendEmployerLeadAck: async () => { call++; return call !== 1 },   // first attempt fails, rest succeed
+      },
+    })
+    t.restore = restore
+
+    const ctx1 = c({ body: valid({ email: 'third@corp.com' }) })
+    await mod.createLead(ctx1)
+    await Promise.all(ctx1._waits)
+    expect(JSON.parse(state.kv[key])).toMatchObject({ count: 29, refunds: 1 })
+
+    const ctx2 = c({ body: valid({ email: 'fourth@corp.com' }) })
+    await mod.createLead(ctx2)
+    await Promise.all(ctx2._waits)
+    expect(call).toBe(2)
+    expect(JSON.parse(state.kv[key])).toMatchObject({ count: 30 })
+  })
+})
+
 describe('adminListLeads', () => {
   it('paginates, reports the total and per-status counts, and clamps pageSize', async () => {
     t = setup({ leads: [1, 2, 3].map(i => ({ id: `id${i}`, name: `N${i}`, company: 'C', email: `e${i}@x.com`, status: i === 3 ? 'ARCHIVED' : 'NEW', created_at: '2026-01-01' })) })

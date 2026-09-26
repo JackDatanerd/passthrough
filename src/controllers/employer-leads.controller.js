@@ -115,25 +115,69 @@ const NOTICE_BUDGET_PER_HOUR = 20
 const ACK_BUDGET_PER_HOUR = 30
 const RESUBMIT_NOTICE_COOLDOWN_MS = 24 * 60 * 60 * 1000
 
-async function withinBudget(env, name, max) {
+// BUG FIX (fresh audit pass, Section 5): the slot used to be spent the
+// instant a send was ATTEMPTED, never given back if the send then actually
+// failed (a Resend outage, a network blip). That meant a provider hiccup
+// during real traffic silently burned through the whole hourly budget with
+// zero emails delivered, then kept legitimate new leads from ever notifying
+// the owner for the rest of that hour — even after Resend recovered. Mirrors
+// the `refund` pattern rateLimiter.js's anonScan limiter already uses for
+// exactly this reason (a failed attempt must not cost a budget meant to
+// bound ATTEMPTS, not outcomes) — bounded per hour so a provider that is
+// failing DURING an actual lead flood can't turn the budget into unlimited
+// retries.
+const NOTICE_MAX_REFUNDS_PER_HOUR = 10
+const ACK_MAX_REFUNDS_PER_HOUR = 15
+
+async function readBudgetState(kv, key) {
+  const raw = await kv.get(key)
+  if (!raw) return { count: 0, refunds: 0 }
+  try {
+    const parsed = JSON.parse(raw)
+    if (typeof parsed.count === 'number')
+      return { count: parsed.count, refunds: typeof parsed.refunds === 'number' ? parsed.refunds : 0 }
+  } catch (_) { /* fall through */ }
+  return { count: parseInt(raw, 10) || 0, refunds: 0 }   // pre-fix value was a bare integer string
+}
+
+// Returns { allowed, refund }. `refund` gives back the slot this call just
+// consumed if the send it was reserved for turns out to have failed — bound
+// to the SAME key the slot was consumed from (not a key re-derived from
+// "now" later), so a refund that happens to land right at an hour boundary
+// can never touch a different hour's count than the one it actually spent.
+async function withinBudget(env, name, max, maxRefunds) {
+  const noRefund = async () => {}
   const kv = env.RATE_LIMIT_KV
-  if (!kv) return true
+  if (!kv) return { allowed: true, refund: noRefund }
   const key = `rl:${name}:${Math.floor(Date.now() / 3_600_000)}`
-  const used = parseInt(await kv.get(key), 10) || 0
-  if (used >= max) return false
-  await kv.put(key, String(used + 1), { expirationTtl: 7200 })
-  return true
+  const { count, refunds } = await readBudgetState(kv, key)
+  if (count >= max) return { allowed: false, refund: noRefund }
+  await kv.put(key, JSON.stringify({ count: count + 1, refunds }), { expirationTtl: 7200 })
+  return {
+    allowed: true,
+    refund: async () => {
+      try {
+        const cur = await readBudgetState(kv, key)
+        if (cur.count <= 0 || cur.refunds >= maxRefunds) return
+        await kv.put(key, JSON.stringify({ count: cur.count - 1, refunds: cur.refunds + 1 }), { expirationTtl: 7200 })
+      } catch (err) {
+        console.error(`Employer-lead budget (${name}) refund failed:`, err.message)
+      }
+    }
+  }
 }
 
 async function sendNotice(env, subject, message) {
+  const budget = await withinBudget(env, 'leadnotice', NOTICE_BUDGET_PER_HOUR, NOTICE_MAX_REFUNDS_PER_HOUR)
+  if (!budget.allowed) {
+    console.warn(`Employer-lead notice budget (${NOTICE_BUDGET_PER_HOUR}/h) exhausted — skipped: ${subject}`)
+    return
+  }
   try {
-    if (!(await withinBudget(env, 'leadnotice', NOTICE_BUDGET_PER_HOUR))) {
-      console.warn(`Employer-lead notice budget (${NOTICE_BUDGET_PER_HOUR}/h) exhausted — skipped: ${subject}`)
-      return
-    }
     await emailService.sendOwnerNotice(env, subject, message)
   } catch (err) {
     console.error('Employer-lead notice failed:', err.message)
+    await budget.refund()
   }
 }
 
@@ -153,16 +197,34 @@ async function leadLinks(env, email) {
 }
 
 // Returns true only when the email actually went out.
+//
+// BUG FIX (fresh audit pass, Section 5): a send that came back `false` — a
+// real Resend failure, OR the recipient's own per-address monthly cap
+// (email.service.js's RECIPIENT_LIMITS) — used to leave the hourly ack slot
+// spent either way. Refunding on any unsuccessful send (not just a thrown
+// error) closes the Resend-outage gap the same way sendNotice's fix does; it
+// is deliberately just as generous for the per-recipient-cap case, since
+// that address is independently and correctly blocked regardless of this
+// budget, refunding it here only frees the slot back up for a genuinely new
+// lead rather than costing anyone an email they shouldn't have gotten.
 async function sendAck(env, row, { skipBudget = false } = {}) {
-  try {
-    if (!skipBudget && !(await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR))) {
+  let refund = async () => {}
+  if (!skipBudget) {
+    const budget = await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR, ACK_MAX_REFUNDS_PER_HOUR)
+    if (!budget.allowed) {
       console.warn(`Employer-lead acknowledgement budget (${ACK_BUDGET_PER_HOUR}/h) exhausted — skipped`)
       return false
     }
-    return await emailService.sendEmployerLeadAck(
+    refund = budget.refund
+  }
+  try {
+    const sent = await emailService.sendEmployerLeadAck(
       env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email))
+    if (!sent) await refund()
+    return sent
   } catch (err) {
     console.error('Employer-lead acknowledgement failed:', err.message)
+    await refund()
     return false
   }
 }
@@ -217,6 +279,58 @@ async function isSuppressed(supabase, email) {
 // was left blank. A repeat only fills fields that are still empty, and is
 // recorded (count + timestamp) so the admin list can show the lead is
 // re-engaged. Status stays admin-owned.
+// Applies a resubmission onto a lead that already exists for this email.
+// Never overwrites name/company/role that are already set (see createLead's
+// comment above the schema) — only fills gaps, bumps the engagement
+// counters, and re-sends what an unconfirmed submitter needs.
+//
+// The update is guarded by `.eq('updated_at', existing.updated_at)` —
+// optimistic concurrency on a column every write path in this file already
+// keeps current. That does two things at once: it detects "deleted after we
+// read it" (0 rows match, same as a delete would give), AND it detects
+// "someone else — another concurrent resubmission, or an admin edit — wrote
+// to this row after we read it" as the same case, since either changes
+// updated_at out from under us. Both return 'retry' rather than one of them
+// silently going through, so the caller re-reads the row's actual current
+// state and redoes the whole decision (submission_count, and specifically
+// the 24h resubmission-notice cooldown below) against fresh data instead of
+// a snapshot that a second concurrent request could otherwise act on too —
+// which used to let two resubmissions arriving together each independently
+// pass the cooldown and both announce the same resubmission to the owner.
+async function mergeIntoExistingLead(c, supabase, existing, row) {
+  const now = new Date()
+  const patch = {
+    submission_count:  (existing.submission_count || 1) + 1,
+    last_submitted_at: now.toISOString(),
+    updated_at:        now.toISOString()
+  }
+  if (!existing.role_category && row.role_category) patch.role_category = row.role_category
+  if (!existing.role_title    && row.role_title)    patch.role_title    = row.role_title
+  if (!existing.source_code   && row.source_code)   patch.source_code   = row.source_code
+
+  const { data: updated, error: updErr } = await supabase
+    .from('employer_leads').update(patch)
+    .eq('id', existing.id).eq('updated_at', existing.updated_at)
+    .select('id').maybeSingle()
+  if (updErr) throw updErr
+  if (!updated) return 'retry'
+
+  // Never confirmed and not dismissed: they may simply not have seen the first
+  // email, so send it again (capped per recipient in email.service.js).
+  if (!existing.confirmed_at && existing.status !== 'ARCHIVED') await runInBackground(c, sendAck(c.env, existing))
+
+  // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
+  // already been announced recently (a hiring manager clicking twice isn't news).
+  const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
+  if (existing.status !== 'ARCHIVED' && now.getTime() - lastMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
+    const changed = ['name', 'company'].filter(k => existing[k] !== row[k]).map(k => `${k}: ${row[k]}`)
+    await notifyOwner(c, 'Employer lead resubmitted',
+      `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
+      (changed.length ? `\n\nThis time they entered different details (not saved over the lead):\n${changed.join('\n')}` : ''))
+  }
+  return 'ok'
+}
+
 async function createLead(c) {
   const body = await c.req.json()
   const data = schema.parse(body)
@@ -241,61 +355,39 @@ async function createLead(c) {
     })()
   }
 
-  const { error: insertErr } = await supabase.from('employer_leads').insert(row)
-  if (!insertErr) {
-    await announceNewLead(c, row)
-    return ok(c)
+  // BUG FIX (fresh audit pass, Section 5): this used to give up after a
+  // SECOND collision on the same email — a race no rarer than the first one
+  // it already handled (an admin deleting the row, or two submissions for
+  // the same address landing together) — and just answered success having
+  // stored and sent nothing. That silently dropped a real submission, which
+  // is exactly the "a lost lead is a lost lead" outcome this endpoint's own
+  // design (see the source_code comment above, and isSuppressed's own
+  // deploy-order comment) says must never happen. Retried, bounded: each
+  // pass re-derives what to do from the database's actual current state —
+  // insert if the email is free, merge if it's already a lead — rather than
+  // ever falling back to "pretend it worked".
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { error: insertErr } = await supabase.from('employer_leads').insert(row)
+    if (!insertErr) {
+      await announceNewLead(c, row)
+      return ok(c)
+    }
+    if (insertErr.code !== '23505') throw insertErr
+
+    // Already a lead — or was, a moment ago.
+    const { data: existing, error: selErr } = await supabase
+      .from('employer_leads').select('*').eq('email', row.email).maybeSingle()
+    if (selErr) throw selErr
+    if (!existing) continue   // deleted between our insert attempt and this read — go again
+
+    if (await mergeIntoExistingLead(c, supabase, existing, row) === 'ok') return ok(c)
+    // 'retry': the row changed (or vanished) between our read and our
+    // update above — go again with a fresh read rather than dropping it.
   }
-  if (insertErr.code !== '23505') throw insertErr
-
-  // Already a lead.
-  const { data: existing, error: selErr } = await supabase
-    .from('employer_leads').select('*').eq('email', row.email).maybeSingle()
-  if (selErr) throw selErr
-
-  if (!existing) {
-    // Deleted by an admin between our insert and this read — treat as new
-    // rather than reporting success for a lead that no longer exists.
-    const { error: retryErr } = await supabase.from('employer_leads').insert(row)
-    if (retryErr && retryErr.code !== '23505') throw retryErr
-    if (!retryErr) await announceNewLead(c, row)
-    return ok(c)
-  }
-
-  const now = new Date()
-  const patch = {
-    submission_count:  (existing.submission_count || 1) + 1,
-    last_submitted_at: now.toISOString(),
-    updated_at:        now.toISOString()
-  }
-  if (!existing.role_category     && row.role_category)     patch.role_category     = row.role_category
-  if (!existing.role_title        && row.role_title)        patch.role_title        = row.role_title
-  if (!existing.source_code && row.source_code) patch.source_code = row.source_code
-
-  const { data: updated, error: updErr } = await supabase
-    .from('employer_leads').update(patch).eq('id', existing.id).select('id').maybeSingle()
-  if (updErr) throw updErr
-  if (!updated) {
-    // Deleted after we read it. Same as above: don't lose the submission.
-    const { error: retryErr } = await supabase.from('employer_leads').insert(row)
-    if (retryErr && retryErr.code !== '23505') throw retryErr
-    if (!retryErr) await announceNewLead(c, row)
-    return ok(c)
-  }
-
-  // Never confirmed and not dismissed: they may simply not have seen the first
-  // email, so send it again (capped per recipient in email.service.js).
-  if (!existing.confirmed_at && existing.status !== 'ARCHIVED') await runInBackground(c, sendAck(c.env, existing))
-
-  // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
-  // already been announced recently (a hiring manager clicking twice isn't news).
-  const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
-  if (existing.status !== 'ARCHIVED' && now.getTime() - lastMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
-    const changed = ['name', 'company'].filter(k => existing[k] !== row[k]).map(k => `${k}: ${row[k]}`)
-    await notifyOwner(c, 'Employer lead resubmitted',
-      `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
-      (changed.length ? `\n\nThis time they entered different details (not saved over the lead):\n${changed.join('\n')}` : ''))
-  }
+  // Every attempt raced (a very sustained, unlikely collision): the address
+  // is a real lead right now either way — nothing was lost, we just never
+  // won a clean read/write pair on it inside the attempts we gave it. The
+  // public form never reveals internal state either way.
   return ok(c)
 }
 

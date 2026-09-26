@@ -101,7 +101,23 @@ export default function AdminLeads() {
       setCounts(meta.counts || {})
       setUnconfirmed(meta.unconfirmed ?? 0)
       setCandidateSupply(meta.candidateSupply)
-      setSelected(new Set())
+      // BUG FIX (traced during Section 5's audit, out of that section's own
+      // scope but closed here since it was already found): this used to
+      // unconditionally wipe the whole bulk selection on every load,
+      // including the silent background refresh a single-row action like
+      // changeStatus or a single delete triggers — so ticking several leads
+      // for a bulk action, then just nudging one row's own status dropdown,
+      // silently emptied the selection with no explanation. Prune instead:
+      // drop only the ids that are no longer in view (deleted, or filtered
+      // out by a status/field change), and keep the rest selected.
+      setSelected(prev => {
+        if (prev.size === 0) return prev
+        const ids = new Set(res.data.data.map(l => l.id))
+        let changed = false
+        const next = new Set()
+        for (const id of prev) { if (ids.has(id)) next.add(id); else changed = true }
+        return changed ? next : prev
+      })
     } catch (err) {
       if (id === requestId.current) toast({ message: getErrorMessage(err, 'Failed to load leads.'), type: 'error' })
     } finally {

@@ -214,7 +214,16 @@ export default function Settings() {
     } catch (err) {
       setExportError(getErrorMessage(err, 'Could not export your data.'))
     } finally {
-      setExporting(false); setExportingPart(0)
+      // BUG FIX (fresh audit pass, Section 6): this used to clear BOTH
+      // `exporting` and `exportingPart` unconditionally, regardless of which
+      // part's request the call was actually for. With nothing else blocking
+      // a click on a different part's button while this one was still in
+      // flight, whichever request happened to finish first cleared the
+      // OTHER part's spinner and re-enabled its button mid-request — letting
+      // it be clicked again while the original download was still pending.
+      // Only clear the flag this call itself set.
+      if (part === 1) setExporting(false)
+      else setExportingPart(0)
     }
   }
   const handleExport = () => downloadExportPart(1)
@@ -456,7 +465,7 @@ export default function Settings() {
             files and generated documents themselves aren't included; the data extracted from them is. Accounts
             with many scans are split into several files.
           </p>
-          <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting}>
+          <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting} disabled={exportingPart !== 0}>
             {exportParts > 1 ? 'Download part 1 again' : 'Download my data'}
           </Button>
           {exportParts > 1 && (
@@ -468,7 +477,7 @@ export default function Settings() {
               <div className="flex flex-wrap gap-2">
                 {Array.from({ length: exportParts - 1 }, (_, i) => i + 2).map(part => (
                   <Button key={part} variant="secondary" size="sm" loading={exportingPart === part}
-                    disabled={exportingPart !== 0} onClick={() => downloadExportPart(part)}>
+                    disabled={exporting || (exportingPart !== 0 && exportingPart !== part)} onClick={() => downloadExportPart(part)}>
                     {exportedParts.includes(part) ? `✓ Part ${part} of ${exportParts}` : `Part ${part} of ${exportParts}`}
                   </Button>
                 ))}
