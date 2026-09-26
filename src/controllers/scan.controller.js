@@ -1980,9 +1980,16 @@ async function generateFix(env, supabase, scanId) {
 // ─── generateBadge — no AI rewrite, original content, parse fallback ────────
 
 async function generateBadge(env, supabase, scanId) {
+  // True once this scan already HAS a delivered badge and this run is a
+  // redelivery on top of it (queues are at-least-once) — a crash then must
+  // not take the delivered badge away (see catch). Unlike generateFix there
+  // is no retry counter to undo here: badges are one-shot, so this is just
+  // "was a docx already sitting on this row before this run started".
+  let priorDelivery = false
   try {
     await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
     const { scan, user } = await getScanWithUser(supabase, scanId)
+    priorDelivery = !!scan.resumeAtsPath
 
     let finalData
 
@@ -2075,6 +2082,23 @@ async function generateBadge(env, supabase, scanId) {
     } catch (_) {}
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
+    if (priorDelivery) {
+      // AUDIT FIX (Auth/Scan round): same class of bug generateFix already
+      // guards against — a crash on a redelivered job used to stamp ERROR
+      // over a scan whose badge was already successfully delivered, hiding
+      // real, valid, paid-for files behind a "failed" status. The earlier
+      // delivery is untouched (this function only repoints the row on
+      // success), so put status back rather than clobber it. Guarded on
+      // status still being FIX_GENERATING so a late/duplicate revert can't
+      // stomp on an unrelated in-flight job. Deliberately no failure email —
+      // the customer's delivered badge was never actually lost.
+      try {
+        await supabase.from('scans').update({ status: 'FIX_DELIVERED' }).eq('id', scanId).eq('status', 'FIX_GENERATING')
+      } catch (revertErr) {
+        console.error(`[CRITICAL] generateBadge ${scanId}: status revert failed:`, revertErr.message)
+      }
+      return { success: false, error: err.message }
+    }
     try {
       await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
     } catch (_) {}

@@ -1708,6 +1708,23 @@ describe('generateBadge', () => {
     expect(t.state.alerts.length).toBe(1)
   })
 
+  // AUDIT FIX (Auth/Scan round): mirrors generateFix's equivalent guard — a
+  // crash on an at-least-once queue REDELIVERY of a badge job that had
+  // already been successfully delivered must not stamp ERROR over a real,
+  // paid-for delivery the customer already has.
+  it('a crash on a REDELIVERY of an already-delivered badge restores FIX_DELIVERED instead of ERROR — no failure email — but still alerts the owner', async () => {
+    t = setup({
+      scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, resume_ats_path: 'old.docx' },
+      deliverError: new Error('save boom'),
+    })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(false)
+    expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(false)
+    expect(t.state.scanUpdates[t.state.scanUpdates.length - 1]).toEqual({ status: 'FIX_DELIVERED' })
+    expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(false)
+    expect(t.state.alerts.length).toBe(1)
+  })
+
   it('sends the delivered-credential email to a logged-in user', async () => {
     t = setup()
     await t.mod.generateBadge(t.env, t.db, 's1')

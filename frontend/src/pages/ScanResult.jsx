@@ -84,6 +84,7 @@ export default function ScanResult() {
   const [popupFallbackUrl, setPopupFallbackUrl] = useState(null)
   const popupFallbackTimerRef = useRef(null)
   const [dlError,     setDlError   ] = useState('')
+  const [pdfRegenLoading, setPdfRegenLoading] = useState(false)
   const [visibilityError, setVisibilityError] = useState('')
   const [publishLoading, setPublishLoading] = useState(false)
   // SECTION 7 AUDIT (feature gap closed): the badge.svg endpoint has existed
@@ -377,6 +378,24 @@ export default function ScanResult() {
     }
   }
 
+  // FEATURE GAP CLOSED (Auth/Scan round): scan.hasPdf / POST
+  // /scan/:id/regenerate-pdf have existed on the backend since an earlier
+  // audit round specifically so a failed PDF render (deliberately non-fatal —
+  // the DOCX still delivers) could be recovered, but nothing here ever called
+  // it — "Download PDF" was shown unconditionally and just failed forever
+  // with "File not ready yet." for anyone who hit that render failure.
+  async function handleRegeneratePdf() {
+    setDlError('')
+    setPdfRegenLoading(true)
+    try {
+      await api.post(`/scan/${id}/regenerate-pdf`)
+      await fetchScan()
+    } catch (err) {
+      setDlError(getErrorMessage(err, 'Could not generate the PDF just now — try again in a minute.'))
+    }
+    setPdfRegenLoading(false)
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen flex flex-col bg-gray-50">
@@ -625,10 +644,21 @@ export default function ScanResult() {
                   <Button onClick={() => handleDownload('ats')} variant="secondary">
                     Download .docx (ATS)
                   </Button>
-                  <Button onClick={() => handleDownload('pdf')}>
-                    Download PDF (beautiful)
-                  </Button>
+                  {scan.hasPdf ? (
+                    <Button onClick={() => handleDownload('pdf')}>
+                      Download PDF (beautiful)
+                    </Button>
+                  ) : (
+                    <Button onClick={handleRegeneratePdf} loading={pdfRegenLoading}>
+                      Generate PDF (beautiful)
+                    </Button>
+                  )}
                 </div>
+                {!scan.hasPdf && (
+                  <p className="text-xs text-gray-500 mt-2">
+                    The PDF version didn't render the first time — this creates it now. Your .docx download above is unaffected.
+                  </p>
+                )}
 
                 {/* Public document visibility — off by default (see
                     0007_verify_document_visibility.sql). The verification
