@@ -2,6 +2,7 @@
 const constants = require('../config/constants')
 const cryptoLib = require('./crypto')
 const { rateKeyIp } = require('./clientIp')
+const { purgeBadgeCache } = require('./badgeCache')
 
 const STATUS = Object.freeze({ ACTIVE: 'ACTIVE', REVOKED: 'REVOKED' })
 // Who revoked. OWNER can be undone by the owner; everything else only by an admin.
@@ -80,6 +81,13 @@ function isTrustedPreview(c) {
 //            "republish" button stop working once the reason is no longer OWNER)
 // Returns true when a row changed. Throws on a DB error so callers can retry.
 //
+// SECTION 7 AUDIT FIX (bug): every state flip below now also purges the code's cached badge
+// (see lib/badgeCache.js) — the DB write and the JSON page (`no-store`) always reflected a
+// revoke/restore instantly, but the cached SVG badge could keep answering the OLD state for up
+// to 5 minutes, which is exactly the surface a viewer never clicks through to double-check.
+// Purging is best-effort and happens only for rows this call actually changed (never for a
+// no-op), so it can never mask a real DB failure and never fires on a call that changed nothing.
+//
 // SECTION 7/8 AUDIT FIX (bug): the "others always win" rule above is
 // intentional — a stronger reason must be able to overwrite a weaker one
 // even on an already-revoked row. But with no gate at all on non-OWNER
@@ -111,9 +119,11 @@ async function revokeVerification(supabase, scanId, reason, now = new Date()) {
     })
     .eq('id', scanId)
   if (reason === REVOKE_REASON.OWNER) q = q.eq('verification_status', STATUS.ACTIVE)
-  const { data, error } = await q.select('id')
+  const { data, error } = await q.select('id, verification_code')
   if (error) throw error
-  return (data || []).length > 0
+  const changed = (data || [])
+  if (changed[0]?.verification_code) await purgeBadgeCache(changed[0].verification_code)
+  return changed.length > 0
 }
 
 // Undo a revocation. `asAdmin` may lift any reason; the owner may only lift
@@ -125,9 +135,11 @@ async function restoreVerification(supabase, scanId, { asAdmin = false } = {}) {
     .eq('id', scanId)
     .eq('verification_status', STATUS.REVOKED)
   if (!asAdmin) q = q.eq('verification_revoked_reason', REVOKE_REASON.OWNER)
-  const { data, error } = await q.select('id')
+  const { data, error } = await q.select('id, verification_code')
   if (error) throw error
-  return (data || []).length > 0
+  const changed = (data || [])
+  if (changed[0]?.verification_code) await purgeBadgeCache(changed[0].verification_code)
+  return changed.length > 0
 }
 
 // Account ban → take every ACTIVE public page of that user down. ROUND-2 AUDIT
@@ -142,9 +154,11 @@ async function revokeUserVerifications(supabase, userId, now = new Date()) {
   const { data, error } = await supabase.from('scans')
     .update({ verification_status: STATUS.REVOKED, verification_revoked_at: now.toISOString(), verification_revoked_reason: REVOKE_REASON.BAN })
     .eq('user_id', userId).eq('verification_status', STATUS.ACTIVE).not('verification_code', 'is', null)
-    .select('id')
+    .select('id, verification_code')
   if (error) throw error
-  return (data || []).length
+  const changed = (data || [])
+  await Promise.all(changed.map(r => purgeBadgeCache(r.verification_code)))
+  return changed.length
 }
 
 // Un-ban: restore exactly what the ban took down (reason BAN) and nothing else.
@@ -153,9 +167,11 @@ async function restoreUserVerifications(supabase, userId) {
   const { data, error } = await supabase.from('scans')
     .update({ verification_status: STATUS.ACTIVE, verification_revoked_at: null, verification_revoked_reason: null })
     .eq('user_id', userId).eq('verification_status', STATUS.REVOKED).eq('verification_revoked_reason', REVOKE_REASON.BAN)
-    .select('id')
+    .select('id, verification_code')
   if (error) throw error
-  return (data || []).length
+  const changed = (data || [])
+  await Promise.all(changed.map(r => purgeBadgeCache(r.verification_code)))
+  return changed.length
 }
 
 // A page that is deleted (its scan, or its owner's whole account) leaves its code behind in
@@ -172,6 +188,10 @@ async function recordTombstones(supabase, codes) {
   } catch (err) {
     console.error('[verify] could not record tombstone(s):', err.message)
   }
+  // SECTION 7 AUDIT FIX (bug): same cache-staleness gap as revoke/restore above — a deleted
+  // page's badge could otherwise keep answering its last live state (possibly "Verified") for
+  // up to 5 minutes after deletion. The codes are already in hand here, so this is free.
+  await Promise.all(rows.map(r => purgeBadgeCache(r.code)))
 }
 
 module.exports = {

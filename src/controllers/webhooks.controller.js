@@ -61,6 +61,14 @@
 //       correct only because every step downstream is idempotent — a slow delivery that
 //       Paystack times out and redelivers runs twice, safely.
 //
+//  8. SECTION 7/8 AUDIT (bug, this pass): `refund.needs-attention` is now hour-bucketed the
+//     same way `.remind` events are (see eventKeyFor) — a second stalled-refund notification
+//     for the same refund id used to dedupe as "already seen" and never alert again. And every
+//     revoke/restore this file triggers (via fulfillment.service's reversePayment →
+//     lib/verification.js) now purges that scan's cached SVG badge, so the one surface a
+//     viewer never clicks through to double-check can no longer keep showing a pre-revoke
+//     "Verified" claim for up to 5 minutes at the edge.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -136,6 +144,22 @@ function eventKeyFor(event, bodyHash, now = Date.now()) {
   // hour keeps a redelivery of the same reminder deduped and lets the next one through.
   // (A reminder only alerts; running one twice is harmless.)
   if (event.event.endsWith('.remind')) return `${event.event}:${bodyHash.slice(0, 16)}:${Math.floor(now / 3_600_000)}`
+
+  // SECTION 8 AUDIT FIX (bug): `refund.needs-attention` has the exact same shape as a
+  // `.remind` event above — Paystack parks a refund indefinitely until the merchant supplies
+  // bank details, and can (most concretely: via the very recovery path this alert itself
+  // names, POST /refund/retry_with_customer_details/{refund id}) land the SAME refund id back
+  // in `needs-attention` a second time. `d.id` never changes between these deliveries, so
+  // without bucketing, the second (and every later) notification deduped against the first
+  // PROCESSED inbox row before ever reaching processRefund — recordEvent's mode:'done' path —
+  // and the alert whose entire point is "this refund is still stuck, go fix it" fired exactly
+  // once, ever, no matter how long the money stayed stalled or how many times the merchant's
+  // own retry failed. sweepReversedPayments (reconcile.service.js) does not backstop this: it
+  // only notices a transaction Paystack reports as `reversed`, i.e. one that already
+  // COMPLETED — a permanently-stalled needs-attention refund never reaches that state. Same
+  // hour-bucket fix as `.remind`, for the same reason: a stalled-but-unresolved state, not a
+  // one-off.
+  if (event.event === 'refund.needs-attention') return `${event.event}:${bodyHash.slice(0, 16)}:${Math.floor(now / 3_600_000)}`
   // Paystack's refund payloads carry no `data.id`, so the old key collapsed to
   // `refund.processed:<transaction_reference>` — a second refund (e.g. the second
   // half of two partial refunds) or a second refund.failed on the same

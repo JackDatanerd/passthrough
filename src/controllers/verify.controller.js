@@ -55,6 +55,7 @@ const { STATUS, SHA256_RE, normalizeCode, isPlausibleCode, isBotUserAgent, visit
 // stop someone guessing across the ~1.07 billion possible verification
 // codes — keying it off a spoofable header defeated the point of having it.
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
+const { badgeCache: getBadgeCache, badgeCacheKeyForCode } = require('../lib/badgeCache')
 
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 const PAGE_COLUMNS =
@@ -386,15 +387,14 @@ function badgeHeaders(ttl) {
   }
 }
 
-function badgeCache() {
-  try { return typeof caches !== 'undefined' && caches.default ? caches.default : null } catch (_) { return null }
-}
-
+// SECTION 7 AUDIT FIX (bug): badgeCache()/the cache key are now shared with lib/badgeCache.js
+// (see that file for the full explanation) instead of living only here — the key used to be
+// derived from this request's own origin (c.req.url), which nothing outside a live request
+// (a revoke) could ever reconstruct to purge. Built from the normalized code alone now, so
+// revoke/restore can invalidate the exact entry a viewer would otherwise keep being served.
+const badgeCache = getBadgeCache
 function badgeCacheKey(c) {
-  const url = new URL(c.req.url || 'https://badge.invalid/')
-  url.search = ''
-  url.pathname = url.pathname.replace(/\/([^/]+)\/badge\.svg$/i, (_, code) => `/${normalizeCode(code)}/badge.svg`)
-  return new Request(url.toString())
+  return badgeCacheKeyForCode(normalizeCode(c.req.param('code')))
 }
 
 function sendBadge(c, svg, ttl, cache, key) {

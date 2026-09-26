@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { createWorld } from './helpers/memoryDb.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 import { hmacSha512Hex } from '../src/lib/crypto.js'
@@ -519,6 +519,42 @@ describe('round 2 — refunds', () => {
     const a = h => mod0.eventKeyFor({ event: 'refund.processed', data: { amount: '1000' } }, h)
     expect(a('aaaaaaaaaaaaaaaaaaaa')).not.toBe(a('bbbbbbbbbbbbbbbbbbbb'))
     restore()
+  })
+  // SECTION 8 AUDIT FIX (bug): refund.needs-attention shares the exact same shape as a
+  // `.remind` event (same refund id, genuinely repeated notification for a still-unresolved
+  // state — most concretely, the merchant's own retry_with_customer_details call failing
+  // again) but wasn't hour-bucketed like `.remind` events are, so a second notification for
+  // the same refund id deduped as "already seen" and its alert never fired.
+  it('SECTION 8 AUDIT FIX: a second refund.needs-attention for the SAME refund id, an hour later, is a distinct event (not deduped)', () => {
+    const { mod: mod0, restore } = pure()
+    const event = { event: 'refund.needs-attention', data: { id: 'rfd_1', status: 'needs-attention', transaction_reference: 'ref-1' } }
+    const hour1 = mod0.eventKeyFor(event, 'somehash', Date.parse('2026-06-01T00:00:00.000Z'))
+    const hour2 = mod0.eventKeyFor(event, 'somehash', Date.parse('2026-06-01T01:00:00.000Z'))
+    expect(hour1).not.toBe(hour2)
+  })
+  it('SECTION 8 AUDIT FIX: a genuine redelivery of the SAME refund.needs-attention within the same hour still dedupes', () => {
+    const { mod: mod0, restore } = pure()
+    const event = { event: 'refund.needs-attention', data: { id: 'rfd_1', status: 'needs-attention', transaction_reference: 'ref-1' } }
+    const a = mod0.eventKeyFor(event, 'somehash', Date.parse('2026-06-01T00:00:00.000Z'))
+    const b = mod0.eventKeyFor(event, 'somehash', Date.parse('2026-06-01T00:05:00.000Z'))
+    expect(a).toBe(b)
+  })
+  it('SECTION 8 AUDIT FIX (end-to-end): a stalled refund that needs attention twice (e.g. a failed retry) is alerted twice', async () => {
+    const w = paidWorld()
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-06-01T00:00:00.000Z'))
+      t = harness(w)
+      const event = { event: 'refund.needs-attention', data: { id: 'rfd_1', status: 'needs-attention', transaction_reference: 'ref-1', amount: '2900', currency: 'USD' } }
+      await t.fire(event)
+      vi.setSystemTime(new Date('2026-06-01T02:00:00.000Z'))          // the merchant's own retry failed again, two hours later
+      await t.fire(event)
+      expect(w.t.webhook_events.filter(e => e.event_type === 'refund.needs-attention')).toHaveLength(2)
+      expect(t.state.alerts.filter(a => /needs attention/i.test(a.subject))).toHaveLength(2)
+      expect(w.t.payments[0].status).toBe('SUCCESS')                  // still untouched — this event only alerts
+    } finally {
+      vi.useRealTimers()
+    }
   })
   it('a redelivery of the SAME refund event is still deduped', async () => {
     const w = paidWorld(); t = harness(w)

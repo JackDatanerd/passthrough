@@ -1,9 +1,11 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, afterEach } from 'vitest'
 import {
   STATUS, REVOKE_REASON, CODE_RE,
   normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey,
-  revokeVerification, restoreVerification, recordTombstones, SHA256_RE,
+  revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications,
+  recordTombstones, SHA256_RE,
 } from '../src/lib/verification.js'
+import { badgeCacheKeyForCode } from '../src/lib/badgeCache.js'
 import { createWorld } from './helpers/memoryDb.cjs'
 
 // lib/verification.js had zero direct test coverage despite encoding the
@@ -150,6 +152,79 @@ describe('restoreVerification', () => {
 })
 
 // ── Round 3 ────────────────────────────────────────────────────────────────
+// SECTION 7 AUDIT FIX (bug): the embeddable badge is edge-cached; nothing used to invalidate
+// it when a scan's verification state changed, so a revoked (or restored) page's badge could
+// keep serving its pre-change claim — "Passthrough Verified", say, after a refund revoked it —
+// for up to 5 minutes. Every state-changing function here now purges that code's cached badge.
+describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', () => {
+  function fakeCaches() {
+    const store = new Map()
+    return { default: { async delete(req) { store.delete(req.url); return true } }, _store: store }
+  }
+  const realCaches = globalThis.caches
+  afterEach(() => { if (realCaches === undefined) delete globalThis.caches; else globalThis.caches = realCaches })
+
+  it('revokeVerification purges the badge for the scan that actually changed, not a stray code', async () => {
+    globalThis.caches = fakeCaches()
+    let deleted = null
+    globalThis.caches.default.delete = async req => { deleted = req.url }
+    const world = createWorld({ scans: [{ id: 's1', verification_code: 'AB3XY7', verification_status: STATUS.ACTIVE }] })
+    await revokeVerification(world.db, 's1', REVOKE_REASON.ADMIN)
+    expect(deleted).toBe(badgeCacheKeyForCode('AB3XY7').url)
+  })
+
+  it('revokeVerification does NOT purge on a no-op (idempotent same-reason call)', async () => {
+    globalThis.caches = fakeCaches()
+    let calls = 0
+    globalThis.caches.default.delete = async () => { calls++ }
+    const world = createWorld({ scans: [{ id: 's1', verification_code: 'AB3XY7', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.REFUND }] })
+    await revokeVerification(world.db, 's1', REVOKE_REASON.REFUND)
+    expect(calls).toBe(0)
+  })
+
+  it('restoreVerification purges the badge on a genuine un-revoke', async () => {
+    globalThis.caches = fakeCaches()
+    let deleted = null
+    globalThis.caches.default.delete = async req => { deleted = req.url }
+    const world = createWorld({ scans: [{ id: 's1', verification_code: 'ZQ8KP2', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.OWNER }] })
+    await restoreVerification(world.db, 's1')
+    expect(deleted).toBe(badgeCacheKeyForCode('ZQ8KP2').url)
+  })
+
+  it('revokeUserVerifications (ban) purges every affected code, and only those', async () => {
+    globalThis.caches = fakeCaches()
+    const deleted = []
+    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    const world = createWorld({ scans: [
+      { id: 's1', user_id: 'u1', verification_code: 'CODE0001', verification_status: STATUS.ACTIVE },
+      { id: 's2', user_id: 'u1', verification_code: 'CODE0002', verification_status: STATUS.ACTIVE },
+      { id: 's3', user_id: 'u1', verification_code: 'CODE0003', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.OWNER },
+    ] })
+    await revokeUserVerifications(world.db, 'u1')
+    expect(deleted.sort()).toEqual([badgeCacheKeyForCode('CODE0001').url, badgeCacheKeyForCode('CODE0002').url].sort())
+  })
+
+  it('restoreUserVerifications (un-ban) purges exactly what it restores', async () => {
+    globalThis.caches = fakeCaches()
+    const deleted = []
+    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    const world = createWorld({ scans: [
+      { id: 's1', user_id: 'u1', verification_code: 'CODE0001', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.BAN },
+    ] })
+    await restoreUserVerifications(world.db, 'u1')
+    expect(deleted).toEqual([badgeCacheKeyForCode('CODE0001').url])
+  })
+
+  it('recordTombstones purges the badge for a deleted page too', async () => {
+    globalThis.caches = fakeCaches()
+    const deleted = []
+    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    const world = createWorld({ verification_tombstones: [] })
+    await recordTombstones(world.db, ['DELETED01', 'DELETED01', null])
+    expect(deleted).toEqual([badgeCacheKeyForCode('DELETED01').url])
+  })
+})
+
 describe('round 3 — code shape, normalisation, tombstones', () => {
   it('CODE_RE accepts the legacy 6-character code and the new 10-character one, and nothing in between', () => {
     expect(isPlausibleCode('AB3XY7')).toBe(true)
