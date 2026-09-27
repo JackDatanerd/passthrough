@@ -36,6 +36,47 @@
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { isTrustedPreview } = require('../lib/verification')
 
+// AUDIT FIX (Section 9 pass — feature gap): every fail-open path above is a
+// deliberate, correct availability tradeoff (see the file-level comment) —
+// but "fail open" and "tell nobody" turned out to be two separate decisions,
+// and only the first one was ever made on purpose. A sustained RATE_LIMIT_KV
+// outage silently disables the general/auth/payment/anonScan limiters, the
+// account-lockout guard AND the verify-code enumeration guard, app-wide, and
+// nothing anywhere notices: admin.controller.js's System Health panel reads
+// only alert_logs, and nothing in this file ever wrote to it. Every other
+// infra failure in this app (a missing table, a dead queue, a reconciliation
+// miss) gets an owner alert; this was the one silent one.
+//
+// sendOwnerAlert's own de-dupe is itself a hitQuota() call against this SAME
+// KV namespace (see email.service.js), so during a real outage that de-dupe
+// fails open too and would fire one email per failed request instead of one
+// per 10 minutes. Throttle with a plain in-process timestamp instead — it
+// never touches KV, so it works precisely when KV doesn't, and it bounds the
+// flood to roughly one email per Worker isolate's lifetime rather than one
+// per request. Deliberately NOT wired into hitQuota()'s own catch block:
+// hitQuota is what sendOwnerAlert's de-dupe calls internally, so alerting
+// from inside it would re-enter this same function on every alert attempt.
+let lastKvOutageAlertAt = 0
+const KV_OUTAGE_ALERT_COOLDOWN_MS = 10 * 60 * 1000
+function alertKvOutage(env, where, err) {
+  const now = Date.now()
+  if (now - lastKvOutageAlertAt < KV_OUTAGE_ALERT_COOLDOWN_MS) return
+  lastKvOutageAlertAt = now
+  // Lazy require — email.service.js requires hitQuota from this same file,
+  // so a top-level require here would be circular (see fulfillment.service.js
+  // / reconcile.service.js / referral.service.js for the same pattern).
+  const emailService = require('../services/email.service')
+  emailService.sendOwnerAlert(env,
+    'RATE_LIMIT_KV outage — rate limiting and account lockout are failing open',
+    `${where}: ${err && err.message}\n\n` +
+    'Every rate limiter, the login-lockout guard, and the verify-code miss ' +
+    'counter fail open on a KV error by design — right now they are all ' +
+    'effectively disabled. This message is throttled in-process (not via ' +
+    'KV) so a sustained outage cannot also become an email flood; expect at ' +
+    'most one of these per Worker isolate per 10 minutes while it persists.'
+  ).catch(alertErr => console.error('KV outage alert failed to send:', alertErr.message))
+}
+
 // Takes `env` directly (not the full Hono context) so this can be reused
 // anywhere a bypass check is needed — not just inside rate-limiter
 // middleware. Currently also used by createScan's daily-scan-quota check in
@@ -153,6 +194,7 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
       slot = await consumeSlot(kv, key, windowSeconds, max)
     } catch (err) {
       console.error(`rate limiter (${keyPrefix}) KV error — failing open:`, err.message)
+      alertKvOutage(c.env, `rate limiter (${keyPrefix})`, err)
       return next()
     }
 
@@ -511,6 +553,7 @@ async function checkAccountLockout(env, email) {
   } catch (err) {
     // FAIL OPEN — see the file-level comment: an outage must never become a login outage.
     console.error('login lockout check KV error — failing open:', err.message)
+    alertKvOutage(env, 'account lockout check', err)
     return { locked: false, retryAfterSeconds: null }
   }
 }
@@ -654,6 +697,7 @@ async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page') {
     return count >= missMax(scope)
   } catch (err) {
     console.error('Verify miss limiter read failed — failing open:', err.message)
+    alertKvOutage(env, 'verify miss limiter', err)
     return false
   }
 }

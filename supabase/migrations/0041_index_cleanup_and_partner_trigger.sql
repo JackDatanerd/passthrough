@@ -31,18 +31,20 @@ create trigger trg_partners_updated_at
   before update on partners
   for each row execute function set_updated_at();
 
--- ── 3. Missing security definer on two referral RPCs ───────────────────────
--- increment_referral_code_usage and increment_referral_code_clicks
--- (0012_referral_pricing_and_commission_ledger.sql) were the only two
--- atomic-increment RPCs in the whole migration set not marked `security
--- definer`, unlike every sibling (increment_verification_views,
--- increment_free_fix_credits, redeem_free_fix_credit,
--- increment_scan_count_if_under_limit, decrement_scan_count,
--- increment_fix_retry_if_available). No live effect — 0023 already locked
--- EXECUTE on both down to service_role only, and it bypasses RLS regardless —
--- but it silently depended on that grant rather than being correct on its
--- own terms. CREATE OR REPLACE keeps each function's OID, so 0023's existing
--- grants need no re-grant.
+-- ── 3. increment_referral_code_usage / increment_referral_code_clicks ──────
+-- CORRECTION (Section 9/10 re-audit): this section originally claimed these
+-- two were "the only two atomic-increment RPCs in the whole migration set
+-- not marked security definer" — that's wrong.
+-- 0015_definer_hardening_and_score_checks.sql already added `security
+-- definer` + `set search_path = public` to both, with the exact bodies
+-- below, 26 migrations before this file existed. No migration in between
+-- ever redefined either function. Re-running the identical CREATE OR
+-- REPLACE here is a harmless no-op (same OID, same body, same grants — see
+-- 0023 for the EXECUTE lockdown that already covered them), but the comment
+-- that justified it mis-stated the migration history. Left in place
+-- unchanged (removing it now buys nothing and a no-op CREATE OR REPLACE is
+-- not worth a new migration to undo); this note exists so the next audit
+-- doesn't re-trust the original claim at face value.
 create or replace function increment_referral_code_usage(p_code_id uuid)
 returns void
 language sql
