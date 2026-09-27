@@ -18,6 +18,17 @@ const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', AR
 const STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
 const PAGE_SIZE = 25
 const SEARCH_DEBOUNCE_MS = 350
+// FEATURE GAP CLOSED (fresh audit pass, Section 5, traced from the
+// controller/routes): source/sourceCounts and the suppression endpoints were
+// all built and tested server-side (employer-leads.controller.js) but had no
+// way to actually reach an admin — no source filter here, meta.sourceCounts
+// and meta.suppressed were fetched into state nowhere, and nothing in the
+// frontend called /suppressions/check or /suppressions at all. Mirrors
+// ALL_LEAD_SOURCES there ('manual' is adminCreateLead's own source value, not
+// something a stranger could submit, but an admin browsing/filtering needs
+// to see it same as any other source that actually exists in the table).
+const SOURCES = ['verification_page', 'homepage', 'manual']
+const sourceLabel = (s) => ({ verification_page: 'Verification page', homepage: 'Homepage', manual: 'Manual' })[s] || s
 
 // Filters, sort and page live in the URL (like Payments and Scans), so the
 // dashboard's "N new leads" link can open the list already filtered, a
@@ -33,12 +44,15 @@ export default function AdminLeads() {
   // Whether the lead's email address was confirmed from the acknowledgement
   // mail: '' = all, 'yes', 'no'.
   const confirmed = ['yes', 'no'].includes(searchParams.get('confirmed')) ? searchParams.get('confirmed') : ''
+  const source = SOURCES.includes(searchParams.get('source')) ? searchParams.get('source') : ''
 
   const [leads, setLeads] = useState([])
   const [total, setTotal] = useState(0)
   const [counts, setCounts] = useState({})
   const [unconfirmed, setUnconfirmed] = useState(0)
   const [candidateSupply, setCandidateSupply] = useState(null)
+  const [sourceCounts, setSourceCounts] = useState({})
+  const [suppressed, setSuppressed] = useState(null)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [pendingDelete, setPendingDelete] = useState(null)
@@ -49,6 +63,49 @@ export default function AdminLeads() {
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
   const [editing, setEditing] = useState(null)     // lead being edited
   const [adding, setAdding] = useState(false)
+
+  // Do-not-contact lookup/lift modal (adminCheckSuppression / adminLiftSuppression).
+  // Only a SHA-256 hash is stored server-side — there's no browsable list of
+  // addresses, only a look-up-by-address and a lift-by-address, so that's
+  // exactly what this modal offers, plus the total count already returned in
+  // meta.suppressed above.
+  const [suppressionOpen, setSuppressionOpen] = useState(false)
+  const [suppressionEmail, setSuppressionEmail] = useState('')
+  const [suppressionChecking, setSuppressionChecking] = useState(false)
+  const [suppressionLifting, setSuppressionLifting] = useState(false)
+  const [suppressionResult, setSuppressionResult] = useState(null)   // { suppressed, since } for the last checked address
+  const [suppressionError, setSuppressionError] = useState('')
+
+  function closeSuppression() {
+    setSuppressionOpen(false); setSuppressionEmail(''); setSuppressionResult(null); setSuppressionError('')
+  }
+
+  async function checkSuppression() {
+    if (!suppressionEmail.trim()) return setSuppressionError('Enter an email address.')
+    setSuppressionChecking(true); setSuppressionError(''); setSuppressionResult(null)
+    try {
+      const res = await api.post('/employer-leads/suppressions/check', { email: suppressionEmail.trim() })
+      setSuppressionResult(res.data.data)
+    } catch (err) {
+      setSuppressionError(getErrorMessage(err, 'Could not check that address.'))
+    } finally {
+      setSuppressionChecking(false)
+    }
+  }
+
+  async function liftSuppression() {
+    setSuppressionLifting(true); setSuppressionError('')
+    try {
+      await api.delete('/employer-leads/suppressions', { data: { email: suppressionEmail.trim() } })
+      setSuppressionResult({ suppressed: false, since: null })
+      toast({ message: 'Suppression lifted.', type: 'success' })
+      await refresh()   // meta.suppressed count changes
+    } catch (err) {
+      setSuppressionError(getErrorMessage(err, 'Could not lift that suppression.'))
+    } finally {
+      setSuppressionLifting(false)
+    }
+  }
 
   // Any change of filter/sort goes through here so the page resets to 1 —
   // unless the change IS the page.
@@ -87,7 +144,7 @@ export default function AdminLeads() {
     if (!silent) setLoading(true)
     try {
       const res = await api.get('/employer-leads', {
-        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, confirmed: confirmed || undefined, sort }
+        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, sort }
       })
       if (id !== requestId.current) return
       const meta = res.data.meta
@@ -100,6 +157,8 @@ export default function AdminLeads() {
       setCounts(meta.counts || {})
       setUnconfirmed(meta.unconfirmed ?? 0)
       setCandidateSupply(meta.candidateSupply)
+      setSourceCounts(meta.sourceCounts || {})
+      setSuppressed(meta.suppressed)
       // BUG FIX (traced during Section 5's audit, out of that section's own
       // scope but closed here since it was already found): this used to
       // unconditionally wipe the whole bulk selection on every load,
@@ -123,7 +182,7 @@ export default function AdminLeads() {
       if (id === requestId.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, status, field, confirmed, sort])
+  }, [page, search, status, field, source, confirmed, sort])
 
   useEffect(() => { load() }, [load])
   const refresh = () => load({ silent: true })
@@ -203,7 +262,7 @@ export default function AdminLeads() {
     setExporting(true)
     try {
       const res = await api.get('/employer-leads/export.csv', {
-        params: { search: search || undefined, status: status || undefined, field: field || undefined, confirmed: confirmed || undefined, sort },
+        params: { search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, sort },
         responseType: 'blob'
       })
       const url = URL.createObjectURL(res.data)
@@ -233,6 +292,9 @@ export default function AdminLeads() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <h1 className="text-2xl font-bold text-gray-900">Employer Leads</h1>
         <div className="flex gap-2">
+          <Button size="sm" variant="secondary" onClick={() => { setSuppressionOpen(true) }}>
+            Do-not-contact{suppressed != null ? ` (${suppressed})` : ''}
+          </Button>
           <Button size="sm" variant="secondary" onClick={() => setAdding(true)}>Add lead</Button>
           <Button size="sm" variant="secondary" loading={exporting} onClick={exportCsv}>Export CSV</Button>
         </div>
@@ -257,6 +319,12 @@ export default function AdminLeads() {
             <option key={key} value={key}>
               {label}{candidateSupply ? ` — ${candidateSupply[key] || 0} verified` : ''}
             </option>
+          ))}
+        </Select>
+        <Select id="lead-source" label="Source" value={source} onChange={e => setParams({ source: e.target.value })}>
+          <option value="">All sources</option>
+          {SOURCES.map(s => (
+            <option key={s} value={s}>{sourceLabel(s)} ({sourceCounts[s] ?? 0})</option>
           ))}
         </Select>
         <Select id="lead-confirmed" label="Email" value={confirmed} onChange={e => setParams({ confirmed: e.target.value })}>
@@ -423,6 +491,34 @@ export default function AdminLeads() {
         onConfirm={() => runBulk({ action: 'delete' }, 'Leads deleted')}
         onCancel={() => setConfirmBulkDelete(false)}
       />
+
+      <Modal open={suppressionOpen} onClose={closeSuppression} title="Do-not-contact list" dismissible={!suppressionChecking && !suppressionLifting}>
+        <p className="text-sm text-gray-500 mb-4">
+          Only a hash of each address is stored, so there's no browsable list — look one up by address instead.
+        </p>
+        <Form onSubmit={checkSuppression} className="flex flex-col gap-3">
+          <Input label="Email" type="email" value={suppressionEmail}
+            onChange={e => { setSuppressionEmail(e.target.value); setSuppressionResult(null); setSuppressionError('') }} />
+          {suppressionError && <p role="alert" className="text-sm text-red-600">{suppressionError}</p>}
+          {suppressionResult && (
+            suppressionResult.suppressed
+              ? <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                  On the do-not-contact list since {formatDate(suppressionResult.since)}.
+                </p>
+              : <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                  Not on the do-not-contact list.
+                </p>
+          )}
+          <div className="flex gap-3 justify-end">
+            {suppressionResult?.suppressed && (
+              <Button type="button" variant="danger" loading={suppressionLifting} onClick={liftSuppression}>
+                Lift suppression
+              </Button>
+            )}
+            <Button type="submit" loading={suppressionChecking} variant="secondary">Check</Button>
+          </div>
+        </Form>
+      </Modal>
 
       <LeadFormModal
         open={adding} mode="add" onClose={() => setAdding(false)}

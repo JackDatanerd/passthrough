@@ -265,6 +265,18 @@ export default function Settings() {
       // after this screen told the user everything was fine.
       const token = res.data?.data?.token
       if (token) localStorage.setItem('passthrough_token', token)
+      // BUG FIX (fresh audit pass, Section 6): a successful password change
+      // never refreshed the cached user — unlike every other mutating
+      // action on this page (handleUpdateEmail, handleCancelPendingEmail).
+      // The backend clears any in-flight pending_email as part of this same
+      // update (auth.controller.js's changePassword — a password change
+      // should invalidate a pending email change too), but without this the
+      // "Confirmation pending" banner above kept showing a change that no
+      // longer existed server-side. Clicking its Cancel button then hit
+      // updateEmail's `newEmail === user.email` branch with pendingEmail
+      // already false, surfacing an unrelated "That is already your email
+      // address." error instead of a clean no-op.
+      await refreshUser()
       setPwSuccess(true)
       setCurrent(''); setNewPass(''); setConfirm('')
     } catch (err) {
