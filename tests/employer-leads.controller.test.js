@@ -886,6 +886,21 @@ describe('confirmLead', () => {
     expect(t.state.leads[0].confirmed_at).toBeTruthy()
     expect(t.state.notices.map(n => n.subject)).toEqual(['Employer lead confirmed'])
   })
+  // BUG FIX (fresh audit pass, Section 5, second re-pass): notifyOwner used to
+  // fire unconditionally here, including for a lead the admin already
+  // ARCHIVED — mergeIntoExistingLead already treats ARCHIVED as "don't
+  // re-bother the owner about this one" for a resubmission; confirming an
+  // address is the same category of event. The confirmation itself still
+  // goes through (the address genuinely is confirmed either way) — only the
+  // owner notice is suppressed.
+  it('still confirms an ARCHIVED lead but does not notify the owner about it', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', status: 'ARCHIVED' })] })
+    const ctx = t.c({ body: { token: await tokenFor('confirm', 'dana@acme.com') } })
+    const res = await t.mod.confirmLead(ctx); await Promise.all(ctx._waits)
+    expect(res.body).toMatchObject({ success: true, status: 'confirmed' })
+    expect(t.state.leads[0].confirmed_at).toBeTruthy()
+    expect(t.state.notices).toHaveLength(0)
+  })
   it('is idempotent: a second click changes nothing and says so', async () => {
     t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: '2026-02-01T00:00:00.000Z' })] })
     const res = await postToken(t.mod.confirmLead, await tokenFor('confirm', 'dana@acme.com'))

@@ -31,6 +31,31 @@ const { isRangeError } = require('../lib/db')
 // (candidate's own name and the role category of the scan it came from) so
 // the settings page can show more than just a bare timestamp without
 // exposing the full structured resume data over this endpoint.
+// BUG FIX (fresh audit pass, Section 6): `latestTitle` used to be a bare
+// `experience[0]?.title` — treating array order as "most recent first" with
+// nothing backing that up. Neither extraction prompt in claude.service.js
+// (parseResumeStructure for an uploaded resume, structureFreeformText for a
+// brain dump) tells the model to return jobs in any particular order, and
+// nothing downstream sorts the array before it's stored. The brain-dump path
+// is the clearest case: it's explicitly "stream-of-consciousness... half-
+// sentences" with no chronological structure to preserve in the first place.
+// A full parser for freeform `dates` strings ("Jan 2020 – Present",
+// "06/19-08/21", "Summer 2021"...) is its own source of confidently-wrong
+// guesses — exactly what this app's own extraction prompts refuse to do
+// elsewhere ("leave a field null/empty rather than guess"). The one signal
+// cheap and unambiguous enough to trust without a date parser: a `dates`
+// string containing "present"/"current" marks an ongoing job. When exactly
+// one experience entry has that marker, it IS the latest job — no guess
+// involved. Anything less certain (no marker anywhere, or more than one
+// concurrent role) falls back to entry 0, same as before — a guess, not a
+// guarantee, used only when nothing more certain is available.
+function pickLatestTitle(experience) {
+  if (!Array.isArray(experience) || !experience.length) return null
+  const ongoing = experience.filter(e => /present|current/i.test(e?.dates || ''))
+  if (ongoing.length === 1) return ongoing[0].title || null
+  return experience[0]?.title || null
+}
+
 async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
@@ -46,7 +71,7 @@ async function getProfile(c) {
   const summary = rd ? {
     name:         rd.name || null,
     roleCategory: saved.roleCategory || null,
-    latestTitle:  (Array.isArray(rd.experience) && rd.experience[0]?.title) || null,
+    latestTitle:  pickLatestTitle(rd.experience),
     jobCount:     count(rd.experience),
     educationCount: count(rd.education),
     skillCount:   count(rd.skills)

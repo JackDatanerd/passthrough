@@ -814,8 +814,15 @@ async function confirmLead(c) {
     .eq('id', lead.id).is('confirmed_at', null).select('id').maybeSingle()
   if (updErr) throw updErr
   if (!updated) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
-  // A confirmed lead is a real one — worth telling the owner.
-  await notifyOwner(c, 'Employer lead confirmed', describeLead(lead))
+  // BUG FIX (fresh audit pass, Section 5 re-pass): notifyOwner used to fire
+  // unconditionally here — including for a lead the admin already ARCHIVED
+  // (dismissed as spam / not interested). mergeIntoExistingLead already
+  // treats ARCHIVED as "don't bother the owner about this one again" for a
+  // resubmission; confirming an address is the same category of event and
+  // deserves the same treatment — a real employer confirming interest on a
+  // lead that's still open is worth a heads-up, one the admin has already
+  // dismissed is not.
+  if (lead.status !== 'ARCHIVED') await notifyOwner(c, 'Employer lead confirmed', describeLead(lead))
   return c.json({ success: true, status: 'confirmed', message: "Thanks — your email is confirmed. We'll be in touch when there are Verified candidates in your field." })
 }
 

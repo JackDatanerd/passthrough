@@ -59,6 +59,54 @@ describe('getProfile', () => {
     expect(JSON.stringify(summary)).not.toMatch(/555|jane@x\.com|bullets/)
   })
 
+  // BUG FIX (fresh audit pass, Section 6): latestTitle used to be a bare
+  // `experience[0]?.title` — treating array order as "most recent first"
+  // with nothing enforcing that. Neither claude.service.js extraction prompt
+  // (parseResumeStructure or structureFreeformText) instructs the model to
+  // return jobs in any particular order, and nothing sorts the array before
+  // it's stored. When exactly one entry's `dates` says "Present"/"Current",
+  // that IS the latest job regardless of its position in the array.
+  it('prefers an experience entry marked "Present" over array order for latestTitle', async () => {
+    t = setup(q => (q.table === 'users' ? {
+      data: { saved_profile: { resumeData: {
+        name: 'Jane Doe',
+        experience: [
+          { title: 'Junior Engineer', company: 'A', dates: '2018 - 2020' },
+          { title: 'Staff Engineer', company: 'B', dates: '2020 - Present' },
+        ],
+      }, savedAt: 't1', sourceScanId: 's1', roleCategory: 'software_engineering' } },
+      error: null,
+    } : undefined))
+    const { summary } = (await t.mod.getProfile(t.c())).body.data
+    expect(summary.latestTitle).toBe('Staff Engineer')
+  })
+  it('falls back to array order when no entry (or more than one) is marked ongoing', async () => {
+    t = setup(q => (q.table === 'users' ? {
+      data: { saved_profile: { resumeData: {
+        name: 'Jane Doe',
+        experience: [
+          { title: 'Most Recent Listed', company: 'A', dates: '2022 - 2023' },
+          { title: 'Older', company: 'B', dates: '2018 - 2020' },
+        ],
+      }, savedAt: 't1', sourceScanId: 's1' } },
+      error: null,
+    } : undefined))
+    const { summary } = (await t.mod.getProfile(t.c())).body.data
+    expect(summary.latestTitle).toBe('Most Recent Listed')
+
+    t = setup(q => (q.table === 'users' ? {
+      data: { saved_profile: { resumeData: {
+        name: 'Jane Doe',
+        experience: [
+          { title: 'Part-time A', company: 'A', dates: '2021 - Present' },
+          { title: 'Part-time B', company: 'B', dates: '2021 - Present' },
+        ],
+      }, savedAt: 't1', sourceScanId: 's1' } },
+      error: null,
+    } : undefined))
+    const res2 = (await t.mod.getProfile(t.c())).body.data
+    expect(res2.summary.latestTitle).toBe('Part-time A')   // two concurrent roles: ambiguous, falls back to entry 0
+  })
   it('scopes the lookup to the requesting user', async () => {
     t = setup(q => (q.table === 'users' ? { data: { saved_profile: null }, error: null } : undefined))
     await t.mod.getProfile(t.c({ userId: 'u42' }))
