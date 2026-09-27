@@ -27,9 +27,10 @@ function createFakeSupabase(resolver = () => undefined) {
       delete() { q.op = 'delete'; return api },
       upsert(values) { q.op = 'upsert'; q.values = values; return api },
       order(col, opts) { q.orders.push([col, opts]); return api },
-      limit() { return api },
-      // range/or are recorded (q.range / q.or) so tests can assert on them;
-      // before, they were silently dropped.
+      // range/or/limit are recorded (q.range / q.or / q.limit) so tests can
+      // assert on them, or a bespoke resolver can apply them; before, all
+      // three were silently dropped.
+      limit(n) { q.limit = n; return api },
       range(from, to) { q.range = [from, to]; return api },
       or(expr) { (q.or = q.or || []).push(expr); return api },
       maybeSingle() { q.maybe = true; return run() },

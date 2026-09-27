@@ -35,6 +35,10 @@ router.post('/bulk',   admin, c.adminBulkUpdateLeads)
 // Registered before the /:id routes for the same "never read as an id" reason
 // as /manual and /bulk above.
 router.post(  '/suppressions/check', admin, c.adminCheckSuppression)
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the write side of the do-
+// not-contact list — see the controller's own comment above adminAddSuppression
+// for why check + lift alone weren't enough.
+router.post(  '/suppressions',       admin, c.adminAddSuppression)
 router.delete('/suppressions',       admin, c.adminLiftSuppression)
 
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —

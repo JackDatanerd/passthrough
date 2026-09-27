@@ -455,6 +455,38 @@ function applySort(query, sort) {
   ).order('id', { ascending: false })
 }
 
+// Keyset cursor for the chunked CSV export (see adminExportLeads). applySort's
+// own id-tiebreak comment above is about a single, static read — it doesn't
+// help across MANY sequential requests. An offset-based page (fine for the
+// admin list's one-shot read) re-evaluates the whole filtered/sorted result on
+// every request: a lead deleted from earlier in the order shifts every later
+// row up by one position, so the next offset-based chunk starts one row too
+// late and silently drops a lead that was never exported. A keyset cursor —
+// "give me rows that sort strictly after the last one I already have" — has
+// no notion of position, so a deletion anywhere in the result set can't shift
+// it. `sort` must be one of applySort's own two orderings; the tuple shape
+// mirrors whichever one is in use.
+function applyCursor(query, sort, cursor) {
+  if (!cursor) return query
+  if (sort === 'activity') {
+    const [lastSubmittedAt, createdAt, id] = cursor
+    return query.or(
+      `last_submitted_at.lt.${lastSubmittedAt},` +
+      `and(last_submitted_at.eq.${lastSubmittedAt},created_at.lt.${createdAt}),` +
+      `and(last_submitted_at.eq.${lastSubmittedAt},created_at.eq.${createdAt},id.lt.${id})`
+    )
+  }
+  const [createdAt, id] = cursor
+  return query.or(`created_at.lt.${createdAt},and(created_at.eq.${createdAt},id.lt.${id})`)
+}
+
+// The cursor tuple for a row, matching applyCursor's shape for the given sort.
+function cursorFor(row, sort) {
+  return sort === 'activity'
+    ? [row.last_submitted_at, row.created_at, row.id]
+    : [row.created_at, row.id]
+}
+
 function pageParams(c, defaultSize = 25, maxSize = 100) {
   const page     = Math.max(1, parseInt(c.req.query('page'), 10) || 1)
   const pageSize = Math.min(maxSize, Math.max(1, parseInt(c.req.query('pageSize'), 10) || defaultSize))
@@ -564,16 +596,17 @@ async function adminExportLeads(c) {
   const supabase = getSupabase(c.env)
   const filters = parseFilters(c)
   const rows = []
-  for (let from = 0; rows.length < EXPORT_MAX_ROWS; from += EXPORT_CHUNK) {
-    const { data, error } = await applySort(
-      applyFilters(supabase.from('employer_leads').select('*'), filters), filters.sort
-    ).range(from, from + EXPORT_CHUNK - 1)
-    if (error) {
-      if (isRangeError(error)) break   // ran exactly to the end of the data
-      throw error
-    }
+  let cursor = null
+  while (rows.length < EXPORT_MAX_ROWS) {
+    const { data, error } = await applyCursor(
+      applySort(applyFilters(supabase.from('employer_leads').select('*'), filters), filters.sort),
+      filters.sort, cursor
+    ).limit(EXPORT_CHUNK)
+    if (error) throw error
+    if (!data.length) break
     rows.push(...data)
     if (data.length < EXPORT_CHUNK) break
+    cursor = cursorFor(data[data.length - 1], filters.sort)
   }
   if (rows.length >= EXPORT_MAX_ROWS) console.warn(`Employer-lead export hit the ${EXPORT_MAX_ROWS}-row cap — the file is truncated`)
   // Exporting every lead's name and email is exactly what an audit trail is for.
@@ -826,6 +859,44 @@ async function adminCheckSuppression(c) {
   return c.json({ success: true, data: { suppressed: !!data, since: data?.created_at || null } })
 }
 
+// POST /api/employer-leads/suppressions { email } — admin only.
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the do-not-contact list
+// could only ever be written by removeLead, which requires the person's own
+// signed token from an email they received. Someone who asks to be removed
+// through any other channel — a reply to the acknowledgement email, a phone
+// call, a support ticket — had no equivalent: an admin's only lever was
+// adminDeleteLead, which removes the lead row but records no suppression, so
+// the same address could resubmit the public form (or be re-added manually)
+// at any time afterwards. This is that missing write path. Same order and
+// same effect as removeLead: the suppression hash is recorded FIRST, then any
+// existing lead for that address is deleted, so a failure partway through is
+// idempotent on retry rather than leaving a deleted lead the public form
+// could recreate. Deliberately doesn't require a lead to already exist —
+// pre-emptively blocking a known-bad address is a legitimate use on its own.
+async function adminAddSuppression(c) {
+  const { email } = emailBodySchema.parse(await c.req.json())
+  const supabase = getSupabase(c.env)
+  const hash = await sha256(email)
+  const { error: supErr } = await supabase
+    .from('employer_lead_suppressions').upsert({ email_hash: hash }, { onConflict: 'email_hash', ignoreDuplicates: true })
+  if (supErr) throw supErr
+  const { data: removed, error: delErr } = await supabase
+    .from('employer_leads').delete().eq('email', email).select('id')
+  if (delErr) throw delErr
+  // target_id is the hash, not the address — same reasoning as
+  // adminLiftSuppression's own audit entry below.
+  await logAdminAction(c, supabase, 'lead.suppression_add', 'employer_lead_suppression', hash, {
+    leadsRemoved: (removed || []).length
+  })
+  return c.json({
+    success: true,
+    message: (removed || []).length
+      ? 'Address added to the do-not-contact list. Its existing lead was removed.'
+      : 'Address added to the do-not-contact list.',
+    data: { leadsRemoved: (removed || []).length }
+  })
+}
+
 // DELETE /api/employer-leads/suppressions { email } — admin only. Lifts a
 // suppression without recreating the lead (adminCreateLead's
 // `overrideRemoval` does both at once, for the common "yes, add them back
@@ -868,6 +939,6 @@ module.exports = {
   createLead, confirmLead, removeLead,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
-  adminCheckSuppression, adminLiftSuppression,
+  adminCheckSuppression, adminAddSuppression, adminLiftSuppression,
   LEAD_STATUSES, LEAD_SOURCES
 }

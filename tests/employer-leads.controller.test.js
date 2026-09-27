@@ -461,6 +461,123 @@ describe('adminExportLeads', () => {
   })
 })
 
+// BUG FIX (fresh audit pass, Section 5): the export used to page with
+// offset-based `.range()`, re-evaluating the whole filtered/sorted result on
+// every request. A lead deleted from earlier in the sort order shifts every
+// later row up by one position, so the NEXT chunk's offset starts one row too
+// late — silently dropping a lead that was never exported. Fixed with a
+// keyset cursor (see applyCursor/cursorFor), which has no notion of position.
+// setup()'s shared fake doesn't actually apply `.or()` or `.limit()` (small
+// fixtures never needed it to), so this uses its own resolver that does,
+// specifically so this regression can't come back unnoticed.
+describe('adminExportLeads — chunked pagination survives a concurrent delete', () => {
+  function makeChunkedDb(rows) {
+    const splitTopLevel = (s) => {
+      const out = []; let depth = 0; let cur = ''
+      for (const ch of s) {
+        if (ch === '(') depth++
+        if (ch === ')') depth--
+        if (ch === ',' && depth === 0) { out.push(cur); cur = '' } else cur += ch
+      }
+      if (cur) out.push(cur)
+      return out
+    }
+    const evalClause = (clause, row) => {
+      if (clause.startsWith('and(')) return splitTopLevel(clause.slice(4, -1)).every(c => evalClause(c, row))
+      const [col, op, ...rest] = clause.split('.')
+      const val = rest.join('.')
+      return op === 'lt' ? row[col] < val : op === 'eq' ? row[col] === val : true
+    }
+    const cmp = (orders) => (a, b) => {
+      for (const [col, opts] of orders) {
+        if (a[col] === b[col]) continue
+        return (a[col] < b[col] ? -1 : 1) * (opts?.ascending ? 1 : -1)
+      }
+      return 0
+    }
+    return createFakeSupabase(q => {
+      if (q.table !== 'employer_leads') return undefined
+      let filtered = rows.filter(r => (q.filters || []).every(([op, col, val]) => op === 'eq' ? r[col] === val : true))
+      if (q.or) filtered = filtered.filter(r => q.or.every(expr => splitTopLevel(expr).some(c => evalClause(c, r))))
+      filtered = filtered.slice().sort(cmp(q.orders))
+      return { data: (q.limit != null ? filtered.slice(0, q.limit) : filtered).map(r => ({ ...r })), error: null }
+    })
+  }
+
+  function makeLeads(n) {
+    const rows = []
+    for (let i = 0; i < n; i++) {
+      const id = `id-${String(i).padStart(6, '0')}`
+      // Strictly increasing so default sort (created_at desc, id desc) gives
+      // every row a distinct position — newest (highest i) exported first.
+      rows.push({
+        id, name: `Lead ${i}`, company: 'Acme', email: `lead${i}@corp.com`,
+        status: 'NEW', notes: null, submission_count: 1,
+        created_at: new Date(2026, 0, 1, 0, 0, i).toISOString()
+      })
+    }
+    return rows
+  }
+
+  it('exports every row exactly once across multiple chunks', async () => {
+    const rows = makeLeads(2200)   // > 2 * EXPORT_CHUNK (1000), forces 3 requests
+    const db = makeChunkedDb(rows)
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'lib/adminAudit.js': { logAdminAction: async () => {} }
+    })
+    const res = await mod.adminExportLeads({
+      env: {}, get: () => ({ id: 'admin-1', role: 'ADMIN' }),
+      req: { query: () => undefined }, json: (b, s = 200) => ({ body: b, status: s }),
+      body: (raw, status = 200, headers = {}) => ({ raw, status, headers })
+    })
+    const lines = res.raw.slice(1).split('\r\n').filter(Boolean)
+    expect(lines.length).toBe(rows.length + 1)   // header + every row, no more, no less
+    const emails = new Set(lines.slice(1).map(l => l.match(/lead\d+@corp\.com/)[0]))
+    expect(emails.size).toBe(rows.length)   // no duplicates
+    for (const r of rows) expect(emails.has(r.email)).toBe(true)   // nothing missing
+    restore()
+  })
+
+  it('does not skip a row when a lead earlier in the sort order is deleted mid-export', async () => {
+    const rows = makeLeads(1500)   // > EXPORT_CHUNK: guarantees at least 2 requests
+    const db = makeChunkedDb(rows)
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'lib/adminAudit.js': { logAdminAction: async () => {} }
+    })
+    // Default sort is created_at desc: the row with the HIGHEST index sorts
+    // FIRST. Delete one of those (id-001499, the very first row exported)
+    // right after the first chunk lands — exactly the case that shifted
+    // everything under the old offset-based `.range()` and dropped a row.
+    let firstChunkSeen = false
+    const origFrom = db.from.bind(db)
+    db.from = (table) => {
+      const api = origFrom(table)
+      const origThen = api.then.bind(api)
+      api.then = (resolve, reject) => origThen((result) => {
+        if (!firstChunkSeen && table === 'employer_leads' && result?.data?.length) {
+          firstChunkSeen = true
+          const idx = rows.findIndex(r => r.id === 'id-001499')
+          if (idx !== -1) rows.splice(idx, 1)
+        }
+        return resolve(result)
+      }, reject)
+      return api
+    }
+    const res = await mod.adminExportLeads({
+      env: {}, get: () => ({ id: 'admin-1', role: 'ADMIN' }),
+      req: { query: () => undefined }, json: (b, s = 200) => ({ body: b, status: s }),
+      body: (raw, status = 200, headers = {}) => ({ raw, status, headers })
+    })
+    const lines = res.raw.slice(1).split('\r\n').filter(Boolean)
+    const emails = new Set(lines.slice(1).map(l => l.match(/lead\d+@corp\.com/)[0]))
+    // Every row that was NOT the one deleted mid-export must still be present.
+    for (const r of rows) expect(emails.has(r.email)).toBe(true)
+    restore()
+  })
+})
+
 describe('adminUpdateLeadStatus', () => {
   const lead = () => ({ id: ID1, name: 'A', company: 'B', email: 'a@b.com', status: 'NEW', notes: null, contacted_at: null })
   it('400s a malformed id before touching the DB', async () => {
@@ -888,6 +1005,51 @@ describe('adminCheckSuppression', () => {
   it('rejects a malformed email before touching the DB', async () => {
     t = setup()
     await expect(t.mod.adminCheckSuppression(t.c({ body: { email: 'not-an-email' } }))).rejects.toBeTruthy()
+  })
+})
+
+// FEATURE GAP CLOSED (fresh audit pass, Section 5): the write side of the
+// do-not-contact list. Before this, only the public remove link (removeLead,
+// requiring the person's own signed token) could ever write a suppression —
+// an admin honoring the same request through any other channel (a reply, a
+// call) could only delete the lead, which records no suppression at all.
+describe('adminAddSuppression', () => {
+  it('suppresses an address with no existing lead — a pre-emptive block', async () => {
+    t = setup()
+    const res = await t.mod.adminAddSuppression(t.c({ body: { email: 'spammer@bad.com' } }))
+    expect(res.body).toMatchObject({ success: true, data: { leadsRemoved: 0 } })
+    expect(t.state.suppressed.has(sha('spammer@bad.com'))).toBe(true)
+  })
+  it('suppresses an address AND removes its existing lead, same order/effect as the public remove link', async () => {
+    t = setup({ leads: [{ id: ID1, name: 'Dana', company: 'Acme', email: 'dana@acme.com', status: 'NEW', notes: null, submission_count: 1 }] })
+    const res = await t.mod.adminAddSuppression(t.c({ body: { email: 'DANA@Acme.com' } }))
+    expect(res.body).toMatchObject({ success: true, data: { leadsRemoved: 1 } })
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('is idempotent — adding an already-suppressed address does not error', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    const res = await t.mod.adminAddSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+  })
+  it('audits by hash, never by address', async () => {
+    t = setup()
+    await t.mod.adminAddSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    expect(t.state.audit).toHaveLength(1)
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.suppression_add', target_id: sha('dana@acme.com') })
+    expect(JSON.stringify(t.state.audit[0])).not.toContain('dana@acme.com')
+  })
+  it('rejects a malformed email before touching the DB', async () => {
+    t = setup()
+    await expect(t.mod.adminAddSuppression(t.c({ body: { email: 'not-an-email' } }))).rejects.toBeTruthy()
+  })
+  it('once suppressed, the public form silently drops a resubmission', async () => {
+    t = setup()
+    await t.mod.adminAddSuppression(t.c({ body: { email: 'dana@acme.com' } }))
+    const res = await submit(valid({ email: 'dana@acme.com' }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
   })
 })
 

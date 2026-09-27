@@ -73,6 +73,13 @@ export default function AdminLeads() {
   const [suppressionEmail, setSuppressionEmail] = useState('')
   const [suppressionChecking, setSuppressionChecking] = useState(false)
   const [suppressionLifting, setSuppressionLifting] = useState(false)
+  // FEATURE GAP CLOSED (fresh audit pass, Section 5): adding, not just
+  // checking/lifting. Before this, the only WRITE path to the do-not-contact
+  // list was the public remove link in an acknowledgement email — someone who
+  // asked to be removed by replying to that email, or by phone, had no
+  // equivalent here. The only lever was deleting their lead outright, which
+  // doesn't stop them resubmitting or being re-added later.
+  const [suppressionAdding, setSuppressionAdding] = useState(false)
   const [suppressionResult, setSuppressionResult] = useState(null)   // { suppressed, since } for the last checked address
   const [suppressionError, setSuppressionError] = useState('')
 
@@ -90,6 +97,24 @@ export default function AdminLeads() {
       setSuppressionError(getErrorMessage(err, 'Could not check that address.'))
     } finally {
       setSuppressionChecking(false)
+    }
+  }
+
+  async function addSuppression() {
+    if (!suppressionEmail.trim()) return setSuppressionError('Enter an email address.')
+    setSuppressionAdding(true); setSuppressionError('')
+    try {
+      const res = await api.post('/employer-leads/suppressions', { email: suppressionEmail.trim() })
+      setSuppressionResult({ suppressed: true, since: new Date().toISOString() })
+      toast({
+        message: res.data.data?.leadsRemoved ? 'Address suppressed and its lead removed.' : 'Address added to the do-not-contact list.',
+        type: 'success'
+      })
+      await refresh()   // meta.suppressed count changes, and the lead (if any) disappears from the list
+    } catch (err) {
+      setSuppressionError(getErrorMessage(err, 'Could not add that suppression.'))
+    } finally {
+      setSuppressionAdding(false)
     }
   }
 
@@ -492,9 +517,11 @@ export default function AdminLeads() {
         onCancel={() => setConfirmBulkDelete(false)}
       />
 
-      <Modal open={suppressionOpen} onClose={closeSuppression} title="Do-not-contact list" dismissible={!suppressionChecking && !suppressionLifting}>
+      <Modal open={suppressionOpen} onClose={closeSuppression} title="Do-not-contact list" dismissible={!suppressionChecking && !suppressionLifting && !suppressionAdding}>
         <p className="text-sm text-gray-500 mb-4">
           Only a hash of each address is stored, so there's no browsable list — look one up by address instead.
+          Someone who asks to be removed some other way (a reply, a call) can be added here directly, without
+          needing the link from their own acknowledgement email.
         </p>
         <Form onSubmit={checkSuppression} className="flex flex-col gap-3">
           <Input label="Email" type="email" value={suppressionEmail}
@@ -513,6 +540,11 @@ export default function AdminLeads() {
             {suppressionResult?.suppressed && (
               <Button type="button" variant="danger" loading={suppressionLifting} onClick={liftSuppression}>
                 Lift suppression
+              </Button>
+            )}
+            {suppressionResult && !suppressionResult.suppressed && (
+              <Button type="button" variant="danger" loading={suppressionAdding} onClick={addSuppression}>
+                Add to do-not-contact list
               </Button>
             )}
             <Button type="submit" loading={suppressionChecking} variant="secondary">Check</Button>
