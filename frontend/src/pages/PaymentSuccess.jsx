@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
 import Spinner from '../components/ui/Spinner'
@@ -26,6 +26,24 @@ export default function PaymentSuccess() {
 
   const reference = params.get('reference') || params.get('trxref')
 
+  // AUDIT FIX (Section 3/4 pass, bug): the recursive setTimeout chain below
+  // (pending-poll retries, the error retry, the post-success redirect) was
+  // never tied to this component's lifecycle — nothing cancelled it if the
+  // user navigated away mid-poll (back button, a manual nav elsewhere while
+  // "Confirming your payment…" was showing). A payment that resolved as
+  // 'success' *after* that point would still fire, and its trailing
+  // navigate(`/scan/${sid}`) would forcibly yank the user to that page from
+  // wherever they'd since moved to, with nothing warning them it was coming.
+  // mountedRef gates every step of verify() below — once unmounted, no
+  // further setState, no further polling, and no surprise navigate.
+  // usePricing.js (same section) already uses this exact pattern for its
+  // own async effects; this was the one place in the section that didn't.
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
   // BUGFIX: previously any failure here — a network blip, a brief 5xx,
   // even a genuine amount-mismatch 400 — collapsed into the same
   // permanent "Verification failed" screen with no way to retry short of
@@ -51,10 +69,15 @@ export default function PaymentSuccess() {
   // scheduled retry inside the `res.data.pending` branch below, so by
   // construction a retry IS a still-pending poll.
   function verify(attempt = 1) {
+    // AUDIT FIX (Section 3/4 pass, bug): see mountedRef's comment above —
+    // bail before touching state OR making the network call at all, so an
+    // unmounted retry doesn't even poll Paystack pointlessly.
+    if (!mountedRef.current) return
     if (!reference) { setStatus('error'); return }
     setStatus(attempt > 1 ? 'pending' : 'loading')
     api.get(`/payments/verify?reference=${reference}`)
       .then(res => {
+        if (!mountedRef.current) return
         // AUDIT FIX (bug): a 202 { pending: true } means Paystack hasn't
         // reached a final status yet — not a failure. Keep polling a bounded
         // number of times before settling on "still processing" rather than
@@ -71,9 +94,13 @@ export default function PaymentSuccess() {
         const sid = res.data.data.scanId
         setScanId(sid)
         setStatus('success')
-        setTimeout(() => navigate(`/scan/${sid}`), 2000)
+        // Guarded separately from the mountedRef check above: this fires
+        // 2s LATER, so a user who navigated away during that window (not
+        // before the check above ran) must still not get force-redirected.
+        setTimeout(() => { if (mountedRef.current) navigate(`/scan/${sid}`) }, 2000)
       })
       .catch(() => {
+        if (!mountedRef.current) return
         if (attempt < 2) { setTimeout(() => verify(attempt + 1), 1500); return }
         setStatus('error')
       })

@@ -175,6 +175,49 @@ function ConversionRow({ conversion, currency }) {
   )
 }
 
+// AUDIT FIX (Section 3/4 pass, feature gap): getPartnerDashboard has always
+// computed and returned cyclesSummary (last 3 twice-monthly cycles: current
+// + 2 prior) — per its own comment, specifically "so a partner can see
+// 'here's what's still accruing' vs. 'here's what's queued for the next
+// payout run'" — but nothing on this page ever rendered it. A partner could
+// only ever see one lump "Pending" stat, with no way to tell how much of it
+// is from the still-accruing current cycle (not payable yet) vs. an older,
+// already-closed cycle sitting ready for the next payout run — despite the
+// admin side (PartnerDetail.jsx's CyclesTab) already showing exactly this
+// breakdown from the same underlying data. Read-only here (no payout
+// actions — those stay admin-only), mirroring CyclesTab's per-cycle shape.
+function CycleRow({ cycle, currency }) {
+  return (
+    <div className="border border-gray-200 rounded-lg bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+      <div>
+        <div className="font-medium text-gray-900 flex items-center gap-2">
+          {cycle.label}
+          {cycle.isCurrent && (
+            <span className="text-xs px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">
+              Current — still accruing
+            </span>
+          )}
+        </div>
+        <div className="text-xs text-gray-400 mt-0.5">
+          {cycle.ledgerCount} conversion{cycle.ledgerCount === 1 ? '' : 's'} · {fmtCents(cycle.commissionCents, currency)} earned
+          {cycle.paidCents > 0 && ` · ${fmtCents(cycle.paidCents, currency)} already paid`}
+        </div>
+      </div>
+      <div className="text-sm text-right shrink-0">
+        {cycle.unpaidCents > 0 ? (
+          cycle.isCurrent ? (
+            <span className="text-gray-400">{fmtCents(cycle.unpaidCents, currency)} — not payable yet</span>
+          ) : (
+            <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents, currency)} — ready to pay</span>
+          )
+        ) : (
+          <span className="text-gray-400 italic">{cycle.ledgerCount > 0 ? 'Settled' : 'Nothing owed'}</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
 export default function PartnerDashboard() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -244,6 +287,17 @@ export default function PartnerDashboard() {
               <StatCard label="Pending" value={fmtCents(data.stats.pendingCents, data.currency)} />
               <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents, data.currency)} />
             </div>
+
+            {data.cyclesSummary?.length > 0 && (
+              <>
+                <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout cycles</h2>
+                <div className="flex flex-col gap-2 mb-8">
+                  {data.cyclesSummary.map(cycle => (
+                    <CycleRow key={cycle.key} cycle={cycle} currency={data.currency} />
+                  ))}
+                </div>
+              </>
+            )}
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Your codes</h2>
             {data.referralCodes.length === 0 ? (
