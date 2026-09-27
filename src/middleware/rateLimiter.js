@@ -337,6 +337,35 @@ const resumeEdit = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// AUDIT FIX (Section 9/10 pass, bug): redeemCredit and retryFix (scan.routes.js)
+// used to run through this exact `payment` limiter instance — same KV bucket
+// (`rl:payment:<ip>`), not just the same numbers — as initializePayment. The
+// identical fate-sharing mistake this file has already fixed three separate
+// times elsewhere (paymentCancel vs payment, click vs employerLead, partnerWrite
+// vs partnerRead): two unrelated actions burning one shared 3-per-60s budget,
+// so a few legitimate retries could block a real checkout attempt from the same
+// IP (or a shared office/NAT IP mixing several people's payment and retry
+// traffic) — and vice versa. Split into their own buckets.
+//
+// retryFix gets the same shape as resumeEdit above — it's the same kind of
+// spend ceiling (a Claude rewrite call + a re-render), not a credential- or
+// money-adjacent surface, so a generous per-15-min budget is the right fit.
+// The DB-level cap (increment_fix_retry_if_available, MAX_FIX_RETRIES) already
+// bounds retries per scan; this is just an abuse backstop across scans.
+const retryFix = makeLimiter({
+  windowSeconds: 15 * 60, max: 15, keyPrefix: 'rl:retryfix',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
+// redeemCredit spends a scarce, already-earned free_fix_credits row — a much
+// rarer action than a resume edit or a retry, so a tighter ceiling than either
+// is still generous for genuine use (an account only ever has a handful of
+// credits) while keeping it out of `payment`'s tight checkout-specific budget.
+const redeemCredit = makeLimiter({
+  windowSeconds: 5 * 60, max: 5, keyPrefix: 'rl:redeemcredit',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 // Backs GET /api/profile/export — one request reads every scan and payment the
 // account has (JD text, structured resumes and all), so it is capped tightly;
 // a person downloading their own data needs it a handful of times, not more.
@@ -642,7 +671,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, employerLead, employerLeadLink, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

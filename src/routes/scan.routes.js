@@ -19,8 +19,14 @@ router.get( '/history',          auth,        c.getScanHistory)
 router.get( '/status/:id',  rl.scanPoll,      validateUuidParam(), c.getScanStatus)
 router.get( '/:id',         rl.scanPoll,      validateUuidParam(), c.getScan)
 router.post('/:id/initiate-fix', auth,        validateUuidParam(), c.initiateFix)
-router.post('/:id/redeem-credit', auth, rl.payment, validateUuidParam(), c.redeemCredit)
-router.post('/:id/retry-fix',    auth, rl.payment, validateUuidParam(), c.retryFix)
+// AUDIT FIX (Section 9/10 pass, bug): these two used to share `rl.payment` —
+// the same KV bucket as initializePayment, not just the same numbers — which
+// let either action starve the other for an unrelated reason. See
+// middleware/rateLimiter.js's own comment on retryFix/redeemCredit for the
+// full reasoning (same fate-sharing class as paymentCancel/click/partnerWrite
+// being split off their own shared buckets elsewhere in this codebase).
+router.post('/:id/redeem-credit', auth, rl.redeemCredit, validateUuidParam(), c.redeemCredit)
+router.post('/:id/retry-fix',    auth, rl.retryFix, validateUuidParam(), c.retryFix)
 // FEATURE (Auth/Scan round): re-render a PDF that failed to generate at delivery.
 router.post('/:id/regenerate-pdf', auth, rl.resumeEdit, validateUuidParam(), c.regeneratePdf)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)

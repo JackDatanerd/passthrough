@@ -105,7 +105,13 @@ async function recipientAllowed(env, to, template) {
 function htmlToPlainText(html) {
   const decode = s => s.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
   const stripTags = s => s.replace(/<[^>]*>/g, '')
-  let t = html.replace(/<style>[\s\S]*?<\/style>/i, '')
+  // AUDIT FIX (Section 9/10 pass, hardening): missing `g` flag meant only the
+  // FIRST <style> block in the composed html was stripped. Not live today —
+  // every template composes exactly one <style> block (BASE in
+  // templates/emails.js) — but a latent trap the moment a second one is ever
+  // added (a per-template inline style block), which would leak raw CSS into
+  // the plain-text alternative every client without HTML rendering sees.
+  let t = html.replace(/<style>[\s\S]*?<\/style>/gi, '')
   t = t.replace(/<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
     const l = stripTags(label).trim(), h = decode(href)
     return !l || l === h ? h : `${l} (${h})`
