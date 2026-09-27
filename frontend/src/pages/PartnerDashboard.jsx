@@ -133,6 +133,16 @@ function CodeCard({ code, partnerActive, currency }) {
 // (PartnerDetail.jsx's Conversions tab) for the same underlying data.
 function ConversionRow({ conversion, currency }) {
   const isRefund = conversion.commissionAmountCents < 0 || conversion.isReversal
+  // AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard has
+  // always computed and returned grossAmountCents + commissionRate per
+  // conversion (see partners.controller.js) — specifically so a partner
+  // isn't just told what they earned, but can see what it was earned ON and
+  // at what rate. Neither was ever rendered here; a partner could only see
+  // the commission amount with no way to verify it against the sale it came
+  // from. Shown only for a real (non-reversal) row — a reversal's own
+  // "gross" is the negative of the original sale, which is confusing framed
+  // as a "sale" line rather than the refund it is.
+  const showSaleLine = !conversion.isReversal && conversion.grossAmountCents != null
   return (
     <li className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
       <div>
@@ -140,6 +150,12 @@ function ConversionRow({ conversion, currency }) {
           {new Date(conversion.createdAt).toLocaleDateString()}
           {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
         </div>
+        {showSaleLine && (
+          <div className="text-xs text-gray-400 mt-0.5">
+            {fmtCents(conversion.grossAmountCents, currency)} sale
+            {conversion.commissionRate != null ? ` · ${Math.round(conversion.commissionRate * 100)}% rate` : ''}
+          </div>
+        )}
         {conversion.isReversal && (
           <div className="text-xs text-red-600 mt-0.5">
             Refunded{conversion.reversalReason ? ` — ${conversion.reversalReason}` : ''}
@@ -190,7 +206,7 @@ export default function PartnerDashboard() {
           </div>
         ) : (
           <>
-            <div className="flex items-center justify-between mb-6 flex-wrap gap-2">
+            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
               <h1 className="text-2xl font-bold text-gray-900">
                 {data.name}'s Passthrough dashboard
               </h1>
@@ -199,6 +215,17 @@ export default function PartnerDashboard() {
                 Update payout details →
               </Link>
             </div>
+            {/* AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard
+                has always returned commissionRate — the rate applied to every
+                sale below — but this page never displayed it anywhere. A
+                partner had no way to know their own rate except by manually
+                back-computing it from a commission amount against a sale price
+                they'd have to already know. */}
+            {data.commissionRate != null && (
+              <p className="text-sm text-gray-500 mb-5">
+                You earn {Math.round(data.commissionRate * 100)}% commission on every sale through your link.
+              </p>
+            )}
 
             {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
                 this is the account-level half of that fix. Without it, a
@@ -237,11 +264,24 @@ export default function PartnerDashboard() {
                 No conversions yet — once someone buys through your link, it'll show up here.
               </p>
             ) : (
-              <ul className="flex flex-col gap-2 mb-8">
-                {data.conversions.map(cv => (
-                  <ConversionRow key={cv.id} conversion={cv} currency={data.currency} />
-                ))}
-              </ul>
+              <div className="mb-8">
+                <ul className="flex flex-col gap-2 mb-2">
+                  {data.conversions.map(cv => (
+                    <ConversionRow key={cv.id} conversion={cv} currency={data.currency} />
+                  ))}
+                </ul>
+                {/* AUDIT FIX (Section 3/4 re-audit, feature gap): this list used
+                    to receive (and render) the partner's ENTIRE conversion
+                    history with no bound — an unbounded payload and DOM for a
+                    heading that's always said "Recent," not "All." The backend
+                    now caps what it sends; this just says so honestly instead
+                    of silently looking complete when it's a partial view. */}
+                {typeof data.conversionsTotal === 'number' && data.conversionsTotal > data.conversions.length && (
+                  <p className="text-xs text-gray-400">
+                    Showing the {data.conversions.length} most recent of {data.conversionsTotal} conversions.
+                  </p>
+                )}
+              </div>
             )}
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>

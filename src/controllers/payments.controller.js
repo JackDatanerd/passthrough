@@ -354,9 +354,18 @@ async function verifyPayment(c2) {
   } catch (err) {
     console.error(`[CRITICAL] Paystack verify failed (ref ${reference}):`, err.message)
     try {
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — without
+      // it, sendOwnerAlert's 10-minute dedupe (keyed on subject alone) means
+      // a SECOND, DIFFERENT stuck payment within the same window silently
+      // gets no email at all (still logged to alert_logs, but nothing
+      // proactive). webhooks.controller.js's equivalent `alert()` helper
+      // already always threads the reference through for exactly this
+      // reason — this file was the one place that pattern wasn't applied,
+      // across all four per-payment alerts below.
       await emailService.sendOwnerAlert(c2.env,
         'Paystack verify failed — a payment may be stuck',
-        `reference: ${reference}\nerror: ${err.message}`
+        `reference: ${reference}\nerror: ${err.message}`,
+        { dedupeKey: reference }
       )
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 502)
@@ -407,11 +416,17 @@ async function verifyPayment(c2) {
   if (pResult.data?.currency !== paymentRow.currency) {
     console.error(`[CRITICAL] Currency mismatch on ${reference}: expected ${paymentRow.currency}, Paystack reports ${pResult.data?.currency}`)
     try {
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — see the
+      // matching fix above. This subject string is identical for every
+      // mismatched payment, so without a per-payment dedupeKey a second
+      // customer's currency mismatch inside the same 10-minute window would
+      // never reach the owner's inbox at all.
       await emailService.sendOwnerAlert(c2.env,
         'Payment currency mismatch — NOT fulfilled',
         `reference: ${reference}\nscanId: ${paymentRow.scan_id}\nexpected: ${paymentRow.currency}\nreceived: ${pResult.data?.currency}\n\n` +
         `Payment left PENDING for manual review — no fix was generated. A currency mismatch can never be ` +
-        `auto-accepted (see POST /api/payments/${reference}/recheck) — verify by hand in Paystack first.`
+        `auto-accepted (see POST /api/payments/${reference}/recheck) — verify by hand in Paystack first.`,
+        { dedupeKey: reference }
       )
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
@@ -429,9 +444,12 @@ async function verifyPayment(c2) {
   if (pResult.data?.amount !== paymentRow.amount_cents) {
     console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${paymentRow.amount_cents}, Paystack reports ${pResult.data?.amount}`)
     try {
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — same
+      // fix as the currency-mismatch branch just above.
       await emailService.sendOwnerAlert(c2.env,
         'Payment amount mismatch — NOT fulfilled',
-        `reference: ${reference}\nscanId: ${paymentRow.scan_id}\nexpected: ${paymentRow.amount_cents}\nreceived: ${pResult.data?.amount}\n\nPayment left PENDING for manual review — no fix was generated.`
+        `reference: ${reference}\nscanId: ${paymentRow.scan_id}\nexpected: ${paymentRow.amount_cents}\nreceived: ${pResult.data?.amount}\n\nPayment left PENDING for manual review — no fix was generated.`,
+        { dedupeKey: reference }
       )
     } catch (_) {}
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
@@ -454,11 +472,14 @@ async function verifyPayment(c2) {
   } catch (fulfillErr) {
     console.error(`[CRITICAL] verifyPayment settlement/fulfillment failed (ref ${reference}, scan ${paymentRow.scan_id}):`, fulfillErr.message)
     try {
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — same
+      // fix as the mismatch branches above; this alert fires per-payment too.
       await emailService.sendOwnerAlert(c2.env,
         'Payment succeeded but fulfillment failed — manual reconcile needed',
         `source: verifyPayment\nreference: ${reference}\nscanId: ${paymentRow.scan_id}\nfixTier: ${paymentRow.fix_tier}\nerror: ${fulfillErr.message}\n\n` +
         `Recovery is automatic: Paystack's webhook retries, the buyer's next /verify call, and the hourly sweeps all re-run settlement. ` +
-        `To force it now: POST /api/payments/${reference}/reconcile (admin-only).`
+        `To force it now: POST /api/payments/${reference}/reconcile (admin-only).`,
+        { dedupeKey: reference }
       )
     } catch (_) {}
     // The payment itself genuinely succeeded — Paystack was charged and verified

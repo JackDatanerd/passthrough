@@ -286,6 +286,18 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
 
 // ── owner notification for outcomes that need a human ──────────────────────
 // Returns true if it sent something. Never throws.
+//
+// AUDIT FIX (Section 3/4 re-audit, bug): sendOwnerAlert's 10-minute dedupe is
+// keyed on `subject` alone unless a `dedupeKey` is passed — and every title
+// below is a FIXED string shared across every payment that hits that
+// outcome. This function is called from three places (verifyPayment,
+// recheckPayment, and reconcile.service.js's automated hourly pending-sweep
+// — the sweep is the sharpest case, since one run can genuinely process
+// several different problem payments back to back), so without a
+// per-payment dedupeKey a second DUPLICATE/SCAN_MISSING/etc. payment inside
+// the same 10-minute window silently got no email at all — still logged to
+// alert_logs, but nothing proactive. paymentRow.paystack_ref is already
+// on hand here, so this needed no change to any of the three call sites.
 async function notifySettlementProblem(env, result, paymentRow, source) {
   const needs = ['DUPLICATE', 'SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED']
   if (!needs.includes(result.outcome)) return false
@@ -304,7 +316,8 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
   try {
     await emailService.sendOwnerAlert(env, titles[result.outcome],
       `source: ${source}\nreference: ${paymentRow.paystack_ref}\nscanId: ${paymentRow.scan_id}\n` +
-      `amount: ${paymentRow.amount_cents} ${paymentRow.currency}${detail}`)
+      `amount: ${paymentRow.amount_cents} ${paymentRow.currency}${detail}`,
+      { dedupeKey: paymentRow.paystack_ref })
     return true
   } catch (_) { return false }
 }

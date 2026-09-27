@@ -180,10 +180,18 @@ async function adminUpdatePartner(ctx) {
     await Promise.all([
       emailService.sendPartnerEmailChanged(ctx.env, supabase, before.email, data.name, before.email, data.email).catch(() => {}),
       emailService.sendPartnerEmailChanged(ctx.env, supabase, data.email,  data.name, before.email, data.email).catch(() => {}),
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId —
+      // sendOwnerAlert's 10-minute dedupe is keyed on subject alone unless a
+      // dedupeKey is passed, and this subject is a fixed string shared by
+      // every partner's email change. Without this, changing TWO different
+      // partners' emails within the same 10-minute window (routine admin
+      // cleanup, or the exact fraud pattern this alert exists to catch)
+      // meant only the first one actually emailed the owner.
       emailService.sendOwnerAlert(ctx.env,
         'Partner email changed',
         `partner: ${data.name}\nold email: ${before.email}\nnew email: ${data.email}\ntime: ${new Date().toISOString()}\n\n` +
-        `If this wasn't expected, verify with the partner directly before their next payout or referral-code notification.`
+        `If this wasn't expected, verify with the partner directly before their next payout or referral-code notification.`,
+        { dedupeKey: partnerId }
       ).catch(() => {})
     ])
   }
@@ -202,9 +210,15 @@ async function adminUpdatePartner(ctx) {
   if (body.status !== undefined && before?.status && before.status !== data.status) {
     await Promise.all([
       emailService.sendPartnerStatusChanged(ctx.env, supabase, data.email, data.name, data.status).catch(() => {}),
+      // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId — same
+      // fix as the email-changed alert above. The subject here varies by
+      // transition (ACTIVE -> PAUSED vs PAUSED -> ACTIVE), so two DIFFERENT
+      // partners could still collide if both underwent the identical
+      // transition in the same window; scoping to partnerId closes that too.
       emailService.sendOwnerAlert(ctx.env,
         `Partner status changed: ${before.status} -> ${data.status}`,
-        `partner: ${data.name}\nemail: ${data.email}\nold status: ${before.status}\nnew status: ${data.status}\ntime: ${new Date().toISOString()}`
+        `partner: ${data.name}\nemail: ${data.email}\nold status: ${before.status}\nnew status: ${data.status}\ntime: ${new Date().toISOString()}`,
+        { dedupeKey: partnerId }
       ).catch(() => {})
     ])
   }
@@ -599,6 +613,13 @@ async function adminRecordPayout(ctx) {
       console.error('adminRecordPayout ledger settlement:', settleErr.message)
       ledgerSettlementFailed = true
       try {
+        // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId — this
+        // subject is a fixed string shared across every partner, so without
+        // a per-partner dedupeKey, a ledger-settlement failure on a SECOND
+        // partner's payout inside the same 10-minute window (a plausible DB
+        // blip hitting an admin's whole payout-run session) would silently
+        // never reach the owner — exactly the "books may be wrong" case this
+        // alert exists for.
         await emailService.sendOwnerAlert(ctx.env,
           'Payout recorded but commission-ledger settlement failed — books may be wrong',
           `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\namount recorded: ${payoutRow.amount_cents} cents\n` +
@@ -606,7 +627,8 @@ async function adminRecordPayout(ctx) {
           `The payout row was created (real money was already sent), but marking these commission_ledger rows ` +
           `as paid failed — they still show as UNPAID and may be pulled into a future payout for this partner, ` +
           `double-counting this money. Check commission_ledger for partner_id=${partnerId} with payout_id null ` +
-          `and created before this payout, and settle them by hand if this payout already covers them.`
+          `and created before this payout, and settle them by hand if this payout already covers them.`,
+          { dedupeKey: partnerId }
         )
       } catch (_) {}
     } else if ((claimed?.length || 0) < ledgerIds.length) {
@@ -634,6 +656,10 @@ async function adminRecordPayout(ctx) {
         else if (corrected) payoutRow = corrected
       }
       try {
+        // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId — same
+        // fix as the ledger-settlement-failure alert above. Low-likelihood
+        // across different partners, but a busy multi-partner payout
+        // session is exactly when it'd matter most.
         await emailService.sendOwnerAlert(ctx.env,
           'Payout recording raced a concurrent payout for the same partner',
           `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\n` +
@@ -642,7 +668,8 @@ async function adminRecordPayout(ctx) {
           `Another payout for this partner was recorded at almost the same moment (double-click, or two admin sessions). ` +
           `This payout's amount was ${body.amountCents == null ? 'automatically corrected to' : 'left as manually entered, despite'} ` +
           `only ${claimed?.length || 0} of ${ledgerIds.length} conversion(s) actually being available to settle here — ` +
-          `review both payouts for this partner before their next payout run.`
+          `review both payouts for this partner before their next payout run.`,
+          { dedupeKey: partnerId }
         )
       } catch (_) {}
     }
@@ -722,9 +749,18 @@ async function submitPayoutDetails(ctx) {
   // neither blocks the save.
   await Promise.all([
     emailService.sendPayoutDetailsChanged(ctx.env, supabase, data.email, data.name, payoutMethod).catch(() => {}),
+    // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: token — this is the
+    // subject this whole feature was built around ("the tripwire for an
+    // unauthorized change"), and it's a fixed string for every partner.
+    // Without a per-partner dedupeKey, a compromised inbox/link submitting
+    // fraudulent changes for TWO different partners within the same
+    // 10-minute window would only ever alert the owner about the first one
+    // — the exact scenario this notification exists to catch. `token` is
+    // already in scope and unique per partner, so no extra query is needed.
     emailService.sendOwnerAlert(ctx.env,
       'Partner payout details changed',
-      `partner: ${data.name} <${data.email}>\nmethod: ${payoutMethod}\ntime: ${new Date().toISOString()}\n\nIf this wasn't expected, verify with the partner directly before their next payout.`
+      `partner: ${data.name} <${data.email}>\nmethod: ${payoutMethod}\ntime: ${new Date().toISOString()}\n\nIf this wasn't expected, verify with the partner directly before their next payout.`,
+      { dedupeKey: token }
     ).catch(() => {})
   ])
 
@@ -780,7 +816,23 @@ async function getPartnerDashboard(ctx) {
   // than one code to see which one a given conversion came through — rather
   // than exposed as a raw id with nothing to look it up against.
   const codeTextById = new Map(codes.map(row => [row.id, row.code]))
-  const conversions = ledger.map(row => ({
+  // AUDIT FIX (Section 3/4 re-audit, feature gap): this used to map and ship
+  // EVERY row in `ledger` — the partner's entire, ever-growing conversion
+  // history, no bound at all — into a plain, un-paginated list the frontend
+  // then rendered in full (PartnerDashboard.jsx's "Recent conversions"
+  // list). For a partner with a long history that's an unbounded response
+  // payload and an unbounded DOM on every dashboard load, which is exactly
+  // the cost adminListPartners' own comment shows this codebase already
+  // knows to avoid ("Deliberately does NOT ship the full commission_ledger
+  // to the browser") — just not applied here. `ledger` (the full, unsliced
+  // array) is still what stats/cyclesSummary below are computed from, since
+  // those totals are genuinely cumulative; only the per-row list a partner
+  // actually scrolls through is capped, matching what the UI already calls
+  // it — "Recent conversions," not "every conversion ever." `ledger` is
+  // already ordered newest-first (see the query's own .order() above), so
+  // this is exactly the most recent CONVERSIONS_LIST_LIMIT.
+  const CONVERSIONS_LIST_LIMIT = 50
+  const conversions = ledger.slice(0, CONVERSIONS_LIST_LIMIT).map(row => ({
     id:                    row.id,
     code:                  codeTextById.get(row.referral_code_id) || null,
     grossAmountCents:      row.gross_amount_cents,
@@ -816,6 +868,9 @@ async function getPartnerDashboard(ctx) {
     currency:       ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
     referralCodes:  codes.map(referralCodeRowToCamel),
     conversions,
+    // So the frontend can say "showing the most recent 50 of 214" instead of
+    // silently looking complete when it isn't.
+    conversionsTotal: ledger.length,
     payouts:        (partner.payouts || []).map(payoutRowToCamel),
     // Last 3 cycles (current + 2 prior) — enough for a partner to see
     // "here's what's still accruing" vs. "here's what's queued for the
