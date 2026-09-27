@@ -208,22 +208,60 @@ async function maybeCountView(c, code, row) {
 // being reported as "current until Jan 1" (the date it STARTED, not ended).
 //
 // `history` is chronological (oldest first, most-recently-superseded last),
-// so entry i's real "current until" moment is entry i+1's own `at` (the
-// next version's start = this one's end) — or, for the last historical
-// entry, `row.verified_at` (the CURRENT version's start = when it took
-// over). Both docx and pdf changes from the same regeneration round share
-// one `at` in the source data, so this is computed once per round and
-// applied to whichever of the pair actually changed.
+// so a value's real "current until" moment is the `at` of the NEXT entry
+// (in history, or the current row) whose value for that same file type
+// actually differs from it — the next version's start = this one's end.
+//
+// SECTION 7 AUDIT FIX (bug, fresh pass): this used to assume docx and pdf
+// always change together, one round producing one shared `at` for whichever
+// of the pair changed — true whenever BOTH files are regenerated in lock
+// step, but false the moment they aren't. scan.controller.js's regeneratePdf
+// backfills resume_pdf_hash on its own, with no history entry of its own, no
+// change to verified_at. The NEXT full regeneration then folds that
+// independently-arrived pdf hash into a history entry stamped with the
+// DOCX's verified_at — a timestamp that predates the pdf hash's own
+// lifecycle. Reading `history[i+1]?.at` as "when entry i's pair was
+// replaced" silently assumed entry i's own values were both still current
+// right up to that point, which breaks the moment either half of a pair
+// repeats across rounds (the repeated one wasn't actually superseded then —
+// it was superseded whenever ITS OWN value next changes, not whenever the
+// OTHER file's value happened to change). The old code additionally pushed
+// a `previous` entry once per historical ROUND rather than once per actual
+// VALUE change, so a value that persisted across N rounds produced N
+// entries, sharing a hash but each dated by the round it happened to be
+// looked at in, with `classifyFingerprint`'s `.find()` on the frontend
+// silently taking whichever the array put first — not the correct one.
+//
+// Fixed by tracking docx and pdf as two independent lineages: walk each
+// file type's own value across history (skipping consecutive repeats — a
+// value that didn't change that round is not a new "previous" entry), and
+// for each genuinely distinct past value, look FORWARD along that same
+// file type's own values (through the rest of history, then the current
+// row) for the next point where it actually differs — that point's `at` is
+// the true supersession moment, however many intervening rounds left this
+// file type's own hash untouched.
 function fingerprintsFor(row) {
   const history = Array.isArray(row.resume_hash_history) ? row.resume_hash_history : []
+  const current = { docx: row.resume_hash || null, pdf: row.resume_pdf_hash || null }
   const previous = []
-  for (let i = 0; i < history.length; i++) {
-    const h = history[i]
-    const supersededAt = history[i + 1]?.at || row.verified_at || null
-    if (h?.docx && h.docx !== row.resume_hash) previous.push({ kind: 'docx', hash: h.docx, at: supersededAt })
-    if (h?.pdf && h.pdf !== row.resume_pdf_hash) previous.push({ kind: 'pdf', hash: h.pdf, at: supersededAt })
+
+  for (const kind of ['docx', 'pdf']) {
+    let lastHash
+    for (let i = 0; i < history.length; i++) {
+      const hash = history[i]?.[kind] || null
+      if (!hash || hash === lastHash) { if (hash) lastHash = hash; continue }   // unset, or unchanged from the round before
+      lastHash = hash
+      if (hash === current[kind]) continue   // still (or again) the live value — not a "previous" fingerprint
+
+      let supersededAt = null
+      for (let j = i + 1; j <= history.length; j++) {
+        const nextHash = j < history.length ? (history[j]?.[kind] || null) : current[kind]
+        if (nextHash !== hash) { supersededAt = (j < history.length ? history[j]?.at : row.verified_at) || null; break }
+      }
+      previous.push({ kind, hash, at: supersededAt })
+    }
   }
-  return { docx: row.resume_hash || null, pdf: row.resume_pdf_hash || null, previous }
+  return { docx: current.docx, pdf: current.pdf, previous }
 }
 
 // GET /api/verify/:code[?preview=1]

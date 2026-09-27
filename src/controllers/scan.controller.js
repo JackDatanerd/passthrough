@@ -1892,11 +1892,24 @@ async function generateFix(env, supabase, scanId) {
     const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
+    // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
+    // catch block below already protects "a crash on a RETRY must not take the earlier
+    // delivery away" (priorDelivery), but this success path didn't extend that same
+    // invariant to a PDF re-render that fails without throwing. On a retry of a scan
+    // that already had a working PDF, writing `pdfKey`/`pdfHash` straight from a failed
+    // render (both null) overwrote the previously-good pointer with null, and
+    // deleteSuperseded below then deleted the still-referenced R2 object outright —
+    // silently destroying a candidate's already-delivered PDF because a LATER retry's
+    // PDF render happened to fail, even though the retry's DOCX succeeded. A failed
+    // re-render now simply leaves whatever PDF was already on the row untouched.
+    const finalPdfKey  = pdfKey || scan.resumePdfPath || null
+    const finalPdfHash = pdfKey ? pdfHash : (scan.resumePdfHash || null)
+
     const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
-      resume_pdf_path:      pdfKey,
-      resume_pdf_hash:      pdfHash,
+      resume_pdf_path:      finalPdfKey,
+      resume_pdf_hash:      finalPdfHash,
       resume_hash_history:  isPlain ? [] : nextHashHistory(scan),
       fix_ats_score:        fixAtsScore,
       // Reset every generation — this reflects THIS attempt's outcome only,
@@ -1927,7 +1940,7 @@ async function generateFix(env, supabase, scanId) {
     // This write was never checked: a failed update used to fall straight
     // through to "delivered" emails for a scan still stuck at FIX_GENERATING.
     if (deliverErr) throw deliverErr
-    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, pdfKey])
+    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
 
     if (user) {
       try {
@@ -2040,11 +2053,19 @@ async function generateBadge(env, supabase, scanId) {
     // the credential wording is always the verified one here.
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, true, version, { hash: true })
 
+    // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —
+    // a redelivered job (the catch block below already anticipates this via `priorDelivery`)
+    // whose PDF re-render fails without throwing must not overwrite an already-delivered
+    // PDF's path/hash with null, or have deleteSuperseded then delete that still-referenced
+    // R2 object.
+    const finalPdfKey  = pdfKey || scan.resumePdfPath || null
+    const finalPdfHash = pdfKey ? pdfHash : (scan.resumePdfHash || null)
+
     const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
-      resume_pdf_path:      pdfKey,
-      resume_pdf_hash:      pdfHash,
+      resume_pdf_path:      finalPdfKey,
+      resume_pdf_hash:      finalPdfHash,
       resume_hash_history:  nextHashHistory(scan),
       fix_ats_score:        scan.atsScore,
       fix_generated_at:     new Date().toISOString(),
@@ -2064,7 +2085,7 @@ async function generateBadge(env, supabase, scanId) {
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
     if (deliverErr) throw deliverErr
-    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, pdfKey])
+    await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
 
     if (user) {
       try {

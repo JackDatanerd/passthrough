@@ -1355,6 +1355,30 @@ describe('generateFix', () => {
     expect(finalUpdate.resume_pdf_hash).toBe(null)
   })
 
+  // SECTION 7 AUDIT (bug, fresh pass): a retry that already has a WORKING PDF from an
+  // earlier round must not lose it just because THIS round's re-render happens to fail —
+  // same "a retry only repoints the row on success" invariant the crash-path (priorDelivery)
+  // branch already protects, extended to a PDF failure that doesn't throw.
+  it('a PDF re-render failure on a RETRY preserves the previously-delivered PDF instead of wiping it', async () => {
+    t = setup({
+      scan: {
+        id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
+        job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 1, role_category: null,
+        resume_ats_path: 'old-ats-key', resume_pdf_path: 'old-pdf-key',
+        resume_hash: 'olddocxhash', resume_pdf_hash: 'oldpdfhash',
+      },
+      htmlResult: { success: true, data: '<html></html>' },
+      pdfImpl: async () => { throw new Error('pdf boom') },
+    })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.resume_pdf_path).toBe('old-pdf-key')
+    expect(finalUpdate.resume_pdf_hash).toBe('oldpdfhash')
+    // The still-referenced old PDF object must survive in R2 too.
+    expect(t.state.r2Deletes).not.toContain('old-pdf-key')
+  })
+
   it('the final DB write failing throws into the top-level catch (ERROR + sendFixFailed)', async () => {
     t = setup({ deliverError: new Error('save boom') })
     const res = await t.mod.generateFix(t.env, t.db, 's1')
@@ -1697,6 +1721,27 @@ describe('generateBadge', () => {
     const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
     expect(finalUpdate.resume_pdf_path).toBe(null)
     expect(finalUpdate.resume_pdf_hash).toBe(null)
+  })
+
+  // SECTION 7 AUDIT (bug, fresh pass): same class of fix as generateFix — a redelivered
+  // job on top of an already-delivered badge must not lose its working PDF just because
+  // this round's re-render fails.
+  it('a PDF re-render failure on an already-delivered scan preserves the previous PDF instead of wiping it', async () => {
+    t = setup({
+      scan: {
+        id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
+        ats_score: 85, role_category: null,
+        resume_ats_path: 'old-ats-key', resume_pdf_path: 'old-pdf-key',
+        resume_hash: 'olddocxhash', resume_pdf_hash: 'oldpdfhash',
+      },
+      htmlResult: { success: true, data: '<html></html>' },
+      pdfImpl: async () => { throw new Error('pdf boom') },
+    })
+    const res = await t.mod.generateBadge(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.resume_pdf_path).toBe('old-pdf-key')
+    expect(finalUpdate.resume_pdf_hash).toBe('oldpdfhash')
   })
 
   it('the final DB write failing throws into the top-level catch (ERROR + sendFixFailed + owner alert)', async () => {

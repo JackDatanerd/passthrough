@@ -201,6 +201,41 @@ describe('fingerprintsFor — "current until" date on a superseded version (bug 
     await t.drain()
     expect(res.data.data.fingerprints.previous.find(p => p.hash === oldDocx).at).toBeNull()
   })
+
+  // SECTION 7 AUDIT FIX (bug, fresh pass): a history round doesn't always change BOTH
+  // docx and pdf together — scan.controller.js's regeneratePdf can backfill a pdf hash
+  // independently of any docx regeneration, so a later round's history entry can pair an
+  // already-superseded docx with a pdf hash that's still current. The old code treated
+  // every (docx, pdf) pair as one shared-timestamp event and pushed a `previous` entry
+  // for whichever half differed from the CURRENT row — so a pdf hash that repeats across
+  // two history rounds (only the docx changed in between) got reported TWICE, once with
+  // the wrong "current until" date (the round where only the docx changed, not this pdf).
+  it('a pdf hash unchanged across two rounds (only the docx changed) is reported ONCE, dated by when the pdf itself actually changed', async () => {
+    const pdfHash = await sha256Bytes(new TextEncoder().encode('stable pdf'))
+    const docx1 = await sha256Bytes(new TextEncoder().encode('docx round 1'))
+    const docx2 = await sha256Bytes(new TextEncoder().encode('docx round 2'))
+    const at1 = '2026-01-01T00:00:00.000Z'
+    const at2 = '2026-02-01T00:00:00.000Z'   // only the docx changed here — this pdf hash carried over unchanged
+    const atCurrent = '2026-03-01T00:00:00.000Z'   // the pdf finally changes here
+    const row = await seedRow({
+      verified_at: atCurrent,
+      resume_hash_history: [
+        { docx: docx1, pdf: pdfHash, at: at1 },
+        { docx: docx2, pdf: pdfHash, at: at2 },
+      ],
+    })
+    t = harness(row)
+    const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES, [row.resume_pdf_path]: PDF_BYTES } })
+    const res = await t.mod.getVerification(c)
+    await t.drain()
+    const prevs = res.data.data.fingerprints.previous
+    const pdfEntries = prevs.filter(p => p.hash === pdfHash)
+    expect(pdfEntries).toHaveLength(1)                // not twice, and not once per round it happened to appear in
+    expect(pdfEntries[0].at).toBe(atCurrent)           // it stayed current all the way through round 2, only replaced now
+    // the docx side is unaffected by this fix — still one entry per round, each dated by the next round's start
+    expect(prevs.find(p => p.hash === docx1).at).toBe(at2)
+    expect(prevs.find(p => p.hash === docx2).at).toBe(atCurrent)
+  })
 })
 
 describe('getBadge — integrity-gated "Verified" claim (bug fix)', () => {
