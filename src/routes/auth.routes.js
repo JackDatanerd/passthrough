@@ -29,6 +29,11 @@ router.post('/sessions/revoke-others', auth, c.signOutOtherSessions)
 // credential-adjacent bucket with /password and /account since it also
 // requires the current password; /name doesn't, so it stays on the
 // general per-route rate limit only.
+// FEATURE GAP CLOSED (Auth section, second independent pass): companion route
+// to safeUser()'s termsCurrent flag — no password needed (see the
+// controller's own comment), so this stays on the general per-route limit
+// only, same posture as /name.
+router.post('/accept-terms',        auth,          c.acceptTerms)
 router.patch('/name',               auth,          c.updateName)
 router.patch('/email',              auth, rl.auth,  c.updateEmail)
 // Public, token-gated (same posture as /verify-email) — the confirmation

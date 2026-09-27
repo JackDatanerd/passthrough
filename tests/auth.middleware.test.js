@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 import { sign } from '../src/lib/jwt.js'
+import { TERMS_VERSION } from '../src/config/constants.js'
 
 const SECRET = 'test-jwt-secret'
 
@@ -66,6 +67,29 @@ describe('auth middleware', () => {
     expect(eqValue(ctx.db.calls[0], 'id')).toBe('u1')
     expect(store.user.email).toBe('a@b.co')
     expect(store.user.passwordHash).toBeUndefined()
+  })
+
+  // FEATURE GAP CLOSED (Auth section, second independent pass): termsCurrent
+  // has to be computed here (and identically in optionalAuth.js), not just in
+  // auth.controller.js's safeUser() — getMe() reads c.get('user') straight
+  // from this middleware, it never goes through safeUser().
+  it('termsCurrent is true for an account with no terms_version on record (grandfathered)', async () => {
+    ctx = setup(() => ({ data: userRow({ terms_version: null }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 60)
+    const { store } = await run(ctx.auth, { header: `Bearer ${token}` })
+    expect(store.user.termsCurrent).toBe(true)
+  })
+  it('termsCurrent is false for an account that accepted a since-superseded version', async () => {
+    ctx = setup(() => ({ data: userRow({ terms_version: '2020-01' }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 60)
+    const { store } = await run(ctx.auth, { header: `Bearer ${token}` })
+    expect(store.user.termsCurrent).toBe(false)
+  })
+  it('termsCurrent is true for an account on the current terms version', async () => {
+    ctx = setup(() => ({ data: userRow({ terms_version: TERMS_VERSION }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 60)
+    const { store } = await run(ctx.auth, { header: `Bearer ${token}` })
+    expect(store.user.termsCurrent).toBe(true)
   })
 
   it('SESSION_INVALID when tokenVersion no longer matches (password changed elsewhere)', async () => {

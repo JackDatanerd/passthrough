@@ -15,6 +15,7 @@
 const jwtLib = require('../lib/jwt')
 const { getSupabase } = require('../config/supabase')
 const { userRowToCamel } = require('../lib/mappers')
+const constants = require('../config/constants')
 
 async function auth(c, next) {
   // AUDIT FIX (bug — redundant double auth check): optionalAuth (mounted
@@ -79,7 +80,14 @@ async function auth(c, next) {
     return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
 
   const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
-  c.set('user', safe)
+  // AUDIT FIX (feature gap — Auth section, second independent pass): getMe()
+  // reads c.get('user') straight from here, NOT through auth.controller.js's
+  // own safeUser() — so termsCurrent has to be computed at the same source
+  // those two strips share, or getMe (the one place the frontend actually
+  // polls on session restore) would never see it even though register/login/
+  // changePassword/etc. would. See safeUser()'s own comment for what this
+  // flag means and why null is treated as current.
+  c.set('user', { ...safe, termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION })
   // The JWT's `exp` from THIS request's already-verified token, stashed for
   // getMe() to use for silent session renewal (added upstream; kept here).
   c.set('tokenExp', decoded.exp)

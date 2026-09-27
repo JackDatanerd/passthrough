@@ -570,7 +570,27 @@ async function checkAccountLockout(env, email) {
 // with access to the account's name/email can fire a one-time alert rather
 // than one per failed attempt (see sendAccountLockoutAlert in
 // email.service.js, wired up in auth.controller.js).
-async function recordLoginFailure(env, email, ip) {
+//
+// AUDIT FIX (bug — Auth section, second independent pass): LOCKOUT_MIN_DISTINCT_IPS
+// exists to stop a STRANGER from freely locking a victim out of login() with a
+// handful of requests from one IP — a real threat there, since login() is
+// fully unauthenticated and anyone can hit it. changePassword/updateEmail/
+// deleteAccount reuse this exact function for the same "don't let a stolen
+// JWT be used as a password-guessing oracle" reason, but for THOSE three the
+// distinct-IP bar actively works against the goal: the caller already holds a
+// valid session (XSS, a shared/left-open device, a leaked token) and has no
+// need to spread guesses across IPs to avoid a false-lockout concern that only
+// ever applied to login()'s unauthenticated attacker. A one-IP attacker
+// against those three endpoints could never accumulate the 2nd distinct IP
+// needed to trip the lock, leaving them bounded only by rl.auth's generic
+// 10-per-15-min-per-IP bucket — which paces but never actually stops or
+// alerts anyone. `opts.requireDistinctIps: false` (passed by those three call
+// sites only; login() keeps the default) drops the distinct-IP bar to 1 for
+// this call, so a single-IP attacker against an authenticated password check
+// still gets locked out — and the account owner still gets the lockout email
+// — after LOCKOUT_MAX_CONSECUTIVE_FAILURES, exactly the protection the
+// comments already claimed these three endpoints had.
+async function recordLoginFailure(env, email, ip, opts = {}) {
   try {
     const kv = env.RATE_LIMIT_KV
     const key = lockoutKey(email)
@@ -614,7 +634,8 @@ async function recordLoginFailure(env, email, ip) {
     if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
     if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
 
-    const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= LOCKOUT_MIN_DISTINCT_IPS)
+    const minDistinctIps = opts.requireDistinctIps === false ? 1 : LOCKOUT_MIN_DISTINCT_IPS
+    const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= minDistinctIps)
       ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
       : null
 

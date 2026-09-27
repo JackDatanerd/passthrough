@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import bcrypt from 'bcryptjs'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
+import { TERMS_VERSION } from '../src/config/constants.js'
 
 // AUDIT FIX (Section 12): auth.controller.js is 550 lines — the single
 // largest piece of the app's actual security surface (login, registration,
@@ -32,7 +33,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
+  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -79,7 +80,18 @@ async function setup(opts = {}) {
       if (q.maybe) return { data: 'claimScanResult' in opts ? opts.claimScanResult : null, error: null }
       return { data: opts.scans ?? [], error: null }
     }
-    if (q.table === 'scans' && q.op === 'update') { state.updates.push({ table: 'scans', patch: q.patch }); return { error: opts.scanUpdateError || null } }
+    if (q.table === 'scans' && q.op === 'update') {
+      state.updates.push({ table: 'scans', patch: q.patch })
+      if (opts.scanUpdateError) return { data: null, error: opts.scanUpdateError }
+      // AUDIT FIX (Auth section, second independent pass): claimScan's update is
+      // now a compare-and-swap (.is('user_id', null)) that selects the claimed
+      // row back, so it can tell a real write apart from "someone else claimed
+      // it first". opts.scanClaimRaceLost simulates the latter — the WHERE
+      // clause matched zero rows, so a real Supabase update-with-select
+      // returns null, not an error.
+      if (opts.scanClaimRaceLost) return { data: null, error: null }
+      return { data: { id: eqValue(q, 'id') }, error: null }
+    }
     // AUDIT FIX (Auth section audit, fresh pass — deleteAccount email_logs
     // purge race): pushed onto the same state.callOrder array the
     // sendAccountDeleted stub below pushes onto, so a test can assert the
@@ -136,10 +148,13 @@ async function setup(opts = {}) {
       // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now takes
       // the requester's IP as a third argument — captured here (alongside
       // the pre-existing state.failures) so tests can assert it's actually
-      // being threaded through from clientIp(c), not silently dropped.
-      // Also now returns { justLocked }, defaulting to false — tests that
+      // being threaded through from clientIp(c), not silently dropped.      // Also now returns { justLocked }, defaulting to false — tests that
       // care about the one-time lockout-alert email set opts.justLocked.
-      recordLoginFailure:  async (env, email, ip) => { state.failures.push(email); state.failureIps.push(ip); return { justLocked: !!opts.justLocked } },
+      // AUDIT FIX (bug — Auth section, second independent pass): captures the
+      // 4th arg (opts, e.g. { requireDistinctIps: false }) so tests can
+      // assert changePassword/updateEmail/deleteAccount actually pass it
+      // through — see rateLimiter.js's recordLoginFailure comment for why.
+      recordLoginFailure:  async (env, email, ip, failOpts) => { state.failures.push(email); state.failureIps.push(ip); state.failureOpts.push(failOpts); return { justLocked: !!opts.justLocked } },
       recordLoginSuccess:  async (env, email) => { state.successes.push(email) },
       LOCKOUT_MINUTES: 15,
     },
@@ -302,6 +317,16 @@ describe('login', () => {
       headers: { 'cf-connecting-ip': '203.0.113.7' }
     }))
     expect(t.state.failureIps).toEqual(['203.0.113.7'])
+  })
+
+  // AUDIT FIX (bug — Auth section, second independent pass): login() is the
+  // UNAUTHENTICATED endpoint the distinct-IP requirement was built for — it
+  // must keep the default (no opts override), unlike changePassword/
+  // updateEmail/deleteAccount below.
+  it('login does NOT override requireDistinctIps (keeps the default distinct-IP bar)', async () => {
+    t = await setup()
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'nope' } }))
+    expect(t.state.failureOpts).toEqual([undefined])
   })
 
   // AUDIT FIX being locked in: BANNED is only revealed AFTER the password
@@ -697,6 +722,16 @@ describe('changePassword', () => {
     const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
     expect(res.status).toBe(400)
   })
+  // AUDIT FIX (bug — Auth section, second independent pass): unlike login(),
+  // this is an authenticated endpoint — the caller already holds a valid
+  // session, so the distinct-IP bar login() needs (to stop a STRANGER
+  // grief-locking a victim) would just let a single-IP JWT holder grind on
+  // the real password forever with the account lock never engaging.
+  it('records a wrong-current-password failure with requireDistinctIps: false', async () => {
+    t = await setup()
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'longenough' } }))
+    expect(t.state.failureOpts).toEqual([{ requireDistinctIps: false }])
+  })
   it('refuses a "new" password identical to the current one, or equal to the account\'s email', async () => {
     t = await setup()
     let res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'correct-password' } }))
@@ -803,6 +838,13 @@ describe('updateEmail', () => {
     t = await setup()
     const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
     expect(res.status).toBe(400)
+  })
+  // AUDIT FIX (bug — Auth section, second independent pass): same reasoning
+  // as changePassword's equivalent test above.
+  it('records a wrong-password failure with requireDistinctIps: false', async () => {
+    t = await setup()
+    await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'wrong' } }))
+    expect(t.state.failureOpts).toEqual([{ requireDistinctIps: false }])
   })
   it('400s when the "new" email is unchanged', async () => {
     t = await setup()
@@ -953,6 +995,13 @@ describe('deleteAccount', () => {
     expect(t.state.updates).toHaveLength(0)
     expect(t.state.rpcCalls).toHaveLength(0)
   })
+  // AUDIT FIX (bug — Auth section, second independent pass): same reasoning
+  // as changePassword/updateEmail's equivalent tests above.
+  it('records a wrong-password failure with requireDistinctIps: false', async () => {
+    t = await setup()
+    await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
+    expect(t.state.failureOpts).toEqual([{ requireDistinctIps: false }])
+  })
   // AUDIT FIX: stale since migration 0022 — this used to assert on two
   // separate app-level `.update()` calls (scans, then users) that deleteAccount
   // has not issued since scrub_account_data (see that migration's comment)
@@ -1025,6 +1074,19 @@ describe('claimScan', () => {
     expect(res.body.data.scanId).toBe('s1')
     const update = t.state.updates.find(u => u.table === 'scans')
     expect(update.patch).toEqual({ user_id: 'u1', anon_token: null, anon_expires_at: null, contact_name: null, contact_email: null })
+  })
+  // AUDIT FIX (bug — Auth section, second independent pass): the initial
+  // SELECT checks user_id IS NULL, but a second account could pass that same
+  // SELECT (the anonToken link is mailed out and can be forwarded/leaked)
+  // before either UPDATE commits. The UPDATE now re-asserts user_id IS NULL
+  // (a compare-and-swap) instead of matching on id alone, so only the first
+  // writer can ever actually claim the scan — this simulates the loser's
+  // WHERE clause matching zero rows.
+  it('404s honestly instead of reporting success when a concurrent claim wins the race', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS' }, scanClaimRaceLost: true })
+    const res = await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
+    expect(res.status).toBe(404)
+    expect(res.body.success).toBe(false)
   })
 })
 
@@ -1147,6 +1209,49 @@ describe('deleteAccount — work in flight', () => {
     const since = q.filters.find(f => f[0] === 'gt' && f[1] === 'updated_at')[2]
     expect(Date.now() - Date.parse(since)).toBeGreaterThan(59 * 60 * 1000)
     expect(Date.now() - Date.parse(since)).toBeLessThan(61 * 60 * 1000)
+  })
+})
+
+// FEATURE GAP CLOSED (Auth section, second independent pass): terms_version
+// was recorded at signup (migration 0038) and read back by the mapper, but
+// nothing ever compared it against the current TERMS_VERSION — the
+// versioning existed but had no consumer, so a future Terms/Privacy change
+// would leave every existing account silently running on stale consent
+// forever. acceptTerms + safeUser's termsCurrent flag closes that.
+describe('acceptTerms', () => {
+  it('bumps terms_accepted_at and terms_version to the current one, and returns termsCurrent: true', async () => {
+    t = await setup({ userRow: baseUserRow({ terms_version: '2020-01', terms_accepted_at: '2020-01-01T00:00:00Z' }) })
+    const res = await t.mod.acceptTerms(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.user.termsVersion).toBe(TERMS_VERSION)
+    expect(res.body.data.user.termsCurrent).toBe(true)
+    const update = t.state.updates.find(u => u.table === 'users')
+    expect(update.patch.terms_version).toBe(TERMS_VERSION)
+    expect(typeof update.patch.terms_accepted_at).toBe('string')
+  })
+  it('takes no body — there is only ever one thing to accept (the current version)', async () => {
+    t = await setup({ userRow: baseUserRow({ terms_version: null }) })
+    const res = await t.mod.acceptTerms(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.user.termsVersion).toBe(TERMS_VERSION)
+  })
+})
+
+describe('safeUser — termsCurrent (register/login)', () => {
+  it('register: a brand-new account is on the current version, so termsCurrent is true', async () => {
+    t = await setup({ insertedRow: baseUserRow({ id: 'new1', password_hash: 'x', terms_version: TERMS_VERSION, terms_accepted_at: NOW() }) })
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'ada@example.com', password: 'longenough', acceptTerms: true } }))
+    expect(res.body.data.user.termsCurrent).toBe(true)
+  })
+  it('login: an account that accepted a since-superseded version reports termsCurrent: false', async () => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), terms_version: '2020-01' }) })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(res.body.data.user.termsCurrent).toBe(false)
+  })
+  it('login: an account with no terms_version on record (pre-dates the checkbox) is grandfathered as current', async () => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), terms_version: null }) })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(res.body.data.user.termsCurrent).toBe(true)
   })
 })
 

@@ -127,6 +127,18 @@ async function issueJWT(env, user) {
   return jwtLib.sign({ userId: user.id, tokenVersion: user.tokenVersion }, env.JWT_SECRET, expiresIn)
 }
 
+// FEATURE GAP CLOSED (Auth section, second independent pass): terms_accepted_at
+// /terms_version (migration 0038) were written at signup and read back by the
+// mapper, but nothing anywhere ever compared a user's accepted version against
+// the CURRENT constants.TERMS_VERSION — the versioning existed but had no
+// point, since a future Terms/Privacy change would silently leave every
+// existing account running on stale consent forever, with no way for the app
+// to even notice. `termsCurrent` gives the frontend something to react to
+// without needing its own copy of TERMS_VERSION. `null` (an account that
+// signed up before the checkbox existed) is deliberately treated as current,
+// not stale — 0038's own comment already decided those accounts shouldn't be
+// retroactively blocked by a check that didn't exist when they signed up;
+// this only flags accounts that DID accept a version, once a newer one ships.
 function safeUser(user) {
   const {
     passwordHash, paystackAuthCode, paystackCustomerCode,
@@ -139,7 +151,10 @@ function safeUser(user) {
     lastLoginAlertAt,
     savedProfile, ...safe
   } = user
-  return safe
+  return {
+    ...safe,
+    termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION
+  }
 }
 
 function expiry(hours) {
@@ -712,7 +727,11 @@ async function changePassword(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
-    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    // requireDistinctIps: false — see recordLoginFailure's own comment. This
+    // endpoint is authenticated (a stolen JWT, not a stranger, is the threat),
+    // so the distinct-IP bar login() needs would just let a single-IP
+    // attacker guess forever without ever tripping the lock.
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c), { requireDistinctIps: false })
     maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Current password incorrect.' }, 400)
   }
@@ -800,6 +819,27 @@ async function signOutOtherSessions(c) {
   return c.json({ success: true, message: 'Other sessions signed out.', data: { token } })
 }
 
+// POST /api/auth/accept-terms
+// FEATURE GAP CLOSED (Auth section, second independent pass): the write side
+// of safeUser()'s new termsCurrent flag above — once a signed-in account is
+// told its accepted Terms/Privacy version is stale, this is what actually
+// records fresh acceptance. Deliberately no request body: there is only ever
+// one thing to accept — whatever constants.TERMS_VERSION currently is — so
+// there's nothing for a caller to get wrong or spoof by passing their own
+// version string. No password confirmation needed, same posture as
+// updateName: this doesn't change anything security- or identity-adjacent.
+async function acceptTerms(c) {
+  const sessionUser = c.get('user')
+  const supabase = getSupabase(c.env)
+  const { data: row, error } = await supabase.from('users').update({
+    terms_accepted_at: new Date().toISOString(),
+    terms_version:     constants.TERMS_VERSION
+  }).eq('id', sessionUser.id).select().single()
+  if (error) throw error
+
+  return c.json({ success: true, message: 'Terms accepted.', data: { user: safeUser(userRowToCamel(row)) } })
+}
+
 // PATCH /api/auth/name
 // AUDIT FIX (Section 6): Settings displayed Name as static text with no way
 // to ever change it — no endpoint existed anywhere in the app. Low-risk
@@ -867,7 +907,9 @@ async function updateEmail(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    // requireDistinctIps: false — see recordLoginFailure's own comment; same
+    // reasoning as changePassword's identical call above.
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c), { requireDistinctIps: false })
     maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
@@ -1018,7 +1060,9 @@ async function deleteAccount(c) {
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
-    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c))
+    // requireDistinctIps: false — see recordLoginFailure's own comment; same
+    // reasoning as changePassword/updateEmail's identical calls above.
+    const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c), { requireDistinctIps: false })
     maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Incorrect password.' }, 400)
   }
@@ -1159,16 +1203,30 @@ async function claimScan(c) {
   // submitter could be emailed a way back to their scan. Once the scan
   // belongs to an account that purpose is served by the account itself, so
   // the extra copy of their personal details is dropped rather than kept.
-  must(await supabase.from('scans').update({
+  //
+  // AUDIT FIX (bug — Auth section, second independent pass): the SELECT above
+  // checks user_id IS NULL, but this UPDATE used to filter on id alone — the
+  // anonToken is mailed out as a magic link (sendAnonScanResult) and can be
+  // forwarded or intercepted, so two different accounts racing to claim it
+  // could both pass the SELECT before either UPDATE committed, and the second
+  // write would silently steal the scan out from under the first with no
+  // error to either caller (Supabase doesn't report "0 rows matched" on an
+  // update with no .select()). Re-asserting user_id IS NULL here makes the
+  // claim an atomic compare-and-swap: only the first writer can ever succeed,
+  // and .select().maybeSingle() lets the loser find out honestly instead of
+  // getting back a false "success".
+  const { data: claimed, error: claimErr } = await supabase.from('scans').update({
     user_id: user.id, anon_token: null, anon_expires_at: null,
     contact_name: null, contact_email: null
-  }).eq('id', scan.id), 'claim scan')
+  }).eq('id', scan.id).is('user_id', null).select('id').maybeSingle()
+  if (claimErr) throw claimErr
+  if (!claimed) return c.json({ success: false, message: 'Scan not found or expired.' }, 404)
 
-  return c.json({ success: true, data: { scanId: scan.id } })
+  return c.json({ success: true, data: { scanId: claimed.id } })
 }
 
 module.exports = {
   register, login, getMe, forgotPassword, resetPassword, checkResetToken,
   verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
-  confirmEmailChange, deleteAccount, claimScan
+  confirmEmailChange, deleteAccount, claimScan, acceptTerms
 }

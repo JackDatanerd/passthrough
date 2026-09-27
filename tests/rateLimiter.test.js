@@ -121,6 +121,27 @@ describe('account lockout — checkAccountLockout / recordLoginFailure / recordL
     expect(status.locked).toBe(false)
   })
 
+  // AUDIT FIX (bug — Auth section, second independent pass): the distinct-IP
+  // requirement exists to stop a STRANGER from freely locking a login()
+  // victim out from one IP. changePassword/updateEmail/deleteAccount reuse
+  // this same function, but their caller already holds a valid session — the
+  // distinct-IP bar there only helps an attacker who already has a stolen
+  // JWT grind forever from one IP with the account-level lock never firing.
+  // requireDistinctIps: false (what those three now pass) drops the bar to 1.
+  it('with requireDistinctIps: false, DOES lock after 8 failures from a single IP', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    let last
+    for (let i = 0; i < 8; i++) last = await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9', { requireDistinctIps: false })
+    expect(last.justLocked).toBe(true)
+    const status = await rl.checkAccountLockout(env, 'victim@example.com')
+    expect(status.locked).toBe(true)
+  })
+  it('requireDistinctIps: false still requires the full failure COUNT, just not distinct IPs', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 7; i++) await rl.recordLoginFailure(env, 'victim@example.com', '9.9.9.9', { requireDistinctIps: false })
+    expect((await rl.checkAccountLockout(env, 'victim@example.com')).locked).toBe(false)
+  })
+
   // AUDIT FIX (Auth/Scan round): distinctness is tallied per limiter bucket, so
   // two addresses inside ONE IPv6 /64 (one machine) are still one client.
   it('does NOT lock when the "distinct" IPs are all inside one IPv6 /64 (one client)', async () => {

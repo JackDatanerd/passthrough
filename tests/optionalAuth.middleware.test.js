@@ -82,6 +82,22 @@ describe('optionalAuth', () => {
       expect(store.user).not.toHaveProperty(field)
   })
 
+  // FEATURE GAP CLOSED (Auth section, second independent pass): must match
+  // auth.js's own version of this exactly — auth.js's fast path just reuses
+  // whatever this middleware already set on c.get('user').
+  it('sets termsCurrent on a valid token, grandfathering a null terms_version', async () => {
+    ctx = setup(() => ({ data: userRow({ terms_version: null }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.user.termsCurrent).toBe(true)
+  })
+  it('sets termsCurrent: false for a stale accepted terms version', async () => {
+    ctx = setup(() => ({ data: userRow({ terms_version: '2020-01' }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.user.termsCurrent).toBe(false)
+  })
+
   it('also stashes tokenExp on success, for auth.js to reuse', async () => {
     ctx = setup(() => ({ data: userRow() }))
     const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)

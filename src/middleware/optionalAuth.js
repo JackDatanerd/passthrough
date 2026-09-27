@@ -17,6 +17,7 @@
 const jwtLib = require('../lib/jwt')
 const { getSupabase } = require('../config/supabase')
 const { userRowToCamel } = require('../lib/mappers')
+const constants = require('../config/constants')
 
 async function optionalAuth(c, next) {
   const header = c.req.header('Authorization')
@@ -35,7 +36,12 @@ async function optionalAuth(c, next) {
         c.set('authError', 'inactive')
       } else {
         const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
-        c.set('user', safe)
+        // AUDIT FIX (feature gap — Auth section, second independent pass): kept
+        // identical to auth.js's own strip — see its comment. auth.js's fast
+        // path (c.get('user') already set) just reuses whatever this set, so
+        // the two must compute termsCurrent the same way or which path a
+        // request happened to take would change what the frontend sees.
+        c.set('user', { ...safe, termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION })
         // AUDIT FIX (bug — redundant double auth check): middleware/auth.js
         // runs on every protected route AFTER this one and used to redo the
         // exact same JWT verify + full user-row fetch from scratch. Stashing
