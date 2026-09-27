@@ -46,6 +46,7 @@ const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
 const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
+const { purgeBadgeCache } = require('../lib/badgeCache')
 const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
@@ -1538,6 +1539,13 @@ async function regeneratePdf(ctx) {
     await deleteSuperseded(ctx.env, [pdfKey], [])
     return ctx.json({ success: true, data: { alreadyAvailable: true } })
   }
+  // SECTION 7 AUDIT FIX (bug, fresh pass): this backfill flips a below-threshold
+  // badge's integrity read from "partial" to "verified" (checkIntegrity treats a
+  // resume_pdf_path with no hash as partial, one with a hash as verified) but
+  // purgeBadgeCache was only ever called from revoke/restore/tombstone — never
+  // from here, or from generateFix/generateBadge below. A previously-cached
+  // badge could keep showing the stale integrity label for up to BADGE_TTL.
+  if (scan.verificationCode) await purgeBadgeCache(scan.verificationCode)
   return ctx.json({ success: true, data: { alreadyAvailable: false } })
 }
 
@@ -1941,6 +1949,14 @@ async function generateFix(env, supabase, scanId) {
     // through to "delivered" emails for a scan still stuck at FIX_GENERATING.
     if (deliverErr) throw deliverErr
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
+    // SECTION 7 AUDIT FIX (bug, fresh pass): a RETRY round can change fix_ats_score,
+    // resume_hash and resume_pdf_hash on an EXISTING verification_code (first
+    // delivery never had a cached badge yet, so this is a harmless no-op there).
+    // purgeBadgeCache used to only be called from revoke/restore/tombstone — a
+    // retry that pushes a failing score over the badge threshold (or back under
+    // it) could leave a stale badge cached for up to BADGE_TTL after the page
+    // itself already shows the new result.
+    if (code) await purgeBadgeCache(code)
 
     if (user) {
       try {
@@ -2086,6 +2102,10 @@ async function generateBadge(env, supabase, scanId) {
     }).eq('id', scanId)
     if (deliverErr) throw deliverErr
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
+    // SECTION 7 AUDIT FIX (bug, fresh pass): same reasoning as generateFix — a
+    // redelivery through this path can rewrite resume_hash/resume_pdf_hash on an
+    // EXISTING verification_code with no cache purge to match.
+    if (code) await purgeBadgeCache(code)
 
     if (user) {
       try {

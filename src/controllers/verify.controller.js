@@ -457,7 +457,14 @@ async function getBadge(c) {
   }
 
   const ip = clientIp(c)
-  if (!isTrustedPreview(c) && !(await rateLimiter.hitQuota(c.env, `rl:verifybadge:${rateKeyIp(ip, 48)}`, BADGE_IP_QUOTA, 15 * 60)))
+  // SECTION 7 AUDIT FIX (bug, fresh pass): this was the one rate/quota check in the
+  // whole verify surface that never checked isBypassed — isVerifyMissLimited (this
+  // same function's own miss counter, a few lines below) checks it, and so does
+  // every rl.* middleware limiter. A RATE_LIMIT_BYPASS_IPS-listed testing IP could
+  // still get 429'd fetching badges even though every other verify endpoint fully
+  // ignores the limiter for it.
+  if (!isTrustedPreview(c) && !rateLimiter.isBypassed(c.env, ip) &&
+      !(await rateLimiter.hitQuota(c.env, `rl:verifybadge:${rateKeyIp(ip, 48)}`, BADGE_IP_QUOTA, 15 * 60)))
     return c.json({ success: false, message: 'Too many requests.' }, 429, { 'Retry-After': '300' })
 
   const loaded = await loadByCode(c, { scope: 'badge', columns:

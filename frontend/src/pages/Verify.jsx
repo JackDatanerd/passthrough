@@ -273,6 +273,14 @@ export default function Verify() {
         {notFound && (
           <div className="text-center py-20">
             <p className="text-gray-600">Verification not found.</p>
+            {/* SECTION 7 AUDIT FIX (feature gap, fresh pass): this was the only failure
+                state on the page with no "Report a problem" link — removed/revoked/the
+                fingerprint mismatch panel all got one in earlier rounds, but the most
+                common failure (a mistyped code, or a genuinely fake link) had no path
+                to tell anyone. */}
+            <p className="text-xs text-gray-400 mt-4">
+              <a href={reportHref(code, 'not found')} className="underline underline-offset-2 hover:text-gray-600">Report a problem</a>
+            </p>
           </div>
         )}
 

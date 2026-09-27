@@ -1,6 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
+import { badgeCacheKeyForCode } from '../src/lib/badgeCache.js'
 
 // SECTION 12 AUDIT: scan.controller.js (1,772 lines, 22 functions) had ZERO
 // test coverage — the single largest gap in the backend, and the file that
@@ -1240,6 +1241,44 @@ describe('generateFix', () => {
     expect(t.rewriteCalls[0][1]).toEqual({ name: 'Previously Rewritten' })
   })
 
+  // SECTION 7 AUDIT FIX (bug, fresh pass): a retry round can change fix_ats_score,
+  // resume_hash and resume_pdf_hash on an EXISTING verification_code — a previously
+  // cached badge could keep serving the stale score/status. purgeBadgeCache was only
+  // ever wired to revoke/restore/tombstone before this.
+  describe('purges the badge cache on delivery (Section 7 audit fix)', () => {
+    function fakeCaches() {
+      const store = new Map()
+      return { default: { async delete(req) { store.delete(req.url); return true } } }
+    }
+    const realCaches = globalThis.caches
+    afterEach(() => { if (realCaches === undefined) delete globalThis.caches; else globalThis.caches = realCaches })
+
+    it('a retry that reuses an EXISTING code purges that code\'s cached badge', async () => {
+      globalThis.caches = fakeCaches()
+      let deleted = null
+      globalThis.caches.default.delete = async req => { deleted = req.url }
+      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
+    })
+    it('a FIRST delivery purges its own brand-new code too — harmless, nothing was ever cached under it', async () => {
+      globalThis.caches = fakeCaches()
+      let deleted = null
+      globalThis.caches.default.delete = async req => { deleted = req.url }
+      t = setup()   // default scan has no verification_code — badge.service stub mints 'NEWCODE1'
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(deleted).toBe(badgeCacheKeyForCode('NEWCODE1').url)
+    })
+    it('FIX_PLAIN never purges (no credential, no code)', async () => {
+      globalThis.caches = fakeCaches()
+      let calls = 0
+      globalThis.caches.default.delete = async () => { calls++ }
+      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX_PLAIN', fix_retry_count: 0 } })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(calls).toBe(0)
+    })
+  })
+
   it('FIX_PLAIN never generates a verification code or URL', async () => {
     t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX_PLAIN', fix_retry_count: 0 } })
     await t.mod.generateFix(t.env, t.db, 's1')
@@ -1545,6 +1584,43 @@ describe('regeneratePdf', () => {
     expect(t.state.updateFilters[0]).toContainEqual(['is', 'resume_pdf_path', null])
     expect(Object.keys(t.state.updates[0]).sort()).toEqual(['resume_pdf_hash', 'resume_pdf_path'])   // touches nothing else
   })
+  // SECTION 7 AUDIT FIX (bug, fresh pass): this backfill flips checkIntegrity's read from
+  // "partial" (a resume_pdf_path with no hash) to "verified" (one with a hash) — a cached
+  // badge showing the stale "partial"/amber state used to sit for up to BADGE_TTL with
+  // nothing invalidating it. Confirms the fix without re-deriving checkIntegrity's own logic.
+  describe('purges the badge cache on a successful attach (Section 7 audit fix)', () => {
+    function fakeCaches() {
+      const store = new Map()
+      return { default: { async delete(req) { store.delete(req.url); return true } } }
+    }
+    const realCaches = globalThis.caches
+    afterEach(() => { if (realCaches === undefined) delete globalThis.caches; else globalThis.caches = realCaches })
+
+    it('purges the code that just got its PDF hash attached', async () => {
+      globalThis.caches = fakeCaches()
+      let deleted = null
+      globalThis.caches.default.delete = async req => { deleted = req.url }
+      t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 85, rewritten_resume_data: { name: 'Rewritten' }, verification_url: 'https://x/v/C1', resume_pdf_path: null, verification_code: 'CODE01' } })
+      await t.mod.regeneratePdf(call())
+      expect(deleted).toBe(badgeCacheKeyForCode('CODE01').url)
+    })
+    it('does NOT purge when someone else already attached it first (alreadyAvailable race)', async () => {
+      globalThis.caches = fakeCaches()
+      let calls = 0
+      globalThis.caches.default.delete = async () => { calls++ }
+      t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 85, rewritten_resume_data: { name: 'Rewritten' }, verification_url: 'https://x/v/C1', resume_pdf_path: null, verification_code: 'CODE01' }, updateReturn: [] })
+      await t.mod.regeneratePdf(call())
+      expect(calls).toBe(0)
+    })
+    it('does NOT purge a FIX_PLAIN scan (no verification_code to purge)', async () => {
+      globalThis.caches = fakeCaches()
+      let calls = 0
+      globalThis.caches.default.delete = async () => { calls++ }
+      t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX_PLAIN', fix_ats_score: 90, rewritten_resume_data: { name: 'R' }, verification_url: null, resume_pdf_path: null, verification_code: null } })
+      await t.mod.regeneratePdf(call())
+      expect(calls).toBe(0)
+    })
+  })
   it('FIX_PLAIN: no verification link, no credential, no hash', async () => {
     t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX_PLAIN', fix_ats_score: 90, rewritten_resume_data: { name: 'R' }, verification_url: 'https://x/v/C1' } })
     await t.mod.regeneratePdf(call())
@@ -1631,6 +1707,35 @@ describe('generateBadge', () => {
     const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
     expect(finalUpdate.original_resume_data).toEqual({ name: 'Jane' })
     expect('rewritten_resume_data' in finalUpdate).toBe(false)
+  })
+
+  // SECTION 7 AUDIT FIX (bug, fresh pass): same reasoning as generateFix — a redelivery
+  // through this path can rewrite resume_hash/resume_pdf_hash on an EXISTING
+  // verification_code with no cache purge to match it, before this fix.
+  describe('purges the badge cache on delivery (Section 7 audit fix)', () => {
+    function fakeCaches() {
+      const store = new Map()
+      return { default: { async delete(req) { store.delete(req.url); return true } } }
+    }
+    const realCaches = globalThis.caches
+    afterEach(() => { if (realCaches === undefined) delete globalThis.caches; else globalThis.caches = realCaches })
+
+    it('a redelivery that reuses an EXISTING code purges that code\'s cached badge', async () => {
+      globalThis.caches = fakeCaches()
+      let deleted = null
+      globalThis.caches.default.delete = async req => { deleted = req.url }
+      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+      await t.mod.generateBadge(t.env, t.db, 's1')
+      expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
+    })
+    it('a FIRST delivery purges its own brand-new code too — harmless, nothing was ever cached under it', async () => {
+      globalThis.caches = fakeCaches()
+      let deleted = null
+      globalThis.caches.default.delete = async req => { deleted = req.url }
+      t = setup()   // default scan has no verification_code — badge.service stub mints 'NEWCODE1'
+      await t.mod.generateBadge(t.env, t.db, 's1')
+      expect(deleted).toBe(badgeCacheKeyForCode('NEWCODE1').url)
+    })
   })
 
   // AUDIT FIX (Auth/Scan round): the empty-"Candidate"-shell fallback delivered a

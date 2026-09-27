@@ -304,25 +304,7 @@ async function processChargeSuccess(c, supabase, event) {
   return { status: 'PROCESSED', note: result.outcome }
 }
 
-// Sum of the refunds already confirmed for this payment: every refund.processed row in the
-// inbox for its transaction that finished as PROCESSED. Returns 0 (and logs) if the inbox
-// cannot be read — the caller then judges the event on its own, as it always did.
-async function refundedSoFar(supabase, payment) {
-  try {
-    const { data, error } = await supabase.from('webhook_events').select('payload')
-      .eq('event_type', 'refund.processed').eq('reference', payment.paystack_ref).eq('status', 'PROCESSED')
-    if (error) { console.error('refundedSoFar: inbox unreadable:', error.message); return 0 }
-    return (data || []).reduce((sum, r) => {
-      const n = Number(r?.payload?.data?.amount)
-      return sum + (Number.isFinite(n) && n > 0 ? n : 0)
-    }, 0)
-  } catch (err) {
-    console.error('refundedSoFar failed:', err.message)
-    return 0
-  }
-}
-
-async function processRefund(c, supabase, event) {
+async function processRefund(c, supabase, event, eventId) {
   const payment = await fulfillment.findPaymentForEvent(supabase, event)
   const refundRef = event.data?.refund_reference || null
   const incident = payment?.paystack_ref || refundRef || fulfillment.referenceCandidates(event)[0] || null
@@ -372,11 +354,36 @@ async function processRefund(c, supabase, event) {
   // ROUND-3 AUDIT FIX (feature gap): each event was judged alone, so two partial refunds that
   // together return the whole payment (2 × 50%) never reversed anything — just two alerts. The
   // refunds Paystack has already confirmed for this transaction are in this very inbox, so the
-  // running total is `earlier PROCESSED refund.processed events + this one`. A redelivery of an
-  // event is deduped by its key before it gets here, so it cannot be counted twice.
+  // running total is `earlier PROCESSED refund.processed events + this one`.
+  //
+  // SECTION 8 AUDIT FIX (bug, fresh pass): that total used to be computed by a plain JS
+  // read (refundedSoFar: sum already-PROCESSED refund.processed rows) then adding this
+  // event's amount on top — a read-then-decide with no lock. Two DISTINCT partial refunds
+  // on the SAME transaction, delivered close enough together to land on two concurrent
+  // Worker invocations, could each read the total BEFORE the other's row was marked
+  // PROCESSED — both compute a total under the full amount, and NEITHER reverses a sale
+  // that, together, they did fully refund. record_refund_and_total does the same "sum the
+  // inbox" in one Postgres call that locks the payment row first and marks THIS event's
+  // own row PROCESSED before summing, so a concurrent sibling — once it gets the lock —
+  // always sees this one already counted. It's a SUM over source rows, not an accumulator,
+  // so it's naturally idempotent too: a genuine redelivery of this same event never even
+  // reaches here (recordEvent's inbox key already caught it), but if it somehow did, this
+  // just recomputes the same total rather than adding again.
   const refunded = Number(event.data?.amount)
-  const earlier = payment.status === 'REFUNDED' ? 0 : await refundedSoFar(supabase, payment)
-  const total = (Number.isFinite(refunded) ? refunded : 0) + earlier
+  let total
+  if (eventId) {
+    const { data, error } = await supabase.rpc('record_refund_and_total', {
+      p_payment_id: payment.id, p_reference: payment.paystack_ref, p_event_id: eventId,
+    })
+    if (error) throw error
+    total = Number(data)
+    if (!Number.isFinite(total)) total = Number.isFinite(refunded) ? refunded : 0
+  } else {
+    // No inbox row to lock/sum against (webhook_events unavailable) — judge this event
+    // alone, the same degraded behavior every other inbox-dependent feature here falls
+    // back to.
+    total = Number.isFinite(refunded) ? refunded : 0
+  }
   const full = Number.isFinite(refunded) && payment.amount_cents > 0 && total >= payment.amount_cents
   if (!full) {
     alert(c, 'Paystack refund.processed — partial/unknown amount, NOT actioned',
@@ -458,10 +465,10 @@ async function processDispute(c, supabase, event) {
   return { status: 'PROCESSED', note: payment ? undefined : 'payment not found' }
 }
 
-async function processEvent(c, supabase, event) {
+async function processEvent(c, supabase, event, eventId) {
   const type = event.event
   if (type === 'charge.success') return processChargeSuccess(c, supabase, event)
-  if (type.startsWith('refund.')) return processRefund(c, supabase, event)
+  if (type.startsWith('refund.')) return processRefund(c, supabase, event, eventId)
   if (type.startsWith('charge.dispute')) return processDispute(c, supabase, event)
   return { status: 'IGNORED', note: type }
 }
@@ -537,7 +544,7 @@ async function handlePaystack(c) {
 
   let outcome
   try {
-    outcome = await processEvent(c, supabase, event)
+    outcome = await processEvent(c, supabase, event, inbox.id)
   } catch (err) {
     console.error(`[CRITICAL] webhook ${event.event} (${reference}) failed:`, err.message)
     await markEvent(supabase, inbox, 'FAILED', err.message)
@@ -634,7 +641,7 @@ async function runStoredEvent(c, supabase, row, { by = null } = {}) {
   if (by) { patch.replayed_by = by; patch.replayed_at = new Date().toISOString() }
   await updateEvent(supabase, row.id, patch, ['replayed_by', 'replayed_at'])
   try {
-    const outcome = await processEvent(c, supabase, row.payload)
+    const outcome = await processEvent(c, supabase, row.payload, row.id)
     await markEvent(supabase, inbox, outcome.status, outcome.note)
     return { ok: true, outcome }
   } catch (err) {

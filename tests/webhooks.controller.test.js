@@ -20,6 +20,17 @@ function seed(over = {}) {
     { cols: ['payment_id'],        where: r => !r.reverses_ledger_id },
     { cols: ['reverses_ledger_id'], where: r => !!r.reverses_ledger_id },
   ]
+  // SECTION 8 AUDIT FIX (bug, fresh pass): stand-in for record_refund_and_total —
+  // marks the event's own row PROCESSED, THEN sums PROCESSED refund.processed rows
+  // for the reference, same order the real function does it in under its row lock.
+  world.rpcs.record_refund_and_total = ({ p_reference, p_event_id }) => {
+    const row = world.t.webhook_events.find(r => r.id === p_event_id)
+    if (row) { row.status = 'PROCESSED'; row.processed_at = new Date().toISOString() }
+    const total = world.t.webhook_events
+      .filter(r => r.event_type === 'refund.processed' && r.reference === p_reference && r.status === 'PROCESSED')
+      .reduce((sum, r) => sum + (Number(r.payload?.data?.amount) || 0), 0)
+    return { data: total, error: null }
+  }
   return world
 }
 
@@ -505,6 +516,20 @@ describe('round 2 — refunds', () => {
     await t.fire(partial('1000', 'rf-1'))
     expect(w.t.payments[0].status).toBe('SUCCESS')
     await t.fire(partial('1900', 'rf-2'))                       // 1000 + 1900 = 2900 = the amount paid
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(t.state.alerts.some(a => /sale reversed/i.test(a.subject))).toBe(true)
+  })
+  it('SECTION 8 AUDIT FIX: two DISTINCT partial refunds fired CONCURRENTLY still sum to a full reversal', async () => {
+    // The bug this closes: refundedSoFar read the total in JS with no lock, so two
+    // DIFFERENT partial-refund events for the same transaction, processed by two
+    // concurrent Worker invocations, could each read the total before the other's
+    // row was marked PROCESSED and both conclude "not full" — never reversing a
+    // sale that, together, they did fully refund. record_refund_and_total locks the
+    // payment row and marks its own event PROCESSED before summing, so this comes
+    // out right regardless of dispatch order.
+    const w = paidWorld(); t = harness(w)
+    const partial = (amount, rf) => ({ event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: rf, amount, currency: 'USD' } })
+    await Promise.all([t.fire(partial('1000', 'rf-1')), t.fire(partial('1900', 'rf-2'))])
     expect(w.t.payments[0].status).toBe('REFUNDED')
     expect(t.state.alerts.some(a => /sale reversed/i.test(a.subject))).toBe(true)
   })
