@@ -251,7 +251,7 @@ async function register(c) {
     // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for — or
     // recorded — acceptance of the Terms/Privacy Policy. Required now, and
     // stored with the version accepted so a later terms change can tell who
-    // agreed to what (see the 0037 migration).
+    // agreed to what (see the 0038 migration).
     acceptTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the Terms of Service and Privacy Policy to create an account.' }) }),
     // One shared definition with updateName (lib/text.js): control characters
     // and zero-width filler are stripped, and a name with no letter or digit

@@ -84,12 +84,29 @@ function timingSafeEqual(a, b) {
 /**
  * randomShortCode(length, alphabet) -> string
  * Replaces: crypto.randomInt(0, alphabet.length) loop in badge.service.js
+ *
+ * AUDIT FIX (Scan/ATS section audit): `values[i] % alphabet.length` is
+ * classic modulo bias — whenever alphabet.length doesn't evenly divide
+ * 2^32, the low end of the alphabet gets a very slightly higher probability
+ * than the high end. Not exploitable (this is a public verification code,
+ * not a secret), but not actually uniform either, which is worth being
+ * correct about regardless. Fixed via rejection sampling: draw a byte per
+ * character, and simply discard+redraw any byte that falls in the leftover
+ * range above the largest multiple of alphabet.length that fits in a byte
+ * — every character then has an exactly equal chance of every alphabet
+ * value, with no distribution skew at all.
  */
 function randomShortCode(length, alphabet) {
-  const values = new Uint32Array(length)
-  crypto.getRandomValues(values)
+  const n = alphabet.length
+  const cutoff = 256 - (256 % n) // values >= this are discarded, not used
   let code = ''
-  for (let i = 0; i < length; i++) code += alphabet[values[i] % alphabet.length]
+  const buf = new Uint8Array(length)
+  while (code.length < length) {
+    crypto.getRandomValues(buf)
+    for (let i = 0; i < buf.length && code.length < length; i++) {
+      if (buf[i] < cutoff) code += alphabet[buf[i] % n]
+    }
+  }
   return code
 }
 
