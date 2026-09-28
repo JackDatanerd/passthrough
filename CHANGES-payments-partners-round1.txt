@@ -1,0 +1,63 @@
+SECTIONS 3 (Payments & Pricing) + 4 (Partners / Referral) — fresh independent pass, round 1
+Applied against the live snapshot uploaded 2026-09-28 (the one containing migrations 0042/0043).
+
+APPLY MIGRATION 0044 BEFORE DEPLOYING THE CODE
+  supabase/migrations/0044_referral_code_usage_reservations.sql
+  Without it: referral checkouts for codes that have a usage_limit silently fall back to standard
+  price (reserve RPC missing -> treated as "no slot"), cancelPayment's select fails, and the stale
+  sweep's select fails. Codes with no usage_limit and no-code checkouts are unaffected.
+
+FINDINGS THIS ROUND
+1. BUG (spans 3+4) — fmtPrice() truncated to whole dollars
+   frontend/src/hooks/usePricing.js. Partner tier_prices only require a positive integer of cents
+   (partners.controller.js tierPricesSchema) and the admin UI inputs are step="0.01", so a code can be
+   $29.49; the pricing page / checkout button (Pricing.jsx, FixBanner.jsx, Home.jsx) showed "$29" while
+   Paystack charged 2949. Whole-dollar amounts still render "$49"; real cents now render "$29.49".
+   Test: frontend/tests/fmtPrice.test.js
+
+2. FEATURE GAP — referral usage_limit was never reserved (documented-but-deferred in referral.service.js)
+   A single-use code shared in a burst could be redeemed by many concurrent checkouts; warnIfOverLimit
+   only alerted afterwards. Now:
+   - migration 0044: referral_code_reservations table, payments.referral_reservation_id,
+     reserve_referral_code_slot() (row-locks the code; counts uses_so_far + live reservations),
+     release_referral_code_slot(), increment_referral_code_usage(p_code_id, p_reservation_id default null)
+     which consumes the reservation in the same statement as the uses_so_far bump. Reservations older than
+     3600s stop counting on their own (self-healing if a release path is ever missed).
+   - initializePayment: for a code WITH a usage_limit, atomically reserves BEFORE calling Paystack. Denied
+     or errored reservation => code not applied, standard/promo price, checkout still succeeds (same as an
+     already-exhausted code). Unlimited codes skip all of this.
+   - Slot released on: Paystack init failure (both branches), payments insert failure (incl. 23505
+     fold-back), stale-PENDING abandon inside initializePayment, cancelPayment, and
+     sweepStalePendingPayments (each only when THIS call won the PENDING->ABANDONED flip).
+   - Consumed by recordConversion via increment_referral_code_usage (reservation id passed only when
+     present, so unlimited-code payments call the RPC exactly as before).
+   - sweepOrphanedPayments now selects referral_reservation_id (it calls recordConversion directly).
+   - sweepStalePendingPayments also prunes reservation rows older than 24h (table hygiene).
+   - Quotes (/api/pricing) deliberately do NOT reserve — only real checkout attempts do.
+   Files: referral.service.js, payments.controller.js, reconcile.service.js (+ migration).
+   Known, accepted edge: a payment that converts AFTER its slot was released (very late revival of an
+   ABANDONED row) is still honoured; warnIfOverLimit remains as the tripwire for that.
+
+3. BUG (introduced by the newest live code, section 4) — duplicate-partner-email check used ilike
+   partners.controller.js emailUsedByAnotherPartner() passed the raw address to ilike, where `_` and `%`
+   are wildcards. john.smith@x.com "matched" an existing john_smith@x.com and was rejected as a duplicate
+   the new unique index (0043) would never have flagged. LIKE metacharacters are now escaped.
+   Test added in tests/partners.controller.test.js.
+
+TESTS
+  Added/extended: payments.controller (reservation reserve/deny/error/unlimited/release paths, stale
+  abandon release, cancel release), reconcile.service (release only on won claim, prune every run),
+  referral.pricing (reserve/release/prune helpers, reservation id passed to usage RPC), partners
+  (wildcard escaping), frontend fmtPrice.
+  NOTE: vitest was not installable in the audit environment (no network). The affected suites were run
+  through a small offline shim: payments 75/75, reconcile 51/51, referral.pricing 33/33, referral.service
+  8/8, partners 68/74 (the 6 failures are zod-validation tests, an artifact of the stand-in used for zod
+  offline). Mutation-checked: removing each fix makes its new test fail. Please run `npm test` (root and
+  frontend) once before pushing.
+
+NOT CHANGED / VERIFIED CLEAN THIS ROUND
+  New live code re-read in scope: admin-audit logging in payments/partners controllers (best-effort,
+  cannot fail the action), partner email uniqueness (apart from #3), refund atomic total (webhooks, out
+  of scope, no interaction with reservations). Everything else in both file lists unchanged and clean.
+
+Per workflow, sections 3+4 are not closed until a further fresh independent pass comes back with nothing.

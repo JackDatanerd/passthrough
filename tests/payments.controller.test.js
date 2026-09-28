@@ -48,7 +48,7 @@ function setup(opts = {}) {
 // payments-table queries (existing-PENDING lookup + insert, not the
 // select-then-update-by-reference pattern verifyPayment/reconcilePayment use.
 function setupInit(opts = {}) {
-  const state = { paymentInserts: [], paymentUpdates: [], alerts: [] }
+  const state = { paymentInserts: [], paymentUpdates: [], alerts: [], rpcCalls: [] }
   const scan = 'scan' in opts
     ? opts.scan
     : { id: 's1', user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
@@ -70,6 +70,14 @@ function setupInit(opts = {}) {
     }
     if (q.table === 'payments' && q.op === 'insert') { state.paymentInserts.push(q.values); return { error: opts.insertError || null } }
     if (q.table === 'referral_codes') return { data: referralCodes[eqValue(q, 'code')] || null, error: null }
+    // Usage-limit reservation RPCs (migration 0044) — recorded so tests can
+    // assert what was reserved/released; reserve returns opts.reservationId
+    // (null by default = "no room left").
+    if (q.op === 'rpc') {
+      state.rpcCalls.push({ name: q.name, args: q.args })
+      if (q.name === 'reserve_referral_code_slot') return { data: opts.reservationId ?? null, error: opts.reserveError || null }
+      return { data: null, error: null }
+    }
     return undefined
   })
 
@@ -77,7 +85,10 @@ function setupInit(opts = {}) {
     'config/supabase.js': { getSupabase: () => db },
     'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
     'services/paystack.service.js': {
-      initializeTransaction: async () => ({ access_code: 'AC_1', authorization_url: 'https://paystack.test/pay/AC_1' }),
+      initializeTransaction: async () => {
+        if (opts.paystackThrows) throw opts.paystackThrows
+        return { access_code: 'AC_1', authorization_url: 'https://paystack.test/pay/AC_1' }
+      },
       verifyTransaction: async () => ({}),
     },
   })
@@ -230,6 +241,99 @@ describe('initializePayment — stale PENDING cleanup', () => {
       expect(res.status).toBe(200)
       expect(res.body.data.reference).toBe('fresh-ref')
     })
+  })
+})
+
+// Section 3/4 audit (feature gap, migration 0044): referral-code usage_limit
+// is now enforced by an atomic reservation taken BEFORE Paystack is called,
+// not just a plain read of uses_so_far.
+describe('initializePayment — referral usage-limit reservation', () => {
+  const limitedCode = (over = {}) => ({
+    id: 'rc1', code: 'LIMITED', active: true, usage_limit: 5, uses_so_far: 0, expires_at: null,
+    tier_prices: { FIX: 1500 }, partners: { status: 'ACTIVE' }, ...over
+  })
+  const body = { scanId: 's1', fixTier: 'FIX', referralCode: 'LIMITED' }
+  const rpcNames = () => t.state.rpcCalls.map(r => r.name)
+
+  it('a limited code takes a reservation, charges the discounted price, and stores the reservation on the payment row', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: 'res-1' })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(200)
+    expect(t.state.rpcCalls[0]).toEqual({ name: 'reserve_referral_code_slot', args: { p_code_id: 'rc1' } })
+    expect(t.state.paymentInserts[0]).toMatchObject({
+      amount_cents: 1500, referral_code_id: 'rc1', referral_code: 'LIMITED', referral_reservation_id: 'res-1',
+    })
+  })
+
+  it('when the reservation is denied (lost the race for the last slot) the code is NOT applied — standard price, checkout still succeeds', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: null })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(200)
+    const ins = t.state.paymentInserts[0]
+    expect(ins.amount_cents).toBeGreaterThan(1500)
+    expect(ins.referral_code_id).toBeNull()
+    expect(ins.referral_code).toBeNull()
+    expect('referral_reservation_id' in ins).toBe(false)
+  })
+
+  it('a reservation ERROR is treated exactly like a denial (never applies a discount it could not reserve)', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reserveError: { message: 'function does not exist' } })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(200)
+    expect(t.state.paymentInserts[0].referral_code_id).toBeNull()
+  })
+
+  it('an UNLIMITED code never touches the reservation RPCs and inserts the pre-0044 row shape', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode({ usage_limit: null }) } })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(200)
+    expect(t.state.rpcCalls).toHaveLength(0)
+    expect(t.state.paymentInserts[0]).toMatchObject({ amount_cents: 1500, referral_code_id: 'rc1' })
+    expect('referral_reservation_id' in t.state.paymentInserts[0]).toBe(false)
+  })
+
+  it('no code at all -> no reservation RPC', async () => {
+    t = setupInit()
+    await t.mod.initializePayment(t.c())
+    expect(t.state.rpcCalls).toHaveLength(0)
+  })
+
+  it('releases the slot when Paystack initialize fails (no payment row will ever carry it)', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: 'res-1', paystackThrows: new Error('boom') })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(502)
+    expect(t.state.rpcCalls[1]).toEqual({ name: 'release_referral_code_slot', args: { p_reservation_id: 'res-1' } })
+    expect(t.state.paymentInserts).toHaveLength(0)
+  })
+
+  it('releases the slot when Paystack REJECTS the request (400 path)', async () => {
+    const err = Object.assign(new Error('dup ref'), { paystackRejected: true })
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: 'res-1', paystackThrows: err })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(400)
+    expect(rpcNames()).toEqual(['reserve_referral_code_slot', 'release_referral_code_slot'])
+  })
+
+  it('releases the slot when the payments insert fails', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: 'res-1', insertError: { code: '08006', message: 'down' } })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(502)
+    expect(rpcNames()).toEqual(['reserve_referral_code_slot', 'release_referral_code_slot'])
+  })
+
+  it('a stale PENDING row that this call abandons has ITS reservation released', async () => {
+    const staleCreatedAt = new Date(Date.now() - 40 * 60 * 1000).toISOString()
+    t = setupInit({ existingPending: { paystack_ref: 'old-ref', paystack_access_code: 'old-ac', fix_tier: 'FIX', referral_reservation_id: 'old-res', created_at: staleCreatedAt } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.rpcCalls).toEqual([{ name: 'release_referral_code_slot', args: { p_reservation_id: 'old-res' } }])
+  })
+
+  it('does NOT release when the abandon flip itself failed (row may still be live)', async () => {
+    const staleCreatedAt = new Date(Date.now() - 40 * 60 * 1000).toISOString()
+    t = setupInit({ existingPending: { paystack_ref: 'old-ref', paystack_access_code: 'old-ac', fix_tier: 'FIX', referral_reservation_id: 'old-res', created_at: staleCreatedAt }, abandonError: { message: 'db hiccup' } })
+    await t.mod.initializePayment(t.c())
+    expect(t.state.rpcCalls).toHaveLength(0)
   })
 })
 
@@ -633,8 +737,9 @@ describe('resolvePayment (admin) — reverse a sale / clear a dispute', () => {
 // silently touching someone else's row or re-cancelling a real payment.
 
 function setupCancel(opts = {}) {
-  const state = { updates: [] }
+  const state = { updates: [], rpcs: [] }
   const db = createFakeSupabase(q => {
+    if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: null, error: null } }
     if (q.table === 'payments' && q.op === 'update') {
       state.updates.push(q)
       return { data: 'updated' in opts ? opts.updated : [{ id: 'pay1' }], error: opts.error ?? null }
@@ -662,6 +767,17 @@ describe('cancelPayment', () => {
     expect(call.filters).toEqual(expect.arrayContaining([
       ['eq', 'paystack_ref', 'ref1'], ['eq', 'user_id', 'u1'], ['eq', 'status', 'PENDING'],
     ]))
+  })
+
+  it('releases the cancelled payment\'s referral-code reservation (and only when the cancel actually matched)', async () => {
+    t = setupCancel({ updated: [{ id: 'pay1', referral_reservation_id: 'res-9' }] })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.body.success).toBe(true)
+    expect(t.state.rpcs).toEqual([{ name: 'release_referral_code_slot', args: { p_reservation_id: 'res-9' } }])
+    t.restore()
+    t = setupCancel({ updated: [] })
+    await t.mod.cancelPayment(t.c())
+    expect(t.state.rpcs).toHaveLength(0)
   })
 
   it('404s — and never claims success — when nothing matched (wrong owner, already-settled, or unknown reference)', async () => {

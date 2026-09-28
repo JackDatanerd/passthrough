@@ -104,7 +104,16 @@ const createPartnerSchema = z.object({
 async function emailUsedByAnotherPartner(supabase, email, excludePartnerId) {
   // .limit(1) + array check, not .maybeSingle(): that THROWS on >1 match,
   // which is exactly the legacy-duplicate case this must handle cleanly.
-  let q = supabase.from('partners').select('id').ilike('email', email).limit(1)
+  // SECTION 3/4 AUDIT FIX (bug): ilike treats `_` and `%` in the pattern as
+  // wildcards, but this is an EXACT case-insensitive match (what
+  // idx_partners_email_lower_unique enforces). `_` is extremely common in
+  // real addresses, so john.smith@x.com wrongly collided with an existing
+  // john_smith@x.com (and vice versa) and was rejected as a duplicate that
+  // the unique index would never have flagged. Escape the LIKE
+  // metacharacters (backslash is Postgres's default LIKE escape) so only a
+  // genuine case-insensitive equal matches.
+  const exact = String(email).replace(/[\\%_]/g, '\\$&')
+  let q = supabase.from('partners').select('id').ilike('email', exact).limit(1)
   if (excludePartnerId) q = q.neq('id', excludePartnerId)
   const { data, error } = await q
   if (error) throw error

@@ -416,6 +416,29 @@ describe('adminCreatePartner', () => {
     expect(state.inserted).toBeNull()
     restore()
   })
+
+  // Section 3/4 audit (bug): ilike treats `_`/`%` as wildcards. The duplicate
+  // check is an EXACT case-insensitive match, so those must be escaped —
+  // otherwise john.smith@x.co "collides" with an existing john_smith@x.co.
+  it('escapes LIKE wildcards in the duplicate-email check so john_smith does not match john.smith', async () => {
+    const seen = []
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') {
+        seen.push(q.filters.find(f => f[0] === 'ilike' && f[1] === 'email')[2])
+        return { data: [], error: null }
+      }
+      if (q.table === 'partners' && q.op === 'insert') return { data: { id: 'p1', ...q.values }, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+    })
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, json: (body, status = 200) => ({ body, status }) }
+    await mod.adminCreatePartner(c)
+    expect(seen[0]).toBe('john\\_smith@x.co')
+    restore()
+  })
 })
 
 describe('adminUpdatePartner', () => {

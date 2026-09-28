@@ -129,5 +129,17 @@ export function usePricing(referralCode = '') {
 // formatMoney/formatCents, PartnerDashboard's fmtCents): USD gets a bare `$`
 // for the common case, anything else gets a plain-number + currency-code
 // suffix rather than a `$` that would misrepresent what's actually charged.
-export const fmtPrice = (cents, currency = 'USD') =>
-  currency === 'USD' ? `$${(cents / 100).toFixed(0)}` : `${(cents / 100).toFixed(0)} ${currency}`
+//
+// SECTION 3/4 AUDIT FIX (bug): this used to be an unconditional toFixed(0),
+// silently dropping any cents. Harmless while every hardcoded price is a
+// round dollar, but partners.controller.js's tierPricesSchema only requires
+// a positive integer of cents and PartnerDetail.jsx's price inputs are
+// step="0.01", so a partner code CAN be priced at e.g. 2949 ($29.49) — this
+// then showed "$29" (or "$30" for 2950) while Paystack charged the exact
+// amount. Whole-dollar amounts keep the clean "$49" look; anything with real
+// cents now renders exactly as formatCents does everywhere else.
+export const fmtPrice = (cents, currency = 'USD') => {
+  const value = cents / 100
+  const decimals = Number.isInteger(value) ? 0 : 2
+  return currency === 'USD' ? `$${value.toFixed(decimals)}` : `${value.toFixed(decimals)} ${currency}`
+}

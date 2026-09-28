@@ -68,7 +68,7 @@ async function initializePayment(c2) {
   const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
   const { data: existingPending, error: pendingErr } = await supabase
     .from('payments')
-    .select('paystack_ref, paystack_access_code, fix_tier, referral_code, created_at')
+    .select('paystack_ref, paystack_access_code, fix_tier, referral_code, referral_reservation_id, created_at')
     .eq('scan_id', scanId).eq('status', 'PENDING')
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (pendingErr) throw pendingErr
@@ -164,20 +164,49 @@ async function initializePayment(c2) {
   // below from proceeding.
   if (existingPending) {
     try {
-      const { error: abandonErr } = await supabase
+      const { data: abandoned, error: abandonErr } = await supabase
         .from('payments')
         .update({ status: 'ABANDONED' })
         .eq('paystack_ref', existingPending.paystack_ref)
         .eq('status', 'PENDING')
+        .select('id')
       if (abandonErr) console.error('Stale payment abandon failed:', abandonErr.message)
+      // Section 3/4 (usage-limit reservation, migration 0044): only release
+      // when THIS call actually won the PENDING -> ABANDONED flip. A row a
+      // concurrent verify/webhook just settled is consumed by
+      // recordConversion instead, and must not be released out from under it.
+      else if (abandoned && abandoned.length > 0)
+        await referralService.releaseCodeReservation(supabase, existingPending.referral_reservation_id)
     } catch (err) {
       console.error('Stale payment abandon failed:', err.message)
     }
   }
 
-  // `priced` was already resolved above (needed earlier for the pending-row
-  // comparison) — reused here as the actual charge amount, unchanged.
-  const amount    = priced.amount
+  // Section 3/4 audit (feature gap, migration 0044): close the referral-code
+  // usage_limit race. `priced` above came from a plain read (isCodeUsable), so
+  // two concurrent checkouts could both see the same last free slot. For a
+  // code that HAS a limit, atomically claim a slot NOW — before Paystack is
+  // called, so the amount charged always matches the outcome of the claim.
+  // If the claim fails (lost the race for the last slot, or the reservation
+  // call itself errored) the code is simply not applied: standard/promo
+  // pricing, exactly how an already-exhausted code has always behaved, never
+  // a blocked checkout. Unlimited codes have nothing to enforce and skip
+  // this entirely. resolvedRequestedCode (used above only to decide
+  // resume-vs-block against an existing pending row) is deliberately left as
+  // resolved — that decision is already behind us.
+  let finalPriced = priced
+  let reservationId = null
+  if (priced.referralCode && priced.referralCode.usage_limit != null) {
+    reservationId = await referralService.reserveCodeUsage(supabase, priced.referralCode.id)
+    if (!reservationId) finalPriced = referralService.priceForResolvedCode(fixTier, c2.env, null)
+  }
+
+  // Every failure branch below that leaves NO payment row behind must hand
+  // the slot back, or a real partner's code would lose capacity to a
+  // checkout that never existed.
+  const releaseHeldSlot = () => referralService.releaseCodeReservation(supabase, reservationId)
+
+  const amount    = finalPriced.amount
   const reference = cryptoLib.uuid()  // generated ONCE — passed to both Paystack and DB
 
   // Call Paystack FIRST — if it fails, no orphan record is created
@@ -187,6 +216,7 @@ async function initializePayment(c2) {
       email: user.email, amount, userId: user.id, scanId, fixTier, reference
     })
   } catch (err) {
+    await releaseHeldSlot()
     // AUDIT FIX (bug): an ordinary, request-specific rejection from Paystack
     // (paystackService.initializeTransaction's `err.paystackRejected` — a
     // duplicate reference, a value Paystack's own validation didn't like)
@@ -236,8 +266,11 @@ async function initializePayment(c2) {
     user_id:               user.id,
     scan_id:               scanId,
     fix_tier:              fixTier,
-    referral_code_id:      priced.referralCode?.id || null,
-    referral_code:         priced.referralCode?.code || null
+    referral_code_id:      finalPriced.referralCode?.id || null,
+    referral_code:         finalPriced.referralCode?.code || null,
+    // Only present when a slot is actually held, so a payment with no
+    // reservation inserts exactly the pre-0044 row shape.
+    ...(reservationId ? { referral_reservation_id: reservationId } : {})
   })
   // AUDIT FIX (bug): Paystack has ALREADY been successfully initialized for
   // this reference at this point — every other critical failure in this
@@ -248,6 +281,10 @@ async function initializePayment(c2) {
   // "every payment attempt fails until this is resolved" case the Paystack-
   // init failure branch above already treats as page-worthy.
   if (insertErr) {
+    // No payment row exists to carry this reservation — hand the slot back
+    // (including in the 23505 fold-back below, where the row that won the
+    // race owns its own reservation, not ours).
+    await releaseHeldSlot()
     // AUDIT FIX (Section 3/4 pass, bug): payments_scan_id_pending_uidx
     // (migration 0037) turns the check-then-act race this function's top
     // comment describes into a real, catchable conflict instead of two live
@@ -315,11 +352,15 @@ async function cancelPayment(c2) {
     .eq('paystack_ref', reference)
     .eq('user_id', user.id)
     .eq('status', 'PENDING')
-    .select('id')
+    .select('id, referral_reservation_id')
   if (error) throw error
   if (!updated || updated.length === 0)
     return c2.json({ success: false,
       message: 'Nothing to cancel — this payment is not pending, or does not belong to you.' }, 404)
+
+  // Section 3/4 (usage-limit reservation, migration 0044): the checkout is
+  // dead, hand its referral-code slot back. Best-effort, never throws.
+  await referralService.releaseCodeReservation(supabase, updated[0].referral_reservation_id)
 
   return c2.json({ success: true })
 }

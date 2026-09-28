@@ -212,8 +212,10 @@ describe('sweepOrphanedPayments', () => {
 // PENDING rows to ABANDONED via the same atomic per-row claim pattern used
 // everywhere else in this file.
 function setupPending({ payments = [], updateResults = {}, updateErrors = {} } = {}) {
-  const state = { selects: [], updates: [] }
+  const state = { selects: [], updates: [], rpcs: [], deletes: [] }
   const db = createFakeSupabase(q => {
+    if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: null, error: null } }
+    if (q.table === 'referral_code_reservations' && q.op === 'delete') { state.deletes.push(q); return { data: null, error: null } }
     if (q.table === 'payments' && q.op === 'select') { state.selects.push(q); return { data: payments, error: null } }
     if (q.table === 'payments' && q.op === 'update') {
       state.updates.push(q)
@@ -260,6 +262,27 @@ describe('sweepStalePendingPayments', () => {
     // the atomic guard: only claim if it is STILL pending
     expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'id' && f[2] === 'p1')).toBe(true)
     expect(claim.filters.some(f => f[0] === 'eq' && f[1] === 'status' && f[2] === 'PENDING')).toBe(true)
+  })
+
+  // Section 3/4 (usage-limit reservation, migration 0044)
+  it('releases the referral-code reservation of every row it actually abandons', async () => {
+    t = setupPending({ payments: [pending({ id: 'p1', referral_reservation_id: 'res-1' }), pending({ id: 'p2', paystack_ref: 'ref2' })] })
+    await t.sweep()
+    expect(t.state.rpcs).toEqual([{ name: 'release_referral_code_slot', args: { p_reservation_id: 'res-1' } }])
+  })
+
+  it('does NOT release the reservation of a row a concurrent settle already won (0 rows claimed)', async () => {
+    t = setupPending({ payments: [pending({ referral_reservation_id: 'res-1' })], updateResults: { p1: [] } })
+    await t.sweep()
+    expect(t.state.rpcs).toHaveLength(0)
+  })
+
+  it('prunes old reservation rows every run — even when nothing is stale', async () => {
+    t = setupPending()
+    await t.sweep()
+    expect(t.state.deletes).toHaveLength(1)
+    const lt = t.state.deletes[0].filters.find(f => f[0] === 'lt' && f[1] === 'created_at')[2]
+    expect(Date.parse(lt)).toBe(NOW - 24 * 3600_000)
   })
 
   it('does not count a row a concurrent verify/webhook already resolved (0 rows claimed)', async () => {

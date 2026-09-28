@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
-import { resolvePrice, recordConversion, isCodeUsable } from '../src/services/referral.service.js'
+import {
+  resolvePrice, recordConversion, isCodeUsable,
+  reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
+} from '../src/services/referral.service.js'
 
 const FUTURE = new Date(Date.now() + 86400_000).toISOString()
 const PAST = new Date(Date.now() - 86400_000).toISOString()
@@ -157,6 +160,11 @@ describe('recordConversion', () => {
     expect(d.calls.find(q => q.op === 'rpc').name).toBe('increment_referral_code_usage')
     expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1' })
   })
+  it('passes the payment\'s reservation id to the usage RPC so it is consumed atomically (migration 0044)', async () => {
+    const d = db()
+    await recordConversion(d, { ...payment, referral_reservation_id: 'res-1' })
+    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_reservation_id: 'res-1' })
+  })
   it('rounds the commission to whole cents', async () => {
     const d = db({ partner: { commission_rate: 0.3333 } })
     await recordConversion(d, { ...payment, amount_cents: 1000 })
@@ -217,5 +225,37 @@ describe('recordConversion', () => {
     const r = await recordConversion(boom, payment)
     expect(r.ok).toBe(false)
     expect(r.reason).toBe('exception')
+  })
+})
+
+
+describe('reserveCodeUsage / releaseCodeReservation / pruneReferralCodeReservations (migration 0044)', () => {
+  it('reserveCodeUsage returns the reservation id on success', async () => {
+    const d = createFakeSupabase(q => q.op === 'rpc' ? { data: 'res-1', error: null } : undefined)
+    expect(await reserveCodeUsage(d, 'rc1')).toBe('res-1')
+    expect(d.calls[0]).toMatchObject({ name: 'reserve_referral_code_slot', args: { p_code_id: 'rc1' } })
+  })
+  it('reserveCodeUsage returns null when the code is full, on an RPC error, and when the client throws — never throws itself', async () => {
+    expect(await reserveCodeUsage(createFakeSupabase(() => ({ data: null, error: null })), 'rc1')).toBeNull()
+    expect(await reserveCodeUsage(createFakeSupabase(() => ({ data: null, error: { message: 'x' } })), 'rc1')).toBeNull()
+    expect(await reserveCodeUsage({ rpc() { throw new Error('boom') } }, 'rc1')).toBeNull()
+  })
+  it('releaseCodeReservation is a no-op for a missing id and never throws', async () => {
+    const d = createFakeSupabase()
+    await releaseCodeReservation(d, null)
+    await releaseCodeReservation(d, undefined)
+    expect(d.calls).toHaveLength(0)
+    await releaseCodeReservation(d, 'res-1')
+    expect(d.calls[0]).toMatchObject({ name: 'release_referral_code_slot', args: { p_reservation_id: 'res-1' } })
+    await releaseCodeReservation({ rpc() { throw new Error('boom') } }, 'res-1')
+  })
+  it('pruneReferralCodeReservations deletes only rows older than 24h and never throws', async () => {
+    const now = Date.parse('2026-09-28T00:00:00Z')
+    const d = createFakeSupabase()
+    await pruneReferralCodeReservations(d, { now })
+    expect(d.calls[0].table).toBe('referral_code_reservations')
+    expect(d.calls[0].op).toBe('delete')
+    expect(Date.parse(d.calls[0].filters.find(f => f[0] === 'lt')[2])).toBe(now - 24 * 3600_000)
+    await pruneReferralCodeReservations({ from() { throw new Error('boom') } }, { now })
   })
 })

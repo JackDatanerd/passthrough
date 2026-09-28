@@ -6,19 +6,30 @@
 // principle config/constants.js's priceForTier()/isPromoActive() already
 // apply to the site-wide promo.
 //
-// Usage-limit gap: isCodeUsable() below is only checked in resolvePrice() —
-// at quote time and at initializePayment time — never again when a payment
-// actually completes (recordConversion, further down). uses_so_far is only
-// incremented on completion, so the real enforcement window is the FULL
-// checkout duration for every concurrent shopper, not a narrow simultaneous
-// DB race. A single-use code shared in a burst can be legitimately redeemed
-// by many more people than usage_limit intends, each a genuine, correctly-
-// tracked commission. AUDIT FIX (bug): a proper fix is a reservation system
-// (hold a slot at initializePayment time, release on abandon/fail) — out of
-// scope for this pass; recordConversion now at least alerts the owner the
-// first time a code's uses_so_far runs past its usage_limit, so an
-// over-redeemed code doesn't sit silently unnoticed — see warnIfOverLimit.
-
+// Usage-limit gap — FIXED (Section 3/4 pass, feature gap): isCodeUsable()
+// below is only a plain read of uses_so_far vs usage_limit, which is fine
+// for a QUOTE (getPricing) but was, until this pass, also the only thing
+// initializePayment relied on before charging — and uses_so_far is only
+// incremented on a COMPLETED conversion, so the real enforcement window used
+// to be the FULL checkout duration for every concurrent shopper, not a
+// narrow simultaneous DB race: a single-use code shared in a burst could be
+// legitimately redeemed by many more people than usage_limit intended,
+// each a genuine, correctly-tracked commission with nothing to undo.
+// warnIfOverLimit (below) only ever told the owner AFTER the fact.
+//
+// reserveCodeUsage/releaseCodeReservation (below) close this: payments.
+// controller.js's initializePayment now takes an atomic reservation for a
+// code BEFORE ever calling Paystack (so the amount actually charged always
+// matches whatever the reservation decided), and releases it on every path
+// that ends a checkout without converting (cancelPayment, the stale-PENDING
+// abandon in initializePayment itself, reconcile.service.js's
+// sweepStalePendingPayments, and initializePayment's own Paystack-call/
+// insert failure branches). recordConversion consumes a held reservation
+// (folds it into uses_so_far) in the same statement that bumps the counter —
+// see increment_referral_code_usage (migration 0042). warnIfOverLimit stays
+// as defense-in-depth for anything this doesn't cover (a payment that
+// predates this migration, or a reservation that outlived its TTL before
+// being consumed).
 const c = require('../config/constants')
 
 async function lookupCode(supabase, rawCode) {
@@ -114,6 +125,81 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode) {
 }
 
 /**
+ * reserveCodeUsage(supabase, codeId) -> reservationId | null
+ *
+ * Atomically claims a usage-limit slot for this code (see migration 0042's
+ * reserve_referral_code_slot — the `for update` lock there is what actually
+ * closes the race, not this JS wrapper). Call ONLY from an actual checkout
+ * attempt (payments.controller.js's initializePayment), never from a plain
+ * price quote (pricing.controller.js's getPricing) — reserving on every page
+ * view of a ?ref= link would burn through a limited code's capacity just
+ * from visitors browsing, not buying.
+ *
+ * Returns the new reservation's id on success. Returns null both when the
+ * code has no room left (the caller should fall back to standard/promo
+ * pricing — exactly how an already-exhausted code has always silently been
+ * treated) AND on an unexpected DB error (logged, never thrown) — a failure
+ * to reserve must never be treated as "reservation succeeded," so both cases
+ * collapse to the same safe "don't apply this code" outcome for the caller.
+ */
+async function reserveCodeUsage(supabase, codeId) {
+  try {
+    const { data, error } = await supabase.rpc('reserve_referral_code_slot', { p_code_id: codeId })
+    if (error) { console.error('reserveCodeUsage:', error.message); return null }
+    return data || null
+  } catch (err) {
+    console.error('reserveCodeUsage unexpected:', err.message)
+    return null
+  }
+}
+
+/**
+ * releaseCodeReservation(supabase, reservationId) -> void
+ *
+ * Best-effort, never throws — call from every path that ends a checkout
+ * without it converting (cancelPayment, initializePayment's own stale-PENDING
+ * abandon step and its Paystack-call/insert-failure branches, reconcile.
+ * service.js's sweepStalePendingPayments). A no-op for a reservation that's
+ * already gone (already released, already consumed by recordConversion,
+ * already pruned) — callers never need to check existence first. Silently
+ * skips a null/undefined id so every call site can pass
+ * `payment.referral_reservation_id` unconditionally.
+ */
+async function releaseCodeReservation(supabase, reservationId) {
+  if (!reservationId) return
+  try {
+    const { error } = await supabase.rpc('release_referral_code_slot', { p_reservation_id: reservationId })
+    if (error) console.error('releaseCodeReservation:', error.message)
+  } catch (err) {
+    console.error('releaseCodeReservation unexpected:', err.message)
+  }
+}
+
+// Table hygiene, not correctness — reserve_referral_code_slot's own count
+// already ignores anything older than its TTL, so a reservation row past
+// that age can never affect a real limit decision even if it's never
+// explicitly released. This just keeps referral_code_reservations from
+// growing forever for the rare row whose release path was skipped (a
+// payment stuck PENDING past every sweep's reach, a crashed request between
+// reserving and inserting). Piggybacked on the existing hourly
+// sweepStalePendingPayments run (reconcile.service.js) rather than a new
+// cron job — same cadence, same file already touches this exact area.
+// MAX_AGE_MS is deliberately far past reserve_referral_code_slot's own TTL
+// (60 min) — this is cleanup of things already long since ignored for
+// limit-counting purposes, not a second enforcement window.
+const RESERVATION_MAX_AGE_MS = 24 * 60 * 60 * 1000
+
+async function pruneReferralCodeReservations(supabase, { now = Date.now() } = {}) {
+  try {
+    const cutoff = new Date(now - RESERVATION_MAX_AGE_MS).toISOString()
+    const { error } = await supabase.from('referral_code_reservations').delete().lt('created_at', cutoff)
+    if (error) console.error('pruneReferralCodeReservations:', error.message)
+  } catch (err) {
+    console.error('pruneReferralCodeReservations unexpected:', err.message)
+  }
+}
+
+/**
  * recordConversion(supabase, payment, env?)
  *   -> { ok: boolean, recorded: boolean, reason?: string, error?: string }
  *
@@ -194,7 +280,21 @@ async function recordConversionInner(supabase, payment, env) {
       return { ok: false, recorded: false, reason: 'ledger-insert', error: ledgerRes.error.message }
     }
 
-    const rpcRes = await withOneRetry(() => supabase.rpc('increment_referral_code_usage', { p_code_id: codeRow.id }))
+    // AUDIT FIX (Section 3/4 pass, feature gap): p_reservation_id — see this
+    // file's header comment on the usage-limit fix (migration 0042). Passing
+    // it here releases the reservation this payment was holding (if any) in
+    // the SAME statement as the uses_so_far bump, so there's never a window
+    // where both a completed use AND its now-redundant reservation count
+    // toward the limit at once. `|| null` covers a payment that never held
+    // one (a code with no usage_limit at all, or one predating this
+    // migration) — increment_referral_code_usage treats that as a no-op.
+    // p_reservation_id is only sent when there IS one — payments for codes
+    // with no usage_limit never take a reservation (see initializePayment),
+    // and omitting the arg keeps this call identical to the pre-0044 shape
+    // for them.
+    const rpcArgs = { p_code_id: codeRow.id }
+    if (payment.referral_reservation_id) rpcArgs.p_reservation_id = payment.referral_reservation_id
+    const rpcRes = await withOneRetry(() => supabase.rpc('increment_referral_code_usage', rpcArgs))
     if (rpcRes.error) {
       console.error('recordConversion usage increment:', rpcRes.error.message)
       // The commission itself IS recorded — only the usage counter is short by one.
@@ -290,4 +390,7 @@ async function notifyPartnerConversion(env, supabase, partner, codeRow, commissi
   } catch (_) {}
 }
 
-module.exports = { resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable }
+module.exports = {
+  resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
+  priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
+}

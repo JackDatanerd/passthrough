@@ -62,7 +62,7 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
     .from('payments')
     // referral_code_id + amount_cents added for recordConversion() below —
     // everything else here was already selected.
-    .select('id, paystack_ref, scan_id, fix_tier, created_at, referral_code_id, amount_cents')
+    .select('id, paystack_ref, scan_id, fix_tier, created_at, referral_code_id, referral_reservation_id, amount_cents')
     .eq('status', 'SUCCESS')
     .gt('created_at', new Date(now - LOOKBACK_MS).toISOString())
     .lt('created_at', new Date(now - ORPHAN_MIN_AGE_MS).toISOString())
@@ -186,12 +186,18 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
 
   const { data: stale, error } = await supabase
     .from('payments')
-    .select('id, paystack_ref')
+    .select('id, paystack_ref, referral_reservation_id')
     .eq('status', 'PENDING')
     .gt('created_at', new Date(now - PENDING_LOOKBACK_MS).toISOString())
     .lt('created_at', new Date(now - PENDING_ABANDON_AGE_MS).toISOString())
     .limit(MAX_ABANDON_PER_RUN)
   if (error) { result.error = error.message; return result }
+
+  // Reservation-table hygiene (migration 0044) — see referral.service.js's
+  // pruneReferralCodeReservations. Runs even when nothing is stale, never
+  // throws, never affects this sweep's own result.
+  await referralService.pruneReferralCodeReservations(supabase, { now })
+
   result.checked = stale?.length || 0
   if (!result.checked) return result
 
@@ -207,8 +213,16 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
       .eq('status', 'PENDING')
       .select('id')
     if (updErr) { console.error('Stale payment sweep update:', updErr.message); continue }
-    if (claimed?.length) result.abandoned++
+    if (claimed?.length) {
+      result.abandoned++
+      // Section 3/4 (usage-limit reservation, migration 0044): only the
+      // caller that won the PENDING -> ABANDONED claim releases the slot; a
+      // row a concurrent verify/webhook settled is consumed by
+      // recordConversion instead. Best-effort, never throws.
+      await referralService.releaseCodeReservation(supabase, row.referral_reservation_id)
+    }
   }
+
   return result
 }
 
