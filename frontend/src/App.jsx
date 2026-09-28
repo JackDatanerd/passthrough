@@ -48,6 +48,7 @@ const AdminPayments      = lazyWithRetry(() => import('./pages/admin/AdminPaymen
 const AdminWebhooks      = lazyWithRetry(() => import('./pages/admin/AdminWebhooks'))
 const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'))
 const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
+const AdminAuditLog      = lazyWithRetry(() => import('./pages/admin/AdminAuditLog'))
 
 // Sends a signed-out visitor to /login, remembering where they were headed so
 // login can return them there (Login validates ?next= via safeNext).
@@ -142,6 +143,7 @@ function RoutedApp() {
             <Route path="webhooks"     element={<AdminWebhooks />} />
             <Route path="leads"        element={<AdminLeads />} />
             <Route path="health"       element={<AdminSystemHealth />} />
+            <Route path="audit-log"    element={<AdminAuditLog />} />
           </Route>
 
           {/* Catch-all: a real 404 page instead of a silent redirect home */}

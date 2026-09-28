@@ -17,6 +17,7 @@ const { revokeVerification, restoreVerification, revokeUserVerifications, restor
 const { getSupabase } = require('../config/supabase')
 const c = require('../config/constants')
 const cryptoLib = require('../lib/crypto')
+const { logAdminAction } = require('../lib/adminAudit')
 
 // Shared page-param parsing — every list endpoint here is paginated the
 // same way so the frontend can use one generic table component for all of
@@ -240,6 +241,15 @@ async function adminUpdateUser(ctx) {
   }
 
   const supabase = getSupabase(ctx.env)
+
+  // FEATURE GAP CLOSED (Section 12 audit): need the OLD status/role to know
+  // whether this call actually changed anything worth logging (a no-op PATCH
+  // — resending the same status, say — shouldn't create a log entry that
+  // implies something happened). Best-effort like partners.controller.js's
+  // equivalent read: if it fails, fall through to the update exactly as
+  // before, just without a "from" value in the log entry.
+  const { data: before } = await supabase.from('users').select('status, role').eq('id', userId).maybeSingle()
+
   const patch = {}
   if (body.status !== undefined) patch.status = body.status
   if (body.role !== undefined)   patch.role = body.role
@@ -248,6 +258,23 @@ async function adminUpdateUser(ctx) {
   const { data, error } = await supabase.from('users').update(patch).eq('id', userId).select(USER_LIST_FIELDS).maybeSingle()
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'User not found.' }, 404)
+
+  // FEATURE GAP CLOSED (Section 12 audit): this is this file's one
+  // moderation action (see the top-of-file comment) — banning a user,
+  // promoting/demoting a role, or resetting their scan quota — and until
+  // now it left no trace anywhere of which admin did it or when, unlike the
+  // equivalent leads-admin actions (employer-leads.controller.js) or a
+  // partner's payout/status changes (partners.controller.js). Only logged
+  // when something actually changed; a resubmitted no-op PATCH stays quiet.
+  const statusChanged = body.status !== undefined && before?.status !== data.status
+  const roleChanged   = body.role   !== undefined && before?.role   !== data.role
+  if (statusChanged || roleChanged || body.resetScansToday) {
+    await logAdminAction(ctx, supabase, 'user.update', 'user', userId, {
+      ...(statusChanged ? { statusFrom: before?.status ?? null, statusTo: data.status } : {}),
+      ...(roleChanged   ? { roleFrom: before?.role ?? null, roleTo: data.role } : {}),
+      ...(body.resetScansToday ? { scansReset: true } : {})
+    })
+  }
 
   // ROUND-2 AUDIT FIX (feature gap, Section 7): a ban used to leave the user's
   // public verification pages (and any downloadable resume they had exposed)
@@ -419,6 +446,39 @@ async function adminListAlerts(ctx) {
   return ctx.json({ success: true, data: alerts, meta: { page, pageSize, total: count || 0 } })
 }
 
+// GET /api/admin/audit-log
+//
+// FEATURE GAP CLOSED (Section 12 audit): admin_audit_log (see lib/adminAudit.js
+// and migration 0034) has been an append-only record of admin actions on
+// other people's data since the leads section was built — bulk deletes,
+// status changes, CSV exports — and every one of the newer admin actions
+// this same audit round wired up (user ban/role changes, partner status/
+// payout-link changes, payment reversals) writes into it too. But nothing
+// anywhere ever read it back: the table existed purely to be queried by
+// hand in the database. This is that read path, filterable by target_type
+// and action the same way adminListEmailLogs filters by status/template.
+async function adminListAuditLog(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const targetType = ctx.req.query('targetType')
+  const action     = ctx.req.query('action')
+
+  let query = supabase.from('admin_audit_log')
+    .select('id, action, target_type, target_id, detail, created_at, users(email)', { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (targetType) query = query.eq('target_type', targetType)
+  if (action)     query = query.eq('action', action)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  const entries = data.map(row => ({
+    id: row.id, action: row.action, targetType: row.target_type, targetId: row.target_id,
+    detail: row.detail || {}, actorEmail: row.users?.email || null, createdAt: row.created_at
+  }))
+  return ctx.json({ success: true, data: entries, meta: { page, pageSize, total: count || 0 } })
+}
+
 // POST /api/admin/scans/:id/requeue-fix
 //
 // The manual escape hatch for a customer who PAID and whose fix failed to
@@ -480,5 +540,5 @@ module.exports = {
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,
   adminListScans, adminSetVerification, adminListPayments,
-  adminListEmailLogs, adminListAlerts
+  adminListEmailLogs, adminListAlerts, adminListAuditLog
 }

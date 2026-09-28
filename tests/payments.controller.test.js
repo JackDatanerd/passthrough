@@ -716,3 +716,71 @@ describe('getPaymentHistory', () => {
     restore()
   })
 })
+
+// SECTION 12 AUDIT (feature gap): reconcile / recheck / resolve are the
+// admin-only actions that move real money (or the record of it), and none of
+// them left any trace of WHICH admin did it. Each now writes to
+// admin_audit_log via lib/adminAudit.js. worldSetup's c() acts as user 'u1'.
+describe('admin payment actions — audit trail', () => {
+  const audit = w => w.world.t.admin_audit_log || []
+  function sold(status = 'SUCCESS') {
+    const w = worldSetup()
+    Object.assign(w.world.t.payments[0], { status, referral_code_id: 'rc1' })
+    Object.assign(w.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    w.world.t.commission_ledger.push({ id: 'led1', payment_id: 'pay1', partner_id: 'p1', referral_code_id: 'rc1', gross_amount_cents: 2900, commission_rate: 0.2, commission_amount_cents: 580, payout_id: null, reverses_ledger_id: null })
+    return w
+  }
+
+  it('reverse logs payment.reversed with the reason and what was undone', async () => {
+    t = sold()
+    await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(audit(t)).toHaveLength(1)
+    expect(audit(t)[0]).toMatchObject({
+      actor_id: 'u1', action: 'payment.reversed', target_type: 'payment', target_id: 'pay1',
+      detail: { reference: 'ref1', reason: 'REFUND', commissionReversed: true, verificationRevoked: true },
+    })
+  })
+  it('reversing a DISPUTED payment logs reason DISPUTE', async () => {
+    t = sold('DISPUTED')
+    await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(audit(t)[0].detail.reason).toBe('DISPUTE')
+  })
+  it('clear-dispute logs payment.dispute_cleared', async () => {
+    t = sold('DISPUTED')
+    await t.mod.resolvePayment(t.c({ body: { action: 'clear-dispute' } }))
+    expect(audit(t)).toHaveLength(1)
+    expect(audit(t)[0]).toMatchObject({ action: 'payment.dispute_cleared', target_id: 'pay1', detail: { reference: 'ref1' } })
+  })
+  it('a REFUSED resolve (400/404) logs nothing — nothing happened', async () => {
+    t = sold('SUCCESS')
+    await t.mod.resolvePayment(t.c({ body: { action: 'clear-dispute' } }))          // not DISPUTED → 400
+    await t.mod.resolvePayment(t.c({ params: { reference: 'nope' }, body: { action: 'reverse' } })) // 404
+    expect(audit(t)).toHaveLength(0)
+  })
+  it('reconcile logs payment.reconcile with the outcome', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'SUCCESS'
+    await t.mod.reconcilePayment(t.c())
+    expect(audit(t)).toHaveLength(1)
+    expect(audit(t)[0]).toMatchObject({ action: 'payment.reconcile', target_id: 'pay1', detail: { reference: 'ref1', outcome: 'FULFILLED' } })
+  })
+  it('reconcile of a non-SUCCESS payment (400) logs nothing', async () => {
+    t = worldSetup()   // PENDING
+    await t.mod.reconcilePayment(t.c())
+    expect(audit(t)).toHaveLength(0)
+  })
+  it('recheck logs payment.recheck including whether a mismatch was accepted', async () => {
+    t = worldSetup({}, { paystack: { data: { status: 'success', currency: 'USD', amount: 3100 } } })
+    await t.mod.recheckPayment(t.c())                                             // held (MISMATCH, 409)
+    await t.mod.recheckPayment(t.c({ body: { acceptAmountMismatch: true } }))    // accepted
+    expect(audit(t)).toHaveLength(2)
+    expect(audit(t)[0].detail).toMatchObject({ outcome: 'MISMATCH', acceptAmountMismatch: false })
+    expect(audit(t)[1].detail).toMatchObject({ acceptAmountMismatch: true })
+  })
+  it('a failed audit write never turns a completed reversal into an error', async () => {
+    t = sold()
+    t.world.failNext('admin_audit_log', 'insert', { message: 'audit table down' })
+    const res = await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.world.t.payments[0].status).toBe('REFUNDED')
+  })
+})

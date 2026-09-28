@@ -18,6 +18,7 @@ const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const emailService = require('../services/email.service')
 const { recentCycles, cycleKey } = require('../lib/cycles')
+const { logAdminAction } = require('../lib/adminAudit')
 const {
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   camelToSnake, PARTNER_FIELD_MAP
@@ -223,6 +224,21 @@ async function adminUpdatePartner(ctx) {
     ])
   }
 
+  // FEATURE GAP CLOSED (Section 12 audit): the email/status changes just
+  // above already trigger a best-effort owner-alert EMAIL — real, but not
+  // queryable, and easy to lose in an inbox. This adds the same durable,
+  // queryable record every leads-admin action already gets (see
+  // employer-leads.controller.js). Field NAMES and status values only,
+  // never the actual email addresses (see lib/adminAudit.js's own rule).
+  if ((body.email !== undefined && before?.email && before.email !== data.email) ||
+      (body.status !== undefined && before?.status && before.status !== data.status)) {
+    await logAdminAction(ctx, supabase, 'partner.update', 'partner', partnerId, {
+      emailChanged: body.email !== undefined && before?.email !== data.email,
+      ...(body.status !== undefined && before?.status !== data.status
+        ? { statusFrom: before.status, statusTo: data.status } : {})
+    })
+  }
+
   return ctx.json({ success: true, data: partnerRowToCamel(data) })
 }
 
@@ -375,6 +391,13 @@ async function adminRegeneratePayoutLink(ctx) {
   const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${newToken}`
   const emailed = await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, partner.email, partner.name, payoutUrl)
     .catch(() => false)
+
+  // FEATURE GAP CLOSED (Section 12 audit): this route's own comment above
+  // calls this link "the only thing standing between an email compromise and
+  // someone redirecting a real future payout" — exactly the kind of action
+  // that should leave a durable trace of which admin triggered it and when,
+  // and until now didn't, anywhere.
+  await logAdminAction(ctx, supabase, 'partner.payout_link_regenerated', 'partner', partnerId, { emailed })
 
   // AUDIT FIX (feature gap): same admin-facing fallback as adminResendPayoutLink
   // above, and if anything a stronger case here — this is the moment the
@@ -681,6 +704,17 @@ async function adminRecordPayout(ctx) {
   const emailed = await emailService.sendPayoutSent(
     ctx.env, supabase, partner.email, partner.name, payoutRow.amount_cents, payoutRow.currency
   ).catch(() => false)
+
+  // FEATURE GAP CLOSED (Section 12 audit): recording a payout moves real
+  // money and, unlike the two error paths above (settlement failure, race —
+  // both already owner-alerted), the ROUTINE, successful case left no
+  // record anywhere of which admin recorded it. amountCents/currency only —
+  // no payout method/bank details, which already live on the payout row
+  // itself and are the more sensitive of the two.
+  await logAdminAction(ctx, supabase, 'partner.payout_recorded', 'payout', payoutRow.id, {
+    partnerId, amountCents: payoutRow.amount_cents, currency: payoutRow.currency,
+    racedWithConcurrentPayout, ledgerSettlementFailed
+  })
 
   return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout, ledgerSettlementFailed })
 }

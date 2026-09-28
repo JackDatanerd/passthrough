@@ -316,3 +316,104 @@ describe('round 3 — adminBackfillPdfHashes (pages issued before PDF fingerprin
     expect(updates[0].filters.some(f => f[0] === 'is' && f[1] === 'resume_pdf_hash')).toBe(true)
   })
 })
+
+// SECTION 12 AUDIT (feature gap): adminUpdateUser is this file's one
+// moderation action (ban / role / quota reset) and left no trace of which
+// admin did it. It now logs to admin_audit_log — but only when something
+// actually changed, and never with anything beyond status/role values.
+describe('adminUpdateUser — audit trail', () => {
+  function auditSetup({ before, after, auditError } = {}) {
+    const audits = []
+    const s = setup(q => {
+      if (q.table === 'users' && q.op === 'select') return { data: before ?? null, error: null }
+      if (q.table === 'users' && q.op === 'update') return { data: after ?? { id: 'u2' }, error: null }
+      if (q.table === 'admin_audit_log' && q.op === 'insert') { audits.push(q.values); return { data: null, error: auditError ?? null } }
+      return undefined
+    })
+    return { ...s, audits }
+  }
+
+  it('logs a ban with the from/to status and the acting admin', async () => {
+    t = auditSetup({ before: { status: 'ACTIVE', role: 'SEEKER' }, after: { id: 'u2', status: 'BANNED', role: 'SEEKER' } })
+    await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { status: 'BANNED' } }))
+    expect(t.audits).toEqual([{
+      actor_id: 'admin-1', action: 'user.update', target_type: 'user', target_id: 'u2',
+      detail: { statusFrom: 'ACTIVE', statusTo: 'BANNED' },
+    }])
+  })
+  it('logs a role change, and a combined status+role+reset change in ONE entry', async () => {
+    t = auditSetup({ before: { status: 'BANNED', role: 'SEEKER' }, after: { id: 'u2', status: 'ACTIVE', role: 'ADMIN' } })
+    await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { status: 'ACTIVE', role: 'ADMIN', resetScansToday: true } }))
+    expect(t.audits).toHaveLength(1)
+    expect(t.audits[0].detail).toEqual({ statusFrom: 'BANNED', statusTo: 'ACTIVE', roleFrom: 'SEEKER', roleTo: 'ADMIN', scansReset: true })
+  })
+  it('a quota reset alone logs scansReset only', async () => {
+    t = auditSetup({ before: { status: 'ACTIVE', role: 'SEEKER' }, after: { id: 'u2', status: 'ACTIVE', role: 'SEEKER' } })
+    await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { resetScansToday: true } }))
+    expect(t.audits[0].detail).toEqual({ scansReset: true })
+  })
+  it('a no-op PATCH (same status/role resubmitted) logs nothing', async () => {
+    t = auditSetup({ before: { status: 'BANNED', role: 'SEEKER' }, after: { id: 'u2', status: 'BANNED', role: 'SEEKER' } })
+    await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { status: 'BANNED', role: 'SEEKER' } }))
+    expect(t.audits).toHaveLength(0)
+  })
+  it('does not crash when the before-read finds no row (before = null) — logs from: null', async () => {
+    t = auditSetup({ before: null, after: { id: 'u2', status: 'BANNED', role: 'SEEKER' } })
+    const res = await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { status: 'BANNED' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.audits[0].detail).toEqual({ statusFrom: null, statusTo: 'BANNED' })
+  })
+  it('a 404 (user does not exist) and a refused self-ban log nothing', async () => {
+    t = auditSetup({ before: null })
+    t.db.calls.length = 0
+    await t.mod.adminUpdateUser(t.c({ param: 'admin-1', actingUser: { id: 'admin-1' }, body: { status: 'BANNED' } }))
+    expect(t.audits).toHaveLength(0)
+    t.restore()
+    t = setup(q => (q.op === 'update' ? { data: null, error: null } : undefined))
+    const res = await t.mod.adminUpdateUser(t.c({ param: 'nope', body: { status: 'BANNED' } }))
+    expect(res.status).toBe(404)
+    expect(t.db.calls.some(c => c.table === 'admin_audit_log')).toBe(false)
+  })
+  it('a failed audit write never fails the moderation action itself', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      t = auditSetup({ before: { status: 'ACTIVE', role: 'SEEKER' }, after: { id: 'u2', status: 'BANNED', role: 'SEEKER' }, auditError: { message: 'audit down' } })
+      const res = await t.mod.adminUpdateUser(t.c({ param: 'u2', body: { status: 'BANNED' } }))
+      expect(res.body.success).toBe(true)
+    } finally { console.error = realErr }
+  })
+})
+
+describe('adminListAuditLog', () => {
+  const row = (over = {}) => ({ id: 'a1', action: 'user.update', target_type: 'user', target_id: 'u2', detail: { statusTo: 'BANNED' }, created_at: 't1', users: { email: 'boss@x.co' }, ...over })
+
+  it('maps rows to camelCase, newest-first, with the joined actor email and pagination meta', async () => {
+    t = setup(q => (q.table === 'admin_audit_log' ? { data: [row()], error: null, count: 41 } : undefined))
+    const res = await t.mod.adminListAuditLog(t.c({ query: { page: '2', pageSize: '20' } }))
+    expect(res.body.data[0]).toEqual({ id: 'a1', action: 'user.update', targetType: 'user', targetId: 'u2', detail: { statusTo: 'BANNED' }, actorEmail: 'boss@x.co', createdAt: 't1' })
+    expect(res.body.meta).toEqual({ page: 2, pageSize: 20, total: 41 })
+    const call = t.db.calls.find(c => c.table === 'admin_audit_log')
+    expect(call.range).toEqual([20, 39])
+    expect(call.orders[0]).toEqual(['created_at', { ascending: false }])
+  })
+  it('applies the targetType and action filters only when given', async () => {
+    t = setup(q => (q.table === 'admin_audit_log' ? { data: [], error: null, count: 0 } : undefined))
+    await t.mod.adminListAuditLog(t.c({ query: {} }))
+    expect(t.db.calls.find(c => c.table === 'admin_audit_log').filters).toHaveLength(0)
+    t.restore()
+    t = setup(q => (q.table === 'admin_audit_log' ? { data: [], error: null, count: 0 } : undefined))
+    await t.mod.adminListAuditLog(t.c({ query: { targetType: 'payment', action: 'payment.reversed' } }))
+    const f = t.db.calls.find(c => c.table === 'admin_audit_log').filters
+    expect(f.find(x => x[1] === 'target_type')[2]).toBe('payment')
+    expect(f.find(x => x[1] === 'action')[2]).toBe('payment.reversed')
+  })
+  it('actorEmail is null (not a crash) when the actor row is gone; detail defaults to {}', async () => {
+    t = setup(q => (q.table === 'admin_audit_log' ? { data: [row({ users: null, detail: null })], error: null, count: 1 } : undefined))
+    const res = await t.mod.adminListAuditLog(t.c())
+    expect(res.body.data[0]).toMatchObject({ actorEmail: null, detail: {} })
+  })
+  it('propagates a database error', async () => {
+    t = setup(q => (q.table === 'admin_audit_log' ? { data: null, error: new Error('db down') } : undefined))
+    await expect(t.mod.adminListAuditLog(t.c())).rejects.toThrow('db down')
+  })
+})

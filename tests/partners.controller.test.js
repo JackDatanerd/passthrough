@@ -850,3 +850,101 @@ describe('trackClick', () => {
     restore()
   })
 })
+
+// SECTION 12 AUDIT (feature gap): status/email changes already sent an owner
+// alert EMAIL, but recording a payout and rotating a payout link — both real
+// money/security actions — left no record at all of which admin did them, and
+// even the emailed changes weren't queryable. All four admin mutations now
+// also write to admin_audit_log. The log carries ids, amounts and status
+// values only — never an email address or any payout/bank details.
+describe('partner admin actions — audit trail', () => {
+  function setupAudit(opts = {}) {
+    const audits = []
+    const partner = 'partner' in opts ? opts.partner : { id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', payout_method: 'BANK', payout_details: { bankName: 'SecretBank', accountNumber: '0123456789' } }
+    const unpaid = [{ id: 'l1', commission_amount_cents: 500 }, { id: 'l2', commission_amount_cents: 700 }]
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select') return { data: partner, error: null }
+      if (q.table === 'partners' && q.op === 'update') return { data: opts.updated ?? partner, error: null }
+      if (q.table === 'commission_ledger' && q.op === 'select') return { data: unpaid, error: null }
+      if (q.table === 'commission_ledger' && q.op === 'update') return { data: unpaid, error: null }
+      if (q.table === 'payouts' && q.op === 'insert') return { data: { id: 'payout1', ...q.values }, error: null }
+      if (q.table === 'admin_audit_log' && q.op === 'insert') { audits.push(q.values); return { data: null, error: opts.auditError ?? null } }
+      return undefined
+    })
+    const ok = async () => true
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': {
+        sendPartnerEmailChanged: ok, sendPartnerStatusChanged: ok, sendOwnerAlert: ok,
+        sendPartnerLinkRegenerated: ok, sendPayoutSent: ok,
+      },
+    })
+    const c = (over = {}) => ({
+      env: { FRONTEND_URL: 'https://passthrough.dev' },
+      get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
+      req: { param: () => 'p1', json: async () => over.body ?? {} },
+      json: (body, status = 200) => ({ body, status }),
+    })
+    return { mod, restore, audits, c }
+  }
+
+  it('a status change logs from/to — and never the partner email', async () => {
+    t = setupAudit({ updated: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'PAUSED' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'PAUSED' } }))
+    expect(t.audits).toEqual([{
+      actor_id: 'admin-1', action: 'partner.update', target_type: 'partner', target_id: 'p1',
+      detail: { emailChanged: false, statusFrom: 'ACTIVE', statusTo: 'PAUSED' },
+    }])
+    expect(JSON.stringify(t.audits)).not.toContain('k@x.co')
+  })
+  it('an email change logs emailChanged:true but neither address', async () => {
+    t = setupAudit({ updated: { id: 'p1', email: 'new@x.co', name: 'Coach K', status: 'ACTIVE' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
+    expect(t.audits).toHaveLength(1)
+    expect(t.audits[0].detail).toEqual({ emailChanged: true })
+    const raw = JSON.stringify(t.audits)
+    expect(raw).not.toContain('new@x.co'); expect(raw).not.toContain('k@x.co')
+  })
+  it('logs nothing when status/email are unchanged, or only harmless fields (name/rate) changed', async () => {
+    t = setupAudit({ updated: { id: 'p1', email: 'k@x.co', name: 'Coach K', status: 'ACTIVE' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { status: 'ACTIVE', commissionRate: 0.3, name: 'Coach K' } }))
+    expect(t.audits).toHaveLength(0)
+  })
+  it('regenerating a payout link logs payout_link_regenerated (and never the token/url)', async () => {
+    t = setupAudit()
+    const res = await t.mod.adminRegeneratePayoutLink(t.c())
+    expect(res.body.success).toBe(true)
+    expect(t.audits).toEqual([{
+      actor_id: 'admin-1', action: 'partner.payout_link_regenerated', target_type: 'partner', target_id: 'p1',
+      detail: { emailed: true },
+    }])
+    expect(JSON.stringify(t.audits)).not.toContain('token=')
+  })
+  it('regenerating for a partner that does not exist (404) logs nothing', async () => {
+    t = setupAudit({ partner: null })
+    const res = await t.mod.adminRegeneratePayoutLink(t.c())
+    expect(res.status).toBe(404)
+    expect(t.audits).toHaveLength(0)
+  })
+  it('recording a payout logs partner.payout_recorded with amount/currency — and no bank details', async () => {
+    t = setupAudit()
+    const res = await t.mod.adminRecordPayout(t.c())
+    expect(res.body.success).toBe(true)
+    expect(t.audits).toHaveLength(1)
+    expect(t.audits[0]).toMatchObject({
+      actor_id: 'admin-1', action: 'partner.payout_recorded', target_type: 'payout', target_id: 'payout1',
+      detail: { partnerId: 'p1', amountCents: 1200, racedWithConcurrentPayout: false, ledgerSettlementFailed: false },
+    })
+    expect(typeof t.audits[0].detail.currency).toBe('string')
+    const raw = JSON.stringify(t.audits)
+    expect(raw).not.toContain('SecretBank'); expect(raw).not.toContain('0123456789')
+  })
+  it('a failed audit write never fails the payout that already happened', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      t = setupAudit({ auditError: { message: 'audit down' } })
+      const res = await t.mod.adminRecordPayout(t.c())
+      expect(res.body.success).toBe(true)
+    } finally { console.error = realErr }
+  })
+})

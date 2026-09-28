@@ -165,6 +165,23 @@ describe('endSession via the response interceptor', () => {
     expect(replace).toHaveBeenCalledWith('/login?banned=true')
   })
 
+  // BUG FIX (Section 11 audit): AuthProvider's refreshUser() calls /auth/me on
+  // every app load regardless of page, and nothing redirects an already-
+  // authenticated visitor away from /login — so a session that gets banned
+  // while its tab happens to already be on /login is a real, reachable case,
+  // not just a theoretical one. It used to fall through to the silent-logout
+  // branch with no ?banned=true ever set, leaving the person logged out with
+  // no explanation.
+  it('a banned account already sitting on /login still gets the banned notice', async () => {
+    const { replace, dispatchEvent } = setGlobals({ pathname: '/login', token: 'tok' })
+    const api = await loadApi()
+    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { code: 'BANNED' } } } }])
+    await expect(api.get('/auth/me', { adapter })).rejects.toBeTruthy()
+    expect(dispatchEvent).toHaveBeenCalledTimes(1)
+    expect(dispatchEvent.mock.calls[0][0].detail).toEqual({ reason: 'banned' })
+    expect(replace).toHaveBeenCalledWith('/login?banned=true')
+  })
+
   it('an expired session on a PUBLIC path clears storage but does not redirect', async () => {
     const { localStorage, replace, dispatchEvent } = setGlobals({ pathname: '/', token: 'tok' })
     const api = await loadApi()

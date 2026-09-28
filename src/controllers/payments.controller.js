@@ -23,6 +23,7 @@ const emailService = require('../services/email.service')
 const referralService = require('../services/referral.service')
 const fulfillmentService = require('../services/fulfillment.service')
 const reconcileService = require('../services/reconcile.service')
+const { logAdminAction } = require('../lib/adminAudit')
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
@@ -533,6 +534,16 @@ async function reconcilePayment(ctx) {
     ACCOUNT_DELETED:   'The account was deleted — nothing to deliver. Refund it in Paystack.',
   }
   const ok = !['SCAN_MISSING', 'NO_SCAN'].includes(result.outcome)
+
+  // FEATURE GAP CLOSED (Section 12 audit): an admin forcing a stuck payment
+  // through fulfillment (bypassing the automatic re-enqueue grace period)
+  // left no record anywhere of who did it or when — this file's other
+  // admin-only mutations (resolvePayment, recheckPayment) get the same
+  // treatment below, for the same reason.
+  await logAdminAction(ctx, supabase, 'payment.reconcile', 'payment', payment.id, {
+    reference, outcome: result.outcome, fixTier: result.fixTier
+  })
+
   return ctx.json({ success: ok, message: messages[result.outcome] || result.outcome,
     data: { scanId: payment.scan_id, outcome: result.outcome, fixTier: result.fixTier, conversion } }, ok ? 200 : 404)
 }
@@ -573,6 +584,11 @@ async function recheckPayment(ctx) {
   }
   await fulfillmentService.notifySettlementProblem(ctx.env, r, payment, 'admin-recheck')
 
+  // FEATURE GAP CLOSED (Section 12 audit): see reconcilePayment's comment above.
+  await logAdminAction(ctx, supabase, 'payment.recheck', 'payment', payment.id, {
+    reference, outcome: r.outcome, acceptAmountMismatch: !!body.acceptAmountMismatch
+  })
+
   if (r.outcome === 'NOT_PAID')
     return ctx.json({ success: false, message: `Paystack reports this transaction as "${r.paystackStatus}" — not paid.`, data: r }, 409)
   if (r.outcome === 'MISMATCH')
@@ -603,6 +619,12 @@ async function resolvePayment(ctx) {
     const { error: upErr } = await supabase.from('payments')
       .update({ status: 'SUCCESS', disputed_at: null }).eq('id', payment.id).eq('status', 'DISPUTED')
     if (upErr) throw upErr
+    // FEATURE GAP CLOSED (Section 12 audit): clearing a dispute and reversing
+    // a payment both move real money (or the record of it) and previously
+    // left no trace anywhere of which admin did it — see reconcilePayment's
+    // comment above for the other two admin-only mutations in this file that
+    // got the same fix.
+    await logAdminAction(ctx, supabase, 'payment.dispute_cleared', 'payment', payment.id, { reference })
     return ctx.json({ success: true, message: 'Dispute cleared — payment is SUCCESS again.' })
   }
 
@@ -610,6 +632,9 @@ async function resolvePayment(ctx) {
     return ctx.json({ success: false, message: `Payment is ${payment.status} — nothing to reverse.` }, 400)
   const reason = payment.status === 'DISPUTED' ? 'DISPUTE' : 'REFUND'
   const done = await fulfillmentService.reversePayment(supabase, payment, { reason })
+  await logAdminAction(ctx, supabase, 'payment.reversed', 'payment', payment.id, {
+    reference, reason, commissionReversed: done.ledger.reversed, verificationRevoked: done.revoked
+  })
   return ctx.json({ success: true, message: 'Reversed.', data: {
     transitioned: done.transitioned, commissionReversed: done.ledger.reversed,
     commissionNote: done.ledger.reason || (done.ledger.alreadyPaidOut ? 'already paid out — nets against next payout' : null),

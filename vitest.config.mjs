@@ -26,6 +26,9 @@ export default defineConfig({
   plugins: [react()],
   test: {
     environment: 'node',
+    // Registers jest-dom matchers + RTL cleanup for the jsdom component tests —
+    // see frontend/tests/setup.js for why this was a real (silent) gap.
+    setupFiles: ['./frontend/tests/setup.js'],
     // tests/webhooks etc. seed Node's require.cache to stub CommonJS modules, and
     // frontend/tests/utils changes process.env.TZ — both need real child
     // processes rather than worker threads.

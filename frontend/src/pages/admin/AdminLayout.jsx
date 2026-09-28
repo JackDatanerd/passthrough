@@ -12,6 +12,7 @@ const NAV = [
   { to: '/admin/webhooks',  label: 'Webhooks' },
   { to: '/admin/leads',     label: 'Leads' },
   { to: '/admin/health',    label: 'System Health' },
+  { to: '/admin/audit-log', label: 'Audit Log' },
 ]
 
 // A tiny always-visible strip of the numbers Jack actually checks daily —

@@ -46,7 +46,17 @@ function endSession(reason) {
   // Only pages that REQUIRE a session get bounced (and they remember where the
   // user was, so login can send them back). Public pages just carry on
   // logged-out. A banned account is sent to the login notice from anywhere.
-  if (pathname !== '/login' && (reason === 'banned' || isProtectedPath(pathname))) {
+  //
+  // BUG FIX (Section 11 audit): "from anywhere" used to exclude the one place
+  // it matters most — /login itself. AuthProvider's refreshUser() calls
+  // /auth/me on every app load regardless of page, and nothing here redirects
+  // an already-authenticated visitor away from /login, so a session that gets
+  // banned while its tab happens to already be sitting on /login hit the
+  // `pathname !== '/login'` guard and fell into the silent-logout branch below
+  // with no `?banned=true` ever set — the person was just logged out with zero
+  // explanation. Expired sessions still only redirect off pages that actually
+  // require one; a banned account no longer has an exception for /login.
+  if (reason === 'banned' || (pathname !== '/login' && isProtectedPath(pathname))) {
     const flag = reason === 'banned' ? 'banned=true' : 'expired=true'
     const next = reason === 'banned' ? '' : `&next=${encodeURIComponent(pathname + search)}`
     window.location.replace(`/login?${flag}${next}`)

@@ -35,4 +35,8 @@ router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookE
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)
 
+// Section 12 audit (feature gap): read path for admin_audit_log — see
+// adminListAuditLog's own comment.
+router.get('/audit-log',  c.adminListAuditLog)
+
 module.exports = router

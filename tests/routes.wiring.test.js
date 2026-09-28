@@ -133,3 +133,24 @@ describe('admin routes — webhook inbox', () => {
     expect((await call(a, 'POST', '/webhook-events/not-a-uuid/replay', {})).status).toBe(400)
   })
 })
+
+// Section 12 audit (feature gap): GET /admin/audit-log is the read path for
+// admin_audit_log — a list of who did what to whose data, so it is exactly as
+// sensitive as the actions it records and must never be reachable without
+// the admin guard.
+describe('admin routes — audit log', () => {
+  const app = () => mount('routes/admin.routes.js', 'controllers/admin.controller.js', {
+    'controllers/webhooks.controller.js': marker(),
+  })
+  it('is admin-only: 401 anonymous, 403 for a non-admin', async () => {
+    const a = app()
+    current = undefined
+    expect((await call(a, 'GET', '/audit-log')).status).toBe(401)
+    current = { id: 'u1', role: 'USER' }
+    expect((await call(a, 'GET', '/audit-log')).status).toBe(403)
+  })
+  it('an admin reaches adminListAuditLog', async () => {
+    const a = app(); current = { id: 'a1', role: 'ADMIN' }
+    expect(await call(a, 'GET', '/audit-log')).toEqual({ status: 200, json: { handler: 'adminListAuditLog' } })
+  })
+})
