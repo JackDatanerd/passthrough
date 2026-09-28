@@ -377,6 +377,7 @@ function payoutRowToCamel(row) {
     payoutMethod:          row.payout_method,
     payoutDetailsSnapshot: row.payout_details_snapshot,
     note:                  row.note,
+    settledCommissionCents: row.settled_commission_cents ?? null,
     status:                row.status,
     // AUDIT FIX (Admin panel — twice-monthly payout cycles): added by
     // migration 0016 (payouts.period_start/period_end) so a recorded

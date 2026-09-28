@@ -1,0 +1,12 @@
+Section 4 (Partners / Referral) deep audit - fixes. Apply migration 0046 BEFORE deploying code.
+
+Bugs: RLS on referral_code_reservations; fractional commission rates no longer rewritten/rounded;
+usage counter repairable via /reconcile (commission_ledger.usage_counted + 3-arg increment RPC);
+safe localStorage in useReferralCapture; referral code format validation + URL-encoded links + future-only expiry;
+negative/older cycle balances shown; code badge reflects live state; 404-vs-other errors on partner pages;
+payout details trimmed.
+Gaps: payout settled_commission_cents + AMOUNT_DIFFERS guard; self-referral guard (checkout + scan quote);
+optional COMMISSION_HOLD_DAYS; payout token rotates on partner email change; audit log + rate-change email;
+reversal labels, tier labels, no-payout-details flag, richer Overview.
+Not done on purpose: hashing payout_details_token (emails embed the raw link).
+Tests updated/added but NOT run under vitest (logic verified with plain-node harness only).

@@ -84,7 +84,7 @@ async function initializePayment(c2) {
   // against the RESOLVED current code instead of the raw request body
   // field — see that function's comment for why the raw value was wrong
   // to compare against.
-  const priced = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode)
+  const priced = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode, { buyerEmail: user.email })
 
   // AUDIT FIX (bug): this used to compare fix_tier alone. A PENDING row
   // already has its price (and therefore its referral code, if any) locked

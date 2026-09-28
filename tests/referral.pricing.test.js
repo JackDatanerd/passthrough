@@ -34,7 +34,7 @@ describe('lookup — asserts WHAT was queried', () => {
   it('asks for the owning partner\'s status in the same query', async () => {
     const db = dbReturning(codeRow())
     await resolvePrice(db, 'FIX', {}, 'coach20')
-    expect(db.calls[0].cols).toContain('partners(status)')
+    expect(db.calls[0].cols).toContain('partners(status, email)')
   })
   it('surfaces a database error instead of silently charging the wrong price', async () => {
     const db = createFakeSupabase(() => ({ data: null, error: new Error('db down') }))
@@ -88,6 +88,21 @@ describe('resolvePrice', () => {
   })
 })
 
+describe('self-referral guard', () => {
+  const withPartner = email => codeRow({ partners: { status: 'ACTIVE', email } })
+  it('does not apply a partner\'s own code when the buyer\'s email matches theirs (case-insensitive)', async () => {
+    const r = await resolvePrice(dbReturning(withPartner('Jane@Example.com')), 'FIX', {}, 'COACH20', { buyerEmail: ' jane@example.COM ' })
+    expect(r.referralApplied).toBe(false)
+    expect(r.referralCode).toBeNull()
+    expect(r.selfReferral).toBe(true)
+  })
+  it('still applies the code for a different buyer, or when no buyer email is supplied', async () => {
+    const db = () => dbReturning(withPartner('jane@example.com'))
+    expect((await resolvePrice(db(), 'FIX', {}, 'COACH20', { buyerEmail: 'someone@else.com' })).referralApplied).toBe(true)
+    expect((await resolvePrice(db(), 'FIX', {}, 'COACH20')).referralApplied).toBe(true)
+  })
+})
+
 describe('isCodeUsable', () => {
   it('accepts an active, unexpired, under-limit code', () => expect(isCodeUsable(codeRow())).toBe(true))
   it('rejects null / inactive', () => {
@@ -132,11 +147,13 @@ describe('recordConversion — env alerting', () => {
 describe('recordConversion', () => {
   const payment = { id: 'pay1', referral_code_id: 'rc1', amount_cents: 1900 }
 
-  function db({ ledgerError, rpcError, partner = { commission_rate: 0.2 }, code = { id: 'rc1', partner_id: 'p1' } } = {}) {
+  function db({ ledgerError, rpcError, partner = { commission_rate: 0.2 }, code = { id: 'rc1', partner_id: 'p1' },
+                existing = { id: 'led1', usage_counted: true } } = {}) {
     return createFakeSupabase(q => {
       if (q.table === 'referral_codes') return { data: code, error: null }
       if (q.table === 'partners') return { data: partner, error: null }
-      if (q.table === 'commission_ledger') return { error: ledgerError || null }
+      if (q.table === 'commission_ledger' && q.op === 'select') return { data: existing, error: null }
+      if (q.table === 'commission_ledger') return { data: ledgerError ? null : { id: 'led1' }, error: ledgerError || null }
       if (q.op === 'rpc') return { error: rpcError || null }
       return undefined
     })
@@ -156,14 +173,15 @@ describe('recordConversion', () => {
     expect(ins.values).toEqual({
       payment_id: 'pay1', partner_id: 'p1', referral_code_id: 'rc1',
       gross_amount_cents: 1900, commission_rate: 0.2, commission_amount_cents: 380,
+      usage_counted: false,
     })
     expect(d.calls.find(q => q.op === 'rpc').name).toBe('increment_referral_code_usage')
-    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1' })
+    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_ledger_id: 'led1' })
   })
   it('passes the payment\'s reservation id to the usage RPC so it is consumed atomically (migration 0044)', async () => {
     const d = db()
     await recordConversion(d, { ...payment, referral_reservation_id: 'res-1' })
-    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_reservation_id: 'res-1' })
+    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_ledger_id: 'led1', p_reservation_id: 'res-1' })
   })
   it('rounds the commission to whole cents', async () => {
     const d = db({ partner: { commission_rate: 0.3333 } })
@@ -175,6 +193,21 @@ describe('recordConversion', () => {
     const r = await recordConversion(d, payment)
     expect(r).toEqual({ ok: true, recorded: false, reason: 'duplicate' })
     expect(d.calls.find(q => q.op === 'rpc')).toBeUndefined()
+  })
+  it('a duplicate whose usage was never counted (earlier bump failed) is REPAIRED, once, via the ledger id', async () => {
+    const d = db({ ledgerError: { code: '23505', message: 'dup' }, existing: { id: 'led9', usage_counted: false } })
+    const r = await recordConversion(d, { ...payment, referral_reservation_id: 'res-1' })
+    expect(r).toEqual({ ok: true, recorded: false, reason: 'duplicate', usageRepaired: true })
+    const lookup = d.calls.find(q => q.table === 'commission_ledger' && q.op === 'select')
+    expect(lookup.filters).toEqual(expect.arrayContaining([['eq', 'payment_id', 'pay1'], ['is', 'reverses_ledger_id', null]]))
+    expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_ledger_id: 'led9', p_reservation_id: 'res-1' })
+  })
+  it('a failed repair on a duplicate reports ok:false, recorded:false so reconcile can be retried again', async () => {
+    const d = db({ ledgerError: { code: '23505', message: 'dup' }, existing: { id: 'led9', usage_counted: false }, rpcError: { message: 'still down' } })
+    const r = await recordConversion(d, payment)
+    expect(r.ok).toBe(false)
+    expect(r.recorded).toBe(false)
+    expect(r.reason).toBe('usage-increment')
   })
   // The previous version only console.error'd here, so a lost commission was invisible.
   it('REPORTS a failed ledger insert (ok:false) instead of swallowing it', async () => {

@@ -19,6 +19,7 @@ export default function PartnerPayoutDetails() {
 
   const [loading,  setLoading ] = useState(true)
   const [invalid,  setInvalid ] = useState(false)
+  const [loadError, setLoadError] = useState(false)
   const [partnerName, setPartnerName] = useState('')
   const [alreadySubmittedAt, setAlreadySubmittedAt] = useState(null)
 
@@ -49,14 +50,19 @@ export default function PartnerPayoutDetails() {
           setPhoneNumber(d.phoneNumber || '')
         }
       })
-      .catch(() => setInvalid(true))
+      .catch(err => {
+        // Only a bad/expired link should say so — a 429/500/network drop is transient.
+        const status = err?.response?.status
+        if (status === 404 || status === 400) setInvalid(true)
+        else setLoadError(true)
+      })
       .finally(() => setLoading(false))
   }, [token])
 
   async function handleSubmit() {
     const body = method === 'BANK'
-      ? { payoutMethod: 'BANK', bankName, accountName, accountNumber }
-      : { payoutMethod: 'MOBILE_MONEY', provider, accountName, phoneNumber }
+      ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim() }
+      : { payoutMethod: 'MOBILE_MONEY', provider: provider.trim(), accountName: accountName.trim(), phoneNumber: phoneNumber.trim() }
 
     const missing = Object.values(body).some(v => !v)
     if (missing) {
@@ -79,6 +85,13 @@ export default function PartnerPayoutDetails() {
         <div className="w-full max-w-md bg-white rounded-lg border border-gray-200 shadow-sm p-8">
           {loading ? (
             <div className="flex justify-center py-8"><Spinner /></div>
+          ) : loadError ? (
+            <div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't load this page</h1>
+              <p className="text-sm text-gray-600">
+                Something went wrong on our side or with your connection — your link is fine. Please refresh in a moment.
+              </p>
+            </div>
           ) : invalid ? (
             <div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
@@ -93,7 +106,7 @@ export default function PartnerPayoutDetails() {
                 Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
                 You can revisit this link anytime to update them.
               </p>
-              <Link to={`/partner/dashboard?token=${token}`} className="text-sm text-blue-600 hover:underline">
+              <Link to={`/partner/dashboard?token=${encodeURIComponent(token)}`} className="text-sm text-blue-600 hover:underline">
                 View your dashboard →
               </Link>
             </div>

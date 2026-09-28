@@ -37,7 +37,7 @@ async function lookupCode(supabase, rawCode) {
   const code = String(rawCode).trim().toUpperCase()
   if (!code) return null
   const { data, error } = await supabase
-    .from('referral_codes').select('*, partners(status)').eq('code', code).maybeSingle()
+    .from('referral_codes').select('*, partners(status, email)').eq('code', code).maybeSingle()
   if (error) throw error
   return data
 }
@@ -75,7 +75,7 @@ function isCodeUsable(row) {
 // shape) and resolvePricesForTiers (all three tiers, one shared lookup —
 // getPricing's shape) reduce to the exact same tier-price math and can never
 // independently drift on what "the price for this code+tier" means.
-function priceForResolvedCode(fixTier, env, codeRow) {
+function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   const standard = c.priceForTier(fixTier, env)
   // AUDIT FIX: this used to hardcode c.CURRENCY ('USD') in all three returns
   // below, while the actual charge (paystack.service.js, payments.controller.js's
@@ -87,6 +87,14 @@ function priceForResolvedCode(fixTier, env, codeRow) {
 
   if (!isCodeUsable(codeRow) || tierPrice == null)
     return { amount: standard, currency, referralApplied: false, referralCode: null }
+
+  // Self-referral guard: a partner buying with their own code would collect
+  // the buyer discount AND the commission on the same sale. Silently fall
+  // back to normal pricing, exactly like any other code that doesn't apply.
+  // (Matches on the partner's registered email; a different email can't be
+  // detected here.)
+  if (isSelfReferral(codeRow, opts.buyerEmail))
+    return { amount: standard, currency, referralApplied: false, referralCode: null, selfReferral: true }
 
   // BUGFIX: tier_prices on a referral code is a static, admin-set cents
   // value with no awareness of an active site-wide promo (isPromoActive()).
@@ -102,10 +110,17 @@ function priceForResolvedCode(fixTier, env, codeRow) {
   return { amount: Math.min(tierPrice, standard), currency, referralApplied: true, referralCode: codeRow }
 }
 
-async function resolvePrice(supabase, fixTier, env, rawReferralCode) {
+function isSelfReferral(codeRow, buyerEmail) {
+  const partnerEmail = codeRow?.partners?.email
+  if (!partnerEmail || !buyerEmail) return false
+  return String(partnerEmail).trim().toLowerCase() === String(buyerEmail).trim().toLowerCase()
+}
+
+// opts.buyerEmail (optional) enables the self-referral guard above.
+async function resolvePrice(supabase, fixTier, env, rawReferralCode, opts = {}) {
   if (!rawReferralCode) return priceForResolvedCode(fixTier, env, null)
   const codeRow = await lookupCode(supabase, rawReferralCode)
-  return priceForResolvedCode(fixTier, env, codeRow)
+  return priceForResolvedCode(fixTier, env, codeRow, opts)
 }
 
 // AUDIT FIX (Section 3/4 pass, perf): pricing.controller.js's getPricing
@@ -266,40 +281,50 @@ async function recordConversionInner(supabase, payment, env) {
       return { ok: false, recorded: false, reason: 'bad-commission-rate', error: `commission_rate=${partner.commission_rate}` }
     const commissionAmountCents = Math.round(payment.amount_cents * commissionRate)
 
+    // usage_counted:false marks "row written, counter not bumped yet". The RPC
+    // below flips it and bumps uses_so_far in one transaction, exactly once —
+    // so a failed bump can be repaired by re-running this function (the
+    // /reconcile path) instead of being stuck behind the duplicate check.
     const ledgerRes = await withOneRetry(() => supabase.from('commission_ledger').insert({
       payment_id:              payment.id,
       partner_id:              codeRow.partner_id,
       referral_code_id:        codeRow.id,
       gross_amount_cents:      payment.amount_cents,
       commission_rate:         commissionRate,
-      commission_amount_cents: commissionAmountCents
-    }))
+      commission_amount_cents: commissionAmountCents,
+      usage_counted:           false
+    }).select('id').single())
+
+    let ledgerId = ledgerRes.data?.id || null
+    let repairOnly = false
     if (ledgerRes.error) {
-      if (ledgerRes.error.code === '23505') return { ok: true, recorded: false, reason: 'duplicate' }
-      console.error('recordConversion ledger insert:', ledgerRes.error.message)
-      return { ok: false, recorded: false, reason: 'ledger-insert', error: ledgerRes.error.message }
+      if (ledgerRes.error.code !== '23505') {
+        console.error('recordConversion ledger insert:', ledgerRes.error.message)
+        return { ok: false, recorded: false, reason: 'ledger-insert', error: ledgerRes.error.message }
+      }
+      // Duplicate: the commission already exists. Only act if a previous run
+      // wrote the row but never managed to count the usage.
+      const existing = await withOneRetry(() => supabase.from('commission_ledger')
+        .select('id, usage_counted').eq('payment_id', payment.id).is('reverses_ledger_id', null).maybeSingle())
+      if (existing.error) {
+        console.error('recordConversion duplicate lookup:', existing.error.message)
+        return { ok: false, recorded: false, reason: 'duplicate-lookup', error: existing.error.message }
+      }
+      if (!existing.data || existing.data.usage_counted !== false) return { ok: true, recorded: false, reason: 'duplicate' }
+      ledgerId = existing.data.id
+      repairOnly = true
     }
 
-    // AUDIT FIX (Section 3/4 pass, feature gap): p_reservation_id — see this
-    // file's header comment on the usage-limit fix (migration 0042). Passing
-    // it here releases the reservation this payment was holding (if any) in
-    // the SAME statement as the uses_so_far bump, so there's never a window
-    // where both a completed use AND its now-redundant reservation count
-    // toward the limit at once. `|| null` covers a payment that never held
-    // one (a code with no usage_limit at all, or one predating this
-    // migration) — increment_referral_code_usage treats that as a no-op.
-    // p_reservation_id is only sent when there IS one — payments for codes
-    // with no usage_limit never take a reservation (see initializePayment),
-    // and omitting the arg keeps this call identical to the pre-0044 shape
-    // for them.
-    const rpcArgs = { p_code_id: codeRow.id }
+    const rpcArgs = { p_code_id: codeRow.id, p_ledger_id: ledgerId }
     if (payment.referral_reservation_id) rpcArgs.p_reservation_id = payment.referral_reservation_id
     const rpcRes = await withOneRetry(() => supabase.rpc('increment_referral_code_usage', rpcArgs))
     if (rpcRes.error) {
       console.error('recordConversion usage increment:', rpcRes.error.message)
       // The commission itself IS recorded — only the usage counter is short by one.
-      return { ok: false, recorded: true, reason: 'usage-increment', error: rpcRes.error.message }
+      // Re-running (POST /api/payments/:ref/reconcile) now repairs exactly this.
+      return { ok: false, recorded: !repairOnly, reason: 'usage-increment', error: rpcRes.error.message }
     }
+    if (repairOnly) return { ok: true, recorded: false, reason: 'duplicate', usageRepaired: true }
     // AUDIT FIX (bug): see the file-level comment above — this is the
     // mitigation for the usage-limit gap. Not gated on `env` being passed
     // for a live fulfilment path specifically; every caller that DOES pass

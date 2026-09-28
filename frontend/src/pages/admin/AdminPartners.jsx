@@ -9,7 +9,7 @@ import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents } from '../../lib/utils'
+import { formatCents, formatRate } from '../../lib/utils'
 
 function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
@@ -129,11 +129,17 @@ export default function AdminPartners() {
                   <td className="px-4 py-3">
                     <Badge variant={p.status === 'ACTIVE' ? 'green' : 'gray'}>{p.status}</Badge>
                   </td>
-                  <td className="px-4 py-3 text-gray-600">{(p.commissionRate * 100).toFixed(0)}%</td>
+                  <td className="px-4 py-3 text-gray-600">{formatRate(p.commissionRate)}</td>
                   <td className="px-4 py-3 text-right">
                     <span className={p.readyToPayCents > 0 ? 'font-semibold text-amber-600' : 'text-gray-400'}>
                       {formatCents(p.readyToPayCents || 0, p.currency)}
                     </span>
+                    {p.readyToPayCents > 0 && !p.payoutMethod && (
+                      <div className="text-xs text-red-500 mt-0.5">No payout details yet</div>
+                    )}
+                    {p.heldCents > 0 && (
+                      <div className="text-xs text-gray-400 mt-0.5">{formatCents(p.heldCents, p.currency)} held</div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right text-gray-500">
                     {formatCents(p.currentCycleAccruedCents || 0, p.currency)}

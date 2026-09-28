@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { copyToClipboard, formatCents } from '../lib/utils'
+import { copyToClipboard, formatCents, formatRate } from '../lib/utils'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
@@ -26,7 +26,7 @@ const fmtCents = formatCents
 // shareable, a URL is.
 function ShareLink({ code }) {
   const [copied, setCopied] = useState(false)
-  const url = `${window.location.origin}/?ref=${code}`
+  const url = `${window.location.origin}/?ref=${encodeURIComponent(code)}`
 
   async function copy() {
     if (await copyToClipboard(url)) {
@@ -63,6 +63,21 @@ function ShareLink({ code }) {
 // working the moment they were paused. `partnerActive` now comes from
 // data.active (partners.controller.js) — see the account-level banner in the
 // main component below for the other half of this fix.
+const TIER_LABEL = { FIX: 'Fix + Credential', BADGE: 'Credential only', FIX_PLAIN: 'Fix only' }
+
+// Why a code is not live (null when it is). Drives the badge so it can't
+// say "Active" next to a caption saying the link isn't working.
+function codeInactiveReason(code, partnerActive) {
+  if (!partnerActive) return 'Paused'
+  if (!code.active) return 'Inactive'
+  if (code.expiresAt) {
+    const expiresMs = Date.parse(code.expiresAt)
+    if (Number.isNaN(expiresMs) || expiresMs < Date.now()) return 'Expired'
+  }
+  if (code.usageLimit != null && (code.usesSoFar || 0) >= code.usageLimit) return 'Limit reached'
+  return null
+}
+
 function isCodeLive(code, partnerActive) {
   if (!partnerActive) return false
   if (!code.active) return false
@@ -89,8 +104,8 @@ function CodeCard({ code, partnerActive, currency }) {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-mono text-lg font-bold text-blue-700">{code.code}</div>
         <span className={`text-xs px-2 py-0.5 rounded-full ${
-          code.active ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-          {code.active ? 'Active' : 'Inactive'}
+          live ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
+          {live ? 'Active' : codeInactiveReason(code, partnerActive)}
         </span>
       </div>
       <ShareLink code={code.code} />
@@ -100,7 +115,7 @@ function CodeCard({ code, partnerActive, currency }) {
             exactly the currency-drift bug already fixed elsewhere for the
             checkout price tags. If PAYSTACK_CURRENCY is ever not USD, a
             partner would see the wrong symbol on their own promo prices. */}
-        {prices.map(([tier, cents]) => `${tier}: ${fmtCents(cents, currency)}`).join(' · ')}
+        {prices.map(([tier, cents]) => `${TIER_LABEL[tier] || tier}: ${fmtCents(cents, currency)}`).join(' · ')}
       </div>
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
@@ -153,7 +168,7 @@ function ConversionRow({ conversion, currency }) {
         {showSaleLine && (
           <div className="text-xs text-gray-400 mt-0.5">
             {fmtCents(conversion.grossAmountCents, currency)} sale
-            {conversion.commissionRate != null ? ` · ${Math.round(conversion.commissionRate * 100)}% rate` : ''}
+            {conversion.commissionRate != null ? ` · ${formatRate(conversion.commissionRate)} rate` : ''}
           </div>
         )}
         {conversion.isReversal && (
@@ -207,9 +222,18 @@ function CycleRow({ cycle, currency }) {
         {cycle.unpaidCents > 0 ? (
           cycle.isCurrent ? (
             <span className="text-gray-400">{fmtCents(cycle.unpaidCents, currency)} — not payable yet</span>
+          ) : cycle.heldCents > 0 ? (
+            <span className="text-gray-500">
+              {cycle.unpaidCents - cycle.heldCents > 0 && (
+                <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents - cycle.heldCents, currency)} — ready to pay · </span>
+              )}
+              {fmtCents(cycle.heldCents, currency)} — held for the refund window
+            </span>
           ) : (
             <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents, currency)} — ready to pay</span>
           )
+        ) : cycle.unpaidCents < 0 ? (
+          <span className="text-red-600">{fmtCents(cycle.unpaidCents, currency)} — refund credit, nets against future commission</span>
         ) : (
           <span className="text-gray-400 italic">{cycle.ledgerCount > 0 ? 'Settled' : 'Nothing owed'}</span>
         )}
@@ -224,13 +248,20 @@ export default function PartnerDashboard() {
 
   const [loading, setLoading] = useState(true)
   const [invalid, setInvalid] = useState(false)
+  const [loadError, setLoadError] = useState(false)
   const [data, setData] = useState(null)
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
     api.get(`/partners/dashboard?token=${encodeURIComponent(token)}`)
       .then(res => setData(res.data.data))
-      .catch(() => setInvalid(true))
+      .catch(err => {
+        // Only a genuinely bad/expired link says so; a 429/500/network drop is
+        // transient and must not send the partner off to request a new link.
+        const status = err?.response?.status
+        if (status === 404 || status === 400) setInvalid(true)
+        else setLoadError(true)
+      })
       .finally(() => setLoading(false))
   }, [token])
 
@@ -240,6 +271,14 @@ export default function PartnerDashboard() {
       <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-10">
         {loading ? (
           <div className="flex justify-center py-16"><Spinner /></div>
+        ) : loadError ? (
+          <div className="bg-white rounded-lg border border-gray-200 p-8">
+            <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't load your dashboard</h1>
+            <p className="text-sm text-gray-600">
+              Something went wrong on our side or with your connection — your link is fine.
+              Please refresh in a moment.
+            </p>
+          </div>
         ) : invalid ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
@@ -253,7 +292,7 @@ export default function PartnerDashboard() {
               <h1 className="text-2xl font-bold text-gray-900">
                 {data.name}'s Passthrough dashboard
               </h1>
-              <Link to={`/partner/payout-details?token=${token}`}
+              <Link to={`/partner/payout-details?token=${encodeURIComponent(token)}`}
                 className="text-sm text-blue-600 hover:underline">
                 Update payout details →
               </Link>
@@ -266,7 +305,7 @@ export default function PartnerDashboard() {
                 they'd have to already know. */}
             {data.commissionRate != null && (
               <p className="text-sm text-gray-500 mb-5">
-                You earn {Math.round(data.commissionRate * 100)}% commission on every sale through your link.
+                You earn {formatRate(data.commissionRate)} commission on every sale through your link.
               </p>
             )}
 
@@ -295,6 +334,14 @@ export default function PartnerDashboard() {
                   {data.cyclesSummary.map(cycle => (
                     <CycleRow key={cycle.key} cycle={cycle} currency={data.currency} />
                   ))}
+                  {data.olderUnpaidCents !== 0 && (
+                    <div className="border border-gray-200 rounded-lg bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                      <div className="font-medium text-gray-900">Earlier cycles</div>
+                      <div className={`text-sm ${data.olderUnpaidCents > 0 ? 'font-semibold text-amber-600' : 'text-red-600'}`}>
+                        {fmtCents(data.olderUnpaidCents, data.currency)} {data.olderUnpaidCents > 0 ? '— still unpaid' : '— refund credit, nets against future commission'}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </>
             )}

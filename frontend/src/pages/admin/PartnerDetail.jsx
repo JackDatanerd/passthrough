@@ -62,6 +62,13 @@ function PayoutRow({ payout }) {
             <span className="text-gray-400 ml-2">· {formatDate(payout.periodStart)}–{formatDate(payout.periodEnd)}</span>
           )}
           {payout.note && <span className="text-gray-400 ml-2">({payout.note})</span>}
+          {payout.settledCommissionCents != null && payout.settledCommissionCents !== payout.amountCents && (
+            <div className="text-xs text-amber-600 mt-0.5">
+              Settled {formatCents(payout.settledCommissionCents, payout.currency)} of commission —{' '}
+              {payout.amountCents < payout.settledCommissionCents ? 'underpaid' : 'overpaid'} by{' '}
+              {formatCents(Math.abs(payout.amountCents - payout.settledCommissionCents), payout.currency)}
+            </div>
+          )}
         </div>
         {hasSnapshot && (
           <button
@@ -115,7 +122,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   const toast = useToast()
   const [name, setName] = useState(partner.name)
   const [email, setEmail] = useState(partner.email)
-  const [rate, setRate] = useState(String(Math.round(partner.commissionRate * 100)))
+  const [rate, setRate] = useState(String(+(partner.commissionRate * 100).toFixed(2)))
   const [status, setStatus] = useState(partner.status)
   const { loading: saving, error, execute } = useApi()
 
@@ -129,12 +136,20 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
     // was stricter than what the system actually supports. Check for a
     // genuinely empty/invalid field instead of falsy-zero.
     if (rate.trim() === '') return fail('Enter a commission rate.')
-    const rateNum = Number(rate) / 100
+    const rateNum = Math.round(Number(rate) * 100) / 10000  // whole basis points; avoids float noise
     if (!name || !email) return fail('Name and email are required.')
     if (Number.isNaN(rateNum) || rateNum < 0 || rateNum > 1) return fail('Commission rate must be between 0 and 100%.')
 
     try {
-      await execute(() => api.patch(`/partners/${partner.id}`, { name, email, commissionRate: rateNum, status }),
+      // Only send what changed — re-sending an untouched rate used to overwrite
+      // a fractional rate (12.5%) with its rounded display value.
+      const patch = {}
+      if (name.trim() !== partner.name)   patch.name = name.trim()
+      if (email !== partner.email)        patch.email = email
+      if (rateNum !== Number(partner.commissionRate)) patch.commissionRate = rateNum
+      if (status !== partner.status)      patch.status = status
+      if (Object.keys(patch).length === 0) { onClose(); return }
+      await execute(() => api.patch(`/partners/${partner.id}`, patch),
         { fallback: 'Failed to update partner.' })
       toast({ message: 'Partner updated.', type: 'success' })
       onSaved()
@@ -147,7 +162,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
-        <Input label="Commission rate (%)" type="number" step="1" min="0" max="100" value={rate}
+        <Input label="Commission rate (%)" type="number" step="0.01" min="0" max="100" value={rate}
           onChange={e => setRate(e.target.value)} />
         <p className="text-xs text-gray-400 -mt-2">
           Only applies going forward — past conversions keep the rate they were earned at.
@@ -180,10 +195,17 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
 // partners.controller.js for exactly what settling means in each case.
 function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   const toast = useToast()
-  const defaultCents = cycle ? cycle.unpaidCents : partner.pendingCommissionCents
+  // What the server will actually settle: unpaid commission minus anything
+  // still inside the refund-window hold.
+  const defaultCents = cycle
+    ? cycle.unpaidCents - (cycle.heldCents || 0)
+    : partner.pendingCommissionCents - (partner.heldCents || 0)
   const [amount, setAmount] = useState(defaultCents > 0 ? (defaultCents / 100).toFixed(2) : '')
   const [note, setNote] = useState('')
+  const [ack, setAck] = useState(false)
   const { loading: saving, error, execute } = useApi()
+  const amountCentsNow = Math.round(Number(amount || 0) * 100)
+  const differs = amountCentsNow > 0 && amountCentsNow !== defaultCents
 
   async function handleRecord() {
     const parsed = Number(amount)
@@ -193,9 +215,16 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       return
     }
 
+    if (differs && (!ack || !note.trim())) {
+      await execute(() => Promise.reject(new Error('Amount differs from the commission being settled — tick the confirmation and add a note explaining why.')),
+        { fallback: 'Confirm the difference and add a note.' }).catch(() => {})
+      return
+    }
+
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
+        ...(differs ? { acknowledgeDifference: true } : {}),
         // AUDIT FIX (Section 3/4 pass, bug): hardcoded 'USD' regardless of
         // the platform's actual configured currency (env.PAYSTACK_CURRENCY)
         // — the backend (recordPayoutSchema) already accepts any 3-letter
@@ -205,7 +234,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
         // record, not just a display label. partner.currency comes from
         // adminGetPartner (partners.controller.js).
         currency: partner.currency || 'USD',
-        note: note || undefined,
+        note: note.trim() || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
       }), { fallback: 'Failed to record payout.' })
       // AUDIT FIX (bug): ledgerSettlementFailed means the payout row was
@@ -244,8 +273,21 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
             ? `Recording this settles every conversion in ${cycle.label}, regardless of the exact amount entered above.`
             : `Recording this settles ${partner.name}'s ENTIRE outstanding balance (all cycles), regardless of the exact amount entered above.`}
         </p>
-        <Input label="Note (optional)" value={note} onChange={e => setNote(e.target.value)}
-          placeholder="e.g. September referrals" />
+        {differs && (
+          <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            <p>
+              You're sending {formatCents(amountCentsNow, partner.currency)} but this settles{' '}
+              {formatCents(defaultCents, partner.currency)} of commission. The difference is not tracked as owed —
+              it is recorded on the payout only.
+            </p>
+            <label className="flex items-center gap-2 mt-2">
+              <input type="checkbox" checked={ack} onChange={e => setAck(e.target.checked)} />
+              I confirm the amount differs on purpose
+            </label>
+          </div>
+        )}
+        <Input label={differs ? 'Note (required — explain the difference)' : 'Note (optional)'} value={note}
+          onChange={e => setNote(e.target.value)} placeholder="e.g. September referrals" />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
@@ -272,7 +314,10 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
     function fail(message) {
       return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
     }
-    if (!code) return fail('Code is required.')
+    const cleanCode = code.trim()
+    if (!cleanCode) return fail('Code is required.')
+    if (!/^[A-Za-z0-9_-]{2,50}$/.test(cleanCode)) return fail('Code must be 2–50 characters: letters, numbers, hyphens or underscores only.')
+    if (expiresAt && new Date(dateToExpiresAt(expiresAt)) <= new Date()) return fail('Expiry date must be in the future.')
     const tierPrices = {}
     if (fix)      tierPrices.FIX       = Math.round(Number(fix) * 100)
     if (badge)    tierPrices.BADGE     = Math.round(Number(badge) * 100)
@@ -281,13 +326,13 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
 
     try {
       await execute(() => api.post(`/partners/${partner.id}/referral-codes`, {
-        code, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined,
+        code: cleanCode, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined,
         // createReferralCodeSchema's expiresAt is optional but NOT
         // nullable — omit the key entirely rather than send null when no
         // date was picked.
         ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {})
       }), { fallback: 'Failed to create code.' })
-      toast({ message: `Code ${code.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
+      toast({ message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
       onCreated()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -344,6 +389,15 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
       return
     }
 
+    // Only send expiresAt when it was edited — an already-expired code must
+    // still allow price/limit edits without tripping the future-date check.
+    const expiresChanged = expiresAt !== expiresAtToDateInput(codeRow.expiresAt)
+    if (expiresChanged && expiresAt && new Date(dateToExpiresAt(expiresAt)) <= new Date()) {
+      await execute(() => Promise.reject(new Error('Expiry date must be in the future.')),
+        { fallback: 'Expiry date must be in the future.' }).catch(() => {})
+      return
+    }
+
     try {
       await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
         tierPrices,
@@ -351,7 +405,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         // updateReferralCodeSchema's expiresAt is nullable — unlike create,
         // an explicit null here is how an admin clears an existing
         // expiration, same convention as usageLimit right above.
-        expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null
+        ...(expiresChanged ? { expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null } : {})
       }), { fallback: 'Failed to update code.' })
       toast({ message: `Code ${codeRow.code} updated.`, type: 'success' })
       onSaved()
@@ -401,7 +455,7 @@ function ReferralCodesTab({ partner, onChanged }) {
   }
 
   async function copyLink(codeRow) {
-    const url = `${siteOrigin()}/?ref=${codeRow.code}`
+    const url = `${siteOrigin()}/?ref=${encodeURIComponent(codeRow.code)}`
     // Only claim "copied" when it actually was (it used to toast success even when the write failed).
     if (await copyToClipboard(url)) toast({ message: 'Link copied.', type: 'success' })
     else toast({ message: `Couldn't copy automatically — ${url}`, type: 'error', duration: 8000 })
@@ -485,15 +539,32 @@ function CyclesTab({ partner, onChanged }) {
                 {c.unpaidCents > 0 ? (
                   c.isCurrent ? (
                     <span className="text-sm text-gray-400">{formatCents(c.unpaidCents, partner.currency)} (not payable yet)</span>
+                  ) : c.unpaidCents - (c.heldCents || 0) > 0 ? (
+                    <>
+                      {c.heldCents > 0 && (
+                        <span className="text-xs text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window)</span>
+                      )}
+                      <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents - (c.heldCents || 0), partner.currency)}</Button>
+                    </>
                   ) : (
-                    <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents, partner.currency)}</Button>
+                    <span className="text-sm text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window)</span>
                   )
+                ) : c.unpaidCents < 0 ? (
+                  <span className="text-sm text-red-600">{formatCents(c.unpaidCents, partner.currency)} refund credit — nets against future commission</span>
                 ) : (
                   <span className="text-sm text-gray-400 italic">{c.ledgerCount > 0 ? 'Settled' : 'Nothing owed'}</span>
                 )}
               </div>
             </div>
           ))}
+          {partner.olderUnpaidCents !== 0 && partner.olderUnpaidCents != null && (
+            <div className="p-3 flex items-center justify-between gap-3 flex-wrap">
+              <div className="font-medium text-gray-900">Older than the last 12 cycles</div>
+              <span className={cn('text-sm', partner.olderUnpaidCents > 0 ? 'text-amber-600 font-semibold' : 'text-red-600')}>
+                {formatCents(partner.olderUnpaidCents, partner.currency)} unpaid — use "Record ad hoc payout" to settle
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
@@ -541,10 +612,13 @@ function ConversionsTab({ partner }) {
             <tr key={l.id}>
               <td className="px-4 py-3 text-gray-600">{formatDate(l.createdAt)}</td>
               <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, partner.currency)}</td>
-              <td className="px-4 py-3 text-right text-gray-400">{(l.commissionRate * 100).toFixed(0)}%</td>
+              <td className="px-4 py-3 text-right text-gray-400">{formatRate(l.commissionRate)}</td>
               <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents, partner.currency)}</td>
               <td className="px-4 py-3">
                 <Badge variant={l.payoutId ? 'green' : 'amber'}>{l.payoutId ? 'Paid' : 'Unpaid'}</Badge>
+                {l.reversesLedgerId && (
+                  <span className="ml-2 text-xs text-red-500">Reversal{l.reversalReason ? ` — ${l.reversalReason}` : ''}</span>
+                )}
               </td>
             </tr>
           ))}
@@ -656,7 +730,7 @@ export default function PartnerDetail() {
         <StatCard label="Total pending" size="md" valueClassName="text-amber-600"
           value={formatCents(partner.pendingCommissionCents || 0, partner.currency)} />
         <StatCard label="Commission rate" size="md"
-          value={`${(partner.commissionRate * 100).toFixed(0)}%`} />
+          value={formatRate(partner.commissionRate)} />
         <StatCard label="Payout details" size="md">
           <PayoutDetailsSummary partner={partner} />
         </StatCard>
@@ -678,9 +752,28 @@ export default function PartnerDetail() {
       </div>
 
       {tab === 'overview' && (
-        <div className="text-sm text-gray-600">
-          Added {formatDate(partner.createdAt)}. Use the tabs above to record payouts by cycle,
-          review every conversion behind the balance, or manage referral codes.
+        <div className="flex flex-col gap-4">
+          <div className="grid sm:grid-cols-4 gap-4">
+            <StatCard label="Ready to pay" size="md" valueClassName="text-amber-600"
+              value={formatCents(partner.readyToPayCents || 0, partner.currency)} />
+            <StatCard label="Held (refund window)" size="md"
+              value={formatCents(partner.heldCents || 0, partner.currency)} />
+            <StatCard label="Clicks" size="md"
+              value={(partner.referralCodes || []).reduce((n, cd) => n + (cd.clicks || 0), 0)} />
+            <StatCard label="Conversions" size="md"
+              value={(partner.commissionLedger || []).filter(l => !l.reversesLedgerId).length} />
+          </div>
+          {!partner.payoutMethod && (partner.readyToPayCents || 0) > 0 && (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              {formatCents(partner.readyToPayCents, partner.currency)} is ready to pay but {partner.name} hasn't
+              submitted payout details yet — resend the payout-details link above.
+            </div>
+          )}
+          <div className="text-sm text-gray-600">
+            Added {formatDate(partner.createdAt)}.
+            {partner.holdDays > 0 && ` Commission is held ${partner.holdDays} day${partner.holdDays === 1 ? '' : 's'} before it becomes payable.`}
+            {' '}Use the tabs above to record payouts by cycle, review every conversion behind the balance, or manage referral codes.
+          </div>
         </div>
       )}
       {tab === 'cycles' && <CyclesTab partner={partner} onChanged={load} />}

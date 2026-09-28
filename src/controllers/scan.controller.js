@@ -813,7 +813,7 @@ async function initiateFix(ctx) {
   // frontend checkout calls /api/payments/initialize directly rather than
   // this endpoint, so this quote can never show a different number than
   // what a payment would actually charge.
-  const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode)
+  const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode, { buyerEmail: user.email })
   const promoActive = c.isPromoActive(ctx.env)
   // AUDIT FIX (bug): originalAmount used to branch on referralApplied and,
   // in that branch, anchor on c.priceForTier(fixTier, ctx.env) — the

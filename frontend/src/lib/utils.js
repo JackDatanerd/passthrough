@@ -132,3 +132,11 @@ export function downloadBlob(blob, filename) {
   a.click()
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1500)
 }
+
+// Commission rates are stored as fractions (0.125 = 12.5%). Show up to 2
+// decimals, no trailing zeros — never round a fractional rate to a whole %.
+export function formatRate(rate) {
+  const n = Number(rate)
+  if (!Number.isFinite(n)) return '—'
+  return `${+(n * 100).toFixed(2)}%`
+}

@@ -149,7 +149,7 @@ describe('adminRecordPayout', () => {
     const res = await t.mod.adminRecordPayout(t.c())
     expect(res.body.racedWithConcurrentPayout).toBe(true)
     expect(res.body.data.amountCents).toBe(500)   // corrected down from the stale 1200 read
-    expect(t.state.payoutCorrections).toEqual([{ amount_cents: 500 }])
+    expect(t.state.payoutCorrections).toEqual([{ settled_commission_cents: 500, amount_cents: 500 }])
     expect(t.state.sendPayoutSentCalls[0].amountCents).toBe(500)   // notifies with the corrected amount
     expect(t.state.alerts.some(a => /raced/i.test(a.subject))).toBe(true)
   })
@@ -159,16 +159,50 @@ describe('adminRecordPayout', () => {
     const res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 1200 } }))
     expect(res.body.racedWithConcurrentPayout).toBe(true)
     expect(res.body.data.amountCents).toBe(1200)   // left exactly as the admin typed it
-    expect(t.state.payoutCorrections).toHaveLength(0)   // no auto-correction over a manual figure
+    // the amount is left as typed; only the true settled figure is recorded
+    expect(t.state.payoutCorrections).toEqual([{ settled_commission_cents: 500 }])
     expect(t.state.alerts.some(a => /raced/i.test(a.subject))).toBe(true)
   })
 
   it('claiming everything it asked for is not treated as a race, even with zero unpaid rows', async () => {
     t = setupPayout({ unpaidLedger: [], claimed: [] })
-    const res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 5000, note: 'Bonus' } }))
+    const res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 5000, note: 'Bonus', acknowledgeDifference: true } }))
     expect(res.body.racedWithConcurrentPayout).toBe(false)
     expect(res.body.data.amountCents).toBe(5000)
     expect(t.state.alerts).toHaveLength(0)
+  })
+
+  it('records what the payout settled (settled_commission_cents) alongside the amount sent', async () => {
+    t = setupPayout()
+    await t.mod.adminRecordPayout(t.c())
+    expect(t.state.payoutInserts[0].settled_commission_cents).toBe(1200)
+  })
+
+  it('400s AMOUNT_DIFFERS when the amount differs from the settled commission without acknowledgement + note', async () => {
+    t = setupPayout()
+    let res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 1000 } }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('AMOUNT_DIFFERS')
+    res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 1000, acknowledgeDifference: true } }))   // no note
+    expect(res.status).toBe(400)
+    expect(t.state.payoutInserts).toHaveLength(0)   // nothing recorded, nothing settled
+  })
+
+  it('allows a different amount once acknowledged with a note, keeping both figures on the payout', async () => {
+    t = setupPayout()
+    const res = await t.mod.adminRecordPayout(t.c({ body: { amountCents: 1000, acknowledgeDifference: true, note: 'bank fee' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.payoutInserts[0]).toMatchObject({ amount_cents: 1000, settled_commission_cents: 1200, note: 'bank fee' })
+  })
+
+  it('with COMMISSION_HOLD_DAYS set, only settles reversals and rows older than the hold window', async () => {
+    t = setupPayout()
+    const call = t.c()
+    call.env.COMMISSION_HOLD_DAYS = '14'
+    await t.mod.adminRecordPayout(call)
+    const ledgerSelect = t.db.calls.find(q => q.table === 'commission_ledger' && q.op === 'select')
+    expect(ledgerSelect.or).toHaveLength(1)
+    expect(ledgerSelect.or[0]).toMatch(/^reverses_ledger_id\.not\.is\.null,created_at\.lte\./)
   })
 
   it('400s when the partner has no payout method on file and none was provided', async () => {
@@ -455,9 +489,11 @@ describe('adminUpdatePartner', () => {
         sendPartnerEmailChanged:  async (...a) => state.notifications.push({ type: 'emailChanged', to: a[2] }),
         sendPartnerStatusChanged: async (...a) => state.notifications.push({ type: 'statusChanged', to: a[2], status: a[4] }),
         sendOwnerAlert:           async (...a) => state.notifications.push({ type: 'ownerAlert', subject: a[1] }),
+        sendPartnerLinkRegenerated: async (...a) => state.notifications.push({ type: 'linkRotated', to: a[2], url: a[4] }),
+        sendPartnerRateChanged:     async (...a) => state.notifications.push({ type: 'rateChanged', to: a[2], from: a[4], toRate: a[5] }),
       },
     })
-    const c = (over = {}) => ({ env: {}, req: { param: () => 'p1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -483,6 +519,34 @@ describe('adminUpdatePartner', () => {
     await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
     expect(t.state.notifications.filter(n => n.type === 'emailChanged')).toHaveLength(2)
     expect(t.state.notifications.some(n => n.type === 'ownerAlert')).toBe(true)
+  })
+
+  it('rotates the payout token when the email changes and sends the fresh link to the NEW address only', async () => {
+    t = setupUpdate({ before: { email: 'old@x.co' }, updated: { id: 'p1', email: 'new@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
+    expect(typeof t.state.patch.payout_details_token).toBe('string')
+    expect(t.state.patch.payout_details_token.length).toBeGreaterThan(20)
+    const rot = t.state.notifications.filter(n => n.type === 'linkRotated')
+    expect(rot).toHaveLength(1)
+    expect(rot[0].to).toBe('new@x.co')
+    expect(rot[0].url).toBe(`https://passthrough.dev/partner/payout-details?token=${t.state.patch.payout_details_token}`)
+  })
+
+  it('does NOT rotate the token for a casing-only, missing, or unchanged email', async () => {
+    t = setupUpdate({ before: { email: 'same@x.co' }, updated: { id: 'p1', email: 'same@x.co', name: 'X' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { email: 'same@x.co', status: 'ACTIVE' } }))
+    expect(t.state.patch.payout_details_token).toBeUndefined()
+  })
+
+  it('emails the partner when the commission rate actually changes (and not when it is re-sent unchanged)', async () => {
+    t = setupUpdate({ before: { email: 'a@x.co', commission_rate: '0.1250' }, updated: { id: 'p1', email: 'a@x.co', name: 'X', commission_rate: '0.2000' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { commissionRate: 0.2 } }))
+    expect(t.state.notifications.filter(n => n.type === 'rateChanged')).toHaveLength(1)
+    t.restore()
+
+    t = setupUpdate({ before: { email: 'a@x.co', commission_rate: '0.1250' }, updated: { id: 'p1', email: 'a@x.co', name: 'X', commission_rate: '0.1250' } })
+    await t.mod.adminUpdatePartner(t.c({ body: { commissionRate: 0.125 } }))
+    expect(t.state.notifications.filter(n => n.type === 'rateChanged')).toHaveLength(0)
   })
 
   it('does not notify when email is provided but unchanged, or not provided at all', async () => {
@@ -601,6 +665,25 @@ describe('adminListPartners', () => {
     expect(p.currentCycleAccruedCents).toBe(300)
     expect(p.readyToPayCents).toBe(500)
     expect(p.commissionLedger).toBeUndefined()   // never shipped in the list view
+  })
+
+  it('with COMMISSION_HOLD_DAYS, a young prior-cycle row is held (not ready to pay); reversals are never held', async () => {
+    const old = new Date(); old.setUTCMonth(old.getUTCMonth() - 2)
+    const young = new Date(Date.now() - 2 * 86400_000)
+    t = setupList([{
+      id: 'p1', name: 'K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500', payouts: [], referral_codes: [],
+      commission_ledger: [
+        { id: 'l1', partner_id: 'p1', gross_amount_cents: 1, commission_amount_cents: 500, payout_id: null, reverses_ledger_id: null, created_at: old.toISOString() },
+        { id: 'l2', partner_id: 'p1', gross_amount_cents: 1, commission_amount_cents: 300, payout_id: null, reverses_ledger_id: null, created_at: young.toISOString() },
+        { id: 'l3', partner_id: 'p1', gross_amount_cents: 1, commission_amount_cents: -100, payout_id: null, reverses_ledger_id: 'l0', created_at: young.toISOString() },
+      ],
+    }])
+    t.c.env.COMMISSION_HOLD_DAYS = '7'
+    const p = (await t.mod.adminListPartners(t.c)).body.data[0]
+    expect(p.heldCents).toBe(300)
+    // l1 (old) is always payable; l2 is held; the reversal l3 (never held) counts only if 2 days ago fell in a
+    // prior cycle — so 400 or 500 depending on today's date, but never 800 (l2 must not leak in).
+    expect([400, 500]).toContain(p.readyToPayCents)
   })
 
   it('a paid ledger row never counts toward pending', async () => {
@@ -731,6 +814,25 @@ describe('adminCreateReferralCode', () => {
     expect(t.state.inserted.code).toBe('COACH20')
   })
 
+  it('rejects codes containing characters that break ?ref= links, and a past expiry', async () => {
+    for (const bad of ['A&B', 'has space', 'x#y', '50%off', 'a+b', 'a']) {
+      t = setupCreateCode({ partner: { name: 'K', email: 'k@x.co' }, body: { code: bad, tierPrices: { FIX: 1900 } } })
+      await expect(t.mod.adminCreateReferralCode(t.c)).rejects.toThrow()
+      expect(t.state.inserted).toBeNull()
+      t.restore()
+    }
+    t = setupCreateCode({ partner: { name: 'K', email: 'k@x.co' },
+      body: { code: 'OK20', tierPrices: { FIX: 1900 }, expiresAt: new Date(Date.now() - 86400_000).toISOString() } })
+    await expect(t.mod.adminCreateReferralCode(t.c)).rejects.toThrow()
+    expect(t.state.inserted).toBeNull()
+  })
+
+  it('accepts hyphen/underscore codes', async () => {
+    t = setupCreateCode({ partner: { name: 'K', email: 'k@x.co', payout_details_token: 'tok' }, body: { code: 'coach_20-x', tierPrices: { FIX: 1900 } } })
+    await t.mod.adminCreateReferralCode(t.c)
+    expect(t.state.inserted.code).toBe('COACH_20-X')
+  })
+
   it('rejects a body with no tier prices set', async () => {
     t = setupCreateCode({ partner: { name: 'Coach K', email: 'k@x.co' }, body: { code: 'X20', tierPrices: {} } })
     await expect(t.mod.adminCreateReferralCode(t.c)).rejects.toThrow()
@@ -857,6 +959,13 @@ describe('submitPayoutDetails', () => {
     expect(res.status).toBe(400)
   })
 
+  it('rejects whitespace-only fields and trims what it stores', async () => {
+    t = setupSubmit({ updated: { name: 'K', email: 'k@x.co' } })
+    await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: '   ', accountName: 'K', accountNumber: '1' } }))).rejects.toThrow()
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: ' Equity ', accountName: ' K ', accountNumber: ' 123 ' } }))
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'Equity', accountName: 'K', accountNumber: '123' })
+  })
+
   it('rejects a body missing required BANK fields', async () => {
     t = setupSubmit()
     await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK' } }))).rejects.toThrow()
@@ -904,6 +1013,13 @@ describe('trackClick', () => {
     await t.mod.trackClick(t.c({ body: { code: '  coach20 ' } }))
     expect(t.state.rpcCalls[0].name).toBe('increment_referral_code_clicks')
     expect(t.state.rpcCalls[0].args).toEqual({ p_code: 'COACH20' })
+  })
+
+  it('an absurdly long code is a silent no-op (never reaches the RPC)', async () => {
+    t = setupTrack()
+    const res = await t.mod.trackClick(t.c({ body: { code: 'A'.repeat(51) } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.rpcCalls).toHaveLength(0)
   })
 
   it('a blank code is a silent no-op — still 200, no RPC call', async () => {

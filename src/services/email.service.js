@@ -378,6 +378,15 @@ async function sendPartnerEmailChanged(env, supabase, to, name, oldEmail, newEma
 // AUDIT FIX (feature gap): the one account-affecting partner change with no
 // proactive notification at all — see partners.controller.js's
 // adminUpdatePartner. `status` is only ever 'ACTIVE' or 'PAUSED'.
+async function sendPartnerRateChanged(env, supabase, email, name, oldRate, newRate) {
+  const pct = r => `${+(Number(r) * 100).toFixed(2)}%`
+  return send(env, supabase, email, 'Your Passthrough commission rate has changed', 'partner_status_changed', {
+    NAME:    name,
+    HEADING: 'Your commission rate has changed',
+    BODY:    `your commission rate on future referrals changed from ${pct(oldRate)} to ${pct(newRate)}. Commission already earned is unaffected.`
+  })
+}
+
 async function sendPartnerStatusChanged(env, supabase, email, name, status) {
   const paused = status === 'PAUSED'
   return send(env, supabase, email,
@@ -628,5 +637,5 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged
+  sendPartnerStatusChanged, sendPartnerRateChanged
 }

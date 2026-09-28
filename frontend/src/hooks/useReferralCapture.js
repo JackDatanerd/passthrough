@@ -20,8 +20,15 @@ const STORAGE_KEY = 'passthrough_referral_code'
 // navigation dedup below, which is unaffected by this).
 const ATTRIBUTION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+// localStorage can throw (blocked storage in some in-app browsers / private
+// modes). A ?ref= landing must never crash the app — attribution just won't
+// persist there.
+function storageGet()      { try { return localStorage.getItem(STORAGE_KEY) } catch (_) { return null } }
+function storageSet(value) { try { localStorage.setItem(STORAGE_KEY, value) } catch (_) {} }
+function storageRemove()   { try { localStorage.removeItem(STORAGE_KEY) } catch (_) {} }
+
 function readStored() {
-  const raw = localStorage.getItem(STORAGE_KEY)
+  const raw = storageGet()
   if (!raw) return null
   let parsed
   try { parsed = JSON.parse(raw) } catch (_) {
@@ -30,16 +37,16 @@ function readStored() {
     // untimestamped attribution live on indefinitely. The next real ?ref=
     // visit or manual code entry re-captures it in the new, timestamped
     // format going forward.
-    localStorage.removeItem(STORAGE_KEY)
+    storageRemove()
     return null
   }
-  if (!parsed?.code || !Number.isFinite(parsed.capturedAt)) { localStorage.removeItem(STORAGE_KEY); return null }
-  if (Date.now() - parsed.capturedAt > ATTRIBUTION_TTL_MS) { localStorage.removeItem(STORAGE_KEY); return null }
+  if (!parsed?.code || !Number.isFinite(parsed.capturedAt)) { storageRemove(); return null }
+  if (Date.now() - parsed.capturedAt > ATTRIBUTION_TTL_MS) { storageRemove(); return null }
   return parsed.code
 }
 
 function writeStored(code) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify({ code, capturedAt: Date.now() }))
+  storageSet(JSON.stringify({ code, capturedAt: Date.now() }))
 }
 
 // Mounted once, globally (see App.jsx), so a ?ref=CODE landing on ANY page
@@ -87,5 +94,5 @@ export function getStoredReferralCode() {
 export function setStoredReferralCode(code) {
   const trimmed = (code || '').trim().toUpperCase()
   if (trimmed) writeStored(trimmed)
-  else localStorage.removeItem(STORAGE_KEY)
+  else storageRemove()
 }
