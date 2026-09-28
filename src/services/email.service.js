@@ -67,6 +67,24 @@ const RECIPIENT_LIMITS = {
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
   email_change_confirm:   { max: 5, windowSeconds: 3600 },
+  // Section 9 audit: email_changed_old_address and password_changed were
+  // exempted by the "proven identity" rule above, but that rule doesn't hold
+  // for them. updateEmail() and changePassword() (auth.controller.js) each
+  // require the caller to re-prove the account's CURRENT password — yet that
+  // proof is replayable, not consumed: anyone who genuinely knows a valid
+  // password (leaked or reused credentials, not a stolen session token) can
+  // call changePassword() in a loop (X -> Y1, then Y1 -> Y2, ...) or call
+  // updateEmail() repeatedly with a fresh unused newEmail each time, every
+  // call succeeding and firing one of these at the account owner's real
+  // inbox. The only bound was rl.auth (10 per 15 min PER IP), which
+  // bounds nothing per recipient and resets by rotating IPs; account
+  // lockout counts FAILURES only. Both sends are fire-and-forget after the
+  // change already committed, so this only caps notifications — it never
+  // blocks the change itself. (resetPassword also sends password_changed,
+  // but its single-use token and password_reset's own limit already bound
+  // that path.)
+  email_changed_old_address: { max: 5, windowSeconds: 3600 },
+  password_changed:       { max: 5, windowSeconds: 3600 },
   // A successful login DOES prove identity (the correct password), so by
   // this file's own rule above this template wouldn't normally need a limit
   // here at all. It gets one anyway, for the same reason account_lockout_alert

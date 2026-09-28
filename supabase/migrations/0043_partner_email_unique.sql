@@ -1,0 +1,33 @@
+-- AUDIT FIX (Section 9/10 pass, round 2): partners.email (0011_partners_and_payouts.sql)
+-- has never had a uniqueness guarantee of any kind — every other identity-
+-- bearing column in this schema either has one (users.email, referral_codes.code,
+-- payments.paystack_ref) or has a documented reason it doesn't. This one had
+-- neither: adminCreatePartner/adminUpdatePartner (partners.controller.js) never
+-- checked for an existing match before writing, so two partner rows could
+-- silently end up sharing one inbox — an admin typo on creation, or an update
+-- accidentally reusing another partner's address. partner.email is the sole
+-- channel for every payout link, payout-sent confirmation, and referral-code
+-- notification that partner ever receives, so two rows sharing one address
+-- means notifications meant for one partner arrive indistinguishable from the
+-- other's, and there is no query anywhere that could tell them apart by email
+-- alone.
+--
+-- Case-insensitive for the same reason idx_users_email_lower_unique
+-- (0017_case_insensitive_email.sql) is: "Partner@Co.com" and
+-- "partner@co.com" are the same real mailbox as far as collision risk goes,
+-- even though — unlike users.email — there's no login-lookup path here that
+-- needs the stored value itself forced to lowercase, so the column is left
+-- exactly as an admin typed it; only uniqueness is enforced, not casing.
+--
+-- CAVEAT: if any pre-existing partner rows already collide only by case,
+-- this CREATE UNIQUE INDEX fails at migration time with a duplicate-key
+-- error. Run this first to check before applying:
+--
+--   select lower(email), array_agg(id), array_agg(email)
+--   from partners group by lower(email) having count(*) > 1;
+--
+-- Any rows returned need manual resolution (merge or rename one) before this
+-- migration can apply cleanly. Given how few partner rows this table
+-- realistically holds, that is expected to be a one-time manual check, not
+-- an ongoing concern.
+create unique index if not exists idx_partners_email_lower_unique on partners (lower(email));

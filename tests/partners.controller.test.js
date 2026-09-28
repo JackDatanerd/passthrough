@@ -395,6 +395,27 @@ describe('adminCreatePartner', () => {
     t = setupCreate({ insertError: new Error('db down') })
     await expect(t.mod.adminCreatePartner(t.c)).rejects.toThrow('db down')
   })
+
+  // Section 10 audit: partners.email had no uniqueness check anywhere.
+  it('rejects an email already used by another partner (case-insensitive) without inserting', async () => {
+    const state = { inserted: null }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select' && q.filters.some(f => f[0] === 'ilike' && f[1] === 'email'))
+        return { data: [{ id: 'p-existing' }], error: null }
+      if (q.table === 'partners' && q.op === 'insert') { state.inserted = q.values; return { data: { id: 'p1', ...q.values }, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+    })
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.adminCreatePartner(c)
+    expect(res.status).toBe(400)
+    expect(res.body.success).toBe(false)
+    expect(state.inserted).toBeNull()
+    restore()
+  })
 })
 
 describe('adminUpdatePartner', () => {
@@ -492,6 +513,44 @@ describe('adminUpdatePartner', () => {
   it('rejects a commissionRate outside 0-1', async () => {
     t = setupUpdate()
     await expect(t.mod.adminUpdatePartner(t.c({ body: { commissionRate: 1.5 } }))).rejects.toThrow()
+  })
+
+  // Section 10 audit: same uniqueness gap on the update path.
+  it('rejects reassigning a partner to another partner\'s email (case-insensitive) without updating', async () => {
+    const state = { updateCalled: false }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners' && q.op === 'select' && q.filters.some(f => f[0] === 'ilike' && f[1] === 'email'))
+        return { data: [{ id: 'p-other' }], error: null }
+      if (q.table === 'partners' && q.op === 'select') return { data: { email: 'old@x.co' }, error: null }
+      if (q.table === 'partners' && q.op === 'update') { state.updateCalled = true; return { data: { id: 'p1', email: 'taken@x.co' }, error: null } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPartnerEmailChanged: async () => {}, sendOwnerAlert: async () => {} },
+    })
+    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'TAKEN@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.adminUpdatePartner(c)
+    expect(res.status).toBe(400)
+    expect(state.updateCalled).toBe(false)
+    restore()
+  })
+
+  it('skips the duplicate check entirely when only the casing of the current address differs', async () => {
+    const calls = []
+    const db = createFakeSupabase(q => {
+      calls.push(q)
+      if (q.table === 'partners' && q.op === 'select') return { data: { email: 'old@x.co' }, error: null }
+      if (q.table === 'partners' && q.op === 'update') return { data: { id: 'p1', email: 'OLD@X.CO' }, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendPartnerEmailChanged: async () => {}, sendOwnerAlert: async () => {} },
+    })
+    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'OLD@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const res = await mod.adminUpdatePartner(c)
+    expect(res.body.success).toBe(true)
+    expect(calls.some(q => q.filters.some(f => f[0] === 'ilike'))).toBe(false)
+    restore()
   })
 })
 

@@ -46,7 +46,9 @@ describe('email send — per-recipient throttle', () => {
   })
   it('reserveRecipientSlot on an unthrottled template always grants', async () => {
     t = setup()
-    for (let i = 0; i < 10; i++) expect(await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'password_changed')).toBe(true)
+    // account_deleted: terminal one-shot action (the account is gone after),
+    // so genuinely not repeatable — unlike password_changed, now throttled.
+    for (let i = 0; i < 10; i++) expect(await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'account_deleted')).toBe(true)
   })
   it('is per recipient and case-insensitive', async () => {
     t = setup()
@@ -73,6 +75,21 @@ describe('email send — per-recipient throttle', () => {
     t = setup()
     const r = []
     for (let i = 0; i < 6; i++) r.push(await t.mod.sendEmailChangeConfirmation(t.env, t.db, 'victim@example.com', 'N', 'tok'))
+    expect(r).toEqual([true, true, true, true, true, false])
+  })
+  // Section 9 audit: changePassword()/updateEmail() make the caller re-prove
+  // the current password, but that proof is replayable by anyone who knows it,
+  // so both notices could be looped at the real inbox with no ceiling.
+  it('the password-changed notice (proof is replayable) is throttled too', async () => {
+    t = setup()
+    const r = []
+    for (let i = 0; i < 6; i++) r.push(await t.mod.sendPasswordChanged(t.env, t.db, 'victim@example.com', 'V'))
+    expect(r).toEqual([true, true, true, true, true, false])
+  })
+  it('the email-changed old-address notice (proof is replayable) is throttled too', async () => {
+    t = setup()
+    const r = []
+    for (let i = 0; i < 6; i++) r.push(await t.mod.sendEmailChangedOldAddress(t.env, t.db, 'victim@example.com', 'V', `new${i}@example.com`))
     expect(r).toEqual([true, true, true, true, true, false])
   })
   it('fails open if KV is down — an outage must not stop password-reset mail', async () => {

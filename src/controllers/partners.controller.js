@@ -93,9 +93,31 @@ const createPartnerSchema = z.object({
   email: z.string().email()
 })
 
+// Section 10 audit: partners.email had no uniqueness guarantee — no DB
+// constraint (see migration 0043) and no check in either write path below —
+// unlike users.email / referral_codes.code. It is the sole channel for every
+// payout link, payout confirmation and referral-code notice a partner gets,
+// so two rows sharing one inbox made those indistinguishable. Same pattern as
+// updateEmail() for users: a proactive check for a clear 400 in the common
+// case, with the unique index as the backstop for a race (which surfaces
+// through errorHandler.js's generic 23505 branch).
+async function emailUsedByAnotherPartner(supabase, email, excludePartnerId) {
+  // .limit(1) + array check, not .maybeSingle(): that THROWS on >1 match,
+  // which is exactly the legacy-duplicate case this must handle cleanly.
+  let q = supabase.from('partners').select('id').ilike('email', email).limit(1)
+  if (excludePartnerId) q = q.neq('id', excludePartnerId)
+  const { data, error } = await q
+  if (error) throw error
+  return (data || []).length > 0
+}
+
 async function adminCreatePartner(ctx) {
   const body = createPartnerSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
+
+  if (await emailUsedByAnotherPartner(supabase, body.email))
+    return ctx.json({ success: false, message: 'A partner with that email address already exists.' }, 400)
+
   const token = cryptoLib.randomToken(32)
 
   const { data, error } = await supabase.from('partners').insert({
@@ -157,6 +179,13 @@ async function adminUpdatePartner(ctx) {
   // against. Best-effort — if this read fails, fall through to the update
   // exactly as before, just without either notification.
   const { data: before } = await supabase.from('partners').select('email, status').eq('id', partnerId).maybeSingle()
+
+  // Section 10 audit: see emailUsedByAnotherPartner above. Only queried when
+  // the address actually changes (case-insensitively), not on every save.
+  if (body.email !== undefined && (!before?.email || body.email.toLowerCase() !== before.email.toLowerCase())) {
+    if (await emailUsedByAnotherPartner(supabase, body.email, partnerId))
+      return ctx.json({ success: false, message: 'A partner with that email address already exists.' }, 400)
+  }
 
   const patch = camelToSnake(body, PARTNER_FIELD_MAP)  // status, commissionRate
   if (body.name !== undefined)  patch.name = body.name
