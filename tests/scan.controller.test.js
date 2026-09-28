@@ -2,6 +2,9 @@ import { describe, it, expect, afterEach } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 import { badgeCacheKeyForCode } from '../src/lib/badgeCache.js'
+import { createHash } from 'node:crypto'
+
+const sha256hex = s => createHash('sha256').update(s).digest('hex')
 
 // SECTION 12 AUDIT: scan.controller.js (1,772 lines, 22 functions) had ZERO
 // test coverage — the single largest gap in the backend, and the file that
@@ -536,13 +539,13 @@ describe('getScanStatus', () => {
   })
 
   it('403s an anonymous caller with a wrong/missing token', async () => {
-    t = setup({ id: 's1', user_id: null, anon_token: 'real-token-123' })
+    t = setup({ id: 's1', user_id: null, anon_token: sha256hex('real-token-123') })
     const res = await t.mod.getScanStatus(baseCtx({ user: null, query: { token: 'wrong' } }))
     expect(res.status).toBe(403)
   })
 
   it('allows the anon owner with the correct token', async () => {
-    t = setup({ id: 's1', user_id: null, anon_token: 'real-token-123', status: 'SCANNING' })
+    t = setup({ id: 's1', user_id: null, anon_token: sha256hex('real-token-123'), status: 'SCANNING' })
     const res = await t.mod.getScanStatus(baseCtx({ user: null, query: { token: 'real-token-123' } }))
     expect(res.body.success).toBe(true)
   })
@@ -846,7 +849,9 @@ describe('createScan', () => {
     expect(res.body.success).toBe(true)
     expect(typeof res.body.data.anonToken).toBe('string')
     expect(t.state.inserts[0].user_id).toBe(null)
-    expect(t.state.inserts[0].anon_token).toBe(res.body.data.anonToken)
+    // The DB holds sha256(token), never the bearer token itself (migration 0045)
+    expect(t.state.inserts[0].anon_token).toBe(sha256hex(res.body.data.anonToken))
+    expect(t.state.inserts[0].anon_token).not.toBe(res.body.data.anonToken)
     expect(t.state.inserts[0].anon_expires_at).toBeTruthy()
   })
 
@@ -1121,9 +1126,15 @@ describe('runAtsScan', () => {
   })
 
   it('an anonymous brain-dump scan with a contact email gets sendAnonScanResult; without one, no email at all', async () => {
-    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: 'anon@x.com', contact_name: 'Anon', anon_token: 'tok1' } })
-    await t.mod.runAtsScan(t.env, t.db, 's1')
+    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: 'anon@x.com', contact_name: 'Anon', anon_token: sha256hex('tok1') } })
+    await t.mod.runAtsScan(t.env, t.db, 's1', 'tok1')
     expect(t.state.emails[0].fn).toBe('sendAnonScanResult')
+    t.restore()
+
+    // the stored value is a hash and can't be mailed as a working link, so no raw token = no email
+    t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: 'anon@x.com', anon_token: sha256hex('tok1') } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails).toHaveLength(0)
     t.restore()
 
     t = setup({ scan: { id: 's1', input_mode: 'brain_dump', raw_brain_dump_text: 'x'.repeat(150), user_id: null, contact_email: null } })

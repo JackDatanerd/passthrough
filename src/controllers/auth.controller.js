@@ -1190,7 +1190,8 @@ async function claimScan(c) {
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase
     .from('scans').select('*')
-    .eq('anon_token', anonToken)
+    // anon_token is stored as sha256(token) (migration 0045)
+    .eq('anon_token', await cryptoLib.sha256(anonToken))
     .gt('anon_expires_at', new Date().toISOString())
     .is('user_id', null)
     .maybeSingle()

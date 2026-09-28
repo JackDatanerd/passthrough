@@ -39,6 +39,18 @@ const c             = require('../config/constants')
 const storage        = require('../config/storage')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib       = require('../lib/crypto')
+
+// AUDIT FIX (Scan pass): anon_token is a bearer capability (read access to an
+// anonymous submitter's resume + the right to claim the scan), yet it was the
+// only such token stored raw — reset/verify/pending-email tokens are all
+// sha256-hashed at rest so a DB read can't be replayed as the capability.
+// The DB now holds sha256(token); the raw UUID only ever exists in the
+// createScan response and the magic-link email. See migration 0045.
+async function hashAnonToken(token) { return cryptoLib.sha256(String(token)) }
+async function anonTokenMatches(scan, presented) {
+  if (!scan.anonTokenHash || !presented) return false
+  return cryptoLib.timingSafeEqual(scan.anonTokenHash, await hashAnonToken(presented))
+}
 const { scanRowToCamel, userRowToCamel } = require('../lib/mappers')
 const atsService    = require('../services/ats.service')
 const claudeService  = require('../services/claude.service')
@@ -391,6 +403,7 @@ async function createScan(ctx) {
 
   // Anonymous scan
   const anonToken = cryptoLib.uuid()
+  const anonTokenHash = await hashAnonToken(anonToken)
   try {
     await putFileIfNeeded()
 
@@ -398,7 +411,7 @@ async function createScan(ctx) {
       ...baseInsertFields(),
       ...modeInsertFields(),
       user_id:          null,
-      anon_token:        anonToken,
+      anon_token:        anonTokenHash,
       anon_expires_at:   new Date(Date.now() + c.ANON_SCAN_TTL_HOURS * 3600000).toISOString()
     })
     if (insertErr) throw insertErr
@@ -408,7 +421,7 @@ async function createScan(ctx) {
   }
 
   ctx.executionCtx?.waitUntil(
-    runAtsScan(ctx.env, supabase, scanId).catch(err => console.error('Unhandled runAtsScan:', err.message))
+    runAtsScan(ctx.env, supabase, scanId, anonToken).catch(err => console.error('Unhandled runAtsScan:', err.message))
   )
   return ctx.json({ success: true, data: { scanId, anonToken } })
 }
@@ -428,7 +441,7 @@ async function getScanStatus(ctx) {
   // network), but it was an inconsistency against a gap this codebase
   // otherwise closes deliberately everywhere else a secret token is checked.
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+                  (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   // badgeEligible computed — NOT stored
@@ -568,7 +581,7 @@ async function getScan(ctx) {
   const user = ctx.get('user')
   // Timing-safe comparison — see matching note in getScanStatus above.
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+                  (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, ...safe } = scan
@@ -653,7 +666,7 @@ async function updateResumeData(ctx) {
 
   const user = ctx.get('user')
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+                  (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
@@ -757,7 +770,7 @@ async function downloadDraft(ctx) {
 
   const user = ctx.get('user')
   const isOwner = (scan.userId && scan.userId === user?.id) ||
-                  (scan.anonToken && cryptoLib.timingSafeEqual(scan.anonToken, ctx.req.query('token') || ''))
+                  (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
   if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
@@ -1294,7 +1307,7 @@ async function getScanWithUser(supabase, scanId) {
 // product/cost tradeoff, not something to decide unilaterally while fixing
 // a stale comment.
 
-async function runAtsScan(env, supabase, scanId) {
+async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
   let scanForRefund = null
   try {
     warnOnError(await supabase.from('scans').update({ status: 'SCANNING' }).eq('id', scanId), 'runAtsScan: mark SCANNING')
@@ -1460,7 +1473,7 @@ async function runAtsScan(env, supabase, scanId) {
           })
         } catch (e) { console.error('Scan email:', e.message) }
       }
-    } else if (scan.inputMode === 'brain_dump' && scan.contactEmail) {
+    } else if (scan.inputMode === 'brain_dump' && scan.contactEmail && rawAnonToken) {
       // AUDIT FIX (feature gap — section audit "generate a resume from
       // scratch"): an anonymous brain-dump submitter has no account, so the
       // logged-in branch above never fires for them — they previously got
@@ -1477,7 +1490,7 @@ async function runAtsScan(env, supabase, scanId) {
       try {
         await emailService.sendAnonScanResult(
           env, supabase, scan.contactEmail, scan.contactName || 'there',
-          scanId, scan.anonToken, finalScore, finalScore >= c.ATS_PASS_THRESHOLD
+          scanId, rawAnonToken, finalScore, finalScore >= c.ATS_PASS_THRESHOLD
         )
       } catch (e) { console.error('Anon scan email:', e.message) }
     }

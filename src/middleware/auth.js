@@ -79,7 +79,10 @@ async function auth(c, next) {
   if (user.tokenVersion !== decoded.tokenVersion)
     return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
 
-  const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
+  // AUDIT FIX (bug — Auth pass): this strip list must stay in lockstep with
+  // auth.controller.js's safeUser() — getMe() returns c.get('user') verbatim,
+  // so any field missing here (lastLoginAlertAt was) reaches the client.
+  const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, lastLoginAlertAt, ...safe } = user
   // AUDIT FIX (feature gap — Auth section, second independent pass): getMe()
   // reads c.get('user') straight from here, NOT through auth.controller.js's
   // own safeUser() — so termsCurrent has to be computed at the same source

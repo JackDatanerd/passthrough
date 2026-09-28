@@ -69,6 +69,16 @@ describe('auth middleware', () => {
     expect(store.user.passwordHash).toBeUndefined()
   })
 
+  // getMe() returns c.get('user') verbatim, so every internal-only column must be
+  // stripped HERE — lastLoginAlertAt (throttle bookkeeping) used to slip through.
+  it('strips every internal-only column, including lastLoginAlertAt, from the user it exposes', async () => {
+    ctx = setup(() => ({ data: userRow({ last_login_alert_at: '2026-01-01T00:00:00Z', reset_token: 'h', email_verify_token: 'h', pending_email_token: 'h' }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 60)
+    const { store } = await run(ctx.auth, { header: `Bearer ${token}` })
+    for (const f of ['passwordHash', 'lastLoginAlertAt', 'resetToken', 'emailVerifyToken', 'pendingEmailToken', 'paystackAuthCode', 'savedProfile'])
+      expect(store.user).not.toHaveProperty(f)
+  })
+
   // FEATURE GAP CLOSED (Auth section, second independent pass): termsCurrent
   // has to be computed here (and identically in optionalAuth.js), not just in
   // auth.controller.js's safeUser() — getMe() reads c.get('user') straight

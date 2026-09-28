@@ -82,6 +82,13 @@ describe('optionalAuth', () => {
       expect(store.user).not.toHaveProperty(field)
   })
 
+  it('never exposes lastLoginAlertAt (internal throttle bookkeeping)', async () => {
+    ctx = setup(() => ({ data: userRow({ last_login_alert_at: '2026-01-01T00:00:00Z' }) }))
+    const token = await sign({ userId: 'u1', tokenVersion: 3 }, SECRET, 3600)
+    const { store } = await run(ctx.optionalAuth, { header: `Bearer ${token}` })
+    expect(store.user).not.toHaveProperty('lastLoginAlertAt')
+  })
+
   // FEATURE GAP CLOSED (Auth section, second independent pass): must match
   // auth.js's own version of this exactly — auth.js's fast path just reuses
   // whatever this middleware already set on c.get('user').

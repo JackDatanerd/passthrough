@@ -77,6 +77,7 @@ async function setup(opts = {}) {
       // claimScan's lookup uses .maybeSingle() (a single row or null);
       // deleteAccount's uses a plain array select — same table+op, so
       // distinguish by that instead of trying to give them one shared shape.
+      if (q.maybe) state.claimLookupToken = eqValue(q, 'anon_token')
       if (q.maybe) return { data: 'claimScanResult' in opts ? opts.claimScanResult : null, error: null }
       return { data: opts.scans ?? [], error: null }
     }
@@ -1066,6 +1067,11 @@ describe('claimScan', () => {
     t = await setup({ claimScanResult: null })
     const res = await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
     expect(res.status).toBe(404)
+  })
+  it('looks the scan up by sha256(token), never the raw token (anon_token is hashed at rest)', async () => {
+    t = await setup({ claimScanResult: null })
+    await t.mod.claimScan(t.c({ body: { anonToken: 'abc' } }))
+    expect(t.state.claimLookupToken).toBe('ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad')
   })
   it('links the scan to the account and clears its anon fields', async () => {
     t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS' } })

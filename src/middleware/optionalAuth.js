@@ -35,7 +35,7 @@ async function optionalAuth(c, next) {
       if (!user || user.deletedAt || user.status === 'BANNED' || user.tokenVersion !== decoded.tokenVersion) {
         c.set('authError', 'inactive')
       } else {
-        const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, ...safe } = user
+        const { passwordHash, paystackAuthCode, paystackCustomerCode, resetToken, resetTokenExpiry, emailVerifyToken, emailVerifyExpiry, pendingEmailToken, pendingEmailExpiry, savedProfile, lastLoginAlertAt, ...safe } = user
         // AUDIT FIX (feature gap — Auth section, second independent pass): kept
         // identical to auth.js's own strip — see its comment. auth.js's fast
         // path (c.get('user') already set) just reuses whatever this set, so
