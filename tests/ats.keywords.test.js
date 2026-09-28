@@ -131,3 +131,26 @@ describe('decodeHtmlEntities', () => {
     expect(decodeHtmlEntities(undefined)).toBeUndefined()
   })
 })
+
+// ─── Scan/ATS independent pass: numbers are not keywords ─────────────────────
+describe('extractKeywords — numeric tokens (Scan/ATS pass)', () => {
+  const JD = 'Senior Data Analyst. Salary range: $120,000 - $150,000 per year. Hiring in 2024, New York (10001). SQL, Python, Tableau dashboards.'
+  it('drops salary figures, years and postcodes, alone or inside a bigram', () => {
+    const keys = Object.keys(extractKeywords(JD))
+    for (const junk of ['000', '120', '150', '2024', '10001', '120 000', '000 150', '150 000'])
+      expect(keys).not.toContain(junk)
+    expect(keys.some(x => x.split(' ').some(t => /^\d+$/.test(t)))).toBe(false)
+  })
+  it('keeps real mixed alphanumeric terms (only PURE numbers are dropped)', () => {
+    // s3/3d are pre-existing 2-char-token behavior (SHORT_KEEP), unrelated to
+    // this fix — b2b/k8s (3+ chars, mixed) are the ones this fix must not touch.
+    const keys = Object.keys(extractKeywords('Experience with SQL, Python, Kubernetes (k8s), B2B sales'))
+    for (const w of ['sql', 'python', 'k8s', 'b2b']) expect(keys).toContain(w)
+  })
+  it('the score no longer penalises a resume for lacking the posting\'s pay line', () => {
+    const resume = 'Jane Doe\njane@x.com\nExperience\n- Built SQL and Python Tableau dashboards\nSkills\nSQL Python Tableau\nEducation\nBS'
+    const { detail } = scoreResume(resume, JD)
+    expect(detail.keywords.missing).not.toContain('000')
+    expect(detail.keywords.missing).not.toContain('2024')
+  })
+})

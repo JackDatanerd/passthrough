@@ -49,6 +49,12 @@ const cryptoLib       = require('../lib/crypto')
 async function hashAnonToken(token) { return cryptoLib.sha256(String(token)) }
 async function anonTokenMatches(scan, presented) {
   if (!scan.anonTokenHash || !presented) return false
+  // FEATURE GAP CLOSED (Scan/ATS pass): anonymous scans carry a 24h
+  // anon_expires_at, but only claimScan honoured it — every read/edit/download
+  // path accepted the token until the hourly retention purge happened to run,
+  // so a user could view (and edit) a scan that could no longer be claimed.
+  // Expiry is now part of the capability itself.
+  if (scan.anonExpiresAt && Date.parse(scan.anonExpiresAt) < Date.now()) return false
   return cryptoLib.timingSafeEqual(scan.anonTokenHash, await hashAnonToken(presented))
 }
 const { scanRowToCamel, userRowToCamel } = require('../lib/mappers')
@@ -232,9 +238,15 @@ async function createScan(ctx) {
   // address we will send to.
   if (!user && brainDumpText && contactEmail && !z.string().email().safeParse(contactEmail).success)
     return ctx.json({ success: false, message: 'Enter a valid email address.' }, 400)
+  // BUG FIX (Scan/ATS pass): the "Name/Email" preamble was prepended BEFORE the
+  // 8,000-char slice (here, and again inside structureBrainDump), so a person
+  // who used the whole box the UI allowed silently lost the last ~40-150
+  // characters of their own text to the preamble. The body is capped first,
+  // the preamble goes on top, and both downstream caps allow for it.
+  const brainDumpBody = brainDumpText.slice(0, c.MAX_RESUME_CHARS)
   const brainDumpWithContact = (!user && brainDumpText && (contactName || contactEmail))
-    ? `Name: ${contactName}\nEmail: ${contactEmail}\n\n${brainDumpText}`
-    : brainDumpText
+    ? `Name: ${contactName.slice(0, 100)}\nEmail: ${contactEmail.slice(0, 254)}\n\n${brainDumpBody}`
+    : brainDumpBody
 
   // PHASE 4: fetch the saved profile fresh from the DB — never trust a
   // client-supplied resumeData payload here, even implicitly. This is the
@@ -290,7 +302,7 @@ async function createScan(ctx) {
     }
     return {
       input_mode:           'brain_dump',
-      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS),
+      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS + 500),
       // AUDIT FIX (feature gap): contactName/contactEmail were previously
       // ONLY folded into raw_brain_dump_text as a preamble for Claude to
       // read — never persisted as their own values. That meant the one
@@ -584,7 +596,9 @@ async function getScan(ctx) {
                   (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
-  const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, ...safe } = scan
+  // anonTokenHash is a capability secret at rest (migration 0045) — it must
+  // never ride out in the response body. (Scan/ATS pass: `...safe` leaked it.)
+  const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, anonTokenHash, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   const atsDetail = buildAtsDetail(fullAtsReport)
   // AUDIT FIX (Auth/Scan round): the storage keys are (rightly) not exposed —
@@ -724,6 +738,10 @@ async function updateResumeData(ctx) {
     sections_score:  ruleResult.sectionsScore,
     content_score:   ruleResult.contentScore,
     full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
+    // BUG FIX (Scan/ATS pass): the dashboard's name search matches on
+    // candidate_first_name, which was set once at scan time — so a person who
+    // corrected their name in the editor stayed searchable under the old one.
+    candidate_first_name: candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null,
     status
   }).eq('id', scan.id).eq('fix_purchased', false).in('status', ['COMPLETE_PASS', 'COMPLETE_FAIL']).select('id')
   if (updErr) throw updErr
@@ -739,6 +757,11 @@ async function updateResumeData(ctx) {
     formatScore:   ruleResult.formatScore,
     sectionsScore: ruleResult.sectionsScore,
     contentScore:  ruleResult.contentScore,
+    // BUG FIX (Scan/ATS pass): ScanResult merges this response over the scan
+    // it already holds, and `atsDetail` wasn't in it — so after "Save changes
+    // & rescore" the new score sat next to the OLD "Why this score" gaps
+    // (keywords the edit had just added still listed as missing).
+    atsDetail:     buildAtsDetail({ ...ruleResult.detail, aiMissingKeywords }),
     status
   }})
 }
@@ -1541,15 +1564,29 @@ async function regeneratePdf(ctx) {
     return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute.', detail: pdfError }, 502)
 
   // Only attach it if nobody else did in the meantime (double-click, two tabs).
+  // BUG FIX (Scan/ATS pass): the write was keyed on "no PDF yet" alone, but the
+  // render above is a multi-second Chromium call. A "Try Again" retry that
+  // started (or finished) in that window has a NEWER rewrite than the `data`
+  // this PDF was drawn from — attaching it put a PDF of the OLD resume next to
+  // the new DOCX, with a hash that then read as "verified". The write now only
+  // applies while the scan is still the exact delivery the render was built from.
+  const retryCountSeen = scan.fixRetryCount ?? 0
   const { data: updated, error: updErr } = await supabase.from('scans')
     .update({ resume_pdf_path: pdfKey, resume_pdf_hash: pdfHash })
-    .eq('id', scan.id).is('resume_pdf_path', null).select('id')
+    .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retryCountSeen)
+    .is('resume_pdf_path', null).select('id')
   if (updErr) {
     await deleteSuperseded(ctx.env, [pdfKey], [])
     throw updErr
   }
   if (Array.isArray(updated) && updated.length === 0) {
     await deleteSuperseded(ctx.env, [pdfKey], [])
+    // Zero rows means either someone else attached a PDF first (fine — say so)
+    // or the delivery itself moved on under us (retry in flight / finished) —
+    // which must not be reported as "available".
+    const { data: fresh } = await supabase.from('scans').select('status, fix_retry_count, resume_pdf_path').eq('id', scan.id).maybeSingle()
+    if (fresh && (fresh.status !== 'FIX_DELIVERED' || (fresh.fix_retry_count ?? 0) !== retryCountSeen))
+      return ctx.json({ success: false, message: 'Your resume was just updated. Refresh the page, then generate the PDF again.' }, 409)
     return ctx.json({ success: true, data: { alreadyAvailable: true } })
   }
   // SECTION 7 AUDIT FIX (bug, fresh pass): this backfill flips a below-threshold
@@ -1745,6 +1782,9 @@ async function generateFix(env, supabase, scanId) {
     // to regenerate that weak-areas detail — fix_ats_score alone doesn't
     // carry enough information to build it.
     let lastFeedback = null
+    // True once at least one rewrite attempt this round produced a real,
+    // scoreable candidate (whether or not it beat the delivered one).
+    let producedCandidate = false
     if (isRetry && typeof scan.fixAtsScore === 'number') {
       const startingDocxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
       const startingText = await resumeParser.extractText(startingDocxBytes, DOCX_MIME)
@@ -1793,6 +1833,7 @@ async function generateFix(env, supabase, scanId) {
       const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl)
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
       const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
+      producedCandidate = true
 
       if (candidateScore.score > bestScore) {
         bestScore = candidateScore.score
@@ -1810,6 +1851,29 @@ async function generateFix(env, supabase, scanId) {
           weakAreas: atsService.describeWeakAreas(candidateScore)
         }
       }
+    }
+
+    // BUG FIX (Scan/ATS pass): a retry round seeds bestScore from the
+    // delivered fix, so when EVERY rewrite call in the round hard-failed
+    // (API error / truncation / fabrication with no attempts left) bestScore
+    // stayed >= 0, `rewriteFailed` stayed false, and the round "succeeded":
+    // the person's one-of-few retries was consumed, the same files were
+    // re-delivered with a fresh email, and nothing explained that no rewrite
+    // had happened. A round that produced nothing usable is now handed back
+    // exactly like a crashed retry round (retry restored, previous delivery
+    // untouched, owner alerted) instead of being spent silently.
+    if (isRetry && priorDelivery && !producedCandidate) {
+      try {
+        must(await supabase.rpc('revert_fix_retry', { p_scan_id: scanId }), 'revert fix retry (retry round produced nothing)')
+      } catch (revertErr) {
+        console.error(`[CRITICAL] generateFix ${scanId}: revert_fix_retry failed:`, revertErr.message)
+        try { await supabase.from('scans').update({ status: 'FIX_DELIVERED' }).eq('id', scanId) } catch (_) {}
+      }
+      try {
+        await emailService.sendOwnerAlert(env, 'generateFix retry round produced no usable rewrite',
+          `scanId: ${scanId}\nEvery rewrite attempt in this retry round failed (API/parse/fabrication). The retry was handed back and the previous delivery left untouched.`)
+      } catch (_) {}
+      return { success: false, error: 'RETRY_NO_USABLE_REWRITE' }
     }
 
     finalData = bestData

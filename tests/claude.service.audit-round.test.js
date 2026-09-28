@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { detectFabrication, sanitizeResumeShape, scoreResumeWithAI, generateBeautifulResumeHTML } from '../src/services/claude.service.js'
+import { detectFabrication, sanitizeResumeShape, scoreResumeWithAI, generateBeautifulResumeHTML, groundCertifications } from '../src/services/claude.service.js'
 
 const orig = {
   name: 'Jane', email: 'j@x.com',
@@ -101,5 +101,70 @@ describe('generateBeautifulResumeHTML — truncated output is a failure, not a h
     const r = await generateBeautifulResumeHTML({ ANTHROPIC_API_KEY: 'k' }, { name: 'Jane' }, { palette: { bg: '#fff', primary: '#000', accent: '#111', text: '#222' }, fonts: { heading: 'A', body: 'B', hPt: 14, bPt: 10 } }, null, { verified: false })
     expect(r.success).toBe(false)
     expect(r.error).toBe('RESPONSE_TRUNCATED')
+  })
+})
+
+// ─── Scan/ATS independent pass: false FABRICATION_DETECTED on honest rewrites ──
+// A paid Fix that trips this guard three times fails outright and hands back the
+// original, so every false positive is a customer who paid for nothing.
+describe('detectFabrication — honest rewrites must not be flagged (Scan/ATS pass)', () => {
+  const multi = {
+    experience: [
+      { company: 'Acme Corp', title: 'Analyst', dates: '2018 - 2020', bullets: ['a'] },
+      { company: 'Acme Corp', title: 'Senior Analyst', dates: '2020 - 2022', bullets: ['b'] },
+    ],
+    education: [
+      { institution: 'State University', degree: 'BSc Computer Science', dates: '2014 - 2018' },
+      { institution: 'State University', degree: 'MSc Data Science', dates: '2018 - 2020' },
+    ],
+    certifications: [], projects: [],
+  }
+  const copy = o => JSON.parse(JSON.stringify(o))
+  const oneJob = (company, dates, title = 'Analyst') => ({ experience: [{ company, title, dates }], education: [] })
+
+  it('a promotion inside one employer / two degrees at one school round-trips clean', () => {
+    expect(detectFabrication(multi, copy(multi))).toBe(false)
+  })
+  it('...but a title still cannot be moved onto the wrong role at that employer', () => {
+    const r = copy(multi); r.experience[0].title = 'Senior Analyst'   // Senior exists, but not with 2018-2020 dates
+    expect(detectFabrication(multi, r)).toBe(true)
+  })
+  it('...and an invented seniority or degree level at the same employer/school is still caught', () => {
+    const t = copy(multi); t.experience[1].title = 'Director of Analytics'
+    expect(detectFabrication(multi, t)).toBe(true)
+    const d = copy(multi); d.education[0].degree = 'PhD Computer Science'
+    expect(detectFabrication(multi, d)).toBe(true)
+  })
+  it.each([
+    ['2019 - till date', '2019 - Present'], ['2019 - to date', '2019 - Present'], ['Since 2019', '2019 - Present'],
+    ['2019 – ', '2019 - Present'], ["'19 - '21", '2019 - 2021'], ['2019-21', '2019 - 2021'],
+  ])('%s -> %s is a format change, not invented dates', (a, b) => {
+    expect(detectFabrication(oneJob('Acme', a), oneJob('Acme', b))).toBe(false)
+  })
+  it('a genuinely invented Present, or a shifted year, is still caught', () => {
+    expect(detectFabrication(oneJob('Acme', '2019 - 2021'), oneJob('Acme', '2019 - Present'))).toBe(true)
+    expect(detectFabrication(oneJob('Acme', '2019 - 2021'), oneJob('Acme', '2018 - 2021'))).toBe(true)
+  })
+  it.each([
+    ['Acme Ltd', 'Acme Limited'], ['Johnson & Johnson', 'Johnson and Johnson'],
+    ['Ford Motor Company', 'Ford Motor Co.'], ['Safaricom', 'Safaricom PLC'],
+  ])('%s vs %s is the same employer', (a, b) => {
+    expect(detectFabrication(oneJob(a, '2019'), oneJob(b, '2019'))).toBe(false)
+  })
+  it('padding a real name with invented words is still caught', () => {
+    expect(detectFabrication(oneJob('IBM', '2019'), oneJob('IBM Watson Research', '2019'))).toBe(true)
+  })
+})
+
+describe('groundCertifications — short credentials (Scan/ATS pass)', () => {
+  const g = (certs, raw) => groundCertifications({ certifications: certs }, raw).certifications
+  it('keeps a two-letter credential the user actually wrote (RN)', () => {
+    expect(g(['RN', 'CPR Certified'], 'Registered Nurse (RN), CPR Certified')).toEqual(['RN', 'CPR Certified'])
+  })
+  it('two-letter tokens must match as a whole word — "rn" inside "learning" is not a trace', () => {
+    expect(g(['RN'], 'Continuous learning and mentoring')).toEqual([])
+  })
+  it('still drops a credential with no trace at all', () => {
+    expect(g(['PMP'], 'Registered Nurse (RN)')).toEqual([])
   })
 })

@@ -185,7 +185,16 @@ function htmlToText(html) {
   t = stripBlocks(t, /<!--/g, /-->/g, true)
   t = stripBlocks(t, /<script(?=[\s/>])/gi, /<\/script\s*>/gi, true)
   t = stripBlocks(t, /<style(?=[\s/>])/gi, /<\/style\s*>/gi, true)
-  for (const tag of ['nav', 'header', 'footer', 'aside'])
+  // BUG FIX (Scan/ATS pass, found while testing the page-title feature above):
+  // <head> was never in this list, so <title>, <meta>, and any other head-only
+  // text (found while writing a test for the title fix: "X Corp Careers"
+  // leaked in ahead of the real posting) rode along at the very front of every
+  // fetched JD's text — pushing the actual first line of content past whatever
+  // fixed-length prefix downstream code (deriveJobTitle, this very title fix)
+  // reads. Dropped like nav/header/footer/aside: not dropped outright if
+  // unclosed, since a page with no closing </head> would otherwise cost us
+  // the entire body that (per HTML nesting) sits after it.
+  for (const tag of ['head', 'nav', 'header', 'footer', 'aside'])
     t = stripBlocks(t, new RegExp(`<${tag}(?=[\\s/>])`, 'gi'), new RegExp(`<\\/${tag}\\s*>`, 'gi'), false)
   return decodeHtmlEntities(stripTags(t))
     .replace(/\s+/g, ' ')
@@ -269,6 +278,37 @@ function extractJobPostingText(html) {
   ].filter(Boolean)
   const text = parts.join('\n').replace(/[ \t]+/g, ' ').trim()
   return text.length >= 200 ? text : null
+}
+
+// FEATURE GAP CLOSED (Scan/ATS pass): on the non-JSON-LD path htmlToText
+// flattens the whole page into ONE line, and deriveJobTitle (lib/jobTitle.js)
+// takes the first line and rejects anything over 100 characters — so every
+// scan created from a plain job-page URL ended up with NO job title on the
+// dashboard/history, and role detection lost its strongest signal (the
+// title). The page already says what the job is: its <h1> (or, failing
+// that, the first segment of its <title>). Built on the same linear-scan
+// helpers as htmlToText — no backtracking regex on attacker-supplied HTML.
+const GENERIC_TITLE = /^(?:careers?|jobs?|job (?:search|details?|description|posting)|search jobs|open positions|join (?:us|our team)|apply(?: now)?|home)\b|\b(?:careers|jobs)\s+(?:at|@)\b/i
+function firstElementText(html, tag) {
+  const open = findLiteral(html, new RegExp(`<${tag}(?=[\\s/>])`, 'gi'), 0)
+  if (!open) return ''
+  const start = html.indexOf('>', open.index)
+  if (start === -1) return ''
+  const close = findLiteral(html, new RegExp(`<\\/${tag}\\s*>`, 'gi'), start + 1)
+  if (!close) return ''
+  return htmlToText(html.slice(start + 1, Math.min(close.index, start + 1 + 2000)))
+}
+function extractPageTitle(html) {
+  let t = html || ''
+  t = stripBlocks(t, /<!--/g, /-->/g, true)
+  t = stripBlocks(t, /<script(?=[\s/>])/gi, /<\/script\s*>/gi, true)
+  t = stripBlocks(t, /<style(?=[\s/>])/gi, /<\/style\s*>/gi, true)
+  const ok = s => s.length >= 3 && s.length <= 100 && !GENERIC_TITLE.test(s)
+  const h1 = firstElementText(t, 'h1')
+  if (ok(h1)) return h1
+  // <title> is usually "Job Title - Company Careers" / "Job Title | Company".
+  const seg = firstElementText(t, 'title').split(/\s+[|\u2013\u2014-]\s+/)[0].trim()
+  return ok(seg) ? seg : ''
 }
 
 async function fetchJobDescriptionFromUrl(url) {
@@ -361,6 +401,17 @@ async function fetchJobDescriptionFromUrl(url) {
         message: 'This looks like a job listing/category page with multiple postings, not a single job description. Please paste the URL of the specific job, or paste its description text directly.' }
     }
 
+    // htmlToText flattens the whole page to ONE space-joined line, so even when
+    // the title is already the literal prefix of `text` (h1 was the first thing
+    // on the page) it isn't on its OWN line — deriveJobTitle reads up to the
+    // first newline. A newline is inserted after the existing prefix instead of
+    // duplicating it; only when the title isn't there at all does it get added.
+    const pageTitle = extractPageTitle(html)
+    if (pageTitle) {
+      text = text.toLowerCase().startsWith(pageTitle.toLowerCase())
+        ? `${text.slice(0, pageTitle.length)}\n${text.slice(pageTitle.length).replace(/^\s+/, '')}`
+        : `${pageTitle}\n${text}`
+    }
     return { success: true, blocked: false, text: text.slice(0, 5000) }
   } catch (_) {
     return { success: false, blocked: false, text: null,
@@ -374,4 +425,4 @@ async function fetchJobDescriptionFromUrl(url) {
   }
 }
 
-module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractJobPostingText }
+module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractJobPostingText, extractPageTitle }

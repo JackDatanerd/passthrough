@@ -108,6 +108,9 @@ export default function ScanResult() {
   // "have we EVER gotten a successful response", checked live, across every
   // tick of that same long-lived interval closure.
   const hasLoadedRef = useRef(false)
+  // Last status a FULL fetch returned — lets the poller ask the tiny
+  // /scan/status endpoint and only pull the whole scan when it changed.
+  const lastStatusRef = useRef(null)
 
   async function fetchScan() {
     try {
@@ -115,6 +118,7 @@ export default function ScanResult() {
       const res    = await api.get(url)
       const data   = res.data.data
       hasLoadedRef.current = true
+      lastStatusRef.current = data.status
       setScan(data)
       setLoading(false)
       setPollError('')
@@ -156,11 +160,28 @@ export default function ScanResult() {
     }
   }
 
+  // PERFORMANCE (Scan/ATS pass): every tick used to download the FULL scan —
+  // structured resume data, JD text, the atsDetail report, up to ~100 KB — every
+  // 2.5-10s for the whole life of a generation, although a lightweight
+  // /scan/status/:id endpoint exists for exactly this and only the dashboard
+  // used it. While a scan is in flight the poller now asks that endpoint and
+  // does the full fetch only when the status actually moved (or on any error,
+  // so fetchScan's existing 403/404/429 handling stays the single authority).
+  async function pollScan() {
+    const known = lastStatusRef.current
+    if (!hasLoadedRef.current || !known || POLLING_STOP.includes(known)) return fetchScan()
+    try {
+      const res = await api.get(`/scan/status/${id}${anonToken ? `?token=${anonToken}` : ''}`)
+      if (res.data?.data?.status === known) { setPollError(''); return true }
+    } catch (_) { /* fall through: the full fetch classifies the error */ }
+    return fetchScan()
+  }
+
   // (Re)starts status polling after an action that moves the scan back into a
   // non-terminal state. Callers have just fetched, so don't tick immediately.
   function restartPolling() {
     pollRef.current?.stop()
-    pollRef.current = createPoller(fetchScan)
+    pollRef.current = createPoller(pollScan)
     pollRef.current.start({ immediate: false })
   }
 
@@ -181,7 +202,8 @@ export default function ScanResult() {
   }
 
   useEffect(() => {
-    pollRef.current = createPoller(fetchScan)
+    lastStatusRef.current = null         // new scan id -> first tick is always a full fetch
+    pollRef.current = createPoller(pollScan)
     pollRef.current.start()              // first tick runs immediately
     return () => pollRef.current?.stop()
   }, [id])
@@ -467,13 +489,36 @@ export default function ScanResult() {
         {/* Error state */}
         {scan.status === 'ERROR' && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-6 text-center">
-            <p className="font-medium text-red-800 mb-1">Scan failed</p>
-            <p className="text-sm text-red-600">
-              {scan.inputMode === 'brain_dump'
-                ? "We couldn't structure your background. Try adding more detail — company names, roles, and what you did."
-                : "We couldn't parse your resume. Try uploading a text-based PDF or .docx."}
-            </p>
-            <Link to="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>
+            {/* FEATURE GAP CLOSED (Scan/ATS pass): this branch used to say "we
+                couldn't parse your resume — try again" for EVERY ERROR,
+                including a PAID fix that failed generating (where "start
+                over" is wrong and the payment is never mentioned), a saved-
+                profile scan (which has no upload to fix) and our own outages.
+                Backend recovery already exists — failed paid fixes are
+                re-queued automatically and the person is emailed — so the
+                page now says so instead of contradicting it. */}
+            {scan.fixPurchased ? (
+              <>
+                <p className="font-medium text-red-800 mb-1">We hit a problem building your resume</p>
+                <p className="text-sm text-red-600">
+                  Your payment went through and isn't lost. We retry failed builds automatically and
+                  email you as soon as your files are ready. If you haven't heard from us within a few
+                  hours, contact support and mention this scan.
+                </p>
+              </>
+            ) : (
+              <>
+                <p className="font-medium text-red-800 mb-1">Scan failed</p>
+                <p className="text-sm text-red-600">
+                  {scan.inputMode === 'brain_dump'
+                    ? "We couldn't structure your background. Try adding more detail — company names, roles, and what you did. If you wrote plenty already, this may have been a temporary problem on our side — trying again is safe."
+                    : scan.inputMode === 'saved_profile'
+                      ? "We couldn't score your saved profile. This is usually a temporary problem on our side — try again in a minute."
+                      : "We couldn't read your resume. Try uploading a text-based PDF or .docx — or, if it is one, this may have been a temporary problem on our side and trying again is safe."}
+                </p>
+              </>
+            )}
+            {!scan.fixPurchased && <Link to="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>}
           </div>
         )}
 
@@ -844,7 +889,18 @@ export default function ScanResult() {
             {!user && !scan.fixPurchased && (
               <div className="bg-gray-50 border border-gray-200 rounded-xl p-5 text-sm text-gray-600">
                 <p className="font-medium text-gray-800 mb-1">Save your results</p>
-                <p className="mb-3">Create a free account to keep your scan history and buy a fix.</p>
+                <p className="mb-3">
+                  Create a free account to keep your scan history and buy a fix.
+                  {(() => {
+                    // FEATURE GAP CLOSED (Scan/ATS pass): anonymous results are
+                    // deleted after 24h (getScan even returns anonExpiresAt) but
+                    // nothing on this page said so. Show how long is left.
+                    const ms = scan.anonExpiresAt ? Date.parse(scan.anonExpiresAt) - Date.now() : NaN
+                    if (!Number.isFinite(ms) || ms <= 0) return null
+                    const h = Math.floor(ms / 3600000), m = Math.ceil((ms % 3600000) / 60000)
+                    return <> Without one, this result is deleted in about {h >= 1 ? `${h} hour${h === 1 ? '' : 's'}` : `${m} minute${m === 1 ? '' : 's'}`}.</>
+                  })()}
+                </p>
                 <Link to="/register"
                   className="inline-block bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
                   Create free account →

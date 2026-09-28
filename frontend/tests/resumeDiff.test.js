@@ -115,3 +115,22 @@ describe('buildResumeDiff — education, projects, contact (Auth/Scan round)', (
     expect(() => buildResumeDiff(original, rewritten)).not.toThrow()
   })
 })
+
+// ─── Scan/ATS pass: DiffView renders job dates, so the diff must expose them ──
+describe('buildResumeDiff — experience date changes (Scan/ATS pass)', () => {
+  it('flags a changed employment date range on the experience entry', () => {
+    const original = { experience: [{ company: 'Acme', title: 'Engineer', dates: 'Jan 2019 - Mar 2022', bullets: [] }] }
+    const rewritten = { experience: [{ company: 'Acme', title: 'Engineer', dates: '2019 - 2022', bullets: [] }] }
+    const diff = buildResumeDiff(original, rewritten)
+    const job = diff.experience[0]
+    expect(job.datesChanged).toBe(true)
+    expect(job.beforeDates).toBe('Jan 2019 - Mar 2022')
+    expect(job.afterDates).toBe('2019 - 2022')
+  })
+  it('does not flag an unchanged date range', () => {
+    const original = { experience: [{ company: 'Acme', title: 'Engineer', dates: '2019 - 2022', bullets: [] }] }
+    const rewritten = { experience: [{ company: 'Acme', title: 'Senior Engineer', dates: '2019 - 2022', bullets: [] }] }
+    const diff = buildResumeDiff(original, rewritten)
+    expect(diff.experience[0].datesChanged).toBe(false)
+  })
+})

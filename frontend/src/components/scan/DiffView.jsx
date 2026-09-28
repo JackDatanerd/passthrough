@@ -140,6 +140,16 @@ function DiffContent({ diff }) {
                 ) : (
                   <div className="text-xs text-gray-500 mb-1">{job.afterTitle}</div>
                 )}
+                {/* BUG FIX (Scan/ATS pass): resumeDiff computes datesChanged for
+                    every job, but only the Education block rendered it — a
+                    rewrite that altered an employment date range showed nothing
+                    here, on the one screen that exists to show what changed. */}
+                {job.datesChanged && (
+                  <div className="text-xs mb-1">
+                    <span className="text-gray-400 line-through mr-2">{job.beforeDates}</span>
+                    <span className="text-gray-600">{job.afterDates}</span>
+                  </div>
+                )}
                 <ul>
                   {job.bullets.map((b, bi) => <BulletRow key={bi} bullet={b} />)}
                 </ul>

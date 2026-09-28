@@ -293,14 +293,19 @@ function groundCertifications(resumeData, rawText) {
   const haystack = String(rawText || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ')
   const grounded = resumeData.certifications.filter(cert => {
     if (typeof cert !== 'string') return false
-    const words = cert.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(w => w.length > 2)
+    // BUG FIX (Scan/ATS pass, verified): `w.length > 2` silently dropped
+    // every two-letter credential (RN, PE, CA, PT) — the certification became
+    // an empty word list and was deleted even when the user wrote it
+    // verbatim. Two-letter tokens are now kept, but because "rn" is a
+    // substring of "learning" they must match as a WHOLE word in the source.
+    const words = cert.toLowerCase().replace(/[^a-z0-9]+/g, ' ').split(' ').filter(w => w.length >= 2)
     if (!words.length) return false
     // Every significant word the certification is built from must appear
     // somewhere in the source text — not necessarily contiguous (the model
     // may reformat "AWS - Certified Solutions Architect" from "AWS
     // Certified Solutions Architect"), but nothing in the name is allowed
     // to be pure invention with zero trace in what the person actually wrote.
-    return words.every(w => haystack.includes(w))
+    return words.every(w => (w.length > 2 ? haystack.includes(w) : (' ' + haystack + ' ').includes(' ' + w + ' ')))
   })
   return { ...resumeData, certifications: grounded }
 }
@@ -392,9 +397,19 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
 }
 
 function detectFabrication(orig, rewritten) {
+  // BUG FIX (Scan/ATS pass, verified): normalisation only knew the short
+  // corporate suffixes and treated "&" and "and" as different characters, so
+  // an honest "Acme Ltd" -> "Acme Limited" or "Johnson & Johnson" ->
+  // "Johnson and Johnson" was reported as an invented employer. "&" is now
+  // folded to "and", the long-form suffixes are stripped too, and inner
+  // whitespace is collapsed so removing a suffix can't leave a double space
+  // that breaks the substring comparison below.
   const norm = s => (s || '').toLowerCase()
-    .replace(/\b(inc|llc|ltd|corp|university|institute|college|group)\b/g, '')
-    .replace(/[.,]/g, '').trim()
+    .replace(/&/g, ' and ')
+    .replace(/[.,]/g, '')
+    .replace(/\b(inc|incorporated|llc|ltd|limited|corp|corporation|plc|pty|gmbh|company|university|institute|college|group)\b/g, '')
+    .replace(/\bco\b(?!-)/g, '')
+    .replace(/\s+/g, ' ').trim()
   // AUDIT FIX (section audit — "generate a resume from scratch"): projects
   // are new to this schema (see parseResumeStructure/structureFreeformText
   // above) and just as fabricatable as an employer or institution — a
@@ -467,20 +482,51 @@ function detectFabrication(orig, rewritten) {
     .replace(/\bsr\b\.?/g, 'senior').replace(/\bjr\b\.?/g, 'junior').replace(/\bvice president\b/g, 'vp').replace(/[^a-z ]+/g, ' ')
   const LEVEL_WORDS = new Set(['senior', 'lead', 'principal', 'staff', 'head', 'director', 'vp', 'chief', 'manager', 'junior', 'intern', 'associate', 'executive', 'president', 'founder', 'cto', 'ceo', 'coo', 'cfo'])
   const levelsOf = s => new Set(canonTitle(s).split(/\s+/).filter(w => LEVEL_WORDS.has(w)))
-  const yearsOf = s => new Set(String(s || '').match(/\b(?:19|20)\d{2}\b/g) || [])
-  const hasOngoing = s => /\b(?:present|current|now|ongoing)\b/i.test(String(s || ''))
+  // BUG FIX (Scan/ATS pass, verified): two-digit years ("'19 - '21",
+  // "2019-21") were invisible to the 4-digit-only matcher, so expanding them
+  // to full years — a normal, honest tidy-up — looked like invented dates.
+  // Two-digit forms are now expanded before comparison.
+  const yearsOf = s => {
+    const str = String(s || ''), out = new Set(str.match(/\b(?:19|20)\d{2}\b/g) || [])
+    for (const m of str.matchAll(/['\u2019](\d{2})\b/g)) out.add(String((+m[1] <= 49 ? 2000 : 1900) + +m[1]))
+    for (const m of str.matchAll(/\b((?:19|20)\d{2})\s*[-\u2013\u2014]\s*(\d{2})\b(?!\d)/g)) out.add(m[1].slice(0, 2) + m[2])
+    return out
+  }
+  // BUG FIX (Scan/ATS pass, verified): "till date", "to date", "since 2019"
+  // and an open-ended "2019 -" all MEAN "Present", but only the literal
+  // words present/current/now/ongoing counted — so writing "Present" for
+  // them was flagged as an invented ongoing role.
+  const hasOngoing = s => {
+    const t = String(s || '')
+    return /\b(?:present|current|currently|now|ongoing|today)\b/i.test(t)
+      || /\b(?:till|until|to|up\s+to)\s+(?:date|now|today)\b/i.test(t)
+      || /\bsince\s+(?:19|20)\d{2}\b/i.test(t)
+      || /(?:19|20)\d{2}\s*[-\u2013\u2014]\s*$/.test(t.trim())
+  }
   const datesInvented = (o, n) => {
     const oy = yearsOf(o)
     for (const y of yearsOf(n)) if (!oy.has(y)) return true
     return hasOngoing(n) && !hasOngoing(o)
   }
   const nameMatch = (a, b) => { const x = norm(a), y = norm(b); return !!x && !!y && (x.includes(y) || y.includes(x)) }
+  // BUG FIX (Scan/ATS pass, verified — the most serious finding): each
+  // rewritten job/degree was compared to the FIRST original entry with a
+  // matching company/school. A promotion inside one employer ("Analyst" then
+  // "Senior Analyst" at Acme) or a BSc and MSc at the same university made
+  // the second entry get judged against the first, so a byte-identical,
+  // faithful rewrite returned FABRICATION_DETECTED and the paid Fix could
+  // never succeed for that (very common) resume shape. An entry now passes
+  // if ANY original entry at that company/school explains BOTH its title
+  // and its dates, so the pairing still can't be mixed across entries.
+  const experienceOk = (e, m) => {
+    const ol = levelsOf(m.title)
+    for (const w of levelsOf(e.title)) if (!ol.has(w)) return false
+    return !datesInvented(m.dates, e.dates)
+  }
   for (const e of rewritten.experience || []) {
-    const match = (orig.experience || []).find(o => nameMatch(o.company, e.company))
-    if (!match) continue
-    const ol = levelsOf(match.title)
-    for (const w of levelsOf(e.title)) if (!ol.has(w)) return true
-    if (datesInvented(match.dates, e.dates)) return true
+    const matches = (orig.experience || []).filter(o => nameMatch(o.company, e.company))
+    if (!matches.length) continue
+    if (!matches.some(m => experienceOk(e, m))) return true
   }
   const degreeLevels = s => {
     const t = String(s || '').toLowerCase(), out = new Set()
@@ -491,12 +537,15 @@ function detectFabrication(orig, rewritten) {
     if (/\bdiploma\b/.test(t)) out.add('diploma')
     return out
   }
+  const educationOk = (e, m) => {
+    const ol = degreeLevels(m.degree)
+    for (const lvl of degreeLevels(e.degree)) if (!ol.has(lvl)) return false
+    return !datesInvented(m.dates, e.dates)
+  }
   for (const e of rewritten.education || []) {
-    const match = (orig.education || []).find(o => nameMatch(o.institution, e.institution))
-    if (!match) continue
-    const ol = degreeLevels(match.degree)
-    for (const lvl of degreeLevels(e.degree)) if (!ol.has(lvl)) return true
-    if (datesInvented(match.dates, e.dates)) return true
+    const matches = (orig.education || []).filter(o => nameMatch(o.institution, e.institution))
+    if (!matches.length) continue
+    if (!matches.some(m => educationOk(e, m))) return true
   }
   const words = s => new Set(String(s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter(Boolean))
   const subset = (a, b) => [...a].every(w => b.has(w))

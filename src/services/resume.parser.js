@@ -225,7 +225,10 @@ async function structureBrainDump(env, rawText) {
       parseError: true,
       parseErrorMessage: 'Tell us a bit more about your background — at least a few sentences.'
     }
-  const truncated = rawText.slice(0, c.MAX_RESUME_CHARS)
+  // +500: room for createScan's Name/Email preamble on top of a full-length
+  // body (Scan/ATS pass) — the body itself is already capped at
+  // MAX_RESUME_CHARS by the controller.
+  const truncated = rawText.slice(0, c.MAX_RESUME_CHARS + 500)
   const claude = require('./claude.service')
   const result = await claude.structureFreeformText(env, truncated)
   if (!result.success)

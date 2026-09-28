@@ -13,6 +13,17 @@
 const KEY = 'passthrough_anon_tokens'
 const MAX_TRACKED = 30
 
+// BUG FIX (Scan/ATS pass): addAnonScanToken called localStorage.setItem
+// unguarded. Where storage is unavailable or full (Safari private mode
+// historically, a quota-exhausted profile, storage disabled by policy) it
+// threw AFTER the scan had already been created server-side — ScanForm
+// showed a generic error and never navigated, the raw token (returned once,
+// never stored anywhere else) was lost, and the 1-scan-per-hour anonymous
+// limit then blocked a retry. The token is now also kept in memory for the
+// life of the page, so the person is taken to their result and can view/edit
+// it in this tab even when persistence fails.
+const memoryTokens = new Map()
+
 function readAll() {
   try {
     const raw = JSON.parse(localStorage.getItem(KEY) || '[]')
@@ -26,29 +37,38 @@ function readAll() {
 
 export function addAnonScanToken(scanId, token) {
   if (!scanId || !token) return
-  const tokens = readAll().filter(e => e.scanId !== scanId)
-  tokens.push({ scanId, token })
-  if (tokens.length > MAX_TRACKED) tokens.splice(0, tokens.length - MAX_TRACKED)
-  localStorage.setItem(KEY, JSON.stringify(tokens))
+  memoryTokens.set(scanId, token)
+  try {
+    const tokens = readAll().filter(e => e.scanId !== scanId)
+    tokens.push({ scanId, token })
+    if (tokens.length > MAX_TRACKED) tokens.splice(0, tokens.length - MAX_TRACKED)
+    localStorage.setItem(KEY, JSON.stringify(tokens))
+  } catch (_) { /* storage unavailable/full — the in-memory copy above still works for this page */ }
 }
 
 export function getAnonScanTokens() {
-  return readAll()
+  const stored = readAll()
+  const seen = new Set(stored.map(e => e.scanId))
+  return [...stored, ...[...memoryTokens].filter(([scanId]) => !seen.has(scanId)).map(([scanId, token]) => ({ scanId, token }))]
 }
 
 export function getAnonScanToken(scanId) {
-  return readAll().find(e => e.scanId === scanId)?.token || null
+  return readAll().find(e => e.scanId === scanId)?.token || memoryTokens.get(scanId) || null
 }
 
 export function clearAnonScanTokens() {
-  localStorage.removeItem(KEY)
+  memoryTokens.clear()
+  try { localStorage.removeItem(KEY) } catch (_) {}
 }
 
 // Drops just one entry. Used by the claim loop so that a claim that failed for
 // a TRANSIENT reason (network blip, 5xx) keeps its token for a later attempt
 // instead of being wiped along with the ones that were actually consumed.
 export function removeAnonScanToken(scanId) {
-  const remaining = readAll().filter(e => e.scanId !== scanId)
-  if (remaining.length === 0) localStorage.removeItem(KEY)
-  else localStorage.setItem(KEY, JSON.stringify(remaining))
+  memoryTokens.delete(scanId)
+  try {
+    const remaining = readAll().filter(e => e.scanId !== scanId)
+    if (remaining.length === 0) localStorage.removeItem(KEY)
+    else localStorage.setItem(KEY, JSON.stringify(remaining))
+  } catch (_) {}
 }

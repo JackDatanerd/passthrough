@@ -128,6 +128,37 @@ async function scheduled(event, env, ctx) {
         //
         // Recover stuck PENDING / SCANNING / FIX_GENERATING scans (replaces the server.js
         // startup recovery — here it runs hourly instead).
+        //
+        // BUG FIX (Scan/ATS pass): this used to flip all three statuses to ERROR
+        // in one blind UPDATE, which was wrong in two ways:
+        //   1. A stuck PENDING/SCANNING scan is one whose background job died
+        //      (waitUntil is hard-capped at 30s — a brain dump's structuring
+        //      call plus scoring call can exceed it). The person's daily scan
+        //      quota was already spent, and unlike every ERROR path INSIDE
+        //      runAtsScan, nothing here gave it back. It is refunded now (same
+        //      rule as refundScanQuota: only for a scan created today).
+        //   2. A stuck FIX_GENERATING scan that ALREADY has a delivered fix
+        //      (a retry round that died) was set to ERROR, hiding files the
+        //      person had paid for and already received. Those go back to
+        //      FIX_DELIVERED with the retry handed back — the same atomic
+        //      revert_fix_retry generateFix's own crash path uses. Only a
+        //      first-time FIX_GENERATING with no delivery becomes ERROR, where
+        //      the failed-fix sweep below picks it up.
+        const stuckCutoff = new Date(Date.now() - 30 * 60 * 1000).toISOString() // stuck > 30 min
+        const { data: stuckRetries, error: retryErr } = await supabase
+          .from('scans')
+          .select('id')
+          .eq('status', 'FIX_GENERATING')
+          .lt('updated_at', stuckCutoff)
+          .not('resume_ats_path', 'is', null)
+          .gt('fix_retry_count', 0)
+        if (retryErr) { console.error('Stuck retry recovery:', retryErr.message); return }
+        for (const row of stuckRetries || []) {
+          const { error: revertErr } = await supabase.rpc('revert_fix_retry', { p_scan_id: row.id })
+          if (revertErr) console.error(`Stuck retry revert failed for ${row.id}:`, revertErr.message)
+        }
+        if (stuckRetries?.length > 0) console.log(`Recovered ${stuckRetries.length} stuck retry round(s) → FIX_DELIVERED`)
+
         const { data: stuck, error: stuckErr } = await supabase
           .from('scans')
           .update({ status: 'ERROR' })
@@ -136,10 +167,18 @@ async function scheduled(event, env, ctx) {
           // PENDING forever — nothing recovered it, and the dashboard could
           // never offer to delete it.
           .in('status', ['PENDING', 'SCANNING', 'FIX_GENERATING'])
-          .lt('updated_at', new Date(Date.now() - 30 * 60 * 1000).toISOString()) // stuck > 30 min
-          .select('id')
+          .lt('updated_at', stuckCutoff)
+          .select('id, user_id, created_at, fix_purchased')
         if (stuckErr) { console.error('Stuck scan recovery:', stuckErr.message); return }
         if (stuck?.length > 0) console.log(`Recovered ${stuck.length} stuck scan(s) → ERROR`)
+        const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+        for (const row of stuck || []) {
+          // Free-scan quota only: a paid fix (fix_purchased) never consumed a
+          // scan slot at that stage and is handled by the failed-fix sweep.
+          if (!row.user_id || row.fix_purchased || !row.created_at || new Date(row.created_at) < startOfToday) continue
+          const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })
+          if (refundErr) console.error(`Stuck scan quota refund failed for ${row.id}:`, refundErr.message)
+        }
       } catch (err) {
         console.error('Scheduled handler error:', err.message)
       }

@@ -16,13 +16,17 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 // @cloudflare/puppeteer is stubbed the same way internal src/ deps are
 // stubbed elsewhere in this suite (see loadWithStubs.cjs) — no real browser,
 // no network, just a fake with the handful of methods pdf.service.js calls.
-function fakePuppeteer(pdfBehavior) {
+function fakePuppeteer(pdfBehavior, setContentBehavior) {
   const calls = []
   let pdfCallCount = 0
   const page = {
     setJavaScriptEnabled: async v => { calls.push(['setJavaScriptEnabled', v]) },
     setDefaultNavigationTimeout: async ms => { calls.push(['setDefaultNavigationTimeout', ms]) },
-    setContent: async (html, opts) => { calls.push(['setContent', opts.waitUntil]) },
+    setContent: async (html, opts) => {
+      calls.push(['setContent', opts.waitUntil])
+      const err = setContentBehavior && setContentBehavior(opts.waitUntil)
+      if (err instanceof Error) throw err
+    },
     emulateMediaType: async t => { calls.push(['emulateMediaType', t]) },
     pdf: async opts => {
       pdfCallCount++
@@ -40,8 +44,8 @@ function fakePuppeteer(pdfBehavior) {
   return { calls, launch: async env => { calls.push(['launch', env]); return browser } }
 }
 
-function setup(pdfBehavior) {
-  const fake = fakePuppeteer(pdfBehavior)
+function setup(pdfBehavior, setContentBehavior) {
+  const fake = fakePuppeteer(pdfBehavior, setContentBehavior)
   const { mod, restore } = loadWithStubs('services/pdf.service.js', {
     '@cloudflare/puppeteer': { launch: fake.launch },
   })
@@ -77,6 +81,25 @@ describe('pdf.service — generateResumePDF', () => {
     expect(t.calls.filter(c => c[0] === 'pdf')).toHaveLength(2)
     // Cleanup still runs exactly once each, not once per attempt.
     expect(t.calls.filter(c => c[0] === 'page.close')).toHaveLength(1)
+    expect(t.calls.filter(c => c[0] === 'browser.close')).toHaveLength(1)
+  })
+
+  // Scan/ATS pass: the real-world failure is page.setContent(networkidle0)
+  // timing out on a slow font request — that throw used to escape the
+  // fallback entirely because setContent ran outside the try.
+  it('falls back to domcontentloaded when setContent(networkidle0) itself times out', async () => {
+    t = setup(undefined, w => w === 'networkidle0' ? new Error('Navigation timeout of 15000 ms exceeded') : null)
+    const buf = await t.mod.generateResumePDF({ BROWSER: {} }, '<html/>')
+    expect(buf.toString()).toBe('pdf-1') // first pdf() call is the one on the fallback load
+    expect(t.calls.filter(c => c[0] === 'setContent').map(c => c[1])).toEqual(['networkidle0', 'domcontentloaded'])
+    expect(t.calls.filter(c => c[0] === 'page.close')).toHaveLength(1)
+    expect(t.calls.filter(c => c[0] === 'browser.close')).toHaveLength(1)
+  })
+
+  it('does not retry a non-network setContent failure', async () => {
+    t = setup(undefined, () => new Error('Protocol error: target closed'))
+    await expect(t.mod.generateResumePDF({ BROWSER: {} }, '<html/>')).rejects.toThrow('Protocol error')
+    expect(t.calls.filter(c => c[0] === 'setContent')).toHaveLength(1)
     expect(t.calls.filter(c => c[0] === 'browser.close')).toHaveLength(1)
   })
 

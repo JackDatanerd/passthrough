@@ -38,22 +38,29 @@ async function generateResumePDF(env, html) {
       // relying solely on the upstream regex-based sanitizer.
       await page.setJavaScriptEnabled(false)
       await page.setDefaultNavigationTimeout(15000)
-      await page.setContent(html, { waitUntil: 'networkidle0' })
-      await page.emulateMediaType('print')
-      try {
-        const buf = await page.pdf({
+      // BUG FIX (Scan/ATS pass): the fallback below only wrapped page.pdf(),
+      // but the failure it exists for — the render template pulling Google
+      // Fonts, so `networkidle0` never settles — is thrown by
+      // page.setContent(), which sat OUTSIDE the try. A slow or blocked font
+      // request therefore escaped straight past the fallback and failed the
+      // whole PDF (the test stub's setContent never throws, which is why
+      // this went unnoticed). The load AND the print now live in one
+      // attempt, so a timeout / net:: error at either step retries once with
+      // `domcontentloaded`, which doesn't wait on the network at all.
+      const render = async waitUntil => {
+        await page.setContent(html, { waitUntil })
+        await page.emulateMediaType('print')
+        return page.pdf({
           format: 'A4', printBackground: true,
           margin: { top: '0', right: '0', bottom: '0', left: '0' }
         })
-        return buf
+      }
+      try {
+        return await render('networkidle0')
       } catch (err) {
-        if (err.message.includes('timeout') || err.message.includes('net::')) {
-          await page.setContent(html, { waitUntil: 'domcontentloaded' })
-          const buf = await page.pdf({
-            format: 'A4', printBackground: true,
-            margin: { top: '0', right: '0', bottom: '0', left: '0' }
-          })
-          return buf
+        const msg = String((err && err.message) || '')
+        if (msg.includes('timeout') || msg.includes('Timeout') || msg.includes('net::')) {
+          return await render('domcontentloaded')
         }
         throw err
       }

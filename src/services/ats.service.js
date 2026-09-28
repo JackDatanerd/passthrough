@@ -135,7 +135,16 @@ function tokenizeRaw(text) {
     .filter(Boolean)
 }
 
-const keepToken = w => w.length >= 3 || SHORT_KEEP.has(w)
+// BUG FIX (Scan/ATS pass, verified): any 3+ character token was kept, so a
+// posting's pay line ("$120,000 - $150,000"), a year ("2024") or a postcode
+// became keywords — the top "missing" list for that JD started with `000`,
+// `120`, `150`, `2024`, `10001` and `120 000`. Those can never legitimately
+// appear as a skill on a resume, they inflated the keyword denominator (35%
+// of the total score) and they put junk in the "Why this score" panel.
+// Purely numeric tokens are now dropped (mixed tokens like "s3", "3d", "b2b"
+// and "k8s" are unaffected), along with pay-line boilerplate words.
+const keepToken = w => (w.length >= 3 || SHORT_KEEP.has(w)) && !/^\p{N}+$/u.test(w)
+for (const w of ['per', 'range', 'base', 'hiring', 'annual', 'annually', 'transparency', 'compensation']) STOP_WORDS.add(w)
 
 function displayKeyword(kw) {
   return kw.split(' ').map(t => CANONICAL_DISPLAY[t] || t).join(' ')

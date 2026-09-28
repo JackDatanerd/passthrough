@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
-import { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage } from '../src/services/jd.parser.js'
+import { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractPageTitle } from '../src/services/jd.parser.js'
 
 const realFetch = globalThis.fetch
 let fetched
@@ -231,5 +231,35 @@ describe('htmlToText — hostile input must stay linear (was 40-65s of CPU at 50
     const t0 = Date.now()
     looksLikeListingPage(htmlToText('$1 - '.repeat(100_000) + '12 jobs '.repeat(60_000)))
     expect(Date.now() - t0).toBeLessThan(1500)
+  })
+})
+
+// ─── Scan/ATS independent pass: a fetched page's title becomes the JD's first line ──
+describe('extractPageTitle / job title on the non-JSON-LD path', () => {
+  it('prefers the first <h1> (tags inside it flattened; script text never a candidate)', () => {
+    const page = '<title>Senior Data Analyst - Acme Careers</title><script>var s="<h1>bad</h1>"</script><h1 class="t">Senior <b>Data</b> Analyst</h1>'
+    expect(extractPageTitle(page)).toBe('Senior Data Analyst')
+  })
+  it('falls back to the first segment of <title>', () => {
+    expect(extractPageTitle('<title>Backend Engineer | Acme Corp</title><div>x</div>')).toBe('Backend Engineer')
+  })
+  it('rejects generic / missing / unclosed headings', () => {
+    expect(extractPageTitle('<title>Careers at Acme</title><h1>Careers</h1>')).toBe('')
+    expect(extractPageTitle('<div>no headings</div>')).toBe('')
+    expect(extractPageTitle('<h1>Broken <p>text')).toBe('')
+  })
+  it('the fetched text starts with the title on its own line so deriveJobTitle can use it', async () => {
+    const body = `<html><head><title>Data Engineer | Acme</title></head><body><h1>Data Engineer</h1><p>${'Build pipelines with Python, Airflow and dbt for analytics teams across the company. '.repeat(4)}</p></body></html>`
+    mockFetch(() => html(body))
+    const r = await fetchJobDescriptionFromUrl('https://jobs.example.com/de')
+    expect(r.success).toBe(true)
+    expect(r.text.split('\n')[0]).toBe('Data Engineer')
+    expect(r.text.match(/Data Engineer/g)).toHaveLength(1)   // not duplicated when the body already opens with it
+  })
+  it('adds the title when the flattened body does not open with it', async () => {
+    const body = `<html><head><title>Data Engineer | Acme</title></head><body><h1>Data Engineer</h1><div>Join our team!</div><p>${'Build pipelines with Python, Airflow and dbt for analytics teams across the company. '.repeat(4)}</p></body></html>`
+    mockFetch(() => html(body))
+    const r = await fetchJobDescriptionFromUrl('https://jobs.example.com/de2')
+    expect(r.text.split('\n')[0]).toBe('Data Engineer')
   })
 })

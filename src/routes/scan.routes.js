@@ -28,7 +28,7 @@ router.post('/:id/initiate-fix', auth,        validateUuidParam(), c.initiateFix
 router.post('/:id/redeem-credit', auth, rl.redeemCredit, validateUuidParam(), c.redeemCredit)
 router.post('/:id/retry-fix',    auth, rl.retryFix, validateUuidParam(), c.retryFix)
 // FEATURE (Auth/Scan round): re-render a PDF that failed to generate at delivery.
-router.post('/:id/regenerate-pdf', auth, rl.resumeEdit, validateUuidParam(), c.regeneratePdf)
+router.post('/:id/regenerate-pdf', auth, rl.pdfRegen, validateUuidParam(), c.regeneratePdf)
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
 // Owner-only removal of one scan and everything stored for it (see deleteScan).
@@ -39,6 +39,6 @@ router.delete('/:id',            auth,        validateUuidParam(), c.deleteScan)
 // anonymous brain-dump submitter should be able to review/correct their
 // extracted data and get their free draft back without registering first.
 router.patch('/:id/resume-data',   rl.resumeEdit, validateUuidParam(), c.updateResumeData)
-router.get( '/:id/download-draft', rl.resumeEdit, validateUuidParam(), c.downloadDraft)
+router.get( '/:id/download-draft', rl.draftDownload, validateUuidParam(), c.downloadDraft)
 
 module.exports = router

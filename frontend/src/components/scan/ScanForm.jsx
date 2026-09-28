@@ -23,6 +23,14 @@ const MIN_BRAIN_DUMP_CHARS = 100
 // could lose an entire job or degree off the end with zero indication why
 // the AI "forgot" it.
 const MAX_RESUME_CHARS = 8000
+// FEATURE GAP CLOSED (Scan/ATS pass): mirrors backend MAX_JD_CHARS. The
+// backend silently cuts the job description at this length (and a URL fetch
+// cuts at the same point), but only the brain-dump box had a counter — so a
+// long posting lost its qualifications section, usually the part that carries
+// the keywords being scored, with no hint why. Paste mode gets the same
+// counter/warning; it does NOT truncate input, so the person can trim what
+// THEY judge least relevant instead of losing the tail.
+const MAX_JD_CHARS = 5000
 
 export default function ScanForm() {
   const navigate  = useNavigate()
@@ -289,16 +297,32 @@ export default function ScanForm() {
             <p className="mt-1 text-xs text-gray-500">
               LinkedIn URLs cannot be read automatically — paste the text instead.
               For the most accurate score, use the employer's own posting link
-              rather than a job board aggregator or reposted listing.
+              rather than a job board aggregator or reposted listing. Only the first
+              {' '}{MAX_JD_CHARS.toLocaleString()} characters of the posting are read.
             </p>
           </div>
         ) : (
-          <Textarea
-            placeholder="Paste the full job description here…"
-            value={jdText}
-            onChange={e => setJdText(e.target.value)}
-            rows={7}
-          />
+          <div>
+            <Textarea
+              placeholder="Paste the full job description here…"
+              value={jdText}
+              onChange={e => setJdText(e.target.value)}
+              rows={7}
+            />
+            <div className="mt-1 flex items-start justify-between gap-3">
+              <p className={`text-xs ${jdText.length > MAX_JD_CHARS ? 'text-red-600' : 'text-gray-500'}`}>
+                {jdText.length > MAX_JD_CHARS
+                  ? `Only the first ${MAX_JD_CHARS.toLocaleString()} characters are scored — trim boilerplate (benefits, legal text) so the requirements fit.`
+                  : ''}
+              </p>
+              <span className={`shrink-0 text-xs tabular-nums ${
+                jdText.length > MAX_JD_CHARS ? 'text-red-600 font-medium' :
+                jdText.length >= MAX_JD_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
+              }`}>
+                {jdText.length.toLocaleString()} / {MAX_JD_CHARS.toLocaleString()}
+              </span>
+            </div>
+          </div>
         )}
       </div>
 
@@ -313,6 +337,7 @@ export default function ScanForm() {
       </Button>
       <p className="text-xs text-gray-500">
         No account needed. Results in ~30 seconds.
+        {!user && ' Without an account, your result is kept for 24 hours — create a free account to keep it.'}
       </p>
     </Form>
   )

@@ -379,6 +379,23 @@ const resumeEdit = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// BUG FIX (Scan/ATS pass): regenerate-pdf and download-draft shared the
+// `resumeEdit` bucket with the resume-data PATCH — three unrelated actions on
+// one 15-per-15-minutes budget, the same fate-sharing shape this file has
+// already split apart several times. A person who edits their extracted data
+// a few times and then downloads their draft could be told "too many
+// requests" on the download itself; a PDF regeneration (a Chromium render,
+// the most expensive of the three) could be starved by edits or vice versa.
+// Each gets its own bucket, sized to what it costs.
+const pdfRegen = makeLimiter({
+  windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:pdfregen',
+  message: msg('Too many requests. Please wait a moment.')
+})
+const draftDownload = makeLimiter({
+  windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:draftdownload',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 // AUDIT FIX (Section 9/10 pass, bug): redeemCredit and retryFix (scan.routes.js)
 // used to run through this exact `payment` limiter instance — same KV bucket
 // (`rl:payment:<ip>`), not just the same numbers — as initializePayment. The
@@ -736,7 +753,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
