@@ -25,6 +25,13 @@ export default function ConfirmEmailChange() {
   const [status, setStatus] = useState('loading') // loading | success | error
   const [message, setMessage] = useState('')
   const [keptOtherSession, setKeptOtherSession] = useState(false)
+  // AUDIT FIX (Auth section round 1): opening this link a SECOND time (a mail
+  // scanner, a double tap, the back button) used to hit the generic 400
+  // "invalid or expired" branch below — indistinguishable from a genuinely
+  // dead link — for an address that HAD just been confirmed. The backend now
+  // answers a replay with { alreadyConfirmed: true } and no token/user (see
+  // confirmEmailChange's own comment): nothing to adopt, nothing wrong either.
+  const [alreadyConfirmed, setAlreadyConfirmed] = useState(false)
   const ran = useRef(false)
 
   useEffect(() => {
@@ -34,7 +41,8 @@ export default function ConfirmEmailChange() {
     if (!token) { setStatus('error'); setMessage('This link is missing its confirmation token.'); return }
     api.post('/auth/email/confirm', { token })
       .then(async res => {
-        const { user, token: sessionToken } = res.data.data
+        const { user, token: sessionToken, alreadyConfirmed: replay } = res.data.data
+        if (replay) { setAlreadyConfirmed(true); setStatus('success'); return }
         // AUDIT FIX (Auth/Scan round): this used to adopt the returned session
         // unconditionally — so following a confirmation link in a browser
         // that was signed in as a DIFFERENT account silently swapped that
@@ -70,9 +78,13 @@ export default function ConfirmEmailChange() {
           {status === 'success' && (
             <>
               <div className="text-green-500 text-4xl mb-3">✓</div>
-              <h1 className="text-xl font-bold text-gray-900 mb-2">Email updated</h1>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">
+                {alreadyConfirmed ? 'Already confirmed' : 'Email updated'}
+              </h1>
               <p className="text-sm text-gray-500 mb-6">
-                {keptOtherSession
+                {alreadyConfirmed
+                  ? 'This link has already been used and your email was updated earlier.'
+                  : keptOtherSession
                   ? 'The account now uses this email address. You are signed in to a different account in this browser, so sign out and sign in with the new email to use it.'
                   : 'Your account now uses this email address.'}
               </p>

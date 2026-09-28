@@ -199,3 +199,69 @@ describe('optionalAuth — c.get(\'authError\') classification', () => {
     expect(store.authError).toBe('unavailable')
   })
 })
+
+const SID = '11111111-2222-4333-8444-555555555555'
+const session = (over = {}) => ({
+  id: SID, user_id: 'u1', created_at: new Date(Date.now() - 86400000).toISOString(),
+  last_seen_at: new Date().toISOString(), absolute_expires_at: new Date(Date.now() + 20 * 86400000).toISOString(),
+  revoked_at: null, ip: '1.2.3.4', user_agent: 'UA', ...over,
+})
+const tick = () => new Promise(r => setTimeout(r, 0))
+
+function setupS({ user = () => ({ data: userRow() }), sess = () => ({ data: session() }) } = {}) {
+  const db = createFakeSupabase(q => (q.table === 'users' ? user(q) : q.table === 'user_sessions' ? sess(q) : undefined))
+  const { mod, restore } = loadWithStubs('middleware/optionalAuth.js', { 'config/supabase.js': { getSupabase: () => db } })
+  return { optionalAuth: mod, db, restore }
+}
+const bearer = async payload => `Bearer ${await sign(payload, SECRET, 60)}`
+
+describe('optionalAuth — explicit column list (bug B5) and server-side sessions', () => {
+  it('never selects * from users', async () => {
+    ctx = setupS()
+    await run(ctx.optionalAuth, { header: await bearer({ userId: 'u1', tokenVersion: 3 }) })
+    const cols = ctx.db.calls.find(q => q.table === 'users').cols
+    expect(cols).not.toBe('*')
+    expect(cols).not.toContain('password_hash')
+    expect(cols).not.toContain('saved_profile')
+  })
+  it('a token without a sid never touches user_sessions', async () => {
+    ctx = setupS()
+    const { store } = await run(ctx.optionalAuth, { header: await bearer({ userId: 'u1', tokenVersion: 3 }) })
+    expect(store.user.id).toBe('u1')
+    expect(ctx.db.calls.filter(q => q.table === 'user_sessions')).toHaveLength(0)
+  })
+  it('a live session sets user, tokenExp, sessionId and the absolute expiry', async () => {
+    ctx = setupS()
+    const { store } = await run(ctx.optionalAuth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    expect(store.user.id).toBe('u1')
+    expect(store.tokenExp).toBeTypeOf('number')
+    expect(store.sessionId).toBe(SID)
+    expect(store.sessionExpiresAtMs).toBeGreaterThan(Date.now())
+  })
+  it('a revoked / expired / foreign / missing / malformed session → no user, authError "inactive"', async () => {
+    const bads = [
+      [session({ revoked_at: new Date().toISOString() }), SID],
+      [session({ absolute_expires_at: new Date(Date.now() - 1000).toISOString() }), SID],
+      [session({ user_id: 'someone-else' }), SID],
+      [null, SID],
+      [session(), 'not-a-uuid'],
+    ]
+    for (const [row, sid] of bads) {
+      ctx = setupS({ sess: () => ({ data: row }) })
+      const { store, nextCalled } = await run(ctx.optionalAuth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid }) })
+      expect(store.user).toBeUndefined()
+      expect(store.tokenExp).toBeUndefined() // so auth.js's fast path can't be fooled
+      expect(store.authError).toBe('inactive')
+      expect(nextCalled).toBe(true) // optionalAuth never blocks
+      ctx.restore()
+    }
+  })
+  it('a database failure on the session lookup is "unavailable" (our fault), not "inactive" (theirs)', async () => {
+    const realErr = console.error; console.error = () => {}
+    ctx = setupS({ sess: () => ({ data: null, error: { message: 'boom' } }) })
+    const { store } = await run(ctx.optionalAuth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    console.error = realErr
+    expect(store.authError).toBe('unavailable')
+    expect(store.user).toBeUndefined()
+  })
+})

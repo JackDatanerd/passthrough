@@ -58,4 +58,16 @@ describe('safeNext — open-redirect protection', () => {
       '/login', '/login?expired=true', '/foo\r\nSet-Cookie: x=1'])
       expect(safeNext(bad)).toBeNull()
   })
+  // AUDIT FIX (Auth section round 1, bug B1): a tab character (and other
+  // whitespace/control characters) survived the old \r\n-only check, and a
+  // URL parser resolving the value later strips it — so "/\t/evil.com" passed
+  // this guard but resolved to https://evil.com/. Every ASCII control
+  // character and space is rejected now, not just \r and \n.
+  it('rejects a tab (and other control/whitespace characters) that a URL parser would strip', () => {
+    for (const bad of ['/\t/evil.com', '/\t\\evil.com', '/ /evil.com', '/\x00/evil.com', '/\x7f/evil.com', '/\v/evil.com', '/\f/evil.com'])
+      expect(safeNext(bad)).toBeNull()
+  })
+  it('still accepts an ordinary path with no control characters', () => {
+    expect(safeNext('/dashboard/settings?tab=security')).toBe('/dashboard/settings?tab=security')
+  })
 })

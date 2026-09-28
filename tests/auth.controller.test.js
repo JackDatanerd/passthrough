@@ -3,6 +3,8 @@ import bcrypt from 'bcryptjs'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 import { TERMS_VERSION } from '../src/config/constants.js'
+import { verify as verifyJwt } from '../src/lib/jwt.js'
+import { sha256 } from '../src/lib/crypto.js'
 
 // AUDIT FIX (Section 12): auth.controller.js is 550 lines — the single
 // largest piece of the app's actual security surface (login, registration,
@@ -18,6 +20,10 @@ import { TERMS_VERSION } from '../src/config/constants.js'
 const NOW = () => new Date().toISOString()
 const FUTURE = () => new Date(Date.now() + 60 * 60 * 1000).toISOString()
 const PAST = () => new Date(Date.now() - 60 * 60 * 1000).toISOString()
+// Server-side sessions (migration 0047)
+const SID = '11111111-2222-4333-8444-555555555555'
+const SID2 = '99999999-2222-4333-8444-555555555555'
+const IN_DAYS = d => new Date(Date.now() + d * 24 * 60 * 60 * 1000).toISOString()
 
 function baseUserRow(over = {}) {
   return {
@@ -33,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [] }
+  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -51,6 +57,10 @@ async function setup(opts = {}) {
       // confirmEmailChange's proactive duplicate-email check) needs the
       // opt-in opts.existingEmailUser.
       if (q.maybe) {
+        // Auth round 1: confirmEmailChange's replay lookup is the only query
+        // filtering on email_change_done_token (a consumed link's hash).
+        if (q.filters.some(f => f[1] === 'email_change_done_token'))
+          return { data: opts.doneTokenRow ?? null, error: null }
         // AUDIT FIX (Auth/Scan round): verifyEmail's "already used link" replay
         // lookup is the one email_verify_token query WITHOUT an expiry filter.
         if (q.filters.some(f => f[1] === 'email_verify_token') && !q.filters.some(f => f[0] === 'gt' && f[1] === 'email_verify_expiry'))
@@ -66,6 +76,11 @@ async function setup(opts = {}) {
     if (q.table === 'users' && q.op === 'insert') return { data: opts.insertedRow ?? baseUserRow({ id: 'new1', password_hash: 'x' }), error: opts.insertError || null }
     if (q.table === 'users' && q.op === 'update') {
       state.updates.push({ table: 'users', patch: q.patch, id: eqValue(q, 'id') })
+      // Auth round 1: opts.casLost = the WHERE clause (token / token_version) matched
+      // no row, exactly what Postgres reports when another request got there first.
+      if (opts.casLost) return { data: null, error: null }
+      // opts.userUpdateErrorOnce = only the FIRST users update fails (e.g. a 23505).
+      if (opts.userUpdateErrorOnce && !state.onceFired) { state.onceFired = true; return { data: null, error: opts.userUpdateErrorOnce } }
       return { data: opts.updatedUserRow ?? { ...userRow, ...q.patch }, error: opts.userUpdateError || null }
     }
     if (q.table === 'scans' && q.op === 'select' && q.selectOpts?.head) {
@@ -99,7 +114,23 @@ async function setup(opts = {}) {
     // confirmation email is actually sent-and-logged BEFORE this purge runs,
     // not just that both eventually happen.
     if (q.table === 'email_logs' && q.op === 'delete') { state.logPurges.push(q.filters.find(f => f[0] === 'in' && f[1] === 'to')?.[2] ?? eqValue(q, 'to')); state.callOrder.push('log-purge'); return { error: null } }
-    if (q.op === 'rpc') { state.rpcCalls.push({ name: q.name, args: q.args }); return { data: null, error: opts.rpcError || null } }
+    if (q.op === 'rpc') {
+      state.rpcCalls.push({ name: q.name, args: q.args })
+      // opts.sessions: sign-in creates a real (fake) session row; without it
+      // create_user_session yields nothing, which lib/sessions.js treats as
+      // "couldn't create one" and issues a sessionless token — the pre-0047 shape.
+      if (q.name === 'create_user_session')
+        return opts.sessions
+          ? { data: [{ session_id: opts.newSessionId ?? SID, session_expires_at: opts.sessionExpiresAt ?? IN_DAYS(30) }], error: null }
+          : { data: null, error: opts.createSessionError || null }
+      if (q.name === 'revoke_other_sessions') return { data: 'revokeOthersResult' in opts ? opts.revokeOthersResult : 6, error: opts.rpcError || null }
+      return { data: null, error: opts.rpcError || null }
+    }
+    if (q.table === 'user_sessions') {
+      state.sessionQueries.push(q)
+      if (q.op === 'select') return { data: opts.sessionRows ?? [], error: opts.sessionsError || null }
+      if (q.op === 'update') return { data: 'sessionUpdateResult' in opts ? opts.sessionUpdateResult : { id: eqValue(q, 'id') }, error: null }
+    }
     return undefined
   })
 
@@ -144,6 +175,9 @@ async function setup(opts = {}) {
       sendNewSignInAlert:         async (...a) => { state.emails.push({ type: 'new_login_alert', to: a[2], ip: a[4]?.ip }) },
       sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4], opts: a[5] }); return true },
     },
+    // Auth round 1: the breached-password check must never reach the network in a
+    // unit test. opts.pwned = true simulates a hit.
+    'lib/pwned.js': { isPwnedPassword: async pw => { state.pwnedChecks.push(pw); return !!opts.pwned } },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
       // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now takes
@@ -174,10 +208,11 @@ async function setup(opts = {}) {
     // changePassword/updateEmail/deleteAccount's account-lockout calls key
     // off sessionUser.email, so a mock missing it would silently pass
     // `undefined` through instead of catching a real wiring mistake.
-    get: k => ({ user: opts.sessionUser ?? { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp }[k]),
+    get: k => ({ user: opts.sessionUser ?? { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp, sessionId: opts.sessionId, sessionExpiresAtMs: opts.sessionExpiresAtMs }[k]),
     req: {
       json: async () => (over.body ?? {}),
       query: k => (over.query ?? {})[k],
+      param: k => (over.params ?? {})[k],
       // AUDIT FIX (bug — account-lockout DoS): clientIp(c) in
       // auth.controller.js now reads this on every login/changePassword/
       // updateEmail/deleteAccount call — a mock missing it entirely would
@@ -280,12 +315,21 @@ describe('register', () => {
 })
 
 describe('login', () => {
-  it('a locked-out account is rejected with 429 before any DB read', async () => {
+  it('a locked-out account is rejected with 429 without ever checking the password', async () => {
     t = await setup({ locked: { locked: true, retryAfterSeconds: 125 } })
     const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'x' } }))
     expect(res.status).toBe(429)
     expect(res.body.message).toMatch(/3 minute/)
-    expect(t.db.calls).toHaveLength(0)
+    // Only the user lookup (needed for the known-network check) — nothing was
+    // written, no session was created, and no failure was recorded.
+    expect(t.db.calls.every(q => q.op === 'select' && q.table === 'users')).toBe(true)
+    expect(t.state.failures).toHaveLength(0)
+    expect(t.state.rpcCalls).toHaveLength(0)
+  })
+  it('a normal (not locked) login does no early lookup — exactly one users read', async () => {
+    t = await setup()
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(t.db.calls.filter(q => q.table === 'users' && q.op === 'select')).toHaveLength(1)
   })
 
   it('an unknown email still pays the bcrypt cost (timing equalization) and records a failure', async () => {
@@ -433,7 +477,7 @@ describe('login — new sign-in visibility + alert (migration 0040)', () => {
     expect(t.state.emails.filter(e => e.type === 'new_login_alert')).toHaveLength(0)
   })
 
-  it('alerts when the network looks different and no alert has recently gone out — and the response still reports the OLD ip, not the new one', async () => {
+  it('alerts when the network looks different and no alert has recently gone out — and the response reports the post-login state', async () => {
     t = await setup({ userRow: baseUserRow({
       password_hash: await bcrypt.hash('correct-password', 10),
       last_login_at: PAST(), last_login_ip: '9.9.9.9', last_login_alert_at: null,
@@ -442,11 +486,14 @@ describe('login — new sign-in visibility + alert (migration 0040)', () => {
       body: { email: 'user@example.com', password: 'correct-password' },
       headers: { 'cf-connecting-ip': '55.55.55.55' }
     }))
-    // The response was built from the user row fetched at the TOP of the
-    // request, before recordLoginMetadata's own (still in-flight) write —
-    // it must report last sign-in as it was BEFORE this one, same reasoning
-    // as Settings.jsx showing "previous", never "current".
-    expect(res.body.data.user.lastLoginIp).toBe('9.9.9.9')
+    // AUDIT FIX (Auth round 1, bug B2): the response used to be built from the
+    // row read BEFORE this login's own write, so previousLoginAt/Ip were two
+    // sign-ins old. It now reports what the database will hold: this sign-in
+    // as the latest, and the one BEFORE it (9.9.9.9) as the "previous" one that
+    // Settings shows.
+    expect(res.body.data.user.lastLoginIp).toBe('55.55.55.55')
+    expect(res.body.data.user.previousLoginIp).toBe('9.9.9.9')
+    expect(res.body.data.user.previousLoginAt).toBeTypeOf('string')
     await flush()
     expect(t.state.emails).toEqual([{ type: 'new_login_alert', to: 'user@example.com', ip: '55.55.55.55' }])
     const update = t.state.updates.find(u => u.table === 'users')
@@ -817,20 +864,20 @@ describe('signOutOtherSessions', () => {
   // FEATURE (Auth section audit): bumps token_version on its own — no
   // password change involved — for someone who just wants to sign a lost/
   // stolen device out.
-  it('bumps token_version and returns a fresh token valid under the NEW version', async () => {
-    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 5, email: 'user@example.com' } })
+  it('bumps token_version atomically (RPC) and returns a fresh token valid under the NEW version', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 5, email: 'user@example.com' }, sessionId: SID, sessionExpiresAtMs: Date.now() + 86400000, revokeOthersResult: 6 })
     const res = await t.mod.signOutOtherSessions(t.c())
     expect(res.status).toBe(200)
-    const update = t.state.updates.find(u => u.table === 'users')
-    expect(update.patch).toEqual({ token_version: 6 })
-    expect(res.body.data.token).toBeTypeOf('string')
+    expect(t.state.rpcCalls).toEqual([{ name: 'revoke_other_sessions', args: { p_user_id: 'u1', p_keep_session: SID } }])
+    const payload = await verifyJwt(res.body.data.token, 'test-secret-at-least-this-long')
+    expect(payload).toMatchObject({ userId: 'u1', tokenVersion: 6, sid: SID })
   })
-  it('requires no password and touches nothing but token_version', async () => {
-    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, email: 'user@example.com' } })
+  it('requires no password and writes nothing to users itself (the RPC does it in one statement)', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, email: 'user@example.com' }, sessionId: SID, sessionExpiresAtMs: Date.now() + 86400000 })
     const res = await t.mod.signOutOtherSessions(t.c({ body: {} }))
     expect(res.status).toBe(200)
-    expect(t.state.updates).toHaveLength(1)
-    expect(Object.keys(t.state.updates[0].patch)).toEqual(['token_version'])
+    // AUDIT FIX (Auth round 1, bug B3): no read-then-write of tokenVersion.
+    expect(t.state.updates).toHaveLength(0)
   })
 })
 
@@ -944,7 +991,7 @@ describe('confirmEmailChange', () => {
     })
   }
   it('400s an unknown/expired token without changing anything', async () => {
-    t = await setup({ pendingLookupRow: null })
+    t = await setup({ pendingLookupRow: null, doneTokenRow: null })
     const res = await t.mod.confirmEmailChange(t.c({ body: { token: 'nope' } }))
     expect(res.status).toBe(400)
     expect(t.state.updates).toHaveLength(0)
@@ -1279,5 +1326,395 @@ describe('name validation (register + updateName)', () => {
       await expect(register(bad)).rejects.toBeTruthy()
       await expect(t.mod.updateName(t.c({ body: { name: bad } }))).rejects.toBeTruthy()
     }
+  })
+})
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Auth section, round 1 — server-side sessions, breached passwords, lockout
+// bypass for the owner's own network, and the compare-and-swap writes.
+// ─────────────────────────────────────────────────────────────────────────────
+const SECRET = 'test-secret-at-least-this-long'
+const UPDATE_TO = (t, table = 'users') => t.db.calls.filter(q => q.table === table && q.op === 'update')
+
+describe('sessions — sign-in issues session-bound tokens (migration 0047)', () => {
+  it('register: the token carries a sid, and the session is created with this request\'s IP and user-agent', async () => {
+    t = await setup({ sessions: true })
+    const res = await t.mod.register(t.c({
+      body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true },
+      headers: { 'cf-connecting-ip': '198.51.100.9', 'User-Agent': 'TestBrowser/1.0' }
+    }))
+    const payload = await verifyJwt(res.body.data.token, SECRET)
+    expect(payload.sid).toBe(SID)
+    const rpc = t.state.rpcCalls.find(r => r.name === 'create_user_session')
+    expect(rpc.args).toMatchObject({ p_user_id: 'new1', p_ip: '198.51.100.9', p_user_agent: 'TestBrowser/1.0', p_lifetime_days: 30, p_max_active: 20 })
+  })
+  it('login: the token carries a sid and cannot outlive the session\'s absolute expiry', async () => {
+    t = await setup({ sessions: true, sessionExpiresAt: new Date(Date.now() + 2 * 3600 * 1000).toISOString() })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    const p = await verifyJwt(res.body.data.token, SECRET)
+    expect(p.sid).toBe(SID)
+    // 7-day token lifetime, capped to the ~2h left on the session
+    expect(p.exp - p.iat).toBeLessThanOrEqual(2 * 3600)
+    expect(p.exp - p.iat).toBeGreaterThan(2 * 3600 - 60)
+  })
+  it('DEGRADES to the old sessionless token when the session row can\'t be created — sign-in must not break', async () => {
+    t = await setup({ createSessionError: { message: 'relation "user_sessions" does not exist' } })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    const p = await verifyJwt(res.body.data.token, SECRET)
+    expect(p.sid).toBeUndefined()
+    expect(p.exp - p.iat).toBe(604800)
+  })
+})
+
+describe('breached-password check (HIBP, fails open)', () => {
+  const REG = { name: 'Ada', email: 'a@b.com', password: 'a-long-unique-passphrase', acceptTerms: true }
+  it('register refuses a password found in a breach, before touching the database', async () => {
+    t = await setup({ pwned: true })
+    const res = await t.mod.register(t.c({ body: REG }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/data breach/i)
+    expect(t.db.calls).toHaveLength(0)
+    expect(t.state.pwnedChecks).toEqual([REG.password])
+  })
+  it('register accepts a password that is not in a breach', async () => {
+    t = await setup({ pwned: false })
+    expect((await t.mod.register(t.c({ body: REG }))).status).toBe(201)
+  })
+  it('the cheap local checks run first — a password equal to the email never costs an outbound request', async () => {
+    t = await setup({ pwned: false })
+    await t.mod.register(t.c({ body: { ...REG, email: 'someone@example.com', password: 'someone@example.com' } }))
+    expect(t.state.pwnedChecks).toHaveLength(0)
+  })
+  it('resetPassword refuses a breached password and writes nothing', async () => {
+    t = await setup({ pwned: true, userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'a-long-unique-passphrase' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/data breach/i)
+    expect(t.state.updates).toHaveLength(0)
+  })
+  it('changePassword refuses a breached new password and writes nothing', async () => {
+    t = await setup({ pwned: true })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'a-long-unique-passphrase' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/data breach/i)
+    expect(t.state.updates).toHaveLength(0)
+  })
+})
+
+describe('login — account lockout no longer locks out the owner on their own network', () => {
+  const LOCKED = { locked: true, retryAfterSeconds: 600 }
+  const ownerRow = async (ip, over = {}) => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), last_login_ip: ip, last_login_at: PAST(), ...over })
+  const attempt = (t, ip, password = 'correct-password', email = 'user@example.com') =>
+    t.mod.login(t.c({ body: { email, password }, headers: ip === null ? {} : { 'cf-connecting-ip': ip } }))
+
+  it('lets the request through to the password check from the network the account last signed in from', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow('203.0.113.5') })
+    const res = await attempt(t, '203.0.113.5')
+    expect(res.status).toBe(200)
+    expect(t.state.successes).toEqual(['user@example.com']) // and the successful sign-in clears the lock
+  })
+  it('a WRONG password from that network is still rejected and still counted', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow('203.0.113.5') })
+    const res = await attempt(t, '203.0.113.5', 'nope')
+    expect(res.status).toBe(401)
+    expect(t.state.failures).toEqual(['user@example.com'])
+  })
+  it('stays locked for every OTHER network — even with the right password', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow('203.0.113.5') })
+    const res = await attempt(t, '198.51.100.77')
+    expect(res.status).toBe(429)
+    expect(t.state.successes).toHaveLength(0)
+    expect(t.state.rpcCalls).toHaveLength(0)
+  })
+  it('matches an IPv6 client by its /64 (privacy extensions rotate the low bits)', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow('2001:db8:1:2::1') })
+    expect((await attempt(t, '2001:db8:1:2:aaaa:bbbb:cccc:dddd')).status).toBe(200)
+  })
+  it('NEVER treats "unknown" as the owner\'s network — that bucket is shared by every request whose address we can\'t see', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow('unknown') })
+    const res = await attempt(t, null) // no cf-connecting-ip -> clientIp() === 'unknown'
+    expect(res.status).toBe(429)
+  })
+  it('an account with no recorded last sign-in has no network to trust', async () => {
+    t = await setup({ locked: LOCKED, userRow: await ownerRow(null) })
+    expect((await attempt(t, '203.0.113.5')).status).toBe(429)
+  })
+  it('an unknown email gets the identical 429 — the bypass cannot be used to probe which accounts exist', async () => {
+    t = await setup({ locked: LOCKED, userRow: null })
+    const res = await attempt(t, '203.0.113.5', 'x', 'ghost@example.com')
+    expect(res.status).toBe(429)
+    expect(res.body.message).toMatch(/10 minute/)
+  })
+  it('applies to the authenticated password-guessing endpoints too (changePassword)', async () => {
+    t = await setup({ locked: LOCKED, sessionUser: { id: 'u1', tokenVersion: 1, email: 'user@example.com', lastLoginIp: '203.0.113.5' } })
+    const other = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'another-fine-passphrase' }, headers: { 'cf-connecting-ip': '198.51.100.77' } }))
+    expect(other.status).toBe(429)
+    const own = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'another-fine-passphrase' }, headers: { 'cf-connecting-ip': '203.0.113.5' } }))
+    expect(own.status).toBe(200)
+  })
+})
+
+describe('getMe — no tokenVersion leak, and renewal can never outrun the session', () => {
+  const NOW_S = () => Math.floor(Date.now() / 1000)
+  const ME = { id: 'u1', tokenVersion: 3, emailVerified: true, email: 'user@example.com' }
+
+  it('never returns tokenVersion to the client (but still renews with it)', async () => {
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 3600 })
+    const res = await t.mod.getMe(t.c())
+    expect(res.body.data.user.tokenVersion).toBeUndefined()
+    expect((await verifyJwt(res.body.data.token, SECRET)).tokenVersion).toBe(3)
+  })
+  it('upgrades a pre-sessions token to a real session the first time it is seen, even with days to spare', async () => {
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 6 * 86400, sessions: true })
+    const res = await t.mod.getMe(t.c())
+    expect((await verifyJwt(res.body.data.token, SECRET)).sid).toBe(SID)
+  })
+  it('a pre-sessions token is left alone when a session can\'t be created and time remains', async () => {
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 6 * 86400 })
+    expect((await t.mod.getMe(t.c())).body.data.token).toBeUndefined()
+  })
+  it('renews a session-bound token under the SAME sid, capped at the absolute expiry', async () => {
+    const absolute = Date.now() + 2 * 86400 * 1000
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 3600, sessionId: SID, sessionExpiresAtMs: absolute })
+    const p = await verifyJwt((await t.mod.getMe(t.c())).body.data.token, SECRET)
+    expect(p.sid).toBe(SID)
+    // not the usual 7 days: renewal stops at the 2 days the session has left
+    expect(p.exp * 1000).toBeLessThanOrEqual(absolute + 1000)
+    expect(p.exp - p.iat).toBeLessThanOrEqual(2 * 86400)
+  })
+  it('does NOT renew when the session is about to end — a token that only buys minutes is churn, not renewal', async () => {
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 20 * 60, sessionId: SID, sessionExpiresAtMs: Date.now() + 30 * 60 * 1000 })
+    expect((await t.mod.getMe(t.c())).body.data.token).toBeUndefined()
+  })
+  it('does not renew when plenty of time remains', async () => {
+    t = await setup({ sessionUser: ME, tokenExp: NOW_S() + 5 * 86400, sessionId: SID, sessionExpiresAtMs: Date.now() + 20 * 86400 * 1000 })
+    expect((await t.mod.getMe(t.c())).body.data.token).toBeUndefined()
+  })
+})
+
+describe('compare-and-swap writes (bugs B3/B4) — one request wins, none can lower token_version', () => {
+  it('resetPassword: the UPDATE is filtered on the consumed token AND the token_version it read', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE(), token_version: 3 }) })
+    await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    const upd = UPDATE_TO(t)[0]
+    expect(eqValue(upd, 'reset_token')).toBe(await sha256('raw-token'))
+    expect(eqValue(upd, 'token_version')).toBe(3)
+    expect(eqValue(upd, 'id')).toBe('u1')
+  })
+  it('resetPassword: a request that loses the race gets the same 400 as a dead link — and sends nothing, revokes nothing, clears no lockout', async () => {
+    t = await setup({ casLost: true, userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/invalid or expired/i)
+    expect(t.state.emails).toHaveLength(0)
+    expect(t.state.successes).toHaveLength(0)
+    expect(t.state.sessionQueries).toHaveLength(0)
+  })
+  it('resetPassword: on success every live session row of that user is marked revoked', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    const q = t.state.sessionQueries.find(x => x.op === 'update')
+    expect(q.patch.revoked_at).toBeTypeOf('string')
+    expect(eqValue(q, 'user_id')).toBe('u1')
+    expect(q.filters).toContainEqual(['is', 'revoked_at', null])
+  })
+  it('changePassword: the UPDATE is filtered on the token_version it read', async () => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), token_version: 7 }) })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'another-fine-passphrase' } }))
+    expect(res.status).toBe(200)
+    expect(eqValue(UPDATE_TO(t)[0], 'token_version')).toBe(7)
+  })
+  it('changePassword: losing the race is a 409 "try again", not a false success — no email, no new token', async () => {
+    t = await setup({ casLost: true })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'another-fine-passphrase' } }))
+    expect(res.status).toBe(409)
+    expect(res.body.data).toBeUndefined()
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('changePassword: the browser that changed it gets a fresh session-bound token under the new version; old rows are revoked', async () => {
+    t = await setup({ sessions: true, userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), token_version: 2 }) })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'another-fine-passphrase' } }))
+    expect(await verifyJwt(res.body.data.token, SECRET)).toMatchObject({ tokenVersion: 3, sid: SID })
+    expect(t.state.sessionQueries.some(q => q.op === 'update' && q.patch.revoked_at)).toBe(true)
+  })
+  it('changePassword / updateEmail / deleteAccount: an account that vanished mid-request is a 401 USER_NOT_FOUND, not a 500', async () => {
+    for (const [fn, body] of [
+      ['changePassword', { currentPassword: 'x', newPassword: 'another-fine-passphrase' }],
+      ['updateEmail',    { newEmail: 'new@example.com', password: 'x' }],
+      ['deleteAccount',  { password: 'x' }],
+    ]) {
+      t = await setup({ userRow: null })
+      const res = await t.mod[fn](t.c({ body }))
+      expect(res.status, fn).toBe(401)
+      expect(res.body.code, fn).toBe('USER_NOT_FOUND')
+      t.restore()
+    }
+  })
+})
+
+describe('signOutOtherSessions — session-aware (0047)', () => {
+  it('a pre-sessions token starts a real session for this browser and keeps nothing (p_keep_session null)', async () => {
+    t = await setup({ sessions: true, revokeOthersResult: 9, sessionUser: { id: 'u1', tokenVersion: 8, email: 'user@example.com' } })
+    const res = await t.mod.signOutOtherSessions(t.c())
+    expect(t.state.rpcCalls[0]).toEqual({ name: 'revoke_other_sessions', args: { p_user_id: 'u1', p_keep_session: null } })
+    expect(await verifyJwt(res.body.data.token, SECRET)).toMatchObject({ tokenVersion: 9, sid: SID })
+  })
+  it('an account that no longer exists is a 401, not a token for version null', async () => {
+    t = await setup({ revokeOthersResult: null, sessionId: SID })
+    const res = await t.mod.signOutOtherSessions(t.c())
+    expect(res.status).toBe(401)
+    expect(res.body.data).toBeUndefined()
+  })
+  it('a database error surfaces as an error, never as "Other sessions signed out."', async () => {
+    t = await setup({ rpcError: { message: 'boom' }, sessionId: SID })
+    await expect(t.mod.signOutOtherSessions(t.c())).rejects.toBeTruthy()
+  })
+})
+
+describe('logout / listSessions / revokeSession', () => {
+  it('logout revokes exactly the caller\'s own current session row', async () => {
+    t = await setup({ sessionId: SID })
+    const res = await t.mod.logout(t.c())
+    expect(res.status).toBe(200)
+    const q = t.state.sessionQueries.find(x => x.op === 'update')
+    expect(q.patch.revoked_at).toBeTypeOf('string')
+    expect(eqValue(q, 'id')).toBe(SID)
+    expect(eqValue(q, 'user_id')).toBe('u1')
+  })
+  it('logout with a pre-sessions token still succeeds (nothing server-side to revoke) and writes nothing', async () => {
+    t = await setup()
+    const res = await t.mod.logout(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.sessionQueries).toHaveLength(0)
+  })
+  it('logout surfaces a failed revoke rather than reporting a signed-out session that is still live', async () => {
+    t = await setup({ sessionId: SID })
+    t.db.calls.length = 0
+    const origFrom = t.db.from
+    t.db.from = table => table === 'user_sessions'
+      ? { update: () => ({ eq: () => ({ eq: () => ({ is: () => Promise.resolve({ error: { message: 'db down' } }) }) }) }) }
+      : origFrom(table)
+    await expect(t.mod.logout(t.c())).rejects.toBeTruthy()
+  })
+  it('listSessions returns only this user\'s live sessions, flags the current one, and never leaks user_id', async () => {
+    const rows = [
+      { id: SID,  user_id: 'u1', created_at: PAST(), last_seen_at: NOW(), absolute_expires_at: IN_DAYS(20), revoked_at: null, ip: '1.2.3.4', user_agent: 'Chrome' },
+      { id: SID2, user_id: 'u1', created_at: PAST(), last_seen_at: PAST(), absolute_expires_at: IN_DAYS(10), revoked_at: null, ip: null, user_agent: null },
+    ]
+    t = await setup({ sessionId: SID, sessionRows: rows })
+    const res = await t.mod.listSessions(t.c())
+    expect(res.body.data.currentSessionKnown).toBe(true)
+    expect(res.body.data.sessions.map(s => [s.id, s.current])).toEqual([[SID, true], [SID2, false]])
+    expect(JSON.stringify(res.body)).not.toContain('user_id')
+    const q = t.state.sessionQueries[0]
+    expect(eqValue(q, 'user_id')).toBe('u1')
+    expect(q.filters).toContainEqual(['is', 'revoked_at', null])
+    expect(q.filters.some(f => f[0] === 'gt' && f[1] === 'absolute_expires_at')).toBe(true)
+  })
+  it('listSessions tells a pre-sessions caller its own session isn\'t listed yet', async () => {
+    t = await setup({ sessionRows: [] })
+    expect((await t.mod.listSessions(t.c())).body.data.currentSessionKnown).toBe(false)
+  })
+  it('revokeSession: signs out one device, scoped to the caller\'s own sessions', async () => {
+    t = await setup({ sessionId: SID })
+    const res = await t.mod.revokeSession(t.c({ params: { id: SID2 } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.current).toBe(false)
+    const q = t.state.sessionQueries[0]
+    expect(eqValue(q, 'id')).toBe(SID2)
+    expect(eqValue(q, 'user_id')).toBe('u1')
+  })
+  it('revokeSession: revoking the current session says so, so the client can sign out locally', async () => {
+    t = await setup({ sessionId: SID })
+    expect((await t.mod.revokeSession(t.c({ params: { id: SID } }))).body.data.current).toBe(true)
+  })
+  it('revokeSession: another user\'s session and a nonexistent one are indistinguishable (404)', async () => {
+    t = await setup({ sessionId: SID, sessionUpdateResult: null })
+    expect((await t.mod.revokeSession(t.c({ params: { id: SID2 } }))).status).toBe(404)
+  })
+  it('revokeSession: a malformed id is a 404 without ever querying', async () => {
+    t = await setup({ sessionId: SID })
+    expect((await t.mod.revokeSession(t.c({ params: { id: 'not-a-uuid' } }))).status).toBe(404)
+    expect(t.state.sessionQueries).toHaveLength(0)
+  })
+})
+
+describe('updateEmail — cancelPending edge (B9)', () => {
+  it('says there is nothing to cancel, instead of "that is already your email address"', async () => {
+    t = await setup() // baseUserRow has no pending_email
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password', cancelPending: true } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/no pending email change/i)
+  })
+  it('a plain unchanged-address request keeps its original message', async () => {
+    t = await setup()
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'user@example.com', password: 'correct-password' } }))
+    expect(res.body.message).toMatch(/already your email/i)
+  })
+})
+
+describe('confirmEmailChange — replay, race, and unique-violation handling', () => {
+  const RAW2 = 'a-raw-token'
+  const pending = async (over = {}) => baseUserRow({
+    pending_email: 'new@example.com', pending_email_token: await sha256(RAW2), pending_email_expiry: FUTURE(), token_version: 4, ...over,
+  })
+  it('opening the SAME link a second time reports "already updated" instead of "invalid or expired" — and changes nothing', async () => {
+    t = await setup({ pendingLookupRow: null, doneTokenRow: { id: 'u1' } })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+    expect(res.body.data).toEqual({ alreadyConfirmed: true }) // no token, no user: a replay must never mint a session
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.rpcCalls).toHaveLength(0)
+  })
+  it('the replay lookup is by the hash of the consumed token', async () => {
+    t = await setup({ pendingLookupRow: null, doneTokenRow: null })
+    await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    const q = t.db.calls.find(x => x.filters.some(f => f[1] === 'email_change_done_token'))
+    expect(eqValue(q, 'email_change_done_token')).toBe(await sha256(RAW2))
+  })
+  it('records which token was consumed (so a replay can be recognised) and matches on it + token_version', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row })
+    await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    const upd = UPDATE_TO(t)[0]
+    expect(upd.patch.email_change_done_token).toBe(await sha256(RAW2))
+    expect(eqValue(upd, 'pending_email_token')).toBe(await sha256(RAW2))
+    expect(eqValue(upd, 'token_version')).toBe(4)
+  })
+  it('two concurrent confirmations: the loser gets 400 and no token', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, casLost: true })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    expect(res.status).toBe(400)
+    expect(res.body.data).toBeUndefined()
+    expect(t.state.sessionQueries).toHaveLength(0)
+  })
+  it('a unique-violation (another account took the address in the gap) is a clear 400 and clears the pending change — not a 500', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, userUpdateErrorOnce: { code: '23505', message: 'duplicate key' } })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/already in use/i)
+    expect(UPDATE_TO(t)[1].patch).toMatchObject({ pending_email: null, pending_email_token: null, pending_email_expiry: null })
+  })
+  it('on success the caller gets a session-bound token under the new version, and old session rows are revoked', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, sessions: true })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW2 } }))
+    expect(await verifyJwt(res.body.data.token, SECRET)).toMatchObject({ tokenVersion: 5, sid: SID })
+    expect(t.state.sessionQueries.some(q => q.op === 'update' && q.patch.revoked_at)).toBe(true)
+  })
+})
+
+describe('safeUser — no tokenVersion (B8)', () => {
+  it('register / login / changePassword responses never carry tokenVersion', async () => {
+    t = await setup()
+    const login = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(login.body.data.user.tokenVersion).toBeUndefined()
+    const reg = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'a-long-unique-passphrase', acceptTerms: true } }))
+    expect(reg.body.data.user.tokenVersion).toBeUndefined()
   })
 })

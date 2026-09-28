@@ -28,6 +28,17 @@ async function sha256(text) {
 }
 
 /**
+ * sha1Hex(text) -> UPPERCASE hex string
+ * NOT for anything security-sensitive: SHA-1 is only here because the
+ * Have I Been Pwned range API is keyed by the SHA-1 of a password (see
+ * lib/pwned.js). Uppercase because that is the API's format.
+ */
+async function sha1Hex(text) {
+  const hash = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(text))
+  return bytesToHex(hash).toUpperCase()
+}
+
+/**
  * sha256Bytes(arrayBufferOrUint8Array) -> hex string
  * Same as sha256() but for binary data (DOCX file bytes) instead of a string.
  * Replaces: crypto.createHash('sha256').update(fs.readFileSync(fp)).digest('hex')
@@ -118,4 +129,4 @@ function uuid() {
   return crypto.randomUUID()
 }
 
-module.exports = { randomToken, sha256, sha256Bytes, hmacSha512Hex, randomShortCode, uuid, timingSafeEqual }
+module.exports = { randomToken, sha256, sha1Hex, sha256Bytes, hmacSha512Hex, randomShortCode, uuid, timingSafeEqual }

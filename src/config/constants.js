@@ -127,6 +127,19 @@ module.exports = {
   // fire an email per handoff, which trains the account owner to ignore the
   // one that eventually matters instead of helping them notice it.
   NEW_LOGIN_ALERT_THROTTLE_HOURS: 6,
+
+  // Auth section round 1 — server-side sessions (migration 0047).
+  // A session's ABSOLUTE lifetime: the hard stop that silent token renewal
+  // (getMe re-issues a token when <24h remain) can never push past, however
+  // often the client checks in. After this the user signs in again.
+  SESSION_ABSOLUTE_LIFETIME_DAYS: 30,
+  // Live sessions kept per user; signing in beyond this revokes the
+  // least-recently-used one (enforced in create_user_session()).
+  SESSION_MAX_ACTIVE: 20,
+  // How often an active session's last_seen_at / IP is refreshed. Bounded so
+  // an authenticated request costs a session WRITE at most this often, not
+  // on every call.
+  SESSION_TOUCH_INTERVAL_MINUTES: 10,
   ROLE_CATEGORIES: [
     'software_engineering','product_management','design','data_science',
     'marketing','sales','operations','finance','healthcare','legal','education','other'

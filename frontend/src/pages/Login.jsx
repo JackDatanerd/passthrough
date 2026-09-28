@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { safeNext } from '../lib/session'
@@ -13,7 +13,7 @@ import Footer from '../components/layout/Footer'
 export default function Login() {
   const navigate        = useNavigate()
   const [params]        = useSearchParams()
-  const { postAuthActions } = useAuth()
+  const { postAuthActions, user, authLoading } = useAuth()
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
   const { loading, error, execute } = useApi()
@@ -23,6 +23,14 @@ export default function Login() {
   // Where to go after signing in (set when a protected page bounced the user
   // here). safeNext() rejects anything that isn't a same-site relative path.
   const next    = safeNext(params.get('next'))
+
+  // AUDIT FIX (Auth section round 1, feature gap G5): visiting /login while
+  // already signed in used to just render the form again — submitting it
+  // worked (it's a normal login), but there was no reason to ask for
+  // credentials a second time. authLoading gates this on the same "don't
+  // render before we actually know" rule AdminRoute (App.jsx) already
+  // follows, so a signed-out visitor doesn't flash the form and then bounce.
+  if (!authLoading && user) return <Navigate to={next || '/dashboard'} replace />
 
   async function handleSubmit() {
     if (!email || !password) {
@@ -77,7 +85,13 @@ export default function Login() {
             <Link to="/forgot-password" className="text-blue-600 hover:underline">
               Forgot password?
             </Link>
-            <p>No account? <Link to="/register" className="text-blue-600 hover:underline">Get started free</Link></p>
+            {/* AUDIT FIX (Auth section round 1, feature gap G5): ?next= used to
+                be dropped the moment someone clicked through to Register — a
+                signed-out visitor bounced here from a protected link, who then
+                chose "create an account" instead of signing in, lost their
+                original destination and landed on /dashboard after signing up. */}
+            <p>No account? <Link to={next ? `/register?next=${encodeURIComponent(next)}` : '/register'}
+              className="text-blue-600 hover:underline">Get started free</Link></p>
           </div>
         </div>
       </main>

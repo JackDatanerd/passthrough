@@ -175,3 +175,110 @@ describe('auth middleware', () => {
     expect(is401).toBe(false)
   })
 })
+
+const SID = '11111111-2222-4333-8444-555555555555'
+const session = (over = {}) => ({
+  id: SID, user_id: 'u1', created_at: new Date(Date.now() - 86400000).toISOString(),
+  last_seen_at: new Date().toISOString(), absolute_expires_at: new Date(Date.now() + 20 * 86400000).toISOString(),
+  revoked_at: null, ip: '1.2.3.4', user_agent: 'UA', ...over,
+})
+const tick = () => new Promise(r => setTimeout(r, 0))
+
+function setupS({ user = () => ({ data: userRow() }), sess = () => ({ data: session() }) } = {}) {
+  const db = createFakeSupabase(q => (q.table === 'users' ? user(q) : q.table === 'user_sessions' ? sess(q) : undefined))
+  const { mod, restore } = loadWithStubs('middleware/auth.js', { 'config/supabase.js': { getSupabase: () => db } })
+  return { auth: mod, db, restore }
+}
+const sessQueries = ctx => ctx.db.calls.filter(q => q.table === 'user_sessions')
+const bearer = async (payload, ttl = 60) => `Bearer ${await sign(payload, SECRET, ttl)}`
+
+describe('auth middleware — explicit column list (bug B5)', () => {
+  it('never selects * — and never asks the database for password_hash, saved_profile or any token column', async () => {
+    ctx = setupS()
+    await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3 }) })
+    const cols = ctx.db.calls.find(q => q.table === 'users').cols
+    expect(cols).not.toBe('*')
+    for (const secret of ['password_hash', 'saved_profile', 'reset_token', 'email_verify_token', 'pending_email_token', 'paystack_auth_code', 'paystack_customer_code', 'last_login_alert_at'])
+      expect(cols, secret).not.toContain(secret)
+    // ...but everything the checks and the request user need is there
+    for (const needed of ['id', 'email', 'name', 'role', 'status', 'token_version', 'deleted_at', 'email_verified'])
+      expect(cols, needed).toContain(needed)
+  })
+  it('still strips secrets from the request user even if a column list were ever widened (defence in depth)', async () => {
+    ctx = setupS({ user: () => ({ data: userRow({ saved_profile: { x: 1 }, reset_token: 'h', paystack_auth_code: 'AUTH' }) }) })
+    const { store } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3 }) })
+    for (const k of ['passwordHash', 'savedProfile', 'resetToken', 'paystackAuthCode']) expect(store.user[k], k).toBeUndefined()
+  })
+})
+
+describe('auth middleware — server-side sessions (sid)', () => {
+  it('a token WITHOUT a sid never touches user_sessions (pre-0047 tokens keep working)', async () => {
+    ctx = setupS()
+    const { res, nextCalled, store } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3 }) })
+    expect(res).toBeUndefined()
+    expect(nextCalled).toBe(true)
+    expect(sessQueries(ctx)).toHaveLength(0)
+    expect(store.sessionId).toBeUndefined()
+  })
+  it('a token with a live session passes, looks the session up BY sid, and exposes sessionId + its absolute expiry', async () => {
+    ctx = setupS()
+    const { res, nextCalled, store } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    expect(res).toBeUndefined()
+    expect(nextCalled).toBe(true)
+    expect(eqValue(sessQueries(ctx)[0], 'id')).toBe(SID)
+    expect(store.sessionId).toBe(SID)
+    expect(store.sessionExpiresAtMs).toBeGreaterThan(Date.now() + 19 * 86400000)
+  })
+  it('a REVOKED session is SESSION_INVALID even though the JWT signature, expiry and tokenVersion are all fine', async () => {
+    ctx = setupS({ sess: () => ({ data: session({ revoked_at: new Date().toISOString() }) }) })
+    const { res, nextCalled } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('SESSION_INVALID')
+    expect(nextCalled).toBe(false)
+  })
+  it('a session past its ABSOLUTE expiry is TOKEN_EXPIRED even with a fresh, unexpired JWT — renewal cannot outrun it', async () => {
+    ctx = setupS({ sess: () => ({ data: session({ absolute_expires_at: new Date(Date.now() - 1000).toISOString() }) }) })
+    const { res, nextCalled } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }, 3600) })
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('TOKEN_EXPIRED')
+    expect(nextCalled).toBe(false)
+  })
+  it('a sid that points at ANOTHER user\'s session, or at no row, is SESSION_INVALID', async () => {
+    for (const data of [session({ user_id: 'someone-else' }), null]) {
+      ctx = setupS({ sess: () => ({ data }) })
+      const { res } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+      expect(res.status).toBe(401)
+      expect(res.body.code).toBe('SESSION_INVALID')
+      ctx.restore()
+    }
+  })
+  it('a malformed sid is SESSION_INVALID without a database round trip for it', async () => {
+    ctx = setupS()
+    const { res } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: 'not-a-uuid' }) })
+    expect(res.body.code).toBe('SESSION_INVALID')
+    expect(sessQueries(ctx)).toHaveLength(0)
+  })
+  it('a database failure on the session lookup is a 5xx (thrown), never a 401 that would sign the user out', async () => {
+    ctx = setupS({ sess: () => ({ data: null, error: { message: 'connection reset' } }) })
+    await expect(run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })).rejects.toBeTruthy()
+  })
+  it('checks tokenVersion before the session: a bulk-revoked token is SESSION_INVALID whatever the session row says', async () => {
+    ctx = setupS()
+    const { res } = await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 2, sid: SID }) })
+    expect(res.body.code).toBe('SESSION_INVALID')
+  })
+  it('refreshes last_seen_at when the session has been quiet, but not on every request', async () => {
+    ctx = setupS({ sess: () => ({ data: session({ last_seen_at: new Date(Date.now() - 60 * 60000).toISOString() }) }) })
+    await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    await tick()
+    const upd = sessQueries(ctx).find(q => q.op === 'update')
+    expect(upd.patch.last_seen_at).toBeTypeOf('string')
+    expect(eqValue(upd, 'id')).toBe(SID)
+    ctx.restore()
+
+    ctx = setupS() // seen "just now"
+    await run(ctx.auth, { header: await bearer({ userId: 'u1', tokenVersion: 3, sid: SID }) })
+    await tick()
+    expect(sessQueries(ctx).filter(q => q.op === 'update')).toHaveLength(0)
+  })
+})

@@ -154,3 +154,48 @@ describe('admin routes — audit log', () => {
     expect(await call(a, 'GET', '/audit-log')).toEqual({ status: 200, json: { handler: 'adminListAuditLog' } })
   })
 })
+
+
+describe('auth routes — session endpoints and public/authenticated split', () => {
+  const app = () => mount('routes/auth.routes.js', 'controllers/auth.controller.js')
+
+  it('/me, /sessions (GET/DELETE), /sessions/revoke-others, /logout, /accept-terms, /name all require a login', async () => {
+    const a = app()
+    for (const [method, path] of [
+      ['GET',    '/me'],
+      ['GET',    '/sessions'],
+      ['DELETE', `/sessions/${ID}`],
+      ['POST',   '/sessions/revoke-others'],
+      ['POST',   '/logout'],
+      ['POST',   '/accept-terms'],
+      ['PATCH',  '/name'],
+    ]) expect((await call(a, method, path)).status, `${method} ${path}`).toBe(401)
+  })
+  it('reaches each handler once authenticated', async () => {
+    const a = app()
+    current = { id: 'u1' }
+    expect((await call(a, 'GET', '/me')).json.handler).toBe('getMe')
+    expect((await call(a, 'GET', '/sessions')).json.handler).toBe('listSessions')
+    expect((await call(a, 'DELETE', `/sessions/${ID}`)).json.handler).toBe('revokeSession')
+    expect((await call(a, 'POST', '/sessions/revoke-others')).json.handler).toBe('signOutOtherSessions')
+    expect((await call(a, 'POST', '/logout')).json.handler).toBe('logout')
+  })
+  it('register, login, forgot-password, reset-password, email/confirm are public (no login required)', async () => {
+    const a = app()
+    for (const [method, path] of [
+      ['POST', '/register'], ['POST', '/login'], ['POST', '/forgot-password'],
+      ['POST', '/reset-password'], ['GET', '/reset-password/validate'],
+      ['GET', '/verify-email'], ['POST', '/email/confirm'],
+    ]) expect((await call(a, method, path)).json.handler, `${method} ${path}`).toBeDefined()
+  })
+  it('/password, /email and /account require BOTH login and the current password check reaching the handler', async () => {
+    const a = app()
+    expect((await call(a, 'PATCH', '/password')).status).toBe(401)
+    expect((await call(a, 'PATCH', '/email')).status).toBe(401)
+    expect((await call(a, 'DELETE', '/account')).status).toBe(401)
+    current = { id: 'u1' }
+    expect((await call(a, 'PATCH', '/password')).json.handler).toBe('changePassword')
+    expect((await call(a, 'PATCH', '/email')).json.handler).toBe('updateEmail')
+    expect((await call(a, 'DELETE', '/account')).json.handler).toBe('deleteAccount')
+  })
+})

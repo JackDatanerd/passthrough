@@ -221,15 +221,28 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
     // re-throws so errorHandler.js still produces the same response it
     // always did — this change is refund bookkeeping only, never a change in
     // what the client receives.
+    //
+    // `refund.on` (AUDIT FIX, Auth section round 1): 'failure' (the default, and
+    // what anonScan uses) hands the slot back for a 4xx/5xx or a throw;
+    // 'success' does the opposite — it hands it back for a 2xx/3xx and never for
+    // an error. /auth/login uses 'success': the limiter exists to bound
+    // CREDENTIAL GUESSING, so a sign-in that worked isn't a guess and shouldn't
+    // eat the budget of everyone else behind the same NAT/carrier IP. It stays
+    // bounded by maxRefunds, so "successes don't count" can't become unlimited
+    // guesses for someone alternating them with failures.
+    const refundOnSuccess = refund.on === 'success'
     try {
       await next()
     } catch (err) {
-      try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
-      catch (refundErr) { console.error(`rate limiter (${keyPrefix}) refund failed:`, refundErr.message) }
+      if (!refundOnSuccess) {
+        try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
+        catch (refundErr) { console.error(`rate limiter (${keyPrefix}) refund failed:`, refundErr.message) }
+      }
       throw err
     }
     const status = c.res && c.res.status
-    if (typeof status === 'number' && status >= 400) {
+    const shouldRefund = typeof status === 'number' && (refundOnSuccess ? status >= 200 && status < 400 : status >= 400)
+    if (shouldRefund) {
       try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
       catch (err) { console.error(`rate limiter (${keyPrefix}) refund failed:`, err.message) }
     }
@@ -334,6 +347,20 @@ const anonScan = makeLimiter({
 const auth = makeLimiter({
   windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
   message: msg('Too many attempts.')
+})
+
+// POST /auth/login. Shares `auth`'s bucket (same keyPrefix, so login attempts
+// still pool with register/forgot/reset from one IP) but gives the slot back for
+// a successful sign-in — see makeLimiter's `refund.on`. Before this, the 11th
+// legitimate sign-in within 15 minutes from one shared IP (an office, a campus,
+// a mobile carrier's NAT) was refused with "Too many attempts" though nobody
+// had guessed anything. Capped at 20 refunds per window: worst case for one IP
+// is 10 + 20 attempts per 15 minutes, and the per-account lockout (which counts
+// failures across every IP) still applies in full.
+const authLogin = makeLimiter({
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
+  message: msg('Too many attempts.'),
+  refund: { maxRefunds: 20, on: 'success' }
 })
 
 const authVerify = makeLimiter({
@@ -753,7 +780,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authVerify, payment, paymentCancel, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

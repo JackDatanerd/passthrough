@@ -43,6 +43,12 @@ export function safeNext(next) {
   if (typeof next !== 'string') return null
   if (!next.startsWith('/') || next.startsWith('//') || next.startsWith('/\\')) return null
   if (/^\/login(\/|\?|$)/.test(next)) return null   // never bounce back into the login page
-  if (/[\r\n]/.test(next)) return null
+  // AUDIT FIX (Auth section round 1, bug B1): only \r and \n were blocked, but
+  // a tab (and other control/whitespace characters) survives here and is then
+  // stripped by the URL parser that later resolves this value — so
+  // "/\t/evil.com" passed this check but resolved to "https://evil.com/".
+  // Blocking every ASCII control character and space closes the same class of
+  // gap for any other whitespace a parser might trim, not just tab.
+  if (/[\x00-\x20\x7f]/.test(next)) return null
   return next
 }

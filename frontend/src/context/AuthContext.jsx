@@ -126,10 +126,26 @@ export function AuthProvider({ children }) {
     return lastClaimedScanId  // caller should navigate to /scan/:id, or /dashboard if null
   }
 
+  // AUDIT FIX (Auth section round 1, feature gap G2): this used to only clear
+  // the browser's own copy of the token — a copied/stolen token, or another
+  // tab that still held the old one, stayed valid for its full lifetime.
+  // POST /auth/logout (migration 0047) revokes the server-side session the
+  // token is bound to, so it stops working everywhere the instant this
+  // returns. The local state is cleared immediately either way — the UI
+  // shouldn't wait on a network round trip to look signed out, and a token
+  // issued before sessions existed has nothing server-side to revoke anyway
+  // (the endpoint just answers success for it).
   function logout() {
+    // api.js's request interceptor reads the token from localStorage at
+    // request time — it has to be sent explicitly here, BEFORE it's cleared
+    // below, or this call would go out with no Authorization header at all.
+    const token = localStorage.getItem('passthrough_token')
     localStorage.removeItem('passthrough_token')
     localStorage.removeItem('passthrough_user')
     setUser(null)
+    if (token) {
+      api.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } }).catch(() => {}) // best-effort
+    }
   }
 
   return (

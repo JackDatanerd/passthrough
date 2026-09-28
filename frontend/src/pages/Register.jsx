@@ -1,7 +1,8 @@
 import { useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
+import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
+import { safeNext } from '../lib/session'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
@@ -12,7 +13,8 @@ import { passwordProblem } from '../lib/passwordRules'
 
 export default function Register() {
   const navigate = useNavigate()
-  const { postRegisterActions } = useAuth()
+  const [params]  = useSearchParams()
+  const { postRegisterActions, user, authLoading } = useAuth()
   const [name,     setName    ] = useState('')
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
@@ -21,6 +23,14 @@ export default function Register() {
   // the Terms / Privacy Policy. The API requires it and records the version.
   const [acceptTerms, setAcceptTerms] = useState(false)
   const { loading, error, execute } = useApi()
+
+  // AUDIT FIX (Auth section round 1, feature gap G5): same "next" handoff
+  // Login.jsx already had — this page never read it at all, so a visitor
+  // bounced from a protected link who chose to register instead of signing
+  // in always landed on /dashboard afterward, losing where they meant to go.
+  const next = safeNext(params.get('next'))
+
+  if (!authLoading && user) return <Navigate to={next || '/dashboard'} replace />
 
   function fail(message) {
     return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
@@ -40,8 +50,10 @@ export default function Register() {
         const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true })
         const { token, user } = res.data.data
         const scanId = await postRegisterActions(token, user)
-        // If there was a pending anon scan, go to it — otherwise dashboard
-        navigate(scanId ? `/scan/${scanId}` : '/dashboard')
+        // A pending anon scan still wins — it's a specific piece of work the
+        // person just did, more useful to land on than wherever they were
+        // headed before it existed. Otherwise honor `next`, then dashboard.
+        navigate(scanId ? `/scan/${scanId}` : (next || '/dashboard'))
         return res
       }, { fallback: 'Registration failed.' })
     } catch (_) { /* error already captured by useApi */ }
@@ -86,7 +98,8 @@ export default function Register() {
 
           <p className="mt-4 text-sm text-center text-gray-500">
             Already have an account?{' '}
-            <Link to="/login" className="text-blue-600 hover:underline">Sign in</Link>
+            <Link to={next ? `/login?next=${encodeURIComponent(next)}` : '/login'}
+              className="text-blue-600 hover:underline">Sign in</Link>
           </p>
         </div>
       </main>

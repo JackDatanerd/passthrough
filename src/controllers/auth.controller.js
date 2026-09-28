@@ -22,7 +22,9 @@ const jwtLib    = require('../lib/jwt')
 const cryptoLib = require('../lib/crypto')
 const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
-const { must } = require('../lib/db')
+const { must, warnOnError } = require('../lib/db')
+const sessionsLib = require('../lib/sessions')
+const { isPwnedPassword } = require('../lib/pwned')
 const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
@@ -110,6 +112,13 @@ function recordLoginMetadata(c, user) {
       }
     }
   })())
+
+  // AUDIT FIX (bug — Auth section round 1): login() used to serialize the row
+  // it read BEFORE this write, so the response carried previousLoginAt/Ip from
+  // TWO logins ago (and the previous sign-in Settings shows stayed wrong until
+  // the next /auth/me). Returning what the write above is about to store lets
+  // login() answer with the same values the database will hold.
+  return { lastLoginAt: now, lastLoginIp: newIp, previousLoginAt: user.lastLoginAt, previousLoginIp: user.lastLoginIp }
 }
 
 // AUDIT FIX (bug — account-lockout DoS): recordLoginFailure now needs the
@@ -122,9 +131,68 @@ function recordLoginMetadata(c, user) {
 // in prod, which a local copy of this helper would not have gotten right.
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 
-async function issueJWT(env, user) {
-  const expiresIn = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
-  return jwtLib.sign({ userId: user.id, tokenVersion: user.tokenVersion }, env.JWT_SECRET, expiresIn)
+// `session` is the { id, expiresAtMs } from lib/sessions.js's createSession(),
+// or null/undefined for a sessionless token (what every token was before
+// migration 0047, and what sign-in falls back to if the session row can't be
+// created). A session-bound token carries `sid` and never outlives the
+// session's absolute expiry.
+async function issueJWT(env, user, session) {
+  const payload = { userId: user.id, tokenVersion: user.tokenVersion }
+  if (session) payload.sid = session.id
+  return jwtLib.sign(payload, env.JWT_SECRET, sessionsLib.tokenLifetimeSeconds(env, session))
+}
+
+// Creates a fresh server-side session for `user` (recording this request's IP
+// and user-agent) and returns a token bound to it.
+async function issueSessionToken(c, user) {
+  const session = await sessionsLib.createSession(c, getSupabase(c.env), user.id)
+  return issueJWT(c.env, user, session)
+}
+
+// Marks every live session of `userId` revoked. Best-effort: token_version was
+// already bumped by every caller, which is what actually kills the JWTs — this
+// keeps the device list in Settings from showing sessions that no longer work.
+async function revokeAllSessions(supabase, userId) {
+  try {
+    warnOnError(await supabase.from('user_sessions')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('user_id', userId).is('revoked_at', null), 'revoke all sessions')
+  } catch (err) {
+    console.error('revoke all sessions:', err.message)
+  }
+}
+
+// Set PWNED_PASSWORDS_CHECK=off to disable. Fails open — see lib/pwned.js.
+async function passwordBreachProblem(env, password) {
+  return (await isPwnedPassword(password, env))
+    ? 'That password has appeared in a known data breach — please choose a different one.'
+    : null
+}
+
+// AUDIT FIX (Auth section round 1): the account lockout used to refuse the
+// account's real owner exactly like an attacker — even with the right
+// password. Since the "2 distinct IPs" bar still lets anyone with two
+// connections lock a known email, that made "lock someone out" a standing
+// denial-of-service. A locked account now still lets a request through to the
+// password check when it comes from the network the account last signed in
+// from successfully. The lock stays fully in force for every other network
+// (which is where a credential-stuffing attack comes from), and guesses from
+// the owner's own network are still bounded by the per-IP `rl.auth` limiter.
+//
+// 'unknown' is never a match: with no cf-connecting-ip every request shares
+// that one bucket (see lib/clientIp.js), so treating it as "the owner's
+// network" would hand the bypass to anyone whose address we can't see.
+function lockoutBlocks(c, lockout, lastKnownIp) {
+  if (!lockout.locked) return false
+  const ip = clientIp(c)
+  if (lastKnownIp && lastKnownIp !== 'unknown' && ip && ip !== 'unknown' && rateKeyIp(lastKnownIp) === rateKeyIp(ip)) return false
+  return true
+}
+
+function lockedResponse(c, lockout) {
+  return c.json({ success: false,
+    message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
+  }, 429)
 }
 
 // FEATURE GAP CLOSED (Auth section, second independent pass): terms_accepted_at
@@ -144,6 +212,10 @@ function safeUser(user) {
     passwordHash, paystackAuthCode, paystackCustomerCode,
     resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry,
     pendingEmailToken, pendingEmailExpiry,
+    // tokenVersion is the server-side revocation counter (AUDIT FIX, Auth
+    // section round 1): nothing on the client uses it, and handing out the
+    // current value only tells a token-forger which number to sign.
+    tokenVersion,
     // lastLoginAlertAt is purely internal throttle bookkeeping for
     // recordLoginMetadata below (migration 0040) — nothing in the frontend
     // has any use for it, unlike previousLoginAt/previousLoginIp, which
@@ -286,6 +358,8 @@ async function register(c) {
 
   const emailProblem = passwordEmailProblem(password, email)
   if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
+  const breachProblem = await passwordBreachProblem(c.env, password)
+  if (breachProblem) return c.json({ success: false, message: breachProblem }, 400)
 
   const supabase = getSupabase(c.env)
   const passwordHash = await bcrypt.hash(password, 10)
@@ -334,7 +408,7 @@ async function register(c) {
   )
 
   return c.json({ success: true,
-    data: { token: await issueJWT(c.env, user), user: safeUser(user) } }, 201)
+    data: { token: await issueSessionToken(c, user), user: safeUser(user) } }, 201)
 }
 
 // POST /api/auth/login
@@ -349,21 +423,31 @@ async function login(c) {
   // of and in addition to the IP-keyed `rl.auth` limiter on this route —
   // see rateLimiter.js's checkAccountLockout comment for why the IP limiter
   // alone doesn't cover a distributed attack against one account. Checked
-  // before any DB work, and checked identically for every email (real
-  // account or not) so a lockout response itself never reveals whether the
-  // account exists.
-  const lockout = await checkAccountLockout(c.env, email)
-  if (lockout.locked) {
-    return c.json({ success: false,
-      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
-    }, 429)
+  // before any DB work in the normal (not locked) case, and answered
+  // identically for every email (real account or not) so a lockout response
+  // itself never reveals whether the account exists.
+  //
+  // AUDIT FIX (Auth section round 1): a locked request from the network the
+  // account last signed in from is let through to the password check (see
+  // lockoutBlocks() above) — that needs the account's last_login_ip, so the
+  // row is loaded early, and only, when the account is actually locked. For
+  // an unknown email there is no row, no bypass, and the same 429.
+  const supabase = getSupabase(c.env)
+  const findUser = async () => {
+    const { data: row, error } = await supabase
+      .from('users').select('*').eq('email', email).is('deleted_at', null).maybeSingle()
+    if (error) throw error
+    return userRowToCamel(row)
   }
 
-  const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase
-    .from('users').select('*').eq('email', email).is('deleted_at', null).maybeSingle()
-  if (error) throw error
-  const user = userRowToCamel(row)
+  const lockout = await checkAccountLockout(c.env, email)
+  let user
+  if (lockout.locked) {
+    user = await findUser()
+    if (lockoutBlocks(c, lockout, user && user.lastLoginIp)) return lockedResponse(c, lockout)
+  } else {
+    user = await findUser()
+  }
 
   if (!user) {
     // HARDENING: burn a comparable amount of time to the real-user path
@@ -393,13 +477,12 @@ async function login(c) {
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
 
   await recordLoginSuccess(c.env, email)
-  // Backgrounded (see recordLoginMetadata's own comment) and given the `user`
-  // object fetched at the TOP of this request, before any of its own writes —
-  // the response below must keep reporting THIS user object either way, so
-  // there's no ordering hazard even though the update below is still in
-  // flight when safeUser(user) is serialized a line down.
-  recordLoginMetadata(c, user)
-  return c.json({ success: true, data: { token: await issueJWT(c.env, user), user: safeUser(user) } })
+  // Backgrounded (see recordLoginMetadata's own comment); it hands back the
+  // login-metadata values it is about to store so the response below reports
+  // the state AFTER this sign-in (previousLoginAt/Ip = the sign-in before this
+  // one) rather than the row as it was read.
+  const loginMeta = recordLoginMetadata(c, user)
+  return c.json({ success: true, data: { token: await issueSessionToken(c, user), user: safeUser({ ...user, ...loginMeta }) } })
 }
 
 // GET /api/auth/me
@@ -415,14 +498,36 @@ async function login(c) {
 // polling, no separate refresh endpoint, no behavior change for a request
 // that's already comfortably inside its window.
 const TOKEN_RENEW_THRESHOLD_SECONDS = 24 * 60 * 60
+// Renewing a token that would only live a few minutes longer than the one it
+// replaces (which happens as a session nears its absolute expiry) buys
+// nothing and just churns tokens on every call.
+const TOKEN_MIN_EXTENSION_SECONDS = 60 * 60
 async function getMe(c) {
-  const user = c.get('user')
+  // AUDIT FIX (Auth section round 1): tokenVersion is server-side bookkeeping;
+  // it was being returned to the client verbatim. Pulled out here for renewal
+  // and kept out of the response.
+  const { tokenVersion, ...user } = c.get('user')
+  const identity = { id: user.id, tokenVersion }
   const tokenExp = c.get('tokenExp')
+  const sid = c.get('sessionId')
   let token
   if (typeof tokenExp === 'number') {
-    const remaining = tokenExp - Math.floor(Date.now() / 1000)
-    if (remaining < TOKEN_RENEW_THRESHOLD_SECONDS) {
-      token = await issueJWT(c.env, { id: user.id, tokenVersion: user.tokenVersion })
+    const nowSec = Math.floor(Date.now() / 1000)
+    const remaining = tokenExp - nowSec
+    if (!sid) {
+      // A token issued before server-side sessions existed: upgrade it to a
+      // real, revocable, absolutely-bounded session the first time it is seen.
+      // If the session row can't be created, fall back to the old renewal rule.
+      const session = await sessionsLib.createSession(c, getSupabase(c.env), user.id)
+      if (session) token = await issueJWT(c.env, identity, session)
+      else if (remaining < TOKEN_RENEW_THRESHOLD_SECONDS) token = await issueJWT(c.env, identity, null)
+    } else if (remaining < TOKEN_RENEW_THRESHOLD_SECONDS) {
+      // AUDIT FIX (Auth section round 1): renewal used to be unbounded — a
+      // stolen token that called this once a day never expired. The new token
+      // is capped at the session's ABSOLUTE expiry, which renewal can't move.
+      const session = { id: sid, expiresAtMs: c.get('sessionExpiresAtMs') }
+      const lifetime = sessionsLib.tokenLifetimeSeconds(c.env, session)
+      if (nowSec + lifetime - tokenExp > TOKEN_MIN_EXTENSION_SECONDS) token = await issueJWT(c.env, identity, session)
     }
   }
   return c.json({ success: true, data: { user, ...(token ? { token } : {}) } })
@@ -533,11 +638,21 @@ async function resetPassword(c) {
 
   const emailProblem = passwordEmailProblem(newPassword, user.email)
   if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
+  const breachProblem = await passwordBreachProblem(c.env, newPassword)
+  if (breachProblem) return c.json({ success: false, message: breachProblem }, 400)
 
   // Checked (see lib/db.js): supabase-js never throws, so an unchecked failed
   // write here told the user their password was reset when nothing had been
   // written — and left the old password, and every old session, working.
-  must(await supabase.from('users').update({
+  //
+  // AUDIT FIX (Auth section round 1): the write also has to be a
+  // compare-and-swap. It filtered on id alone, so two concurrent requests
+  // presenting the same single-use token both passed the lookup above and both
+  // wrote — and each computed tokenVersion from the row it had read, so one
+  // could overwrite the other's bump with a LOWER number and revive revoked
+  // tokens. Matching reset_token and token_version in the WHERE clause lets
+  // exactly one request win; `.select()` reveals whether a row matched.
+  const { data: swapped, error: swapErr } = await supabase.from('users').update({
     password_hash:      await bcrypt.hash(newPassword, 10),
     // Following an emailed single-use link proves control of this inbox —
     // the same fact verification establishes — so the address is verified
@@ -558,7 +673,10 @@ async function resetPassword(c) {
     // later and take over the account's email, right through the recovery
     // flow that was supposed to lock them out.
     pending_email: null, pending_email_token: null, pending_email_expiry: null
-  }).eq('id', user.id), 'reset password')
+  }).eq('id', user.id).eq('reset_token', stored).eq('token_version', user.tokenVersion).select('id').maybeSingle()
+  if (swapErr) throw swapErr
+  if (!swapped) return c.json({ success: false, message: 'Reset link invalid or expired.' }, 400)
+  await revokeAllSessions(supabase, user.id)
 
   // BUG FIX (account lockout, section audit round 2): proving control of the
   // account's inbox — clicking a time-limited, single-use emailed link — is a
@@ -715,15 +833,15 @@ async function changePassword(c) {
   // means guesses against this account are counted together regardless of
   // which endpoint they came through.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockout.locked) {
-    return c.json({ success: false,
-      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
-    }, 429)
-  }
+  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
+  // maybeSingle, not single: the row can vanish between the auth middleware and
+  // here (an account deleted from another tab). single() turned that into an
+  // unhandled PGRST116 500; it's an authentication answer, not a server fault.
+  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).maybeSingle()
   if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
@@ -742,6 +860,8 @@ async function changePassword(c) {
   if (newPassword === currentPassword) {
     return c.json({ success: false, message: 'Your new password must be different from your current one.' }, 400)
   }
+  const breachProblem = await passwordBreachProblem(c.env, newPassword)
+  if (breachProblem) return c.json({ success: false, message: breachProblem }, 400)
 
   const newTokenVersion = user.tokenVersion + 1  // signs out every existing session, including this one
   // Checked (see lib/db.js): this write used to be fire-and-forget. If it
@@ -749,7 +869,10 @@ async function changePassword(c) {
   // "your password was changed" email, and minted a token carrying a
   // tokenVersion that was never stored, which killed the user's own session
   // while the password stayed exactly as it was.
-  must(await supabase.from('users').update({
+  // Compare-and-swap on token_version (AUDIT FIX, Auth section round 1): see
+  // resetPassword — a read-then-write of tokenVersion could lose a concurrent
+  // bump and lower the counter.
+  const { data: swapped, error: swapErr } = await supabase.from('users').update({
     password_hash: await bcrypt.hash(newPassword, 10),
     token_version:  newTokenVersion,
     // BUG FIX (Section 6, second fixing-time pass): token_version above
@@ -769,7 +892,12 @@ async function changePassword(c) {
     // verification link for no security benefit.
     reset_token: null, reset_token_expiry: null,
     pending_email: null, pending_email_token: null, pending_email_expiry: null
-  }).eq('id', user.id), 'update password')
+  }).eq('id', user.id).eq('token_version', user.tokenVersion).select('id').maybeSingle()
+  if (swapErr) throw swapErr
+  if (!swapped) return c.json({ success: false, message: 'Your account changed while this was being processed. Please try again.' }, 409)
+  // Every session is dead now (token_version); mark the rows so the device list
+  // is truthful, then start a fresh one for THIS browser below.
+  await revokeAllSessions(supabase, user.id)
 
   // BUG FIX: token_version bump above invalidates ALL outstanding JWTs for
   // this user — including the token this very request was authenticated
@@ -783,7 +911,7 @@ async function changePassword(c) {
   // returning a fresh token (same shape as issueJWT() used by register/
   // login) keeps the current session alive across the change, which is
   // what the message already claimed was happening.
-  const token = await issueJWT(c.env, { id: user.id, tokenVersion: newTokenVersion })
+  const token = await issueSessionToken(c, { id: user.id, tokenVersion: newTokenVersion })
 
   // FEATURE (Auth section round 2): see sendPasswordChanged's comment.
   c.executionCtx.waitUntil(
@@ -809,14 +937,85 @@ async function changePassword(c) {
 async function signOutOtherSessions(c) {
   const sessionUser = c.get('user')
   const supabase = getSupabase(c.env)
-  const newTokenVersion = sessionUser.tokenVersion + 1
+  const sid = c.get('sessionId') || null
 
-  must(await supabase.from('users').update({
-    token_version: newTokenVersion
-  }).eq('id', sessionUser.id), 'sign out other sessions')
+  // AUDIT FIX (Auth section round 1): this used to read tokenVersion, add 1 in
+  // JS and write it back — a concurrent bump could be overwritten by a LOWER
+  // number, silently un-revoking tokens. revoke_other_sessions (0047) bumps
+  // token_version with a single `token_version + 1` UPDATE and revokes every
+  // session row except this one, atomically, returning the new version.
+  const { data: newTokenVersion, error } = await supabase.rpc('revoke_other_sessions', {
+    p_user_id: sessionUser.id, p_keep_session: sid
+  })
+  if (error) throw error
+  if (typeof newTokenVersion !== 'number')
+    return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
 
-  const token = await issueJWT(c.env, { id: sessionUser.id, tokenVersion: newTokenVersion })
+  const identity = { id: sessionUser.id, tokenVersion: newTokenVersion }
+  const token = sid
+    ? await issueJWT(c.env, identity, { id: sid, expiresAtMs: c.get('sessionExpiresAtMs') })
+    : await issueSessionToken(c, identity) // a pre-sessions token: start a real session for this browser
   return c.json({ success: true, message: 'Other sessions signed out.', data: { token } })
+}
+
+// POST /api/auth/logout
+// FEATURE GAP CLOSED (Auth section round 1): "Sign out" only ever deleted the
+// browser's copy of the token, so a copied token stayed valid for its full
+// lifetime. This revokes the server-side session the token is bound to. A
+// pre-sessions token has nothing to revoke server-side (the client still
+// discards it); the answer is a success either way so a client can always
+// sign out.
+async function logout(c) {
+  const sid = c.get('sessionId')
+  if (sid) {
+    const supabase = getSupabase(c.env)
+    must(await supabase.from('user_sessions')
+      .update({ revoked_at: new Date().toISOString() })
+      .eq('id', sid).eq('user_id', c.get('user').id).is('revoked_at', null), 'revoke session')
+  }
+  return c.json({ success: true, message: 'Signed out.' })
+}
+
+// GET /api/auth/sessions
+// The account's live sessions (device list): this one is flagged `current`.
+// `currentSessionKnown` is false while the caller is still on a pre-sessions
+// token — getMe() upgrades it on its next call, after which it appears here.
+async function listSessions(c) {
+  const user = c.get('user')
+  const sid = c.get('sessionId')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('user_sessions')
+    .select(sessionsLib.SESSION_COLUMNS)
+    .eq('user_id', user.id).is('revoked_at', null)
+    .gt('absolute_expires_at', new Date().toISOString())
+    .order('last_seen_at', { ascending: false })
+    .limit(constants.SESSION_MAX_ACTIVE)
+  if (error) throw error
+  return c.json({ success: true, data: {
+    currentSessionKnown: !!sid,
+    sessions: (data || []).map(r => ({
+      id: r.id, current: r.id === sid,
+      createdAt: r.created_at, lastSeenAt: r.last_seen_at, expiresAt: r.absolute_expires_at,
+      ip: r.ip ?? null, userAgent: r.user_agent ?? null
+    }))
+  } })
+}
+
+// DELETE /api/auth/sessions/:id
+// Signs one device out. Scoped to the caller's own sessions, so another
+// account's id is indistinguishable from one that doesn't exist (404 both).
+async function revokeSession(c) {
+  const id = c.req.param('id')
+  if (!sessionsLib.isSessionId(id)) return c.json({ success: false, message: 'Session not found.' }, 404)
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('user_sessions')
+    .update({ revoked_at: new Date().toISOString() })
+    .eq('id', id).eq('user_id', c.get('user').id).is('revoked_at', null)
+    .select('id').maybeSingle()
+  if (error) throw error
+  if (!data) return c.json({ success: false, message: 'Session not found.' }, 404)
+  const current = id === c.get('sessionId')
+  return c.json({ success: true, message: current ? 'Signed out.' : 'Session signed out.', data: { current } })
 }
 
 // POST /api/auth/accept-terms
@@ -895,15 +1094,15 @@ async function updateEmail(c) {
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockout.locked) {
-    return c.json({ success: false,
-      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
-    }, 429)
-  }
+  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
+  // maybeSingle, not single: the row can vanish between the auth middleware and
+  // here (an account deleted from another tab). single() turned that into an
+  // unhandled PGRST116 500; it's an authentication answer, not a server fault.
+  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).maybeSingle()
   if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
@@ -922,6 +1121,10 @@ async function updateEmail(c) {
       }).eq('id', user.id), 'cancel pending email change')
       return c.json({ success: true, message: 'Email change canceled.' })
     }
+    // Asked to cancel, but nothing is pending (already confirmed, expired and
+    // cleared, or canceled from another tab) — say so, rather than the
+    // misleading "that is already your email address".
+    if (cancelPending) return c.json({ success: false, message: 'There is no pending email change to cancel.' }, 400)
     return c.json({ success: false, message: 'That is already your email address.' }, 400)
   }
 
@@ -991,8 +1194,21 @@ async function confirmEmailChange(c) {
     .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
   if (error) throw error
   const user = userRowToCamel(row)
-  if (!user || !user.pendingEmail)
+  if (!user || !user.pendingEmail) {
+    // AUDIT FIX (Auth section round 1): this link is single-use, and a SECOND
+    // visit (a mail scanner or client that loads it first, a double tap, the
+    // back button) answered "invalid or expired" for an address that HAD just
+    // been confirmed — verifyEmail got the truthful-replay treatment, this
+    // page didn't. email_change_done_token (0047) keeps the hash of the last
+    // token consumed, so a replay reads "already updated". It can only ever
+    // report that; nothing changes and no session is issued on this path.
+    const { data: doneRow, error: doneErr } = await supabase
+      .from('users').select('id').eq('email_change_done_token', stored)
+      .is('deleted_at', null).eq('status', 'ACTIVE').maybeSingle()
+    if (doneErr) throw doneErr
+    if (doneRow) return c.json({ success: true, message: 'Email address already updated.', data: { alreadyConfirmed: true } })
     return c.json({ success: false, message: 'Confirmation link invalid or expired.' }, 400)
+  }
 
   // The proactive uniqueness check in updateEmail can't see a SECOND email
   // change (by this account or another) that landed in between — re-check
@@ -1015,6 +1231,13 @@ async function confirmEmailChange(c) {
   // happens to be signed in (same reasoning changePassword's own fresh-token
   // reissue above already established for this codebase).
   const newTokenVersion = user.tokenVersion + 1
+  //
+  // AUDIT FIX (Auth section round 1): the write is a compare-and-swap on the
+  // very token being consumed and on token_version (see resetPassword) — two
+  // concurrent requests with the same link can no longer both succeed, and a
+  // stale tokenVersion can't overwrite a newer bump with a lower one. A unique-
+  // constraint hit (another account took the address after the checks above)
+  // is answered like the earlier duplicate case instead of a 500.
   const { data: updatedRow, error: updateErr } = await supabase.from('users').update({
     email:                 user.pendingEmail,
     email_verified:        true,
@@ -1029,12 +1252,26 @@ async function confirmEmailChange(c) {
     // -compromised old inbox, before the owner moved to a new address) stays
     // valid for its full window even after the email it was tied to has
     // moved on, unless cleared here.
-    reset_token: null, reset_token_expiry: null
-  }).eq('id', user.id).select().single()
-  if (updateErr) throw updateErr
+    reset_token: null, reset_token_expiry: null,
+    // Remember which token was consumed so a replay can be answered truthfully.
+    email_change_done_token: stored
+  }).eq('id', user.id).eq('pending_email_token', stored).eq('token_version', user.tokenVersion).select().maybeSingle()
+  if (updateErr) {
+    if (updateErr.code === '23505') {
+      must(await supabase.from('users').update({
+        pending_email: null, pending_email_token: null, pending_email_expiry: null
+      }).eq('id', user.id), 'clear conflicting pending email')
+      return c.json({ success: false, message: 'That email address is already in use.' }, 400)
+    }
+    throw updateErr
+  }
+  if (!updatedRow) return c.json({ success: false, message: 'Confirmation link invalid or expired.' }, 400)
   const updated = userRowToCamel(updatedRow)
 
-  const newToken = await issueJWT(c.env, { id: user.id, tokenVersion: newTokenVersion })
+  // token_version moved, so every session is dead: mark the rows, then start a
+  // fresh session for the browser that confirmed.
+  await revokeAllSessions(supabase, user.id)
+  const newToken = await issueSessionToken(c, { id: user.id, tokenVersion: newTokenVersion })
   return c.json({ success: true, message: 'Email address updated.',
     data: { user: safeUser(updated), token: newToken } })
 }
@@ -1048,15 +1285,15 @@ async function deleteAccount(c) {
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockout.locked) {
-    return c.json({ success: false,
-      message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
-    }, 429)
-  }
+  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
-  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).single()
+  // maybeSingle, not single: the row can vanish between the auth middleware and
+  // here (an account deleted from another tab). single() turned that into an
+  // unhandled PGRST116 500; it's an authentication answer, not a server fault.
+  const { data: row, error } = await supabase.from('users').select('*').eq('id', sessionUser.id).maybeSingle()
   if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
   if (!await bcrypt.compare(password, user.passwordHash)) {
@@ -1229,5 +1466,6 @@ async function claimScan(c) {
 module.exports = {
   register, login, getMe, forgotPassword, resetPassword, checkResetToken,
   verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
-  confirmEmailChange, deleteAccount, claimScan, acceptTerms
+  confirmEmailChange, deleteAccount, claimScan, acceptTerms,
+  logout, listSessions, revokeSession
 }
