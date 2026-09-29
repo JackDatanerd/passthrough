@@ -47,7 +47,7 @@ describe('lookup — asserts WHAT was queried', () => {
 describe('resolvePrice', () => {
   it('applies the code price for the requested tier', async () => {
     const r = await resolvePrice(dbReturning(codeRow()), 'FIX', {}, 'coach20')
-    expect(r).toEqual({ amount: 1900, currency: r.currency, referralApplied: true, referralCode: codeRow() })
+    expect(r).toEqual({ amount: 1900, currency: r.currency, referralApplied: true, discountApplied: true, referralCode: codeRow() })
   })
   it('falls back to standard pricing for a tier the code does not cover', async () => {
     const r = await resolvePrice(dbReturning(codeRow()), 'FIX_PLAIN', {}, 'coach20')

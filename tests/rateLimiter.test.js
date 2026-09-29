@@ -451,3 +451,41 @@ describe('authLogin refund — a successful sign-in must not eat the shared /aut
     expect(JSON.parse(env.RATE_LIMIT_KV.m.get('rl:auth:1.2.3.4')).count).toBe(1)
   })
 })
+
+// ── Payments & Pricing pass 1 (B1/B2/G4): per-account budgets behind `auth` ──
+// Repro of B1: `payment` used to key on the IP, so on a shared carrier-grade
+// NAT address one buyer's three checkout attempts locked out everyone else.
+describe('payment-family limiters — budget belongs to the account, not the network address (B1)', () => {
+  const asUser = (id, ip, env) => ctx({ ip, env, user: { id }, path: '/api/payments/initialize' })
+  const cases = [
+    ['payment', 3], ['paymentCancel', 10], ['paymentVerify', 20], ['paymentReceipt', 3], ['redeemCredit', 5], ['retryFix', 15],
+  ]
+  for (const [name, max] of cases) {
+    it(`${name}: two accounts on one shared IP each get the full ${max}`, async () => {
+      const env = { RATE_LIMIT_KV: kvStore() }
+      for (let i = 0; i < max; i++) expect((await hit(rl[name], asUser('u1', '9.9.9.9', env))).passed).toBe(true)
+      const over = await hit(rl[name], asUser('u1', '9.9.9.9', env))
+      expect(over.passed).toBe(false)
+      expect(over.res.status).toBe(429)
+      expect((await hit(rl[name], asUser('u2', '9.9.9.9', env))).passed).toBe(true)
+    })
+    it(`${name}: one account is one budget however many addresses it comes from`, async () => {
+      const env = { RATE_LIMIT_KV: kvStore() }
+      for (let i = 0; i < max; i++) await hit(rl[name], asUser('u1', `1.1.1.${i + 1}`, env))
+      expect((await hit(rl[name], asUser('u1', '2.2.2.2', env))).passed).toBe(false)
+    })
+    it(`${name}: falls back to the IP when there is no user on the context`, async () => {
+      const env = { RATE_LIMIT_KV: kvStore() }
+      for (let i = 0; i < max; i++) await hit(rl[name], ctx({ ip: '3.3.3.3', env }))
+      expect((await hit(rl[name], ctx({ ip: '3.3.3.3', env }))).passed).toBe(false)
+      expect((await hit(rl[name], ctx({ ip: '4.4.4.4', env }))).passed).toBe(true)
+    })
+  }
+  it('the verify and receipt budgets are separate buckets from checkout (no fate-sharing)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 3; i++) await hit(rl.payment, asUser('u1', '9.9.9.9', env))
+    expect((await hit(rl.payment, asUser('u1', '9.9.9.9', env))).passed).toBe(false)
+    expect((await hit(rl.paymentVerify, asUser('u1', '9.9.9.9', env))).passed).toBe(true)
+    expect((await hit(rl.paymentReceipt, asUser('u1', '9.9.9.9', env))).passed).toBe(true)
+  })
+})

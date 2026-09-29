@@ -225,17 +225,30 @@ async function sendReceiptOnce(env, supabase, row, { legacyOk = false } = {}) {
     const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
     if (!buyer?.email) { await markReceiptDelivered(supabase, row.id); return false }   // nothing will ever be sent
     try {
-      await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+      // AUDIT FIX (Payments & Pricing pass 1, bug — B9): email.service's send()
+      // NEVER throws — a failed send (Resend down/rejecting) or a throttled one
+      // (per-recipient limit) comes back as `false`. This awaited it and
+      // stamped receipt_delivered_at unconditionally, so every real send
+      // failure was recorded as "delivered": the claim was never released, the
+      // hourly recoverLostReceipts (which only retries claimed-but-UNdelivered
+      // rows) never saw it, and the customer simply never got a receipt. Only
+      // a thrown error used to take the failure path below, and the real
+      // sender never throws (the tests stubbed one that did, which is why this
+      // stayed invisible). `false` is now a failure like any other.
+      const sent = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
         fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
         reference: row.paystack_ref, createdAt: row.created_at
       })
+      if (sent === false) throw new Error('receipt email was not sent (send failed or was throttled)')
       await markReceiptDelivered(supabase, row.id)
       return true
     } catch (sendErr) {
-      console.error('Payment receipt failed:', sendErr && sendErr.message)
-      if (!claimErr) {
-        try { await supabase.from('payments').update({ receipt_sent_at: null }).eq('id', row.id) } catch (_) {}
-      }
+      // The claim (receipt_sent_at) is deliberately KEPT and receipt_delivered_at
+      // left null: that exact "claimed, never confirmed delivered" state is what
+      // recoverLostReceipts retries hourly for a week. The claim used to be
+      // released here, which left the retry to whichever path next happened to
+      // re-settle this payment — usually nothing ever did.
+      console.error('Payment receipt failed (recoverLostReceipts will retry):', sendErr && sendErr.message)
       return false
     }
   } catch (err) {
@@ -267,10 +280,12 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
       const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
       if (!buyer?.email) { await markReceiptDelivered(supabase, row.id); continue }
       try {
-        await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+        // See sendReceiptOnce: send() reports failure as `false`, never a throw.
+        const sent = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
           fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
           reference: row.paystack_ref, createdAt: row.created_at
         })
+        if (sent === false) throw new Error('receipt email was not sent (send failed or was throttled)')
         await markReceiptDelivered(supabase, row.id)
         result.resent++
       } catch (err) {
@@ -282,6 +297,60 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
     result.error = err && err.message
   }
   return result
+}
+
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): the receipt was a one-shot
+// email with no in-app way to get it again — a buyer whose receipt was lost,
+// filtered or deleted (or whose send failed, see B9 above) had nothing to fall
+// back on. Re-sends to the buyer's CURRENT account email, independent of the
+// exactly-once claim above (that guards the automatic send; this is an explicit
+// user request, rate-limited by rl.paymentReceipt). Never throws.
+// Returns { sent, reason } — reason: 'NO_EMAIL' | 'SEND_FAILED' | null.
+async function resendReceipt(env, supabase, row) {
+  try {
+    const emailService = require('./email.service')
+    const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
+    if (!buyer?.email) return { sent: false, reason: 'NO_EMAIL', email: null }
+    const ok = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
+      fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
+      reference: row.paystack_ref, createdAt: row.created_at
+    })
+    if (ok === false) return { sent: false, reason: 'SEND_FAILED', email: buyer.email }
+    // A confirmed delivery also settles an automatic send that never was.
+    await markReceiptDelivered(supabase, row.id)
+    return { sent: true, reason: null, email: buyer.email }
+  } catch (err) {
+    console.error('resendReceipt error:', err && err.message)
+    return { sent: false, reason: 'SEND_FAILED', email: null }
+  }
+}
+
+// ── closing a scan's other open checkouts ──────────────────────────────────
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G2): when something OTHER than
+// a payment claims a scan (redeemCredit spending a free credit), any Paystack
+// checkout still PENDING for that scan is now pointless — and used to be left
+// PENDING: showing as a phantom "pending" purchase in the buyer's history until
+// the 2-hour sweep, and holding its referral-code usage slot until the
+// reservation TTL. Marks them ABANDONED (atomic PENDING-only guard, so a
+// checkout that finished in the same instant is untouched) and hands the slots
+// back. NOTE what this cannot do: Paystack has no API to cancel an initialized
+// transaction, so a checkout page the buyer still has open remains payable —
+// if they do pay it, settlePayment's revive path honours the money, the claim
+// is lost, and it is reported as a DUPLICATE (which the admin can now refund
+// from the app). Never throws; returns how many rows were closed.
+async function abandonPendingForScan(supabase, scanId) {
+  try {
+    const { data, error } = await supabase.from('payments')
+      .update({ status: 'ABANDONED' }).eq('scan_id', scanId).eq('status', 'PENDING')
+      .select('id, referral_reservation_id')
+    if (error) { console.error('abandonPendingForScan failed:', error.message); return 0 }
+    const referralService = require('./referral.service')
+    for (const row of data || []) await referralService.releaseCodeReservation(supabase, row.referral_reservation_id)
+    return (data || []).length
+  } catch (err) {
+    console.error('abandonPendingForScan error:', err && err.message)
+    return 0
+  }
 }
 
 // ── owner notification for outcomes that need a human ──────────────────────
@@ -404,6 +473,6 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
 module.exports = {
   REVIVABLE_STATUSES, REENQUEUE_AFTER_MS,
   generatorFor, chargeMismatch,
-  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts,
+  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
 }

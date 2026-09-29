@@ -24,14 +24,31 @@ const referralService = require('../services/referral.service')
 const fulfillmentService = require('../services/fulfillment.service')
 const reconcileService = require('../services/reconcile.service')
 const { logAdminAction } = require('../lib/adminAudit')
+const { UUID_RE } = require('../middleware/validateUuidParam')
+
+// AUDIT FIX (Payments & Pricing pass 1, bug — B4): the body used to be read
+// bare — `await c2.req.json()` then a destructure. A body that is the JSON
+// literal `null` made the destructure throw a TypeError (a 500), and a scanId
+// that was not a UUID went straight into `.eq('id', scanId)`, where Postgres
+// rejects the cast (22P02) and the error handler masks it as a 500 too. Both
+// are plain bad input and now answer 400, like initiateFix (which already
+// validates its body with zod). referralCode is deliberately lenient (any
+// string, capped): an unusable code has always meant "normal pricing", never
+// an error.
+const initializeSchema = z.object({
+  scanId:       z.string().regex(UUID_RE),
+  fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
+  referralCode: z.string().nullable().optional(),
+})
 
 // POST /api/payments/initialize
 async function initializePayment(c2) {
   const user = c2.get('user')
-  const body = await c2.req.json()
-  const { scanId, fixTier, referralCode } = body
-  if (!scanId || !['FIX', 'BADGE', 'FIX_PLAIN'].includes(fixTier))
+  const parsed = initializeSchema.safeParse(await c2.req.json().catch(() => null))
+  if (!parsed.success)
     return c2.json({ success: false, message: 'scanId and valid fixTier required.' }, 400)
+  const { scanId, fixTier } = parsed.data
+  const referralCode = typeof parsed.data.referralCode === 'string' ? parsed.data.referralCode.slice(0, 100) : undefined
 
   const supabase = getSupabase(c2.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', scanId).maybeSingle()
@@ -390,6 +407,17 @@ async function verifyPayment(c2) {
   if (!paymentRow || paymentRow.user_id !== user.id)
     return c2.json({ success: false, message: 'Payment not found.' }, 404)
 
+  // AUDIT FIX (Payments & Pricing pass 1, bug — B2): a free-credit redemption
+  // (`credit:<scan>:<ts>` — scan.controller.js's redeemCredit) has no Paystack
+  // transaction, yet this went on to ask Paystack about it. Paystack answers an
+  // unknown reference with a non-2xx, which lands in the catch below: a
+  // [CRITICAL] log, an owner alert email and a 502 "verification failed" —
+  // for a purchase that already fully succeeded. recheckPayment and both
+  // sweeps already skip these references; this was the one path that didn't.
+  // The row is already SUCCESS by construction, so just report where it landed.
+  if (String(paymentRow.paystack_ref).startsWith('credit:'))
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
+
   let pResult
   try {
     pResult = await paystackService.verifyTransaction(c2.env, reference)
@@ -683,15 +711,165 @@ async function resolvePayment(ctx) {
   } })
 }
 
-// GET /api/payments/history
+// POST /api/payments/:reference/refund — admin-only.
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G1): the app could only
+// RECORD that money had gone back (resolve → reverse) or REACT to a refund made
+// elsewhere (the refund.processed webhook) — it could never issue one. Every
+// "needs a human" alert (DUPLICATE / SCAN_MISSING / NO_SCAN / ACCOUNT_DELETED)
+// therefore ended with "refund it in the Paystack dashboard", a manual step
+// nothing tracked. This QUEUES the refund with Paystack; it deliberately does
+// NOT touch our own row. Paystack processes refunds asynchronously (minutes to
+// days, by channel), and the payment is marked REFUNDED — commission reversed,
+// credential revoked (only if this payment owns the scan, so refunding a
+// DUPLICATE never tears down the valid credential) — by the refund.processed
+// webhook, with sweepReversedPayments as its safety net. Marking it here would
+// claim money moved that may still fail (refund.failed / needs-attention).
+//
+// Body: { amountCents?: int, note?: string } — omit amountCents for a full
+// refund. Guards: only a settled (SUCCESS) paid payment; never a free-credit
+// row; a refund already in flight (or already fully processed) on Paystack
+// blocks a second one, so a double-click can never double-refund.
+const refundSchema = z.object({
+  amountCents: z.number().int().positive().optional(),
+  note:        z.string().max(200).optional(),
+})
+const OPEN_REFUND_STATUSES = ['pending', 'processing', 'needs-attention']
+
+async function refundPayment(ctx) {
+  const reference = ctx.req.param('reference')
+  const body = refundSchema.parse(await ctx.req.json().catch(() => ({})))
+  const supabase = getSupabase(ctx.env)
+
+  const { data: payment, error } = await supabase
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment) return ctx.json({ success: false, message: 'Payment not found.' }, 404)
+  if (String(payment.paystack_ref).startsWith('credit:') || !(payment.amount_cents > 0))
+    return ctx.json({ success: false, message: 'Free-credit redemption — nothing was charged, so there is nothing to refund.' }, 400)
+  if (payment.status === 'REFUNDED')
+    return ctx.json({ success: false, message: 'Already REFUNDED.' }, 400)
+  if (payment.status !== 'SUCCESS')
+    return ctx.json({ success: false, message: payment.status === 'DISPUTED'
+      ? 'Payment is DISPUTED — settle the dispute first (Resolve → clear-dispute if you won, reverse if you lost).'
+      : `Payment is ${payment.status} — only a settled (SUCCESS) payment can be refunded.` }, 400)
+  if (body.amountCents != null && body.amountCents > payment.amount_cents)
+    return ctx.json({ success: false, message: 'amountCents is more than the amount paid.' }, 400)
+
+  // What Paystack already knows about this transaction. Fails CLOSED: if we
+  // cannot see existing refunds we must not risk a second one.
+  let existing
+  try {
+    existing = await paystackService.listRefunds(ctx.env, reference)
+  } catch (err) {
+    return ctx.json({ success: false, message: `Could not check existing refunds with Paystack (${err.message}) — nothing was sent. Try again.` }, 502)
+  }
+  const refunds = Array.isArray(existing?.data) ? existing.data : []
+  const open = refunds.filter(r => OPEN_REFUND_STATUSES.includes(r?.status))
+  if (open.length)
+    return ctx.json({ success: false,
+      message: 'A refund for this payment is already in progress on Paystack — wait for it to finish (or fix it there) before sending another.',
+      data: { openRefunds: open.length } }, 409)
+  const processedSoFar = refunds.filter(r => r?.status === 'processed').reduce((n, r) => n + (Number(r.amount) || 0), 0)
+  const remaining = payment.amount_cents - processedSoFar
+  if (remaining <= 0)
+    return ctx.json({ success: false,
+      message: 'Paystack already shows this payment fully refunded. Our record follows on its own (hourly sweep), or use Resolve → reverse now.' }, 409)
+
+  const amountCents = body.amountCents ?? remaining
+  if (amountCents > remaining)
+    return ctx.json({ success: false, message: `Only ${remaining} (minor units) is left to refund on this payment.` }, 400)
+  const partial = amountCents < payment.amount_cents
+
+  let queued
+  try {
+    queued = await paystackService.createRefund(ctx.env, reference, {
+      amount:       partial ? amountCents : undefined,
+      currency:     payment.currency,
+      customerNote: 'Refund from Passthrough',
+      merchantNote: body.note || 'Refund issued from the Passthrough admin panel',
+    })
+  } catch (err) {
+    if (err.paystackRejected)
+      return ctx.json({ success: false, message: `Paystack rejected the refund: ${err.message}` }, 409)
+    console.error(`[CRITICAL] Paystack refund failed (ref ${reference}):`, err.message)
+    return ctx.json({ success: false, message: `Paystack refund failed: ${err.message}. Nothing was refunded.` }, 502)
+  }
+
+  await logAdminAction(ctx, supabase, 'payment.refund_requested', 'payment', payment.id, {
+    reference, amountCents, partial, note: body.note || null, refundStatus: queued?.data?.status || null,
+  })
+  return ctx.json({ success: true,
+    message: partial
+      ? 'Partial refund queued with Paystack. The payment stays SUCCESS — a partial refund never revokes the delivered work.'
+      : 'Refund queued with Paystack. The payment is marked REFUNDED (commission reversed, credential revoked) once Paystack confirms it — usually within minutes, up to a few business days for some channels.',
+    data: { amountCents, partial, refundStatus: queued?.data?.status || null } })
+}
+
+// POST /api/payments/:reference/receipt
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): the receipt was a
+// one-shot email — a buyer whose copy was lost, filtered or never sent had no
+// way to get it again. Re-sends to the account's current email. Owner-only
+// (a payment that isn't yours answers 404, same as verify), settled paid
+// payments only, capped by rl.paymentReceipt because each call is a real email.
+async function resendPaymentReceipt(c2) {
+  const user = c2.get('user')
+  const reference = c2.req.param('reference')
+  const supabase = getSupabase(c2.env)
+
+  const { data: payment, error } = await supabase
+    .from('payments').select('*').eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment || payment.user_id !== user.id)
+    return c2.json({ success: false, message: 'Payment not found.' }, 404)
+  if (!isReceiptable(payment))
+    return c2.json({ success: false, message: 'A receipt is only available for a completed, paid purchase.' }, 400)
+
+  const r = await fulfillmentService.resendReceipt(c2.env, supabase, payment)
+  if (!r.sent)
+    return c2.json({ success: false, message: r.reason === 'NO_EMAIL'
+      ? 'Your account has no email address on file to send a receipt to.'
+      : 'We could not send the receipt right now. Please try again in a little while.' }, 503)
+  return c2.json({ success: true, message: `Receipt sent to ${r.email}.`, data: { email: r.email } })
+}
+
+// A receipt exists for a completed paid purchase: not a free-credit redemption
+// ($0), and not one that never completed or was refunded.
+function isReceiptable(p) {
+  return p.status === 'SUCCESS' && p.amount_cents > 0 && !String(p.paystack_ref).startsWith('credit:')
+}
+
+function intParam(v, def, min, max) {
+  const n = Number.parseInt(v, 10)
+  return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : def
+}
+
+// GET /api/payments/history?page=1&pageSize=20&includeAbandoned=1
+//
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): this returned EVERY
+// payment the account ever made in one unbounded response, and mixed in every
+// ABANDONED row — each unfinished checkout initializePayment's stale-checkout
+// cleanup marks dead is a row, so a user who fiddled with checkout a few times
+// saw a wall of "Abandoned" noise burying the purchases that matter. Now
+// paginated (newest first, id as tie-break so a page boundary can't repeat or
+// skip a row) with ABANDONED hidden unless asked for. A row that is paid later
+// after being marked ABANDONED becomes SUCCESS and appears normally.
 async function getPaymentHistory(c2) {
   const user = c2.get('user')
   const supabase = getSupabase(c2.env)
-  const { data: rows, error } = await supabase
+  const page = intParam(c2.req.query('page'), 1, 1, 100000)
+  const pageSize = intParam(c2.req.query('pageSize'), 20, 1, 50)
+  const includeAbandoned = c2.req.query('includeAbandoned') === '1'
+  const from = (page - 1) * pageSize
+
+  let q = supabase
     .from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier')
+    .select('id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier', { count: 'exact' })
     .eq('user_id', user.id)
+  if (!includeAbandoned) q = q.neq('status', 'ABANDONED')
+  const { data: rows, error, count } = await q
     .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .range(from, from + pageSize - 1)
   if (error) throw error
 
   // AUDIT FIX (Section 9, feature gap): fix_tier was never selected or
@@ -701,10 +879,11 @@ async function getPaymentHistory(c2) {
   // could trust it (see migration 0010's comment).
   const payments = rows.map(r => ({
     id: r.id, amountCents: r.amount_cents, currency: r.currency, status: r.status,
-    paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id, fixTier: r.fix_tier
+    paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id, fixTier: r.fix_tier,
+    receiptAvailable: isReceiptable(r),
   }))
 
-  return c2.json({ success: true, data: { payments } })
+  return c2.json({ success: true, data: { payments, total: count ?? payments.length, page, pageSize } })
 }
 
-module.exports = { initializePayment, cancelPayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment }
+module.exports = { initializePayment, cancelPayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment, refundPayment, resendPaymentReceipt }

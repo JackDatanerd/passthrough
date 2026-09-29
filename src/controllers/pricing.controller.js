@@ -20,6 +20,14 @@ async function getPricing(ctx) {
   const promoActive = c.isPromoActive(ctx.env)
   const referralCode = ctx.req.query('ref')
   const supabase = referralCode ? getSupabase(ctx.env) : null
+  // AUDIT FIX (Payments & Pricing pass 1, bug — B11): resolvePrice (used by
+  // initiateFix and initializePayment's actual charge) has always passed
+  // buyerEmail to guard against a partner discounting their own purchase;
+  // this quote endpoint never did, so a logged-in partner browsing their own
+  // referral link saw a discounted price that checkout would then refuse to
+  // honour. optionalAuth runs app-wide, so the email (if any) is just sitting
+  // on the context already.
+  const buyerEmail = ctx.get('user')?.email
 
   // AUDIT FIX (Section 3/4 pass, perf): used to call referralService.
   // resolvePrice() once per tier below, each doing its own independent
@@ -27,7 +35,7 @@ async function getPricing(ctx) {
   // request instead of one. resolvePricesForTiers does the single lookup
   // and returns all three tiers' prices from it.
   const priced = referralCode
-    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode)
+    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode, { buyerEmail })
     : null
 
   const tiers = TIERS.map(tier => {
@@ -41,9 +49,9 @@ async function getPricing(ctx) {
     // "was $X" anchor regardless of whether a referral code is present.
     const originalAmount = c.standardPriceForTier(tier)
     const currentAmount  = c.priceForTier(tier, ctx.env)
-    if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false }
+    if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false, discountApplied: false }
 
-    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied }
+    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied, discountApplied: !!priced[tier].discountApplied }
   })
 
   return ctx.json({ success: true, data: {
@@ -66,6 +74,12 @@ async function getPricing(ctx) {
     // countdown in that case rather than showing a stale/zero timer.
     promoEndsAt: promoActive ? ctx.env.PROMO_ENDS_AT : null,
     referralApplied: tiers.some(t => t.referralApplied),
+    // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): the Pricing page
+    // hardcoded "80+" and "two free manual retries" in its copy, which could
+    // silently drift from these two constants (the ones that actually gate
+    // badge eligibility and retry count). The frontend now reads them here.
+    badgeThreshold: c.ATS_BADGE_THRESHOLD,
+    maxFixRetries:  c.MAX_FIX_RETRIES,
     tiers
   } })
 }

@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Button from '../ui/Button'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
 import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
+import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 
 // PriceTag — byTier() always returns a usable value (falls back to the
 // correct standard price internally if /api/pricing hasn't loaded or
@@ -22,91 +23,10 @@ function PriceTag({ tier, byTier, currency }) {
   )
 }
 
-// Two states: a code is already applied (show the confirmation + a way to
-// change it), or no code is applied yet (show the entry field). This is the
-// ONLY place a person can type a code by hand — a ?ref= link in the URL
-// pre-fills it via useReferralCapture, but plenty of real referral traffic
-// is a code heard on a podcast or read off a screenshot, not a clicked link.
-function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
-  const [value, setValue] = useState(referralCode || '')
-  const [editing, setEditing] = useState(!referralCode)
-
-  function handleApply() {
-    onApply(value)
-    setEditing(false)
-  }
-
-  if (referralCode && pricing?.referralApplied && !editing) {
-    return (
-      <p className="text-sm font-medium text-emerald-700 mb-3">
-        ✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}
-        <button type="button" onClick={() => setEditing(true)} disabled={disabled}
-          className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
-          change
-        </button>
-      </p>
-    )
-  }
-
-  // AUDIT FIX (feature gap): a code that's set (typed and applied, or
-  // arrived pre-filled via a ?ref= link — see useReferralCapture) but that
-  // pricing reports back as NOT applied means the code doesn't exist, is
-  // inactive, or has expired. This previously fell straight through to the
-  // plain entry field with zero indication anything had been tried — no way
-  // to tell "haven't applied a code yet" from "applied one that didn't
-  // work". `pricing` is null while /api/pricing is still loading for this
-  // code (see usePricing) — checking it explicitly avoids flashing an error
-  // during that normal loading gap.
-  const invalid = referralCode && !editing && pricing && !pricing.referralApplied
-
-  return (
-    <div className="mb-3">
-      {invalid && (
-        <p className="text-sm text-red-600 mb-1">
-          That code doesn't look right — check it and try again, or leave it blank.
-        </p>
-      )}
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleApply()}
-          placeholder="Have a referral code?"
-          disabled={disabled}
-          className={`text-sm border rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 ${invalid ? 'border-red-300' : 'border-gray-300'}`}
-        />
-        <button type="button" onClick={handleApply}
-          disabled={!value.trim() || disabled}
-          className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
-          Apply
-        </button>
-      </div>
-    </div>
-  )
-}
-
-// AUDIT FIX (feature gap): usePricing() has always reported a `pricingFailed`
-// flag for exactly this situation, but nothing ever read it — byTier()'s
-// fallback to the correct standard price is silent, so a failed /api/pricing
-// fetch used to look identical to a normal, successful, no-discount load.
-// That's fine when there's no referral code in play, but if one IS set and
-// the fetch that would confirm/apply it never came back, the customer would
-// simply be charged full price with no indication anything went wrong —
-// the one case where "degrade quietly" is the wrong default for a
-// money-shaped page. Now surfaced with a one-click retry.
-function PricingFailedNotice({ referralCode, onRetry }) {
-  return (
-    <p className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-3">
-      {referralCode
-        ? "We couldn't verify your referral discount just now — showing standard pricing below. "
-        : "We couldn't load current pricing just now — showing standard pricing below. "}
-      <button type="button" onClick={onRetry} className="underline font-medium hover:text-amber-900">
-        Try again
-      </button>
-    </p>
-  )
-}
+// AUDIT FIX (Payments & Pricing pass 1 — G5): ReferralCodeEntry and
+// PricingFailedNotice used to be defined here only — moved to
+// components/ui/ReferralCodeEntry.jsx, unchanged, so Pricing.jsx can offer
+// the identical manual-entry field instead of a second, driftable copy.
 
 export default function FixBanner({
   scan, onPay, onRedeemCredit, freeFixCredits = 0,

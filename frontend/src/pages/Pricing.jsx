@@ -4,7 +4,9 @@ import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
-import { getStoredReferralCode } from '../hooks/useReferralCapture'
+import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
+import { ReferralCodeEntry, PricingFailedNotice } from '../components/ui/ReferralCodeEntry'
+import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 
 // AUDIT FIX (bug): currency now threaded through from the page's own
 // /api/pricing response (see usePricing.js's fmtPrice comment) — this page
@@ -31,8 +33,28 @@ export default function Pricing() {
   // their discount here, only at actual checkout (ScanResult.jsx/FixBanner).
   // Same initialize-from-storage pattern ScanResult.jsx already uses for
   // the identical reason.
-  const [referralCode] = useState(getStoredReferralCode())
+  // AUDIT FIX (Payments & Pricing pass 1 — G5): was read-only (useState with
+  // no setter) — a visitor with a code that didn't arrive via a clicked
+  // ?ref= link had no way to enter one on this page at all, unlike checkout
+  // (FixBanner). Same read-storage/re-read-after-apply pattern
+  // ScanResult.jsx already uses for FixBanner's identical field.
+  const [referralCode, setReferralCode] = useState(getStoredReferralCode())
   const { pricing, byTier, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode)
+
+  function handleApplyReferralCode(code) {
+    setStoredReferralCode(code)
+    setReferralCode(getStoredReferralCode())   // re-read: normalizes casing/trim, empty string if cleared
+  }
+
+  // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): "80+" and "two free
+  // manual retries" below used to be hardcoded copy that could silently
+  // drift from ATS_BADGE_THRESHOLD/MAX_FIX_RETRIES (the numbers that
+  // actually gate eligibility and retry count). /api/pricing now returns
+  // both live from the backend's own constants.js; the frontend constants
+  // are only the fallback for the brief gap before that first response
+  // lands (or if it never does).
+  const badgeThreshold = pricing?.badgeThreshold ?? ATS_BADGE_THRESHOLD
+  const maxFixRetries  = pricing?.maxFixRetries ?? MAX_FIX_RETRIES
 
   // AUDIT FIX (Section 3/4 re-audit, bug): pricing.referralApplied (from
   // pricing.controller.js) is true if the code discounts ANY ONE of the
@@ -47,7 +69,13 @@ export default function Pricing() {
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
-      <main className="flex-1 max-w-3xl mx-auto px-4 py-16">
+      {/* AUDIT FIX (Payments & Pricing pass 1, bug — B6): max-w-3xl (768px) held
+          a 4-column grid on desktop — after gaps and padding, each of the
+          four cards had roughly 120px of usable text width. max-w-6xl gives
+          each card the same ~280-300px a 2-column tablet layout already had,
+          without changing the sm:grid-cols-2 / lg:grid-cols-4 breakpoints or
+          any card's own markup. */}
+      <main className="flex-1 max-w-6xl mx-auto px-4 py-16">
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold text-gray-900 mb-3">Pricing</h1>
           <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
@@ -70,18 +98,20 @@ export default function Pricing() {
               actually checked. Mirrors the same notice now shown at
               checkout (FixBanner.jsx). */}
           {pricingFailed && (
-            <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4 inline-block">
-              {referralCode
-                ? "We couldn't verify your referral discount just now — prices below are standard pricing. "
-                : "We couldn't load current promotions just now — prices below are standard pricing. "}
-              <button type="button" onClick={refreshPricing} className="underline font-medium hover:text-amber-900">
-                Try again
-              </button>
-            </p>
+            <div className="inline-block text-left">
+              <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} className="text-sm mb-4" />
+            </div>
           )}
           {pricing?.promoActive && pricing.promoEndsAt && (
             <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-8" />
           )}
+          {/* FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): FixBanner
+              (checkout) has always let a visitor type a code by hand; this
+              page — often a visitor's FIRST stop, before they've even
+              scanned — never did. */}
+          <div className="flex justify-center">
+            <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={handleApplyReferralCode} disabled={false} />
+          </div>
         </div>
 
         <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
@@ -107,7 +137,7 @@ export default function Pricing() {
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Credential only</div>
             <PriceBlock tier={byTier('BADGE')} currency={pricing?.currency} />
-            <p className="text-sm text-gray-500 mb-6">Score 80+ required · no content changes</p>
+            <p className="text-sm text-gray-500 mb-6">Score {badgeThreshold}+ required · no content changes</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF'].map(f => (
                 <li key={f} className="flex items-start gap-2">
@@ -167,7 +197,7 @@ export default function Pricing() {
             Included with every fix: we don't stop until you pass.
           </p>
           <p className="text-sm text-blue-700 leading-relaxed max-w-xl mx-auto">
-            Multiple AI rewrite attempts, two free manual retries, and if we still can't
+            Multiple AI rewrite attempts, {maxFixRetries} free manual retries, and if we still can't
             get you past the verification threshold, a free credit for your next resume.
           </p>
         </div>

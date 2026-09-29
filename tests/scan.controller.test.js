@@ -84,13 +84,14 @@ describe('initiateFix', () => {
 
 describe('redeemCredit', () => {
   function setup(opts = {}) {
-    const state = { paymentInserts: [], scanUpdates: [], refundCalls: [], alerts: [], paymentFailUpdates: [] }
+    const state = { paymentInserts: [], scanUpdates: [], refundCalls: [], alerts: [], paymentFailUpdates: [], abandoned: [] }
     const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', fix_purchased: false }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
       if (q.op === 'rpc' && q.name === 'redeem_free_fix_credit') return { data: opts.redeemed ?? true, error: opts.redeemErr || null }
       if (q.op === 'rpc' && q.name === 'increment_free_fix_credits') { state.refundCalls.push(q.args); return { data: true, error: opts.refundErr || null } }
       if (q.table === 'payments' && q.op === 'insert') { state.paymentInserts.push(q.values); return { data: { id: 'pay1' }, error: opts.paymentInsertErr || null } }
+      if (q.table === 'payments' && q.op === 'update' && q.patch?.status === 'ABANDONED') { state.abandoned.push(q); return { data: opts.abandonedRows ?? [], error: opts.abandonErr || null } }
       if (q.table === 'payments' && q.op === 'update') { state.paymentFailUpdates.push(q.patch); return { data: null, error: null } }
       if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q); return { data: opts.claimed ?? [{ id: 's1' }], error: opts.claimErr || null } }
     })
@@ -145,11 +146,45 @@ describe('redeemCredit', () => {
     expect(t.state.refundCalls).toEqual([{ p_user_id: 'u1' }])
   })
 
-  it('queue failure after a WON claim: refunds the credit but does NOT fail the $0 payment row (it is the scan\'s real owning payment)', async () => {
-    t = setup()
-    await expect(t.mod.redeemCredit(baseCtx({ queueThrows: new Error('queue down') }))).rejects.toThrow('queue down')
-    expect(t.state.paymentFailUpdates).toHaveLength(0)
-    expect(t.state.refundCalls).toEqual([{ p_user_id: 'u1' }])
+  // B10 REGRESSION. Once the claim is won the scan belongs to this credit's $0
+  // payment, and the orphan sweep re-enqueues it — so refunding the credit on a
+  // queue failure gave the user the fix AND the credit back.
+  it('REGRESSION (B10): queue failure after a WON claim keeps the credit spent, keeps the $0 row, and reports success (the sweep delivers)', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      t = setup()
+      const res = await t.mod.redeemCredit(baseCtx({ queueThrows: new Error('queue down') }))
+      expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
+      expect(t.state.paymentFailUpdates).toHaveLength(0)
+      expect(t.state.refundCalls).toHaveLength(0)
+    } finally { console.error = realErr }
+  })
+
+  // G2: a won claim closes the scan's other open (PENDING) Paystack checkouts.
+  it('G2: a won claim abandons this scan\'s PENDING checkouts, guarded to PENDING only', async () => {
+    t = setup({ abandonedRows: [{ id: 'old', referral_reservation_id: null }] })
+    const res = await t.mod.redeemCredit(baseCtx())
+    expect(res.body.success).toBe(true)
+    expect(t.state.abandoned).toHaveLength(1)
+    const f = t.state.abandoned[0].filters
+    expect(f.some(x => x[0] === 'eq' && x[1] === 'scan_id' && x[2] === 's1')).toBe(true)
+    expect(f.some(x => x[0] === 'eq' && x[1] === 'status' && x[2] === 'PENDING')).toBe(true)
+  })
+  it('G2: it happens only AFTER the claim is won — a lost claim leaves the other checkout untouched', async () => {
+    t = setup({ claimed: [] })
+    await expect(t.mod.redeemCredit(baseCtx())).rejects.toThrow()
+    expect(t.state.abandoned).toHaveLength(0)
+  })
+  it('G2: a failure while closing the other checkout never undoes the redemption', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      t = setup({ abandonErr: { message: 'db blip' } })
+      const ctx = baseCtx()
+      const res = await t.mod.redeemCredit(ctx)
+      expect(res.body.success).toBe(true)
+      expect(t.state.refundCalls).toHaveLength(0)
+      expect(ctx.__queueSent).toEqual([{ type: 'generateFix', scanId: 's1' }])
+    } finally { console.error = realErr }
   })
 
   it('refund itself failing sends an owner alert but still throws the original error', async () => {

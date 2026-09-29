@@ -97,7 +97,7 @@ function setupInit(opts = {}) {
   const c = (over = {}) => ({
     env,
     get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
-    req: { json: async () => (over.body ?? { scanId: 's1', fixTier: 'FIX' }) },
+    req: { json: async () => (over.body ?? { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX' }) },
     json: (body, status = 200) => ({ body, status }),
   })
   return { mod, restore, state, db, c }
@@ -180,7 +180,7 @@ describe('initializePayment — stale PENDING cleanup', () => {
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'OLDCODE', created_at: new Date().toISOString() },
       referralCodes: { NEWCODE: usableCode({ code: 'NEWCODE' }) },
     })
-    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
     expect(res.status).toBe(409)
     expect(res.body.data.reference).toBe('fresh-ref')
     expect(t.state.paymentUpdates).toHaveLength(0)
@@ -192,7 +192,7 @@ describe('initializePayment — stale PENDING cleanup', () => {
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
       referralCodes: { NEWCODE: usableCode({ code: 'NEWCODE' }) },
     })
-    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'NEWCODE' } }))
     expect(res.status).toBe(409)
   })
 
@@ -201,7 +201,7 @@ describe('initializePayment — stale PENDING cleanup', () => {
       existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: 'SAMECODE', created_at: new Date().toISOString() },
       referralCodes: { SAMECODE: usableCode({ code: 'SAMECODE' }) },
     })
-    const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: '  samecode  ' } }))
+    const res = await t.mod.initializePayment(t.c({ body: { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: '  samecode  ' } }))
     expect(res.status).toBe(200)
     expect(res.body.data.reference).toBe('fresh-ref')
     expect(t.state.paymentInserts).toHaveLength(0)
@@ -223,7 +223,7 @@ describe('initializePayment — stale PENDING cleanup', () => {
         existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
         // No referralCodes entry for 'TYPOCODE' — it does not resolve this time either.
       })
-      const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'TYPOCODE' } }))
+      const res = await t.mod.initializePayment(t.c({ body: { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'TYPOCODE' } }))
       expect(res.status).toBe(200)
       expect(res.body.data.reference).toBe('fresh-ref')
       expect(t.state.paymentInserts).toHaveLength(0)
@@ -237,7 +237,7 @@ describe('initializePayment — stale PENDING cleanup', () => {
         existingPending: { paystack_ref: 'fresh-ref', paystack_access_code: 'fresh-ac', fix_tier: 'FIX', referral_code: null, created_at: new Date().toISOString() },
         referralCodes: { EXPIREDCODE: usableCode({ code: 'EXPIREDCODE', active: false }) },
       })
-      const res = await t.mod.initializePayment(t.c({ body: { scanId: 's1', fixTier: 'FIX', referralCode: 'EXPIREDCODE' } }))
+      const res = await t.mod.initializePayment(t.c({ body: { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'EXPIREDCODE' } }))
       expect(res.status).toBe(200)
       expect(res.body.data.reference).toBe('fresh-ref')
     })
@@ -252,7 +252,7 @@ describe('initializePayment — referral usage-limit reservation', () => {
     id: 'rc1', code: 'LIMITED', active: true, usage_limit: 5, uses_so_far: 0, expires_at: null,
     tier_prices: { FIX: 1500 }, partners: { status: 'ACTIVE' }, ...over
   })
-  const body = { scanId: 's1', fixTier: 'FIX', referralCode: 'LIMITED' }
+  const body = { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'LIMITED' }
   const rpcNames = () => t.state.rpcCalls.map(r => r.name)
 
   it('a limited code takes a reservation, charges the discounted price, and stores the reservation on the payment row', async () => {
@@ -376,7 +376,7 @@ describe('initializePayment — concurrent-insert race (payments_scan_id_pending
     const c = (over = {}) => ({
       env: {},
       get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
-      req: { json: async () => (over.body ?? { scanId: 's1', fixTier: 'FIX' }) },
+      req: { json: async () => (over.body ?? { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX' }) },
       json: (body, status = 200) => ({ body, status }),
     })
     return { mod, restore, state, db, c }
@@ -799,37 +799,243 @@ describe('cancelPayment', () => {
   })
 })
 
+// Payments & Pricing pass 1 (G4): pagination, ABANDONED hidden by default,
+// fixTier + receiptAvailable in the mapped shape.
 describe('getPaymentHistory', () => {
-  function setupHistory(rows) {
-    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: rows, error: null } : undefined))
+  function setupHistory(rows, { total } = {}) {
+    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select'
+      ? { data: rows, error: null, count: total ?? rows.length } : undefined))
     const { mod, restore } = loadWithStubs('controllers/payments.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined), json: (body, status = 200) => ({ body, status }) }
+    const c = (query = {}) => ({
+      env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined),
+      req: { query: k => query[k] },
+      json: (body, status = 200) => ({ body, status }),
+    })
     return { mod, restore, c, db }
   }
 
-  it('scopes to the requesting user and orders newest-first', async () => {
+  it('scopes to the requesting user, orders newest-first with id as tie-break, and hides ABANDONED by default', async () => {
     t = setupHistory([])
-    await t.mod.getPaymentHistory(t.c)
+    await t.mod.getPaymentHistory(t.c())
     const call = t.db.calls.find(c => c.table === 'payments')
     expect(call.filters.find(f => f[0] === 'eq')).toEqual(['eq', 'user_id', 'u1'])
-    expect(call.orders).toEqual([['created_at', { ascending: false }]])
+    expect(call.filters.find(f => f[0] === 'neq')).toEqual(['neq', 'status', 'ABANDONED'])
+    expect(call.orders).toEqual([['created_at', { ascending: false }], ['id', { ascending: false }]])
   })
 
-  it('maps rows to camelCase and includes fixTier', async () => {
-    t = setupHistory([{ id: 'p1', amount_cents: 1900, currency: 'USD', status: 'SUCCESS', paystack_ref: 'r1', created_at: 't1', scan_id: 's1', fix_tier: 'BADGE' }])
-    const res = await t.mod.getPaymentHistory(t.c)
+  it('defaults to page 1 of 20, as a range', async () => {
+    t = setupHistory([])
+    await t.mod.getPaymentHistory(t.c())
+    expect(t.db.calls[0].range).toEqual([0, 19])
+  })
+
+  it('honours page/pageSize query params, clamped to sane bounds', async () => {
+    t = setupHistory([])
+    await t.mod.getPaymentHistory(t.c({ page: '3', pageSize: '10' }))
+    expect(t.db.calls[0].range).toEqual([20, 29])
+    // pageSize is capped at 50 even if a huge one is requested
+    t = setupHistory([])
+    await t.mod.getPaymentHistory(t.c({ page: '1', pageSize: '9999' }))
+    expect(t.db.calls[0].range).toEqual([0, 49])
+  })
+
+  it('includeAbandoned=1 drops the ABANDONED filter', async () => {
+    t = setupHistory([])
+    await t.mod.getPaymentHistory(t.c({ includeAbandoned: '1' }))
+    expect(t.db.calls[0].filters.some(f => f[0] === 'neq')).toBe(false)
+  })
+
+  it('maps rows to camelCase, includes fixTier, total and page info, and flags a receiptable row', async () => {
+    t = setupHistory([{ id: 'p1', amount_cents: 1900, currency: 'USD', status: 'SUCCESS', paystack_ref: 'r1', created_at: 't1', scan_id: 's1', fix_tier: 'BADGE' }], { total: 37 })
+    const res = await t.mod.getPaymentHistory(t.c())
     expect(res.body.data.payments[0]).toEqual({
       id: 'p1', amountCents: 1900, currency: 'USD', status: 'SUCCESS',
-      paystackRef: 'r1', createdAt: 't1', scanId: 's1', fixTier: 'BADGE',
+      paystackRef: 'r1', createdAt: 't1', scanId: 's1', fixTier: 'BADGE', receiptAvailable: true,
     })
+    expect(res.body.data.total).toBe(37)
+    expect(res.body.data.page).toBe(1)
+    expect(res.body.data.pageSize).toBe(20)
+  })
+
+  it('receiptAvailable is false for a free-credit ($0) row and for a non-SUCCESS row', async () => {
+    t = setupHistory([
+      { id: 'p1', amount_cents: 0, currency: 'USD', status: 'SUCCESS', paystack_ref: 'credit:s1:123', created_at: 't1', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'p2', amount_cents: 1900, currency: 'USD', status: 'PENDING', paystack_ref: 'r2', created_at: 't2', scan_id: 's2', fix_tier: 'FIX' },
+    ])
+    const res = await t.mod.getPaymentHistory(t.c())
+    expect(res.body.data.payments.map(p => p.receiptAvailable)).toEqual([false, false])
   })
 
   it('propagates a database error', async () => {
     const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: null, error: new Error('db down') } : undefined))
     const { mod, restore } = loadWithStubs('controllers/payments.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined), json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined), req: { query: () => undefined }, json: (body, status = 200) => ({ body, status }) }
     await expect(mod.getPaymentHistory(c)).rejects.toThrow('db down')
     restore()
+  })
+})
+
+// Payments & Pricing pass 1 (G1): admin-issued Paystack refunds.
+describe('refundPayment (admin)', () => {
+  function setupRefund({ payment, existingRefunds = { data: [] }, createRefund, logAdminAction } = {}) {
+    const state = { logs: [] }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'payments' && q.op === 'select') return { data: payment, error: null }
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/paystack.service.js': {
+        listRefunds: async () => existingRefunds,
+        createRefund: createRefund || (async () => ({ status: true, data: { status: 'pending' } })),
+      },
+      'lib/adminAudit.js': { logAdminAction: async (ctx, sb, action, type, id, meta) => { state.logs.push({ action, type, id, meta }) } },
+    })
+    const c = (ref = 'ref1', body = {}) => ({
+      env: {}, get: () => undefined,
+      req: { param: () => ref, json: async () => body },
+      json: (b, status = 200) => ({ body: b, status }),
+    })
+    return { mod, restore, state, db, c }
+  }
+  const paidPayment = (over = {}) => ({ id: 'pay1', paystack_ref: 'ref1', user_id: 'u1', status: 'SUCCESS', amount_cents: 3900, currency: 'USD', ...over })
+
+  it('queues a full refund, logs the admin action, and leaves our row untouched (the webhook settles it)', async () => {
+    t = setupRefund({ payment: paidPayment() })
+    const res = await t.mod.refundPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+    expect(res.body.data).toMatchObject({ amountCents: 3900, partial: false })
+    expect(t.state.logs[0]).toMatchObject({ action: 'payment.refund_requested', type: 'payment', id: 'pay1' })
+  })
+
+  it('a partial amount is passed through and marked partial', async () => {
+    let sentAmount
+    t = setupRefund({ payment: paidPayment(), createRefund: async (env, ref, opts) => { sentAmount = opts.amount; return { status: true, data: { status: 'pending' } } } })
+    const res = await t.mod.refundPayment(t.c('ref1', { amountCents: 1000 }))
+    expect(sentAmount).toBe(1000)
+    expect(res.body.data.partial).toBe(true)
+  })
+
+  it('404s when the payment does not exist', async () => {
+    t = setupRefund({ payment: null })
+    expect((await t.mod.refundPayment(t.c())).status).toBe(404)
+  })
+
+  it('refuses a free-credit ($0) row — nothing was charged', async () => {
+    t = setupRefund({ payment: paidPayment({ amount_cents: 0, paystack_ref: 'credit:s1:1' }) })
+    const res = await t.mod.refundPayment(t.c())
+    expect(res.status).toBe(400)
+  })
+
+  it('refuses a payment that is not SUCCESS (e.g. still PENDING)', async () => {
+    t = setupRefund({ payment: paidPayment({ status: 'PENDING' }) })
+    expect((await t.mod.refundPayment(t.c())).status).toBe(400)
+  })
+
+  it('refuses a payment already REFUNDED', async () => {
+    t = setupRefund({ payment: paidPayment({ status: 'REFUNDED' }) })
+    expect((await t.mod.refundPayment(t.c())).status).toBe(400)
+  })
+
+  it('DISPUTED gets a distinct message pointing at Resolve', async () => {
+    t = setupRefund({ payment: paidPayment({ status: 'DISPUTED' }) })
+    const res = await t.mod.refundPayment(t.c())
+    expect(res.status).toBe(400)
+    expect(res.body.message).toContain('DISPUTED')
+  })
+
+  it('rejects an amountCents greater than what was paid', async () => {
+    t = setupRefund({ payment: paidPayment({ amount_cents: 1000 }) })
+    expect((await t.mod.refundPayment(t.c('ref1', { amountCents: 2000 }))).status).toBe(400)
+  })
+
+  it('blocks with 409 when Paystack already shows an open (pending/processing) refund — never a double-refund', async () => {
+    t = setupRefund({ payment: paidPayment(), existingRefunds: { data: [{ status: 'pending', amount: 3900 }] } })
+    const res = await t.mod.refundPayment(t.c())
+    expect(res.status).toBe(409)
+  })
+
+  it('blocks with 409 when Paystack already shows it fully processed', async () => {
+    t = setupRefund({ payment: paidPayment(), existingRefunds: { data: [{ status: 'processed', amount: 3900 }] } })
+    expect((await t.mod.refundPayment(t.c())).status).toBe(409)
+  })
+
+  it('a partial prior refund reduces what is left, and a request over that remainder is rejected', async () => {
+    t = setupRefund({ payment: paidPayment(), existingRefunds: { data: [{ status: 'processed', amount: 2000 }] } })
+    const res = await t.mod.refundPayment(t.c('ref1', { amountCents: 1900 + 100 }))
+    expect(res.status).toBe(400)
+  })
+
+  it('fails CLOSED (502, nothing sent) when checking existing refunds itself errors', async () => {
+    t = setupRefund({ payment: paidPayment() })
+    t.restore(); // rebuild with a throwing listRefunds
+    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: paidPayment(), error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/paystack.service.js': { listRefunds: async () => { throw new Error('paystack down') }, createRefund: async () => ({}) },
+      'lib/adminAudit.js': { logAdminAction: async () => {} },
+    })
+    const res = await mod.refundPayment({ env: {}, get: () => undefined, req: { param: () => 'ref1', json: async () => ({}) }, json: (b, s = 200) => ({ body: b, status: s }) })
+    expect(res.status).toBe(502)
+    restore()
+  })
+
+  it('a Paystack-rejected refund (e.g. already reversed) answers 409 with its message, and logs nothing', async () => {
+    t = setupRefund({ payment: paidPayment(), createRefund: async () => { const e = new Error('Transaction has been fully reversed'); e.paystackRejected = true; throw e } })
+    const res = await t.mod.refundPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.message).toContain('fully reversed')
+    expect(t.state.logs).toHaveLength(0)
+  })
+
+  it('a non-rejection Paystack failure (auth/5xx) answers 502, distinct from a rejection', async () => {
+    t = setupRefund({ payment: paidPayment(), createRefund: async () => { throw new Error('HTTP 500') } })
+    expect((await t.mod.refundPayment(t.c())).status).toBe(502)
+  })
+})
+
+// Payments & Pricing pass 1 (G4): in-app receipt resend.
+describe('resendPaymentReceipt', () => {
+  function setup({ payment, resendResult } = {}) {
+    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: payment, error: null } : undefined))
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/fulfillment.service.js': { resendReceipt: async () => resendResult ?? { sent: true, reason: null, email: 'a@b.c' } },
+    })
+    const c = (ref = 'ref1') => ({
+      env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined),
+      req: { param: () => ref },
+      json: (b, status = 200) => ({ body: b, status }),
+    })
+    return { mod, restore, c }
+  }
+  const p = (over = {}) => ({ id: 'pay1', paystack_ref: 'ref1', user_id: 'u1', status: 'SUCCESS', amount_cents: 3900, ...over })
+
+  it('sends and reports the destination email', async () => {
+    t = setup({ payment: p() })
+    const res = await t.mod.resendPaymentReceipt(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.email).toBe('a@b.c')
+  })
+  it('404s on a payment that is not this user\'s (never leaks whether it exists)', async () => {
+    t = setup({ payment: p({ user_id: 'someone-else' }) })
+    expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(404)
+  })
+  it('refuses a free-credit ($0) row and a non-SUCCESS row — a receipt is only for a completed paid purchase', async () => {
+    t = setup({ payment: p({ amount_cents: 0, paystack_ref: 'credit:s1:1' }) })
+    expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(400)
+    t = setup({ payment: p({ status: 'PENDING' }) })
+    expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(400)
+  })
+  it('503s with a clear message when the account has no email on file', async () => {
+    t = setup({ payment: p(), resendResult: { sent: false, reason: 'NO_EMAIL', email: null } })
+    const res = await t.mod.resendPaymentReceipt(t.c())
+    expect(res.status).toBe(503)
+  })
+  it('503s when the send itself fails', async () => {
+    t = setup({ payment: p(), resendResult: { sent: false, reason: 'SEND_FAILED', email: null } })
+    expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(503)
   })
 })
 

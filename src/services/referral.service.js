@@ -107,7 +107,18 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   // way — the partner is still attributed and credited via recordConversion
   // on whatever amount actually gets charged, they just don't out-charge
   // an active promo.
-  return { amount: Math.min(tierPrice, standard), currency, referralApplied: true, referralCode: codeRow }
+  // AUDIT FIX (Payments & Pricing pass 1, bug — B8): referralApplied was true
+  // even when Math.min picked the PROMO price over the code's own tierPrice —
+  // so the checkout/pricing UI said "your code is applied — see your
+  // discount" while charging the same public price everyone else was paying.
+  // referralApplied itself is UNCHANGED (partner attribution/commission are
+  // deliberately keyed on it, see the comment above — the code IS in effect,
+  // it just isn't the reason for today's price). discountApplied is the new,
+  // narrower signal: true only when the code actually lowered what this buyer
+  // pays below the standard price, which is what "you got a discount" copy
+  // should be gated on.
+  const amount = Math.min(tierPrice, standard)
+  return { amount, currency, referralApplied: true, discountApplied: amount < standard, referralCode: codeRow }
 }
 
 function isSelfReferral(codeRow, buyerEmail) {
@@ -132,11 +143,16 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode, opts = {}) 
 // reused for all three tiers via the same priceForResolvedCode() core
 // resolvePrice itself uses above, so a quoted multi-tier price can never
 // compute a tier differently than a single-tier resolvePrice call would.
-async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode) {
+// opts.buyerEmail (optional): see resolvePrice — enables the same self-referral
+// guard for the /api/pricing quote (AUDIT FIX, Payments & Pricing pass 1 —
+// B11: this used to never receive it at all, so a logged-in partner browsing
+// their own code saw a discounted QUOTE that initializePayment's resolvePrice
+// call — which DOES get buyerEmail — would then refuse to honour at checkout).
+async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts = {}) {
   if (!rawReferralCode)
     return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, null)]))
   const codeRow = await lookupCode(supabase, rawReferralCode)
-  return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow)]))
+  return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow, opts)]))
 }
 
 /**

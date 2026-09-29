@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { initializeTransaction, verifyTransaction, listRefunds } from '../src/services/paystack.service.js'
+import { initializeTransaction, verifyTransaction, listRefunds, createRefund } from '../src/services/paystack.service.js'
 
 // paystack.service.js was previously the one payment-facing module with zero
 // direct test coverage — payments.controller.test.js stubs it out entirely
@@ -109,5 +109,90 @@ describe('listRefunds', () => {
   it('throws on a non-2xx response (an outage or a bad key is not "no refunds")', async () => {
     mockFetch(401, { status: false, message: 'Invalid key' })
     await expect(listRefunds(env, 'ref-1')).rejects.toThrow('Invalid key')
+  })
+})
+
+// ── Payments & Pricing pass 1 (B3): the 15s timeout must cover the BODY ──────
+// Repro: a server that sends headers and half a JSON body, then stalls. The
+// old code cleared its timer as soon as fetch() resolved (headers), so
+// res.json() hung forever. Here res.json() only settles by rejecting when the
+// request's own abort signal fires, and the 15s timer is fired immediately.
+describe('body-read timeout (B3)', () => {
+  function stalledBody() {
+    global.fetch = vi.fn(async (url, opts) => ({
+      ok: true, status: 200,
+      json: () => new Promise((_, reject) => {
+        opts.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; reject(e) })
+      }),
+    }))
+  }
+  function fireTimersNow() {
+    const real = global.setTimeout
+    vi.spyOn(global, 'setTimeout').mockImplementation((fn, ms, ...a) => real(fn, ms === 15000 ? 0 : ms, ...a))
+  }
+
+  it('a stalled verify body fails as a timeout instead of hanging', async () => {
+    stalledBody(); fireTimersNow()
+    await expect(verifyTransaction(env, 'ref')).rejects.toThrow('Paystack verify timed out after 15s')
+  })
+  it('a stalled initialize body fails as a timeout', async () => {
+    stalledBody(); fireTimersNow()
+    await expect(initializeTransaction(env, { email: 'a@b.com', amount: 1, userId: 'u', scanId: 's', fixTier: 'FIX', reference: 'r' }))
+      .rejects.toThrow('Paystack initialize timed out after 15s')
+  })
+  it('a stalled refund-list body fails as a timeout', async () => {
+    stalledBody(); fireTimersNow()
+    await expect(listRefunds(env, 'ref')).rejects.toThrow('Paystack refund list timed out after 15s')
+  })
+})
+
+describe('non-JSON responses', () => {
+  function htmlBody(status) {
+    global.fetch = vi.fn(async () => ({ ok: status >= 200 && status < 300, status, json: async () => { throw new SyntaxError('Unexpected token <') } }))
+  }
+  it('an HTML 502 reports the HTTP status, not a SyntaxError', async () => {
+    htmlBody(502)
+    await expect(verifyTransaction(env, 'r')).rejects.toThrow('Paystack verify returned HTTP 502')
+    await expect(initializeTransaction(env, { email: 'a@b.com', amount: 1, userId: 'u', scanId: 's', fixTier: 'FIX', reference: 'r' }))
+      .rejects.toThrow('Paystack initialize returned HTTP 502')
+  })
+  it('a 200 with a non-JSON body is an explicit unreadable-response error (never a fake success)', async () => {
+    htmlBody(200)
+    await expect(verifyTransaction(env, 'r')).rejects.toThrow('unreadable')
+    await expect(listRefunds(env, 'r')).rejects.toThrow('unreadable')
+  })
+})
+
+describe('createRefund (G1)', () => {
+  it('POSTs {transaction} only for a FULL refund and returns the parsed body', async () => {
+    mockFetch(200, { status: true, message: 'Refund has been queued for processing', data: { status: 'pending', amount: 2900 } })
+    const out = await createRefund(env, 'ref-1', { merchantNote: 'duplicate charge' })
+    expect(out.data.status).toBe('pending')
+    const [url, opts] = global.fetch.mock.calls[0]
+    expect(url).toBe('https://api.paystack.co/refund')
+    expect(opts.method).toBe('POST')
+    expect(opts.headers.Authorization).toBe('Bearer sk_test_123')
+    expect(JSON.parse(opts.body)).toEqual({ transaction: 'ref-1', merchant_note: 'duplicate charge' })
+  })
+  it('sends amount/currency only when a partial amount is given', async () => {
+    mockFetch(200, { status: true, data: {} })
+    await createRefund(env, 'ref-1', { amount: 500, currency: 'USD' })
+    expect(JSON.parse(global.fetch.mock.calls[0][1].body)).toEqual({ transaction: 'ref-1', amount: 500, currency: 'USD' })
+  })
+  it('a 4xx Paystack rejection (already refunded, amount too high) is paystackRejected with its message', async () => {
+    mockFetch(400, { status: false, message: 'Transaction has been fully reversed' })
+    const err = await createRefund(env, 'r').catch(e => e)
+    expect(err.message).toBe('Transaction has been fully reversed')
+    expect(err.paystackRejected).toBe(true)
+  })
+  it('a rejection on a 200 (status:false) is also paystackRejected', async () => {
+    mockFetch(200, { status: false, message: 'nope' })
+    expect((await createRefund(env, 'r').catch(e => e)).paystackRejected).toBe(true)
+  })
+  it('auth failures, rate limits and 5xx are NOT rejections — they say nothing about this refund', async () => {
+    for (const status of [401, 403, 429, 500, 503]) {
+      mockFetch(status, { status: false, message: 'x' })
+      expect((await createRefund(env, 'r').catch(e => e)).paystackRejected).toBe(false)
+    }
   })
 })

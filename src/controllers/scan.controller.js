@@ -70,6 +70,7 @@ const pdfService        = require('../services/pdf.service')
 const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
 const referralService      = require('../services/referral.service')
+const fulfillmentService   = require('../services/fulfillment.service')
 const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
@@ -937,8 +938,31 @@ async function redeemCredit(ctx) {
     if (!claimed || claimed.length === 0) throw new Error('Scan was purchased concurrently')
     claimObtained = true
 
+    // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G2): this claim used to
+    // leave any Paystack checkout still PENDING for the scan exactly as it was
+    // — a phantom "pending" purchase in the buyer's history, holding a
+    // referral-code usage slot, and still payable. See
+    // fulfillmentService.abandonPendingForScan for what it does and does not
+    // (Paystack cannot cancel an initialized transaction) achieve. Never throws.
+    await fulfillmentService.abandonPendingForScan(supabase, scan.id)
+
     await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
   } catch (err) {
+    // AUDIT FIX (Payments & Pricing pass 1, bug — B10): the claim WON means the
+    // scan now belongs to this credit's $0 payment row, and the orphan sweep
+    // (reconcile.service.js sweepOrphanedPayments, 'job-lost') re-enqueues a
+    // scan stuck in FIX_PURCHASED for ANY SUCCESS payment, credit rows
+    // included. So when only the enqueue failed, refunding the credit here — as
+    // this used to — handed the user the fix (delivered by the sweep minutes
+    // later) AND their credit back: a free extra fix for every queue blip. The
+    // user also couldn't simply retry (the scan already reads "Already
+    // purchased"), so the error they were shown pointed at nothing. The credit
+    // is genuinely spent; delivery is only late. Report success and let the
+    // sweep finish it.
+    if (claimObtained) {
+      console.error(`[CRITICAL] redeemCredit: scan claimed but the enqueue failed — the orphan sweep will re-enqueue it (user ${user.id}, scan ${scan.id}):`, err.message)
+      return ctx.json({ success: true, data: { scanId: scan.id } })
+    }
     // If the claim was LOST, the $0 row must not linger as a SUCCESS payment for
     // this scan — it would make fulfilment think the scan has a second purchase.
     // (If the claim was WON and only the queue send failed, the row is the

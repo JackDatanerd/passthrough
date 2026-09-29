@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
+import { safeNext } from '../lib/session'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -21,7 +22,7 @@ const PENDING_RETRY_MS = 4000
 export default function PaymentSuccess() {
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
-  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | error
+  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | error
   const [scanId,  setScanId ] = useState(null)
 
   const reference = params.get('reference') || params.get('trxref')
@@ -68,6 +69,19 @@ export default function PaymentSuccess() {
   // needed: this function only ever gets called with attempt > 1 from the
   // scheduled retry inside the `res.data.pending` branch below, so by
   // construction a retry IS a still-pending poll.
+  // AUDIT FIX (Payments & Pricing pass 1, bug — B5): the catch below used to
+  // gate its OWN retry on the very same `attempt` counter the pending-poll
+  // loop advances (up to PENDING_MAX_ATTEMPTS). So a transient network error
+  // on attempt 1 got one silent retry, but the identical transient error on
+  // attempt 3, 4 or 5 — i.e. a payment we've ALREADY confirmed is still
+  // processing — got attempt < 2 === false and jumped straight to a hard
+  // "Verification failed", no retry at all. A network hiccup late in a poll
+  // sequence is if anything less alarming than one on the first try, not
+  // more. errorRetriesRef is its own small budget, independent of how far
+  // into the pending-poll sequence we are, and resets on every successful
+  // response (pending or final) so it never carries stale count forward.
+  const errorRetriesRef = useRef(0)
+
   function verify(attempt = 1) {
     // AUDIT FIX (Section 3/4 pass, bug): see mountedRef's comment above —
     // bail before touching state OR making the network call at all, so an
@@ -75,9 +89,14 @@ export default function PaymentSuccess() {
     if (!mountedRef.current) return
     if (!reference) { setStatus('error'); return }
     setStatus(attempt > 1 ? 'pending' : 'loading')
-    api.get(`/payments/verify?reference=${reference}`)
+    // AUDIT FIX (Payments & Pricing pass 1, bug): `reference` went straight
+    // into the query string unencoded. Paystack references are normally
+    // URL-safe, but nothing here actually guarantees that — encoding costs
+    // nothing and removes the assumption.
+    api.get(`/payments/verify?reference=${encodeURIComponent(reference)}`)
       .then(res => {
         if (!mountedRef.current) return
+        errorRetriesRef.current = 0
         // AUDIT FIX (bug): a 202 { pending: true } means Paystack hasn't
         // reached a final status yet — not a failure. Keep polling a bounded
         // number of times before settling on "still processing" rather than
@@ -99,9 +118,26 @@ export default function PaymentSuccess() {
         // before the check above ran) must still not get force-redirected.
         setTimeout(() => { if (mountedRef.current) navigate(`/scan/${sid}`) }, 2000)
       })
-      .catch(() => {
+      .catch(err => {
         if (!mountedRef.current) return
-        if (attempt < 2) { setTimeout(() => verify(attempt + 1), 1500); return }
+        // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G3): a 401 here
+        // means the session expired (or was ended by api.js's interceptor,
+        // which has already cleared the stored token by the time this catch
+        // runs — see lib/api.js's endSession). /payment/success isn't in
+        // isProtectedPath (lib/session.js), so nothing redirected the user
+        // away, but every retry from here on would 401 again with no token
+        // to send — this used to fall through to the generic transient-error
+        // retry, burn its budget, and land on "Verification failed" with no
+        // hint that signing back in was the actual fix. The payment itself
+        // is untouched either way: it already succeeded or is still
+        // processing on Paystack's side regardless of whether this browser
+        // has a valid session to ask about it.
+        if (err?.response?.status === 401) { setStatus('session-expired'); return }
+        if (errorRetriesRef.current < 2) {
+          errorRetriesRef.current += 1
+          setTimeout(() => verify(attempt), 1500)   // same attempt — not a pending-poll advance
+          return
+        }
         setStatus('error')
       })
   }
@@ -149,6 +185,24 @@ export default function PaymentSuccess() {
                 </button>
                 <a href="/dashboard" className="text-sm text-blue-600 hover:underline">
                   Go to dashboard
+                </a>
+              </div>
+            </>
+          )}
+          {status === 'session-expired' && (
+            <>
+              <div className="text-amber-500 text-5xl mb-4">🔒</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Sign in to confirm your payment</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                Your session expired while we were checking your payment. Your payment itself is unaffected —
+                sign back in and we'll pick up right where we left off.
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <a
+                  href={`/login?next=${encodeURIComponent(safeNext(window.location.pathname + window.location.search) || '/dashboard')}`}
+                  className="text-sm font-medium text-blue-600 hover:underline"
+                >
+                  Sign in
                 </a>
               </div>
             </>

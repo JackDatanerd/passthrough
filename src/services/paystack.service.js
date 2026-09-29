@@ -19,22 +19,46 @@ const c = require('../config/constants')
 // own hard limits killing the request out from under them uncaught.
 const PAYSTACK_TIMEOUT_MS = 15000
 
-async function paystackFetch(url, options, label) {
+// AUDIT FIX (bug, Payments & Pricing pass 1 — B3): the timer above used to be
+// cleared in a `finally` the moment fetch() resolved — and fetch() resolves as
+// soon as the response HEADERS arrive. Every caller then did `await res.json()`
+// with no timeout at all, so a Paystack (or proxy) that sent headers and then
+// stalled mid-body hung that call forever, exactly the failure the timeout
+// exists to prevent (and one hung call still stalled every sweep candidate
+// behind it). Reproduced against a local server that sends a partial JSON body
+// and stops. The body is now read INSIDE the timed window, so the abort signal
+// covers headers and body alike.
+//
+// Returns { res, json }. `json` is null when the body was not JSON at all (a
+// 502 HTML page from a proxy, say) — callers then report the HTTP status
+// instead of a confusing SyntaxError.
+async function paystackRequest(url, options, label) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), PAYSTACK_TIMEOUT_MS)
   try {
-    return await fetch(url, { ...options, signal: controller.signal })
+    const res = await fetch(url, { ...options, signal: controller.signal })
+    let json = null
+    try { json = await res.json() }
+    catch (err) {
+      if (err?.name === 'AbortError') throw err
+      json = null
+    }
+    return { res, json }
   } catch (err) {
-    if (err.name === 'AbortError') throw new Error(`${label} timed out after ${PAYSTACK_TIMEOUT_MS / 1000}s`)
+    if (err?.name === 'AbortError') throw new Error(`${label} timed out after ${PAYSTACK_TIMEOUT_MS / 1000}s`)
     throw err
   } finally {
     clearTimeout(timeout)
   }
 }
 
+function unreadable(label) {
+  return new Error(`${label} returned an unreadable (non-JSON) response`)
+}
+
 // reference param: caller generates once, passes to both Paystack and DB
 async function initializeTransaction(env, { email, amount, userId, scanId, fixTier, reference }) {
-  const res = await paystackFetch('https://api.paystack.co/transaction/initialize', {
+  const { res, json } = await paystackRequest('https://api.paystack.co/transaction/initialize', {
     method: 'POST',
     headers: {
       'Authorization':  `Bearer ${env.PAYSTACK_SECRET_KEY}`,
@@ -46,7 +70,6 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
       callback_url: env.PAYSTACK_CALLBACK_URL
     })
   }, 'Paystack initialize')
-  const json = await res.json()
   // AUDIT FIX (bug): this used to throw identically whether Paystack was
   // genuinely down/misconfigured (res.ok false — a real outage or a bad
   // secret key, exactly the "every payment attempt fails until this is
@@ -59,6 +82,7 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
   // initializePayment's catch can tell the two apart instead of paging the
   // owner for both alike.
   if (!res.ok) throw new Error(json?.message || `Paystack initialize returned HTTP ${res.status}`)
+  if (!json) throw unreadable('Paystack initialize')
   if (!json.status) {
     const err = new Error(json.message || 'Paystack init failed')
     err.paystackRejected = true
@@ -87,12 +111,11 @@ function isPendingStatus(status) {
 }
 
 async function verifyTransaction(env, reference) {
-  const res = await paystackFetch(
+  const { res, json } = await paystackRequest(
     `https://api.paystack.co/transaction/verify/${encodeURIComponent(reference)}`,
     { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
     'Paystack verify'
   )
-  const json = await res.json()
   // BUGFIX: this used to return json unconditionally, with no equivalent of
   // initializeTransaction's `if (!json.status) throw`. A genuine Paystack-
   // side failure (rotated/misconfigured secret key, an outage, a malformed
@@ -108,6 +131,7 @@ async function verifyTransaction(env, reference) {
   // path in payments.controller.js with no alert. Only a non-2xx HTTP
   // response — auth failures, outages — throws here.
   if (!res.ok) throw new Error(json?.message || `Paystack verify returned HTTP ${res.status}`)
+  if (!json) throw unreadable('Paystack verify')
   return json
   // json.data.status — ONE level of .data (native fetch, not Axios)
 }
@@ -118,14 +142,59 @@ async function verifyTransaction(env, reference) {
 // Each item carries `status` (pending | processing | needs-attention | failed | processed),
 // `amount` (minor units) and `currency`.
 async function listRefunds(env, reference) {
-  const res = await paystackFetch(
+  const { res, json } = await paystackRequest(
     `https://api.paystack.co/refund?reference=${encodeURIComponent(reference)}&perPage=50`,
     { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
     'Paystack refund list'
   )
-  const json = await res.json()
   if (!res.ok) throw new Error(json?.message || `Paystack refund list returned HTTP ${res.status}`)
+  if (!json) throw unreadable('Paystack refund list')
   return json
 }
 
-module.exports = { initializeTransaction, verifyTransaction, listRefunds, isPendingStatus, PENDING_STATUSES }
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G1): the app could only
+// LOOK at refunds (listRefunds above) and react to them (the refund.processed
+// webhook) — it could never CREATE one, so every "needs a human" alert
+// (DUPLICATE / SCAN_MISSING / NO_SCAN / ACCOUNT_DELETED) ended in "go refund
+// it in the Paystack dashboard by hand". POST /refund queues a refund for the
+// transaction with this reference. `amount` (minor units) is optional — omit
+// it for a FULL refund. Paystack processes refunds asynchronously: this only
+// QUEUES it, and the existing refund.processed webhook (plus
+// sweepReversedPayments as its safety net) is what flips our own row to
+// REFUNDED, reverses the commission and revokes the credential.
+//
+// Error shape: a request Paystack itself rejects (already fully refunded,
+// amount above what is left, a transaction it cannot refund) is a routine
+// per-request outcome — err.paystackRejected = true, the caller shows the
+// message to the admin. Auth failures / 429 / 5xx are NOT rejections (they say
+// nothing about THIS refund) and stay plain errors.
+async function createRefund(env, reference, { amount, currency, customerNote, merchantNote } = {}) {
+  const body = { transaction: reference }
+  if (amount != null) body.amount = amount
+  if (currency) body.currency = currency
+  if (customerNote) body.customer_note = customerNote
+  if (merchantNote) body.merchant_note = merchantNote
+  const { res, json } = await paystackRequest('https://api.paystack.co/refund', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}`,
+      'Content-Type':  'application/json'
+    },
+    body: JSON.stringify(body)
+  }, 'Paystack refund')
+  if (!res.ok) {
+    const err = new Error(json?.message || `Paystack refund returned HTTP ${res.status}`)
+    err.httpStatus = res.status
+    err.paystackRejected = res.status >= 400 && res.status < 500 && ![401, 403, 429].includes(res.status)
+    throw err
+  }
+  if (!json) throw unreadable('Paystack refund')
+  if (!json.status) {
+    const err = new Error(json.message || 'Paystack refund failed')
+    err.paystackRejected = true
+    throw err
+  }
+  return json
+}
+
+module.exports = { initializeTransaction, verifyTransaction, listRefunds, createRefund, isPendingStatus, PENDING_STATUSES }

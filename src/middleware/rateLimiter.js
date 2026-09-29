@@ -172,6 +172,10 @@ async function hitQuota(env, key, max, windowSeconds) {
 // 4xx/5xx the slot is handed back, up to maxRefunds per window. Used by
 // anonScan: a wrong file type, an oversized upload, or a server hiccup must not
 // burn the one anonymous scan an hour that the visitor never actually got.
+// byAccount — the keyBy for anything behind `auth` that is genuinely
+// per-account. Falls back to the IP (null) when no user is on the context.
+const byAccount = (c) => { const id = c.get && c.get('user')?.id; return id ? `u:${id}` : null }
+
 // `keyBy(c)` (optional) names who the budget belongs to when that should not be
 // the network address — a falsy return falls back to the IP. Anything behind
 // `auth` that is genuinely per-account (a heavy personal export) should key on
@@ -368,8 +372,16 @@ const authVerify = makeLimiter({
   message: msg('Too many attempts. Please wait a few minutes.')
 })
 
+// AUDIT FIX (Payments & Pricing pass 1, bug — B1): this and paymentCancel
+// below sit behind `auth`, so the user is always known, yet both were keyed by
+// IP. The customer base is mobile-money heavy — many unrelated buyers share
+// one carrier-grade-NAT address — so a few people checking out at the same
+// time on one carrier were ALL answered "Payment in progress. Wait." by a
+// 3-per-minute budget that belongs to one person. Per ACCOUNT now (same
+// keyBy as dataExport); the IP is only the fallback when no user is set.
 const payment = makeLimiter({
   windowSeconds: 60, max: 3, keyPrefix: 'rl:payment',
+  keyBy: byAccount,
   message: msg('Payment in progress. Wait.')
 })
 
@@ -391,7 +403,30 @@ const payment = makeLimiter({
 // by attempts at the thing it's meant to unstick.
 const paymentCancel = makeLimiter({
   windowSeconds: 5 * 60, max: 10, keyPrefix: 'rl:paymentcancel',
+  keyBy: byAccount,
   message: msg('Too many requests. Please wait a moment.')
+})
+
+// AUDIT FIX (Payments & Pricing pass 1, bug — B2): GET /api/payments/verify had
+// no limiter of its own — only the app-wide 100-per-15-minutes-per-IP one —
+// yet every call is a live Paystack round trip. Its own per-account bucket
+// (separate from `payment`, for the same fate-sharing reason as paymentCancel:
+// the success page polls it and must not eat a checkout's budget). The
+// success page legitimately makes ~6 calls over half a minute plus manual
+// "check again" clicks, so 20 per 5 minutes leaves comfortable headroom.
+const paymentVerify = makeLimiter({
+  windowSeconds: 5 * 60, max: 20, keyPrefix: 'rl:paymentverify',
+  keyBy: byAccount,
+  message: msg('Too many payment checks. Please wait a minute and try again.')
+})
+
+// FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): POST
+// /api/payments/:reference/receipt re-sends a receipt email. Each call is a
+// real outbound email, so it is capped tightly, per account.
+const paymentReceipt = makeLimiter({
+  windowSeconds: 60 * 60, max: 3, keyPrefix: 'rl:paymentreceipt',
+  keyBy: byAccount,
+  message: msg('Receipt already sent a few times. Please try again in an hour.')
 })
 
 // Backs PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
@@ -440,6 +475,7 @@ const draftDownload = makeLimiter({
 // bounds retries per scan; this is just an abuse backstop across scans.
 const retryFix = makeLimiter({
   windowSeconds: 15 * 60, max: 15, keyPrefix: 'rl:retryfix',
+  keyBy: byAccount,
   message: msg('Too many requests. Please wait a moment.')
 })
 
@@ -447,8 +483,10 @@ const retryFix = makeLimiter({
 // rarer action than a resume edit or a retry, so a tighter ceiling than either
 // is still generous for genuine use (an account only ever has a handful of
 // credits) while keeping it out of `payment`'s tight checkout-specific budget.
+// Per account for the same NAT reason as `payment` above (behind `auth`).
 const redeemCredit = makeLimiter({
   windowSeconds: 5 * 60, max: 5, keyPrefix: 'rl:redeemcredit',
+  keyBy: byAccount,
   message: msg('Too many requests. Please wait a moment.')
 })
 
@@ -460,7 +498,7 @@ const redeemCredit = makeLimiter({
 // account to fetch all of its parts more than once.
 const dataExport = makeLimiter({
   windowSeconds: 60 * 60, max: 12, keyPrefix: 'rl:export',
-  keyBy: (c) => { const id = c.get && c.get('user')?.id; return id ? `u:${id}` : null },
+  keyBy: byAccount,
   message: msg('Too many export requests. Please try again later.')
 })
 
@@ -780,7 +818,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

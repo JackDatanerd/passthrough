@@ -77,7 +77,15 @@ export function usePricing(referralCode = '') {
 
   useEffect(() => {
     let cancelled = false
+    // AUDIT FIX (Payments & Pricing pass 1, bug — B7): when the code changes
+    // to a key that ISN'T cached, `entry` used to keep showing the OLD key's
+    // prices (and its referralApplied) until the new fetch resolved — and, if
+    // that fetch failed, forever, sitting right next to the failure notice.
+    // Clearing to null for an uncached key means byTier() immediately falls
+    // back to the correct STANDARD price while loading, and stays there (not
+    // some other code's discounted price) if the fetch never comes back.
     if (cacheByKey[key]) setEntry(cacheByKey[key])
+    else setEntry(null)
     fetchPricing(key).then(e => {
       if (cancelled) return
       if (e) { setEntry(e); setFailed(false) } else setFailed(true)

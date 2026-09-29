@@ -10,7 +10,11 @@ function setup({
   // Referral-attribution fixtures — only ever queried by recordConversion()
   // when a payment actually has a referral_code_id (see referral.service.js:
   // no-referral payments short-circuit before touching any of these tables).
+  // existingLedgerRow: what recordConversion's post-23505 duplicate-lookup
+  // SELECT finds. Defaults to "already fully recorded" (usage_counted: true),
+  // matching a 23505 ledgerError that isn't paired with an override.
   referralCode = { id: 'rc1', partner_id: 'p1' }, partner = { commission_rate: 0.2 }, ledgerError = null,
+  existingLedgerRow = { id: 'led1', usage_counted: true }, existingLedgerError = null,
 } = {}) {
   const state = { queue: [], alerts: [], claims: [], ledger: [] }
   const db = createFakeSupabase(q => {
@@ -19,7 +23,10 @@ function setup({
     if (q.table === 'scans' && q.op === 'update') { state.claims.push({ patch: q.patch, filters: q.filters }); return { data: claimRows, error: claimError } }
     if (q.table === 'referral_codes') return { data: referralCode, error: null }
     if (q.table === 'partners') return { data: partner, error: null }
-    if (q.table === 'commission_ledger') { state.ledger.push(q.values); return { error: ledgerError } }
+    if (q.table === 'commission_ledger' && q.op === 'insert') { state.ledger.push(q.values); return { error: ledgerError } }
+    // recordConversion's post-23505 duplicate check: a SELECT for the row
+    // that already exists, keyed on payment_id (distinct from the insert above).
+    if (q.table === 'commission_ledger' && q.op === 'select') return { data: existingLedgerRow, error: existingLedgerError }
     return undefined
   })
   const env = { FIX_QUEUE: { send: async m => { if (queueError) throw queueError; state.queue.push(m) } } }
@@ -105,9 +112,26 @@ describe('sweepOrphanedPayments', () => {
 
   it('is idempotent: re-recovering an already-recorded conversion is a harmless no-op', async () => {
     t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
-      ledgerError: { code: '23505', message: 'duplicate key' } })
+      ledgerError: { code: '23505', message: 'duplicate key' },
+      existingLedgerRow: { id: 'led1', usage_counted: true } })
     const r = await t.sweep()
     expect(r.reenqueued[0].conversion).toEqual({ ok: true, recorded: false, reason: 'duplicate' })
+  })
+
+  it('a duplicate whose usage was never counted is repaired (usage bumped), not skipped', async () => {
+    t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
+      ledgerError: { code: '23505', message: 'duplicate key' },
+      existingLedgerRow: { id: 'led1', usage_counted: false } })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].conversion).toEqual({ ok: true, recorded: false, reason: 'duplicate', usageRepaired: true })
+  })
+
+  it('a failure DURING the post-duplicate lookup itself is reported, not silently swallowed as a plain duplicate', async () => {
+    t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
+      ledgerError: { code: '23505', message: 'duplicate key' },
+      existingLedgerError: { message: 'db blip' } })
+    const r = await t.sweep()
+    expect(r.reenqueued[0].conversion).toMatchObject({ ok: false, reason: 'duplicate-lookup' })
   })
 
   it('surfaces a failed commission write in both the sweep summary and a dedicated owner alert, without blocking delivery', async () => {

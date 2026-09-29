@@ -89,6 +89,74 @@ describe('employer-leads routes', () => {
   })
 })
 
+// Payments & Pricing pass 1 (G1, G4, B2): the new refund/receipt endpoints,
+// and the verify endpoint's new rate limiter, are only as safe as their
+// wiring — a route registered without auth/admin, or through the wrong (or
+// no) limiter, would pass every controller-level test while being reachable
+// by the wrong caller in production. Mirrors this file's own template.
+describe('payments routes — refund, receipt, verify', () => {
+  const REF = 'PSK-ref-1'
+  const app = (extraStubs) => mount('routes/payments.routes.js', 'controllers/payments.controller.js', extraStubs)
+
+  it('refund is admin-only: 401 anonymous, 403 for a signed-in non-admin', async () => {
+    const a = app()
+    current = undefined
+    expect((await call(a, 'POST', `/${REF}/refund`, {})).status).toBe(401)
+    current = { id: 'u1', role: 'USER' }
+    expect((await call(a, 'POST', `/${REF}/refund`, {})).status).toBe(403)
+  })
+  it('an admin reaches refundPayment', async () => {
+    const a = app(); current = { id: 'a1', role: 'ADMIN' }
+    expect((await call(a, 'POST', `/${REF}/refund`, {})).json.handler).toBe('refundPayment')
+  })
+  it('receipt requires login (any signed-in owner, not admin-gated) and reaches resendPaymentReceipt', async () => {
+    const a = app()
+    current = undefined
+    expect((await call(a, 'POST', `/${REF}/receipt`, {})).status).toBe(401)
+    current = { id: 'u1', role: 'USER' }
+    expect((await call(a, 'POST', `/${REF}/receipt`, {})).json.handler).toBe('resendPaymentReceipt')
+  })
+  it('receipt goes through its OWN limiter (rl.paymentReceipt), not refund\'s or verify\'s', async () => {
+    const hit = []
+    const taggedLimiter = name => async (c, next) => { hit.push(name); return next() }
+    const a = app({ 'middleware/rateLimiter.js': {
+      paymentReceipt: taggedLimiter('paymentReceipt'), paymentVerify: taggedLimiter('paymentVerify'),
+      payment: taggedLimiter('payment'), paymentCancel: taggedLimiter('paymentCancel'),
+    } })
+    current = { id: 'u1', role: 'USER' }
+    await call(a, 'POST', `/${REF}/receipt`, {})
+    expect(hit).toEqual(['paymentReceipt'])
+  })
+  it('B2: verify now goes through rl.paymentVerify, not the app-wide limiter alone', async () => {
+    const hit = []
+    const taggedLimiter = name => async (c, next) => { hit.push(name); return next() }
+    const a = app({ 'middleware/rateLimiter.js': {
+      paymentVerify: taggedLimiter('paymentVerify'), paymentReceipt: taggedLimiter('paymentReceipt'),
+      payment: taggedLimiter('payment'), paymentCancel: taggedLimiter('paymentCancel'),
+    } })
+    current = { id: 'u1', role: 'USER' }
+    await call(a, 'GET', '/verify', undefined)
+    expect(hit).toEqual(['paymentVerify'])
+  })
+  it('initialize and cancel still use their own distinct limiters (payment / paymentCancel), unaffected by the new ones', async () => {
+    const hit = []
+    const taggedLimiter = name => async (c, next) => { hit.push(name); return next() }
+    const a = app({ 'middleware/rateLimiter.js': {
+      payment: taggedLimiter('payment'), paymentCancel: taggedLimiter('paymentCancel'),
+      paymentVerify: taggedLimiter('paymentVerify'), paymentReceipt: taggedLimiter('paymentReceipt'),
+    } })
+    current = { id: 'u1', role: 'USER' }
+    await call(a, 'POST', '/initialize', {})
+    await call(a, 'POST', `/${REF}/cancel`, {})
+    expect(hit).toEqual(['payment', 'paymentCancel'])
+  })
+  it('refund and receipt both require login before their guard/limiter runs at all', async () => {
+    const a = app()
+    current = undefined
+    expect((await call(a, 'POST', `/${REF}/receipt`, {})).status).toBe(401)
+  })
+})
+
 describe('scan routes — DELETE /:id', () => {
   const app = () => mount('routes/scan.routes.js', 'controllers/scan.controller.js')
   it('requires a login, rejects a malformed id, and reaches deleteScan for an owner', async () => {
