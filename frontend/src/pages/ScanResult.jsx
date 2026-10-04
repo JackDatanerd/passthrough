@@ -257,7 +257,7 @@ export default function ScanResult() {
               // called directly here instead of via a callback_url redirect.
               // The webhook (webhooks.controller.js) still fires independently
               // as a redundant confirmation path either way.
-              await api.get(`/payments/verify?reference=${reference}`)
+              await api.get(`/payments/verify?reference=${encodeURIComponent(reference)}`)
             } catch (_) {
               // Swallow — the webhook will still confirm this independently
               // even if this specific client-side call fails (e.g. the tab

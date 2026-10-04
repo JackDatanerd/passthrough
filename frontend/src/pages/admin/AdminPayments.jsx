@@ -7,6 +7,8 @@ import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
+import Modal from '../../components/ui/Modal'
+import Input from '../../components/ui/Input'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
 
@@ -25,6 +27,8 @@ export default function AdminPayments() {
   const [loading, setLoading] = useState(true)
   const [busyRef, setBusyRef] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
+  const [refundDialog, setRefundDialog] = useState(null)   // { payment, amount, note, error } | null
+  const [refunding, setRefunding] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -140,6 +144,53 @@ export default function AdminPayments() {
     setPendingAction(null)
   }
 
+  // FEATURE GAP CLOSED (Payments & Pricing round 2 — G2): POST
+  // /payments/:reference/refund (queues a real Paystack refund; full by default,
+  // partial with an amount) was built, tested and routed — and had no button.
+  // Every "refund needed" owner alert (DUPLICATE, SCAN_MISSING, ACCOUNT_DELETED)
+  // therefore still ended in "go refund it in the Paystack dashboard by hand".
+  // This only QUEUES the refund; our row flips to REFUNDED via Paystack's
+  // refund.processed webhook (see refundPayment's own comment), so the list is
+  // reloaded but the status is not expected to change immediately.
+  const isRefundable = p =>
+    p.status === 'SUCCESS' && p.amountCents > 0 && !String(p.paystackRef || '').startsWith('credit:')
+
+  function openRefund(payment) {
+    setRefundDialog({ payment, amount: '', note: '', error: '' })
+  }
+
+  async function runRefund() {
+    const { payment, amount, note } = refundDialog
+    let amountCents
+    if (amount.trim() !== '') {
+      const major = Number(amount)
+      amountCents = Math.round(major * 100)
+      if (!Number.isFinite(major) || major <= 0 || !Number.isInteger(amountCents) || amountCents <= 0) {
+        setRefundDialog(d => ({ ...d, error: 'Enter a positive amount, or leave it blank for a full refund.' })); return
+      }
+      if (amountCents > payment.amountCents) {
+        setRefundDialog(d => ({ ...d, error: `That is more than the ${formatCents(payment.amountCents, payment.currency)} paid.` })); return
+      }
+    }
+    setRefunding(true)
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/payments/${encodeURIComponent(payment.paystackRef)}/refund`, {
+        amountCents, note: note.trim() || undefined,
+      })
+      toast({ message: res.data.message || 'Refund queued.', type: 'success' })
+      setRefundDialog(null)
+      load()
+    } catch (err) {
+      // Keep the dialog open with the server's reason (open refund in flight,
+      // Paystack rejected it, …) so the admin can adjust instead of retyping.
+      setRefundDialog(d => d && ({ ...d, error: getErrorMessage(err, 'Failed to queue the refund.') }))
+    } finally {
+      setRefunding(false)
+      setBusyRef(null)
+    }
+  }
+
   async function confirmPendingAction() {
     const action = pendingAction
     if (action.type === 'reconcile') return runReconcile(action.payment)
@@ -243,6 +294,12 @@ export default function AdminPayments() {
                           onClick={() => reconcile(p)}>
                           Reconcile
                         </Button>
+                        {isRefundable(p) && (
+                          <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                            onClick={() => openRefund(p)}>
+                            Refund
+                          </Button>
+                        )}
                         <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
                           onClick={() => resolvePayment(p, 'reverse')}>
                           Reverse
@@ -278,6 +335,38 @@ export default function AdminPayments() {
       {totalPages > 1 && (
         <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />
       )}
+
+      <Modal open={!!refundDialog} onClose={() => setRefundDialog(null)} title="Refund via Paystack" dismissible={!refunding}>
+        {refundDialog && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-gray-600">
+              Queues a refund for <span className="font-mono text-xs">{refundDialog.payment.paystackRef}</span>{' '}
+              ({formatCents(refundDialog.payment.amountCents, refundDialog.payment.currency)} paid). Paystack processes it
+              asynchronously; the payment is marked REFUNDED (commission reversed, credential revoked) once Paystack confirms a full refund.
+            </p>
+            <Input
+              label="Amount (leave blank for a full refund)"
+              type="number" step="0.01" min="0" inputMode="decimal"
+              value={refundDialog.amount}
+              onChange={e => setRefundDialog(d => ({ ...d, amount: e.target.value, error: '' }))}
+              placeholder={(refundDialog.payment.amountCents / 100).toFixed(2)}
+              disabled={refunding}
+            />
+            <Input
+              label="Note for the Paystack record (optional)"
+              maxLength={200}
+              value={refundDialog.note}
+              onChange={e => setRefundDialog(d => ({ ...d, note: e.target.value }))}
+              disabled={refunding}
+            />
+            {refundDialog.error && <p role="alert" className="text-sm text-red-600">{refundDialog.error}</p>}
+            <div className="mt-2 flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setRefundDialog(null)} disabled={refunding}>Cancel</Button>
+              <Button variant="danger" size="sm" onClick={runRefund} loading={refunding}>Queue refund</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       <ConfirmDialog
         open={!!pendingAction}

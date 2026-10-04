@@ -1,0 +1,26 @@
+Payments & Pricing — round 2 (fresh independent pass)
+
+FEATURE GAPS CLOSED
+ G1  PaymentHistory: "Email receipt" button (POST /payments/:ref/receipt, per-row result/error).
+ G2  AdminPayments: Refund dialog (full by default, partial by amount, optional note) -> POST /payments/:ref/refund.
+ G3  PaymentHistory: pagination + "Show unfinished checkouts" toggle (includeAbandoned).
+ G4  discountApplied now consumed by Pricing.jsx + ReferralCodeEntry; pricing quote also returns selfReferral
+     (per tier and top level) and a top-level discountApplied.
+ G5  PaymentHistory: "Cancel checkout" on PENDING rows (with confirm).
+
+BUGS FIXED
+ B1  PaymentHistory silently showed only the first 20 payments (history was paginated, page never was).
+ B2  Pricing page / ReferralCodeEntry claimed "your discount" when the code was only attributed (promo cheaper);
+     a partner's own code showed "doesn't look right" instead of the real reason.
+ B3  refundPayment: "partial" ignored refunds already processed — the leg that completes the total was reported
+     as partial / "payment stays SUCCESS". Judged on the total after this refund; follow-up legs send an explicit amount.
+ B4  refundPayment audit row stored the admin-typed note; now only hasNote (note still goes to Paystack).
+ B5  refundPayment check-then-act across Paystack's API now serialised per payment (payments.refund_claimed_at,
+     migration 0048; tolerant if the column is missing, loudly).
+ B6  verifyPayment answered success for outcomes that delivered nothing (scan/account gone, no scan, REFUNDED/DISPUTED);
+     now 409 { needsSupport } and PaymentSuccess shows an honest support state. DUPLICATE stays a success.
+ B7  PaymentSuccess burned its transient-retry budget on 4xx and mislabelled a 429 as "Verification failed";
+     429 has its own state, other 4xx fail immediately.
+ +   getPricing caps public ?ref= at 100 chars; ScanResult's popup-success verify call now URL-encodes the reference.
+
+MIGRATION: supabase/migrations/0048_refund_claim.sql (additive, nullable column; safe before or after deploy).

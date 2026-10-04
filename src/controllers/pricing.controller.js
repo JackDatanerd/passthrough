@@ -18,7 +18,10 @@ const TIERS = ['FIX', 'BADGE', 'FIX_PLAIN']
 
 async function getPricing(ctx) {
   const promoActive = c.isPromoActive(ctx.env)
-  const referralCode = ctx.req.query('ref')
+  // Capped like initializePayment's own referralCode field (100 chars): this
+  // endpoint is public and unauthenticated, and the value goes straight into a
+  // referral_codes lookup.
+  const referralCode = ctx.req.query('ref')?.slice(0, 100)
   const supabase = referralCode ? getSupabase(ctx.env) : null
   // AUDIT FIX (Payments & Pricing pass 1, bug — B11): resolvePrice (used by
   // initiateFix and initializePayment's actual charge) has always passed
@@ -49,9 +52,13 @@ async function getPricing(ctx) {
     // "was $X" anchor regardless of whether a referral code is present.
     const originalAmount = c.standardPriceForTier(tier)
     const currentAmount  = c.priceForTier(tier, ctx.env)
-    if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false, discountApplied: false }
+    if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false, discountApplied: false, selfReferral: false }
 
-    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied, discountApplied: !!priced[tier].discountApplied }
+    // selfReferral: referral.service's self-referral guard fired (a partner's own
+    // code on their own account). The UI needs it to say so instead of the
+    // misleading "that code doesn't look right" it showed for any code that
+    // did not apply.
+    return { tier, amount: priced[tier].amount, originalAmount, referralApplied: priced[tier].referralApplied, discountApplied: !!priced[tier].discountApplied, selfReferral: !!priced[tier].selfReferral }
   })
 
   return ctx.json({ success: true, data: {
@@ -74,6 +81,10 @@ async function getPricing(ctx) {
     // countdown in that case rather than showing a stale/zero timer.
     promoEndsAt: promoActive ? ctx.env.PROMO_ENDS_AT : null,
     referralApplied: tiers.some(t => t.referralApplied),
+    // True when the code genuinely lowers at least one tier below today's price
+    // (as opposed to referralApplied, which is attribution). See B8/B2.
+    discountApplied: tiers.some(t => t.discountApplied),
+    selfReferral:    tiers.some(t => t.selfReferral),
     // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): the Pricing page
     // hardcoded "80+" and "two free manual retries" in its copy, which could
     // silently drift from these two constants (the ones that actually gate

@@ -21,9 +21,18 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   }
 
   if (referralCode && pricing?.referralApplied && !editing) {
+    // AUDIT FIX (Payments & Pricing round 2, bug — B2): referralApplied means
+    // the code is IN EFFECT (partner attribution), not that it saved the buyer
+    // anything — when the site promo already beats the code's price, the code
+    // is attributed but the price is the same one everybody pays. discountApplied
+    // (pricing.controller.js, added by the earlier B8 fix but never read by any
+    // UI) is the signal "you got a discount" copy must hang on.
+    const saves = pricing.discountApplied !== false   // older/cached responses without the field keep the old wording
     return (
       <p className="text-sm font-medium text-emerald-700 mb-3">
-        ✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}
+        {saves
+          ? <>✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}</>
+          : <>✓ Referral code <span className="font-mono">{referralCode}</span> recognised — today's price is already as low as your code's, so it doesn't change what you pay.{' '}</>}
         <button type="button" onClick={() => setEditing(true)} disabled={disabled}
           className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
           change
@@ -38,12 +47,18 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   // /api/pricing is still loading for this code — checking it explicitly
   // avoids flashing an error during that normal loading gap.
   const invalid = referralCode && !editing && pricing && !pricing.referralApplied
+  // A partner's own code on their own account is refused on purpose (it would
+  // be a discount AND a commission on the same sale). Say that, rather than
+  // implying the code is mistyped.
+  const selfReferral = invalid && pricing.selfReferral === true
 
   return (
     <div className="mb-3">
       {invalid && (
         <p className="text-sm text-red-600 mb-1">
-          That code doesn't look right — check it and try again, or leave it blank.
+          {selfReferral
+            ? "Partner codes can't be used on your own purchases — clear it to continue at the regular price."
+            : "That code doesn't look right — check it and try again, or leave it blank."}
         </p>
       )}
       <div className="flex items-center gap-2">

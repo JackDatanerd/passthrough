@@ -413,10 +413,15 @@ describe('verifyPayment', () => {
     expect(res.status).toBe(400)
   })
 
+  // These three run against the stateful world (declared further down) rather than
+  // the bare fake: with a scan that doesn't exist, settlement outcome is now
+  // SCAN_MISSING, which verifyPayment reports as 409 needsSupport (B6) instead of
+  // the old false success — so a happy-path assertion needs a real scan to land on.
   it('accepts Paystack\'s trxref alias', async () => {
-    t = setup()
-    const res = await t.mod.verifyPayment(t.c({ query: { trxref: 'ref1' } }))
+    t = worldSetup()
+    const res = await t.mod.verifyPayment(t.c({ query: { trxref: 'ref1' }, params: {} }))
     expect(res.status).toBe(200)
+    expect(t.world.t.payments[0].status).toBe('SUCCESS')
   })
 
   it('404s (and never calls Paystack) for a payment owned by someone else', async () => {
@@ -447,10 +452,11 @@ describe('verifyPayment', () => {
   })
 
   it('compares currency to what THIS payment was created with, not current env config', async () => {
-    t = setup({ paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'KES', scan_id: 's1', fix_tier: 'FIX' },
-      paystack: { data: { status: 'success', currency: 'KES', amount: 2900 } } })
+    t = worldSetup({ payments: [{ id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 2900, currency: 'KES', scan_id: 's1', fix_tier: 'FIX', referral_code_id: null }] },
+      { paystack: { data: { status: 'success', currency: 'KES', amount: 2900 } } })
     const res = await t.mod.verifyPayment(t.c())
     expect(res.status).toBe(200)
+    expect(t.world.t.payments[0].status).toBe('SUCCESS')
   })
 
   it('refuses to fulfil on an amount mismatch, and alerts', async () => {
@@ -477,11 +483,14 @@ describe('verifyPayment', () => {
   })
 
   it('is idempotent: if the webhook already processed it (0 rows), reports success without re-fulfilling', async () => {
-    t = setup({ updatedRows: [] })
+    // The webhook already flipped the row AND claimed the scan (recently — inside the
+    // re-enqueue grace window): the buyer's verify call just reports success.
+    t = worldSetup()
+    t.world.t.payments[0].status = 'SUCCESS'
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_PURCHASED', updated_at: new Date().toISOString() })
     const res = await t.mod.verifyPayment(t.c())
     expect(res.body.success).toBe(true)
     expect(t.state.queue).toHaveLength(0)
-    expect(t.state.scanUpdates).toHaveLength(0)
   })
 
 })
@@ -604,6 +613,60 @@ describe('verifyPayment — settlement and fulfilment (fulfillment.service)', ()
     await t.mod.verifyPayment(t.c())
     expect(t.state.queue).toHaveLength(1)
     expect(t.state.alerts.some(a => /commission/i.test(a.subject))).toBe(true)
+  })
+})
+
+// Payments & Pricing round 2 (B6): verifyPayment must not tell a buyer their order
+// was fulfilled when nothing was delivered.
+describe('verifyPayment — outcomes that delivered nothing (B6)', () => {
+  it('SCAN_MISSING answers 409 needsSupport (not a false success), alerts the owner, and generates nothing', async () => {
+    t = worldSetup({ scans: [] })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'SCAN_MISSING' })
+    expect(res.body.message).toContain('ref1')
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.state.alerts.some(a => /no longer exists/i.test(a.subject))).toBe(true)
+  })
+  it('ACCOUNT_DELETED answers 409 needsSupport', async () => {
+    t = worldSetup({ users: [{ id: 'u1', deleted_at: new Date().toISOString() }] })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'ACCOUNT_DELETED' })
+  })
+  it('NO_SCAN (a payment with no scan attached) answers 409 needsSupport', async () => {
+    t = worldSetup(); t.world.t.payments[0].scan_id = null
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.outcome).toBe('NO_SCAN')
+  })
+  it('a REFUNDED row (late duplicate Paystack success) answers 409 naming the status — never "confirmed"', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'REFUNDED'
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'IGNORED_STATUS' })
+    expect(res.body.message).toContain('REFUNDED')
+    expect(t.state.queue).toHaveLength(0)
+    expect(t.world.t.payments[0].status).toBe('REFUNDED')
+  })
+  it('a DISPUTED row answers 409 naming the status', async () => {
+    t = worldSetup(); t.world.t.payments[0].status = 'DISPUTED'
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.message).toContain('DISPUTED')
+  })
+  it('DUPLICATE stays a success — the scan IS delivered (by the earlier payment); the refund is the owner\'s job', async () => {
+    t = worldSetup()
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
+  })
+  it('the happy path is unchanged', async () => {
+    t = worldSetup()
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
   })
 })
 
@@ -877,16 +940,28 @@ describe('getPaymentHistory', () => {
 
 // Payments & Pricing pass 1 (G1): admin-issued Paystack refunds.
 describe('refundPayment (admin)', () => {
-  function setupRefund({ payment, existingRefunds = { data: [] }, createRefund, logAdminAction } = {}) {
-    const state = { logs: [] }
+  // `claim` scripts the migration-0048 refund_claimed_at UPDATE: 'ok' (default)
+  // wins the claim, 'lost' matches no row (another request holds it),
+  // 'missingColumn' is the migration-not-applied error.
+  function setupRefund({ payment, existingRefunds = { data: [] }, createRefund, logAdminAction, claim = 'ok', listRefunds } = {}) {
+    const state = { logs: [], updates: [], listCalls: 0 }
     const db = createFakeSupabase(q => {
       if (q.table === 'payments' && q.op === 'select') return { data: payment, error: null }
+      if (q.table === 'payments' && q.op === 'update') {
+        state.updates.push({ patch: q.patch, id: eqValue(q, 'id'), or: q.or })
+        if (q.patch && q.patch.refund_claimed_at) {
+          if (claim === 'lost') return { data: [], error: null }
+          if (claim === 'missingColumn') return { data: null, error: { code: '42703', message: 'column "refund_claimed_at" does not exist' } }
+          return { data: [{ id: 'pay1' }], error: null }
+        }
+        return { data: null, error: null }
+      }
       return undefined
     })
     const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/paystack.service.js': {
-        listRefunds: async () => existingRefunds,
+        listRefunds: listRefunds || (async () => { state.listCalls++; return existingRefunds }),
         createRefund: createRefund || (async () => ({ status: true, data: { status: 'pending' } })),
       },
       'lib/adminAudit.js': { logAdminAction: async (ctx, sb, action, type, id, meta) => { state.logs.push({ action, type, id, meta }) } },
@@ -970,7 +1045,11 @@ describe('refundPayment (admin)', () => {
   it('fails CLOSED (502, nothing sent) when checking existing refunds itself errors', async () => {
     t = setupRefund({ payment: paidPayment() })
     t.restore(); // rebuild with a throwing listRefunds
-    const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: paidPayment(), error: null } : undefined))
+    const db = createFakeSupabase(q => {
+      if (q.table === 'payments' && q.op === 'select') return { data: paidPayment(), error: null }
+      if (q.table === 'payments' && q.op === 'update') return { data: [{ id: 'pay1' }], error: null }   // refund claim won
+      return undefined
+    })
     const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/paystack.service.js': { listRefunds: async () => { throw new Error('paystack down') }, createRefund: async () => ({}) },
@@ -992,6 +1071,198 @@ describe('refundPayment (admin)', () => {
   it('a non-rejection Paystack failure (auth/5xx) answers 502, distinct from a rejection', async () => {
     t = setupRefund({ payment: paidPayment(), createRefund: async () => { throw new Error('HTTP 500') } })
     expect((await t.mod.refundPayment(t.c())).status).toBe(502)
+  })
+})
+
+// Payments & Pricing round 2: B3 (partial vs completing leg), B4 (no free text in
+// the audit log), B5 (per-payment refund claim, migration 0048).
+describe('refundPayment (admin) — round 2', () => {
+  function setupRefund2(o = {}) {
+    const state = { logs: [], updates: [], created: [] }
+    const db = createFakeSupabase(q => {
+      if (q.table === 'payments' && q.op === 'select') return { data: o.payment, error: null }
+      if (q.table === 'payments' && q.op === 'update') {
+        state.updates.push({ patch: q.patch, id: eqValue(q, 'id'), or: q.or })
+        if (q.patch && q.patch.refund_claimed_at) {
+          if (o.claim === 'lost') return { data: [], error: null }
+          if (o.claim === 'missingColumn') return { data: null, error: { code: '42703', message: 'column does not exist' } }
+          return { data: [{ id: 'pay1' }], error: null }
+        }
+        return { data: null, error: null }
+      }
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/paystack.service.js': {
+        listRefunds: o.listRefunds || (async () => o.existingRefunds || { data: [] }),
+        createRefund: o.createRefund || (async (env, ref, opts) => { state.created.push(opts); return { status: true, data: { status: 'pending' } } }),
+      },
+      'lib/adminAudit.js': { logAdminAction: async (ctx, sb, action, type, id, meta) => { state.logs.push({ action, type, id, meta }) } },
+    })
+    const c = (body = {}) => ({
+      env: {}, get: () => undefined,
+      req: { param: () => 'ref1', json: async () => body },
+      json: (b, status = 200) => ({ body: b, status }),
+    })
+    return { mod, restore, state, c }
+  }
+  const paid = (over = {}) => ({ id: 'pay1', paystack_ref: 'ref1', user_id: 'u1', status: 'SUCCESS', amount_cents: 4900, currency: 'USD', ...over })
+
+  describe('B3 — "partial" is judged on the total AFTER this refund', () => {
+    it('a leg that COMPLETES the total (the remainder after earlier processed refunds) is not "partial" and says the sale will be reversed', async () => {
+      t = setupRefund2({ payment: paid(), existingRefunds: { data: [{ status: 'processed', amount: 2000 }] } })
+      const res = await t.mod.refundPayment(t.c())            // no amount -> the remainder, 2900
+      expect(res.status).toBe(200)
+      expect(res.body.data).toMatchObject({ amountCents: 2900, partial: false })
+      expect(res.body.message).toContain('marked REFUNDED')
+      expect(res.body.message).not.toContain('stays SUCCESS')
+      expect(t.state.created[0].amount).toBe(2900)             // a follow-up leg always states its amount
+      expect(t.state.logs[0].meta).toMatchObject({ partial: false, completesRefund: true })
+    })
+    it('a leg that still leaves money un-refunded IS partial', async () => {
+      t = setupRefund2({ payment: paid(), existingRefunds: { data: [{ status: 'processed', amount: 1000 }] } })
+      const res = await t.mod.refundPayment(t.c({ amountCents: 1000 }))
+      expect(res.body.data.partial).toBe(true)
+      expect(res.body.message).toContain('stays SUCCESS')
+    })
+    it('a first-and-only full refund omits `amount` so Paystack refunds the whole transaction', async () => {
+      t = setupRefund2({ payment: paid() })
+      const res = await t.mod.refundPayment(t.c())
+      expect(res.body.data.partial).toBe(false)
+      expect(t.state.created[0].amount).toBeUndefined()
+    })
+    it('an explicit amount equal to the full payment (nothing refunded yet) is still a full refund', async () => {
+      t = setupRefund2({ payment: paid() })
+      const res = await t.mod.refundPayment(t.c({ amountCents: 4900 }))
+      expect(res.body.data.partial).toBe(false)
+    })
+  })
+
+  describe('B4 — no admin-typed text in admin_audit_log', () => {
+    it('the note goes to Paystack as merchant_note, and the audit row records only THAT a note was given', async () => {
+      t = setupRefund2({ payment: paid() })
+      await t.mod.refundPayment(t.c({ note: 'refund for jane@example.com, duplicate charge' }))
+      expect(t.state.created[0].merchantNote).toBe('refund for jane@example.com, duplicate charge')
+      const meta = t.state.logs[0].meta
+      expect(meta.hasNote).toBe(true)
+      expect(meta).not.toHaveProperty('note')
+      expect(JSON.stringify(meta)).not.toContain('jane@example.com')
+    })
+    it('hasNote is false when none was given', async () => {
+      t = setupRefund2({ payment: paid() })
+      await t.mod.refundPayment(t.c())
+      expect(t.state.logs[0].meta.hasNote).toBe(false)
+    })
+  })
+
+  describe('B5 — per-payment refund claim (refund_claimed_at)', () => {
+    const claimWrites = st => st.updates.filter(u => u.patch && 'refund_claimed_at' in u.patch)
+
+    it('claims atomically: one UPDATE scoped to this payment, only when unclaimed or past the TTL', async () => {
+      t = setupRefund2({ payment: paid() })
+      await t.mod.refundPayment(t.c())
+      const first = claimWrites(t.state)[0]
+      expect(first.id).toBe('pay1')
+      expect(first.patch.refund_claimed_at).toEqual(expect.any(String))
+      expect(first.or[0]).toContain('refund_claimed_at.is.null')
+      expect(first.or[0]).toContain('refund_claimed_at.lt.')
+    })
+    it('a request that loses the claim gets 409 and NEVER touches Paystack (no list, no create)', async () => {
+      let listed = 0, created = 0
+      t = setupRefund2({ payment: paid(), claim: 'lost',
+        listRefunds: async () => { listed++; return { data: [] } },
+        createRefund: async () => { created++; return { status: true, data: {} } } })
+      const res = await t.mod.refundPayment(t.c())
+      expect(res.status).toBe(409)
+      expect(res.body.message).toMatch(/just submitted/i)
+      expect(listed).toBe(0); expect(created).toBe(0)
+      expect(t.state.logs).toHaveLength(0)
+    })
+    it('two concurrent requests with the same explicit amount queue exactly ONE refund', async () => {
+      // A shared claim cell stands in for the row: the first UPDATE wins, the second matches nothing.
+      let held = false, created = 0
+      const state = { logs: [] }
+      const db = createFakeSupabase(q => {
+        if (q.table === 'payments' && q.op === 'select') return { data: paid(), error: null }
+        if (q.table === 'payments' && q.op === 'update' && q.patch && q.patch.refund_claimed_at) {
+          if (held) return { data: [], error: null }
+          held = true; return { data: [{ id: 'pay1' }], error: null }
+        }
+        return undefined
+      })
+      const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+        'config/supabase.js': { getSupabase: () => db },
+        'services/paystack.service.js': {
+          listRefunds: async () => { await Promise.resolve(); return { data: [] } },   // both would see "nothing open"
+          createRefund: async () => { created++; return { status: true, data: { status: 'pending' } } },
+        },
+        'lib/adminAudit.js': { logAdminAction: async () => {} },
+      })
+      t = { restore }
+      const mk = () => ({ env: {}, get: () => undefined, req: { param: () => 'ref1', json: async () => ({ amountCents: 1000 }) }, json: (b, s = 200) => ({ body: b, status: s }) })
+      const [a, b] = await Promise.all([mod.refundPayment(mk()), mod.refundPayment(mk())])
+      expect([a.status, b.status].sort()).toEqual([200, 409])
+      expect(created).toBe(1)
+    })
+    it('the claim is KEPT after a successful queue (Paystack\'s list can lag a just-created refund)', async () => {
+      t = setupRefund2({ payment: paid() })
+      await t.mod.refundPayment(t.c())
+      expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(0)
+    })
+    it('the claim is released at once when Paystack rejects the refund', async () => {
+      t = setupRefund2({ payment: paid(), createRefund: async () => { const e = new Error('nope'); e.paystackRejected = true; throw e } })
+      const res = await t.mod.refundPayment(t.c())
+      expect(res.status).toBe(409)
+      expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(1)
+    })
+    it('the claim is released when Paystack fails outright (502)', async () => {
+      t = setupRefund2({ payment: paid(), createRefund: async () => { throw new Error('HTTP 500') } })
+      expect((await t.mod.refundPayment(t.c())).status).toBe(502)
+      expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(1)
+    })
+    it('the claim is released when the existing-refund lookup fails (fails closed AND frees the payment)', async () => {
+      t = setupRefund2({ payment: paid(), listRefunds: async () => { throw new Error('paystack down') } })
+      expect((await t.mod.refundPayment(t.c())).status).toBe(502)
+      expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(1)
+    })
+    it('the claim is released when the open-refund guard blocks it', async () => {
+      t = setupRefund2({ payment: paid(), existingRefunds: { data: [{ status: 'pending', amount: 4900 }] } })
+      expect((await t.mod.refundPayment(t.c())).status).toBe(409)
+      expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(1)
+    })
+    it('an early refusal (not SUCCESS) never even takes the claim', async () => {
+      t = setupRefund2({ payment: paid({ status: 'PENDING' }) })
+      await t.mod.refundPayment(t.c())
+      expect(claimWrites(t.state)).toHaveLength(0)
+    })
+    it('migration 0048 not applied (column missing): refunds still work, unlocked, with a loud log — and nothing tries to release a claim it never had', async () => {
+      const logged = []
+      const realErr = console.error; console.error = (...a) => logged.push(a.join(' '))
+      try {
+        t = setupRefund2({ payment: paid(), claim: 'missingColumn' })
+        const res = await t.mod.refundPayment(t.c())
+        expect(res.status).toBe(200)
+        expect(logged.some(l => /migration 0048/.test(l))).toBe(true)
+        expect(t.state.updates.filter(u => u.patch && u.patch.refund_claimed_at === null)).toHaveLength(0)
+      } finally { console.error = realErr }
+    })
+    it('any OTHER error taking the claim propagates (fails closed — no refund is sent)', async () => {
+      let created = 0
+      const db = createFakeSupabase(q => {
+        if (q.table === 'payments' && q.op === 'select') return { data: paid(), error: null }
+        if (q.table === 'payments' && q.op === 'update') return { data: null, error: { code: '08006', message: 'conn' } }
+        return undefined
+      })
+      const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+        'config/supabase.js': { getSupabase: () => db },
+        'services/paystack.service.js': { listRefunds: async () => ({ data: [] }), createRefund: async () => { created++; return { status: true } } },
+        'lib/adminAudit.js': { logAdminAction: async () => {} },
+      })
+      t = { restore }
+      await expect(mod.refundPayment({ env: {}, get: () => undefined, req: { param: () => 'ref1', json: async () => ({}) }, json: (b, s = 200) => ({ body: b, status: s }) })).rejects.toBeTruthy()
+      expect(created).toBe(0)
+    })
   })
 })
 

@@ -64,7 +64,12 @@ export default function Pricing() {
   // which overstated things whenever the code only discounted one or two of
   // the three plans shown here. Count which tiers are actually discounted
   // and word the banner to match.
-  const discountedTierCount = PAID_TIERS.filter(t => byTier(t).referralApplied).length
+  // AUDIT FIX (Payments & Pricing round 2, bug — B2): count tiers the code
+  // actually DISCOUNTS (discountApplied), not tiers it is merely attributed on
+  // (referralApplied) — the latter stays true when the site promo already beats
+  // the code's price, which made the banner below claim "prices below reflect
+  // your discount" for a price identical to everyone else's.
+  const discountedTierCount = PAID_TIERS.filter(t => byTier(t).discountApplied).length
 
   return (
     <div className="min-h-screen flex flex-col bg-white">
@@ -81,10 +86,12 @@ export default function Pricing() {
           <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
           {referralCode && pricing?.referralApplied && (
             <p className="text-sm font-medium text-emerald-700 mb-4">
-              ✓ Referral code <span className="font-mono">{referralCode}</span> applied — {
-                discountedTierCount >= PAID_TIERS.length
-                  ? 'prices below reflect your discount.'
-                  : 'reflected in the discounted plan(s) below.'
+              ✓ Referral code <span className="font-mono">{referralCode}</span> {
+                discountedTierCount === 0
+                  ? "recognised — today's prices are already as low as your code's, so nothing changes."
+                  : discountedTierCount >= PAID_TIERS.length
+                    ? 'applied — prices below reflect your discount.'
+                    : 'applied — reflected in the discounted plan(s) below.'
               }
             </p>
           )}

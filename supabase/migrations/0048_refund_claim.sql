@@ -1,0 +1,14 @@
+-- Payments & Pricing round 2 (B5): serialise admin refund requests per payment.
+--
+-- payments.controller.js's refundPayment lists Paystack's refunds and then
+-- creates one — check-then-act across an external API. Two near-simultaneous
+-- requests (two admins, a double-click) could both see "nothing open" and both
+-- queue a refund. refund_claimed_at is the atomic claim: the controller runs
+--   UPDATE payments SET refund_claimed_at = now()
+--   WHERE id = ? AND (refund_claimed_at IS NULL OR refund_claimed_at < now() - 60s)
+-- and only the request that gets a row back proceeds. Released on failure,
+-- left to expire (60s) after a successful queue.
+--
+-- Additive and nullable: safe to apply before or after the code deploy (the
+-- controller tolerates the column being absent, loudly).
+alter table payments add column if not exists refund_claimed_at timestamptz;

@@ -22,8 +22,9 @@ const PENDING_RETRY_MS = 4000
 export default function PaymentSuccess() {
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
-  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | error
+  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | error
   const [scanId,  setScanId ] = useState(null)
+  const [supportMessage, setSupportMessage] = useState('')
 
   const reference = params.get('reference') || params.get('trxref')
 
@@ -132,7 +133,26 @@ export default function PaymentSuccess() {
         // is untouched either way: it already succeeded or is still
         // processing on Paystack's side regardless of whether this browser
         // has a valid session to ask about it.
-        if (err?.response?.status === 401) { setStatus('session-expired'); return }
+        const httpStatus = err?.response?.status
+        if (httpStatus === 401) { setStatus('session-expired'); return }
+        // AUDIT FIX (Payments & Pricing round 2, bug — B6): the server now says
+        // 409 + needsSupport when the payment was received but nothing could be
+        // delivered (scan/account gone, refunded/disputed). Used to be a false
+        // "Payment confirmed!" + redirect; now an honest, retry-free state.
+        if (httpStatus === 409 && err.response?.data?.needsSupport) {
+          setSupportMessage(err.response.data.message || '')
+          setStatus('needs-support')
+          return
+        }
+        // AUDIT FIX (Payments & Pricing round 2, bug — B7): the retry budget
+        // below is for TRANSIENT failures (a network blip, a 5xx). A 429 from
+        // rl.paymentVerify and a deterministic 400/404 (declined payment, a
+        // reference that isn't this account's) used to burn it too — ~3s of
+        // pointless re-asking, then a "Verification failed" that for a 429
+        // wasn't even true. A 429 gets its own wait-and-check-again state; other
+        // 4xx go straight to the failure screen.
+        if (httpStatus === 429) { setStatus('rate-limited'); return }
+        if (httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408) { setStatus('error'); return }
         if (errorRetriesRef.current < 2) {
           errorRetriesRef.current += 1
           setTimeout(() => verify(attempt), 1500)   // same attempt — not a pending-poll advance
@@ -204,6 +224,32 @@ export default function PaymentSuccess() {
                 >
                   Sign in
                 </a>
+              </div>
+            </>
+          )}
+          {status === 'needs-support' && (
+            <>
+              <div className="text-amber-500 text-5xl mb-4">⚠</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">We need to look at this payment</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                {supportMessage || 'We received your payment but could not complete your order automatically. We have been notified.'}
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <a href="mailto:support@passthrough.dev" className="text-sm text-blue-600 hover:underline">Email support</a>
+                <a href="/dashboard" className="text-sm text-blue-600 hover:underline">Go to dashboard</a>
+              </div>
+            </>
+          )}
+          {status === 'rate-limited' && (
+            <>
+              <div className="text-amber-500 text-5xl mb-4">⏳</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Checking too fast</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                We've checked your payment a lot in a short time. Your payment is unaffected — wait a minute, then check again.
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <button type="button" onClick={() => verify()} className="text-sm text-blue-600 hover:underline">Check again</button>
+                <a href="/dashboard" className="text-sm text-blue-600 hover:underline">Go to dashboard</a>
               </div>
             </>
           )}

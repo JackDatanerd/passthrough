@@ -119,7 +119,7 @@ export function usePricing(referralCode = '') {
     if (live) return live
     // Fetch hasn't resolved yet, or failed — fall back to the correct
     // standard (non-promo, non-referral) price rather than showing nothing.
-    return { tier, amount: STANDARD_PRICES[tier], originalAmount: STANDARD_PRICES[tier], referralApplied: false }
+    return { tier, amount: STANDARD_PRICES[tier], originalAmount: STANDARD_PRICES[tier], referralApplied: false, discountApplied: false, selfReferral: false }
   }
 
   return { pricing, byTier, pricingFailed: failed, refresh, clockOffsetMs: entry?.clockOffsetMs || 0 }

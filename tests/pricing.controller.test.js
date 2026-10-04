@@ -130,3 +130,51 @@ describe('getPricing — Payments & Pricing pass 1 additions', () => {
     expect(res.body.data.maxFixRetries).toBe(2)
   })
 })
+
+// Payments & Pricing round 2: top-level discountApplied/selfReferral (B2), ref cap.
+describe('getPricing — round 2 additions', () => {
+  const code = tp => ({ id: 'rc1', active: true, tier_prices: tp, partners: { status: 'ACTIVE', email: 'partner@example.com' } })
+
+  it('top-level discountApplied is true when the code lowers at least one tier below today\'s price', async () => {
+    t = setup({ codeRow: code({ FIX: 1900 }) })
+    const res = await t.mod.getPricing(t.c({ query: { ref: 'coach20' } }))
+    expect(res.body.data.referralApplied).toBe(true)
+    expect(res.body.data.discountApplied).toBe(true)
+  })
+  it('B2: referralApplied true but top-level discountApplied false when the promo already beats every tier the code covers', async () => {
+    t = setup({
+      env: { PROMO_ACTIVE: 'true', PROMO_ENDS_AT: new Date(Date.now() + 999999).toISOString() },
+      codeRow: code({ FIX: 3500 }),
+    })
+    const res = await t.mod.getPricing(t.c({ query: { ref: 'coach20' } }))
+    expect(res.body.data.referralApplied).toBe(true)
+    expect(res.body.data.discountApplied).toBe(false)
+  })
+  it('no code -> discountApplied false and selfReferral false at the top level', async () => {
+    t = setup()
+    const res = await t.mod.getPricing(t.c())
+    expect(res.body.data.discountApplied).toBe(false)
+    expect(res.body.data.selfReferral).toBe(false)
+    expect(res.body.data.tiers.every(x => x.selfReferral === false)).toBe(true)
+  })
+  it('a partner browsing their OWN code is flagged selfReferral (so the UI can say so), with standard prices and referralApplied false', async () => {
+    t = setup({ user: { id: 'u9', email: 'Partner@Example.com' }, codeRow: code({ FIX: 1900, BADGE: 1500, FIX_PLAIN: 1200 }) })
+    const res = await t.mod.getPricing(t.c({ query: { ref: 'coach20' } }))
+    expect(res.body.data.referralApplied).toBe(false)
+    expect(res.body.data.selfReferral).toBe(true)
+    expect(res.body.data.tiers.find(x => x.tier === 'FIX')).toMatchObject({ amount: 4900, selfReferral: true, referralApplied: false })
+  })
+  it('a different logged-in user on that same code is NOT flagged', async () => {
+    t = setup({ user: { id: 'u2', email: 'buyer@example.com' }, codeRow: code({ FIX: 1900 }) })
+    const res = await t.mod.getPricing(t.c({ query: { ref: 'coach20' } }))
+    expect(res.body.data.selfReferral).toBe(false)
+    expect(res.body.data.referralApplied).toBe(true)
+  })
+  it('caps the public ?ref= value at 100 characters before it reaches the lookup', async () => {
+    t = setup()
+    await t.mod.getPricing(t.c({ query: { ref: 'x'.repeat(5000) } }))
+    const lookup = t.db.calls.find(c => c.table === 'referral_codes')
+    const used = lookup.filters.find(f => f[0] === 'eq' && f[1] === 'code')[2]
+    expect(used.length).toBe(100)
+  })
+})
