@@ -1389,7 +1389,7 @@ async function deleteAccount(c) {
   // the way the two old error-swallowing branches used to.
   const { data: scans, error: scansErr } = await supabase
     .from('scans')
-    .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code')
+    .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
     .eq('user_id', user.id)
   if (scansErr) throw scansErr
 
@@ -1398,7 +1398,7 @@ async function deleteAccount(c) {
 
   // The scrub nulled every verification_code; leave the codes' tombstones so links already
   // in circulation read "removed by its owner" rather than "not found".
-  await recordTombstones(supabase, (scans || []).map(s => s.verification_code))
+  await recordTombstones(supabase, scans || [])
 
   // R2 cleanup happens only after the DB side has durably committed.
   // Object storage isn't part of that (or any) Postgres transaction, so

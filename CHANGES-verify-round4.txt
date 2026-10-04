@@ -1,0 +1,46 @@
+Section 7 (Verify) — round 4 (fresh independent audit of verify.controller.js, verify.routes.js, pages/Verify.jsx)
+Base: f931317 "auth: round 2 fixes + gap closures"
+
+APPLY MIGRATION 0049_verify_round4.sql BEFORE DEPLOYING THE CODE.
+
+BUG
+B1  Badge cache poisoning (security). getBadge built its Cache API key from any printable-ASCII "code" before
+    checking its shape. Hono decodes %2F, and a cache key is a URL whose dot-segments collapse, so
+    /api/verify/..%2F<REALCODE>/badge.svg wrote a cached grey "not found" badge over a genuine page's entry for 5
+    minutes — repeatable, unauthenticated, and (malformed codes record no miss) limited only by the cost quota.
+    Fix: only a plausible code may read or write the cache (verify.controller.js getBadge); the key now percent-encodes
+    the code (lib/badgeCache.js) as a second lock.
+
+GAPS
+G1  A genuine file from a DELETED page was reported as "edited / not from Passthrough". Tombstones now keep the
+    SHA-256 of every file the page covered (verification_tombstone_hashes). by-hash answers match:'removed'; the lookup
+    page navigates to /v/<code>, which already renders the "removed by its owner" page. Wired into both deletion
+    paths (scan.controller deleteScan, auth.controller deleteAccount — hashes are read BEFORE the scrub).
+G2  Revocation was not immediate for embedded badges: browsers/image proxies kept "Verified" for the full 5 minutes
+    and no purge reaches them. Clients now get max-age<=30; only the edge copy keeps the full TTL, and a cache hit is
+    re-served with client headers.
+G3  "Find its page" / "Report a problem" links lived inside the fingerprints card, so a page with no fingerprints on
+    file lost them. They now render on every Verify page.
+G4  Owners could see views but not whether a file was taken. New verification_downloads counter + RPC; counted only for
+    a file actually served (not 403/404/409), skipping bots and the owner, one per visitor per file type per day.
+    Shown on the owner's ScanResult next to the view count.
+
+NOT CHANGED (decision, not an oversight)
+B2  The verify miss limiter's KV read-then-write is not atomic, so a parallel burst can briefly exceed 30 misses.
+    Every limiter in this app shares that property (Workers KV has no atomic increment), the attacker gains
+    nothing exploitable (10-char codes; 6-char legacy codes are ~1e9 and a burst adds hundreds of guesses, not
+    millions, and a distributed attacker bypasses any per-IP brake anyway), and making it atomic would put a DB
+    round trip on every legitimate lookup. Best fixed once, app-wide, with a Durable Object limiter.
+
+TESTS
++ tests/verify.round4.test.js (14 tests). tests/verify.round2.test.js: three Cache-Control assertions updated to the
+  new client contract (30s). Full run: 2062 pass; the 38 remaining failures are the identical set that fails on an
+  untouched checkout (frontend/tests/* run from the repo root, and 2 in tests/partners.controller.test.js).
+  `npm run build` in frontend/ succeeds.
+
+FILES
+supabase/migrations/0049_verify_round4.sql
+src/controllers/verify.controller.js, scan.controller.js, auth.controller.js
+src/lib/badgeCache.js, verification.js, mappers.js
+frontend/src/pages/Verify.jsx, ScanResult.jsx
+tests/verify.round4.test.js, tests/verify.round2.test.js

@@ -678,6 +678,13 @@ export default function ScanResult() {
                         {' '}— viewed {scan.verificationViews} time{scan.verificationViews === 1 ? '' : 's'}
                       </span>
                     )}
+                    {/* ROUND-4 AUDIT (feature gap, Section 7): whether anyone actually took a file. */}
+                    {typeof scan.verificationDownloads === 'number' && scan.verificationDownloads > 0 && (
+                      <span className="text-green-700">
+                        {typeof scan.verificationViews === 'number' && scan.verificationViews > 0 ? ', ' : ' — '}
+                        file downloaded {scan.verificationDownloads} time{scan.verificationDownloads === 1 ? '' : 's'}
+                      </span>
+                    )}
                   </p>
                 )}
                 {dlError && (

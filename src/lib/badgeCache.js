@@ -43,8 +43,16 @@ function badgeCache() {
 // generateShortCode draws only from SHORT_CODE_CHARS (already all-uppercase) and never
 // lowercases at rest — so no second normalization pass is needed here, which keeps this
 // module free of any dependency on lib/verification.js and safe for that file to depend on.
+//
+// ROUND-4 AUDIT FIX (bug, security): the code is percent-encoded before it becomes a URL
+// path. A Cache API key is a URL, and URL parsing collapses dot-segments — `../AB3XY7K2PQ`
+// and `x/../AB3XY7K2PQ` both resolved to the key of the REAL code `AB3XY7K2PQ`, so a
+// malformed code (accepted by the router, which decodes %2F) could write a cached "not
+// found" badge over a genuine page's entry. verify.controller.js's getBadge now also
+// refuses to touch the cache for anything that is not a plausible code; this is the second
+// lock. A real code is [A-Z2-9] only, so encoding it is a no-op.
 function badgeCacheKeyForCode(code) {
-  return new Request(`https://verify-badge.passthrough.internal/${code}`)
+  return new Request(`https://verify-badge.passthrough.internal/${encodeURIComponent(String(code))}`)
 }
 
 // Best-effort, like every other cache operation here — a purge failure must never fail (or

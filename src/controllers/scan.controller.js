@@ -1280,7 +1280,7 @@ async function deleteScan(ctx) {
   const supabase = getSupabase(ctx.env)
 
   const { data: row, error } = await supabase.from('scans')
-    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code')
+    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
     .eq('id', id).maybeSingle()
   if (error) throw error
   if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
@@ -1302,7 +1302,7 @@ async function deleteScan(ctx) {
   if (!removed) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
 
   // The page it published (if any) now says "removed" instead of "not found".
-  await recordTombstones(supabase, [row.verification_code])
+  await recordTombstones(supabase, [row])
 
   for (const key of [row.resume_path, row.resume_ats_path, row.resume_pdf_path]) {
     if (!key) continue

@@ -177,16 +177,52 @@ async function restoreUserVerifications(supabase, userId) {
 // A page that is deleted (its scan, or its owner's whole account) leaves its code behind in
 // verification_tombstones so a link printed on a resume answers "removed by its owner"
 // instead of a 404 that reads like a typo. Only the code is kept — nothing about the person.
+//
+// ROUND-4 AUDIT (feature gap, Section 7): it now also keeps the SHA-256 of every file the
+// page covered (verification_tombstone_hashes, migration 0049), so a reader holding a
+// genuine file from a deleted page is told "removed", not "edited or not from Passthrough".
+//
+// Accepts plain codes, or { code, hashes } / a raw scans row (verification_code,
+// resume_hash, resume_pdf_hash, resume_hash_history — read BEFORE the deletion/scrub).
 // Best-effort by design: the deletion it follows has already committed and must not be
 // undone, or reported as failed, by a bookkeeping write.
-async function recordTombstones(supabase, codes) {
-  const rows = [...new Set((codes || []).filter(Boolean))].map(code => ({ code }))
+
+// Every file fingerprint a scan row ever carried: current docx/pdf plus superseded ones.
+function hashesOfRow(row) {
+  if (!row) return []
+  const out = new Set()
+  const add = h => { if (typeof h === 'string' && SHA256_RE.test(h)) out.add(h) }
+  add(row.resume_hash); add(row.resume_pdf_hash)
+  for (const h of Array.isArray(row.resume_hash_history) ? row.resume_hash_history : []) { add(h?.docx); add(h?.pdf) }
+  return [...out]
+}
+
+async function recordTombstones(supabase, items) {
+  const byCode = new Map()   // code -> Set(hash)
+  for (const it of items || []) {
+    const code = typeof it === 'string' ? it : (it && (it.code || it.verification_code))
+    if (!code) continue
+    const set = byCode.get(code) || new Set()
+    if (it && typeof it === 'object') for (const h of (it.hashes || hashesOfRow(it))) set.add(h)
+    byCode.set(code, set)
+  }
+  const rows = [...byCode.keys()].map(code => ({ code }))
   if (!rows.length) return
   try {
     const { error } = await supabase.from('verification_tombstones').upsert(rows, { onConflict: 'code', ignoreDuplicates: true })
     if (error) console.error('[verify] could not record tombstone(s):', error.message)
   } catch (err) {
     console.error('[verify] could not record tombstone(s):', err.message)
+  }
+  const hashRows = []
+  for (const [code, set] of byCode) for (const hash of set) hashRows.push({ hash, code })
+  if (hashRows.length) {
+    try {
+      const { error } = await supabase.from('verification_tombstone_hashes').upsert(hashRows, { onConflict: 'hash', ignoreDuplicates: true })
+      if (error) console.error('[verify] could not record tombstone hash(es):', error.message)
+    } catch (err) {
+      console.error('[verify] could not record tombstone hash(es):', err.message)
+    }
   }
   // SECTION 7 AUDIT FIX (bug): same cache-staleness gap as revoke/restore above — a deleted
   // page's badge could otherwise keep answering its last live state (possibly "Verified") for
@@ -195,7 +231,7 @@ async function recordTombstones(supabase, codes) {
 }
 
 module.exports = {
-  recordTombstones,
+  recordTombstones, hashesOfRow,
   STATUS, REVOKE_REASON, CODE_RE, SHA256_RE,
   normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey,
   revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications,

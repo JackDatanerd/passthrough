@@ -177,8 +177,17 @@ async function incrementViews(env, code) {
   if (error) console.error('[verify] increment_verification_views failed:', error.message)
 }
 
-// True when this request was counted as a view.
-async function maybeCountView(c, code, row) {
+// ROUND-4 AUDIT (feature gap, Section 7): owners saw how often their page was viewed but never
+// whether anyone actually took a file. Same rules as a view (no bots, not the owner, one per
+// visitor per file type per day); migration 0049 adds the counter and RPC.
+async function incrementDownloads(env, code) {
+  const { error } = await getSupabase(env).rpc('increment_verification_downloads', { p_code: code })
+  if (error) console.error('[verify] increment_verification_downloads failed:', error.message)
+}
+
+// Shared by views and downloads. `scope` namespaces the dedupe key ('' for views, so keys
+// written before this change keep deduping). True when this request should be counted.
+async function countOnce(c, code, row, scope, bump) {
   const ua = c.req.header('user-agent') || ''
   if (isBotUserAgent(ua)) return false
   const user = c.get ? c.get('user') : null
@@ -187,16 +196,19 @@ async function maybeCountView(c, code, row) {
   const kv = c.env.RATE_LIMIT_KV
   if (kv) {
     try {
-      const key = await visitorKey(code, clientIp(c), ua)
+      const key = (await visitorKey(code, clientIp(c), ua)) + scope
       if (await kv.get(key)) return false                            // already counted today
       await kv.put(key, '1', { expirationTtl: 24 * 60 * 60 })
     } catch (err) {
-      console.error('[verify] view dedupe unavailable, counting anyway:', err.message)
+      console.error('[verify] count dedupe unavailable, counting anyway:', err.message)
     }
   }
-  runInBackground(c, incrementViews(c.env, code))
+  runInBackground(c, bump(c.env, code))
   return true
 }
+
+// True when this request was counted as a view.
+const maybeCountView = (c, code, row) => countOnce(c, code, row, '', incrementViews)
 
 // FIX (Section 7 audit, bug): `resume_hash_history` entries store each old
 // version's OWN `verified_at` — i.e. when THAT version was generated and
@@ -308,7 +320,7 @@ async function downloadVerifiedFile(c) {
     return c.json({ success: false, message: 'type must be "docx" or "pdf".' }, 400)
 
   const loaded = await loadByCode(c, { columns:
-    'resume_ats_path, resume_pdf_path, resume_hash, resume_pdf_hash, verify_expose_docx, verify_expose_pdf, verification_status, verification_revoked_at' })
+    'resume_ats_path, resume_pdf_path, resume_hash, resume_pdf_hash, verify_expose_docx, verify_expose_pdf, verification_status, verification_revoked_at, user_id' })
   if (loaded.response) return loaded.response
   const { row, code } = loaded
 
@@ -335,6 +347,9 @@ async function downloadVerifiedFile(c) {
   const expected = wantPdf ? row.resume_pdf_hash : row.resume_hash
   if (expected && actual !== expected)
     return c.json({ success: false, code: 'INTEGRITY_FAILED', message: 'This file no longer matches its verified fingerprint, so it is not being served.' }, 409)
+
+  // Only a file that is actually being served counts (not a 403/404/409 above).
+  await countOnce(c, code, row, wantPdf ? ':dlpdf' : ':dldocx', incrementDownloads)
 
   c.header('Content-Type', wantPdf ? 'application/pdf' : DOCX_MIME)
   c.header('Content-Disposition', `${wantPdf ? 'inline' : 'attachment'}; filename="Passthrough-${code}.${wantPdf ? 'pdf' : 'docx'}"`)
@@ -376,6 +391,18 @@ async function lookupByHash(c) {
     if (hit && hit.verification_code)
       return c.json({ success: true, data: { code: hit.verification_code, match: shapes[i][0], kind: shapes[i][1], revoked: hit.verification_status === STATUS.REVOKED } })
   }
+  // ROUND-4 AUDIT FIX (feature gap): a genuine file from a page its owner DELETED matched
+  // nothing above and was reported as edited/not-from-Passthrough. A tombstone keeps the
+  // hashes (migration 0049); a hit is answered like any other match — the page it points at
+  // says "removed by its owner". Fails soft if the table is not there yet.
+  try {
+    const { data: tomb, error: tombErr } = await supabase.from('verification_tombstone_hashes').select('code').eq('hash', hash).maybeSingle()
+    if (tombErr) console.error('[verify] tombstone hash lookup failed:', tombErr.message)
+    else if (tomb && tomb.code)
+      return c.json({ success: true, data: { code: tomb.code, match: 'removed', kind: null, revoked: false, removed: true } })
+  } catch (err) {
+    console.error('[verify] tombstone hash lookup failed:', err.message)
+  }
   if (!isTrustedPreview(c)) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, 'page')
   return c.json({ success: false, code: 'NO_MATCH', message: 'No Passthrough verification matches that file.' }, 404)
 }
@@ -416,13 +443,25 @@ function renderBadge(label, value, color) {
 const BADGE_TTL_SECONDS = 300
 const BADGE_UNSETTLED_TTL_SECONDS = 60   // an integrity check that could not run must not stick for 5 minutes
 const BADGE_IP_QUOTA = 1200              // per IP per 15 min — cache misses only; a cost ceiling, not a person-limit
+// ROUND-4 AUDIT FIX (bug, Section 7): the edge copy lives up to BADGE_TTL_SECONDS, and a revoke
+// purges it — but the response ALSO told every browser and image proxy (GitHub's camo,
+// LinkedIn's, a CDN in front of a README) to keep the picture for the same 5 minutes, and no
+// purge can reach those. A refunded or banned page therefore kept showing "Verified" on other
+// people's pages for up to 5 minutes. Clients now get a short max-age and re-ask the edge
+// (cheap — a Cache API hit, no R2 read); only the edge copy is stored for the full TTL.
+const BADGE_CLIENT_MAX_AGE_SECONDS = 30
 
 function badgeHeaders(ttl) {
   return {
     'Content-Type': 'image/svg+xml; charset=utf-8',
-    'Cache-Control': `public, max-age=${ttl}`,
+    'Cache-Control': `public, max-age=${Math.min(ttl, BADGE_CLIENT_MAX_AGE_SECONDS)}`,
     'X-Robots-Tag': 'noindex',
   }
+}
+// What goes INTO the edge cache: the full TTL (the Cache API expires an entry by its own
+// Cache-Control). Never sent to a client.
+function badgeEdgeHeaders(ttl) {
+  return { ...badgeHeaders(ttl), 'Cache-Control': `public, max-age=${ttl}` }
 }
 
 // SECTION 7 AUDIT FIX (bug): badgeCache()/the cache key are now shared with lib/badgeCache.js
@@ -431,28 +470,36 @@ function badgeHeaders(ttl) {
 // (a revoke) could ever reconstruct to purge. Built from the normalized code alone now, so
 // revoke/restore can invalidate the exact entry a viewer would otherwise keep being served.
 const badgeCache = getBadgeCache
-function badgeCacheKey(c) {
-  return badgeCacheKeyForCode(normalizeCode(c.req.param('code')))
-}
 
 function sendBadge(c, svg, ttl, cache, key) {
   const headers = badgeHeaders(ttl)
   for (const [k, v] of Object.entries(headers)) c.header(k, v)
   if (cache && key) {
-    try { runInBackground(c, cache.put(key, new Response(svg, { headers }))) } catch (_) { /* best effort */ }
+    try { runInBackground(c, cache.put(key, new Response(svg, { headers: badgeEdgeHeaders(ttl) }))) } catch (_) { /* best effort */ }
   }
   return c.body(svg)
 }
 
 async function getBadge(c) {
-  const cache = badgeCache()
-  const key = cache ? badgeCacheKey(c) : null
+  // ROUND-4 AUDIT FIX (bug, security): the cache key used to be built from ANY printable-ASCII
+  // string, before the code was checked for shape. The router decodes %2F, and a Cache API
+  // key is a URL whose dot-segments collapse — so `/api/verify/..%2FAB3XY7K2PQ/badge.svg`
+  // resolved to the key of the REAL code, took the "not found" path below and wrote a cached
+  // grey "not found" badge over a genuine page for 5 minutes, repeatable by anyone with no
+  // auth (and, because a malformed code records no miss, with no brake but the cost quota).
+  // Only a plausible code may read or write the cache; anything else gets an uncached
+  // "not found" image and never reaches an entry that belongs to a real page.
+  const code = normalizeCode(c.req.param('code'))
+  const plausible = isPlausibleCode(code)
+  const cache = plausible ? badgeCache() : null
+  const key = cache ? badgeCacheKeyForCode(code) : null
   if (cache) {
     try {
       const hit = await cache.match(key)
-      // Re-wrapped: a cached Response's headers can be immutable, and the
-      // security-headers middleware still needs to add its own after us.
-      if (hit) return new Response(hit.body, { status: hit.status, headers: hit.headers })
+      // Re-wrapped, with CLIENT headers (the stored copy carries the full edge TTL), because a
+      // cached Response's headers can be immutable and the security-headers middleware still
+      // needs to add its own after us.
+      if (hit) return new Response(hit.body, { status: hit.status, headers: badgeHeaders(BADGE_CLIENT_MAX_AGE_SECONDS) })
     } catch (_) { /* a cache hiccup is just a miss */ }
   }
 

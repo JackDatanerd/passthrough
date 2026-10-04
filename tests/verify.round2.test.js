@@ -51,7 +51,8 @@ describe('badge — always a real image, with its own miss budget', () => {
     const res = await t.mod.getBadge(t.ctx({ code: 'QQQQQQ' }))
     expect(res.status).toBe(200)
     expect(res.headers['Content-Type']).toBe('image/svg+xml; charset=utf-8')
-    expect(res.headers['Cache-Control']).toBe('public, max-age=300')
+    // Round 4: clients get a short max-age; the edge copy keeps the full TTL (see verify.round4.test.js).
+    expect(res.headers['Cache-Control']).toBe('public, max-age=30')
     expect(res.data).toContain('not found')
   })
 
@@ -79,11 +80,11 @@ describe('badge — always a real image, with its own miss budget', () => {
     t = harness(await seedRow())
     const ok = await t.mod.getBadge(t.ctx())
     expect(ok.data).toContain('Passthrough Verified')
-    expect(ok.headers['Cache-Control']).toBe('public, max-age=300')
+    expect(ok.headers['Cache-Control']).toBe('public, max-age=30')
     const blip = await t.mod.getBadge(t.ctx({ files: { d: DOCX /* pdf missing → unknown */ } }))
     expect(blip.data).not.toContain('Passthrough Verified')
     expect(blip.data).toContain('scan 85/100')
-    expect(blip.headers['Cache-Control']).toBe('public, max-age=60')
+    expect(blip.headers['Cache-Control']).toBe('public, max-age=30')   // still <= the 60s unsettled edge TTL
   })
 
   it('a revoked page reads "revoked"', async () => {

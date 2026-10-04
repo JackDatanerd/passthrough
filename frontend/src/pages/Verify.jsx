@@ -492,12 +492,6 @@ export default function Verify() {
                   {data.fingerprints.docx && <Fingerprint label=".docx" hash={data.fingerprints.docx} />}
                   {data.fingerprints.pdf  && <Fingerprint label="PDF"   hash={data.fingerprints.pdf} />}
                 </div>
-                <p className="text-xs text-gray-400 mt-4">
-                  Have a file but not its link?{' '}
-                  <Link to="/check" className="underline underline-offset-2 hover:text-gray-600">Find its verification page</Link>
-                  {' · '}
-                  <a href={reportHref(code, 'reported page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem with this page</a>
-                </p>
               </div>
             )}
 
@@ -524,6 +518,16 @@ export default function Verify() {
                 <p role="status" aria-live="polite" className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
               )}
             </div>
+
+            {/* ROUND-4 AUDIT FIX (feature gap): these two links lived inside the fingerprints card,
+                so a page with no fingerprints on file (an old one — exactly the kind a reader is
+                most likely to doubt) offered no way to look a file up or report a problem. */}
+            <p className="text-xs text-gray-400 text-center">
+              Have a file but not its link?{' '}
+              <Link to="/check" className="underline underline-offset-2 hover:text-gray-600">Find its verification page</Link>
+              {' · '}
+              <a href={reportHref(code, 'reported page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem with this page</a>
+            </p>
 
             {/* Hiring manager soft opt-in — shown above the full form */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
