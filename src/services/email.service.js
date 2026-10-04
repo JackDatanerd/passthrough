@@ -67,6 +67,8 @@ const RECIPIENT_LIMITS = {
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
   email_change_confirm:   { max: 5, windowSeconds: 3600 },
+  // Auth round 2: one per completed change; bounded the same as the request notice.
+  email_change_completed: { max: 5, windowSeconds: 3600 },
   // Section 9 audit: email_changed_old_address and password_changed were
   // exempted by the "proven identity" rule above, but that rule doesn't hold
   // for them. updateEmail() and changePassword() (auth.controller.js) each
@@ -249,9 +251,20 @@ async function sendEmailChangeConfirmation(env, supabase, newEmail, name, rawTok
 }
 
 async function sendEmailChangedOldAddress(env, supabase, oldEmail, name, newEmail) {
-  return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_changed_old_address', {
-    NAME:      name,
-    NEW_EMAIL: newEmail
+  // Subject said "was changed" for a change that is only REQUESTED at this point.
+  return send(env, supabase, oldEmail, 'Email change requested on your Passthrough account', 'email_changed_old_address', {
+    NAME:         name,
+    NEW_EMAIL:    newEmail,
+    SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
+  })
+}
+
+// Auth round 2: to the OLD address once the change has actually been confirmed.
+async function sendEmailChangeCompleted(env, supabase, oldEmail, name, newEmail) {
+  return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_change_completed', {
+    NAME:          name,
+    NEW_EMAIL:     newEmail,
+    SUPPORT_EMAIL: 'support@passthrough.dev'
   })
 }
 
@@ -630,7 +643,7 @@ module.exports = {
   htmlToPlainText, fmtMoney, sendEmployerLeadAck,
   reserveRecipientSlot: recipientAllowed,
   sendWelcome, sendVerification, sendPasswordReset,
-  sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
+  sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendPaymentReceipt,

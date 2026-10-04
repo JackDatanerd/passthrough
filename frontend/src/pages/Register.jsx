@@ -30,7 +30,13 @@ export default function Register() {
   // in always landed on /dashboard afterward, losing where they meant to go.
   const next = safeNext(params.get('next'))
 
-  if (!authLoading && user) return <Navigate to={next || '/dashboard'} replace />
+  // AUDIT FIX (Auth round 2, B2): postAuthActions() stores the user BEFORE it
+  // claims the visitor's anonymous scans (one request each), so this guard used
+  // to fire mid-submit — dropping the person on the dashboard, then yanking them
+  // to their scan when the claims finished, with a stray history entry each time.
+  // While our own submit is in flight (`loading`) the submit handler decides
+  // where to go; this redirect is only for arriving here already signed in.
+  if (!authLoading && user && !loading) return <Navigate to={next || '/dashboard'} replace />
 
   function fail(message) {
     return execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})

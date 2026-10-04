@@ -1,7 +1,16 @@
+# Content-Security-Policy (Auth round 2): the session token lives in localStorage, so the
+# main defence against a script injection reading it is stopping injected script from
+# running at all. script-src 'self' does that (the Vite build emits no inline scripts).
+# style-src needs 'unsafe-inline' for React style={{}} attributes. connect-src is
+# `https:` rather than the exact API origin because VITE_API_URL is a per-deploy
+# build setting; to tighten it, replace `https:` with your API origin
+# (e.g. https://api.passthrough.dev). Paystack checkout is a top-level redirect,
+# not an embedded script/frame, so it needs no entry here.
 /*
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
+  Content-Security-Policy: default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 /v/*
   X-Robots-Tag: noindex, nofollow

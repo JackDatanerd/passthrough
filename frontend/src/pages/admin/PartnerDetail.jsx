@@ -11,7 +11,7 @@ import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, cn, copyToClipboard } from '../../lib/utils'
+import { formatCents, formatDate, formatRate, cn, copyToClipboard } from '../../lib/utils'
 
 function PayoutDetailsFields({ method, details }) {
   const d = details || {}

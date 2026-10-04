@@ -30,7 +30,13 @@ export default function Login() {
   // credentials a second time. authLoading gates this on the same "don't
   // render before we actually know" rule AdminRoute (App.jsx) already
   // follows, so a signed-out visitor doesn't flash the form and then bounce.
-  if (!authLoading && user) return <Navigate to={next || '/dashboard'} replace />
+  // AUDIT FIX (Auth round 2, B2): postAuthActions() stores the user BEFORE it
+  // claims the visitor's anonymous scans (one request each), so this guard used
+  // to fire mid-submit — dropping the person on the dashboard, then yanking them
+  // to their scan when the claims finished, with a stray history entry each time.
+  // While our own submit is in flight (`loading`) the submit handler decides
+  // where to go; this redirect is only for arriving here already signed in.
+  if (!authLoading && user && !loading) return <Navigate to={next || '/dashboard'} replace />
 
   async function handleSubmit() {
     if (!email || !password) {

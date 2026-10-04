@@ -41,9 +41,17 @@ export default function ForgotPassword() {
               <p className="text-sm text-gray-600 mb-4">
                 If that email is registered, check your inbox for a reset link.
               </p>
-              <Link to="/login" className="text-sm text-blue-600 hover:underline">
-                Back to sign in
-              </Link>
+              <div className="flex items-center justify-between">
+                <Link to="/login" className="text-sm text-blue-600 hover:underline">
+                  Back to sign in
+                </Link>
+                {/* Typo'd the address? Without this the only way back to the form
+                    was a page reload. The server answers the same either way. */}
+                <button type="button" onClick={() => setSent(false)}
+                  className="text-sm text-blue-600 hover:underline">
+                  Use a different email
+                </button>
+              </div>
             </div>
           ) : (
             <>

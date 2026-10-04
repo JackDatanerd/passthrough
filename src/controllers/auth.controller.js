@@ -86,7 +86,12 @@ function recordLoginMetadata(c, user) {
   // code path before (pre-migration-0040 account, or the very next login
   // after register() seeded it) — never alert off a null baseline, or every
   // existing account would get a "new sign-in" email the moment this ships.
-  const isNewNetwork = !!prevIp && rateKeyIp(prevIp) !== rateKeyIp(newIp)
+  // AUDIT FIX (Auth round 2, B4): 'unknown' is clientIp()'s "couldn't see an
+  // address" sentinel, not a network. Treating it as a real baseline meant the
+  // first sign-in after a request with no cf-connecting-ip (or the reverse)
+  // looked like a "new network" and mailed a false new-sign-in alert.
+  const isNewNetwork = !!prevIp && prevIp !== 'unknown' && newIp !== 'unknown' &&
+    rateKeyIp(prevIp) !== rateKeyIp(newIp)
   const throttleMs = constants.NEW_LOGIN_ALERT_THROTTLE_HOURS * 60 * 60 * 1000
   const alertDue = isNewNetwork &&
     (!user.lastLoginAlertAt || Date.now() - new Date(user.lastLoginAlertAt).getTime() > throttleMs)
@@ -1114,6 +1119,14 @@ async function updateEmail(c) {
   }
   await recordLoginSuccess(c.env, sessionUser.email)
 
+  // AUDIT FIX (Auth round 2, B5): a cancel request carrying some OTHER address
+  // used to fall through and silently STAGE a new change to it instead. Cancel
+  // is only ever "the account's own current email + cancelPending", so anything
+  // else is a malformed request, not a change request.
+  if (cancelPending && newEmail !== user.email) {
+    return c.json({ success: false, message: 'To cancel a pending email change, submit your current email address.' }, 400)
+  }
+
   if (newEmail === user.email) {
     if (cancelPending && user.pendingEmail) {
       must(await supabase.from('users').update({
@@ -1210,6 +1223,31 @@ async function confirmEmailChange(c) {
     return c.json({ success: false, message: 'Confirmation link invalid or expired.' }, 400)
   }
 
+  // AUDIT FIX (Auth round 2, B1): this link is mailed to the NEW address, and
+  // used to be enough on its own: whoever opened it had the change applied AND
+  // was handed a live session for the account. When the new address is a typo
+  // that happens to be a real stranger's inbox, that stranger became the
+  // account's login email and got signed in as its owner. Reading the new
+  // inbox proves control of the NEW address, never that the person is the
+  // account's owner — so the request must ALSO come from a session of this very
+  // account (the browser that asked for the change is the usual one; anyone
+  // else signs in first and opens the link again — nothing is consumed here).
+  // optionalAuth already resolved the Authorization header app-wide.
+  if (c.get('authError') === 'unavailable') {
+    // Our lookup failed, not their credentials: a 5xx, never "sign in".
+    throw Object.assign(new Error('Could not verify the signed-in session.'), { status: 503, expose: true })
+  }
+  const caller = c.get('user')
+  if (!caller || caller.id !== user.id) {
+    // 403, not 401: the SPA reads a 401 on a request that carried a token as "your
+    // session is dead" and signs the person out — wrong when they are simply
+    // signed in as a different account than the one this link belongs to.
+    return c.json({ success: false, code: 'SIGN_IN_REQUIRED', reason: caller ? 'WRONG_ACCOUNT' : 'SIGNED_OUT',
+      message: caller
+        ? 'You are signed in to a different account. Sign in to the account whose email is changing, then open this link again.'
+        : 'Sign in to your account first, then open this link again to confirm the new email.' }, 403)
+  }
+
   // The proactive uniqueness check in updateEmail can't see a SECOND email
   // change (by this account or another) that landed in between — re-check
   // here, right before the write that would otherwise 23505.
@@ -1272,6 +1310,13 @@ async function confirmEmailChange(c) {
   // fresh session for the browser that confirmed.
   await revokeAllSessions(supabase, user.id)
   const newToken = await issueSessionToken(c, { id: user.id, tokenVersion: newTokenVersion })
+  // FEATURE (Auth round 2, G3): the old address only ever heard about the
+  // REQUEST. The moment the change actually lands is the one it most needs to
+  // know about — and the only thing it can still do about it is act fast.
+  c.executionCtx.waitUntil(
+    emailService.sendEmailChangeCompleted(c.env, supabase, user.email, user.name, updated.email)
+      .catch(e => console.error('Email-change completed notice:', e.message))
+  )
   return c.json({ success: true, message: 'Email address updated.',
     data: { user: safeUser(updated), token: newToken } })
 }

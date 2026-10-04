@@ -164,6 +164,20 @@ describe('security notifications', () => {
     expect(t.sent[0].to).toBe('old@b.co')
     expect(t.sent[0].html).toContain('attacker@evil.co')
   })
+  it('the request notice says "requested" (not "changed") and links to Settings', async () => {
+    t = setup()
+    await t.mod.sendEmailChangedOldAddress(t.env, t.db, 'old@b.co', 'Ada', 'new@b.co')
+    expect(t.sent[0].subject).toMatch(/requested/i)
+    expect(t.sent[0].html).toContain('/dashboard/settings')
+  })
+  it('once the change lands the PREVIOUS address is told it was completed', async () => {
+    t = setup()
+    await t.mod.sendEmailChangeCompleted(t.env, t.db, 'old@b.co', 'Ada', 'new@b.co')
+    expect(t.sent[0].to).toBe('old@b.co')
+    expect(t.sent[0].subject).toMatch(/was changed/i)
+    expect(t.sent[0].html).toContain('new@b.co')
+    expect(t.sent[0].html).not.toContain('{{')
+  })
 })
 
 describe('email_logs / alert_logs', () => {

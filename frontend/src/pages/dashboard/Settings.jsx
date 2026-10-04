@@ -12,6 +12,7 @@ import { formatDate, formatDateTime } from '../../lib/utils'
 import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
 import { passwordProblem } from '../../lib/passwordRules'
 import { roleLabel } from '../../lib/roleCategories'
+import SessionsCard from '../../components/account/SessionsCard'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -286,6 +287,9 @@ export default function Settings() {
     }
   }
 
+  // Bumped after a sign-out-everything so the devices list below re-reads.
+  const [sessionsReload, setSessionsReload] = useState(0)
+
   async function handleSignOutOtherSessions() {
     setSignOutLoading(true); setSignOutError(''); setSignOutSuccess(false)
     try {
@@ -297,6 +301,7 @@ export default function Settings() {
       const token = res.data?.data?.token
       if (token) localStorage.setItem('passthrough_token', token)
       setSignOutSuccess(true)
+      setSessionsReload(n => n + 1)
     } catch (err) {
       setSignOutError(getErrorMessage(err, 'Failed to sign out other sessions.'))
     } finally {
@@ -445,6 +450,9 @@ export default function Settings() {
             Sign out other sessions
           </Button>
         </div>
+
+        {/* FEATURE GAP CLOSED (Auth round 2): per-device list + sign-out */}
+        <SessionsCard reloadKey={sessionsReload} />
 
         {/* Saved profile */}
         <div className="bg-white rounded-lg border border-gray-200 p-6">

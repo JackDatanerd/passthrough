@@ -29,7 +29,24 @@ export function AuthProvider({ children }) {
   // different device/session) would never be reflected here until the user
   // explicitly logged out and back in, no matter how many times they
   // reloaded the page or re-visited the dashboard.
+  //
+  // AUDIT FIX (Auth round 2, B3): every tab runs this on load, and a token
+  // issued before server-side sessions existed is upgraded to a session-bound
+  // one by /auth/me — so N tabs opening together each minted their OWN session
+  // from the same legacy token, and all but the last stored one became ghost
+  // devices. Serialising across tabs (Web Locks) makes the second tab read the
+  // token the first one already upgraded, so it asks with a session-bound token
+  // and gets no new session. Falls back to running directly where Web Locks
+  // isn't available.
   async function refreshUser() {
+    if (typeof navigator !== 'undefined' && navigator.locks && typeof navigator.locks.request === 'function') {
+      try { return await navigator.locks.request('passthrough-auth-refresh', () => refreshUserUnlocked()) }
+      catch (_) { return refreshUserUnlocked() }
+    }
+    return refreshUserUnlocked()
+  }
+
+  async function refreshUserUnlocked() {
     // AUDIT FIX (Auth/Scan round): an /auth/me still in flight when the person
     // clicked Sign out (or another tab signed in as someone else) used to
     // resolve afterwards and write its user — and any renewed token — back
@@ -126,6 +143,17 @@ export function AuthProvider({ children }) {
     return lastClaimedScanId  // caller should navigate to /scan/:id, or /dashboard if null
   }
 
+  // FEATURE GAP CLOSED (Auth round 2): records acceptance of the CURRENT Terms /
+  // Privacy version (see TermsUpdateBanner) and swaps in the user the server
+  // answers with, whose `termsCurrent` is now true.
+  async function acceptTerms() {
+    const res = await api.post('/auth/accept-terms')
+    const fresh = res.data.data.user
+    localStorage.setItem('passthrough_user', JSON.stringify(fresh))
+    setUser(fresh)
+    return fresh
+  }
+
   // AUDIT FIX (Auth section round 1, feature gap G2): this used to only clear
   // the browser's own copy of the token — a copied/stolen token, or another
   // tab that still held the old one, stayed valid for its full lifetime.
@@ -149,7 +177,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, postAuthActions, postRegisterActions: postAuthActions, logout, refreshUser, authLoading }}>
+    <AuthContext.Provider value={{ user, setUser, postAuthActions, postRegisterActions: postAuthActions, logout, refreshUser, acceptTerms, authLoading }}>
       {children}
     </AuthContext.Provider>
   )

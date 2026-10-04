@@ -21,10 +21,14 @@ import Footer from '../components/layout/Footer'
 // identity immediately instead of showing a stale email until next login.
 export default function ConfirmEmailChange() {
   const [params] = useSearchParams()
-  const { postAuthActions } = useAuth()
+  const { postAuthActions, logout } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
   const [message, setMessage] = useState('')
   const [keptOtherSession, setKeptOtherSession] = useState(false)
+  // AUDIT FIX (Auth round 2, B1): the API now only completes a change for a
+  // session of the account itself. 'signin' = nobody signed in (or signed in as
+  // someone else): nothing was consumed, the same link works once they are.
+  const [signInReason, setSignInReason] = useState(null)   // 'SIGNED_OUT' | 'WRONG_ACCOUNT'
   // AUDIT FIX (Auth section round 1): opening this link a SECOND time (a mail
   // scanner, a double tap, the back button) used to hit the generic 400
   // "invalid or expired" branch below — indistinguishable from a genuinely
@@ -59,10 +63,22 @@ export default function ConfirmEmailChange() {
         setStatus('success')
       })
       .catch(err => {
+        if (err.response?.data?.code === 'SIGN_IN_REQUIRED') {
+          setSignInReason(err.response.data.reason || 'SIGNED_OUT')
+          setMessage(getErrorMessage(err, 'Sign in to confirm this change.'))
+          setStatus('signin')
+          return
+        }
         setStatus('error')
         setMessage(getErrorMessage(err, 'The link is invalid or has expired.'))
       })
   }, [])
+
+  // Back to THIS link after signing in (Login validates ?next= via safeNext).
+  const linkToken = params.get('token')
+  const loginHref = linkToken
+    ? `/login?next=${encodeURIComponent(`/confirm-email-change?token=${linkToken}`)}`
+    : '/login'
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -92,6 +108,23 @@ export default function ConfirmEmailChange() {
                 className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
                 Go to settings →
               </Link>
+            </>
+          )}
+          {status === 'signin' && (
+            <>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Sign in to confirm</h1>
+              <p className="text-sm text-gray-500 mb-6">{message}</p>
+              {signInReason === 'WRONG_ACCOUNT' ? (
+                <button type="button" onClick={() => { logout(); window.location.assign(loginHref) }}
+                  className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+                  Sign out and sign in
+                </button>
+              ) : (
+                <Link to={loginHref}
+                  className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+                  Sign in
+                </Link>
+              )}
             </>
           )}
           {status === 'error' && (

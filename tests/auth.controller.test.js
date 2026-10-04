@@ -174,6 +174,7 @@ async function setup(opts = {}) {
       // with the actual incoming IP, not just that it fired at all.
       sendNewSignInAlert:         async (...a) => { state.emails.push({ type: 'new_login_alert', to: a[2], ip: a[4]?.ip }) },
       sendEmailChangeConfirmation: async (...a) => { state.emails.push({ type: 'change_confirm', to: a[2], raw: a[4], opts: a[5] }); return true },
+      sendEmailChangeCompleted: async (...a) => { state.emails.push({ type: 'email_change_completed', to: a[2], newEmail: a[4] }); return true },
     },
     // Auth round 1: the breached-password check must never reach the network in a
     // unit test. opts.pwned = true simulates a hit.
@@ -208,7 +209,7 @@ async function setup(opts = {}) {
     // changePassword/updateEmail/deleteAccount's account-lockout calls key
     // off sessionUser.email, so a mock missing it would silently pass
     // `undefined` through instead of catching a real wiring mistake.
-    get: k => ({ user: opts.sessionUser ?? { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp, sessionId: opts.sessionId, sessionExpiresAtMs: opts.sessionExpiresAtMs }[k]),
+    get: k => ({ user: 'sessionUser' in opts ? opts.sessionUser : { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp, sessionId: opts.sessionId, sessionExpiresAtMs: opts.sessionExpiresAtMs, authError: opts.authError }[k]),
     req: {
       json: async () => (over.body ?? {}),
       query: k => (over.query ?? {})[k],
@@ -1716,5 +1717,89 @@ describe('safeUser — no tokenVersion (B8)', () => {
     expect(login.body.data.user.tokenVersion).toBeUndefined()
     const reg = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'a-long-unique-passphrase', acceptTerms: true } }))
     expect(reg.body.data.user.tokenVersion).toBeUndefined()
+  })
+})
+
+
+// ── Auth round 2 ────────────────────────────────────────────────────────────
+describe('confirmEmailChange — must come from the account owner\'s own session (B1)', () => {
+  const RAW3 = 'a-raw-token'
+  const pending = async (over = {}) => baseUserRow({
+    pending_email: 'new@example.com', pending_email_token: await sha256(RAW3), pending_email_expiry: FUTURE(), token_version: 4, ...over,
+  })
+  it('a visitor with NO session gets 403 SIGN_IN_REQUIRED — nothing is consumed, no token is minted', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, sessionUser: null, sessions: true })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('SIGN_IN_REQUIRED')
+    expect(res.body.reason).toBe('SIGNED_OUT')
+    expect(res.body.data).toBeUndefined()
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.rpcCalls).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('a session for a DIFFERENT account is refused the same way (403, not a 401 that would sign it out)', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, sessionUser: { id: 'someone-else', tokenVersion: 1, email: 'x@y.co' } })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('SIGN_IN_REQUIRED')
+    expect(res.body.reason).toBe('WRONG_ACCOUNT')
+    expect(res.body.message).toMatch(/different account/i)
+    expect(t.state.updates).toHaveLength(0)
+  })
+  it('a failed session lookup on our side is a 5xx, not "sign in"', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row, sessionUser: null, authError: 'unavailable' })
+    await expect(t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))).rejects.toMatchObject({ status: 503 })
+    expect(t.state.updates).toHaveLength(0)
+  })
+  it('the owner\'s own session completes it, and the OLD address is told it happened', async () => {
+    const row = await pending()
+    t = await setup({ userRow: row, pendingLookupRow: row })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))
+    expect(res.status).toBe(200)
+    expect(t.state.emails).toContainEqual({ type: 'email_change_completed', to: 'user@example.com', newEmail: 'new@example.com' })
+  })
+  it('an invalid token still answers 400 for a signed-out visitor (the session check only guards a REAL link)', async () => {
+    t = await setup({ pendingLookupRow: null, doneTokenRow: null, sessionUser: null })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: 'nope' } }))
+    expect(res.status).toBe(400)
+  })
+  it('a replay of a used link stays a harmless 200 for a signed-out visitor', async () => {
+    t = await setup({ pendingLookupRow: null, doneTokenRow: { id: 'u1' }, sessionUser: null })
+    const res = await t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data).toEqual({ alreadyConfirmed: true })
+  })
+})
+
+describe('updateEmail — cancelPending with another address (B5)', () => {
+  it('is refused instead of silently staging a change to that address', async () => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), pending_email: 'p@example.com' }) })
+    const res = await t.mod.updateEmail(t.c({ body: { newEmail: 'other@example.com', password: 'correct-password', cancelPending: true } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/current email/i)
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+})
+
+describe('login — new-sign-in alert baseline (B4)', () => {
+  const alertsFor = async (prevIp, ip) => {
+    t = await setup({ userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), last_login_ip: prevIp, last_login_at: PAST() }) })
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' }, headers: ip ? { 'cf-connecting-ip': ip } : {} }))
+    await new Promise(r => setTimeout(r, 0))
+    return t.state.emails.filter(e => e.type === 'new_login_alert')
+  }
+  it('an \'unknown\' previous address is not a baseline — no alert', async () => {
+    expect(await alertsFor('unknown', '9.9.9.9')).toHaveLength(0)
+  })
+  it('a request with no visible address does not look like a new network either', async () => {
+    expect(await alertsFor('1.2.3.4', null)).toHaveLength(0)
+  })
+  it('a genuinely different network still alerts', async () => {
+    expect(await alertsFor('1.2.3.4', '9.9.9.9')).toHaveLength(1)
   })
 })

@@ -25,6 +25,17 @@ describe('classifyAuthFailure', () => {
   it('BANNED on a token-bearing request is reported as banned', () => {
     expect(classifyAuthFailure({ status: 403, code: 'BANNED', hadToken: true, url: '/scan' })).toBe('banned')
   })
+  // Auth round 2 (B1): confirming an email change from the wrong/no session answers 403
+  // SIGN_IN_REQUIRED. It must never be read as "your session died" — that would sign out a
+  // visitor who is simply signed in as a different account than the link's.
+  it('SIGN_IN_REQUIRED (confirm-email-change from another account) does not end the session', () => {
+    expect(classifyAuthFailure({ status: 403, code: 'SIGN_IN_REQUIRED', hadToken: true, url: '/auth/email/confirm' })).toBeNull()
+    expect(classifyAuthFailure({ status: 403, code: 'SIGN_IN_REQUIRED', hadToken: false, url: '/auth/email/confirm' })).toBeNull()
+  })
+  it('a confirm-email-change link survives as a post-login destination', () => {
+    const next = '/confirm-email-change?token=' + 'ab12'.repeat(16)
+    expect(safeNext(next)).toBe(next)
+  })
   it('ordinary errors are not auth failures (403 forbidden, 404, 429, 500)', () => {
     for (const status of [400, 403, 404, 409, 429, 500, 502])
       expect(classifyAuthFailure({ status, hadToken: true, url: '/scan/1' })).toBeNull()
