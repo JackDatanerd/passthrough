@@ -41,7 +41,12 @@ export default function ScanForm() {
   // a pasted brain dump when the user doesn't have a polished resume yet.
   // PHASE 4 — a third mode, 'savedProfile', only available (and only shown
   // as an option) to a logged-in user who has previously saved one.
-  const [entryMode, setEntryMode] = useState('upload') // 'upload' | 'brainDump' | 'savedProfile'
+  const [entryMode, setEntryMode] = useState('upload') // 'upload' | 'brainDump' | 'savedProfile' | 'rescan'
+  // FEATURE GAP CLOSED (Scan/ATS pass): "scan this same resume against another job"
+  // for scans that came from an upload or a typed background (saved-profile users
+  // always had it). Arrives as /?from=<scanId> from a results page; holds the
+  // earlier scan's label once it has loaded.
+  const [rescanSource, setRescanSource] = useState(null)
   const [file,          setFile         ] = useState(null)
   const [brainDumpText, setBrainDumpText] = useState('')
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
@@ -79,6 +84,26 @@ export default function ScanForm() {
     }
   }, [hasSavedProfile])
 
+  // /?from=<scanId>: the earlier scan must belong to this (logged-in) user; if it
+  // can't be loaded the form just stays on its normal upload mode.
+  const fromScanId = params.get('from')
+  useEffect(() => {
+    if (!user || !fromScanId) return
+    let cancelled = false
+    api.get(`/scan/${encodeURIComponent(fromScanId)}`)
+      .then(res => {
+        const d = res.data.data
+        if (cancelled || !d || !['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(d.status)) return
+        setRescanSource({
+          id: d.id,
+          label: d.resumeOriginalName || (d.inputMode === 'brain_dump' ? 'the background you wrote' : 'your saved profile'),
+        })
+        setEntryMode('rescan')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [user, fromScanId])
+
   function switchEntryMode(mode) {
     setEntryMode(mode)
     setError('')
@@ -88,6 +113,8 @@ export default function ScanForm() {
     e?.preventDefault?.()
     if (entryMode === 'upload' && !file)
       return setError('Please upload your resume.')
+    if (entryMode === 'rescan' && !rescanSource)
+      return setError('We could not load that earlier scan. Upload your resume instead.')
     if (entryMode === 'brainDump' && brainDumpText.trim().length < MIN_BRAIN_DUMP_CHARS)
       return setError(`Tell us a bit more about your background (min ${MIN_BRAIN_DUMP_CHARS} characters).`)
     if (entryMode === 'brainDump' && !user) {
@@ -109,6 +136,8 @@ export default function ScanForm() {
         formData.append('resume', file)
       } else if (entryMode === 'savedProfile') {
         formData.append('useSavedProfile', 'true')
+      } else if (entryMode === 'rescan') {
+        formData.append('sourceScanId', rescanSource.id)
       } else {
         formData.append('brainDumpText', brainDumpText.trim())
         if (!user) {
@@ -159,7 +188,9 @@ export default function ScanForm() {
     ? 'Scan My Resume — Free'
     : entryMode === 'savedProfile'
       ? 'Score My Profile Against This JD — Free'
-      : 'Build & Score My Resume — Free'
+      : entryMode === 'rescan'
+        ? 'Scan Against This Job — Free'
+        : 'Build & Score My Resume — Free'
 
   return (
     <Form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -177,6 +208,14 @@ export default function ScanForm() {
           >
             Start from scratch
           </button>
+          {rescanSource && (
+            <button type="button"
+              onClick={() => switchEntryMode('rescan')}
+              className={`px-3 py-1.5 transition-colors ${entryMode === 'rescan' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            >
+              Same resume
+            </button>
+          )}
           {hasSavedProfile && (
             <button type="button"
               onClick={() => switchEntryMode('savedProfile')}
@@ -256,6 +295,15 @@ export default function ScanForm() {
                 </p>
               </div>
             )}
+          </div>
+        )}
+
+        {entryMode === 'rescan' && rescanSource && (
+          <div className="rounded-lg border border-gray-200 bg-gray-50 px-4 py-3">
+            <p className="text-sm text-gray-700">
+              We'll use <span className="font-medium">{rescanSource.label}</span> again — just add the
+              new job description below. This counts as one of your daily free scans.
+            </p>
           </div>
         )}
 

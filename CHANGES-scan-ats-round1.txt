@@ -1,0 +1,28 @@
+SCAN / ATS CORE — round 1 close-out (base: 7baef4d)
+No migration. No wrangler change (the existing fix-jobs queue carries the new job type).
+
+FEATURE GAPS CLOSED
+ 1. Fabrication guard now also catches invented SKILLS and invented NUMBERS (claude.service: unsupportedSkills, inventedNumbers; 2M == 2,000,000 == 2 million).
+ 2. Claude calls retry transient failures (429/5xx/529/network) inside one deadline; generateFix no longer abandons a paid fix on the first malformed/truncated answer.
+ 3. The free scan runs on the queue (not the 30s waitUntil); waitUntil remains only as the fallback if the queue is down. runAtsScan is idempotent (claims PENDING/SCANNING only). Dead-letter handler fails the scan and refunds the slot. ScanResult shows a stall notice after 3 minutes.
+ 4. PDF no longer depends on Claude's HTML: deterministic template (pdfTemplate.service.js) is used when the AI layout fails or won't render.
+ 5. generateBadge scores the DELIVERED document; the credential wording (docx, PDF, email) follows that score; fix_ats_score is the real number.
+ 6. Rescan: POST /api/scan with sourceScanId re-uses an earlier scan's resume (file, typed, or profile) against a new JD. ScanResult links to /?from=<scanId>; ScanForm has a "Same resume" mode.
+ 7. Format scoring inspects the raw DOCX (tables, text boxes, columns, images) via resume.parser.inspectStructure.
+
+BUGS FIXED
+ - ScanResult: popup payment answered 202 "processing" -> poller stopped, page never advanced. Now keeps polling (5 min) and says so.
+ - ".net" in an e-mail/domain created a phantom dotnet keyword.
+ - detectSeniority read the first "N years" anywhere (2-5 yrs => junior; "founded 25 years ago" => senior).
+ - extractJson failed on preamble/trailing text.
+ - generateFix/generateBadge: duplicate (at-least-once) job for an already-delivered scan re-ran everything; crash handling for a redelivered FIRST delivery wrongly reverted a retry / set ERROR.
+ - updateResumeData: wholly-empty job/school/project rows are dropped; clearing the name keeps the earlier search name (candidateFirstNameFrom now returns null, not 'Candidate').
+ - updateVerifyVisibility: JSON null/array body was a 500.
+ - regeneratePdf no longer leaks internal error detail.
+ - createScan: pasted JD text now wins over a URL (a blocked URL can't reject a usable paste).
+ - "A.A." degree no longer flagged as fabrication; certifications in non-Latin scripts are no longer dropped.
+
+ACCEPTED / NOTE
+ - The anonymous e-mail goes to the address the submitter typed (unverified) — unchanged, accepted risk.
+ - The raw anon token travels in the queue message for the result e-mail (24h-expiry capability; queue is account-internal).
+ - BADGE tier: if the delivered document scores under the threshold the badge is now issued with the honest "Scan Report" wording instead of "Verified". Product call: consider granting a credit in that case.

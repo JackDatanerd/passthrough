@@ -21,7 +21,22 @@ async function handleDeadLetterBatch(batch, env, supabase, emailService) {
   for (const message of batch.messages) {
     const { type, scanId } = message.body || {}
     try {
-      if (scanId) {
+      if (scanId && type === 'runAtsScan') {
+        // A free scan that never ran: nothing was produced, so the person gets the
+        // daily slot back (only for a scan created today — after the daily reset
+        // the counter belongs to another day) exactly as an in-pipeline failure does.
+        try {
+          const { data: failed } = await supabase.from('scans').update({ status: 'ERROR' })
+            .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id, user_id, created_at')
+          for (const row of Array.isArray(failed) ? failed : []) {
+            const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+            if (row.user_id && row.created_at && new Date(row.created_at) >= startOfToday) {
+              const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })
+              if (refundErr) console.error(`Dead-letter: quota refund failed for scan ${scanId}:`, refundErr.message)
+            }
+          }
+        } catch (err) { console.error(`Dead-letter: could not fail scan ${scanId}:`, err.message) }
+      } else if (scanId) {
         try {
           must(await supabase.from('scans').update({ status: 'ERROR' })
             .eq('id', scanId).in('status', ['FIX_PURCHASED', 'FIX_GENERATING']), 'dead-letter: mark scan ERROR')
@@ -31,8 +46,10 @@ async function handleDeadLetterBatch(batch, env, supabase, emailService) {
         `Fix job dead-lettered: ${type || 'unknown type'}`,
         `A ${type || 'fix'} job exhausted its queue retries and was dead-lettered.\n\nscanId: ${scanId || '(none)'}\n` +
         `message id: ${message.id || '(n/a)'}\nattempts: ${message.attempts ?? '(n/a)'}\n\n` +
-        `The scan was moved to ERROR (if it was still generating). The automatic failed-fix sweep will retry it; ` +
-        `if that also fails, re-run with POST /api/admin/scans/${scanId || ':id'}/requeue-fix.`)
+        (type === 'runAtsScan'
+          ? `The free scan was moved to ERROR and the person's daily scan slot handed back; they can simply scan again.`
+          : `The scan was moved to ERROR (if it was still generating). The automatic failed-fix sweep will retry it; ` +
+            `if that also fails, re-run with POST /api/admin/scans/${scanId || ':id'}/requeue-fix.`))
     } catch (err) {
       console.error('Dead-letter handler error:', err.message)
     }

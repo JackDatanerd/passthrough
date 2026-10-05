@@ -96,6 +96,18 @@ export default function ScanResult() {
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const [pollError,    setPollError   ] = useState('')
+  // BUG FIX (Scan/ATS pass): after the inline popup reports success the payment may
+  // still be "processing" (mobile money, slow banks — /payments/verify answers 202).
+  // The scan is then STILL COMPLETE_PASS/COMPLETE_FAIL, which are polling-stop
+  // statuses: fetchScan stopped the poller the instant it saw one, so the page never
+  // learned when the webhook confirmed the payment — the customer paid and stared at
+  // an unchanged "buy" screen until they reloaded. While a just-submitted payment is
+  // unconfirmed the poller now keeps going (bounded), and the page says so.
+  const [confirmingPayment, setConfirmingPayment] = useState(false)
+  const awaitingPaymentRef = useRef(false)
+  const awaitingDeadlineRef = useRef(0)
+  // Re-render clock so a scan that never finishes can say so (see `stalled`).
+  const [nowTs, setNowTs] = useState(() => Date.now())
   // Initialized from storage (auto-captured ?ref= link), but this is now
   // real state — not just a read at render time — so a code typed by hand
   // in FixBanner's entry field (see handleApplyReferralCode below) updates
@@ -122,7 +134,11 @@ export default function ScanResult() {
       setScan(data)
       setLoading(false)
       setPollError('')
-      if (POLLING_STOP.includes(data.status)) {
+      if (awaitingPaymentRef.current) {
+        const stillUnconfirmed = ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(data.status) && Date.now() < awaitingDeadlineRef.current
+        if (!stillUnconfirmed) { awaitingPaymentRef.current = false; setConfirmingPayment(false) }
+      }
+      if (POLLING_STOP.includes(data.status) && !awaitingPaymentRef.current) {
         pollRef.current?.stop()
       }
       return true
@@ -169,7 +185,8 @@ export default function ScanResult() {
   // so fetchScan's existing 403/404/429 handling stays the single authority).
   async function pollScan() {
     const known = lastStatusRef.current
-    if (!hasLoadedRef.current || !known || POLLING_STOP.includes(known)) return fetchScan()
+    if (!hasLoadedRef.current || !known || (POLLING_STOP.includes(known) && !awaitingPaymentRef.current)) return fetchScan()
+    if (awaitingPaymentRef.current && Date.now() >= awaitingDeadlineRef.current) return fetchScan()   // gives up cleanly
     try {
       const res = await api.get(`/scan/status/${id}${anonToken ? `?token=${anonToken}` : ''}`)
       if (res.data?.data?.status === known) { setPollError(''); return true }
@@ -210,6 +227,14 @@ export default function ScanResult() {
 
   // Don't let the fallback timer fire (and setState) after this page unmounts.
   useEffect(() => () => clearTimeout(popupFallbackTimerRef.current), [])
+
+  // Ticks only while a scan is in flight, so `stalled` below can flip on its own.
+  const inFlightScan = scan && ['PENDING', 'SCANNING'].includes(scan.status)
+  useEffect(() => {
+    if (!inFlightScan) return
+    const t = setInterval(() => setNowTs(Date.now()), 15_000)
+    return () => clearInterval(t)
+  }, [inFlightScan])
 
   // Storage stays the source of truth ACROSS page loads/navigation;
   // this state is the source of truth WITHIN this page's lifetime, so a
@@ -267,6 +292,13 @@ export default function ScanResult() {
             // in POLLING_STOP — no page reload here (unlike the old redirect
             // flow) to naturally restart polling, so it has to be explicit.
             await fetchScan()
+            // Verify said "still processing" (202), or the scan simply hasn't moved
+            // yet: keep polling for the webhook, for up to five minutes.
+            if (['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
+              awaitingPaymentRef.current = true
+              awaitingDeadlineRef.current = Date.now() + 5 * 60 * 1000
+              setConfirmingPayment(true)
+            }
             restartPolling()
             setPayLoading(false); setPayingTier(null)
           },
@@ -456,6 +488,11 @@ export default function ScanResult() {
   // of indirection that let FIX_GENERATING's dual meaning slip through
   // unnoticed. PENDING/SCANNING are the only states with no results yet.
   const scanning = ['PENDING', 'SCANNING'].includes(scan.status)
+  // FEATURE GAP CLOSED (Scan/ATS pass): a scan whose job died used to show the same
+  // spinner and "about 30 seconds" until the hourly sweep flipped it to ERROR — up
+  // to ~90 minutes of staring at a lie. After three minutes the page says plainly
+  // that something is wrong, what will happen, and offers a way out.
+  const stalled = scanning && scan.createdAt && (nowTs - Date.parse(scan.createdAt)) > 3 * 60 * 1000
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -482,6 +519,17 @@ export default function ScanResult() {
             <p className="text-sm text-gray-400 mt-1">This takes about 30 seconds</p>
             {pollError && (
               <p className="text-xs text-amber-600 mt-2">{pollError}</p>
+            )}
+            {stalled && (
+              <div className="mt-5 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-left">
+                <p className="text-sm font-medium text-amber-900">This is taking longer than it should.</p>
+                <p className="text-sm text-amber-800 mt-1">
+                  The scan may have hit a problem on our side. If it doesn't finish it will be marked as
+                  failed automatically{scan.userId ? ' and your daily scan will be given back' : ''} — you
+                  can also start a new one now.
+                </p>
+                <Link to="/" className="mt-2 inline-block text-sm text-blue-700 underline underline-offset-2">Start a new scan</Link>
+              </div>
             )}
           </div>
         )}
@@ -545,6 +593,18 @@ export default function ScanResult() {
                 act on it. */}
             <AtsDetailPanel scan={scan} />
 
+            {/* FEATURE GAP CLOSED (Scan/ATS pass): the product's real loop is one resume,
+                many job postings. Signed-in owners can rescan this same resume against
+                another job description without re-uploading or re-typing it. */}
+            {user && scan.userId && user.id === scan.userId && (
+              <p className="text-sm text-gray-600 -mt-2">
+                Applying somewhere else?{' '}
+                <Link to={`/?from=${scan.id}`} className="text-blue-700 underline underline-offset-2 hover:text-blue-800">
+                  Scan this same resume against another job
+                </Link>
+              </p>
+            )}
+
             {/* AUDIT FIX (feature gap — section audit "generate a resume from
                 scratch"): previously nothing on this page ever showed a
                 brain-dump/saved-profile user what was actually extracted
@@ -562,6 +622,16 @@ export default function ScanResult() {
                   anonToken={anonToken}
                   onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
                 />
+            )}
+
+            {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
+              <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 flex items-center gap-3" role="status">
+                <Spinner size="sm" />
+                <p className="text-sm text-blue-900">
+                  Payment received — waiting for the bank to confirm it. This can take a minute or two
+                  (mobile money especially). This page updates by itself; you don't need to pay again.
+                </p>
+              </div>
             )}
 
             {/* Fix generating */}

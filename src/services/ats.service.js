@@ -100,7 +100,12 @@ function normalizeTechTerms(text) {
     .replace(/\bc\+\+/gi, ' cplusplus ')
     .replace(/\bc#/gi, ' csharp ')
     .replace(/\bf#/gi, ' fsharp ')
-    .replace(/\.net\b/gi, ' dotnet ')
+    // ".NET" the framework — but NOT the TLD of a domain or e-mail address.
+    // "john@example.net", "portfolio.net" and "www.acme.net/jobs" used to mint a
+    // phantom `dotnet` token, crediting (or, on a JD, demanding) a skill nobody
+    // named. ASP.NET / VB.NET still count; a bare ".NET" must stand alone.
+    .replace(/\b(?:asp|vb)\.net\b/gi, ' dotnet ')
+    .replace(/(?<![\w@.\/-])\.net\b(?!\/)/gi, ' dotnet ')
     .replace(/\bci\s*\/\s*cd\b/gi, ' cicd ')
     .replace(/\bgolang\b/gi, ' golang ')
     // Case-SENSITIVE on purpose: only the capitalised, standalone language
@@ -325,7 +330,7 @@ function bulletFamily(ch) {
   return ch
 }
 
-function scoreFormat(resumeText) {
+function scoreFormat(resumeText, structure = null) {
   if (!resumeText || resumeText.trim().length < 100)
     return { score: 0, detail: { issues: ['Resume could not be parsed'] } }
   let score = 100; const issues = []
@@ -362,6 +367,21 @@ function scoreFormat(resumeText) {
   // case while no longer firing on normal detailed writing.
   if (resumeText.split('\n').filter(l => l.length > 400).length > 5)
     { score -= 15; issues.push('Possible multi-column layout') }
+  // STRUCTURE (the genuine table / text-box detection the note above called a
+  // "real future improvement"): resume.parser.js inspects the raw DOCX XML before
+  // extraction flattens it, and passes the counts in. Each of these is a widely
+  // documented way employer ATS parsers lose or scramble content, and none is
+  // visible in the extracted text. Absent for PDFs and generated documents.
+  if (structure && typeof structure === 'object') {
+    if (structure.textBoxes > 0)
+      { score -= 15; issues.push('Content inside text boxes — many ATS parsers skip text boxes entirely') }
+    if (structure.tables > 0)
+      { score -= structure.tables >= 3 ? 20 : 10; issues.push('Table-based layout — some ATS parsers read tables out of order or drop them') }
+    if (structure.columns > 1)
+      { score -= 15; issues.push('Multi-column page layout — text may be read across columns instead of down them') }
+    if (structure.images > 0)
+      { score -= 5; issues.push('Images or graphics — ATS parsers ignore them, so nothing in them counts') }
+  }
   return { score: Math.max(0, score), detail: { issues } }
 }
 
@@ -562,22 +582,41 @@ const SENIORITY_PATTERNS = [
 // "reports to the VP of Sales" / "works closely with the Director of X" name
 // somebody ELSE's level, not the role's own.
 const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with)\b[^.;\n]{0,60}/g
+// Years-of-experience requirement, read only where it is plainly a requirement:
+// "N years" (or "N-M years", "N+ years") followed by experience wording, or
+// introduced by minimum / at least / requires. The first "N years" anywhere used
+// to win, so "Founded 25 years ago ... requires 3 years" made a mid role senior
+// and "2-5 years" made a mid role junior.
+const YEARS_RE = /(\d{1,2})\s*\+?\s*(?:(?:-|\u2013|to)\s*(\d{1,2})\s*\+?\s*)?years?\b/g
+function requiredYears(lower) {
+  for (const m of lower.matchAll(YEARS_RE)) {
+    const after  = lower.slice(m.index + m[0].length, m.index + m[0].length + 60)
+    const before = lower.slice(Math.max(0, m.index - 30), m.index)
+    if (/^\s*(?:ago|old|in business|of age|since)\b/.test(after)) continue
+    if (/\b(?:founded|established|for over|for more than|over the (?:past|last))\s*(?:the\s*)?$/.test(before)) continue
+    if (!/experience|exp\b|background|hands.on|proven|track record|working|professional|industry/.test(after) &&
+        !/(?:minimum|min\.?|at least|requires?|required)\s*(?:of\s*)?$/.test(before)) continue
+    const lo = parseInt(m[1], 10)
+    const hi = m[2] ? parseInt(m[2], 10) : lo
+    return { lo: Math.min(lo, hi), hi: Math.max(lo, hi) }
+  }
+  return null
+}
 function detectSeniority(jdText) {
   const lower = String(jdText || '').toLowerCase()
   const title = lower.trim().slice(0, 200).replace(OTHER_PERSON_CLAUSE, ' ')
   for (const [level, re] of SENIORITY_PATTERNS) if (re.test(title)) return level
-  const m = lower.match(/\b(\d{1,2})\s*\+?\s*(?:-|to)?\s*(?:\d{1,2})?\s*\+?\s*years?\b/)
-  if (m) {
-    const years = parseInt(m[1], 10)
-    if (years >= 8) return 'senior'
-    if (years <= 2) return 'junior'
+  const y = requiredYears(lower)
+  if (y) {
+    if (y.lo >= 8) return 'senior'
+    if (y.hi <= 2) return 'junior'
   }
   return 'mid'
 }
 
-function scoreResume(resumeText, jdText) {
+function scoreResume(resumeText, jdText, { structure = null } = {}) {
   const kw  = scoreKeywords(resumeText, jdText)
-  const fmt = scoreFormat(resumeText)
+  const fmt = scoreFormat(resumeText, structure)
   const sec = scoreSections(resumeText)
   const cnt = scoreContent(resumeText)
   const score = Math.max(0, Math.min(100, Math.round(
@@ -627,5 +666,5 @@ function describeWeakAreas(scoreResult) {
 module.exports = {
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
-  extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword
+  extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears
 }

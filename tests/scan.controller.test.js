@@ -1376,10 +1376,24 @@ describe('generateFix', () => {
     expect(finalUpdate.rewrite_failed).toBe(false)
   })
 
-  it('a hard failure (e.g. PARSE_FAIL) stops the loop immediately rather than burning remaining attempts', async () => {
-    t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' } })
-    await t.mod.generateFix(t.env, t.db, 's1')
-    expect(t.getRewriteCallCount()).toBe(1)
+  // Scan/ATS pass: a malformed / truncated / transient failure is not deterministic,
+  // so it no longer ends the paid fix on attempt 1 — every attempt is used.
+  it('a PARSE_FAIL is retried until the attempts run out (not abandoned on the first)', async () => {
+    const warn = console.error; console.error = () => {}
+    try {
+      t = setup({ rewriteResult: { success: false, error: 'PARSE_FAIL' } })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(t.getRewriteCallCount()).toBe(3)
+    } finally { console.error = warn }
+  })
+
+  it('a credentials / billing failure stops immediately — another attempt cannot fix it', async () => {
+    const warn = console.error; console.error = () => {}
+    try {
+      t = setup({ rewriteResult: { success: false, error: 'invalid x-api-key' } })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(t.getRewriteCallCount()).toBe(1)
+    } finally { console.error = warn }
   })
 
   it('total rewrite failure (every attempt hard-failed): delivers the ORIGINAL resume, marks rewrite_failed, and grants a free credit', async () => {
@@ -1583,7 +1597,7 @@ describe('generateFix — Auth/Scan audit round', () => {
 
 describe('regeneratePdf', () => {
   function pdfSetup(opts = {}) {
-    const state = { updates: [], updateFilters: [], r2Puts: [], r2Deletes: [], htmlArgs: null }
+    const state = { updates: [], updateFilters: [], r2Puts: [], r2Deletes: [], htmlArgs: null, pdfHtmls: [] }
     const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 85, rewritten_resume_data: { name: 'Rewritten' }, original_resume_data: { name: 'Orig' }, verification_url: 'https://x/v/C1', resume_pdf_path: null }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
@@ -1595,7 +1609,7 @@ describe('regeneratePdf', () => {
       'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return opts.htmlResult ?? { success: true, data: '<html></html>' } } },
       'services/badge.service.js': { hashBytes: async () => 'pdfhash' },
       'services/design.service.js': { getDesignTokens: () => ({}) },
-      'services/pdf.service.js': { generateResumePDF: async () => { if (opts.pdfThrows) throw new Error('browser down'); return Buffer.from('pdf') } },
+      'services/pdf.service.js': { generateResumePDF: async (_env, html) => { state.pdfHtmls.push(html); if (opts.pdfThrows) throw new Error('browser down'); if (opts.pdfRejectAiHtml && html === '<html></html>') throw new Error('bad css'); return Buffer.from('pdf') } },
     })
     return { ...loaded, state, db, env }
   }
@@ -1684,9 +1698,38 @@ describe('regeneratePdf', () => {
     const res = await t.mod.regeneratePdf(call())
     expect(res.status).toBe(502)
     expect(t.state.updates).toHaveLength(0)
-    t.restore()
-    t = pdfSetup({ htmlResult: { success: false, error: 'RESPONSE_TRUNCATED' } })
-    expect((await t.mod.regeneratePdf(call())).status).toBe(502)
+  })
+  it('the 502 never leaks the internal render error', async () => {
+    const warn = console.error; console.error = () => {}
+    try {
+      t = pdfSetup({ pdfThrows: true })
+      const res = await t.mod.regeneratePdf(call())
+      expect(res.body.detail).toBeUndefined()
+      expect(JSON.stringify(res.body)).not.toMatch(/browser down/)
+    } finally { console.error = warn }
+  })
+  // Scan/ATS pass: the designed layout is no longer a single point of failure.
+  it('when the AI layout fails (truncated / invalid) the deterministic template renders instead, so a PDF still exists', async () => {
+    const warn = console.error; console.error = () => {}
+    try {
+      t = pdfSetup({ htmlResult: { success: false, error: 'RESPONSE_TRUNCATED' } })
+      const res = await t.mod.regeneratePdf(call())
+      expect(res.body.success).toBe(true)
+      expect(t.state.pdfHtmls).toHaveLength(1)
+      expect(t.state.pdfHtmls[0]).toMatch(/^<!DOCTYPE html>/)
+      expect(t.state.pdfHtmls[0]).toContain('Rewritten')
+      expect(t.state.r2Puts).toHaveLength(1)
+    } finally { console.error = warn }
+  })
+  it('if the AI layout renders badly (twice), the template is tried before giving up', async () => {
+    const warn = console.error; console.error = () => {}
+    try {
+      t = pdfSetup({ pdfRejectAiHtml: true })
+      const res = await t.mod.regeneratePdf(call())
+      expect(res.body.success).toBe(true)
+      expect(t.state.pdfHtmls).toHaveLength(3)           // AI x2, then the template
+      expect(t.state.pdfHtmls[2]).toContain('Rewritten')
+    } finally { console.error = warn }
   })
   it('losing the race (another request attached a PDF first) deletes the orphan and reports success', async () => {
     t = pdfSetup({ updateReturn: [] })

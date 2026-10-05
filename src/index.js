@@ -348,19 +348,25 @@ async function queue(batch, env, ctx) {
     return handleDeadLetterBatch(batch, env, supabase, emailService)
   }
 
-  const { generateFix, generateBadge } = require('./controllers/scan.controller')
+  const { generateFix, generateBadge, runAtsScan } = require('./controllers/scan.controller')
   const supabase = getSupabase(env)
 
   for (const message of batch.messages) {
-    const { type, scanId } = message.body || {}
-    if (!scanId || (type !== 'generateFix' && type !== 'generateBadge')) {
+    const { type, scanId, anonToken } = message.body || {}
+    if (!scanId || (type !== 'generateFix' && type !== 'generateBadge' && type !== 'runAtsScan')) {
       console.error('Queue message malformed, dropping:', JSON.stringify(message.body))
       message.ack()  // not retryable — will never become valid
       continue
     }
     try {
-      const generator = type === 'generateBadge' ? generateBadge : generateFix
-      const outcome = await generator(env, supabase, scanId)
+      // runAtsScan (the free scan) moved here from ctx.waitUntil, which is killed
+      // ~30s after the response — see createScan's dispatchAtsScan. It is the one
+      // job that also needs the anonymous submitter's raw token (for the
+      // "here is your result" e-mail); it is idempotent per scan (claims the
+      // scan before working), so an at-least-once redelivery is harmless.
+      const outcome = type === 'runAtsScan'
+        ? await runAtsScan(env, supabase, scanId, anonToken || null)
+        : await (type === 'generateBadge' ? generateBadge : generateFix)(env, supabase, scanId)
       if (outcome?.success) {
         console.log(`Queue job succeeded: ${type} ${scanId}`)
       } else {

@@ -162,6 +162,37 @@ async function extractDocxText(bytes) {
   return [...header, ...body, ...footer].join('\n')
 }
 
+// Layout facts the extracted text can't show. Text extraction flattens tables
+// into plain lines and text boxes into plain paragraphs, so a resume built on a
+// two-column table or floating text boxes reads as "clean" text while being
+// exactly the kind of file employer ATS parsers mangle. The raw XML is the only
+// place that is visible. DOCX only: a PDF has no equivalent structure to read.
+// Never throws — a failed inspection means "unknown", not "bad".
+async function inspectDocxStructure(bytes) {
+  try {
+    const zip = await JSZip.loadAsync(bytes)
+    const docXml = zip.file('word/document.xml')
+    if (!docXml) return null
+    let xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
+    // Text boxes and pictures are written twice (mc:Choice + mc:Fallback copy).
+    xml = xml.replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '')
+    const count = re => (xml.match(re) || []).length
+    let columns = 1
+    for (const m of xml.matchAll(/<w:cols\b[^>]*\bw:num="(\d+)"/g)) columns = Math.max(columns, parseInt(m[1], 10) || 1)
+    return {
+      tables:    count(/<w:tbl>/g),
+      textBoxes: count(/<w:txbxContent\b/g),
+      images:    count(/<pic:pic\b/g) + count(/<v:imagedata\b/g),
+      columns,
+    }
+  } catch (_) { return null }
+}
+
+async function inspectStructure(bytes, mimeType) {
+  if (mimeType === 'application/pdf') return null
+  return inspectDocxStructure(bytes)
+}
+
 async function extractText(bytes, mimeType) {
   try {
     if (mimeType === 'application/pdf') {
@@ -319,4 +350,4 @@ function serializeResumeData(resumeData) {
   return lines.join('\n')
 }
 
-module.exports = { extractText, parse, structureBrainDump, serializeResumeData }
+module.exports = { extractText, inspectStructure, parse, structureBrainDump, serializeResumeData }
