@@ -714,6 +714,22 @@ describe('recheckPayment (admin) — PENDING/ABANDONED/FAILED that Paystack says
     expect(t.world.t.payments[0].status).toBe('SUCCESS')
     expect(t.state.queue).toHaveLength(1)
   })
+  it('Webhooks round 4 (G1): accepting a held payment also closes the HELD webhook-inbox row for it', async () => {
+    t = worldSetup({ webhook_events: [
+      { id: 'we1', reference: 'ref1', status: 'HELD', note: 'amount/currency mismatch', event_type: 'charge.success' },
+      { id: 'we2', reference: 'other', status: 'HELD', note: 'amount/currency mismatch', event_type: 'charge.success' },
+    ] }, { paystack: { data: { status: 'success', currency: 'USD', amount: 3100 } } })
+    await t.mod.recheckPayment(t.c({ body: { acceptAmountMismatch: true } }))
+    const rows = t.world.t.webhook_events
+    expect(rows.find(r => r.id === 'we1')).toMatchObject({ status: 'PROCESSED', note: 'resolved — payment is SUCCESS' })
+    expect(rows.find(r => r.id === 'we2').status).toBe('HELD')
+  })
+  it('a recheck that stays held (mismatch not accepted) leaves the HELD inbox row alone', async () => {
+    t = worldSetup({ webhook_events: [{ id: 'we1', reference: 'ref1', status: 'HELD', event_type: 'charge.success' }] },
+      { paystack: { data: { status: 'success', currency: 'USD', amount: 3100 } } })
+    expect((await t.mod.recheckPayment(t.c())).status).toBe(409)
+    expect(t.world.t.webhook_events[0].status).toBe('HELD')
+  })
   it('409s when Paystack says it was not paid', async () => {
     t = worldSetup({}, { paystack: { data: { status: 'abandoned' } } })
     const res = await t.mod.recheckPayment(t.c())

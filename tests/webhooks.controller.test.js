@@ -20,26 +20,30 @@ function seed(over = {}) {
     { cols: ['payment_id'],        where: r => !r.reverses_ledger_id },
     { cols: ['reverses_ledger_id'], where: r => !!r.reverses_ledger_id },
   ]
-  // SECTION 8 AUDIT FIX (bug, fresh pass): stand-in for record_refund_and_total —
-  // marks the event's own row PROCESSED, THEN sums PROCESSED refund.processed rows
-  // for the reference, same order the real function does it in under its row lock.
-  world.rpcs.record_refund_and_total = ({ p_reference, p_event_id }) => {
+  // ROUND 4 (B1/B3): stand-in for record_refund_and_total (migration 0053) — records this event's
+  // amount ONCE in payment_refunds (unique payment_id + event_key), returns the persisted total, and
+  // never touches webhook_events.status. p_count:false returns the total without recording.
+  world.t.payment_refunds = world.t.payment_refunds || []
+  world.rpcs.record_refund_and_total = ({ p_payment_id, p_event_id, p_count = true }) => {
     const row = world.t.webhook_events.find(r => r.id === p_event_id)
-    if (row) { row.status = 'PROCESSED'; row.processed_at = new Date().toISOString() }
-    const total = world.t.webhook_events
-      .filter(r => r.event_type === 'refund.processed' && r.reference === p_reference && r.status === 'PROCESSED')
-      .reduce((sum, r) => sum + (Number(r.payload?.data?.amount) || 0), 0)
+    const amt = Number(row?.payload?.data?.amount)
+    if (p_count && row && Number.isFinite(amt) &&
+        !world.t.payment_refunds.some(r => r.payment_id === p_payment_id && r.event_key === row.event_key))
+      world.t.payment_refunds.push({ payment_id: p_payment_id, event_key: row.event_key, amount_cents: amt })
+    const total = world.t.payment_refunds.filter(r => r.payment_id === p_payment_id).reduce((n, r) => n + r.amount_cents, 0)
     return { data: total, error: null }
   }
   return world
 }
 
 function harness(world, opts = {}) {
-  const state = { queue: [], alerts: [], conversions: [], kv: new Map(), order: [] }
+  const state = { queue: [], alerts: [], conversions: [], kv: new Map(), order: [], refunds: opts.refunds || [], refundLookups: 0 }
   const { mod, restore } = loadWithStubs('controllers/webhooks.controller.js', {
     'config/supabase.js': { getSupabase: () => world.db },
     'services/email.service.js': { sendOwnerAlert: async (env, subject, message, opts) => { state.alerts.push({ subject, message, opts }); return true } },
     'services/referral.service.js': { recordConversion: async (db, payment) => { state.order.push('commission'); state.conversions.push(payment.id); return { ok: true } } },
+    // Paystack's refund list (the authoritative total processRefund consults when the local one falls short).
+    'services/paystack.service.js': { listRefunds: async () => { state.refundLookups++; if (opts.refundListError) throw opts.refundListError; return { data: state.refunds } } },
   })
 
   async function fire(event, { signature, headers = {}, rawBody } = {}) {
@@ -673,5 +677,113 @@ describe('round 3 — inbox notes, reminders, redaction', () => {
     const out = mod0.redactEvent({ event: 'charge.success', data: { reference: 'r', amount: 1, ip_address: '1.2.3.4', receipt_number: '99', authorization: { x: 1 }, customer: { email: 'a@b.c' }, transaction: { ip_address: '5.6.7.8' } } })
     expect(out.data).toEqual({ reference: 'r', amount: 1, transaction: {} })
     restore()
+  })
+})
+
+
+// ── Round 4 (section 8, independent pass) ─────────────────────────────────────
+describe('round 4 — B1: the inbox row is not marked PROCESSED before the sale is reversed', () => {
+  function paidWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  const full = { event: 'refund.processed', data: { id: 5, transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: '2900', currency: 'USD' } }
+
+  it('a reversePayment failure that ALSO defeats markEvent leaves the row re-runnable, and Paystack\'s redelivery reverses the sale', async () => {
+    const w = paidWorld(); t = harness(w)
+    w.failNext('payments', 'update', { message: 'db blip' })            // reversePayment's REFUNDED flip throws …
+    w.failNext('webhook_events', 'update', { message: 'db blip' })      // … and so does recording FAILED
+    expect((await t.fire(full)).status).toBe(500)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    // The bug: the RPC had already flipped this to PROCESSED, so the redelivery below was answered "done".
+    expect(w.t.webhook_events[0].status).not.toBe('PROCESSED')
+    expect((await t.fire(full)).status).toBe(200)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(w.t.webhook_events[0].status).toBe('PROCESSED')
+  })
+  it('the recorded refund amount survives a failed attempt without being counted twice on the retry', async () => {
+    const w = paidWorld(); t = harness(w)
+    const half = { event: 'refund.processed', data: { id: 6, transaction_reference: 'ref-1', refund_reference: 'rf-a', amount: '1450', currency: 'USD' } }
+    w.failNext('payments', 'update', { message: 'db blip' })
+    await t.fire(half)                                                  // partial path never updates payments, so this failure is consumed later
+    await t.fire(half); await t.fire(half)
+    expect(w.t.payment_refunds).toHaveLength(1)
+  })
+})
+
+describe('round 4 — B3: the refund total does not depend on inbox rows that get pruned', () => {
+  it('a second partial refund still completes the total after the first one\'s inbox row is long gone', async () => {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    w.t.payment_refunds.push({ payment_id: 'pay1', event_key: 'refund.processed:rf-old', amount_cents: 1000 })   // webhook_events is empty (pruned)
+    t = harness(w)
+    await t.fire({ event: 'refund.processed', data: { id: 8, transaction_reference: 'ref-1', refund_reference: 'rf-new', amount: '1900', currency: 'USD' } })
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+})
+
+describe('round 4 — B5: two equal partial refunds with no id of any kind', () => {
+  function paidWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  // Byte-identical: no data.id, refund_reference null — exactly what Paystack's own sample shows.
+  const half = { event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: null, amount: '1450', currency: 'USD' } }
+
+  it('the second equal refund is run again (not swallowed as a duplicate) and the Paystack total reverses the sale', async () => {
+    const w = paidWorld(); t = harness(w, { refunds: [{ status: 'processed', amount: 1450, currency: 'USD' }] })
+    await t.fire(half)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    t.state.refunds.push({ status: 'processed', amount: 1450, currency: 'USD' })      // the second half completes at Paystack
+    await t.fire(half)                                                                // same key, same bytes
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(w.t.payment_refunds).toHaveLength(0)                                       // never added to the local total
+  })
+  it('a plain duplicate delivery of ONE such refund is not double-counted', async () => {
+    const w = paidWorld(); t = harness(w, { refunds: [{ status: 'processed', amount: 1450, currency: 'USD' }] })
+    await t.fire(half); await t.fire(half); await t.fire(half)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+  })
+  it('with the Paystack lookup down, an ambiguous partial is only ever judged on its own amount (never over-reverses)', async () => {
+    const w = paidWorld(); t = harness(w, { refundListError: new Error('Paystack down') })
+    await t.fire(half); await t.fire(half)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
+  })
+  it('a FULL refund by our own books never calls Paystack', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire({ event: 'refund.processed', data: { id: 1, transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: '2900', currency: 'USD' } })
+    expect(t.state.refundLookups).toBe(0)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+  it('refundIsAmbiguous: true only with neither an id nor a refund_reference', () => {
+    const { mod: m, restore } = pure()
+    expect(m.refundIsAmbiguous({ data: { amount: '1' } })).toBe(true)
+    expect(m.refundIsAmbiguous({ data: { id: 1 } })).toBe(false)
+    expect(m.refundIsAmbiguous({ data: { refund_reference: 'r' } })).toBe(false)
+    restore()
+  })
+  it('a non-ambiguous redelivery is still answered "done" without re-running anything', async () => {
+    const w = paidWorld(); t = harness(w)
+    const ev = { event: 'refund.processed', data: { id: 3, transaction_reference: 'ref-1', refund_reference: 'rf-3', amount: '2900', currency: 'USD' } }
+    await t.fire(ev); await t.fire(ev)
+    expect(t.state.alerts.filter(a => /sale reversed/i.test(a.subject))).toHaveLength(1)
+  })
+})
+
+describe('round 4 — B6: the global alert ceiling does not silence the reference it turned away', () => {
+  it('a reference denied by the hourly ceiling can alert again once the ceiling has room', async () => {
+    const w = seed(); t = harness(w)
+    const unknown = n => chargeSuccess({ reference: `nope-${n}`, amount: 100 }, 5000 + n)
+    for (let i = 1; i <= 21; i++) await t.fire(unknown(i))
+    expect(t.state.alerts.filter(a => /unknown reference/i.test(a.subject))).toHaveLength(20)
+    // The 21st was turned away by the ceiling — its own cooldown must not have been taken.
+    expect(t.state.kv.has('webhook-alert-cooldown:unknown-reference:nope-21')).toBe(false)
+    expect(t.state.kv.has('webhook-alert-cooldown:unknown-reference:nope-20')).toBe(true)
   })
 })

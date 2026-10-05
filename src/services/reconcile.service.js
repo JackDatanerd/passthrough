@@ -489,7 +489,82 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
   return result
 }
 
+// ── Missing partner commissions ────────────────────────────────────────────
+// Webhooks round 4 (B4). recordConversion NEVER throws: a failed ledger write comes back as
+// { ok: false } and the webhook (like verifyPayment) carries on, answers 200 and marks the event
+// PROCESSED — so Paystack never redelivers it, and settlePayment only re-attempts a conversion for
+// the one call that flipped/claimed the payment. The owner is paged (notifyConversionFailure) and
+// POST /:reference/reconcile repairs it, but that is a human having to notice an email: a transient
+// Supabase error at exactly that moment cost a partner their commission until someone did.
+//
+// This hourly sweep closes the loop: a SUCCESS payment that carries a referral code but has no
+// original ledger row (or one whose usage counter was never bumped, usage_counted = false) is
+// re-run through recordConversion, which is idempotent (unique original ledger row per payment).
+// Payments whose commission was deliberately not recorded (code or partner deleted, bad rate) come
+// back ok with recorded:false and are simply re-checked until they leave the look-back window — a
+// couple of cheap lookups per run, bounded by MAX_COMMISSION_REPAIRS_PER_RUN.
+//
+// `env` is deliberately NOT passed to recordConversion: with it, a persistent failure would page the
+// owner on every hourly run (its alert has no cooldown). This sweep reports instead, once per
+// payment per week for failures, plus one summary for what it actually recovered.
+const COMMISSION_MIN_AGE_MS   = 15 * 60 * 1000
+const COMMISSION_LOOKBACK_MS  = 3 * 24 * 60 * 60 * 1000
+const MAX_COMMISSION_REPAIRS_PER_RUN = 20
+
+async function sweepMissingCommissions(env, supabase, { now = Date.now(), alert = true } = {}) {
+  const result = { checked: 0, missing: 0, recovered: [], failed: [], error: null }
+  const { data: pays, error } = await supabase.from('payments')
+    .select('id, paystack_ref, scan_id, status, amount_cents, currency, referral_code_id, referral_reservation_id, user_id, created_at')
+    .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
+    .lt('created_at', new Date(now - COMMISSION_MIN_AGE_MS).toISOString())
+    .gt('created_at', new Date(now - COMMISSION_LOOKBACK_MS).toISOString())
+    .order('created_at', { ascending: false }).limit(200)
+  if (error) { result.error = error.message; return result }
+  const candidates = (pays || []).filter(p => p.referral_code_id)
+  result.checked = candidates.length
+  if (!candidates.length) return result
+
+  const { data: ledger, error: ledErr } = await supabase.from('commission_ledger')
+    .select('payment_id, usage_counted').in('payment_id', candidates.map(p => p.id)).is('reverses_ledger_id', null)
+  if (ledErr) { result.error = ledErr.message; return result }
+  const have = new Map((ledger || []).map(l => [l.payment_id, l.usage_counted]))
+  const todo = candidates.filter(p => !have.has(p.id) || have.get(p.id) === false).slice(0, MAX_COMMISSION_REPAIRS_PER_RUN)
+  result.missing = todo.length
+
+  for (const payment of todo) {
+    try {
+      const conv = await referralService.recordConversion(supabase, payment, null)
+      if (conv.ok && (conv.recorded || conv.usageRepaired)) result.recovered.push({ reference: payment.paystack_ref, scanId: payment.scan_id })
+      else if (!conv.ok) result.failed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, reason: conv.reason, error: conv.error })
+    } catch (err) {
+      result.failed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, reason: 'exception', error: err.message })
+    }
+  }
+
+  if (alert && (result.recovered.length || result.failed.length)) {
+    try {
+      const emailService = require('./email.service')
+      const kv = env.RATE_LIMIT_KV
+      const freshFailures = []
+      for (const f of result.failed) {
+        const key = `commission-sweep-failed:${f.reference}`
+        try { if (kv && await kv.get(key)) continue; if (kv) await kv.put(key, '1', { expirationTtl: 7 * 24 * 3600 }) } catch (_) { /* over-alert rather than go silent */ }
+        freshFailures.push(f)
+      }
+      if (result.recovered.length || freshFailures.length)
+        await emailService.sendOwnerAlert(env,
+          `Commission sweep: ${result.recovered.length} recovered, ${freshFailures.length} still failing`,
+          `These referred sales were paid but had no commission recorded (a ledger write failed after the payment settled):\n\n` +
+          [...result.recovered.map(r => `RECOVERED  ${r.reference}  scan ${r.scanId}`),
+           ...freshFailures.map(f => `FAILING    ${f.reference}  scan ${f.scanId}  step ${f.reason}: ${f.error}`)].join('\n') +
+          (freshFailures.length ? `\n\nFailures are retried hourly for 3 days and reported once. Manual retry: POST /api/payments/<reference>/reconcile (admin).` : ''))
+    } catch (_) { /* alerting is best effort */ }
+  }
+  return result
+}
+
 module.exports = {
+  sweepMissingCommissions, COMMISSION_MIN_AGE_MS, COMMISSION_LOOKBACK_MS, MAX_COMMISSION_REPAIRS_PER_RUN,
   sweepReversedPayments, REVERSAL_LOOKBACK_MS, REVERSAL_RECHECK_MS, MAX_REVERSAL_CHECKS_PER_RUN,
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
   sweepStalePendingPayments, PENDING_ABANDON_AGE_MS,

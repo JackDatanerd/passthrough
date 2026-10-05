@@ -1,0 +1,59 @@
+Section 8 (Webhooks) — round 4 (fresh independent audit of webhooks.controller.js, webhooks.routes.js)
+Base: b1651af "Profile & Dashboard: scan quota, saved-profile editor, ..."
+
+APPLY MIGRATION 0053_webhooks_round4.sql BEFORE (or together with) DEPLOYING THE CODE.
+The code degrades safely if the migration is late: the refund RPC call falls back to the 0042 signature.
+
+GAP
+G1  A HELD webhook event (amount/currency mismatch) was never closed out. After Admin -> Payments -> Recheck
+    (accept amount) settled the payment, the inbox row stayed HELD forever: the dashboard "needs attention"
+    count never cleared and, every 3 days, the owner got "a customer may have paid and received nothing" about a
+    payment that had been delivered. closeResolvedHeldEvents() now closes a HELD row (-> PROCESSED, note
+    "resolved — payment is X") once its payment is SUCCESS / DISPUTED / REFUNDED. Called by the admin Recheck
+    (immediate) and by the hourly re-drive (covers browser verify and sweeps). The day-old escalation walks an
+    ordered window of 50 (was an un-ordered limit(10)), skips rows in cooldown, and sends at most 10 per run.
+
+BUGS
+B1  record_refund_and_total (0042) flipped the event's inbox row to PROCESSED BEFORE the sale was reversed. If
+    reversePayment threw and markEvent(FAILED) failed in the same outage, the row stayed PROCESSED, Paystack's
+    redelivery was answered "done", and the hourly re-drive (FAILED/RECEIVED only) never looked at it: a refunded
+    sale stayed SUCCESS. The RPC now only RECORDS the amount; handlePaystack marks PROCESSED after the work.
+B2  The hourly re-drive's oldest-first limit(30) window was never filtered, so rows at the attempt cap (never
+    pruned) and rows without a payload piled up at its front and starved every newer failure. The window now
+    selects only attempts < MAX_REDRIVES with a payload; exhausted rows are reported by a separate query
+    (newest first, once per row per week).
+B3  The partial-refund running total was a SUM over webhook_events rows, which the 90-day prune deletes: a later
+    partial refund saw an understated total and never reversed the sale. Amounts now live in payment_refunds
+    (migration 0053; unique per payment + event key; backfilled from existing PROCESSED rows).
+B4  recordConversion never throws — a failed ledger write returns ok:false, the webhook answers 200 and Paystack
+    never retries; only the one call that flipped/claimed the payment ever attempts the commission. A transient
+    DB error therefore cost a partner their commission until a human acted on the owner email.
+    New sweepMissingCommissions (reconcile.service, hourly via the webhook maintenance job): SUCCESS payments with a
+    referral code and no original ledger row (or usage_counted=false) in the last 3 days are re-run through the
+    idempotent recordConversion; capped at 20/run; failures reported once per payment per week, recoveries in one
+    summary. env is deliberately not passed (recordConversion's own failure alert has no cooldown).
+B5  A refund event with neither data.id nor refund_reference shares its key with an equal-amount sibling, so the
+    second of two equal partial refunds (2 x 50%) deduped as "seen" and never summed to a full refund. Such events
+    are now re-run when seen again (refundIsAmbiguous), are not added to the local total (a duplicate delivery would
+    double-count) and take the authoritative total from Paystack's refund list (only consulted when the local
+    total falls short; lookup failure keeps the conservative own-amount judgement).
+B6  alertAllowedFor took the per-reference cooldown BEFORE the global hourly ceiling, so a reference the ceiling
+    turned away was still silenced for 30 minutes. The cooldown is now peeked, then the ceiling, then taken.
+B7  (found while tracing B1) migration 0042 left record_refund_and_total at Supabase's default EXECUTE grant, i.e.
+    callable by anon/authenticated through PostgREST — a security-definer function that locks payment rows and
+    wrote webhook_events. 0053 locks it to service_role like every other RPC (see 0023).
+
+FILES
+src/controllers/webhooks.controller.js   B1 B2 B3 B5 B6 G1 (+ exports closeResolvedHeldEvents, refundIsAmbiguous)
+src/controllers/payments.controller.js   G1 (Recheck closes the HELD inbox row)
+src/services/reconcile.service.js        B4 sweepMissingCommissions
+src/index.js                             wires B4 + G1 logging into webhookMaintenanceSweep
+supabase/migrations/0053_webhooks_round4.sql   payment_refunds, new record_refund_and_total, grants (B1 B3 B7)
+tests/webhooks.controller.test.js, tests/webhooks.admin.test.js, tests/payments.controller.test.js,
+tests/reconcile.service.test.js, tests/webhooks.migration0053.test.js (new)
+
+VERIFICATION
+Migration 0053 was run against a real Postgres (pglite) on top of 0042: backfill, idempotent re-run, one function
+left (old overload dropped), amount recorded once per event, p_count=false, status untouched, anon cannot execute.
+Backend suite: 31 new tests, all passing; lint clean. The only failures (23 files / 36 tests) are the frontend
+suite's pre-existing missing-dependency/timing failures, identical on the untouched clone.

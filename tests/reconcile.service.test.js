@@ -599,3 +599,75 @@ describe('sweepReversedPayments — Paystack refunded it, but we never heard', (
     expect(out.checked).toBe(1)
   })
 })
+
+
+describe('sweepMissingCommissions (Webhooks round 4, B4)', () => {
+  const CODE = { id: 'rc1', partner_id: 'p1', code: 'PARTNER' }
+  function setupCommissions({ payments, ledger = [], conv } = {}) {
+    const state = { alerts: [], conversions: [], kv: new Map(), queries: [] }
+    const db = createFakeSupabase(q => {
+      state.queries.push(q)
+      if (q.table === 'payments' && q.op === 'select') return { data: payments, error: null }
+      if (q.table === 'commission_ledger' && q.op === 'select') return { data: ledger, error: null }
+      return undefined
+    })
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
+      'services/referral.service.js': { recordConversion: async (d, p, env) => { state.conversions.push({ id: p.id, env }); return conv ? conv(p) : { ok: true, recorded: true } } },
+      'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
+    })
+    const env = { RATE_LIMIT_KV: { get: async k => state.kv.get(k) ?? null, put: async (k, v) => { state.kv.set(k, v) } } }
+    return { run: () => mod.sweepMissingCommissions(env, db, { now: NOW }), state, restore, db }
+  }
+  const rp = (id, over = {}) => ({ id, paystack_ref: 'ref-' + id, scan_id: 's-' + id, status: 'SUCCESS', amount_cents: 2900, currency: 'USD', referral_code_id: CODE.id, created_at: minsAgo(120), ...over })
+
+  it('re-runs recordConversion for a referred SUCCESS payment with no ledger row, and reports the recovery', async () => {
+    t = setupCommissions({ payments: [rp('a'), rp('b')], ledger: [{ payment_id: 'b', usage_counted: true }] })
+    const r = await t.run()
+    expect(t.state.conversions.map(c => c.id)).toEqual(['a'])
+    expect(r.recovered).toEqual([{ reference: 'ref-a', scanId: 's-a' }])
+    expect(t.state.alerts[0].subject).toMatch(/1 recovered/)
+  })
+  it('also repairs a ledger row whose usage counter was never bumped (usage_counted = false)', async () => {
+    t = setupCommissions({ payments: [rp('a')], ledger: [{ payment_id: 'a', usage_counted: false }], conv: () => ({ ok: true, recorded: false, usageRepaired: true }) })
+    const r = await t.run()
+    expect(r.recovered).toHaveLength(1)
+  })
+  it('leaves fully recorded commissions alone and sends nothing', async () => {
+    t = setupCommissions({ payments: [rp('a')], ledger: [{ payment_id: 'a', usage_counted: true }] })
+    const r = await t.run()
+    expect(t.state.conversions).toHaveLength(0)
+    expect(r.missing).toBe(0)
+    expect(t.state.alerts).toHaveLength(0)
+  })
+  it('does NOT pass env to recordConversion (its own alert has no cooldown and would page every hour)', async () => {
+    t = setupCommissions({ payments: [rp('a')] })
+    await t.run()
+    expect(t.state.conversions[0].env).toBeNull()
+  })
+  it('a persistent failure is reported ONCE, not on every hourly run', async () => {
+    t = setupCommissions({ payments: [rp('a')], conv: () => ({ ok: false, reason: 'ledger-insert', error: 'connection reset' }) })
+    const a = await t.run(); await t.run()
+    expect(a.failed).toHaveLength(1)
+    expect(t.state.alerts.filter(x => /still failing/.test(x.subject))).toHaveLength(1)
+  })
+  it('a deliberately-unrecorded commission (code deleted) is neither recovered nor a failure', async () => {
+    t = setupCommissions({ payments: [rp('a')], conv: () => ({ ok: true, recorded: false, reason: 'code-not-found' }) })
+    const r = await t.run()
+    expect(r.recovered).toHaveLength(0); expect(r.failed).toHaveLength(0)
+    expect(t.state.alerts).toHaveLength(0)
+  })
+  it('is capped per run, and only looks at SUCCESS payments inside the look-back window', async () => {
+    t = setupCommissions({ payments: Array.from({ length: 30 }, (_, i) => rp('x' + i)) })
+    const r = await t.run()
+    expect(r.missing).toBe(20)
+    const sel = t.state.queries.find(q => q.table === 'payments')
+    expect(sel.filters).toContainEqual(['eq', 'status', 'SUCCESS'])
+    expect(sel.filters).toContainEqual(['not', 'referral_code_id', 'is', null])
+    expect(sel.filters.filter(f => f[1] === 'created_at').map(f => f[0]).sort()).toEqual(['gt', 'lt'])
+  })
+  it('a payments query error is returned, not thrown', async () => {
+    const db = createFakeSupabase(q => (q.table === 'payments' ? { data: null, error: { message: 'down' } } : undefined))
+    const { mod, restore } = loadWithStubs('services/reconcile.service.js', {})
+    try { expect((await mod.sweepMissingCommissions({}, db, { now: NOW })).error).toBe('down') } finally { restore() }
+  })
+})

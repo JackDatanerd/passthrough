@@ -163,3 +163,74 @@ describe('round 3 — redriveStaleEvents (dead-letter handling)', () => {
     expect(t.alerts.filter(x => /held payment event/i.test(x.subject))).toHaveLength(1)
   })
 })
+
+
+describe('round 4 — B2: exhausted rows cannot starve the re-drive window', () => {
+  const envWith = kv => ({ RATE_LIMIT_KV: kv })
+  const ctx = { waitUntil: () => {} }
+  it('the re-drive query only selects rows that can actually run (attempts under the cap, payload present)', async () => {
+    t = setup([attentionEvent(1)])
+    await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
+    const main = t.world.calls.find(q => q.table === 'webhook_events' && q.op === 'select' && q.limit === 30)
+    expect(main.filters).toContainEqual(['lt', 'attempts', 8])
+    expect(main.filters).toContainEqual(['not', 'payload', 'is', null])
+  })
+  it('a fresh failure is recovered even with exhausted rows sitting in the table, and each exhausted row is reported once', async () => {
+    const stuck = n => attentionEvent(n, { attempts: 8, received_at: ago(5 * 24 * 3600_000) })
+    t = setup([stuck(1), stuck(2), stuck(3), attentionEvent(4, { attempts: 2 })])
+    const kv = kvMap()
+    const a = await t.mod.redriveStaleEvents(envWith(kv), ctx)
+    const b = await t.mod.redriveStaleEvents(envWith(kv), ctx)
+    expect(a.redriven).toEqual([4])
+    expect(a.exhausted).toHaveLength(3)
+    expect(b.exhausted).toHaveLength(0)
+    expect(t.world.t.webhook_events.find(e => e.id === 4).status).toBe('PROCESSED')
+  })
+})
+
+describe('round 4 — G1: a HELD event is closed out once its payment is settled', () => {
+  const envWith = kv => ({ RATE_LIMIT_KV: kv })
+  const ctx = { waitUntil: () => {} }
+  const held = (id, ref, over = {}) => ev(id, { status: 'HELD', reference: ref, received_at: ago(30 * 3600_000), note: 'amount/currency mismatch', ...over })
+
+  it('closes HELD rows whose payment is SUCCESS / DISPUTED / REFUNDED, leaves the ones still waiting', async () => {
+    t = setup([held(1, 'r1'), held(2, 'r2'), held(3, 'r3'), held(4, 'r4')])
+    t.world.t.payments.push(
+      { id: 'p1', paystack_ref: 'r1', status: 'SUCCESS' }, { id: 'p2', paystack_ref: 'r2', status: 'PENDING' },
+      { id: 'p3', paystack_ref: 'r3', status: 'REFUNDED' }, { id: 'p4', paystack_ref: 'r4', status: 'DISPUTED' })
+    const closed = await t.mod.closeResolvedHeldEvents(t.world.db)
+    expect(closed.sort()).toEqual([1, 3, 4])
+    const row = id => t.world.t.webhook_events.find(e => e.id === id)
+    expect(row(1)).toMatchObject({ status: 'PROCESSED', error: null, note: 'resolved — payment is SUCCESS' })
+    expect(row(2).status).toBe('HELD')
+  })
+  it('scoped to one reference when given (what the admin Recheck does)', async () => {
+    t = setup([held(1, 'r1'), held(2, 'r2')])
+    t.world.t.payments.push({ id: 'p1', paystack_ref: 'r1', status: 'SUCCESS' }, { id: 'p2', paystack_ref: 'r2', status: 'SUCCESS' })
+    expect(await t.mod.closeResolvedHeldEvents(t.world.db, { reference: 'r1' })).toEqual([1])
+    expect(t.world.t.webhook_events.find(e => e.id === 2).status).toBe('HELD')
+  })
+  it('the hourly job closes a resolved HELD row and does NOT escalate it as "a customer may have paid and received nothing"', async () => {
+    t = setup([held(1, 'r1'), held(2, 'r2')])
+    t.world.t.payments.push({ id: 'p1', paystack_ref: 'r1', status: 'SUCCESS' }, { id: 'p2', paystack_ref: 'r2', status: 'PENDING' })
+    const r = await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
+    expect(r.heldClosed).toEqual([1])
+    expect(r.heldEscalated).toEqual([2])
+    expect(t.alerts.filter(x => /held payment event/i.test(x.subject))).toHaveLength(1)
+    expect(t.alerts.find(x => /held payment event/i.test(x.subject)).message).toMatch(/r2/)
+  })
+  it('escalation is capped per run and walks past rows already inside their cooldown', async () => {
+    const rows = Array.from({ length: 14 }, (_, i) => held(i + 1, `r${i + 1}`))
+    t = setup(rows)
+    t.world.t.payments.push(...rows.map(r => ({ id: 'p' + r.id, paystack_ref: r.reference, status: 'PENDING' })))
+    const kv = kvMap()
+    for (let i = 1; i <= 10; i++) await kv.put(`webhook-alert-cooldown:held-escalate:${i}`, '1')   // the first ten were alerted recently
+    const r = await t.mod.redriveStaleEvents(envWith(kv), ctx)
+    expect(r.heldEscalated.sort((a, b) => a - b)).toEqual([11, 12, 13, 14])
+  })
+  it('never throws when the payments lookup fails', async () => {
+    t = setup([held(1, 'r1')])
+    t.world.failNext('payments', 'select', { message: 'boom' })
+    expect(await t.mod.closeResolvedHeldEvents(t.world.db)).toEqual([])
+  })
+})

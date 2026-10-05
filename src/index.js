@@ -241,8 +241,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       try {
         const r = await require('./controllers/webhooks.controller').redriveStaleEvents(env, ctx)
         if (r.error) console.error('Webhook re-drive query:', r.error)
-        else if (r.redriven.length || r.exhausted.length || r.heldEscalated.length)
-          console.log(`Webhook re-drive: ${r.redriven.length} re-run, ${r.recovered.length} recovered, ${r.exhausted.length} exhausted, ${r.heldEscalated.length} held escalated`)
+        else if (r.redriven.length || r.exhausted.length || r.heldEscalated.length || (r.heldClosed || []).length)
+          console.log(`Webhook re-drive: ${r.redriven.length} re-run, ${r.recovered.length} recovered, ${r.exhausted.length} exhausted, ${(r.heldClosed || []).length} held closed, ${r.heldEscalated.length} held escalated`)
       } catch (err) {
         console.error('Webhook re-drive error:', err.message)
       }
@@ -254,6 +254,16 @@ async function webhookMaintenanceSweep(event, env, ctx) {
           console.log(`Refund reconciliation: checked ${r.checked}, ${r.reversed.length} reversed, ${r.partial.length} partial, ${r.failed.length} failed`)
       } catch (err) {
         console.error('Refund reconciliation error:', err.message)
+      }
+      // Webhooks round 4 (B4): a commission whose ledger write failed after the payment settled is
+      // never retried by Paystack (the webhook was answered 200) — re-run it here.
+      try {
+        const r = await require('./services/reconcile.service').sweepMissingCommissions(env, getSupabase(env))
+        if (r.error) console.error('Commission sweep query:', r.error)
+        else if (r.recovered.length || r.failed.length)
+          console.log(`Commission sweep: checked ${r.checked}, ${r.missing} missing, ${r.recovered.length} recovered, ${r.failed.length} failed`)
+      } catch (err) {
+        console.error('Commission sweep error:', err.message)
       }
       try {
         const r = await require('./services/fulfillment.service').recoverLostReceipts(env, getSupabase(env))

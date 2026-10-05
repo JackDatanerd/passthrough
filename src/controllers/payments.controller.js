@@ -679,6 +679,13 @@ async function recheckPayment(ctx) {
     reference, outcome: r.outcome, acceptAmountMismatch: !!body.acceptAmountMismatch
   })
 
+  // Webhooks round 4 (G1): the amount was accepted / the payment settled, so the inbox row that was
+  // HELD for it is resolved — close it now so the dashboard count and the day-old escalation clear.
+  if (r.outcome !== 'NOT_PAID' && r.outcome !== 'MISMATCH') {
+    try { await require('./webhooks.controller').closeResolvedHeldEvents(supabase, { reference }) }
+    catch (err) { console.error('recheck: closing HELD webhook events failed:', err.message) }
+  }
+
   if (r.outcome === 'NOT_PAID')
     return ctx.json({ success: false, message: `Paystack reports this transaction as "${r.paystackStatus}" — not paid.`, data: r }, 409)
   if (r.outcome === 'MISMATCH')
