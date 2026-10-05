@@ -394,7 +394,7 @@ async function processRefund(c, supabase, event, eventId) {
     return { status: 'PROCESSED', note: `partial refund — alerted (${total} of ${payment.amount_cents})` }
   }
 
-  const done = await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', refundReference: refundRef })
+  const done = await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', refundReference: refundRef, env: c.env })
   alert(c, 'Paystack refund processed — sale reversed',
     `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\n\n` +
     `payment → REFUNDED: ${done.transitioned ? 'yes' : 'already'}\n` +

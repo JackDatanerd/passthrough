@@ -199,6 +199,12 @@ wrangler secret put PAYSTACK_WEBHOOK_IPS
 #   node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 wrangler secret put VERIFY_PREVIEW_KEY
 
+# Minimum partner payout, in cents (e.g. 2000 = $20.00). Unset or 0 = no minimum.
+# Below it, a partner's payable commission is shown as "carried forward" instead of
+# "ready to pay", and a cycle-scoped payout is refused (an ad hoc payout is the
+# deliberate override). Can also be set as a plain [vars] entry in wrangler.toml.
+wrangler secret put COMMISSION_MIN_PAYOUT_CENTS
+
 # Lets specific IPs (comma-separated) skip every rate limiter entirely —
 # for load-testing or manual QA against production limits. Unset = no
 # bypass = normal behavior for everyone, which is the fail-safe default.

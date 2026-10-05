@@ -15,5 +15,13 @@
 /v/*
   X-Robots-Tag: noindex, nofollow
 
+# Partner pages are reached by a bearer token in the query string: never cache them,
+# never index them, never leak the URL (token included) in a Referer header.
+/partner/*
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

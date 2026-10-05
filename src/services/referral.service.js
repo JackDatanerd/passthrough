@@ -308,6 +308,7 @@ async function recordConversionInner(supabase, payment, env) {
       gross_amount_cents:      payment.amount_cents,
       commission_rate:         commissionRate,
       commission_amount_cents: commissionAmountCents,
+      currency:                payment.currency || (env && env.PAYSTACK_CURRENCY) || c.CURRENCY,
       usage_counted:           false
     }).select('id').single())
 
@@ -341,6 +342,23 @@ async function recordConversionInner(supabase, payment, env) {
       return { ok: false, recorded: !repairOnly, reason: 'usage-increment', error: rpcRes.error.message }
     }
     if (repairOnly) return { ok: true, recorded: false, reason: 'duplicate', usageRepaired: true }
+
+    // Refund-before-commission race: a refund can land between the payment flip to
+    // SUCCESS and this write. reversePayment found no original to reverse, so the
+    // commission we just wrote would sit positive on a REFUNDED sale forever. Re-read
+    // the payment's CURRENT status (the `payment` object here is a stale snapshot) and,
+    // if it was refunded meanwhile, reverse straight away. Idempotent (unique reversal
+    // index), so a reversePayment arriving at the same moment is harmless.
+    try {
+      const cur = await supabase.from('payments').select('status').eq('id', payment.id).maybeSingle()
+      if (cur?.data?.status === 'REFUNDED') {
+        const { reverseCommission } = require('./fulfillment.service')
+        const rev = await reverseCommission(supabase, payment.id, 'REFUND')
+        return { ok: true, recorded: true, reversedImmediately: !!rev.reversed }
+      }
+    } catch (err) {
+      console.error('recordConversion refunded-check:', err.message)   // never fail an already-recorded commission
+    }
     // AUDIT FIX (bug): see the file-level comment above — this is the
     // mitigation for the usage-limit gap. Not gated on `env` being passed
     // for a live fulfilment path specifically; every caller that DOES pass
@@ -431,7 +449,23 @@ async function notifyPartnerConversion(env, supabase, partner, codeRow, commissi
   } catch (_) {}
 }
 
+// A refund/chargeback clawed commission back — tell the partner (their dashboard
+// shows it, but they shouldn't have to notice). Best-effort, never throws; only
+// the live reversal paths pass `env`.
+async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, currency) {
+  try {
+    const { data: partner } = await supabase.from('partners')
+      .select('name, email, payout_details_token, status').eq('id', partnerId).maybeSingle()
+    if (!partner?.email || !partner?.payout_details_token) return
+    const emailService = require('./email.service')
+    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.payout_details_token}`
+    await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
+      commissionCents, currency || env.PAYSTACK_CURRENCY || c.CURRENCY, dashboardUrl)
+  } catch (_) {}
+}
+
 module.exports = {
+  notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
 }

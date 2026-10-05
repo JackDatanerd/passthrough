@@ -9,7 +9,7 @@ import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatRate } from '../../lib/utils'
+import { formatCents, formatRate, formatDate } from '../../lib/utils'
 
 function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
@@ -46,11 +46,74 @@ function AddPartnerModal({ onClose, onCreated }) {
   )
 }
 
+const PAGE_SIZE = 25
+const SORTS = {
+  newest:   { label: 'Newest first',        cmp: (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) },
+  name:     { label: 'Name (A–Z)',          cmp: (a, b) => a.name.localeCompare(b.name) },
+  ready:    { label: 'Most ready to pay',   cmp: (a, b) => (b.readyToPayCents || 0) - (a.readyToPayCents || 0) },
+  accruing: { label: 'Most still accruing', cmp: (a, b) => (b.currentCycleAccruedCents || 0) - (a.currentCycleAccruedCents || 0) },
+}
+
+// Pending "become a partner" applications (public form -> POST /partners/apply).
+// Approve creates the partner and emails their payout-details link; reject just closes it.
+function ApplicationsPanel({ onApproved }) {
+  const toast = useToast()
+  const [apps, setApps] = useState([])
+  const [busyId, setBusyId] = useState(null)
+
+  async function load() {
+    try {
+      const res = await api.get('/partners/applications?status=PENDING')
+      setApps(res.data.data)
+    } catch (_) { /* the panel is optional — the partner list still works without it */ }
+  }
+  useEffect(() => { load() }, [])
+
+  async function act(app, action) {
+    setBusyId(app.id)
+    try {
+      await api.post(`/partners/applications/${app.id}/${action}`)
+      toast({ message: action === 'approve' ? `${app.name} approved — payout-details link sent.` : `${app.name}'s application rejected.`, type: 'success' })
+      await load()
+      if (action === 'approve') onApproved()
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || `Failed to ${action} application.`, type: 'error' })
+      load()
+    } finally {
+      setBusyId(null)
+    }
+  }
+
+  if (apps.length === 0) return null
+  return (
+    <div className="border border-amber-200 bg-amber-50 rounded-lg p-4 flex flex-col gap-3">
+      <h2 className="font-semibold text-gray-900">Applications waiting for review ({apps.length})</h2>
+      {apps.map(app => (
+        <div key={app.id} className="bg-white border border-gray-200 rounded-md p-3 flex items-start justify-between gap-3 flex-wrap">
+          <div className="text-sm min-w-0">
+            <div className="font-medium text-gray-900">{app.name} <span className="text-gray-400 font-normal">· {app.email}</span></div>
+            <div className="text-xs text-gray-400">Applied {formatDate(app.createdAt)}{app.website ? ` · ${app.website}` : ''}</div>
+            {app.audience && <p className="text-gray-600 mt-1 whitespace-pre-wrap break-words">{app.audience}</p>}
+            {app.message && <p className="text-gray-500 mt-1 whitespace-pre-wrap break-words">{app.message}</p>}
+          </div>
+          <div className="flex gap-2 shrink-0">
+            <Button size="sm" variant="secondary" disabled={busyId === app.id} onClick={() => act(app, 'reject')}>Reject</Button>
+            <Button size="sm" loading={busyId === app.id} onClick={() => act(app, 'approve')}>Approve</Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export default function AdminPartners() {
   const toast = useToast()
   const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [query, setQuery] = useState('')
+  const [sortKey, setSortKey] = useState('newest')
+  const [page, setPage] = useState(0)
 
   async function load() {
     setLoading(true)
@@ -66,6 +129,14 @@ export default function AdminPartners() {
 
   useEffect(() => { load() }, [])
 
+  const needle = query.trim().toLowerCase()
+  const filtered = partners
+    .filter(p => !needle || p.name.toLowerCase().includes(needle) || p.email.toLowerCase().includes(needle))
+    .sort(SORTS[sortKey].cmp)
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
+  const safePage = Math.min(page, pageCount - 1)
+  const visible = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
+
   const totalReadyToPay = partners.reduce((sum, p) => sum + (p.readyToPayCents || 0), 0)
   const totalAccruing   = partners.reduce((sum, p) => sum + (p.currentCycleAccruedCents || 0), 0)
 
@@ -75,6 +146,8 @@ export default function AdminPartners() {
         <h1 className="text-2xl font-bold text-gray-900">Partners</h1>
         <Button onClick={() => setShowAdd(true)}>Add partner</Button>
       </div>
+
+      <ApplicationsPanel onApproved={load} />
 
       {!loading && partners.length > 0 && (
         <div className="grid sm:grid-cols-3 gap-4">
@@ -107,6 +180,18 @@ export default function AdminPartners() {
       ) : partners.length === 0 ? (
         <p className="text-sm text-gray-500">No partners yet.</p>
       ) : (
+        <>
+        <div className="flex items-center gap-3 flex-wrap">
+          <input type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0) }}
+            placeholder="Search name or email" aria-label="Search partners"
+            className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <select value={sortKey} onChange={e => { setSortKey(e.target.value); setPage(0) }} aria-label="Sort partners"
+            className="text-sm border border-gray-300 rounded-md px-2 py-1.5">
+            {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </select>
+          <span className="text-xs text-gray-400">{filtered.length} of {partners.length}</span>
+        </div>
+        {filtered.length === 0 && <p className="text-sm text-gray-500">No partners match “{query}”.</p>}
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
@@ -120,7 +205,7 @@ export default function AdminPartners() {
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
-              {partners.map(p => (
+              {visible.map(p => (
                 <tr key={p.id}>
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{p.name}</div>
@@ -140,6 +225,9 @@ export default function AdminPartners() {
                     {p.heldCents > 0 && (
                       <div className="text-xs text-gray-400 mt-0.5">{formatCents(p.heldCents, p.currency)} held</div>
                     )}
+                    {p.belowMinimum && (
+                      <div className="text-xs text-amber-600 mt-0.5">{formatCents(p.carriedForwardCents, p.currency)} below minimum — carried forward</div>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-right text-gray-500">
                     {formatCents(p.currentCycleAccruedCents || 0, p.currency)}
@@ -154,6 +242,14 @@ export default function AdminPartners() {
             </tbody>
           </table>
         </div>
+        {pageCount > 1 && (
+          <div className="flex items-center justify-between text-sm text-gray-500">
+            <Button size="sm" variant="secondary" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>← Previous</Button>
+            <span>Page {safePage + 1} of {pageCount}</span>
+            <Button size="sm" variant="secondary" disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)}>Next →</Button>
+          </div>
+        )}
+        </>
       )}
 
       {showAdd && <AddPartnerModal onClose={() => setShowAdd(false)} onCreated={load} />}

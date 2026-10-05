@@ -38,6 +38,7 @@ const Settings       = lazyWithRetry(() => import('./pages/dashboard/Settings'))
 const PaymentHistory  = lazyWithRetry(() => import('./pages/dashboard/PaymentHistory'))
 const PartnerPayoutDetails = lazyWithRetry(() => import('./pages/PartnerPayoutDetails'))
 const PartnerDashboard     = lazyWithRetry(() => import('./pages/PartnerDashboard'))
+const PartnerApply         = lazyWithRetry(() => import('./pages/PartnerApply'))
 // Admin console (upstream Admin-panel work) — lazy like everything else non-landing.
 const AdminLayout        = lazyWithRetry(() => import('./pages/admin/AdminLayout'))
 const AdminDashboard     = lazyWithRetry(() => import('./pages/admin/AdminDashboard'))
@@ -125,6 +126,7 @@ function RoutedApp() {
           <Route path="/payment/success" element={<PaymentSuccess />} />
           <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
           <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
+          <Route path="/partner/apply"          element={<PartnerApply />} />
 
           {/* Protected routes — redirect to /login if no token */}
           <Route path="/dashboard"

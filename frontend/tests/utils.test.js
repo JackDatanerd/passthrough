@@ -138,3 +138,26 @@ describe('downloadBlob', () => {
     }
   })
 })
+
+describe('CSV export (csvCell / toCsv)', () => {
+  it('quotes commas, quotes and newlines', async () => {
+    const { csvCell } = await import('../src/lib/utils')
+    expect(csvCell('a,b')).toBe('"a,b"')
+    expect(csvCell('say "hi"')).toBe('"say ""hi"""')
+    expect(csvCell('line1\nline2')).toBe('"line1\nline2"')
+  })
+  it('neutralises spreadsheet formulas in TEXT cells', async () => {
+    const { csvCell } = await import('../src/lib/utils')
+    for (const bad of ['=1+1', '+SUM(A1)', '-2+3', '@cmd', '\tx'])
+      expect(csvCell(bad).replace(/^"/, '').startsWith("'")).toBe(true)
+  })
+  it('leaves real numbers alone, negatives included', async () => {
+    const { csvCell } = await import('../src/lib/utils')
+    expect(csvCell(-5.8)).toBe('-5.8')
+    expect(csvCell(0)).toBe('0')
+  })
+  it('null/undefined become empty cells; rows join with CRLF', async () => {
+    const { toCsv } = await import('../src/lib/utils')
+    expect(toCsv([['a', null, undefined, 3], ['b']])).toBe('a,,,3\r\nb')
+  })
+})

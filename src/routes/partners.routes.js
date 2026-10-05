@@ -23,6 +23,15 @@ router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 // rateLimiter.js's `click` comment.
 router.post('/track-click', rl.click, c.trackClick)
 
+// Public — "become a partner" application (rate-limited like the other public writes).
+router.post('/apply', rl.partnerWrite, c.applyAsPartner)
+
+// Admin — application review. Registered BEFORE the '/:id' routes below so
+// 'applications' is never parsed as a partner id.
+router.get( '/applications',                    admin, c.adminListApplications)
+router.post('/applications/:id/approve',        admin, validateUuidParam(), c.adminApproveApplication)
+router.post('/applications/:id/reject',         admin, validateUuidParam(), c.adminRejectApplication)
+
 // Admin only
 router.post( '/',                          admin, c.adminCreatePartner)
 router.get(  '/',                          admin, c.adminListPartners)

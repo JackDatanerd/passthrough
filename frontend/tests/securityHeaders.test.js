@@ -26,3 +26,16 @@ describe('SPA Content-Security-Policy (frontend/public/_headers)', () => {
     expect(directive('frame-ancestors')).toBe("frame-ancestors 'none'")
   })
 })
+
+describe('partner pages (bearer token in the query string)', () => {
+  const block = (headers.split(/\r?\n\r?\n/).find(b => /^\s*\/partner\/\*/m.test(b)) || '')
+  it('have their own rule', () => expect(block).not.toBe(''))
+  it('are never cached, never indexed', () => {
+    expect(block).toMatch(/Cache-Control:\s*no-store/i)
+    expect(block).toMatch(/X-Robots-Tag:\s*noindex/i)
+  })
+  it('replace (not append to) the site Referrer-Policy so the token URL never leaks in a Referer', () => {
+    expect(block).toMatch(/^\s*!\s*Referrer-Policy/m)
+    expect(block).toMatch(/Referrer-Policy:\s*no-referrer/i)
+  })
+})

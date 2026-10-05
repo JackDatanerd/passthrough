@@ -429,6 +429,7 @@ async function reverseCommission(supabase, paymentId, reason) {
     gross_amount_cents:    -original.gross_amount_cents,
     commission_rate:       original.commission_rate,
     commission_amount_cents: -original.commission_amount_cents,
+    currency:              original.currency ?? null,
     reverses_ledger_id:    original.id,
     reversal_reason:       reason,
   })
@@ -436,7 +437,17 @@ async function reverseCommission(supabase, paymentId, reason) {
     if (insErr.code === '23505') return { reversed: false, reason: 'already-reversed' }
     throw insErr
   }
-  return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: original.commission_amount_cents }
+  // The sale no longer counts: free the usage slot it consumed on a limited code.
+  // Exactly once — only the call that actually inserted the reversal reaches here.
+  // Best-effort: a failed decrement must never undo or fail the reversal.
+  if (original.usage_counted !== false && original.referral_code_id && typeof supabase.rpc === 'function') {
+    try {
+      const { error: decErr } = await supabase.rpc('decrement_referral_code_usage', { p_code_id: original.referral_code_id })
+      if (decErr) console.error('reverseCommission usage release:', decErr.message)
+    } catch (err) { console.error('reverseCommission usage release:', err.message) }
+  }
+  return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: original.commission_amount_cents,
+    partnerId: original.partner_id, currency: original.currency ?? null }
 }
 
 /**
@@ -447,7 +458,7 @@ async function reverseCommission(supabase, paymentId, reason) {
  * Every step is idempotent, so a redelivered event simply re-checks them.
  * Downloads are deliberately left alone (documented product decision).
  */
-async function reversePayment(supabase, payment, { reason, refundReference = null, now = new Date() }) {
+async function reversePayment(supabase, payment, { reason, refundReference = null, now = new Date(), env = null }) {
   const { revokeVerification, REVOKE_REASON } = require('../lib/verification')
   const patch = { status: 'REFUNDED', refunded_at: now.toISOString() }
   if (refundReference) patch.refund_reference = refundReference
@@ -458,6 +469,13 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
   const transitioned = !!(moved && moved.length)
 
   const ledger = await reverseCommission(supabase, payment.id, reason)
+  // Tell the partner their commission was clawed back (live paths pass `env`).
+  // Best-effort by contract: a notification problem must never fail the reversal itself.
+  if (env && ledger.reversed && ledger.commissionCents > 0) {
+    try {
+      await require('./referral.service').notifyPartnerReversal(env, supabase, ledger.partnerId, ledger.commissionCents, ledger.currency)
+    } catch (err) { console.error('reversePayment partner notice:', err.message) }
+  }
 
   let revoked = false
   if (payment.scan_id) {

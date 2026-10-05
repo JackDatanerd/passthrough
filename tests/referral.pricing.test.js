@@ -173,6 +173,7 @@ describe('recordConversion', () => {
     expect(ins.values).toEqual({
       payment_id: 'pay1', partner_id: 'p1', referral_code_id: 'rc1',
       gross_amount_cents: 1900, commission_rate: 0.2, commission_amount_cents: 380,
+      currency: 'USD',
       usage_counted: false,
     })
     expect(d.calls.find(q => q.op === 'rpc').name).toBe('increment_referral_code_usage')

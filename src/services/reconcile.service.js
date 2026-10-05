@@ -454,7 +454,7 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
           .filter(r => String(r.status || '').toLowerCase() === 'processed' && (!r.currency || r.currency === payment.currency))
           .reduce((sum, r) => sum + (Number.isFinite(Number(r.amount)) ? Number(r.amount) : 0), 0)
         if (payment.amount_cents > 0 && total >= payment.amount_cents) {
-          await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND' })
+          await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', env })
           result.reversed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total })
         } else {
           result.partial.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total, paid: payment.amount_cents })

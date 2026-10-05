@@ -27,7 +27,7 @@ function setup(opts = {}) {
   const c = () => ({
     env,
     req: { param: () => 'p1' },
-    json: (body, status = 200) => ({ body, status }),
+    header: () => {}, json: (body, status = 200) => ({ body, status }),
   })
   return { mod, restore, state, c }
 }
@@ -123,7 +123,7 @@ function setupPayout(opts = {}) {
   const c = (over = {}) => ({
     env,
     req: { param: () => 'p1', json: async () => (over.body ?? {}) },
-    json: (body, status = 200) => ({ body, status }),
+    header: () => {}, json: (body, status = 200) => ({ body, status }),
   })
   return { mod, restore, state, db, c }
 }
@@ -258,7 +258,7 @@ describe('getPartnerDashboard', () => {
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
     })
-    const c = { env: {}, req: { query: () => 'tok123' }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { query: () => 'tok123' }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, db, c }
   }
 
@@ -335,13 +335,28 @@ describe('getPartnerDashboard', () => {
   // buildCyclesSummary/totalConversions — a refund is a second ledger row
   // (reverses_ledger_id set), which must net out of "how many sales" rather
   // than counting as a second conversion.
-  it('totalConversions counts only original sales, not their reversal rows', async () => {
+  it('totalConversions is NET of refunds: a sale and its reversal row count as zero conversions', async () => {
     const { mod, restore, c } = setupDashboard({
       name: 'Coach K', commission_rate: 0.2,
       referral_codes: [],
       commission_ledger: [
         { id: 'l1', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' },
         { id: 'l2', reverses_ledger_id: 'l1', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: null, created_at: '2026-09-02T00:00:00Z' },
+      ],
+      payouts: [],
+    })
+    const r = await mod.getPartnerDashboard(c)
+    expect(r.body.data.stats.totalConversions).toBe(0)
+    restore()
+  })
+
+  it('totalConversions counts an un-refunded original as 1 even when another sale was refunded', async () => {
+    const { mod, restore, c } = setupDashboard({
+      name: 'Coach K', commission_rate: 0.2, referral_codes: [],
+      commission_ledger: [
+        { id: 'l1', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-01T00:00:00Z' },
+        { id: 'l2', reverses_ledger_id: 'l1', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: null, created_at: '2026-09-02T00:00:00Z' },
+        { id: 'l3', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: '2026-09-03T00:00:00Z' },
       ],
       payouts: [],
     })
@@ -401,7 +416,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async (...a) => { state.emailed.push(a); if (opts.emailThrows) throw new Error('mail down') } },
       'lib/crypto.js': { randomToken: () => 'tok-fixed' },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c, db }
   }
 
@@ -443,7 +458,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed' },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreatePartner(c)
     expect(res.status).toBe(400)
     expect(res.body.success).toBe(false)
@@ -468,7 +483,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed' },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     await mod.adminCreatePartner(c)
     expect(seen[0]).toBe('john\\_smith@x.co')
     restore()
@@ -493,7 +508,7 @@ describe('adminUpdatePartner', () => {
         sendPartnerRateChanged:     async (...a) => state.notifications.push({ type: 'rateChanged', to: a[2], from: a[4], toRate: a[5] }),
       },
     })
-    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -592,7 +607,7 @@ describe('adminUpdatePartner', () => {
         sendOwnerAlert:           async () => { throw new Error('resend down') },
       },
     })
-    const res = await mod.adminUpdatePartner({ env: {}, req: { param: () => 'p1', json: async () => ({ status: 'PAUSED' }) }, json: (body, status = 200) => ({ body, status }) })
+    const res = await mod.adminUpdatePartner({ env: {}, req: { param: () => 'p1', json: async () => ({ status: 'PAUSED' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     expect(res.body.success).toBe(true)
     restore()
   })
@@ -615,7 +630,7 @@ describe('adminUpdatePartner', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendPartnerEmailChanged: async () => {}, sendOwnerAlert: async () => {} },
     })
-    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'TAKEN@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'TAKEN@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminUpdatePartner(c)
     expect(res.status).toBe(400)
     expect(state.updateCalled).toBe(false)
@@ -633,7 +648,7 @@ describe('adminUpdatePartner', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendPartnerEmailChanged: async () => {}, sendOwnerAlert: async () => {} },
     })
-    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'OLD@X.CO' }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { param: () => 'p1', json: async () => ({ email: 'OLD@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminUpdatePartner(c)
     expect(res.body.success).toBe(true)
     expect(calls.some(q => q.filters.some(f => f[0] === 'ilike'))).toBe(false)
@@ -645,7 +660,7 @@ describe('adminListPartners', () => {
   function setupList(rows) {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: rows, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: {}, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, c }
   }
 
@@ -710,7 +725,7 @@ describe('adminListPartners', () => {
 
     const db2 = createFakeSupabase(q => (q.table === 'partners' ? { data: rows, error: null } : undefined))
     const kes = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db2 } })
-    const res2 = await kes.mod.adminListPartners({ env: { PAYSTACK_CURRENCY: 'KES' }, req: {}, json: (body, status = 200) => ({ body, status }) })
+    const res2 = await kes.mod.adminListPartners({ env: { PAYSTACK_CURRENCY: 'KES' }, req: {}, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     expect(res2.body.data[0].currency).toBe('KES')
     kes.restore()
   })
@@ -720,7 +735,7 @@ describe('adminGetPartner', () => {
   function setupGet(row) {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: row, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: { param: () => 'p1' }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { param: () => 'p1' }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, db, c }
   }
 
@@ -780,7 +795,7 @@ describe('adminGetPartner', () => {
     const row = { id: 'p1', name: 'X', payouts: [], referral_codes: [], commission_ledger: [] }
     const db2 = createFakeSupabase(q => (q.table === 'partners' ? { data: row, error: null } : undefined))
     const kes = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db2 } })
-    const res2 = await kes.mod.adminGetPartner({ env: { PAYSTACK_CURRENCY: 'KES' }, req: { param: () => 'p1' }, json: (body, status = 200) => ({ body, status }) })
+    const res2 = await kes.mod.adminGetPartner({ env: { PAYSTACK_CURRENCY: 'KES' }, req: { param: () => 'p1' }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     expect(res2.body.data.currency).toBe('KES')
     kes.restore()
   })
@@ -797,7 +812,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async (...a) => state.emailed.push(a) },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c }
   }
 
@@ -848,7 +863,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async () => { throw new Error('mail down') } },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreateReferralCode(c)
     expect(res.body.success).toBe(true)
     restore()
@@ -862,7 +877,7 @@ describe('adminUpdateReferralCode', () => {
       if (q.table === 'referral_codes' && q.op === 'update') { state.patch = q.patch; return { data: opts.updated ?? null, error: null } }
     })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = (over = {}) => ({ env: {}, req: { param: () => 'rc1', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: {}, req: { param: () => 'rc1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -900,7 +915,7 @@ describe('getPartnerByToken', () => {
   function setupToken(opts = {}) {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: opts.partner ?? null, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: { query: () => opts.token }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { query: () => opts.token }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, c }
   }
 
@@ -949,7 +964,7 @@ describe('submitPayoutDetails', () => {
     // real regression had actually removed that guard. The production guard
     // in submitPayoutDetails was never broken; only this mock couldn't
     // exercise it.
-    const c = (over = {}) => ({ env: {}, req: { query: () => 'token' in over ? over.token : 'tok123', json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: {}, req: { query: () => 'token' in over ? over.token : 'tok123', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -1004,7 +1019,7 @@ describe('trackClick', () => {
       if (q.op === 'rpc') { state.rpcCalls.push(q); return { data: null, error: null } }
     })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = (over = {}) => ({ env: {}, req: { json: async () => over.body ?? {} }, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: {}, req: { json: async () => over.body ?? {}, header: () => 'Mozilla/5.0 (Windows NT 10.0) Chrome/120' }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -1029,11 +1044,22 @@ describe('trackClick', () => {
     expect(t.state.rpcCalls).toHaveLength(0)
   })
 
+  it('crawlers / link-preview fetchers / UA-less scripts are not counted as clicks', async () => {
+    t = setupTrack()
+    const mk = ua => ({ env: {}, req: { json: async () => ({ code: 'COACH20' }), header: () => ua }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
+    for (const ua of ['Googlebot/2.1 (+http://www.google.com/bot.html)', 'facebookexternalhit/1.1', 'curl/8.4.0', 'python-requests/2.31', '', undefined]) {
+      const res = await t.mod.trackClick(mk(ua))
+      expect(res.body.success).toBe(true)
+    }
+    expect(t.state.rpcCalls).toHaveLength(0)
+    t.restore()
+  })
+
   it('a malformed JSON body never throws (caught and treated as empty)', async () => {
     const state = { rpcCalls: [] }
     const db = createFakeSupabase(q => { if (q.op === 'rpc') state.rpcCalls.push(q) })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: { json: async () => { throw new Error('bad json') } }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { json: async () => { throw new Error('bad json') } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.trackClick(c)
     expect(res.body.success).toBe(true)
     restore()
@@ -1042,7 +1068,7 @@ describe('trackClick', () => {
   it('an RPC error is logged, not thrown — the frontend never has to handle a failure here', async () => {
     const db = createFakeSupabase(q => (q.op === 'rpc' ? { data: null, error: new Error('rpc down') } : undefined))
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
-    const c = { env: {}, req: { json: async () => ({ code: 'ABC' }) }, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: {}, req: { json: async () => ({ code: 'ABC' }), header: () => 'Mozilla/5.0 (Windows NT 10.0) Chrome/120' }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.trackClick(c)
     expect(res.body.success).toBe(true)
     restore()
@@ -1081,7 +1107,7 @@ describe('partner admin actions — audit trail', () => {
       env: { FRONTEND_URL: 'https://passthrough.dev' },
       get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
       req: { param: () => 'p1', json: async () => over.body ?? {} },
-      json: (body, status = 200) => ({ body, status }),
+      header: () => {}, json: (body, status = 200) => ({ body, status }),
     })
     return { mod, restore, audits, c }
   }
@@ -1099,7 +1125,7 @@ describe('partner admin actions — audit trail', () => {
     t = setupAudit({ updated: { id: 'p1', email: 'new@x.co', name: 'Coach K', status: 'ACTIVE' } })
     await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
     expect(t.audits).toHaveLength(1)
-    expect(t.audits[0].detail).toEqual({ emailChanged: true })
+    expect(t.audits[0].detail).toEqual({ emailChanged: true, payoutLinkRotated: true })
     const raw = JSON.stringify(t.audits)
     expect(raw).not.toContain('new@x.co'); expect(raw).not.toContain('k@x.co')
   })

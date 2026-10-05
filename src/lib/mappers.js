@@ -419,7 +419,11 @@ function commissionLedgerRowToCamel(row) {
     // AUDIT FIX (Section 10): same numeric-as-string gotcha as partnerRowToCamel above.
     commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
     commissionAmountCents: row.commission_amount_cents,
+    currency:              row.currency ?? null,
     payoutId:              row.payout_id,
+    // Embedded by adminGetPartner (payments(status, paystack_ref)) — for support lookups.
+    paymentRef:            row.payments?.paystack_ref ?? null,
+    paymentStatus:         row.payments?.status ?? null,
     // Section 8 audit: a reversal is a NEGATIVE row pointing at the row it undoes.
     reversesLedgerId:      row.reverses_ledger_id ?? null,
     reversalReason:        row.reversal_reason ?? null,

@@ -120,6 +120,7 @@ function CodeCard({ code, partnerActive, currency }) {
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
+        {code.stats?.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks bought`}
       </div>
       <p className="text-xs text-gray-400 mt-2">
         {live ? (
@@ -227,7 +228,7 @@ function CycleRow({ cycle, currency }) {
               {cycle.unpaidCents - cycle.heldCents > 0 && (
                 <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents - cycle.heldCents, currency)} — ready to pay · </span>
               )}
-              {fmtCents(cycle.heldCents, currency)} — held for the refund window
+              {fmtCents(cycle.heldCents, currency)} — held (refund window or an open dispute)
             </span>
           ) : (
             <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents, currency)} — ready to pay</span>
@@ -317,6 +318,22 @@ export default function PartnerDashboard() {
               <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
                 Your partner account is currently paused. Your links won't apply discounts or earn
                 commission until it's reactivated — contact us if you weren't expecting that.
+              </div>
+            )}
+
+            {/* Money is owed (or accruing) but we have nowhere to send it. */}
+            {!data.hasPayoutDetails && (data.stats.pendingCents > 0 || data.stats.paidCents > 0) && (
+              <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                We don't have your payout details yet, so we can't pay you.{' '}
+                <Link to={`/partner/payout-details?token=${encodeURIComponent(token)}`} className="underline font-medium">
+                  Add them now →
+                </Link>
+              </div>
+            )}
+            {data.belowMinimum && (
+              <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+                Payouts start at {fmtCents(data.minPayoutCents, data.currency)}. Your {fmtCents(data.carriedForwardCents, data.currency)} carries
+                forward and will be paid once your balance reaches it.
               </div>
             )}
 

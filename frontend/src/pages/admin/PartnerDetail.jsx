@@ -11,7 +11,7 @@ import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, formatRate, cn, copyToClipboard } from '../../lib/utils'
+import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv } from '../../lib/utils'
 
 function PayoutDetailsFields({ method, details }) {
   const d = details || {}
@@ -116,6 +116,36 @@ function dateToExpiresAt(dateStr) {
 }
 function expiresAtToDateInput(expiresAt) {
   return expiresAt ? expiresAt.slice(0, 10) : ''
+}
+
+// Payout details changed within this many days of "now" get a warning in the payout
+// modal: a change right before a payout is exactly the account-takeover pattern.
+const RECENT_DETAILS_CHANGE_DAYS = 7
+function detailsChangedRecently(submittedAt) {
+  const ms = Date.parse(submittedAt)
+  return Number.isFinite(ms) && Date.now() - ms < RECENT_DETAILS_CHANGE_DAYS * 86400000
+}
+
+// One CSV row per ledger entry (optionally limited to a cycle window) — what an admin
+// needs to reconcile a payout run in a spreadsheet.
+function exportLedgerCsv(partner, { start, end, label } = {}) {
+  const from = start ? Date.parse(start) : -Infinity
+  const to   = end   ? Date.parse(end)   : Infinity
+  const rows = (partner.commissionLedger || []).filter(l => {
+    const ms = Date.parse(l.createdAt)
+    return ms >= from && ms <= to
+  })
+  const cur = partner.currency || 'USD'
+  downloadCsv(`${partner.name.replace(/[^A-Za-z0-9_-]+/g, '_')}-${(label || 'all-conversions').replace(/[^A-Za-z0-9_-]+/g, '_')}.csv`, [
+    ['Date', 'Code', 'Payment reference', 'Type', 'Gross', 'Rate', 'Commission', 'Currency', 'Status', 'Reason'],
+    ...rows.map(l => [
+      (l.createdAt || '').slice(0, 10), l.code || '', l.paymentRef || '',
+      l.reversesLedgerId ? 'Reversal' : 'Sale',
+      (l.grossAmountCents || 0) / 100, l.commissionRate ?? '', (l.commissionAmountCents || 0) / 100,
+      l.currency || cur, l.payoutId ? 'Paid' : (l.paymentStatus === 'DISPUTED' ? 'Held (dispute)' : 'Unpaid'),
+      l.reversalReason || ''
+    ])
+  ])
 }
 
 function EditPartnerModal({ partner, onClose, onSaved }) {
@@ -225,6 +255,9 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
         ...(differs ? { acknowledgeDifference: true } : {}),
+        // The payout details the admin was looking at; the server refuses (409) if
+        // they changed since, so money is never recorded against a stale account.
+        expectedDetailsSubmittedAt: partner.payoutDetailsSubmittedAt ?? null,
         // AUDIT FIX (Section 3/4 pass, bug): hardcoded 'USD' regardless of
         // the platform's actual configured currency (env.PAYSTACK_CURRENCY)
         // — the backend (recordPayoutSchema) already accepts any 3-letter
@@ -249,8 +282,15 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       toast({ message, type: (data.ledgerSettlementFailed || !data.emailed) ? 'warning' : 'success' })
       onRecorded()
       onClose()
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      // Details changed under us: reload so the modal shows the NEW account and the
+      // next attempt carries the new timestamp (the admin must re-read it first).
+      if (err?.response?.data?.code === 'PAYOUT_DETAILS_CHANGED') onRecorded()
+      /* the message itself is already captured by useApi */
+    }
   }
+
+  const recentChange = detailsChangedRecently(partner.payoutDetailsSubmittedAt)
 
   return (
     <Modal open onClose={onClose} title={cycle ? `Record payout — ${cycle.label}` : `Record ad hoc payout — ${partner.name}`}>
@@ -259,6 +299,12 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           Only use this <strong>after</strong> you've actually sent the money via your bank
           or mobile money app. This just logs it and notifies {partner.name}.
         </p>
+        {recentChange && (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            These payout details were changed on {formatDate(partner.payoutDetailsSubmittedAt)} — within the last {RECENT_DETAILS_CHANGE_DAYS} days.
+            Confirm with {partner.name} that the change was theirs before you send money to this account.
+          </div>
+        )}
         <div className="rounded-md bg-gray-50 p-3 flex flex-col gap-2">
           <PayoutDetailsSummary partner={partner} />
           <div className="text-sm text-gray-600 border-t border-gray-200 pt-2">
@@ -325,14 +371,16 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
     if (Object.keys(tierPrices).length === 0) return fail('Set at least one tier price.')
 
     try {
-      await execute(() => api.post(`/partners/${partner.id}/referral-codes`, {
+      const res = await execute(() => api.post(`/partners/${partner.id}/referral-codes`, {
         code: cleanCode, tierPrices, usageLimit: usageLimit ? Number(usageLimit) : undefined,
         // createReferralCodeSchema's expiresAt is optional but NOT
         // nullable — omit the key entirely rather than send null when no
         // date was picked.
         ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {})
       }), { fallback: 'Failed to create code.' })
-      toast({ message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
+      toast(res?.partnerPaused
+        ? { message: `Code ${cleanCode.toUpperCase()} created, but ${partner.name} is PAUSED — it won't apply or earn until they're reactivated, and no email was sent.`, type: 'warning' }
+        : { message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
       onCreated()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -344,9 +392,9 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
         <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="COACHNAME20" />
         <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
         <div className="grid grid-cols-3 gap-3">
-          <Input label="FIX ($)" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
-          <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
-          <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
+          <Input label={`FIX (${partner.currency || 'USD'})`} type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
+          <Input label={`BADGE (${partner.currency || 'USD'})`} type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
+          <Input label={`FIX_PLAIN (${partner.currency || 'USD'})`} type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Input label="Usage limit (optional)" type="number" value={usageLimit}
@@ -420,9 +468,9 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
           The code string itself, clicks, and usage history stay unchanged — only pricing and limits update.
         </p>
         <div className="grid grid-cols-3 gap-3">
-          <Input label="FIX ($)" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
-          <Input label="BADGE ($)" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
-          <Input label="FIX_PLAIN ($)" type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
+          <Input label={`FIX (${partner.currency || 'USD'})`} type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
+          <Input label={`BADGE (${partner.currency || 'USD'})`} type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
+          <Input label={`FIX_PLAIN (${partner.currency || 'USD'})`} type="number" step="0.01" value={fixPlain} onChange={e => setFixPlain(e.target.value)} />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <Input label="Usage limit (blank = unlimited)" type="number" value={usageLimit}
@@ -483,6 +531,13 @@ function ReferralCodesTab({ partner, onChanged }) {
                   {['FIX', 'BADGE', 'FIX_PLAIN'].filter(t => code.tierPrices?.[t] != null).map(t =>
                     `${t}: ${formatCents(code.tierPrices[t], partner.currency)}`).join(' · ')}
                 </div>
+                {code.stats && (
+                  <div className="text-xs text-gray-500 mt-0.5">
+                    {code.stats.conversions} sale{code.stats.conversions === 1 ? '' : 's'} · {formatCents(code.stats.grossCents, partner.currency)} revenue
+                    · {formatCents(code.stats.commissionCents, partner.currency)} commission
+                    {code.stats.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks converted`}
+                  </div>
+                )}
                 {code.expiresAt && (
                   <div className={cn('text-xs mt-0.5', new Date(code.expiresAt) < new Date() ? 'text-red-500' : 'text-gray-400')}>
                     {new Date(code.expiresAt) < new Date() ? 'Expired' : 'Expires'} {formatDate(code.expiresAt)}
@@ -520,6 +575,11 @@ function CyclesTab({ partner, onChanged }) {
       <div>
         <div className="flex items-center justify-between mb-3">
           <h3 className="font-semibold text-gray-900">Twice-monthly cycles</h3>
+          {partner.belowMinimum && (
+            <span className="text-xs text-amber-700">
+              Below the {formatCents(partner.minPayoutCents, partner.currency)} minimum — {formatCents(partner.carriedForwardCents, partner.currency)} carries forward
+            </span>
+          )}
           <Button size="sm" variant="secondary" onClick={() => setShowAdHoc(true)}>Record ad hoc payout</Button>
         </div>
         <div className="border border-gray-200 rounded-lg bg-white divide-y divide-gray-100">
@@ -542,8 +602,9 @@ function CyclesTab({ partner, onChanged }) {
                   ) : c.unpaidCents - (c.heldCents || 0) > 0 ? (
                     <>
                       {c.heldCents > 0 && (
-                        <span className="text-xs text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window)</span>
+                        <span className="text-xs text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window / open dispute)</span>
                       )}
+                      <Button size="sm" variant="secondary" onClick={() => exportLedgerCsv(partner, { start: c.start, end: c.end, label: c.label })}>CSV</Button>
                       <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents - (c.heldCents || 0), partner.currency)}</Button>
                     </>
                   ) : (
@@ -596,11 +657,17 @@ function ConversionsTab({ partner }) {
   if (ledger.length === 0) return <p className="text-sm text-gray-400 italic">No conversions yet.</p>
 
   return (
+    <div className="flex flex-col gap-3">
+      <div className="flex justify-end">
+        <Button size="sm" variant="secondary" onClick={() => exportLedgerCsv(partner)}>Export CSV</Button>
+      </div>
     <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
             <th className="px-4 py-3">Date</th>
+            <th className="px-4 py-3">Code</th>
+            <th className="px-4 py-3">Payment ref</th>
             <th className="px-4 py-3 text-right">Gross sale</th>
             <th className="px-4 py-3 text-right">Rate</th>
             <th className="px-4 py-3 text-right">Commission</th>
@@ -611,11 +678,16 @@ function ConversionsTab({ partner }) {
           {ledger.map(l => (
             <tr key={l.id}>
               <td className="px-4 py-3 text-gray-600">{formatDate(l.createdAt)}</td>
-              <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, partner.currency)}</td>
+              <td className="px-4 py-3 font-mono text-xs">{l.code || '—'}</td>
+              <td className="px-4 py-3 font-mono text-xs text-gray-500">{l.paymentRef || '—'}</td>
+              <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, l.currency || partner.currency)}</td>
               <td className="px-4 py-3 text-right text-gray-400">{formatRate(l.commissionRate)}</td>
-              <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents, partner.currency)}</td>
+              <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents, l.currency || partner.currency)}</td>
               <td className="px-4 py-3">
                 <Badge variant={l.payoutId ? 'green' : 'amber'}>{l.payoutId ? 'Paid' : 'Unpaid'}</Badge>
+                {l.paymentStatus === 'DISPUTED' && !l.payoutId && (
+                  <span className="ml-2 text-xs text-amber-700">Held — open dispute</span>
+                )}
                 {l.reversesLedgerId && (
                   <span className="ml-2 text-xs text-red-500">Reversal{l.reversalReason ? ` — ${l.reversalReason}` : ''}</span>
                 )}
@@ -624,6 +696,7 @@ function ConversionsTab({ partner }) {
           ))}
         </tbody>
       </table>
+    </div>
     </div>
   )
 }
@@ -756,12 +829,12 @@ export default function PartnerDetail() {
           <div className="grid sm:grid-cols-4 gap-4">
             <StatCard label="Ready to pay" size="md" valueClassName="text-amber-600"
               value={formatCents(partner.readyToPayCents || 0, partner.currency)} />
-            <StatCard label="Held (refund window)" size="md"
+            <StatCard label="Held (refund window / disputes)" size="md"
               value={formatCents(partner.heldCents || 0, partner.currency)} />
             <StatCard label="Clicks" size="md"
               value={(partner.referralCodes || []).reduce((n, cd) => n + (cd.clicks || 0), 0)} />
             <StatCard label="Conversions" size="md"
-              value={(partner.commissionLedger || []).filter(l => !l.reversesLedgerId).length} />
+              value={partner.netConversions ?? 0} />
           </div>
           {!partner.payoutMethod && (partner.readyToPayCents || 0) > 0 && (
             <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800">

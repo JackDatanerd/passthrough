@@ -1,0 +1,57 @@
+Section 4 (Partners / Referral) — independent audit pass, round 3
+=================================================================
+APPLY supabase/migrations/0051_partners_round3.sql BEFORE deploying the Worker
+(recordConversion now writes commission_ledger.currency; the admin partner view selects it).
+
+BUGS FIXED
+ B1  Admin Partner detail crashed on load (formatRate not imported) — already fixed upstream by
+     the time of this pass; this round keeps the import and adds the other fixes to that page.
+ B2  Deploy gate: partners.controller tests were red (stale audit assertion + B3) — green again.
+ B3  Casing-only partner email edit rotated the payout token, sent 3 emails + an owner alert and
+     logged a false emailChanged. Comparison is now case-insensitive (new casing still saved).
+ B4  Creating a code for a PAUSED partner emailed "your code is ready". It now creates the code,
+     skips the email and tells the admin (response: notified / partnerPaused; warning toast).
+ B5  Conversion counts included refunded sales. Partner stats, admin Conversions stat and the
+     list all use NET conversions (an original that has not been reversed).
+ B6  adminRecordPayout race: an auto-amount payout that won NO rows used to remain as a 0-value
+     row and email "payout on its way". It is now deleted, the owner is alerted, admin gets 409.
+ B7  Admin code modals hard-coded "($)" — they follow the configured currency.
+ B8  Click tracking: inactive/expired/paused-partner codes no longer count (migration 0051), bots /
+     link-preview fetchers / UA-less scripts are ignored, and blocked-localStorage browsers no
+     longer re-fire a click on every in-app navigation that still carries ?ref=.
+ B9  Refund-before-commission race: a refund landing between the payment flip and
+     recordConversion left a POSITIVE commission on a REFUNDED sale with nothing to reverse it.
+     recordConversion re-reads the payment status and reverses immediately.
+
+FEATURE GAPS CLOSED
+ G1  Disputes hold commission: commission on a DISPUTED payment is "held", not ready to pay, and
+     adminRecordPayout will not settle it (reversal rows always settle).
+ G2  Payout-destination guard: the payout modal sends expectedDetailsSubmittedAt; the server
+     refuses (409 PAYOUT_DETAILS_CHANGED) if the details changed since the admin opened the
+     screen. The modal also warns when details changed in the last 7 days.
+ G3  Partner dashboard prompts for payout details while money is owed; partner gets an email
+     when a refund/chargeback reverses a commission (sendPartnerCommissionReversed).
+ G4  Admin tooling: Conversions tab shows code + payment reference; per-code stats (sales,
+     revenue, commission, click->sale rate); CSV export (all conversions, and per cycle) with
+     spreadsheet-formula neutralisation; partner list search, sort and paging.
+ G5  Click quality: bot/preview filtering, per-code conversion rate on partner + admin views.
+ G6  A refund/chargeback frees the usage slot it consumed on a limited code
+     (decrement_referral_code_usage, called once, only by the call that inserts the reversal).
+ G7  Token hygiene: partner token responses send Cache-Control: no-store + X-Robots-Tag;
+     /partner/* gets no-store, noindex and Referrer-Policy: no-referrer in _headers; robots.txt
+     disallows /partner/. (Token still travels in the query string — see "not done".)
+ G8  commission_ledger.currency (backfilled from payments, copied onto reversal rows).
+ G9  Optional minimum payout (COMMISSION_MIN_PAYOUT_CENTS) with carry-forward display, and a
+     public "become a partner" application: /partner/apply -> POST /api/partners/apply
+     (rate-limited, honeypot, no email enumeration) -> Admin > Partners > Applications
+     (approve creates the partner and emails their payout-details link; reject closes it).
+
+NOT DONE (deliberate)
+ - Hashing the partner token at rest / moving it out of the URL: it changes every link already
+   emailed to partners and needs a header-based or cookie handshake. Mitigated by G7 for now.
+ - Partial-refund commission adjustment: the owner is still alerted; a policy decision.
+
+TESTS
+ tests/partners.round3.test.js (new), partners.controller / referral.pricing updated,
+ frontend: PartnerApply, PartnerDashboard, useReferralCapture (blocked storage), utils (CSV),
+ securityHeaders (/partner/*).

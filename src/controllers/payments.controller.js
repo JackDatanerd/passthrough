@@ -721,7 +721,7 @@ async function resolvePayment(ctx) {
   if (!['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status))
     return ctx.json({ success: false, message: `Payment is ${payment.status} — nothing to reverse.` }, 400)
   const reason = payment.status === 'DISPUTED' ? 'DISPUTE' : 'REFUND'
-  const done = await fulfillmentService.reversePayment(supabase, payment, { reason })
+  const done = await fulfillmentService.reversePayment(supabase, payment, { reason, env: ctx.env })
   await logAdminAction(ctx, supabase, 'payment.reversed', 'payment', payment.id, {
     reference, reason, commissionReversed: done.ledger.reversed, verificationRevoked: done.revoked
   })

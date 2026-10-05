@@ -422,6 +422,17 @@ async function sendPartnerRateChanged(env, supabase, email, name, oldRate, newRa
   })
 }
 
+// A refund / lost dispute reversed a commission this partner had earned.
+async function sendPartnerCommissionReversed(env, supabase, email, name, commissionCents, currency, dashboardUrl) {
+  const amount = `${(commissionCents / 100).toFixed(2)} ${currency}`
+  return send(env, supabase, email, 'A commission was reversed', 'partner_status_changed', {
+    NAME:    name,
+    HEADING: 'A commission was reversed',
+    BODY:    `a sale made through your link was refunded, so the ${amount} commission on it has been reversed. ` +
+             `If it had already been paid out, it nets against your next payout. Details: ${dashboardUrl}`
+  })
+}
+
 async function sendPartnerStatusChanged(env, supabase, email, name, status) {
   const paused = status === 'PAUSED'
   return send(env, supabase, email,
@@ -681,5 +692,5 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerRateChanged
+  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed
 }

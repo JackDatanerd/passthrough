@@ -20,6 +20,11 @@ const STORAGE_KEY = 'passthrough_referral_code'
 // navigation dedup below, which is unaffected by this).
 const ATTRIBUTION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
+// Codes already click-tracked in THIS page session. localStorage can be blocked (some in-app
+// browsers / private modes), in which case readStored() always returns null and every route
+// change that still carries ?ref= would look like a "new" code and fire another click.
+const trackedThisSession = new Set()
+
 // localStorage can throw (blocked storage in some in-app browsers / private
 // modes). A ?ref= landing must never crash the app — attribution just won't
 // persist there.
@@ -74,7 +79,8 @@ export function useReferralCapture() {
     const previous = readStored()
     writeStored(code)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
 
-    if (previous !== code) {
+    if (previous !== code && !trackedThisSession.has(code)) {
+      trackedThisSession.add(code)
       // Fire-and-forget — a failed click log should never block navigation
       // or surface an error to the visitor.
       api.post('/partners/track-click', { code }).catch(() => {})

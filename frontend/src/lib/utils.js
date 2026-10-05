@@ -140,3 +140,21 @@ export function formatRate(rate) {
   if (!Number.isFinite(n)) return '—'
   return `${+(n * 100).toFixed(2)}%`
 }
+
+// ── CSV export ───────────────────────────────────────────────────────────────
+// A cell that starts with = + - @ (or a tab/CR) is executed as a formula by
+// Excel/Sheets, and partner names/codes are not trusted text — so text cells get a
+// leading apostrophe. Real numbers (amounts, which may legitimately be negative)
+// are written as-is.
+export function csvCell(v) {
+  if (v === null || v === undefined) return ''
+  let s = String(v)
+  if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
+}
+export function toCsv(rows) {
+  return rows.map(r => r.map(csvCell).join(',')).join('\r\n')
+}
+export function downloadCsv(filename, rows) {
+  downloadBlob(new Blob([`\uFEFF${toCsv(rows)}`], { type: 'text/csv;charset=utf-8' }), filename)
+}
