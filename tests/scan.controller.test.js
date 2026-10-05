@@ -544,14 +544,20 @@ describe('deleteScan', () => {
     await expect(t.mod.deleteScan(t.ctx())).rejects.toBeTruthy()
     expect(t.r2.deleted).toEqual([])
   })
-  it('clears the saved profile\'s source-scan pointer only when it pointed at this scan, keeping the profile itself', async () => {
-    const profile = { resumeData: { name: 'J' }, sourceScanId: 's1', savedAt: 't' }
-    t = setup({ savedProfile: profile })
-    await t.mod.deleteScan(t.ctx())
-    expect(t.state.profileUpdates).toEqual([{ saved_profile: { ...profile, sourceScanId: null } }])
-    t.restore(); t = setup({ savedProfile: { ...profile, sourceScanId: 'other' } })
-    await t.mod.deleteScan(t.ctx())
-    expect(t.state.profileUpdates).toEqual([])
+  it('clears the saved profile\'s source-scan pointer with one atomic RPC — never by reading and rewriting the whole profile', async () => {
+    t = setup({ savedProfile: { resumeData: { name: 'J' }, sourceScanId: 's1', savedAt: 't' } })
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(200)
+    const rpc = t.db.calls.filter(c => c.op === 'rpc' && c.name === 'clear_saved_profile_source')
+    expect(rpc).toHaveLength(1)
+    expect(rpc[0].args).toEqual({ p_user_id: 'u1', p_scan_ids: ['s1'] })
+    // A read-modify-write of users.saved_profile is exactly the stale-overwrite this replaced.
+    expect(t.db.calls.some(c => c.table === 'users')).toBe(false)
+  })
+  it('a failing pointer RPC never fails a deletion that has already happened', async () => {
+    t = setup()
+    const orig = t.db.rpc
+    t.db.rpc = (name, args) => { orig(name, args); return Promise.resolve({ data: null, error: { message: 'rpc down' } }) }
+    expect((await t.mod.deleteScan(t.ctx())).status).toBe(200)
   })
 })
 // ─── Batch 2: getScanStatus, getScan, updateResumeData, downloadDraft ─────
@@ -1158,6 +1164,21 @@ describe('runAtsScan', () => {
     t = setup({ scan: { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', user_id: 'u1', job_description_text: 'JD' }, ruleResult: { score: 10, keywordScore: 10, formatScore: 10, sectionsScore: 10, contentScore: 10, detail: {} } })
     await t.mod.runAtsScan(t.env, t.db, 's1')
     expect(t.state.emails[0].fn).toBe('sendScanFail')
+  })
+
+  it('a user who turned scan-result emails off gets none — the scan still completes; an absent column or true keeps them', async () => {
+    const owned = { id: 's1', input_mode: 'file', resume_path: 'r-key', resume_mime_type: 'application/pdf', user_id: 'u1', job_description_text: 'JD' }
+    t = setup({ scan: owned, userRow: { id: 'u1', name: 'Jane', email: 'jane@x.com', notify_scan_results: false } })
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(t.state.emails).toHaveLength(0)
+    expect(t.state.scanUpdates.some(u => u.status === 'COMPLETE_PASS')).toBe(true)
+    t.restore()
+    for (const notify_scan_results of [true, undefined]) {
+      t = setup({ scan: owned, userRow: { id: 'u1', name: 'Jane', email: 'jane@x.com', notify_scan_results } })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      expect(t.state.emails.map(e => e.fn), String(notify_scan_results)).toEqual(['sendScanPass'])
+      t.restore()
+    }
   })
 
   it('an anonymous brain-dump scan with a contact email gets sendAnonScanResult; without one, no email at all', async () => {

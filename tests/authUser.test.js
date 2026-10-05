@@ -18,7 +18,7 @@ const camelFields = Object.keys(userRowToCamel({
   scans_day_reset: null, paystack_customer_code: 'x', paystack_auth_code: 'x', saved_profile: {},
   terms_accepted_at: null, terms_version: null, last_login_at: null, last_login_ip: null,
   previous_login_at: null, previous_login_ip: null, last_login_alert_at: null,
-  created_at: 'x', updated_at: 'x',
+  created_at: 'x', updated_at: 'x', notify_scan_results: true,
 }))
 
 // snake_case -> the exact camelCase key userRowToCamel() maps it to.
@@ -64,5 +64,32 @@ describe('authUser.js — toRequestUser()', () => {
   })
   it('tokenVersion stays on requestUser (server-side use) — callers serializing to a client must strip it themselves', () => {
     expect(toRequestUser(row).requestUser.tokenVersion).toBe(3)
+  })
+})
+
+describe('authUser.js — a pending email change whose link has expired is not "pending" any more', () => {
+  const base = { id: 'u1', email: 'a@b.co', name: 'A', role: 'USER', status: 'ACTIVE', token_version: 1, deleted_at: null, pending_email: 'new@b.co' }
+  const inMs = ms => new Date(Date.now() + ms).toISOString()
+  it('a live staged change is reported, with its expiry for a countdown', () => {
+    const { requestUser } = toRequestUser({ ...base, pending_email_expiry: inMs(30 * 60_000) })
+    expect(requestUser.pendingEmail).toBe('new@b.co')
+    expect(requestUser.pendingEmailExpiry).toBeTruthy()
+  })
+  it('an expired one reads as none (the confirmation endpoint refuses it), but the full user row is untouched', () => {
+    const { user, requestUser } = toRequestUser({ ...base, pending_email_expiry: inMs(-60_000) })
+    expect(requestUser.pendingEmail).toBe(null)
+    expect(user.pendingEmail).toBe('new@b.co')
+  })
+  it('a staged address with no expiry cannot be confirmed either, so it is not shown', () => {
+    expect(toRequestUser({ ...base, pending_email_expiry: null }).requestUser.pendingEmail).toBe(null)
+  })
+  it('no staged change stays null; the confirmation token is never exposed', () => {
+    const { requestUser } = toRequestUser({ ...base, pending_email: null, pending_email_expiry: null, pending_email_token: 'secret' })
+    expect(requestUser.pendingEmail).toBe(null)
+    expect(requestUser.pendingEmailToken).toBeUndefined()
+  })
+  it('exposes the notification preference, defaulting to on for a row from before the column', () => {
+    expect(toRequestUser({ ...base, notify_scan_results: false }).requestUser.notifyScanResults).toBe(false)
+    expect(toRequestUser(base).requestUser.notifyScanResults).toBe(true)
   })
 })

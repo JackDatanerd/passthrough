@@ -29,7 +29,7 @@ describe('getProfile', () => {
   it('reports no saved profile when saved_profile is null', async () => {
     t = setup(q => (q.table === 'users' ? { data: { saved_profile: null }, error: null } : undefined))
     const res = await t.mod.getProfile(t.c())
-    expect(res.body.data).toEqual({ hasSavedProfile: false, savedAt: null, sourceScanId: null, summary: null })
+    expect(res.body.data).toMatchObject({ hasSavedProfile: false, savedAt: null, editedAt: null, sourceScanId: null, summary: null })
   })
 
   it('summarizes an existing saved profile without exposing the full resumeData', async () => {
@@ -38,7 +38,7 @@ describe('getProfile', () => {
       error: null,
     } : undefined))
     const res = await t.mod.getProfile(t.c())
-    expect(res.body.data).toEqual({
+    expect(res.body.data).toMatchObject({
       hasSavedProfile: true, savedAt: 't1', sourceScanId: 's1',
       summary: { name: 'Jane Doe', roleCategory: 'engineering', latestTitle: null, jobCount: 0, educationCount: 0, skillCount: 0 },
     })
@@ -163,19 +163,19 @@ describe('saveProfile', () => {
   it('saves resumeData + sourceScanId + roleCategory for an owned, structured scan', async () => {
     let updatePatch = null
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', original_resume_data: { name: 'Jane' }, role_category: 'engineering' }, error: null }
+      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] }, role_category: 'engineering' }, error: null }
       if (q.table === 'users' && q.op === 'update') { updatePatch = q.patch; return { data: null, error: null } }
     })
     const res = await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))
     expect(res.body.success).toBe(true)
-    expect(updatePatch.saved_profile).toMatchObject({ resumeData: { name: 'Jane' }, sourceScanId: 's1', roleCategory: 'engineering' })
+    expect(updatePatch.saved_profile).toMatchObject({ resumeData: { name: 'Jane', skills: ['a'] }, sourceScanId: 's1', roleCategory: 'engineering' })
     expect(typeof updatePatch.saved_profile.savedAt).toBe('string')
   })
 
   it('stores roleCategory as null rather than undefined when the scan has none', async () => {
     let updatePatch = null
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', original_resume_data: { name: 'Jane' }, role_category: null }, error: null }
+      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] }, role_category: null }, error: null }
       if (q.table === 'users' && q.op === 'update') { updatePatch = q.patch; return { data: null, error: null } }
     })
     await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))
@@ -184,7 +184,7 @@ describe('saveProfile', () => {
 
   it('propagates a database error on the update', async () => {
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', original_resume_data: { name: 'Jane' } }, error: null }
+      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] } }, error: null }
       if (q.table === 'users' && q.op === 'update') return { data: null, error: new Error('write failed') }
     })
     await expect(t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))).rejects.toThrow('write failed')
@@ -232,6 +232,8 @@ describe('exportMyData', () => {
     users: { data: { name: 'Jane', email: 'jane@x.com', email_verified: true, free_fix_credits: 2, created_at: 'c1', saved_profile: { resumeData: { name: 'Jane' } } }, error: null },
     scans: { data: [{ id: 's1', status: 'COMPLETE_PASS', ats_score: 81, job_description_text: 'jd', original_resume_data: { name: 'Jane' }, verification_code: 'ABC' }], error: null },
     payments: { data: [{ id: 'p1', amount_cents: 1900, fix_tier: 'FIX', status: 'SUCCESS', scan_id: 's1' }], error: null },
+    user_sessions: { data: [{ id: 'ses1', created_at: 'c', last_seen_at: 'l', absolute_expires_at: 'e', revoked_at: null, ip: '1.2.3.4', user_agent: 'UA' }], error: null },
+    email_logs: { data: [{ subject: 'Welcome', template: 'welcome', status: 'sent', sent_at: 's' }], error: null },
   }
   it('returns the account\'s own data as a JSON attachment, camelCased', async () => {
     t = setup(q => rows[q.table])
@@ -245,7 +247,7 @@ describe('exportMyData', () => {
     expect(out.payments[0]).toMatchObject({ id: 'p1', amountCents: 1900, scanId: 's1' })
     expect(out.savedProfile).toEqual({ resumeData: { name: 'Jane' } })
     expect(out.paymentsTruncated).toBe(false)
-    expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 1, scansPerPart: 500 })
+    expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 1, scansPerPart: 250 })
     expect(res.headers['X-Export-Parts']).toBe('1')
     expect(res.headers['Content-Disposition']).toContain('passthrough-my-data.json')
   })
@@ -258,7 +260,7 @@ describe('exportMyData', () => {
   it('only ever reads the requesting user\'s rows, with explicit columns (never select *)', async () => {
     t = setup(q => rows[q.table])
     await t.mod.exportMyData(t.c({ userId: 'u42' }))
-    for (const table of ['users', 'scans', 'payments']) {
+    for (const table of ['users', 'scans', 'payments', 'user_sessions']) {
       const q = t.db.calls.find(c => c.table === table)
       expect(q.filters.find(f => f[0] === 'eq')).toEqual(['eq', table === 'users' ? 'id' : 'user_id', 'u42'])
       expect(q.cols).not.toBe('*')
@@ -269,39 +271,41 @@ describe('exportMyData', () => {
   describe('parts', () => {
     const scanRows = n => Array.from({ length: n }, (_, i) => ({ id: `s${i}`, status: 'COMPLETE_PASS' }))
     const many = (total, data) => q => q.table === 'scans' ? { data, count: total, error: null } : rows[q.table]
-    it('reads scans 500 at a time in a stable order (created_at desc, id as the tiebreak) and asks for the exact total', async () => {
-      t = setup(many(1200, scanRows(500)))
+    it('reads scans 250 at a time in a stable order (created_at desc, id as the tiebreak) and asks for the exact total', async () => {
+      t = setup(many(600, scanRows(250)))
       await t.mod.exportMyData(t.c())
       const q = t.db.calls.find(c => c.table === 'scans')
-      expect(q.range).toEqual([0, 499])
+      expect(q.range).toEqual([0, 249])
       expect(q.selectOpts).toMatchObject({ count: 'exact' })
       expect(q.orders.map(o => o[0])).toEqual(['created_at', 'id'])
     })
     it('part 1 of 3 says so, carries the account, saved profile and payments, and points at the other parts', async () => {
-      t = setup(many(1200, scanRows(500)))
+      t = setup(many(600, scanRows(250)))
       const res = await t.mod.exportMyData(t.c())
       const out = JSON.parse(res.raw)
-      expect(out.export).toEqual({ part: 1, parts: 3, totalScans: 1200, scansPerPart: 500 })
+      expect(out.export).toEqual({ part: 1, parts: 3, totalScans: 600, scansPerPart: 250 })
       expect(res.headers['X-Export-Parts']).toBe('3')
-      expect(out.scans).toHaveLength(500)
+      expect(out.scans).toHaveLength(250)
       expect(out.account.name).toBe('Jane')
       expect(out.savedProfile).toBeTruthy()
       expect(out.payments).toHaveLength(1)
     })
     it('a later part reads its own slice, is named part-N, and carries scans only (no payments or saved profile repeated)', async () => {
-      t = setup(many(1200, scanRows(200)))
+      t = setup(many(600, scanRows(100)))
       const res = await t.mod.exportMyData(t.c({ query: { part: '3' } }))
       const out = JSON.parse(res.raw)
-      expect(t.db.calls.find(c => c.table === 'scans').range).toEqual([1000, 1499])
-      expect(out.export).toEqual({ part: 3, parts: 3, totalScans: 1200, scansPerPart: 500 })
+      expect(t.db.calls.find(c => c.table === 'scans').range).toEqual([500, 749])
+      expect(out.export).toEqual({ part: 3, parts: 3, totalScans: 600, scansPerPart: 250 })
       expect(res.headers['Content-Disposition']).toContain('passthrough-my-data-part-3.json')
       expect(out.account).toEqual({ email: 'jane@x.com' })
       expect(out.payments).toBeUndefined()
       expect(out.savedProfile).toBeUndefined()
-      expect(t.db.calls.some(c => c.table === 'payments')).toBe(false)
+      expect(out.sessions).toBeUndefined()
+      expect(out.emailsSent).toBeUndefined()
+      expect(t.db.calls.some(c => c.table === 'payments' || c.table === 'user_sessions' || c.table === 'email_logs')).toBe(false)
     })
     it('404s a part past the end (said by the database or by an empty page) instead of returning an empty file', async () => {
-      t = setup(many(1200, []))
+      t = setup(many(600, []))
       expect((await t.mod.exportMyData(t.c({ query: { part: '4' } }))).status).toBe(404)
       t.restore()
       t = setup(q => q.table === 'scans'
@@ -322,7 +326,7 @@ describe('exportMyData', () => {
     it('an account with no scans still gets one (empty) part', async () => {
       t = setup(many(0, []))
       const out = JSON.parse((await t.mod.exportMyData(t.c())).raw)
-      expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 0, scansPerPart: 500 })
+      expect(out.export).toEqual({ part: 1, parts: 1, totalScans: 0, scansPerPart: 250 })
       expect(out.scans).toEqual([])
     })
   })

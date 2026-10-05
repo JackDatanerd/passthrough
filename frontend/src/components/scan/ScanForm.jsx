@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
+import { describeQuota } from '../../lib/quota'
 import { useAuth } from '../../hooks/useAuth'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
@@ -50,6 +51,8 @@ export default function ScanForm() {
   const [file,          setFile         ] = useState(null)
   const [brainDumpText, setBrainDumpText] = useState('')
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
+  // Today's free-scan allowance, shown next to the submit button (signed-in only).
+  const [quota, setQuota] = useState(null)
   // Anonymous users describing their background in free text rarely think
   // to state their own name — Claude is correctly instructed never to
   // invent one, which means it's frequently left blank. Logged-in users
@@ -70,7 +73,7 @@ export default function ScanForm() {
   useEffect(() => {
     if (!user) return
     api.get('/profile')
-      .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
+      .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile); setQuota(res.data.data.quota || null) })
       .catch(() => {}) // fail silently — worst case the toggle just doesn't show
   }, [user])
 
@@ -383,6 +386,11 @@ export default function ScanForm() {
       <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
         {submitLabel}
       </Button>
+      {user && describeQuota(quota) && (
+        <p role="status" className={`text-xs ${describeQuota(quota).exhausted ? 'text-amber-700 font-medium' : 'text-gray-500'}`}>
+          {describeQuota(quota).text}
+        </p>
+      )}
       <p className="text-xs text-gray-500">
         No account needed. Results in ~30 seconds.
         {!user && ' Without an account, your result is kept for 24 hours — create a free account to keep it.'}

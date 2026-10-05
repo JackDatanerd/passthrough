@@ -13,10 +13,12 @@ import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
 import { passwordProblem } from '../../lib/passwordRules'
 import { roleLabel } from '../../lib/roleCategories'
 import SessionsCard from '../../components/account/SessionsCard'
+import SavedProfileEditor from '../../components/account/SavedProfileEditor'
+import { USER_KEY } from '../../lib/session'
 
 export default function Settings() {
   const navigate      = useNavigate()
-  const { user, logout, refreshUser } = useAuth()
+  const { user, setUser, logout, refreshUser } = useAuth()
 
   // AUDIT FIX (Section 6): Account previously showed name/email as static
   // text with no way to ever change either — no endpoint existed for it.
@@ -58,14 +60,30 @@ export default function Settings() {
     if (user?.name && !nameDirty) setName(user.name)
   }, [user?.name, nameDirty])
 
+  // Swaps a field of the cached user in place (state AND the localStorage copy AuthProvider
+  // reads on the next load) from a response we already hold, so the page is right at once and
+  // does not depend on a second request succeeding.
+  function applyUserPatch(patch) {
+    const next = { ...(user || {}), ...patch }
+    try { localStorage.setItem(USER_KEY, JSON.stringify(next)) } catch (_) { /* storage unavailable */ }
+    setUser(next)
+  }
+
   async function handleUpdateName() {
     if (!name.trim()) return setNameError('Name is required.')
     setNameLoading(true); setNameError(''); setNameSuccess(false)
     try {
-      await api.patch('/auth/name', { name: name.trim() })
+      const res = await api.patch('/auth/name', { name: name.trim() })
+      // The server answers with the saved user. Previously the "dirty" flag was cleared first,
+      // which let the sync effect above put the OLD cached name back into the field until a
+      // refresh finished — and if that refresh failed, the old name stayed next to "Name
+      // updated." Field, cache and flag now change together, from the response.
+      const savedName = res.data?.data?.user?.name ?? name.trim()
+      setName(savedName)
+      applyUserPatch({ name: savedName })
       setNameDirty(false)
-      await refreshUser()
       setNameSuccess(true)
+      refreshUser()
     } catch (err) {
       setNameError(getErrorMessage(err, 'Failed to update name.'))
     } finally {
@@ -153,6 +171,13 @@ export default function Settings() {
   // rescan-from-scratch. getProfile now also returns sourceScanId (so this
   // page can link back to the original scan) and a small summary.
   const [sourceScanId,   setSourceScanId   ] = useState(null)
+  const [editedAt,        setEditedAt       ] = useState(null)
+  const [editingProfile,  setEditingProfile ] = useState(false)
+  // null until the profile read succeeds: showing a toggle for a preference we could not read
+  // would show (and then save over) a guess.
+  const [notifyScanResults, setNotifyScanResults] = useState(null)
+  const [prefSaving, setPrefSaving] = useState(false)
+  const [prefError,  setPrefError ] = useState('')
   const [profileSummary, setProfileSummary ] = useState(null)
   const [removing,        setRemoving       ] = useState(false)
   const [removeError,     setRemoveError    ] = useState('')
@@ -171,7 +196,10 @@ export default function Settings() {
         setHasSavedProfile(!!res.data.data.hasSavedProfile)
         setSavedAt(res.data.data.savedAt)
         setSourceScanId(res.data.data.sourceScanId)
+        setEditedAt(res.data.data.editedAt || null)
         setProfileSummary(res.data.data.summary)
+        const pref = res.data.data.preferences?.notifyScanResults
+        setNotifyScanResults(typeof pref === 'boolean' ? pref : null)
       })
       .catch(err => setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")))
       .finally(() => setProfileLoading(false))
@@ -192,6 +220,8 @@ export default function Settings() {
       setHasSavedProfile(false)
       setSavedAt(null)
       setSourceScanId(null)
+      setEditedAt(null)
+      setEditingProfile(false)
       setProfileSummary(null)
       setRemoveConfirmOpen(false)
     } catch (err) {
@@ -199,6 +229,49 @@ export default function Settings() {
       setRemoveConfirmOpen(false)
     } finally {
       setRemoving(false)
+    }
+  }
+
+  async function handleToggleNotify(e) {
+    const next = e.target.checked
+    setNotifyScanResults(next); setPrefSaving(true); setPrefError('')
+    try {
+      await api.patch('/profile/preferences', { notifyScanResults: next })
+    } catch (err) {
+      setNotifyScanResults(!next)
+      setPrefError(getErrorMessage(err, "Couldn't save that setting."))
+    } finally {
+      setPrefSaving(false)
+    }
+  }
+
+  // Delete the whole scan history (not the account, not payments). The server removes it in
+  // small batches and says how many are left, so this loops with a running count instead of
+  // one request that has to finish a large history inside a single call.
+  const [purgeOpen,   setPurgeOpen  ] = useState(false)
+  const [purging,     setPurging    ] = useState(false)
+  const [purgeCount,  setPurgeCount ] = useState(0)
+  const [purgeError,  setPurgeError ] = useState('')
+  const [purgeResult, setPurgeResult] = useState(null)   // { deleted, remaining }
+
+  async function handlePurgeHistory() {
+    setPurging(true); setPurgeError(''); setPurgeResult(null); setPurgeCount(0)
+    let deleted = 0, remaining = null
+    try {
+      for (let batch = 0; batch < 400; batch++) {
+        const res = await api.delete('/profile/scans')
+        deleted += res.data.data.deleted
+        remaining = res.data.data.remaining
+        setPurgeCount(deleted)
+        // Nothing left, or nothing more can go right now (scans still being processed stay).
+        if (res.data.data.deleted === 0 || remaining === 0) break
+      }
+      setPurgeResult({ deleted, remaining })
+    } catch (err) {
+      setPurgeError(getErrorMessage(err, 'Could not delete your scan history.') + (deleted ? ` ${deleted} scan${deleted === 1 ? ' was' : 's were'} deleted before it stopped.` : ''))
+    } finally {
+      setPurging(false); setPurgeOpen(false)
+      loadProfile()   // the saved profile's "view source scan" link may have just been cleared
     }
   }
 
@@ -379,7 +452,7 @@ export default function Settings() {
                   confirmed. */}
               {user?.pendingEmail && (
                 <div className="text-sm bg-amber-50 border border-amber-200 text-amber-800 rounded-md px-3 py-2 flex items-center justify-between gap-2 flex-wrap">
-                  <span>Confirmation pending for <strong>{user.pendingEmail}</strong> — check that inbox.</span>
+                  <span>Confirmation pending for <strong>{user.pendingEmail}</strong> — check that inbox{user.pendingEmailExpiry && <> (the link works until {formatDateTime(user.pendingEmailExpiry)})</>}.</span>
                   <Button type="button" size="sm" variant="ghost" onClick={() => setCancelOpen(true)}>
                     Cancel
                   </Button>
@@ -454,6 +527,24 @@ export default function Settings() {
         {/* FEATURE GAP CLOSED (Auth round 2): per-device list + sign-out */}
         <SessionsCard reloadKey={sessionsReload} />
 
+        {/* Email preferences: only the "your scan finished" result email is optional. */}
+        {notifyScanResults !== null && (
+          <div className="bg-white rounded-lg border border-gray-200 p-6">
+            <h2 className="font-semibold text-gray-900 mb-1">Email</h2>
+            <label className="flex items-start gap-3 cursor-pointer">
+              <input type="checkbox" className="mt-1 h-4 w-4 rounded border-gray-300"
+                checked={notifyScanResults} disabled={prefSaving} onChange={handleToggleNotify} />
+              <span>
+                <span className="block text-sm font-medium text-gray-900">Email me when a scan finishes</span>
+                <span className="block text-sm text-gray-500">
+                  The score summary after each scan. Security notices, receipts and your delivered fix are always sent.
+                </span>
+              </span>
+            </label>
+            {prefError && <p role="alert" className="text-sm text-red-600 mt-2">{prefError}</p>}
+          </div>
+        )}
+
         {/* Saved profile */}
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Saved profile</h2>
@@ -469,19 +560,14 @@ export default function Settings() {
               <Button variant="secondary" size="sm" onClick={loadProfile}>Try again</Button>
             </div>
           ) : hasSavedProfile ? (
+            <>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <p className="text-sm text-gray-600">
-                  Saved {savedAt ? formatDate(savedAt) : ''}
+                  Saved {savedAt ? formatDate(savedAt) : ''}{editedAt ? `, edited ${formatDate(editedAt)}` : ''}
                   {profileSummary?.name && <> — <span className="font-medium">{profileSummary.name}</span></>}
                   {profileSummary?.roleCategory && (
-                    // BUG FIX (fresh audit pass, Section 6): hand-rolled
-                    // `.replace(/_/g, ' ').toLowerCase()` here instead of using
-                    // roleLabel() — every other place in the app that shows a
-                    // role category (e.g. dashboard/Index.jsx's scan rows, via
-                    // scanDisplay.js's roleLine()) uses roleLabel() and gets
-                    // "Data Science"; this alone showed "data science" for
-                    // every saved profile with a category.
+                    // roleLabel() like every other place that shows a role category.
                     <span className="text-gray-400"> ({roleLabel(profileSummary.roleCategory)})</span>
                   )}
                 </p>
@@ -501,10 +587,23 @@ export default function Settings() {
                   </Link>
                 )}
               </div>
-              <Button variant="secondary" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
-                Remove saved profile
-              </Button>
+              <div className="flex flex-wrap gap-2 shrink-0">
+                <Link to="/?mode=savedProfile"
+                  className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
+                  Scan against a new job
+                </Link>
+                {!editingProfile && (
+                  <Button variant="secondary" size="sm" onClick={() => setEditingProfile(true)}>Edit</Button>
+                )}
+                <Button variant="secondary" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
+                  Remove saved profile
+                </Button>
+              </div>
             </div>
+            {editingProfile && (
+              <SavedProfileEditor onSaved={loadProfile} onClose={() => setEditingProfile(false)} />
+            )}
+            </>
           ) : (
             <p className="text-sm text-gray-400">
               No saved profile yet — you can save one from any completed scan.
@@ -517,10 +616,11 @@ export default function Settings() {
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
           <p className="text-sm text-gray-500 mb-4">
-            Download a copy of what we hold for your account — profile, scans (including job descriptions and
-            the text and structured data of your resumes), and payment history — as JSON. The uploaded resume
-            files and generated documents themselves aren't included; the data extracted from them is. Accounts
-            with many scans are split into several files.
+            Download a copy of what we hold for your account — profile and settings, sign-in history and signed-in
+            devices, scans (including job descriptions and the text and structured data of your resumes), payment
+            history, and a list of the emails we've sent you — as JSON. The uploaded resume files and generated
+            documents themselves aren't included; the data extracted from them is. Accounts with many scans are
+            split into several files.
           </p>
           <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting} disabled={exportingPart !== 0}>
             {exportParts > 1 ? 'Download part 1 again' : 'Download my data'}
@@ -528,8 +628,8 @@ export default function Settings() {
           {exportParts > 1 && (
             <div role="status" className="mt-4 text-sm text-gray-600">
               <p className="mb-2">
-                Your data is split into <strong>{exportParts} files</strong> — each one holds up to 500 scans, and the first also holds your
-                account, saved profile and payments. Part 1 is downloaded; download the rest to have everything:
+                Your data is split into <strong>{exportParts} files</strong> — each one holds a batch of your scans, and the first also holds your
+                account, saved profile, devices, email history and payments. Part 1 is downloaded; download the rest to have everything:
               </p>
               <div className="flex flex-wrap gap-2">
                 {Array.from({ length: exportParts - 1 }, (_, i) => i + 2).map(part => (
@@ -544,6 +644,27 @@ export default function Settings() {
           {exportError && <p role="alert" className="text-sm text-red-600 mt-2">{exportError}</p>}
         </div>
 
+        {/* Delete scan history */}
+        <div className="bg-white rounded-lg border border-gray-200 p-6">
+          <h2 className="font-semibold text-gray-900 mb-1">Scan history</h2>
+          <p className="text-sm text-gray-500 mb-4">
+            Delete every scan — resume text, job descriptions and rewritten documents — without closing your account.
+            Payment records and your saved profile are kept.
+          </p>
+          <Button variant="secondary" size="sm" onClick={() => { setPurgeError(''); setPurgeResult(null); setPurgeOpen(true) }}>
+            Delete my scan history
+          </Button>
+          {purgeError && <p role="alert" className="text-sm text-red-600 mt-2">{purgeError}</p>}
+          {purgeResult && (
+            <p role="status" className="text-sm text-gray-700 mt-2">
+              {purgeResult.deleted === 0 && purgeResult.remaining === 0
+                ? 'You have no scans to delete.'
+                : `Deleted ${purgeResult.deleted} scan${purgeResult.deleted === 1 ? '' : 's'}.`}
+              {purgeResult.remaining > 0 && ` ${purgeResult.remaining} ${purgeResult.remaining === 1 ? 'is' : 'are'} still being processed and ${purgeResult.remaining === 1 ? 'was' : 'were'} kept — try again in a few minutes.`}
+            </p>
+          )}
+        </div>
+
         {/* Danger zone */}
         <div className="bg-white rounded-lg border border-red-200 p-6">
           <h2 className="font-semibold text-red-800 mb-2">Danger zone</h2>
@@ -555,6 +676,18 @@ export default function Settings() {
           </Button>
         </div>
       </div>
+
+      <ConfirmDialog
+        open={purgeOpen}
+        title="Delete scan history"
+        message={purging
+          ? `Deleting… ${purgeCount} scan${purgeCount === 1 ? '' : 's'} removed so far.`
+          : 'Permanently delete your whole scan history? Every scan\'s resume file, job description and rewritten documents are removed, and any public verification page you purchased stops working. Your payment records, saved profile and account stay.\n\nScans that are still being processed are skipped.'}
+        confirmLabel="Delete all scans"
+        loading={purging}
+        onConfirm={handlePurgeHistory}
+        onCancel={() => setPurgeOpen(false)}
+      />
 
       <ConfirmDialog
         open={removeConfirmOpen}

@@ -1,4 +1,4 @@
-// Phase 4 — profile reuse. Three endpoints, all auth-required.
+// Profile & account-data endpoints, all auth-required.
 //
 // SECURITY NOTE on saveProfile: the request body is { scanId }, never raw
 // resume data. The server looks up that scan (verifying ownership), reads
@@ -6,20 +6,26 @@
 // is deliberate — accepting arbitrary client-supplied JSON here would let a
 // malicious or buggy client inject unvalidated content into saved_profile,
 // which later gets rendered into a DOCX/PDF for a completely different scan.
-// Routing through an owned scan means the only data that can ever become a
-// saved profile is the structured resume the server itself derived from that
-// user's own upload or brain dump (original_resume_data) — never a value the
-// client typed into this request. (detectFabrication() is NOT part of that
-// story: it only compares an original against a rewrite, and a saved profile
-// is the original.) Same trust posture as the rest of the app — never trust a
-// client-supplied payload where a server-side lookup can derive the same value
-// safely (see payments.controller.js's amount calculation for the same
-// pattern applied to pricing).
+// Routing through an owned scan means the only data that can become a saved
+// profile by SAVING is the structured resume the server itself derived from
+// that user's own upload or brain dump (original_resume_data).
+//
+// The one door for client-typed content is updateProfile (PUT /api/profile),
+// the saved-profile editor. It is held to exactly the standard of the existing
+// scan-data editor (PATCH /scan/:id/resume-data): the same shared schema and
+// size cap (lib/resumeData.js), blank lines dropped, a profile must already
+// exist, and the write replaces only the resume content — never the
+// ownership/source fields. (detectFabrication() is not part of this story: it
+// only compares an original against a rewrite, and a saved profile is the
+// original.)
 
 const { getSupabase } = require('../config/supabase')
 const { scanRowToCamel } = require('../lib/mappers')
 const { UUID_RE } = require('../middleware/validateUuidParam')
-const { isRangeError } = require('../lib/db')
+const { isRangeError, warnOnError } = require('../lib/db')
+const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
+const { recordTombstones } = require('../lib/verification')
+const constants = require('../config/constants')
 
 // GET /api/profile
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used to
@@ -59,7 +65,8 @@ function pickLatestTitle(experience) {
 async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
-  const { data, error } = await supabase.from('users').select('saved_profile').eq('id', user.id).single()
+  const { data, error } = await supabase.from('users')
+    .select('saved_profile, scans_today, scans_day_reset, notify_scan_results').eq('id', user.id).single()
   if (error) throw error
 
   const saved = data.saved_profile
@@ -80,10 +87,74 @@ async function getProfile(c) {
   return c.json({ success: true, data: {
     hasSavedProfile: !!saved?.resumeData,
     savedAt:         saved?.savedAt || null,
+    editedAt:        saved?.editedAt || null,
     sourceScanId:    saved?.sourceScanId || null,
-    summary
+    summary,
+    quota:           scanQuota(data),
+    preferences:     { notifyScanResults: data.notify_scan_results !== false }
   }})
 }
+
+// Today's free-scan allowance, computed the way the increment_scan_count_if_under_limit RPC
+// decides it (0008): a counter last touched before today's midnight is a stale day and counts
+// as zero. The Worker runs in UTC, so "midnight" is UTC midnight — resetsAt says so in a form
+// the client can show in the person's own time zone.
+function scanQuota(row, now = new Date()) {
+  const limit = constants.FREE_SCANS_PER_DAY
+  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const lastReset = row?.scans_day_reset ? Date.parse(row.scans_day_reset) : NaN
+  const used = Number.isFinite(lastReset) && lastReset >= midnight ? Math.max(0, row.scans_today || 0) : 0
+  return { limit, used: Math.min(used, limit), remaining: Math.max(0, limit - used), resetsAt: new Date(midnight + 86_400_000).toISOString() }
+}
+
+// GET /api/profile/data — the saved resume itself, for the editor only. getProfile deliberately
+// withholds it (contact details, full history); this is the same owner reading their own data on
+// an explicit request, so it carries no-store like every other account response.
+async function getProfileData(c) {
+  const user = c.get('user')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('users').select('saved_profile').eq('id', user.id).single()
+  if (error) throw error
+  const saved = data.saved_profile
+  if (!saved?.resumeData) return c.json({ success: false, message: 'No saved profile.' }, 404)
+  return c.json({ success: true, data: { resumeData: saved.resumeData, savedAt: saved.savedAt || null, editedAt: saved.editedAt || null } })
+}
+
+// PUT /api/profile  { resumeData } — correct the saved profile in place.
+async function updateProfile(c) {
+  const user = c.get('user')
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  const checked = parseClientResumeData(body && typeof body === 'object' ? body.resumeData : undefined)
+  if (!checked.ok) return c.json({ success: false, message: checked.message }, 400)
+  if (!hasResumeContent(checked.data))
+    return c.json({ success: false, message: 'Add at least one job, school, skill or a summary — an empty profile is not worth saving.' }, 400)
+
+  const supabase = getSupabase(c.env)
+  const { data: updated, error } = await supabase.rpc('set_saved_profile_resume', {
+    p_user_id: user.id, p_resume: checked.data, p_edited_at: new Date().toISOString()
+  })
+  if (error) throw error
+  if (!updated) return c.json({ success: false, message: 'No saved profile to edit. Save one from a completed scan first.' }, 404)
+  return c.json({ success: true, message: 'Saved profile updated.', data: { resumeData: checked.data } })
+}
+
+// PATCH /api/profile/preferences  { notifyScanResults: boolean }
+// Only the "your scan finished" result email is optional. Security notices, receipts and a
+// delivered fix are never governed by this.
+async function updatePreferences(c) {
+  const user = c.get('user')
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  const v = body && typeof body === 'object' ? body.notifyScanResults : undefined
+  if (typeof v !== 'boolean') return c.json({ success: false, message: 'notifyScanResults must be true or false.' }, 400)
+  const supabase = getSupabase(c.env)
+  const { error } = await supabase.from('users').update({ notify_scan_results: v }).eq('id', user.id)
+  if (error) throw error
+  return c.json({ success: true, message: v ? 'Scan result emails are on.' : 'Scan result emails are off.', data: { notifyScanResults: v } })
+}
+
+const SAVEABLE_STATUSES = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']
 
 // POST /api/profile/save  { scanId }
 async function saveProfile(c) {
@@ -111,6 +182,15 @@ async function saveProfile(c) {
     return c.json({ success: false, message: 'Access denied.' }, 403)
   if (!scan.originalResumeData)
     return c.json({ success: false, message: 'This scan has no structured resume data to save yet.' }, 400)
+  // A scan still running, or one that failed, can hold half-written or unusable data (a brain
+  // dump stores its structured copy before the scoring step that may still error). A profile
+  // saved from it would later fail every rescan built on it.
+  if (!SAVEABLE_STATUSES.includes(scan.status))
+    return c.json({ success: false, message: scan.status === 'ERROR'
+      ? 'This scan did not finish, so its resume data is not reliable enough to save. Save from a scan that completed.'
+      : 'This scan is still being processed. Save the profile once it has finished.' }, 400)
+  if (!hasResumeContent(scan.originalResumeData))
+    return c.json({ success: false, message: 'This scan has no work history, education or skills to save.' }, 400)
 
   // Wrapped with savedAt (and now sourceScanId/roleCategory — see
   // getProfile's comment above) inside the single jsonb column — avoids a
@@ -150,15 +230,19 @@ async function deleteProfile(c) {
 // carries the account, saved profile and payments; every part says how many
 // parts there are (`export.parts` and the X-Export-Parts header) so the app can
 // offer the rest.
-const EXPORT_SCANS_PER_PART = 500
+const EXPORT_SCANS_PER_PART = 250
 const EXPORT_MAX_PAYMENTS = 1000
 const EXPORT_SCAN_COLUMNS =
-  'id, status, input_mode, created_at, scan_completed_at, resume_original_name, role_category, seniority_level, ' +
+  'id, status, input_mode, created_at, scan_completed_at, resume_original_name, job_title, role_category, seniority_level, ' +
   'ats_score, passed, keyword_score, format_score, sections_score, content_score, ' +
   'job_description_text, job_description_url, raw_brain_dump_text, cover_letter_text, ' +
   'original_resume_data, rewritten_resume_data, fix_purchased, fix_tier, fix_ats_score, fix_generated_at, ' +
   'candidate_first_name, verify_hide_name, verify_expose_docx, verify_expose_pdf, ' +
   'verification_code, verification_status, verified_at, verification_revoked_at'
+const EXPORT_MAX_SESSIONS = 200
+const EXPORT_MAX_EMAILS = 500
+const EXPORT_SESSION_COLUMNS = 'id, created_at, last_seen_at, absolute_expires_at, revoked_at, ip, user_agent'
+const EXPORT_EMAIL_COLUMNS = 'subject, template, status, sent_at'
 const EXPORT_PAYMENT_COLUMNS =
   'id, paystack_ref, amount_cents, currency, fix_tier, status, scan_id, referral_code, created_at, refunded_at, disputed_at'
 
@@ -173,7 +257,8 @@ async function exportMyData(c) {
   const from = (part - 1) * EXPORT_SCANS_PER_PART
 
   const { data: account, error: accErr } = await supabase.from('users')
-    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile').eq('id', user.id).single()
+    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile, pending_email, notify_scan_results, ' +
+      'terms_accepted_at, terms_version, last_login_at, last_login_ip, previous_login_at, previous_login_ip').eq('id', user.id).single()
   if (accErr) throw accErr
 
   // Newest first, id as the tiebreak: created_at ties must not shuffle rows
@@ -202,7 +287,11 @@ async function exportMyData(c) {
     export: { part, parts, totalScans, scansPerPart: EXPORT_SCANS_PER_PART },
     account: part === 1
       ? { name: account.name, email: account.email, emailVerified: account.email_verified,
-          freeFixCredits: account.free_fix_credits, createdAt: account.created_at }
+          freeFixCredits: account.free_fix_credits, createdAt: account.created_at,
+          pendingEmail: account.pending_email ?? null, notifyScanResults: account.notify_scan_results !== false,
+          termsAcceptedAt: account.terms_accepted_at ?? null, termsVersion: account.terms_version ?? null,
+          lastLoginAt: account.last_login_at ?? null, lastLoginIp: account.last_login_ip ?? null,
+          previousLoginAt: account.previous_login_at ?? null, previousLoginIp: account.previous_login_ip ?? null }
       : { email: account.email },   // later parts only need to say whose they are
     scans: (scans || []).map(camel)
   }
@@ -215,6 +304,19 @@ async function exportMyData(c) {
     payload.savedProfile = account.saved_profile || null
     payload.payments = (payments || []).map(camel)
     payload.paymentsTruncated = (payments || []).length >= EXPORT_MAX_PAYMENTS
+
+    // The sign-in devices and mail history are data the account holds about its owner too.
+    const { data: sessions, error: sessErr } = await supabase.from('user_sessions')
+      .select(EXPORT_SESSION_COLUMNS).eq('user_id', user.id)
+      .order('created_at', { ascending: false }).limit(EXPORT_MAX_SESSIONS)
+    if (sessErr) throw sessErr
+    payload.sessions = (sessions || []).map(camel)
+    const { data: emails, error: mailErr } = await supabase.from('email_logs')
+      .select(EXPORT_EMAIL_COLUMNS).eq('to', account.email)
+      .order('sent_at', { ascending: false }).limit(EXPORT_MAX_EMAILS)
+    if (mailErr) throw mailErr
+    payload.emailsSent = (emails || []).map(camel)
+    payload.emailsTruncated = (emails || []).length >= EXPORT_MAX_EMAILS
   }
 
   return c.body(JSON.stringify(payload, null, 2), 200, {
@@ -224,4 +326,71 @@ async function exportMyData(c) {
   })
 }
 
-module.exports = { getProfile, saveProfile, deleteProfile, exportMyData }
+// DELETE /api/profile/scans — remove the account's scan history (not the account, not payments).
+//
+// Scans hold the most personal data in the app (resume text, structured history, job
+// descriptions) and could only be removed one at a time or by deleting the whole account. This
+// removes them in small batches — each call deletes up to PURGE_BATCH scans plus their stored
+// files — and says how many are left, so the app can loop with a progress message instead of
+// one request that blows the Worker's subrequest/time budget on a large history.
+//
+// Same rules as deleteScan for each scan: nothing still being processed (untouched for an hour
+// means the job died and does not block), nothing with a payment in flight; a paid scan CAN be
+// deleted, its verification page then reads "removed by its owner", and its payment record
+// stays. The saved profile is a separate copy and is kept (only its source pointer is cleared).
+const PURGE_BATCH = 25
+const IN_FLIGHT_STATUSES = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
+const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000
+
+async function deleteScanHistory(c) {
+  const user = c.get('user')
+  const supabase = getSupabase(c.env)
+  const since = new Date(Date.now() - IN_FLIGHT_WINDOW_MS).toISOString()
+
+  const { data: rows, error } = await supabase.from('scans')
+    .select('id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
+    .eq('user_id', user.id)
+    .or(`status.not.in.(${IN_FLIGHT_STATUSES.join(',')}),updated_at.lte.${since}`)
+    .order('created_at', { ascending: true }).order('id', { ascending: true })
+    .limit(PURGE_BATCH)
+  if (error) throw error
+
+  let batch = rows || []
+  if (batch.length) {
+    const { data: busy, error: payErr } = await supabase.from('payments')
+      .select('scan_id').in('scan_id', batch.map(r => r.id)).eq('status', 'PENDING').gt('created_at', since)
+    if (payErr) throw payErr
+    const held = new Set((busy || []).map(p => p.scan_id))
+    batch = batch.filter(r => !held.has(r.id))
+  }
+
+  let deleted = 0
+  if (batch.length) {
+    const { data: removed, error: delErr } = await supabase.from('scans')
+      .delete().in('id', batch.map(r => r.id)).eq('user_id', user.id).select('id')
+    if (delErr) throw delErr
+    const gone = new Set((removed || []).map(r => r.id))
+    const goneRows = batch.filter(r => gone.has(r.id))
+    deleted = goneRows.length
+
+    if (goneRows.length) {
+      await recordTombstones(supabase, goneRows)
+      for (const row of goneRows) {
+        for (const key of [row.resume_path, row.resume_ats_path, row.resume_pdf_path]) {
+          if (!key) continue
+          try { await c.env.RESUMES_BUCKET.delete(key) }
+          catch (e) { console.error(`deleteScanHistory: failed to delete R2 object ${key} for scan ${row.id}:`, e.message) }
+        }
+      }
+      warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: goneRows.map(r => r.id) }),
+        'deleteScanHistory: clear saved-profile source')
+    }
+  }
+
+  const { count, error: countErr } = await supabase.from('scans')
+    .select('id', { count: 'exact', head: true }).eq('user_id', user.id)
+  if (countErr) throw countErr
+  return c.json({ success: true, data: { deleted, remaining: count ?? 0 } })
+}
+
+module.exports = { getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }

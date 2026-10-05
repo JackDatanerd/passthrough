@@ -6,8 +6,13 @@ const c    = require('../controllers/profile.controller')
 const router = new Hono()
 
 router.get(   '/',      auth, c.getProfile)
+router.get(   '/data',  auth, c.getProfileData)          // the saved resume itself, for the editor
+router.put(   '/',      auth, c.updateProfile)           // correct the saved resume in place
+router.patch( '/preferences', auth, c.updatePreferences)
 router.post(  '/save',  auth, c.saveProfile)
 router.delete('/',      auth, c.deleteProfile)
+// "Delete my scan history" — batched; the SPA loops until `remaining` is 0.
+router.delete('/scans', auth, rl.historyPurge, c.deleteScanHistory)
 // A full read of the account's scans and payments — rate-limited like the other
 // heavy per-user reads.
 router.get(   '/export', auth, rl.dataExport, c.exportMyData)

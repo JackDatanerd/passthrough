@@ -385,6 +385,18 @@ describe('verify-miss limiter', () => {
   })
 })
 
+describe('historyPurge limiter — "delete my scan history" is budgeted per account', () => {
+  const asUser = (id, ip, env) => ctx({ ip, env, user: { id }, path: '/api/profile/scans' })
+  it('a big history can be cleared in many batches, but not without limit, and one account never spends another\'s budget', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 120; i++) expect((await hit(rl.historyPurge, asUser('u1', `5.5.5.${(i % 200) + 1}`, env))).passed).toBe(true)
+    const over = await hit(rl.historyPurge, asUser('u1', '6.6.6.6', env))
+    expect(over.passed).toBe(false)
+    expect(over.res.status).toBe(429)
+    expect((await hit(rl.historyPurge, asUser('u2', '5.5.5.1', env))).passed).toBe(true)
+  })
+})
+
 describe('dataExport limiter — budget belongs to the account, not the network address', () => {
   const asUser = (id, ip, env) => ctx({ ip, env, user: { id }, path: '/api/profile/export' })
   it('two different accounts behind the same IP (shared NAT) each get their own budget', async () => {

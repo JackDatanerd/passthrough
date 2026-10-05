@@ -30,6 +30,9 @@ function userRowToCamel(row) {
     paystackCustomerCode:  row.paystack_customer_code,
     paystackAuthCode:      row.paystack_auth_code,
     savedProfile:          row.saved_profile,
+    // false = the person turned off the "your scan finished" email (migration 0052). A row from
+    // before the column existed reads as on, which is what it always was.
+    notifyScanResults:     row.notify_scan_results ?? true,
     // FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
     // (migration 0038) are written at registration (auth.controller.js) but
     // were never read back anywhere — this mapper is the one read path every
@@ -229,7 +232,7 @@ const USER_FIELD_MAP = {
   // map.
   freeFixCredits: 'free_fix_credits',
   paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code',
-  savedProfile: 'saved_profile',
+  savedProfile: 'saved_profile', notifyScanResults: 'notify_scan_results',
   // AUDIT FIX (Section 9/10 pass): same latent-drop trap as freeFixCredits
   // above, for pending_email/pending_email_token/pending_email_expiry
   // (migration 0029, auth.controller.js's updateEmail/confirmEmailChange

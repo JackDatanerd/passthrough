@@ -13,6 +13,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, statusLabel } from '../../lib/utils'
 import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
 import { createPoller } from '../../lib/poller'
+import { describeQuota } from '../../lib/quota'
 import { isLive, canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
@@ -60,7 +61,10 @@ export default function DashboardIndex() {
   // remount.
   const [searchParams, setSearchParams] = useSearchParams()
   const page   = Math.max(parseInt(searchParams.get('page')) || 1, 1)
-  const status = searchParams.get('status') || ''
+  // A hand-edited ?status=FOO used to leave the dropdown showing "All" while the empty state
+  // claimed a filter was active. Anything that is not a real status is no filter at all.
+  const rawStatus = searchParams.get('status') || ''
+  const status = SCAN_STATUSES.includes(rawStatus) ? rawStatus : ''
   // Search box needs its own local state so typing doesn't refetch on every
   // keystroke — committed to the URL (and therefore the API call) debounced,
   // same reasoning as AdminUsers.jsx / AdminLeads.jsx's search boxes, which
@@ -86,6 +90,8 @@ export default function DashboardIndex() {
   // saved-profile scan without one with a clear message, so showing it when
   // unsure is the safe direction.
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
+  // Today's free-scan allowance (from the same /profile read). Not knowing is not an error.
+  const [quota, setQuota] = useState(null)
 
   const search = searchParams.get('search') || ''
 
@@ -178,7 +184,7 @@ export default function DashboardIndex() {
 
   useEffect(() => {
     api.get('/profile')
-      .then(res => setHasSavedProfile(!!res.data.data.hasSavedProfile))
+      .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile); setQuota(res.data.data.quota || null) })
       .catch(() => setHasSavedProfile(null))
 
     // Re-sync cached user state (emailVerified in particular) every time the
@@ -216,8 +222,14 @@ export default function DashboardIndex() {
       setPendingDelete(null)
       setReloadTick(t => t + 1)   // the page may now be short or empty; the load effect steps back if so
     } catch (err) {
-      setDeleteError(getErrorMessage(err, 'Could not delete that scan.'))
       setPendingDelete(null)
+      if (err.response?.status === 404) {
+        // Already gone (deleted from another tab or device): the goal is met. Say nothing
+        // alarming, just drop the stale row by re-reading the list.
+        setReloadTick(t => t + 1)
+      } else {
+        setDeleteError(getErrorMessage(err, 'Could not delete that scan.'))
+      }
     } finally {
       setDeleting(false)
     }
@@ -263,6 +275,20 @@ export default function DashboardIndex() {
             )}
           </div>
         )}
+
+        {/* Free-scan allowance: the first sign of the daily limit used to be a 429 at submit. */}
+        {(() => {
+          const q = describeQuota(quota)
+          if (!q) return null
+          return (
+            <p role="status" data-testid="scan-quota"
+              className={q.exhausted
+                ? 'text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3'
+                : 'text-xs text-gray-500 -mt-3'}>
+              {q.text}
+            </p>
+          )
+        })()}
 
         {/* Free fix credit balance — previously only surfaced on a specific
             scan's FixBanner once you happened to land there; shown here too

@@ -502,6 +502,15 @@ const dataExport = makeLimiter({
   message: msg('Too many export requests. Please try again later.')
 })
 
+// Backs DELETE /api/profile/scans — "delete my whole scan history" runs as a loop of small
+// batches (each one deletes up to a few dozen scans and their stored files), so the ceiling is
+// per ACCOUNT and sized for a large history being cleared in one sitting, a few times at most.
+const historyPurge = makeLimiter({
+  windowSeconds: 60 * 60, max: 120, keyPrefix: 'rl:historypurge',
+  keyBy: byAccount,
+  message: msg('Too many delete requests. Please try again later.')
+})
+
 const employerLead = makeLimiter({
   windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:lead',
   message: msg('Slow down.')
@@ -818,7 +827,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, historyPurge, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

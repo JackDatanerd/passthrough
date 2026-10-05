@@ -182,6 +182,25 @@ describe('profile routes — GET /export', () => {
     expect(await call(a, 'GET', '/export')).toEqual({ status: 200, json: { handler: 'exportMyData' } })
     expect((await call(a, 'GET', '')).json.handler).toBe('getProfile')
   })
+  it('every profile route needs a login, and each reaches its own handler', async () => {
+    const a = app()
+    const routes = [
+      ['GET', '', 'getProfile'], ['GET', '/data', 'getProfileData'], ['PUT', '', 'updateProfile'],
+      ['PATCH', '/preferences', 'updatePreferences'], ['POST', '/save', 'saveProfile'],
+      ['DELETE', '', 'deleteProfile'], ['DELETE', '/scans', 'deleteScanHistory'], ['GET', '/export', 'exportMyData'],
+    ]
+    for (const [m, p, handler] of routes) {
+      current = undefined
+      expect((await call(a, m, p, {})).status, `${m} ${p} anonymous`).toBe(401)
+      current = { id: 'u1' }
+      expect((await call(a, m, p, {})).json, `${m} ${p}`).toEqual({ handler })
+    }
+  })
+  it('DELETE /scans (the whole history) is not shadowed by, and does not shadow, DELETE / (the saved profile)', async () => {
+    const a = app(); current = { id: 'u1' }
+    expect((await call(a, 'DELETE', '')).json.handler).toBe('deleteProfile')
+    expect((await call(a, 'DELETE', '/scans')).json.handler).toBe('deleteScanHistory')
+  })
 })
 
 describe('admin routes — webhook inbox', () => {

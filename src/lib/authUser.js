@@ -19,7 +19,7 @@ const constants = require('../config/constants')
 
 const AUTH_USER_COLUMNS = [
   'id', 'email', 'name', 'role', 'status', 'token_version', 'email_verified',
-  'pending_email', 'deleted_at', 'scans_today', 'free_fix_credits', 'scans_day_reset',
+  'pending_email', 'pending_email_expiry', 'notify_scan_results', 'deleted_at', 'scans_today', 'free_fix_credits', 'scans_day_reset',
   'terms_accepted_at', 'terms_version',
   'last_login_at', 'last_login_ip', 'previous_login_at', 'previous_login_ip',
   'created_at', 'updated_at',
@@ -30,7 +30,7 @@ const AUTH_USER_COLUMNS = [
 const SECRET_USER_FIELDS = [
   'passwordHash', 'paystackAuthCode', 'paystackCustomerCode',
   'resetToken', 'resetTokenExpiry', 'emailVerifyToken', 'emailVerifyExpiry',
-  'pendingEmailToken', 'pendingEmailExpiry', 'savedProfile', 'lastLoginAlertAt',
+  'pendingEmailToken', 'savedProfile', 'lastLoginAlertAt',
 ]
 
 /**
@@ -48,6 +48,12 @@ function toRequestUser(row) {
   if (!user) return { user, requestUser: null }
   const safe = { ...user }
   for (const k of SECRET_USER_FIELDS) delete safe[k]
+  // A staged email change whose link has expired is dead — the confirmation endpoint refuses it —
+  // but the row keeps it until the hourly sweep. Telling the client it is still "pending" showed
+  // a "check that inbox" banner for a link that could no longer work. pendingEmailExpiry itself
+  // is not a credential (the token is), so it rides along for the countdown.
+  const expiresAt = user.pendingEmailExpiry ? Date.parse(user.pendingEmailExpiry) : NaN
+  safe.pendingEmail = user.pendingEmail && Number.isFinite(expiresAt) && expiresAt > Date.now() ? user.pendingEmail : null
   return {
     user,
     requestUser: { ...safe, termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION },

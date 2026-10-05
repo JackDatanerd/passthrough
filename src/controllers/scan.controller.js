@@ -64,6 +64,7 @@ const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
 const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
+const { parseClientResumeData } = require('../lib/resumeData')
 const { purgeBadgeCache } = require('../lib/badgeCache')
 const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
@@ -419,7 +420,7 @@ async function createScan(ctx) {
       // this is a separate DB-tracked limit (not KV-based), but reuses the
       // same testing toggle so there's one bypass to turn on/off, not two.
       if (!rateLimiter.isBypassed(ctx.env, ip)) {
-        return ctx.json({ success: false, message: 'Daily scan limit reached. Upgrade for unlimited.' }, 429)
+        return ctx.json({ success: false, message: `Daily scan limit reached (${c.FREE_SCANS_PER_DAY} free scans a day). Your count resets at midnight UTC.` }, 429)
       }
       // Bypassed — the RPC already declined to increment, so grant the
       // slot manually for this request only (testing path, unmetered).
@@ -595,27 +596,6 @@ function buildAtsDetail(fullAtsReport) {
 // discarded, at both call sites. Blends the score exactly as before and
 // also returns whatever missing-keyword list Claude provided, for the
 // caller to persist onto full_ats_report.aiMissingKeywords.
-// Removes empty strings the editor sends for untouched lines: blank bullets,
-// blank skills / certifications / technologies.
-function dropBlankEntries(rd) {
-  const keep = arr => (Array.isArray(arr) ? arr.filter(x => typeof x !== 'string' || x.trim()) : arr)
-  const blank = v => (typeof v === 'string' ? !v.trim() : v == null || (Array.isArray(v) && v.length === 0))
-  // An "Add job" / "Add school" row the person never filled in is an entry whose
-  // every field is empty — saved as-is it printed an empty heading line (and an
-  // empty-bullet block) into the delivered documents.
-  const keepEntries = (arr, fields) => (Array.isArray(arr) ? arr.filter(e => e && fields.some(f => !blank(e[f]))) : arr)
-  return {
-    ...rd,
-    skills: keep(rd.skills),
-    certifications: keep(rd.certifications),
-    experience: Array.isArray(rd.experience)
-      ? keepEntries(rd.experience.map(e => ({ ...e, bullets: keep(e?.bullets) })), ['company', 'title', 'dates', 'bullets']) : rd.experience,
-    education: keepEntries(rd.education, ['institution', 'degree', 'dates']),
-    projects: Array.isArray(rd.projects)
-      ? keepEntries(rd.projects.map(p => ({ ...p, technologies: keep(p?.technologies) })), ['name', 'description', 'technologies', 'link']) : rd.projects,
-  }
-}
-
 // AUDIT FIX (Auth/Scan round): a scan that ends in ERROR because of a fault on
 // OUR side (or one that produced nothing at all) used to keep the free-scan
 // slot it consumed — the person lost one of their 3 daily scans and got no
@@ -694,35 +674,7 @@ async function getScan(ctx) {
 // else (the AI-generation call sites intentionally do NOT run their output
 // through this — that would just be a second, redundant thing to keep in
 // sync with the prompt's own schema).
-const MAX_RESUME_DATA_JSON_CHARS = 100_000
-const resumeDataSchema = z.object({
-  name:      z.string().nullable().optional(),
-  email:     z.string().nullable().optional(),
-  phone:     z.string().nullable().optional(),
-  location:  z.string().nullable().optional(),
-  linkedin:  z.string().nullable().optional(),
-  portfolio: z.string().nullable().optional(),
-  summary:   z.string().nullable().optional(),
-  experience: z.array(z.object({
-    company: z.string().nullable().optional(),
-    title:   z.string().nullable().optional(),
-    dates:   z.string().nullable().optional(),
-    bullets: z.array(z.string()).optional()
-  })).optional(),
-  education: z.array(z.object({
-    institution: z.string().nullable().optional(),
-    degree:      z.string().nullable().optional(),
-    dates:       z.string().nullable().optional()
-  })).optional(),
-  skills:         z.array(z.string()).optional(),
-  certifications: z.array(z.string()).optional(),
-  projects: z.array(z.object({
-    name:         z.string().nullable().optional(),
-    description:  z.string().nullable().optional(),
-    technologies: z.array(z.string()).optional(),
-    link:         z.string().nullable().optional()
-  })).optional()
-}).passthrough()
+// (schema + size cap live in lib/resumeData.js, shared with PUT /api/profile)
 
 // PATCH /api/scan/:id/resume-data
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
@@ -774,18 +726,11 @@ async function updateResumeData(ctx) {
   } catch (_) {
     return ctx.json({ success: false, message: 'Invalid request body.' }, 400)
   }
-  // Bounded BEFORE it is validated, rendered to a docx and stored as JSONB:
-  // the schema is deliberately permissive (`.passthrough()`), so it can't be
-  // relied on to cap size. A real structured resume is a few KB.
-  if (JSON.stringify(body?.resumeData ?? null).length > MAX_RESUME_DATA_JSON_CHARS)
-    return ctx.json({ success: false, message: 'Resume data is too large.' }, 400)
-  const parsedBody = resumeDataSchema.safeParse(body?.resumeData)
-  if (!parsedBody.success)
-    return ctx.json({ success: false, message: 'Resume data is not in the expected shape.' }, 400)
-  // AUDIT FIX (Auth/Scan round): the editor sends a bullet/skill for every
-  // line the person typed, including blank ones; blanks were saved and became
-  // empty "•" lines in the delivered documents.
-  const resumeData = dropBlankEntries(parsedBody.data)
+  // Size-capped and shape-checked (lib/resumeData.js) BEFORE it is rendered to a docx and
+  // stored as JSONB; blank editor lines are dropped there too.
+  const checked = parseClientResumeData(body?.resumeData)
+  if (!checked.ok) return ctx.json({ success: false, message: checked.message }, 400)
+  const resumeData = checked.data
 
   // Same WYSIWYG scoring basis as runAtsScan's own brain_dump/saved_profile
   // branches (see renderStructuredResumeText above) and the same AI/rule
@@ -1389,11 +1334,12 @@ async function deleteScan(ctx) {
     catch (e) { console.error(`deleteScan: failed to delete R2 object ${key} for scan ${id}:`, e.message) }
   }
 
+  // Only the "view source scan" pointer is cleared, atomically (0052): the profile itself is a
+  // separate copy the user chose to keep, and a profile saved or edited while this request ran
+  // must not be overwritten by a stale copy of itself.
   try {
-    const { data: u } = await supabase.from('users').select('saved_profile').eq('id', user.id).maybeSingle()
-    if (u?.saved_profile?.sourceScanId === id)
-      warnOnError(await supabase.from('users')
-        .update({ saved_profile: { ...u.saved_profile, sourceScanId: null } }).eq('id', user.id), 'deleteScan: clear saved-profile source')
+    warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: [id] }),
+      'deleteScan: clear saved-profile source')
   } catch (e) { console.error('deleteScan: saved-profile pointer:', e.message) }
 
   return ctx.json({ success: true, message: 'Scan deleted.' })
@@ -1598,7 +1544,10 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
     if (scan.userId) {
       const { data: userRow } = await supabase.from('users').select('*').eq('id', scan.userId).maybeSingle()
       const user = userRowToCamel(userRow)
-      if (user) {
+      // notifyScanResults === false is an explicit opt-out (Settings); anything else — including a
+      // row from before migration 0052 — keeps the old behaviour. Only this "scan finished"
+      // message is governed: security and transactional mail is never optional.
+      if (user && user.notifyScanResults !== false) {
         const fn = finalScore >= c.ATS_PASS_THRESHOLD ? emailService.sendScanPass : emailService.sendScanFail
         // Awaited rather than fire-and-forget: this whole function already
         // runs inside a background waitUntil() call from createScan (the
