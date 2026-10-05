@@ -20,6 +20,13 @@ describe('sendViaResend', () => {
     expect(calls[0].init.headers['Idempotency-Key']).toMatch(/^[0-9a-f-]{36}$/)
     expect(JSON.parse(calls[0].init.body).text).toBe('h')
   })
+  it('forwards extra message headers (List-Unsubscribe) and omits the field when there are none', async () => {
+    script(resp(200, '{"id":"h1"}'), resp(200, '{"id":"h2"}'))
+    await sendViaResend(env, { ...msg, headers: { 'List-Unsubscribe': '<https://x/u>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' } }, FAST)
+    await sendViaResend(env, msg, FAST)
+    expect(JSON.parse(calls[0].init.body).headers).toEqual({ 'List-Unsubscribe': '<https://x/u>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' })
+    expect('headers' in JSON.parse(calls[1].init.body)).toBe(false)
+  })
   it('retries a 429 and succeeds — a rate-limit burst does not lose the email', async () => {
     script(resp(429, 'slow down'), resp(200, '{"id":"e2"}'))
     expect(await sendViaResend(env, msg, FAST)).toEqual({ id: 'e2' })

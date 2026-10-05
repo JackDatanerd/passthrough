@@ -8,6 +8,8 @@
 //   * spent auth tokens — hashed reset/verify tokens that outlive their expiry
 //   * dismissed employer leads — a stranger's name/company/email, archived by an
 //                           admin, kept until someone remembered to delete it
+//   * never-confirmed employer leads — an address a stranger typed that nobody has ever
+//                           confirmed or touched, kept forever (fresh audit pass 2, Section 5)
 //
 // Each step is independent and never throws (one failing purge must not stop
 // the others, or the rest of the cron). All return counts for the cron's log.
@@ -22,6 +24,12 @@ const ANON_BATCH = 500
 // dismissed lead, then removed. Any resubmission bumps updated_at, so a lead
 // that keeps coming back is never purged out from under the dedupe.
 const ARCHIVED_LEAD_RETENTION_DAYS = 90
+// A lead that is still NEW, never confirmed, carries no admin notes and has not been
+// resubmitted for this long was never going to be confirmed: the acknowledgement asked
+// the address owner to confirm (or remove it) and nothing came back. Anything an admin
+// has touched is safe — CONTACTED/CONVERTED/ARCHIVED status or a note keeps the row —
+// and a person who keeps resubmitting keeps last_submitted_at fresh.
+const UNCONFIRMED_LEAD_RETENTION_DAYS = 90
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -113,17 +121,31 @@ async function purgeArchivedLeads(supabase, now = Date.now()) {
   }
 }
 
+async function purgeStaleUnconfirmedLeads(supabase, now = Date.now()) {
+  try {
+    const cutoff = new Date(now - UNCONFIRMED_LEAD_RETENTION_DAYS * DAY).toISOString()
+    const { data, error } = await supabase.from('employer_leads')
+      .delete().eq('status', 'NEW').is('confirmed_at', null).is('notes', null)
+      .lt('last_submitted_at', cutoff).select('id')
+    if (error) return { deleted: 0, error: error.message }
+    return { deleted: data?.length || 0 }
+  } catch (err) {
+    return { deleted: 0, error: err.message }
+  }
+}
+
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
     purgeArchivedLeads(supabase, now),
+    purgeStaleUnconfirmedLeads(supabase, now),
   ])
-  return { anon, logs, tokens, leads }
+  return { anon, logs, tokens, leads, staleLeads }
 }
 
 module.exports = {
-  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads,
-  EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
+  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads,
+  EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

@@ -38,7 +38,7 @@ describe('employer-leads routes', () => {
   const adminRoutes = [
     ['GET', ''], ['GET', '/export.csv'], ['POST', '/manual'], ['POST', '/bulk'],
     ['POST', '/suppressions/check'], ['DELETE', '/suppressions'],
-    [`PATCH`, `/${ID}`], [`DELETE`, `/${ID}`], [`POST`, `/${ID}/request-confirmation`],
+    [`PATCH`, `/${ID}`], [`DELETE`, `/${ID}`], [`POST`, `/${ID}/request-confirmation`], [`POST`, `/${ID}/mark-confirmed`],
   ]
   it('the public form needs no login', async () => {
     const a = app()
@@ -48,6 +48,9 @@ describe('employer-leads routes', () => {
     const a = app()
     expect(await call(a, 'POST', '/confirm', { token: 'x' })).toEqual({ status: 200, json: { handler: 'confirmLead' } })
     expect(await call(a, 'POST', '/remove', { token: 'x' })).toEqual({ status: 200, json: { handler: 'removeLead' } })
+    // Fresh audit pass 2 (G4): the RFC 8058 one-click target mail providers POST to.
+    expect(await call(a, 'POST', '/unsubscribe')).toEqual({ status: 200, json: { handler: 'unsubscribeLead' } })
+    expect((await call(a, 'GET', '/unsubscribe')).status).toBe(404)   // POST-only: a scanner's GET removes nobody
   })
   it('every admin route rejects anonymous callers (401) and non-admins (403)', async () => {
     const a = app()
@@ -65,6 +68,7 @@ describe('employer-leads routes', () => {
     expect((await call(a, 'GET', '/export.csv')).json.handler).toBe('adminExportLeads')
     expect((await call(a, 'PATCH', `/${ID}`, {})).json.handler).toBe('adminUpdateLeadStatus')
     expect((await call(a, 'POST', `/${ID}/request-confirmation`, {})).json.handler).toBe('adminRequestConfirmation')
+    expect((await call(a, 'POST', `/${ID}/mark-confirmed`, {})).json.handler).toBe('adminMarkConfirmed')
     expect((await call(a, 'PATCH', '/bulk', {})).status).toBe(400)   // a malformed :id, not the bulk handler
     // FEATURE GAP CLOSED (fresh audit pass, Section 5): 'suppressions' must
     // never be read as an :id either, same reasoning as 'manual' and 'bulk'.
@@ -85,7 +89,8 @@ describe('employer-leads routes', () => {
     await call(a, 'POST', '', { name: 'x' })
     await call(a, 'POST', '/confirm', { token: 'x' })
     await call(a, 'POST', '/remove', { token: 'x' })
-    expect(hit).toEqual(['employerLead', 'employerLeadLink', 'employerLeadLink'])
+    await call(a, 'POST', '/unsubscribe')
+    expect(hit).toEqual(['employerLead', 'employerLeadLink', 'employerLeadLink', 'employerLeadLink'])
   })
 })
 

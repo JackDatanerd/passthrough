@@ -32,6 +32,8 @@ export default function EmployerLeadAction({ mode }) {
   const [state, setState] = useState(token ? (isConfirm ? 'loading' : 'ask') : 'error') // loading | ask | working | done | error
   const [result, setResult] = useState(null)
   const [message, setMessage] = useState(token ? '' : 'This link is missing its token. Use the link from the email we sent you.')
+  // A rejected link (400) will never work on a second try; a network or server hiccup might.
+  const [retryable, setRetryable] = useState(false)
   const ran = useRef(false)
 
   async function run() {
@@ -42,6 +44,7 @@ export default function EmployerLeadAction({ mode }) {
       setState('done')
     } catch (err) {
       setMessage(getErrorMessage(err, 'This link could not be processed. Please try again.'))
+      setRetryable(!!token && err?.response?.status !== 400)
       setState('error')
     }
   }
@@ -99,7 +102,8 @@ export default function EmployerLeadAction({ mode }) {
               <div className="text-red-500 text-4xl mb-3">✕</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">{isConfirm ? 'Confirmation failed' : 'Removal failed'}</h1>
               <p className="text-sm text-gray-500 mb-6">{message}</p>
-              <Link to="/" className="text-sm text-blue-600 hover:underline">Back to Passthrough</Link>
+              {retryable && <Button onClick={run} className="mb-4">Try again</Button>}
+              <div><Link to="/" className="text-sm text-blue-600 hover:underline">Back to Passthrough</Link></div>
             </>
           )}
         </div>

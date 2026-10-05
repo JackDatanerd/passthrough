@@ -1195,3 +1195,172 @@ describe('admin audit trail', () => {
     expect(res.status).toBe(200)
   })
 })
+
+// ══ Fresh audit pass 2 (Section 5) ══════════════════════════════════════════
+
+describe('B1 — a failing KV never costs a lead its notices', () => {
+  it('still sends the owner notice and the acknowledgement when the budget store throws', async () => {
+    const dead = new Proxy({}, { get() { throw new Error('KV GET failed: 429') } })
+    t = setup({ kv: dead })
+    await submit(valid())
+    expect(t.state.notices).toHaveLength(1)
+    expect(t.state.acks).toHaveLength(1)
+  })
+})
+
+describe('B2 — an unconfirmed lead resubmitting does not spend both acknowledgement slots at once', () => {
+  const unconfirmed = (minutesAgo) => mkLead({ email: 'dana@acme.com', name: 'Dana', company: 'Acme',
+    last_submitted_at: new Date(Date.now() - minutesAgo * 60_000).toISOString(), created_at: '2026-01-01T00:00:00.000Z' })
+  it('does not re-send within the cooldown (a double-click)', async () => {
+    t = setup({ leads: [unconfirmed(1)] })
+    await submit(valid())
+    expect(t.state.acks).toHaveLength(0)
+    expect(t.state.leads[0].submission_count).toBe(2)   // still recorded
+  })
+  it('re-sends once the cooldown has passed', async () => {
+    t = setup({ leads: [unconfirmed(30)] })
+    await submit(valid())
+    expect(t.state.acks).toHaveLength(1)
+  })
+})
+
+describe('B3 — names made only of invisible letters are rejected', () => {
+  it.each([
+    ['Hangul filler', '\u3164\u3164'], ['halfwidth Hangul filler', '\uffa0'], ['choseong filler', '\u115f'],
+    ['jungseong filler', '\u1160'], ['Arabic letter mark', '\u061c'], ['combining grapheme joiner', '\u034f'],
+    ['Khmer inherent vowel', '\u17b4\u17b5'],
+  ])('%s', async (_label, name) => {
+    t = setup()
+    await expect(submit(valid({ name }))).rejects.toBeTruthy()
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('strips the same characters out of an otherwise real name', async () => {
+    t = setup()
+    await submit(valid({ name: 'Da\u3164na\u061c' }))
+    expect(t.state.leads[0].name).toBe('Dana')
+  })
+})
+
+describe('G1 — adminMarkConfirmed', () => {
+  it('confirms an unconfirmed lead and audits it', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const res = await t.mod.adminMarkConfirmed(t.c({ params: { id: ID1 } }))
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ success: true })
+    expect(t.state.leads[0].confirmed_at).toBeTruthy()
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.mark_confirmed', target_id: ID1 })
+  })
+  it('409s an already-confirmed lead without touching its timestamp, 404s an unknown one, 400s a bad id', async () => {
+    t = setup({ leads: [mkLead({ confirmed_at: '2026-02-01T00:00:00.000Z' })] })
+    expect((await t.mod.adminMarkConfirmed(t.c({ params: { id: ID1 } }))).status).toBe(409)
+    expect(t.state.leads[0].confirmed_at).toBe('2026-02-01T00:00:00.000Z')
+    expect((await t.mod.adminMarkConfirmed(t.c({ params: { id: ID2 } }))).status).toBe(404)
+    expect((await t.mod.adminMarkConfirmed(t.c({ params: { id: 'nope' } }))).status).toBe(400)
+    expect(t.state.audit).toHaveLength(0)
+  })
+})
+
+describe('G2/G7 — list filters', () => {
+  it('status=OPEN returns NEW and CONTACTED only, and counts.OPEN adds them', async () => {
+    t = setup({ leads: [
+      mkLead({ id: ID1, email: 'a@x.com', status: 'NEW' }), mkLead({ id: ID2, email: 'b@x.com', status: 'CONTACTED' }),
+      mkLead({ id: 'gen-9', email: 'c@x.com', status: 'CONVERTED' }), mkLead({ id: 'gen-8', email: 'd@x.com', status: 'ARCHIVED' }),
+    ] })
+    const res = await t.mod.adminListLeads(t.c({ query: { status: 'OPEN' } }))
+    expect(res.body.data.map(l => l.email).sort()).toEqual(['a@x.com', 'b@x.com'])
+    expect(res.body.meta.counts.OPEN).toBe(2)
+  })
+  it('search also matches the verification page code and the admin notes', async () => {
+    t = setup({ leads: [mkLead()] })
+    await t.mod.adminListLeads(t.c({ query: { search: 'K7QX' } }))
+    const expr = t.db.calls.find(c => c.or)?.or[0] || ''
+    expect(expr).toContain('source_code.ilike.%K7QX%')
+    expect(expr).toContain('notes.ilike.%K7QX%')
+  })
+  it('passes the badge threshold to the supply query', async () => {
+    t = setup({ leads: [mkLead()] })
+    await t.mod.adminListLeads(t.c())
+    expect(t.db.calls.find(c => c.op === 'rpc').args).toEqual({ p_min_score: 80 })
+  })
+})
+
+describe('G7 — adminCheckSuppression says whether a lead exists', () => {
+  it('leadExists is true only when a lead is stored for the address', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    expect((await t.mod.adminCheckSuppression(t.c({ body: { email: 'dana@acme.com' } }))).body.data.leadExists).toBe(true)
+    expect((await t.mod.adminCheckSuppression(t.c({ body: { email: 'other@acme.com' } }))).body.data.leadExists).toBe(false)
+  })
+})
+
+describe('G4 — one-click unsubscribe', () => {
+  it('removes the address and records the do-not-contact hash from a POST with the token in the URL', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const token = await tokenFor('remove', 'dana@acme.com')
+    const res = await t.mod.unsubscribeLead({ ...t.c(), req: { query: k => k === 'token' ? token : undefined } })
+    expect(res.status).toBe(200)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+  })
+  it('refuses a confirm token, a missing token and garbage — and removes nothing', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const ctx = tok => ({ ...t.c(), req: { query: k => k === 'token' ? tok : undefined } })
+    expect((await t.mod.unsubscribeLead(ctx(await tokenFor('confirm', 'dana@acme.com')))).status).toBe(400)
+    expect((await t.mod.unsubscribeLead(ctx(undefined))).status).toBe(400)
+    expect((await t.mod.unsubscribeLead(ctx('x.y'))).status).toBe(400)
+    expect(t.state.leads).toHaveLength(1)
+  })
+  it('hands the acknowledgement a one-click URL built from the request origin', async () => {
+    t = setup()
+    const ctx = t.c({ body: valid() })
+    ctx.req.url = 'https://api.passthrough.dev/api/employer-leads'
+    await t.mod.createLead(ctx); await Promise.all(ctx._waits)
+    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.passthrough\.dev\/api\/employer-leads\/unsubscribe\?token=/)
+  })
+  it('API_ORIGIN overrides the request origin; with neither, the email just goes without the header', async () => {
+    t = setup()
+    const a = t.c({ body: valid() }); a.env = { ...a.env, API_ORIGIN: 'https://edge.example.com/' }
+    await t.mod.createLead(a); await Promise.all(a._waits)
+    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/edge\.example\.com\/api\/employer-leads\/unsubscribe/)
+    t.restore(); t = setup()
+    await submit(valid())
+    expect(t.state.ackLinks[0].unsubscribeUrl).toBeNull()
+  })
+})
+
+describe('G5 — Turnstile on the public form', () => {
+  let realFetch
+  beforeEach(() => { realFetch = globalThis.fetch })
+  afterEach(() => { globalThis.fetch = realFetch })
+  const withSecret = (ctx) => { ctx.env = { ...ctx.env, TURNSTILE_SECRET_KEY: 'sek' }; return ctx }
+
+  it('is inert without TURNSTILE_SECRET_KEY', async () => {
+    t = setup()
+    await submit(valid())
+    expect(t.state.leads).toHaveLength(1)
+  })
+  it('rejects with a real error when the secret is set and no token came', async () => {
+    t = setup()
+    const res = await t.mod.createLead(withSecret(t.c({ body: valid() })))
+    expect(res.status).toBe(400)
+    expect(res.body).toMatchObject({ success: false, code: 'CAPTCHA_FAILED' })
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('rejects when Cloudflare says the token is bad, accepts when it says good', async () => {
+    t = setup()
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ success: false }) })
+    expect((await t.mod.createLead(withSecret(t.c({ body: valid({ turnstileToken: 'bad' }) })))).status).toBe(400)
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ success: true }) })
+    const ctx = withSecret(t.c({ body: valid({ turnstileToken: 'good' }) }))
+    expect((await t.mod.createLead(ctx)).status).toBe(200)
+    await Promise.all(ctx._waits)
+    expect(t.state.leads).toHaveLength(1)
+  })
+  it('lets the submission through when Cloudflare itself is unreachable', async () => {
+    t = setup()
+    globalThis.fetch = async () => { throw new Error('network down') }
+    const ctx = withSecret(t.c({ body: valid({ turnstileToken: 'x' }) }))
+    expect((await t.mod.createLead(ctx)).status).toBe(200)
+    await Promise.all(ctx._waits)
+    expect(t.state.leads).toHaveLength(1)
+  })
+})

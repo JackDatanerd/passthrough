@@ -27,7 +27,9 @@ function retryAfterMs(res) {
   return Number.isFinite(secs) && secs >= 0 ? Math.min(secs * 1000, 5000) : null
 }
 
-async function sendViaResend(env, { from, to, subject, html, text }, { retryDelaysMs = DEFAULT_RETRY_DELAYS_MS } = {}) {
+// `headers` (optional) are extra message headers, e.g. List-Unsubscribe / List-Unsubscribe-Post
+// (employer-lead acknowledgements, RFC 8058). Omitted entirely when empty.
+async function sendViaResend(env, { from, to, subject, html, text, headers }, { retryDelaysMs = DEFAULT_RETRY_DELAYS_MS } = {}) {
   const idempotencyKey = crypto.randomUUID()
   let lastErr
 
@@ -42,7 +44,7 @@ async function sendViaResend(env, { from, to, subject, html, text }, { retryDela
           'Content-Type':    'application/json',
           'Idempotency-Key': idempotencyKey
         },
-        body: JSON.stringify({ from, to, subject, html, ...(text ? { text } : {}) }),
+        body: JSON.stringify({ from, to, subject, html, ...(text ? { text } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}) }),
         signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)
       })
       if (res.ok) return res.json()

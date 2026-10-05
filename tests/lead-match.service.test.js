@@ -46,8 +46,8 @@ describe('runLeadMatchSweep', () => {
     const r = await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
     expect(r).toEqual({ announced: 1, pending: 0 })
     expect(t.notices).toHaveLength(1)
-    expect(t.notices[0].message).toContain('Sales: 2 open leads · 2 verified candidates')
-    expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=sales')
+    expect(t.notices[0].message).toContain('Sales: 2 confirmed open leads · 2 verified candidates')
+    expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=sales&status=OPEN')
     expect(t.notices[0].message).not.toContain('Design')
     expect(t.saved()).toEqual({ supply: { sales: 2 }, sentAt: NOW })
   })
@@ -61,7 +61,7 @@ describe('runLeadMatchSweep', () => {
   it('counts every waiting lead, however many (a tally of 1500 is not clipped at a 1000-row response cap)', async () => {
     t = setup({ supply: [sup('sales', 1)], leads: [{ role_category: 'sales', lead_count: '1500' }] })
     await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
-    expect(t.notices[0].message).toContain('Sales: 1500 open leads')
+    expect(t.notices[0].message).toContain('Sales: 1500 confirmed open leads')
   })
   it('records nothing when the owner notice was NOT delivered (no owner inbox), so a later run still announces it', async () => {
     t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), delivered: false })
@@ -69,6 +69,23 @@ describe('runLeadMatchSweep', () => {
     expect(t.store.get('leadmatch:state')).toBeUndefined()      // baseline and sentAt untouched
     t.restore(); t = setup({ supply: [sup('sales', 2)], leads: waiting('sales') })
     expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW + 3600_000)).toEqual({ announced: 1, pending: 0 })
+  })
+  // Fresh audit pass 2 (G2): an address nobody confirmed may be a typo or a bot.
+  it('does not announce a field whose only open leads are unconfirmed', async () => {
+    t = setup({ supply: [sup('sales', 3)], leads: [{ role_category: 'sales', lead_count: '4', confirmed_count: '0' }] })
+    expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW)).toEqual({ announced: 0, pending: 0 })
+    expect(t.notices).toHaveLength(0)
+  })
+  it('announces on confirmed leads and shows the unconfirmed remainder, which the linked list also includes', async () => {
+    t = setup({ supply: [sup('sales', 3)], leads: [{ role_category: 'sales', lead_count: '5', confirmed_count: '2' }] })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices[0].message).toContain('Sales: 2 confirmed open leads (+3 unconfirmed) · 3 verified candidates')
+  })
+  it('passes the app\'s badge threshold to the supply query instead of a number baked into SQL (B5)', async () => {
+    t = setup({ supply: [], leads: [] })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    const call = t.db.calls.find(c => c.op === 'rpc' && c.name === 'verified_candidate_counts')
+    expect(call.args).toEqual({ p_min_score: 80 })
   })
   it('does not repeat itself when supply has not grown', async () => {
     t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), state: { supply: { sales: 2 }, sentAt: NOW - 3 * DAY } })

@@ -11,7 +11,8 @@ import { formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
 import { isRoleCategory } from '../lib/roleCategories'
-import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
+import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
+import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 
 const SUPPORT_EMAIL = 'support@passthrough.dev'
 
@@ -77,6 +78,8 @@ export default function Verify() {
   const [roleTitle,   setRoleTitle  ] = useState('')
   const [email,       setEmail      ] = useState('')
   const [leadSent,    setLeadSent   ] = useState(false)
+  const [captcha,     setCaptcha    ] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
   const [leadErr,     setLeadErr    ] = useState('')
   const [leadLoading, setLeadLoading] = useState(false)
   const [website,     setWebsite    ] = useState('')  // honeypot — real visitors never see or fill this
@@ -145,6 +148,7 @@ export default function Verify() {
   async function handleLead(e) {
     e?.preventDefault?.()
     if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
+    if (TURNSTILE_ENABLED && !captcha) return setLeadErr('Please complete the verification check below.')
     setLeadLoading(true); setLeadErr('')
     try {
       await api.post('/employer-leads', {
@@ -157,11 +161,13 @@ export default function Verify() {
         // SECTION 7 AUDIT (feature gap): which candidate's page this lead came
         // from, so the admin list isn't just an undifferentiated pile.
         verificationCode: code,
-        website
+        website,
+        turnstileToken: captcha || undefined
       })
       setLeadSent(true)
     } catch (err) {
       setLeadErr(getErrorMessage(err, 'Something went wrong.'))
+      setCaptcha(''); setCaptchaReset(n => n + 1)   // a token is single-use
     } finally {
       setLeadLoading(false)
     }
@@ -533,7 +539,7 @@ export default function Verify() {
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
               {leadSent ? (
                 <p className="text-sm text-green-700 font-medium">
-                  Almost there — check your inbox for an email from us and click the link to confirm your address.
+                  {LEAD_SENT_MESSAGE}
                 </p>
               ) : !hmExpanded ? (
                 /* Collapsed trigger */
@@ -571,6 +577,7 @@ export default function Verify() {
                     onChange={e => setEmail(e.target.value)}
                   />
                   <LeadConsentNote />
+                  <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
                   {leadErr && <p className="text-xs text-red-600">{leadErr}</p>}
                   {/* Honeypot: invisible to a real person, tempting to a bot filling
                       every field it finds. Off-screen rather than display:none/hidden —

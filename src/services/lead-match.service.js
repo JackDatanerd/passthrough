@@ -3,7 +3,8 @@
 // per-field supply number, but nothing told anyone when a field that leads are
 // WAITING on actually gained a verified candidate. This is that signal: an
 // owner digest, sent from the hourly cron, of the fields where
-//   (a) at least one lead is still open (NEW or CONTACTED), and
+//   (a) at least one CONFIRMED lead is still open (NEW or CONTACTED) — an address nobody
+//       has confirmed may be a typo or a bot, so it never triggers a digest by itself, and
 //   (b) verified-candidate supply has grown since the last digest.
 //
 // The digest goes to the owner only (a person decides whom to write to and
@@ -14,6 +15,7 @@
 // fast supply grows.
 
 const emailService = require('./email.service')
+const constants = require('../config/constants')
 
 const STATE_KEY = 'leadmatch:state'
 const MIN_INTERVAL_MS = 24 * 60 * 60 * 1000
@@ -47,7 +49,7 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
   const kv = env.RATE_LIMIT_KV
   if (!kv) return { skipped: 'no-kv' }
 
-  const { data: rows, error: rpcErr } = await supabase.rpc('verified_candidate_counts')
+  const { data: rows, error: rpcErr } = await supabase.rpc('verified_candidate_counts', { p_min_score: constants.ATS_BADGE_THRESHOLD })
   if (rpcErr) return { error: rpcErr.message }
   const supply = Object.fromEntries((rows || []).map(r => [r.role_category, Number(r.candidate_count)]))
 
@@ -56,7 +58,13 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
   // its max-rows (1000 by default), so the count silently stopped there.
   const { data: leadRows, error: leadErr } = await supabase.rpc('open_lead_counts')
   if (leadErr) return { error: leadErr.message }
-  const waiting = Object.fromEntries((leadRows || []).map(r => [r.role_category, Number(r.lead_count)]))
+  // Fresh audit pass 2: `waiting` is CONFIRMED open leads; `open` is all open leads (so the
+  // email can show the unconfirmed remainder and the link's list size matches). A database
+  // that has not run migration 0050 yet returns no confirmed_count — fall back to the old
+  // behaviour rather than silence the digest.
+  const open = Object.fromEntries((leadRows || []).map(r => [r.role_category, Number(r.lead_count)]))
+  const waiting = Object.fromEntries((leadRows || []).map(r =>
+    [r.role_category, r.confirmed_count == null ? Number(r.lead_count) : Number(r.confirmed_count)]))
 
   const state = await loadState(kv)
 
@@ -72,9 +80,12 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
   let sent = false
   if (due.length && now - state.sentAt >= MIN_INTERVAL_MS) {
     const base = env.FRONTEND_URL || ''
-    const lines = due.map(a =>
-      `${label(a.cat)}: ${a.leads} open lead${a.leads === 1 ? '' : 's'} · ${a.candidates} verified candidate${a.candidates === 1 ? '' : 's'}` +
-      `${a.before ? ` (was ${a.before})` : ''}\n  ${base}/admin/leads?field=${a.cat}`)
+    const lines = due.map(a => {
+      const unconfirmed = Math.max(0, (open[a.cat] || 0) - a.leads)
+      return `${label(a.cat)}: ${a.leads} confirmed open lead${a.leads === 1 ? '' : 's'}` +
+        `${unconfirmed ? ` (+${unconfirmed} unconfirmed)` : ''} · ${a.candidates} verified candidate${a.candidates === 1 ? '' : 's'}` +
+        `${a.before ? ` (was ${a.before})` : ''}\n  ${base}/admin/leads?field=${a.cat}&status=OPEN`
+    })
     const delivered = await emailService.sendOwnerNotice(env, 'Verified candidates now available for waiting leads',
       `Fields where leads are waiting and verified supply has grown:\n\n${lines.join('\n\n')}`)
     // sendOwnerNotice answers false (it does not throw) when there is no owner

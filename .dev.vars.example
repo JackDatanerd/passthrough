@@ -28,3 +28,8 @@ RESEND_API_KEY=re_...
 # PAYSTACK_WEBHOOK_IPS=52.31.139.75,52.49.173.169,52.214.14.220
 # Shared secret with the /v/:code Pages Function for link previews.
 # VERIFY_PREVIEW_KEY=replace_with_random_hex
+# Turnstile bot challenge on the employer-lead form; unset = off. Pair with VITE_TURNSTILE_SITE_KEY
+# in the frontend. Cloudflare's always-passes TEST secret:
+# TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
+# Public origin of this Worker for the List-Unsubscribe URL; unset = taken from the request.
+# API_ORIGIN=http://localhost:8787

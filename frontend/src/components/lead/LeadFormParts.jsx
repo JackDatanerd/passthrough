@@ -23,11 +23,18 @@ export function RoleFields({ category, onCategory, title, onTitle }) {
   )
 }
 
+// What a visitor is told after submitting. The API answers every valid submission the same
+// way on purpose (so the form can't be used to learn who is on the list), which means the
+// copy must not promise an email: none is sent for an address that is already confirmed,
+// was removed, or was mailed moments ago.
+export const LEAD_SENT_MESSAGE =
+  "Thanks — if this address isn't already on our list, we've emailed you a link to confirm it. Check your inbox (and spam folder). Once you've confirmed, we'll reach out when we have candidates matching your needs."
+
 // What submitting does, said where it happens.
 export function LeadConsentNote() {
   return (
     <p className="text-xs text-gray-500">
-      We'll email you when there are Verified candidates in your field, and send one confirmation now.{' '}
+      We'll email you when there are Verified candidates in your field. If this address is new to us we'll first send a link to confirm it.{' '}
       <Link to="/privacy" className="underline">Privacy</Link>
     </p>
   )

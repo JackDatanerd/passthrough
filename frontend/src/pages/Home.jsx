@@ -9,7 +9,8 @@ import Input from '../components/ui/Input'
 import Form from '../components/ui/Form'
 import api, { getErrorMessage } from '../lib/api'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
-import { RoleFields, LeadConsentNote } from '../components/lead/LeadFormParts'
+import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
+import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 
 // tier is always a usable object — byTier() falls back internally to the
 // correct standard price if /api/pricing hasn't loaded or failed.
@@ -97,19 +98,23 @@ function EmployerLeadForm() {
   const [sent,    setSent   ] = useState(false)
   const [err,     setErr    ] = useState('')
   const [loading, setLoading] = useState(false)
+  const [captcha, setCaptcha] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
 
   async function handleSubmit(e) {
     e?.preventDefault?.()
     if (!name || !company || !email) return setErr('Name, company, and email required.')
+    if (TURNSTILE_ENABLED && !captcha) return setErr('Please complete the verification check below.')
     setLoading(true); setErr('')
     try {
       await api.post('/employer-leads', {
         name, company, email, roleCategory: field || undefined, roleTitle: title || undefined,
-        source: 'homepage', website
+        source: 'homepage', website, turnstileToken: captcha || undefined
       })
       setSent(true)
     } catch (e) {
       setErr(getErrorMessage(e, 'Something went wrong.'))
+      setCaptcha(''); setCaptchaReset(n => n + 1)   // a token is single-use
     } finally {
       setLoading(false)
     }
@@ -118,7 +123,7 @@ function EmployerLeadForm() {
   if (sent) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8 text-center">
-        <p className="text-sm text-green-700 font-medium">Almost there — check your inbox for an email from us and click the link to confirm your address. Then we'll reach out when we have candidates matching your needs.</p>
+        <p className="text-sm text-green-700 font-medium">{LEAD_SENT_MESSAGE}</p>
       </div>
     )
   }
@@ -133,6 +138,7 @@ function EmployerLeadForm() {
         <Input type="email" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
         <RoleFields category={field} onCategory={setField} title={title} onTitle={setTitle} />
         <LeadConsentNote />
+        <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
         {err && <p className="text-xs text-red-600">{err}</p>}
         {/* Honeypot: invisible to a real person, tempting to a bot filling every
             field it finds. Off-screen rather than display:none/hidden — some

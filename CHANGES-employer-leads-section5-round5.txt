@@ -1,0 +1,40 @@
+Section 5 (Employer leads) — fresh independent audit pass (employer-leads.controller.js + routes, with the email,
+retention, digest, frontend and migration code they touch)
+Base: 8480c9b "verify: fix badge cache-key poisoning, tombstoned-file lookup, badge client caching"
+
+APPLY MIGRATION 0050_employer_leads_round5.sql BEFORE DEPLOYING THE CODE. The code calls
+verified_candidate_counts(p_min_score) and reads confirmed_count from open_lead_counts(); until the migration runs,
+the hourly lead-digest sweep reports an error (the admin list still loads — its supply figure is optional).
+
+BUGS
+B1  A KV error in the budget check (withinBudget) rejected inside waitUntil, so the owner notice AND the
+    acknowledgement were silently lost. It now logs and fails open like every other limiter.
+B2  The per-recipient acknowledgement cap (2 / 30 days) was easy to burn: a failed send (Resend outage) used up a
+    slot with nothing delivered, and an unconfirmed lead's resubmission re-sent immediately, so a double-click spent
+    both. Failed sends now refund the slot (bounded, email.service.js refundOnFailure); a resend needs 10 minutes
+    since the last submission.
+B3  A name made only of Hangul filler letters (U+115F, U+1160, U+3164, U+FFA0) passed validation and rendered blank.
+    These, U+061C, U+034F and U+17B4/5 are now stripped, so such a name is rejected.
+B4  The form said "check your inbox" even when no email is sent (confirmed / removed / archived / just mailed). The
+    API's uniform answer stays; the copy no longer promises an email.
+B5  verified_candidate_counts() hard-coded >= 80. The threshold is now a parameter and the app passes
+    ATS_BADGE_THRESHOLD (admin supply figure, owner digest).
+B6  The remove page showed "Removal failed" with no way to retry. It now offers "Try again" (not for a rejected link).
+
+GAPS
+G1  Admin "Mark confirmed" (POST /:id/mark-confirmed, audited lead.mark_confirmed) for addresses confirmed by reply/call.
+G2  Owner digest counts CONFIRMED open leads only and lists the unconfirmed remainder; its link opens status=OPEN
+    (new filter: NEW + CONTACTED, plus an "Open" chip) so the list matches the email. The dashboard "new leads"
+    triage count is intentionally unchanged.
+G3  Retention purges leads that are NEW, never confirmed, have no notes and have not resubmitted for 90 days.
+G4  Acknowledgements carry RFC 8058 List-Unsubscribe / List-Unsubscribe-Post headers; POST /unsubscribe?token=… is the
+    one-click target. sendViaResend now forwards extra headers.
+G5  Cloudflare Turnstile on the public form, OFF unless TURNSTILE_SECRET_KEY (Worker) and VITE_TURNSTILE_SITE_KEY
+    (Pages) are set. Fails open if Cloudflare is unreachable. CSP in frontend/public/_headers allows
+    challenges.cloudflare.com.
+G6  Privacy page now matches behaviour (second confirmation email, one-click removal, kept hash, 90-day email log,
+    the new purge).
+G7  Do-not-contact modal warns when a lead exists (adding deletes it); list search also matches page code and notes.
+
+Not verified outside unit tests: migration 0050 against a real Postgres, Turnstile against real Cloudflare, and whether
+Resend signs the List-Unsubscribe headers.

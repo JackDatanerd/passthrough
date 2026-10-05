@@ -205,6 +205,25 @@ wrangler secret put VERIFY_PREVIEW_KEY
 # Turn it OFF again before real users arrive:
 #   wrangler secret delete RATE_LIMIT_BYPASS_IPS
 wrangler secret put RATE_LIMIT_BYPASS_IPS
+
+# Cloudflare Turnstile bot challenge on the public employer-lead form (the one
+# unauthenticated endpoint that emails an address a stranger typed). Off by
+# default. To turn it on set BOTH halves: this secret on the Worker, and
+# VITE_TURNSTILE_SITE_KEY on Pages (see section 6) followed by a frontend
+# rebuild — the widget only renders when the site key was baked into the
+# bundle, and the Worker only demands a token when this secret is set, so
+# enabling one half alone is harmless. Create the widget under Cloudflare
+# dashboard -> Turnstile. If Cloudflare itself is unreachable the form still
+# accepts submissions (an outage must not lose leads).
+wrangler secret put TURNSTILE_SECRET_KEY
+
+# Optional. The public origin the Worker is reached at (no path), used to build
+# the one-click List-Unsubscribe URL in employer-lead acknowledgement emails.
+# Unset = taken from the incoming request, which is correct for the normal
+# single-hostname setup; set it only if requests reach the Worker under a
+# different hostname than the one mail clients should call back.
+#   https://api.passthrough.dev
+wrangler secret put API_ORIGIN
 ```
 
 ### Deploy
@@ -253,6 +272,7 @@ Then redeploy: `npm run deploy`
    | `VITE_API_URL` | `https://api.passthrough.dev/api` |
    | `API_URL`      | `https://api.passthrough.dev/api` |
    | `VERIFY_PREVIEW_KEY` | *(optional)* same value as the Worker secret of that name — see "Optional secrets" |
+   | `VITE_TURNSTILE_SITE_KEY` | *(optional)* Turnstile site key; pair with the Worker's `TURNSTILE_SECRET_KEY`. Baked in at build time. Cloudflare's always-passes test key for trying it: `1x00000000000000000000AA` (secret `1x0000000000000000000000000000000AA`) |
 
    Both point at the same Worker, and **both must include the `/api` suffix** —
    every Worker route is mounted under `/api` (e.g. `/api/auth/login`). Both

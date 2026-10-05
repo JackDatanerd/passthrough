@@ -322,3 +322,48 @@ describe('htmlToPlainText / fmtMoney', () => {
     expect(t.mod.fmtMoney(4900, 'KES')).toBe('49 KES')
   })
 })
+
+// ══ Employer leads, fresh audit pass 2 (Section 5) ═══════════════════════════
+describe('employer_lead_ack — failed sends and List-Unsubscribe', () => {
+  const links = { confirmUrl: 'https://x/c', removeUrl: 'https://x/r' }
+  const mk = (sendImpl) => {
+    const sent = []
+    const { mod, restore } = loadWithStubs('services/email.service.js', {
+      'config/email.js': { sendViaResend: async (env, msg) => { sent.push(msg); return sendImpl(sent.length) } },
+    })
+    const kv = {}
+    const env = { RATE_LIMIT_KV: { get: async k => kv[k] ?? null, put: async (k, v) => { kv[k] = v } }, EMAIL_FROM: 'a@b.c', FRONTEND_URL: 'https://x.y' }
+    const sb = { from: () => ({ insert: async () => ({ error: null }) }) }
+    return { mod, restore, sent, env, sb }
+  }
+  let m
+  afterEach(() => m?.restore())
+
+  it('a failed send does not use up the address\'s slots, so a later send after recovery still goes out (B2)', async () => {
+    const err = console.error; console.error = () => {}
+    m = mk(n => { if (n <= 2) throw new Error('Resend API error (503)'); return {} })
+    const a = await m.mod.sendEmployerLeadAck(m.env, m.sb, 'd@acme.com', 'Dana', '', links)
+    const b = await m.mod.sendEmployerLeadAck(m.env, m.sb, 'd@acme.com', 'Dana', '', links)
+    const c = await m.mod.sendEmployerLeadAck(m.env, m.sb, 'd@acme.com', 'Dana', '', links)
+    console.error = err
+    expect([a, b, c]).toEqual([false, false, true])
+    expect(m.sent).toHaveLength(3)
+  })
+  it('two SUCCESSFUL sends still use both slots — the cap itself is unchanged', async () => {
+    m = mk(() => ({}))
+    const r = []
+    for (let i = 0; i < 3; i++) r.push(await m.mod.sendEmployerLeadAck(m.env, m.sb, 'd@acme.com', 'Dana', '', links))
+    expect(r).toEqual([true, true, false])
+    expect(m.sent).toHaveLength(2)
+  })
+  it('sends RFC 8058 List-Unsubscribe headers when given a one-click URL, and none otherwise (G4)', async () => {
+    m = mk(() => ({}))
+    await m.mod.sendEmployerLeadAck(m.env, m.sb, 'a@acme.com', 'A', '', { ...links, unsubscribeUrl: 'https://api.x/api/employer-leads/unsubscribe?token=t' })
+    await m.mod.sendEmployerLeadAck(m.env, m.sb, 'b@acme.com', 'B', '', links)
+    expect(m.sent[0].headers).toEqual({
+      'List-Unsubscribe': '<https://api.x/api/employer-leads/unsubscribe?token=t>',
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+    })
+    expect(m.sent[1].headers).toBeUndefined()
+  })
+})

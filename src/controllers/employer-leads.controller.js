@@ -9,6 +9,8 @@ const { isRangeError } = require('../lib/db')
 const { sha256 } = require('../lib/crypto')
 const { signLeadToken, verifyLeadToken } = require('../lib/leadTokens')
 const { logAdminAction } = require('../lib/adminAudit')
+const { verifyTurnstile } = require('../lib/turnstile')
+const { clientIp } = require('../lib/clientIp')
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 // Statuses match lead_status_enum (migration 0018). Sources are whitelisted
@@ -34,7 +36,14 @@ const ROLE_CATEGORIES = constants.ROLE_CATEGORIES
 // sequences and Persian/Indic scripts need them.
 // eslint-disable-next-line no-control-regex
 const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
-const INVISIBLE_CHARS = /[\u00ad\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g
+// BUG FIX (fresh audit pass 2, Section 5): the list below used to miss two
+// families. (1) The Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) are
+// category Lo — LETTERS — so a name made only of them passed hasSubstance()
+// below and rendered as a blank row, the exact outcome this list exists to
+// prevent. (2) U+061C ARABIC LETTER MARK is a direction-changing control like
+// the LRM/RLM already listed, and U+034F / U+17B4 / U+17B5 are default-
+// ignorable marks with no visible glyph of their own.
+const INVISIBLE_CHARS = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0]/g
 const cleanText = (s) => s.replace(CONTROL_CHARS, ' ').replace(INVISIBLE_CHARS, '').replace(/\s+/g, ' ').trim()
 const text = (max, { min = 0 } = {}) =>
   z.string().transform(cleanText).pipe(z.string().min(min).max(max))
@@ -70,7 +79,10 @@ const schema = z.object({
   // submission — attribution is a nice-to-have, not a required field.
   verificationCode: z.string().max(32).nullish(),
   // Honeypot: hidden from humans, irresistible to form-filling bots.
-  website: z.string().nullish()
+  website: z.string().nullish(),
+  // Cloudflare Turnstile response token (see lib/turnstile.js). Only required
+  // when the deployment has TURNSTILE_SECRET_KEY set.
+  turnstileToken: z.string().max(2048).nullish()
 })
 
 function resolveRole(data) {
@@ -114,6 +126,11 @@ function resolveRole(data) {
 const NOTICE_BUDGET_PER_HOUR = 20
 const ACK_BUDGET_PER_HOUR = 30
 const RESUBMIT_NOTICE_COOLDOWN_MS = 24 * 60 * 60 * 1000
+// BUG FIX (fresh audit pass 2, Section 5): an unconfirmed lead's resubmission used to
+// re-send the acknowledgement immediately, so a double-click (or two quick tries)
+// spent BOTH of the address's monthly acknowledgement slots within seconds. A person
+// who never saw the first email isn't helped by a second one a minute later.
+const ACK_RESEND_COOLDOWN_MS = 10 * 60 * 1000
 
 // BUG FIX (fresh audit pass, Section 5): the slot used to be spent the
 // instant a send was ATTEMPTED, never given back if the send then actually
@@ -150,9 +167,21 @@ async function withinBudget(env, name, max, maxRefunds) {
   const kv = env.RATE_LIMIT_KV
   if (!kv) return { allowed: true, refund: noRefund }
   const key = `rl:${name}:${Math.floor(Date.now() / 3_600_000)}`
-  const { count, refunds } = await readBudgetState(kv, key)
-  if (count >= max) return { allowed: false, refund: noRefund }
-  await kv.put(key, JSON.stringify({ count: count + 1, refunds }), { expirationTtl: 7200 })
+  // BUG FIX (fresh audit pass 2, Section 5): a KV error here (a 429 or an
+  // outage) used to propagate out of sendNotice/sendAck — both run inside
+  // waitUntil — so the lead was stored but the owner notice AND the
+  // acknowledgement were silently lost. Every other limiter in this app
+  // fails OPEN on a KV error; this budget only bounds a flood, and a lost
+  // lead notice is the worse failure, so it does the same.
+  let count, refunds
+  try {
+    ;({ count, refunds } = await readBudgetState(kv, key))
+    if (count >= max) return { allowed: false, refund: noRefund }
+    await kv.put(key, JSON.stringify({ count: count + 1, refunds }), { expirationTtl: 7200 })
+  } catch (err) {
+    console.error(`Employer-lead budget (${name}) unavailable — allowing the send:`, err.message)
+    return { allowed: true, refund: noRefund }
+  }
   return {
     allowed: true,
     refund: async () => {
@@ -185,14 +214,25 @@ const fieldLabel = (cat) => cat ? cat.replace(/_/g, ' ').replace(/\b\w/g, ch => 
 
 // The two links every acknowledgement carries. Built here (not in the email
 // service) because signing needs the secret and the frontend origin.
-async function leadLinks(env, email) {
+// Fresh audit pass 2 (G4): also builds the RFC 8058 one-click URL — the API's own
+// origin, taken from the request that triggered the send (or API_ORIGIN when set),
+// since the Worker has no other way to know its public hostname. Without an origin
+// (e.g. a cron path) the acknowledgement simply goes out without the header.
+function apiOrigin(c) {
+  const fixed = c.env && c.env.API_ORIGIN
+  if (fixed) return String(fixed).replace(/\/+$/, '')
+  try { return new URL(c.req.url).origin } catch (_) { return null }
+}
+
+async function leadLinks(env, email, origin = null) {
   const [confirmTok, removeTok] = await Promise.all([
     signLeadToken(env.JWT_SECRET, 'confirm', email),
     signLeadToken(env.JWT_SECRET, 'remove', email)
   ])
   return {
     confirmUrl: `${env.FRONTEND_URL}/employer/confirm?token=${confirmTok}`,
-    removeUrl:  `${env.FRONTEND_URL}/employer/remove?token=${removeTok}`
+    removeUrl:  `${env.FRONTEND_URL}/employer/remove?token=${removeTok}`,
+    unsubscribeUrl: origin ? `${origin}/api/employer-leads/unsubscribe?token=${removeTok}` : null
   }
 }
 
@@ -207,7 +247,7 @@ async function leadLinks(env, email) {
 // that address is independently and correctly blocked regardless of this
 // budget, refunding it here only frees the slot back up for a genuinely new
 // lead rather than costing anyone an email they shouldn't have gotten.
-async function sendAck(env, row, { skipBudget = false } = {}) {
+async function sendAck(env, row, { skipBudget = false, origin = null } = {}) {
   let refund = async () => {}
   if (!skipBudget) {
     const budget = await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR, ACK_MAX_REFUNDS_PER_HOUR)
@@ -219,7 +259,7 @@ async function sendAck(env, row, { skipBudget = false } = {}) {
   }
   try {
     const sent = await emailService.sendEmployerLeadAck(
-      env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email))
+      env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email, origin))
     if (!sent) await refund()
     return sent
   } catch (err) {
@@ -245,7 +285,7 @@ const describeLead = (row) =>
 // Everything that follows a lead being stored for the first time.
 async function announceNewLead(c, row) {
   await notifyOwner(c, 'New employer lead', describeLead(row))
-  await runInBackground(c, sendAck(c.env, row))
+  await runInBackground(c, sendAck(c.env, row, { origin: apiOrigin(c) }))
 }
 
 const ok = (c) => c.json({ success: true, message: "We'll be in touch." })
@@ -317,11 +357,12 @@ async function mergeIntoExistingLead(c, supabase, existing, row) {
 
   // Never confirmed and not dismissed: they may simply not have seen the first
   // email, so send it again (capped per recipient in email.service.js).
-  if (!existing.confirmed_at && existing.status !== 'ARCHIVED') await runInBackground(c, sendAck(c.env, existing))
+  const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
+  if (!existing.confirmed_at && existing.status !== 'ARCHIVED' && now.getTime() - lastMs > ACK_RESEND_COOLDOWN_MS)
+    await runInBackground(c, sendAck(c.env, existing, { origin: apiOrigin(c) }))
 
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
-  const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
   if (existing.status !== 'ARCHIVED' && now.getTime() - lastMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
     const changed = ['name', 'company'].filter(k => existing[k] !== row[k]).map(k => `${k}: ${row[k]}`)
     await notifyOwner(c, 'Employer lead resubmitted',
@@ -335,6 +376,13 @@ async function createLead(c) {
   const body = await c.req.json()
   const data = schema.parse(body)
   if (data.website) return ok(c)   // honeypot tripped: pretend success, store nothing
+
+  // Fresh audit pass 2 (G5): bot challenge, active only when TURNSTILE_SECRET_KEY is
+  // configured. Unlike the honeypot this answers with a REAL error: a person whose
+  // widget failed to load or expired must be told to retry, not shown a success
+  // message for something that was never stored.
+  const human = await verifyTurnstile(c.env, data.turnstileToken, clientIp(c))
+  if (!human) return c.json({ success: false, code: 'CAPTCHA_FAILED', message: 'We couldn\u2019t verify that you\u2019re human. Please try again.' }, 400)
 
   const supabase = getSupabase(c.env)
   // Asked to be removed: pretend success, store and send nothing (same
@@ -406,6 +454,10 @@ function sanitizeSearchTerm(term) {
 // categorise by hand); otherwise a taxonomy key.
 const FIELD_FILTERS = [...ROLE_CATEGORIES, 'none']
 
+// Fresh audit pass 2 (G2): `status=OPEN` means NEW or CONTACTED — the same set
+// open_lead_counts() tallies for the owner digest, so the digest's link opens a
+// list whose size matches the number in the email.
+const OPEN_STATUSES = ['NEW', 'CONTACTED']
 // FEATURE GAP CLOSED (fresh audit pass, Section 5): `source`/`source_code`
 // were captured meticulously (see the schema comments above) and reached the
 // CSV export, but there was no way to filter or count by source anywhere in
@@ -424,7 +476,7 @@ function parseFilters(c) {
   const sort   = c.req.query('sort') === 'activity' ? 'activity' : 'created'
   return {
     search: sanitizeSearchTerm(c.req.query('search')),
-    status: LEAD_STATUSES.includes(status) ? status : null,
+    status: LEAD_STATUSES.includes(status) || status === 'OPEN' ? status : null,
     field:  FIELD_FILTERS.includes(field) ? field : null,
     source: ALL_LEAD_SOURCES.includes(source) ? source : null,
     // yes = the address was confirmed, no = still unconfirmed.
@@ -434,8 +486,11 @@ function parseFilters(c) {
 }
 
 function applyFilters(query, { search, status, field, source, confirmed }) {
-  if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%,role_title.ilike.%${search}%`)
-  if (status) query = query.eq('status', status)
+  // Fresh audit pass 2 (G7): also matches the verification page code a lead came
+  // from and the admin's own notes — both were visible in the UI but unsearchable.
+  if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%,role_title.ilike.%${search}%,source_code.ilike.%${search}%,notes.ilike.%${search}%`)
+  if (status === 'OPEN') query = query.in('status', OPEN_STATUSES)
+  else if (status) query = query.eq('status', status)
   if (field === 'none') query = query.is('role_category', null)
   else if (field) query = query.eq('role_category', field)
   if (source) query = query.eq('source', source)
@@ -523,6 +578,7 @@ async function adminListLeads(c) {
     if (cErr) throw cErr
     counts[s] = n || 0
   }))
+  counts.OPEN = OPEN_STATUSES.reduce((sum, s) => sum + (counts[s] || 0), 0)
 
   // FEATURE GAP CLOSED (fresh audit pass, Section 5): same shape as `counts`
   // above, but by source — same "unaffected by the current filters" reasoning,
@@ -556,7 +612,7 @@ async function adminListLeads(c) {
   // that defines it hasn't run, the list must still load.
   let supply = null
   try {
-    const { data: rows, error: sErr } = await supabase.rpc('verified_candidate_counts')
+    const { data: rows, error: sErr } = await supabase.rpc('verified_candidate_counts', { p_min_score: constants.ATS_BADGE_THRESHOLD })
     if (!sErr && Array.isArray(rows))
       supply = Object.fromEntries(rows.map(r => [r.role_category, Number(r.candidate_count)]))
   } catch (_) { supply = null }
@@ -835,12 +891,28 @@ async function removeLead(c) {
   const email = await verifyLeadToken(c.env.JWT_SECRET, 'remove', token)
   if (!email) return c.json(INVALID_LINK, 400)
 
-  const supabase = getSupabase(c.env)
+  await performRemoval(getSupabase(c.env), email)
+  return c.json({ success: true, message: "You've been removed. We won't contact you again." })
+}
+
+async function performRemoval(supabase, email) {
   const { error: supErr } = await supabase
     .from('employer_lead_suppressions').upsert({ email_hash: await sha256(email) }, { onConflict: 'email_hash', ignoreDuplicates: true })
   if (supErr) throw supErr
   const { error: delErr } = await supabase.from('employer_leads').delete().eq('email', email)
   if (delErr) throw delErr
+}
+
+// POST /api/employer-leads/unsubscribe?token=… — the RFC 8058 one-click target named in
+// the acknowledgement's List-Unsubscribe header (fresh audit pass 2, G4). Mail clients
+// (Gmail, Apple Mail, Outlook) POST `List-Unsubscribe=One-Click` here, with the token
+// in the URL because the body is a form, not JSON, and is ignored. POST-only for the
+// same reason removeLead is: a scanner or link previewer only ever GETs.
+async function unsubscribeLead(c) {
+  const token = c.req.query('token') || ''
+  const email = token.length >= 10 && token.length <= 700 ? await verifyLeadToken(c.env.JWT_SECRET, 'remove', token) : null
+  if (!email) return c.json(INVALID_LINK, 400)
+  await performRemoval(getSupabase(c.env), email)
   return c.json({ success: true, message: "You've been removed. We won't contact you again." })
 }
 
@@ -863,7 +935,13 @@ async function adminCheckSuppression(c) {
   const { data, error } = await supabase
     .from('employer_lead_suppressions').select('created_at').eq('email_hash', await sha256(email)).maybeSingle()
   if (error) throw error
-  return c.json({ success: true, data: { suppressed: !!data, since: data?.created_at || null } })
+  // Fresh audit pass 2 (G7): also says whether a lead exists for the address, so the
+  // admin UI can warn before "add to do-not-contact" deletes it (that action removes
+  // the lead along with recording the suppression).
+  const { data: lead, error: leadErr } = await supabase
+    .from('employer_leads').select('id').eq('email', email).maybeSingle()
+  if (leadErr) throw leadErr
+  return c.json({ success: true, data: { suppressed: !!data, since: data?.created_at || null, leadExists: !!lead } })
 }
 
 // POST /api/employer-leads/suppressions { email } — admin only.
@@ -936,14 +1014,40 @@ async function adminRequestConfirmation(c) {
   if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
   if (lead.confirmed_at) return c.json({ success: false, message: 'This address is already confirmed.' }, 409)
 
-  const sent = await sendAck(c.env, lead, { skipBudget: true })
+  const sent = await sendAck(c.env, lead, { skipBudget: true, origin: apiOrigin(c) })
   await logAdminAction(c, supabase, 'lead.request_confirmation', 'employer_lead', id, { sent })
   if (!sent) return c.json({ success: false, message: 'The email was not sent (this address has reached its email limit, or delivery failed). Try again later.' }, 429)
   return c.json({ success: true, message: 'Confirmation email sent.' })
 }
 
+// POST /api/employer-leads/:id/mark-confirmed — admin only (fresh audit pass 2, G1).
+// For an employer who confirmed the address some other way — a reply to the email, a
+// call. Until now the only options were to wait for a link click that was never coming or
+// delete the lead and lose its notes and history. Same atomic guard as confirmLead, so
+// it can't overwrite a confirmation that just landed; logged, because it records the
+// admin's word rather than proof the inbox is the submitter's.
+async function adminMarkConfirmed(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
+
+  const supabase = getSupabase(c.env)
+  const now = new Date().toISOString()
+  const { data: updated, error } = await supabase
+    .from('employer_leads').update({ confirmed_at: now, updated_at: now })
+    .eq('id', id).is('confirmed_at', null).select('id').maybeSingle()
+  if (error) throw error
+  if (!updated) {
+    const { data: lead, error: selErr } = await supabase.from('employer_leads').select('id').eq('id', id).maybeSingle()
+    if (selErr) throw selErr
+    if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
+    return c.json({ success: false, message: 'This address is already confirmed.' }, 409)
+  }
+  await logAdminAction(c, supabase, 'lead.mark_confirmed', 'employer_lead', id)
+  return c.json({ success: true, message: 'Marked as confirmed.', data: { confirmedAt: now } })
+}
+
 module.exports = {
-  createLead, confirmLead, removeLead,
+  createLead, confirmLead, removeLead, unsubscribeLead, adminMarkConfirmed,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression,

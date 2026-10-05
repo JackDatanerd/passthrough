@@ -56,8 +56,11 @@ export default function Privacy() {
             your name, company, work email, and, optionally, the field and job title you're hiring
             for — so we can follow up. If you submit from a candidate's verification page we also
             note which page, so we know where the request came from (it isn't shown to the
-            candidate). We send you one confirmation email when you join. This is stored separately
-            from candidate accounts.
+            candidate). When you join we email you a link to confirm the address is yours; if you
+            submit again before confirming we may send it once more, and every one of those emails
+            has a one-click link to remove your address. We also keep a record of each email we send
+            (the address, subject and whether it was delivered) for 90 days. This is stored
+            separately from candidate accounts.
           </p>
         </Section>
 
@@ -99,8 +102,12 @@ export default function Privacy() {
             request deletion at any time (Section 7).
           </p>
           <p>
-            <strong>Employer inquiries</strong> are kept until you ask us to remove them (email us
-            — see Section 7). Inquiries we've dismissed are deleted automatically after 90 days.
+            <strong>Employer inquiries</strong> are kept until you remove them. Every email we send
+            you has a link that removes your address immediately (or you can email us — see
+            Section 7). Inquiries we've dismissed, and ones whose address was never confirmed and
+            that nobody has followed up, are deleted automatically after 90 days. When you remove
+            your address we keep a one-way hash of it (not the address itself) so the form can't
+            add you again; ask us if you'd like that lifted.
           </p>
           <p>
             <strong>Payment records</strong> are retained for accounting and legal purposes even

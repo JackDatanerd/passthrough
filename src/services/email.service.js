@@ -16,7 +16,7 @@ const c = require('../config/constants')
 // function here already receives `supabase` from its caller, but
 // sendOwnerAlert historically didn't take one (see its own comment below).
 const { getSupabase } = require('../config/supabase')
-const { hitQuota } = require('../middleware/rateLimiter')
+const { hitQuota, refundSlot } = require('../middleware/rateLimiter')
 const { sha256 } = require('../lib/crypto')
 const { must } = require('../lib/db')
 
@@ -108,14 +108,34 @@ const RECIPIENT_LIMITS = {
   // confirmation) because they never saw the first. A confirmed lead's
   // resubmission sends nothing, and the removal link in every one of these
   // emails ends the whole thing permanently.
-  employer_lead_ack:      { max: 2, windowSeconds: 30 * 24 * 3600 },
+  //
+  // `refundOnFailure` (fresh audit pass 2, Section 5): a send that FAILED reached no inbox,
+  // so it must not use up one of the address's two slots — a Resend outage used to burn both
+  // and lock the address out for 30 days without a single email delivered. Bounded per
+  // window (that many refunds) so a provider that keeps failing can't become unlimited retries.
+  employer_lead_ack:      { max: 2, windowSeconds: 30 * 24 * 3600, refundOnFailure: 4 },
+}
+
+async function recipientKey(to, template) {
+  return `rl:mail:${template}:${(await sha256(String(to).trim().toLowerCase())).slice(0, 32)}`
 }
 
 async function recipientAllowed(env, to, template) {
   const limit = RECIPIENT_LIMITS[template]
   if (!limit) return true
-  const digest = (await sha256(String(to).trim().toLowerCase())).slice(0, 32)
-  return hitQuota(env, `rl:mail:${template}:${digest}`, limit.max, limit.windowSeconds)
+  return hitQuota(env, await recipientKey(to, template), limit.max, limit.windowSeconds)
+}
+
+// Gives back the slot a send consumed when that send then failed outright (see
+// `refundOnFailure` above). Never throws: the caller is already handling a failure.
+async function refundRecipientSlot(env, to, template) {
+  const limit = RECIPIENT_LIMITS[template]
+  if (!limit || !limit.refundOnFailure || !env.RATE_LIMIT_KV) return
+  try {
+    await refundSlot(env.RATE_LIMIT_KV, await recipientKey(to, template), limit.windowSeconds, limit.refundOnFailure)
+  } catch (err) {
+    console.error(`Email [${template}] recipient-slot refund failed:`, err.message)
+  }
 }
 
 // ── Plain-text alternative ──────────────────────────────────────────────────
@@ -183,11 +203,13 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   } else {
     const html = render(template, { ...globalVars(env), ...vars })
     try {
-      await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html) })
+      await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html), headers: opts.headers })
     } catch (err) {
       status = 'failed'
       error  = err.message
       console.error(`Email [${template}] to ${to}:`, err.message)
+      // Only when THIS call spent the slot; a caller that reserved its own owns that decision.
+      if (!opts.slotReserved) await refundRecipientSlot(env, to, template)
     }
   }
 
@@ -627,7 +649,7 @@ async function sendOwnerNotice(env, subject, message) {
 // a public form is whatever a stranger typed, so every copy carries a signed
 // confirm link and a signed one-click removal link (built by the controller —
 // signing needs the secret).
-async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl } = {}) {
+async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl, unsubscribeUrl } = {}) {
   // Never send the template with its placeholders unfilled.
   if (!confirmUrl || !removeUrl) throw new Error('sendEmployerLeadAck needs confirmUrl and removeUrl')
   return send(env, supabase, email, 'Confirm your email for Passthrough early access', 'employer_lead_ack', {
@@ -636,6 +658,15 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
     SUPPORT_EMAIL: 'support@passthrough.dev',
     CONFIRM_URL:   confirmUrl,
     REMOVE_URL:    removeUrl
+  }, {
+    // Fresh audit pass 2 (G4): this goes to an address a stranger typed, from the same
+    // sending domain as password resets — so mail clients get a real one-click
+    // unsubscribe (RFC 8058) in addition to the link in the body. Only when the
+    // controller could build the URL (it needs the API's own origin).
+    headers: unsubscribeUrl ? {
+      'List-Unsubscribe':      `<${unsubscribeUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+    } : undefined
   })
 }
 

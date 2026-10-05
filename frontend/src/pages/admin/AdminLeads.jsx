@@ -37,7 +37,9 @@ export default function AdminLeads() {
   const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const page   = Math.max(parseInt(searchParams.get('page'), 10) || 1, 1)
-  const status = STATUSES.includes(searchParams.get('status')) ? searchParams.get('status') : ''
+  // OPEN = NEW or CONTACTED (not a stored status): the filter the owner digest's link uses,
+  // so the list it opens is the same size as the number in the email.
+  const status = STATUSES.includes(searchParams.get('status')) || searchParams.get('status') === 'OPEN' ? searchParams.get('status') : ''
   const field  = searchParams.get('field') || ''
   const search = searchParams.get('search') || ''
   const sort   = searchParams.get('sort') === 'activity' ? 'activity' : 'created'
@@ -69,6 +71,7 @@ export default function AdminLeads() {
   // addresses, only a look-up-by-address and a lift-by-address, so that's
   // exactly what this modal offers, plus the total count already returned in
   // meta.suppressed above.
+  const [pendingMarkConfirmed, setPendingMarkConfirmed] = useState(null)
   const [suppressionOpen, setSuppressionOpen] = useState(false)
   const [suppressionEmail, setSuppressionEmail] = useState('')
   const [suppressionChecking, setSuppressionChecking] = useState(false)
@@ -105,7 +108,7 @@ export default function AdminLeads() {
     setSuppressionAdding(true); setSuppressionError('')
     try {
       const res = await api.post('/employer-leads/suppressions', { email: suppressionEmail.trim() })
-      setSuppressionResult({ suppressed: true, since: new Date().toISOString() })
+      setSuppressionResult({ suppressed: true, since: new Date().toISOString(), leadExists: false })
       toast({
         message: res.data.data?.leadsRemoved ? 'Address suppressed and its lead removed.' : 'Address added to the do-not-contact list.',
         type: 'success'
@@ -252,6 +255,24 @@ export default function AdminLeads() {
     }
   }
 
+  // Records that the address was confirmed by some other route (a reply, a call). The
+  // admin's word, not the inbox owner's click — hence the confirmation dialog and the audit entry.
+  async function confirmMarkConfirmed() {
+    const lead = pendingMarkConfirmed
+    setBusyId(lead.id)
+    try {
+      await api.post(`/employer-leads/${lead.id}/mark-confirmed`)
+      toast({ message: `${lead.email} marked as confirmed.`, type: 'success' })
+      setPendingMarkConfirmed(null)
+      await refresh()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Could not mark that lead as confirmed.'), type: 'error' })
+      setPendingMarkConfirmed(null)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   async function confirmRemoveLead() {
     const lead = pendingDelete
     setBusyId(lead.id)
@@ -327,6 +348,7 @@ export default function AdminLeads() {
 
       <div className="flex gap-2 flex-wrap">
         <button onClick={() => setParams({ status: '' })} className={chip(!status)}>All ({allCount})</button>
+        <button onClick={() => setParams({ status: 'OPEN' })} className={chip(status === 'OPEN')}>Open ({counts.OPEN ?? 0})</button>
         {STATUSES.map(s => (
           <button key={s} onClick={() => setParams({ status: s })} className={chip(status === s)}>
             {s} ({counts[s] ?? 0})
@@ -335,7 +357,7 @@ export default function AdminLeads() {
       </div>
 
       <div className="flex gap-3 flex-wrap items-end">
-        <Input label="Search" placeholder="Name, company, email, or role" value={searchInput}
+        <Input label="Search" placeholder="Name, company, email, role, note, or page code" value={searchInput}
           onChange={e => setSearchInput(e.target.value)} className="w-64" />
         <Select id="lead-field" label="Field" value={field} onChange={e => setParams({ field: e.target.value })}>
           <option value="">All fields</option>
@@ -482,6 +504,11 @@ export default function AdminLeads() {
                         Send confirm link
                       </Button>
                     )}
+                    {!l.confirmedAt && (
+                      <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setPendingMarkConfirmed(l)} className="mr-2">
+                        Mark confirmed
+                      </Button>
+                    )}
                     <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
                       Edit
                     </Button>
@@ -508,6 +535,15 @@ export default function AdminLeads() {
         onCancel={() => setPendingDelete(null)}
       />
       <ConfirmDialog
+        open={!!pendingMarkConfirmed}
+        title="Mark as confirmed"
+        message={pendingMarkConfirmed ? `Mark ${pendingMarkConfirmed.email} as confirmed? Only do this if they have confirmed the address is theirs another way (a reply or a call). It is recorded in the audit log.` : ''}
+        confirmLabel="Mark confirmed"
+        loading={busyId === pendingMarkConfirmed?.id}
+        onConfirm={confirmMarkConfirmed}
+        onCancel={() => setPendingMarkConfirmed(null)}
+      />
+      <ConfirmDialog
         open={confirmBulkDelete}
         title="Delete selected leads"
         message={`Delete ${selected.size} lead${selected.size === 1 ? '' : 's'}? This can't be undone.`}
@@ -532,9 +568,16 @@ export default function AdminLeads() {
               ? <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
                   On the do-not-contact list since {formatDate(suppressionResult.since)}.
                 </p>
-              : <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
-                  Not on the do-not-contact list.
-                </p>
+              : <div className="flex flex-col gap-2">
+                  <p className="text-sm text-green-700 bg-green-50 border border-green-200 rounded-md px-3 py-2">
+                    Not on the do-not-contact list.
+                  </p>
+                  {suppressionResult.leadExists && (
+                    <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                      A lead exists for this address. Adding it to the list deletes that lead, including its notes.
+                    </p>
+                  )}
+                </div>
           )}
           <div className="flex gap-3 justify-end">
             {suppressionResult?.suppressed && (
@@ -544,7 +587,7 @@ export default function AdminLeads() {
             )}
             {suppressionResult && !suppressionResult.suppressed && (
               <Button type="button" variant="danger" loading={suppressionAdding} onClick={addSuppression}>
-                Add to do-not-contact list
+                {suppressionResult.leadExists ? 'Add to list and delete its lead' : 'Add to do-not-contact list'}
               </Button>
             )}
             <Button type="submit" loading={suppressionChecking} variant="secondary">Check</Button>

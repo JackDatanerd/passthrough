@@ -16,6 +16,10 @@ router.post('/', rl.employerLead, c.createLead)
 // already fixed for partner click-tracking. Given their own dedicated bucket.
 router.post('/confirm', rl.employerLeadLink, c.confirmLead)
 router.post('/remove',  rl.employerLeadLink, c.removeLead)
+// RFC 8058 one-click target for the acknowledgement's List-Unsubscribe header (fresh
+// audit pass 2, G4). Mail providers POST a form body here with the signed token in the
+// query string; POST-only so a scanner's GET can never remove anyone.
+router.post('/unsubscribe', rl.employerLeadLink, c.unsubscribeLead)
 
 // AUDIT FIX (Section 5): the retrieval side of the lead-capture gap — leads
 // were being written with no way for anyone to ever read them back short of
@@ -50,6 +54,8 @@ router.delete('/suppressions',       admin, c.adminLiftSuppression)
 // to `.eq('id', ...)` against a uuid column and surfacing as an uncaught 500
 // via errorHandler.js's generic branch instead of a clean 400.
 router.post(  '/:id/request-confirmation', admin, validateUuidParam(), c.adminRequestConfirmation)
+// Fresh audit pass 2 (G1): an admin recording that the address was confirmed by other means.
+router.post(  '/:id/mark-confirmed', admin, validateUuidParam(), c.adminMarkConfirmed)
 router.patch( '/:id', admin, validateUuidParam(), c.adminUpdateLeadStatus)
 router.delete('/:id', admin, validateUuidParam(), c.adminDeleteLead)
 

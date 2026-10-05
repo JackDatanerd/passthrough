@@ -16,7 +16,8 @@ describe('SPA Content-Security-Policy (frontend/public/_headers)', () => {
   })
   it('only runs same-origin scripts — no inline, eval or third-party script', () => {
     const script = directive('script-src')
-    expect(script).toBe("script-src 'self'")
+    // Turnstile (employer-lead bot challenge) is the one allowed third-party script host.
+    expect(script).toBe("script-src 'self' https://challenges.cloudflare.com")
     expect(csp).not.toMatch(/unsafe-eval/)
   })
   it('blocks plugins, base-tag hijack and framing', () => {
