@@ -1,0 +1,8 @@
+Guardian / scope governance (section 13) - pass 16 fixes
+B-A  guardian-email: ambiguous localized header words (a/an/de/da/data/para) only count as header lines when they carry an address; forwarded body lines like "A: add a store" are kept.
+B-B  guardian-email: a bare "--" keeps an unpunctuated second request; only a sign-off, contact line or short name-like line ends the scan.
+B-C  guardian-email: "From:" + "Date:" in prose is not an Outlook header block unless the From line has an address or the date line has a year/time.
+B-D  projects/[id]/page.tsx: guardian_flags embed ordered newest first (stable).
+B-E  FlagCollaboration: a 403 hides the notes panel instead of a permanent retryable error.
+B-F  cron/guardian-health healStrandedFlags: only links a flag to a live CO (not withdrawn/closed/declined/expired/superseded); otherwise reopens.
+B-G  already fixed upstream (activity-format has flag.co_link_repaired).
