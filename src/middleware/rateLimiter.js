@@ -35,46 +35,85 @@
 
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { isTrustedPreview } = require('../lib/verification')
+const core = require('../lib/rateLimitCore')
+const { runInBackground } = require('../lib/background')
 
-// AUDIT FIX (Section 9 pass — feature gap): every fail-open path above is a
-// deliberate, correct availability tradeoff (see the file-level comment) —
-// but "fail open" and "tell nobody" turned out to be two separate decisions,
-// and only the first one was ever made on purpose. A sustained RATE_LIMIT_KV
-// outage silently disables the general/auth/payment/anonScan limiters, the
-// account-lockout guard AND the verify-code enumeration guard, app-wide, and
-// nothing anywhere notices: admin.controller.js's System Health panel reads
-// only alert_logs, and nothing in this file ever wrote to it. Every other
-// infra failure in this app (a missing table, a dead queue, a reconciliation
-// miss) gets an owner alert; this was the one silent one.
+// ── Storage backend ───────────────────────────────────────────────────────
+// With a RATE_LIMIT_DO binding (production) every counter lives in a Durable
+// Object addressed by its key, so read-modify-write is ATOMIC (see
+// lib/rateLimitCore.js for why KV could not give that). Without the binding
+// (local dev, unit tests) the SAME algorithms run against RATE_LIMIT_KV — the
+// old best-effort behaviour — so nothing here needs a DO to be developed.
+// `op` names an entry of core.OPS; args are plain JSON.
+const DO_URL = 'https://rate-limiter.internal/op'
+
+function backendName(env) { return env && env.RATE_LIMIT_DO ? 'RATE_LIMIT_DO' : 'RATE_LIMIT_KV' }
+function hasBackend(env) { return !!(env && (env.RATE_LIMIT_DO || env.RATE_LIMIT_KV)) }
+
+async function runOp(env, op, args) {
+  if (env.RATE_LIMIT_DO) {
+    const ns = env.RATE_LIMIT_DO
+    const stub = ns.get(ns.idFromName(args.key))
+    const res = await stub.fetch(DO_URL, { method: 'POST', body: JSON.stringify({ op, args }) })
+    if (!res.ok) throw new Error(`rate limiter DO ${res.status}`)
+    return res.json()
+  }
+  return core.OPS[op](env.RATE_LIMIT_KV, args)
+}
+
+// ── Outage alerting ───────────────────────────────────────────────────────
+// Every fail-open path in this file is a deliberate availability tradeoff —
+// but "fail open" and "tell nobody" are two separate decisions. A sustained
+// backend outage silently disables every limiter, the account lockout and the
+// verify-code enumeration guard, so it emails the owner.
 //
-// sendOwnerAlert's own de-dupe is itself a hitQuota() call against this SAME
-// KV namespace (see email.service.js), so during a real outage that de-dupe
-// fails open too and would fire one email per failed request instead of one
-// per 10 minutes. Throttle with a plain in-process timestamp instead — it
-// never touches KV, so it works precisely when KV doesn't, and it bounds the
-// flood to roughly one email per Worker isolate's lifetime rather than one
-// per request. Deliberately NOT wired into hitQuota()'s own catch block:
-// hitQuota is what sendOwnerAlert's de-dupe calls internally, so alerting
-// from inside it would re-enter this same function on every alert attempt.
-let lastKvOutageAlertAt = 0
-const KV_OUTAGE_ALERT_COOLDOWN_MS = 10 * 60 * 1000
-function alertKvOutage(env, where, err) {
+// sendOwnerAlert's own de-dupe is a hitQuota() call against this SAME backend,
+// so during a real outage it fails open and would send one email per failed
+// request. Throttle with plain in-process state instead (never touches the
+// backend). Deliberately NOT wired into hitQuota()'s own catch block: hitQuota
+// is what sendOwnerAlert calls internally, so alerting from there would
+// re-enter this function on every alert attempt.
+//
+// Two traps this avoids:
+//  * The send used to be a floating promise. Workers may cancel unawaited work
+//    once the response is out, and the cooldown was armed BEFORE the send — so
+//    a cancelled send muted alerts for 10 minutes. It now runs under waitUntil
+//    when a request context exists, and the cooldown starts only when the send
+//    has actually finished (an attempt that never finishes expires on its own).
+//  * Workers KV answers a 2nd write to one key inside a second with
+//    "429 Too Many Requests". That is contention, not an outage: it is logged,
+//    never emailed.
+let lastBackendAlertAt = 0
+let alertStartedAt = 0
+const BACKEND_ALERT_COOLDOWN_MS = 10 * 60 * 1000
+const BACKEND_ALERT_STALE_MS = 60 * 1000
+
+function isContention(err) {
+  return /\b429\b|too many requests/i.test(String(err && err.message))
+}
+
+function alertKvOutage(env, where, err, c) {
+  if (isContention(err)) return
   const now = Date.now()
-  if (now - lastKvOutageAlertAt < KV_OUTAGE_ALERT_COOLDOWN_MS) return
-  lastKvOutageAlertAt = now
+  if (now - lastBackendAlertAt < BACKEND_ALERT_COOLDOWN_MS) return
+  if (alertStartedAt && now - alertStartedAt < BACKEND_ALERT_STALE_MS) return
+  alertStartedAt = now
   // Lazy require — email.service.js requires hitQuota from this same file,
-  // so a top-level require here would be circular (see fulfillment.service.js
-  // / reconcile.service.js / referral.service.js for the same pattern).
+  // so a top-level require here would be circular.
   const emailService = require('../services/email.service')
-  emailService.sendOwnerAlert(env,
-    'RATE_LIMIT_KV outage — rate limiting and account lockout are failing open',
-    `${where}: ${err && err.message}\n\n` +
-    'Every rate limiter, the login-lockout guard, and the verify-code miss ' +
-    'counter fail open on a KV error by design — right now they are all ' +
-    'effectively disabled. This message is throttled in-process (not via ' +
-    'KV) so a sustained outage cannot also become an email flood; expect at ' +
-    'most one of these per Worker isolate per 10 minutes while it persists.'
-  ).catch(alertErr => console.error('KV outage alert failed to send:', alertErr.message))
+  const name = backendName(env)
+  const done = Promise.resolve()
+    .then(() => emailService.sendOwnerAlert(env,
+      `${name} outage — rate limiting and account lockout are failing open`,
+      `${where}: ${err && err.message}\n\n` +
+      'Every rate limiter, the login-lockout guard, and the verify-code miss ' +
+      'counter fail open on a backend error by design — right now they are all ' +
+      'effectively disabled. This message is throttled in-process (not via the ' +
+      'backend) so a sustained outage cannot also become an email flood; expect at ' +
+      'most one of these per Worker isolate per 10 minutes while it persists.'))
+    .catch(alertErr => console.error('Rate-limit outage alert failed to send:', alertErr && alertErr.message))
+    .finally(() => { lastBackendAlertAt = Date.now(); alertStartedAt = 0 })
+  if (c) runInBackground(c, done)
 }
 
 // Takes `env` directly (not the full Hono context) so this can be reused
@@ -88,83 +127,29 @@ function isBypassed(env, ip) {
   return raw.split(',').map(s => s.trim()).filter(Boolean).includes(ip)
 }
 
-// Core fixed-window step shared by every limiter and by hitQuota() below.
-// windowStart is set once, on the first request of the window, and never moves
-// afterwards — each later request just increments `count` and re-derives the
-// REMAINING ttl from that original windowStart. (Re-arming the TTL on every
-// request would let a client that keeps polling ratchet up to the cap and
-// stay locked out forever instead of getting a fresh budget every window.)
-//
-// Cloudflare KV requires expirationTtl >= 60s, so the TTL is floored there;
-// the elapsed-time check on read — not the KV expiry — is what actually
-// guarantees the window rolls over on time.
-//
-// Returns { allowed, retryAfter }. Throws only if KV itself throws.
-async function consumeSlot(kv, key, windowSeconds, max, now = Date.now()) {
-  const raw = await kv.get(key)
-  let count = 0
-  let windowStart = now
-  let refunds = 0
-  if (raw) {
-    try {
-      const parsed = JSON.parse(raw)
-      if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number') {
-        count = parsed.count
-        windowStart = parsed.windowStart
-        refunds = typeof parsed.refunds === 'number' ? parsed.refunds : 0
-      }
-    } catch (_) {
-      // Pre-fix value (plain integer string) or corrupt data — treat as the
-      // start of a fresh window rather than throwing.
-    }
-  }
-
-  let elapsedSeconds = (now - windowStart) / 1000
-  if (elapsedSeconds >= windowSeconds) {
-    count = 0
-    windowStart = now
-    refunds = 0
-    elapsedSeconds = 0   // recomputed from the reset windowStart, not left stale
-  }
-
-  if (count >= max) {
-    return { allowed: false, retryAfter: Math.max(1, Math.ceil(windowSeconds - elapsedSeconds)) }
-  }
-
-  const remainingTtl = Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
-  await kv.put(key, JSON.stringify({ count: count + 1, windowStart, refunds }), { expirationTtl: remainingTtl })
-  return { allowed: true, retryAfter: 0 }
-}
-
-// Give back one slot for a request that was counted but then failed — see the
-// `refund` option on makeLimiter. Bounded by `maxRefunds` per window so that
-// "failures don't count" can never become "unlimited free attempts".
-async function refundSlot(kv, key, windowSeconds, maxRefunds, now = Date.now()) {
-  const raw = await kv.get(key)
-  if (!raw) return
-  let st
-  try { st = JSON.parse(raw) } catch (_) { return }
-  if (typeof st.count !== 'number' || typeof st.windowStart !== 'number' || st.count <= 0) return
-  const refunds = typeof st.refunds === 'number' ? st.refunds : 0
-  if (refunds >= maxRefunds) return
-  const elapsedSeconds = (now - st.windowStart) / 1000
-  if (elapsedSeconds >= windowSeconds) return
-  await kv.put(key, JSON.stringify({ count: st.count - 1, windowStart: st.windowStart, refunds: refunds + 1 }), {
-    expirationTtl: Math.max(Math.ceil(windowSeconds - elapsedSeconds), 60)
-  })
-}
+// The fixed-window / refund algorithms live in lib/rateLimitCore.js (shared with
+// the Durable Object). These KV-level exports stay for callers and tests that
+// drive a store directly.
+const consumeSlot = core.consumeSlot
+const refundSlot  = core.refundSlot
 
 // Generic keyed fixed-window quota for things that aren't a per-IP request
 // limit (e.g. "at most 3 verification emails per hour to one address"). Fails
-// open (returns true) if KV is unavailable.
+// open (returns true) if the backend is unavailable.
 async function hitQuota(env, key, max, windowSeconds) {
   try {
-    const r = await consumeSlot(env.RATE_LIMIT_KV, key, windowSeconds, max)
+    const r = await runOp(env, 'consume', { key, windowSeconds, max })
     return r.allowed
   } catch (err) {
-    console.error(`quota (${key.split(':').slice(0, 2).join(':')}) KV error — failing open:`, err.message)
+    console.error(`quota (${key.split(':').slice(0, 2).join(':')}) backend error — failing open:`, err.message)
     return true
   }
+}
+
+// Gives a quota slot back (see email.service.js's refundOnFailure). Never throws.
+async function refundQuota(env, key, windowSeconds, maxRefunds) {
+  try { await runOp(env, 'refund', { key, windowSeconds, maxRefunds }) }
+  catch (err) { console.error(`quota (${key.split(':').slice(0, 2).join(':')}) refund failed:`, err.message) }
 }
 
 // `refund: { maxRefunds }` — the request is counted up front (so concurrent
@@ -191,14 +176,13 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
     if (isBypassed(c.env, ip)) return next()
 
     const key = `${keyPrefix}:${(keyBy && keyBy(c)) || rateKeyIp(ip, ipBits)}`
-    const kv  = c.env.RATE_LIMIT_KV
 
     let slot
     try {
-      slot = await consumeSlot(kv, key, windowSeconds, max)
+      slot = await runOp(c.env, 'consume', { key, windowSeconds, max })
     } catch (err) {
-      console.error(`rate limiter (${keyPrefix}) KV error — failing open:`, err.message)
-      alertKvOutage(c.env, `rate limiter (${keyPrefix})`, err)
+      console.error(`rate limiter (${keyPrefix}) backend error — failing open:`, err.message)
+      alertKvOutage(c.env, `rate limiter (${keyPrefix})`, err, c)
       return next()
     }
 
@@ -239,7 +223,7 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
       await next()
     } catch (err) {
       if (!refundOnSuccess) {
-        try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
+        try { await runOp(c.env, 'refund', { key, windowSeconds, maxRefunds: refund.maxRefunds }) }
         catch (refundErr) { console.error(`rate limiter (${keyPrefix}) refund failed:`, refundErr.message) }
       }
       throw err
@@ -247,7 +231,7 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
     const status = c.res && c.res.status
     const shouldRefund = typeof status === 'number' && (refundOnSuccess ? status >= 200 && status < 400 : status >= 400)
     if (shouldRefund) {
-      try { await refundSlot(kv, key, windowSeconds, refund.maxRefunds) }
+      try { await runOp(c.env, 'refund', { key, windowSeconds, maxRefunds: refund.maxRefunds }) }
       catch (err) { console.error(`rate limiter (${keyPrefix}) refund failed:`, err.message) }
     }
   }
@@ -593,8 +577,8 @@ const click = makeLimiter({
 // eventually start returning "too many failed attempts" instead of
 // "invalid credentials" — the same non-enumeration property login() already
 // protects with its dummy-hash timing match is preserved here the same way.
-const LOCKOUT_MAX_CONSECUTIVE_FAILURES = 8
-const LOCKOUT_MINUTES = 15
+const LOCKOUT_MAX_CONSECUTIVE_FAILURES = core.LOCKOUT_MAX_CONSECUTIVE_FAILURES
+const LOCKOUT_MINUTES = core.LOCKOUT_MINUTES
 const LOCKOUT_KEY_PREFIX = 'rl:lockout'
 // AUDIT FIX (bug — account-lockout DoS, section audit): failCount alone let
 // anyone who merely knows a real user's email lock that account for
@@ -608,11 +592,11 @@ const LOCKOUT_KEY_PREFIX = 'rl:lockout'
 // while closing the free single-IP DoS: a lone attacker now exhausts
 // `rl.auth`'s own IP budget long before an account-level lock can ever
 // trigger, since it takes coordinated failures from more than one address.
-const LOCKOUT_MIN_DISTINCT_IPS = 2
+const LOCKOUT_MIN_DISTINCT_IPS = core.LOCKOUT_MIN_DISTINCT_IPS
 // Bounded — recordLoginFailure only needs to know "how many distinct IPs
 // have failed," not a full history, so this caps the stored array rather
 // than letting it grow unboundedly under a long-running distributed attempt.
-const LOCKOUT_MAX_TRACKED_IPS = 10
+const LOCKOUT_MAX_TRACKED_IPS = core.LOCKOUT_MAX_TRACKED_IPS
 
 function lockoutKey(email) {
   return `${LOCKOUT_KEY_PREFIX}:${String(email).trim().toLowerCase()}`
@@ -632,18 +616,10 @@ function lockoutKey(email) {
 // tallied together across every endpoint that can prove its password.
 async function checkAccountLockout(env, email) {
   try {
-    const kv = env.RATE_LIMIT_KV
-    const raw = await kv.get(lockoutKey(email))
-    if (!raw) return { locked: false, retryAfterSeconds: null }
-    let parsed
-    try { parsed = JSON.parse(raw) } catch (_) { return { locked: false, retryAfterSeconds: null } }
-    if (parsed.lockedUntil && parsed.lockedUntil > Date.now()) {
-      return { locked: true, retryAfterSeconds: Math.ceil((parsed.lockedUntil - Date.now()) / 1000) }
-    }
-    return { locked: false, retryAfterSeconds: null }
+    return await runOp(env, 'lockoutCheck', { key: lockoutKey(email) })
   } catch (err) {
     // FAIL OPEN — see the file-level comment: an outage must never become a login outage.
-    console.error('login lockout check KV error — failing open:', err.message)
+    console.error('login lockout check backend error — failing open:', err.message)
     alertKvOutage(env, 'account lockout check', err)
     return { locked: false, retryAfterSeconds: null }
   }
@@ -683,62 +659,14 @@ async function checkAccountLockout(env, email) {
 // comments already claimed these three endpoints had.
 async function recordLoginFailure(env, email, ip, opts = {}) {
   try {
-    const kv = env.RATE_LIMIT_KV
-    const key = lockoutKey(email)
-    const raw = await kv.get(key)
-    let failCount = 0
-    let ips = []
-    let wasLocked = false
-    try {
-      if (raw) {
-        const parsed = JSON.parse(raw)
-        failCount = parsed.failCount || 0
-        ips = Array.isArray(parsed.ips) ? parsed.ips : []
-        wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > Date.now())
-        // BUG FIX (account-lockout DoS, round 2): failCount/ips previously
-        // lived on forever untouched once a lock fired and later expired —
-        // both already sat at/above the lock thresholds, so the very next
-        // failure (from ONE ip, no coordination needed) re-locked the account
-        // instantly. That defeats LOCKOUT_MIN_DISTINCT_IPS's whole purpose,
-        // which only ever actually gated the FIRST lock a fresh key could
-        // produce. A lock that already ran its course and expired is stale
-        // history, not an ongoing attack — start this failure's counting over
-        // from zero so the distinct-IP bar has to be cleared again before
-        // another lock can trigger, exactly like it did the first time.
-        if (parsed.lockedUntil && parsed.lockedUntil <= Date.now()) {
-          failCount = 0
-          ips = []
-        }
-      }
-    } catch (_) { failCount = 0; ips = []; wasLocked = false }
-    failCount += 1
-
-    // AUDIT FIX (Auth/Scan round): the distinct-IP tally used the raw address,
-    // but every per-IP limiter (rl.auth included) buckets an IPv6 client by
-    // its /64 (rateKeyIp). A single attacker owns a whole /64, so two
-    // addresses inside it satisfied LOCKOUT_MIN_DISTINCT_IPS from ONE
-    // machine — within rl.auth's 10-per-15-minutes budget — reopening the
-    // exact lone-attacker lockout DoS the distinct-IP bar exists to close.
-    // Tally by the same bucket the limiters use, so "distinct" means
-    // distinct clients, not distinct addresses in one client's subnet.
+    // Tally by the same bucket the limiters use (an IPv6 client owns a whole /64),
+    // so "distinct" means distinct clients, not distinct addresses in one subnet.
     const normalizedIp = rateKeyIp(String(ip || 'unknown'))
-    if (!ips.includes(normalizedIp)) ips.push(normalizedIp)
-    if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
-
     const minDistinctIps = opts.requireDistinctIps === false ? 1 : LOCKOUT_MIN_DISTINCT_IPS
-    const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= minDistinctIps)
-      ? Date.now() + LOCKOUT_MINUTES * 60 * 1000
-      : null
-
-    await kv.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
-      // KV's 60s TTL floor applies here same as consumeSlot() above; either
-      // way this key naturally ages out well before it'd matter.
-      expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
-    })
-
-    return { justLocked: !!lockedUntil && !wasLocked }
+    const r = await runOp(env, 'lockoutFail', { key: lockoutKey(email), ip: normalizedIp, minDistinctIps })
+    return { justLocked: !!r.justLocked }
   } catch (err) {
-    console.error('login failure record KV error (ignored):', err.message)
+    console.error('login failure record backend error (ignored):', err.message)
     return { justLocked: false }
   }
 }
@@ -747,8 +675,8 @@ async function recordLoginFailure(env, email, ip, opts = {}) {
 // who mistypes their password a few times isn't left one mistake away from
 // a lockout on their next legitimate attempt days later.
 async function recordLoginSuccess(env, email) {
-  try { await env.RATE_LIMIT_KV.delete(lockoutKey(email)) }
-  catch (err) { console.error('login success record KV error (ignored):', err.message) }
+  try { await runOp(env, 'lockoutClear', { key: lockoutKey(email) }) }
+  catch (err) { console.error('login success record backend error (ignored):', err.message) }
 }
 
 // ── Public verification lookups: miss limiter ───────────────────────────────
@@ -788,25 +716,13 @@ const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 function verifyMissKey(ip, scope = 'page') { return `${scope === 'badge' ? 'rl:vmissb' : 'rl:vmiss'}:${rateKeyIp(ip, 48)}` }
 const missMax = scope => (scope === 'badge' ? VERIFY_BADGE_MISS_MAX : VERIFY_MISS_MAX)
 
-async function readMissCounter(kv, key, now) {
-  const raw = await kv.get(key)
-  if (!raw) return { count: 0, windowStart: now }
-  try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed.count === 'number' && typeof parsed.windowStart === 'number'
-        && (now - parsed.windowStart) / 1000 < VERIFY_MISS_WINDOW_SECONDS)
-      return parsed
-  } catch (_) { /* corrupt value → fresh window */ }
-  return { count: 0, windowStart: now }
-}
-
 // true → this IP has already produced too many misses in the window.
-// Fails OPEN on any KV problem (same posture as makeLimiter).
+// Fails OPEN on any backend problem (same posture as makeLimiter).
 async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page') {
-  if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return false
+  if (!hasBackend(env) || isBypassed(env, ip)) return false
   try {
-    const { count } = await readMissCounter(env.RATE_LIMIT_KV, verifyMissKey(ip, scope), now)
-    return count >= missMax(scope)
+    const r = await runOp(env, 'missRead', { key: verifyMissKey(ip, scope), max: missMax(scope), now })
+    return !!r.limited
   } catch (err) {
     console.error('Verify miss limiter read failed — failing open:', err.message)
     alertKvOutage(env, 'verify miss limiter', err)
@@ -815,12 +731,9 @@ async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page') {
 }
 
 async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
-  if (!env.RATE_LIMIT_KV || isBypassed(env, ip)) return
+  if (!hasBackend(env) || isBypassed(env, ip)) return
   try {
-    const key = verifyMissKey(ip, scope)
-    const cur = await readMissCounter(env.RATE_LIMIT_KV, key, now)
-    const remaining = Math.max(Math.ceil(VERIFY_MISS_WINDOW_SECONDS - (now - cur.windowStart) / 1000), 60)
-    await env.RATE_LIMIT_KV.put(key, JSON.stringify({ count: cur.count + 1, windowStart: cur.windowStart }), { expirationTtl: remaining })
+    await runOp(env, 'missRecord', { key: verifyMissKey(ip, scope), now })
   } catch (err) {
     console.error('Verify miss limiter write failed:', err.message)
   }
@@ -831,5 +744,5 @@ module.exports = {
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
-  clientIp, rateKeyIp, hitQuota, consumeSlot, refundSlot
+  clientIp, rateKeyIp, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName
 }

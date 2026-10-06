@@ -19,12 +19,6 @@ const c = require('../config/constants')
 
 const PDF_MIME  = 'application/pdf'
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-const ALLOWED_MIME = [PDF_MIME, DOCX_MIME]
-
-// Labels browsers/OSes routinely attach to a valid PDF/DOCX. The bytes, not the
-// label, decide; a label that is neither allowed nor generic (image/png,
-// text/html, …) is still refused up front.
-const GENERIC_MIME = ['', 'application/octet-stream', 'application/zip', 'application/x-zip-compressed', 'application/x-pdf']
 
 const MAX_FILE_BYTES = c.MAX_UPLOAD_MB * 1024 * 1024
 // File cap plus a fixed allowance for the other multipart fields (job
@@ -156,9 +150,16 @@ async function uploadResume(ctx, next) {
     return next()
   }
 
-  if (!ALLOWED_MIME.includes(file.type) && !GENERIC_MIME.includes(file.type))
+  // The label is only an early, friendly refusal for files that are plainly something else (a
+  // screenshot, a video, a .txt). It never ACCEPTS anything — the bytes decide below — so any
+  // label that isn't obviously the wrong kind of file goes on to the real check. An allow-list
+  // here wrongly turned away genuine PDFs/DOCX whose label was merely unusual
+  // (`binary/octet-stream` from some Android file pickers, a different case, a charset suffix).
+  const label = String(file.type || '').toLowerCase().split(';')[0].trim()
+  if (/^(image|video|audio|text|font)\//.test(label) || label === 'application/json' || label === 'application/xml')
     return ctx.json({ success: false, message: 'Only PDF and DOCX files accepted' }, 415)
 
+  if (file.size === 0) return ctx.json({ success: false, message: 'That file is empty.' }, 400)
   if (file.size > MAX_FILE_BYTES) return tooLarge(ctx)
 
   const bytes = new Uint8Array(await file.arrayBuffer())
@@ -168,7 +169,7 @@ async function uploadResume(ctx, next) {
 
   ctx.set('uploadedFile', {
     bytes,
-    originalname: String(file.name || '').slice(0, 255),
+    originalname: cleanFilename(file.name),
     mimetype:     detected,       // decided from the bytes, never from the client's label
     size:         file.size
   })
@@ -176,6 +177,16 @@ async function uploadResume(ctx, next) {
   return next()
 }
 
+// The stored name is shown back in the dashboard and the admin tools, so keep it to a plain
+// base name: no directory parts, no control characters, and none of the bidirectional
+// overrides (U+202A–202E, U+2066–2069, U+200E/F) that make "evil\u202Efdp.exe" display as
+// "evilexe.pdf".
+function cleanFilename(name) {
+  const base = String(name || '').split(/[\\/]/).pop()
+  return base.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '').trim().slice(0, 255)
+}
+
 module.exports = uploadResume
+module.exports.cleanFilename = cleanFilename
 module.exports.detectType = detectType
 module.exports.readBodyCapped = readBodyCapped

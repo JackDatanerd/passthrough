@@ -29,7 +29,7 @@ backend runs as a Cloudflare Worker.
 | Paystack account (business verified) | USD support requires verification |
 | Anthropic API key | Pay-as-you-go |
 | Resend account | Verify your sending domain before production |
-| Node.js 20 LTS | Local development only |
+| Node.js 20 LTS or newer (CI runs 22) | Local development only |
 
 ---
 
@@ -76,13 +76,21 @@ backend runs as a Cloudflare Worker.
    - **Project URL** (`https://xxxx.supabase.co`)
    - **service_role key** (Settings → API → service_role — keep this secret)
 
-4. Seed demo data:
+4. **Production: do NOT seed.** `supabase/seed.js` creates an ADMIN account
+   and a fake "Passthrough Verified" page (`/v/DEMO01`) — fine for a
+   development or staging project, a forged credential on a real domain.
+   It refuses to run unless you opt in, and it never contains passwords
+   (the repository is public). For a dev/staging project only:
    ```bash
+   SEED_ENV=development \
+   SEED_ADMIN_PASSWORD='at-least-12-characters' \   # optional: random one is printed once if unset
    SUPABASE_URL=https://xxxx.supabase.co \
    SUPABASE_SERVICE_ROLE_KEY=eyJ... \
-   FRONTEND_URL=https://passthrough.dev \
+   FRONTEND_URL=http://localhost:3000 \
    node supabase/seed.js
    ```
+   In production, create your admin by registering normally and then setting
+   `role = 'ADMIN'` on that row in the SQL editor.
 
 ---
 
@@ -111,6 +119,15 @@ Paste the returned `id` into `wrangler.toml` under `[[kv_namespaces]]`:
 ```toml
 id = "paste-id-here"
 ```
+
+### Durable Object (rate limits)
+
+Nothing to create by hand: the `[[durable_objects.bindings]]` and
+`[[migrations]]` blocks in `wrangler.toml` declare `RateLimiterDO`, and the
+first deploy applies the migration. Rate limits and the login lockout count
+inside this object, where a read-modify-write is atomic. Without the binding
+they fall back to the KV counters (best-effort: a burst of parallel requests
+can overrun them) and the Worker logs a configuration warning on start-up.
 
 ### Enable Browser Rendering
 
@@ -178,8 +195,9 @@ node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
 
 ### Optional secrets
 
-Neither is required for a normal deploy — both default to "off" when unset,
-which is the correct state for a real production launch:
+None of these is required for a normal deploy — each defaults to "off" (or to a
+sensible built-in) when unset, which is the correct state for a real production
+launch:
 
 ```bash
 # Restricts /api/webhooks/paystack to Paystack's published outbound IP
@@ -230,13 +248,30 @@ wrangler secret put TURNSTILE_SECRET_KEY
 # different hostname than the one mail clients should call back.
 #   https://api.passthrough.dev
 wrangler secret put API_ORIGIN
+
+# Extra browser origins allowed by CORS in addition to FRONTEND_URL (comma-separated,
+# no trailing slashes) — the www variant, a staging site, a Pages preview.
+#   https://www.passthrough.dev,https://staging.passthrough.dev
+wrangler secret put CORS_EXTRA_ORIGINS
+
+# Raise/lower the per-request Supabase timeout (default 25000 ms).
+#   (a plain [vars] entry in wrangler.toml is fine for this one)
+# SUPABASE_TIMEOUT_MS = "25000"
+
+# Other optional [vars]/secrets read by the code: SCAN_IP_DAILY_CAP (free scans per IP per day;
+# 0 disables the cap), PWNED_PASSWORDS_CHECK ("off" turns off the breached-password
+# check), RATE_LIMIT_BYPASS_IPS (comma-separated; ignored in production).
 ```
 
 ### Deploy
 
-```bash
-npm run deploy
-```
+Deploy from CI / Linux, never with a local `wrangler deploy` on Windows (it
+mangles secrets and can crash). Before any deploy, `npm run predeploy` (lint
++ backend tests) must be green; CI also bundles the Worker with
+`wrangler deploy --dry-run` so a bundling failure shows up on the pull request
+rather than in production. The deploy itself is the plain
+`npx wrangler deploy` run by your CI/CD job (needs `CLOUDFLARE_API_TOKEN` and
+`CLOUDFLARE_ACCOUNT_ID` there); this repository does not define that job.
 
 Wrangler bundles `src/index.js` (ESM entry) with all CommonJS dependencies
 via esbuild and uploads the bundle. No build step needed — wrangler handles it.
@@ -254,7 +289,7 @@ Update `wrangler.toml` `[vars]` if you haven't already:
 FRONTEND_URL          = "https://passthrough.dev"
 PAYSTACK_CALLBACK_URL = "https://passthrough.dev/payment/success"
 ```
-Then redeploy: `npm run deploy`
+Then redeploy (CI).
 
 ---
 
@@ -384,16 +419,26 @@ Every push to `main` triggers an automatic rebuild and deploy.
 - [ ] Upload a real resume + JD → score appears in <60s
 - [ ] Payment flow (test card: 4084 0840 8408 4081) → FIX_DELIVERED
 - [ ] Downloaded .docx opens in Word with bullets
-- [ ] Verification page `/v/DEMO01` loads
+- [ ] A verification page for a REAL delivered scan loads
 - [ ] Password reset email → link works
 
-### Seed passwords
-- [ ] `admin@passthrough.dev` password changed
-- [ ] `demo@passthrough.dev` password changed or account deleted
+### Seed leftovers (must all be "none")
+- [ ] No `admin@passthrough.dev` / `demo@passthrough.dev` rows in `users` (earlier versions of
+      `seed.js` created them with a password that was in this public repository — if either
+      exists in production, delete it or set a new password and rotate any session)
+- [ ] No scan with `verification_code = 'DEMO01'` (the forged demo credential) — delete it
+- [ ] `RATE_LIMIT_DO` binding present (no "binding RATE_LIMIT_DO is missing" line in the logs)
 
 ---
 
 ## 9. Monitoring & Logs
+
+### Persisted logs
+
+`[observability]` is enabled in `wrangler.toml`, so every `console.log` /
+`console.error` and uncaught exception is kept in Workers Logs (Cloudflare
+Dashboard → Workers & Pages → passthrough-api → Logs) and can be searched
+after the fact; the `cf-ray` id on an error line ties it to the failing request.
 
 ### Live log tail
 
@@ -447,9 +492,10 @@ to `module.exports`. See Section 9 of the migration patch for details.
 
 ### Browser Rendering not working locally
 
-`@cloudflare/puppeteer` with `env.BROWSER` works in production. In local
-dev with `wrangler dev`, Browser Rendering launches a local Chromium.
-If it's unavailable, PDF generation fails gracefully (DOCX still delivered —
+`@cloudflare/puppeteer` with `env.BROWSER` works in production. Whether
+`wrangler dev` can run Browser Rendering locally depends on your Wrangler
+version (Wrangler 3 needs `wrangler dev --remote`). When it is unavailable, PDF
+generation fails gracefully (DOCX still delivered —
 see the try/catch in scan.controller.js's `generateFix`/`generateBadge`).
 
 ### Supabase "relation does not exist" error
@@ -460,12 +506,30 @@ Section 2 above). A relation from a later migration (partners, payouts,
 referral_codes, commission_ledger, etc.) failing specifically usually means
 migrations were stopped partway through rather than skipped entirely.
 
-### KV rate limiter letting requests through
+### Rate limiter letting requests through
 
-KV is eventually consistent — see the `rateLimiter.js` caveat comment.
-Under a concurrent burst, a few extra requests may slip through at the
-boundary. This is expected and acceptable for abuse mitigation. Upgrade
-to a Durable Object counter if precise enforcement is required.
+Rate limits and the login lockout count in the `RATE_LIMIT_DO` Durable Object,
+where a burst of parallel requests cannot overrun them. If limits seem not to
+bite, check the logs for `binding RATE_LIMIT_DO is missing` — without the
+binding the limiter falls back to best-effort KV counters, which a parallel
+burst CAN overrun (all the requests read the same count; KV also refuses a
+second write to one key within a second). A `RATE_LIMIT_DO outage` /
+`RATE_LIMIT_KV outage` email means the counting backend itself errored and
+every limiter failed open until it recovered.
+
+### Secret rotation
+
+- `JWT_SECRET`: changing it signs every user out at once (no overlap window).
+  Rotate in a quiet hour; it is also the key for lead-confirmation tokens, so
+  outstanding employer-lead links stop working.
+- `RESEND_API_KEY`, `PAYSTACK_SECRET_KEY`, `ANTHROPIC_API_KEY`: `wrangler secret put`
+  the new value and redeploy; no other step.
+
+### Rolling back a bad deploy
+
+Cloudflare Dashboard → Workers & Pages → passthrough-api → Deployments → pick
+the previous version → Rollback (or `wrangler rollback`). The Durable Object
+migration is additive; rolling back the code leaves it in place.
 
 ### Paystack webhook 401 errors
 

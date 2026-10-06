@@ -9,6 +9,9 @@
 const validStatus = s => Number.isInteger(s) && s >= 400 && s <= 599 ? s : 500
 
 function errorHandler(err, ctx) {
+  // Anything can be thrown (a string, null) — never let the handler itself crash on it.
+  if (!err || typeof err !== 'object') err = new Error(String(err ?? 'Unknown error'))
+
   if (err.name === 'ZodError')
     return ctx.json({ success: false, message: 'Validation failed',
       errors: err.errors.map(e => ({ field: e.path.join('.'), message: e.message })) }, 400)
@@ -21,14 +24,19 @@ function errorHandler(err, ctx) {
   // how to render itself with the right status and headers.
   if (typeof err.getResponse === 'function') return err.getResponse()
 
-  // A request body that isn't valid JSON: every controller does
-  // `await c.req.json()`, which throws a bare SyntaxError on an empty or
-  // malformed body. That is the CLIENT's mistake — 400 — not a server fault to
-  // page someone about with a stack trace.
-  if (err instanceof SyntaxError && /JSON/i.test(err.message || ''))
+  // A request body that isn't valid JSON: bodyLimit.js wraps c.req.json() and tags the
+  // SyntaxError it throws on an empty or malformed body. That is the CLIENT's mistake — 400.
+  // Only the tag counts: an untagged SyntaxError (an internal JSON.parse of a Claude or
+  // Paystack reply, a bad migration) is a server fault, and used to be misreported as a 400
+  // the caller caused — and never logged.
+  if (err instanceof SyntaxError && err.clientBody === true)
     return ctx.json({ success: false, message: 'Invalid request body.' }, 400)
 
-  const status = validStatus(err.status)
+  // Only an error that opts in with `expose` chooses its own status. Any other `err.status` is
+  // somebody else's: an upstream HTTP status copied onto a thrown error (Resend answered 401,
+  // Anthropic 429) must never become OUR response status — a 401 here reads to the SPA as an
+  // expired session and signs the user out over a server-side API-key problem.
+  const status = err.expose === true ? validStatus(err.status) : 500
 
   // The stack is the one thing on `err` that points at where a production
   // incident happened (`wrangler tail` is where it gets root-caused). The

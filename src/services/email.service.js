@@ -16,7 +16,7 @@ const c = require('../config/constants')
 // function here already receives `supabase` from its caller, but
 // sendOwnerAlert historically didn't take one (see its own comment below).
 const { getSupabase } = require('../config/supabase')
-const { hitQuota, refundSlot } = require('../middleware/rateLimiter')
+const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 const { sha256 } = require('../lib/crypto')
 const { must } = require('../lib/db')
 
@@ -130,9 +130,9 @@ async function recipientAllowed(env, to, template) {
 // `refundOnFailure` above). Never throws: the caller is already handling a failure.
 async function refundRecipientSlot(env, to, template) {
   const limit = RECIPIENT_LIMITS[template]
-  if (!limit || !limit.refundOnFailure || !env.RATE_LIMIT_KV) return
+  if (!limit || !limit.refundOnFailure || !(env.RATE_LIMIT_DO || env.RATE_LIMIT_KV)) return
   try {
-    await refundSlot(env.RATE_LIMIT_KV, await recipientKey(to, template), limit.windowSeconds, limit.refundOnFailure)
+    await refundQuota(env, await recipientKey(to, template), limit.windowSeconds, limit.refundOnFailure)
   } catch (err) {
     console.error(`Email [${template}] recipient-slot refund failed:`, err.message)
   }
@@ -201,8 +201,12 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
     error  = 'per-recipient limit reached'
     console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
   } else {
-    const html = render(template, { ...globalVars(env), ...vars })
+    // Rendering is INSIDE the try: an unknown template or a throwing variable used to escape
+    // send() entirely — no email_logs row, no refund of the throttle slot just spent, and the
+    // caller's own .catch(() => false) swallowing the only trace (partner_link_regenerated never
+    // existed, so that email silently never went out).
     try {
+      const html = render(template, { ...globalVars(env), ...vars })
       await sendViaResend(env, { from: env.EMAIL_FROM, to, subject, html, text: htmlToPlainText(html), headers: opts.headers })
     } catch (err) {
       status = 'failed'
@@ -314,7 +318,9 @@ async function sendNewSignInAlert(env, supabase, email, name, { ip, when }) {
   return send(env, supabase, email, 'New sign-in to your Passthrough account', 'new_login_alert', {
     NAME:         name,
     IP:           ip,
-    WHEN:         new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' }),
+    // Workers run in UTC and the recipient's zone is unknown — say so rather than print a
+    // clock time that reads as local.
+    WHEN:         `${new Date(when).toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC' })} UTC`,
     SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
   })
 }
@@ -377,7 +383,7 @@ async function sendPaymentReceipt(env, supabase, email, name, { fixTier, amountC
     NAME:       name,
     TIER_LABEL: c.tierLabel(fixTier),
     AMOUNT:     fmtMoney(amountCents, currency),
-    DATE:       new Date(createdAt || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }),
+    DATE:       `${new Date(createdAt || Date.now()).toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'UTC' })} (UTC)`,
     REFERENCE:  reference
   })
 }

@@ -26,10 +26,21 @@ describe('errorHandler', () => {
     expect(errorHandler(err, ctx({ NODE_ENV: 'production' })).body.message).toBe('An error occurred.')
     expect(errorHandler(err, ctx({ NODE_ENV: 'development' })).body.message).toBe('relation "users" does not exist')
   })
-  it('defaults to 500 and honours an explicit err.status', () => {
+  it('defaults to 500; honours err.status ONLY when the error opts in with expose', () => {
     expect(errorHandler(new Error('x'), ctx()).status).toBe(500)
-    const e = new Error('teapot'); e.status = 418
+    const e = new Error('teapot'); e.status = 418; e.expose = true
     expect(errorHandler(e, ctx()).status).toBe(418)
+  })
+  it('an upstream status copied onto a thrown error is NOT our response status (a Resend 401 must not look like an expired session)', () => {
+    for (const status of [401, 403, 404, 429, 502]) {
+      const e = new Error(`Resend API error (${status})`); e.status = status
+      const res = errorHandler(e, ctx({ NODE_ENV: 'production' }))
+      expect(res.status).toBe(500)
+      expect(res.body.message).toBe('An error occurred.')
+    }
+  })
+  it('survives being handed something that is not an Error', () => {
+    for (const thrown of [null, undefined, 'boom', 42]) expect(errorHandler(thrown, ctx()).status).toBe(500)
   })
   it('never leaks a stack trace', () => {
     const res = errorHandler(new Error('boom'), ctx())
@@ -39,10 +50,19 @@ describe('errorHandler', () => {
   it('turns a malformed/empty JSON body into a 400 (client fault), not a 500', () => {
     for (const body of ['', '{', 'not json', '{"a":']) {
       let err; try { JSON.parse(body) } catch (e) { err = e }
+      err.clientBody = true   // bodyLimit.js tags what c.req.json() throws
       const res = errorHandler(err, ctx({ NODE_ENV: 'production' }))
       expect(res.status).toBe(400)
       expect(res.body.message).toBe('Invalid request body.')
     }
+  })
+  it('an UNTAGGED JSON SyntaxError (an internal JSON.parse of an upstream reply) is a logged 500, not a 400 the caller caused', () => {
+    let err; try { JSON.parse('not json from claude') } catch (e) { err = e }
+    const logged = []; const orig = console.error; console.error = (...a) => logged.push(a.join(' '))
+    const res = errorHandler(err, ctx({ NODE_ENV: 'production' }))
+    console.error = orig
+    expect(res.status).toBe(500)
+    expect(logged.length).toBe(1)
   })
   it('does not mistake an unrelated SyntaxError for a bad request body', () => {
     const res = errorHandler(new SyntaxError('Unexpected identifier in module'), ctx({ NODE_ENV: 'production' }))

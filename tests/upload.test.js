@@ -78,9 +78,10 @@ describe('upload.js — content sniffing', () => {
     const bytes = new Uint8Array([...lead, ...PDF_BYTES()])
     expect(detectType(bytes)).toBe('application/pdf')
   })
-  it('an empty file is rejected, not crashed on', async () => {
+  it('an empty file is rejected with a clear message, not crashed on', async () => {
     const { res } = await run(formReq(fd => fd.set('resume', file(new Uint8Array(0), 'e.pdf', 'application/pdf'))))
-    expect(res.status).toBe(415)
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/empty/i)
   })
 })
 describe('upload.js — size limits (the cap must not depend on a Content-Length header)', () => {
@@ -136,5 +137,28 @@ describe('upload.js — form fields', () => {
   it('a non-multipart body is a clean 400', async () => {
     const { res } = await run(new Request('https://x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }))
     expect(res.status).toBe(400)
+  })
+})
+
+describe('upload.js — client labels never decide, and the stored name is clean', () => {
+  const accepts = async label => (await run(formReq(fd => fd.set('resume', file(PDF_BYTES(), 'cv.pdf', label))))).passed
+  it('accepts a genuine PDF whatever unusual-but-not-wrong label the browser attached', async () => {
+    for (const label of ['application/pdf', 'APPLICATION/PDF', 'application/pdf; charset=binary', 'binary/octet-stream', 'application/octet-stream', '', 'application/x-pdf'])
+      expect(await accepts(label), label).toBe(true)
+  })
+  it('still turns away files that are plainly something else, up front', async () => {
+    for (const label of ['image/png', 'video/mp4', 'audio/mpeg', 'text/html', 'text/plain', 'application/json']) {
+      const { res, passed } = await run(formReq(fd => fd.set('resume', file(PDF_BYTES(), 'x.pdf', label))))
+      expect(passed, label).toBe(false); expect(res.status).toBe(415)
+    }
+  })
+  it('a lying label cannot get non-document bytes through (the bytes decide)', async () => {
+    const { res, passed } = await run(formReq(fd => fd.set('resume', file(new TextEncoder().encode('MZ not a document'), 'cv.pdf', 'application/pdf'))))
+    expect(passed).toBe(false); expect(res.status).toBe(415)
+  })
+  it('stores a plain base name: no directories, control characters or bidi overrides', async () => {
+    const { store } = await run(formReq(fd => fd.set('resume', file(PDF_BYTES(), '../../etc/pa\u202Essw\u0000d.pdf', 'application/pdf'))))
+    expect(store.uploadedFile.originalname).toBe('passwd.pdf')
+    expect(store.uploadedFile.originalname).not.toMatch(/[\u0000-\u001f\u202a-\u202e/\\]/)
   })
 })

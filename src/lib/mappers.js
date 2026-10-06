@@ -186,6 +186,10 @@ function paymentRowToCamel(row) {
     refundedAt:          row.refunded_at,
     refundReference:     row.refund_reference,
     disputedAt:          row.disputed_at,
+    // Migrations 0044 / 0048 — same latent-drop shape as the columns above (found by the
+    // mapper-vs-migrations drift test, tests/mappers.migrations.test.js).
+    referralReservationId: row.referral_reservation_id ?? null,
+    refundClaimedAt:     row.refund_claimed_at ?? null,
     // AUDIT FIX (Section 9/10 pass): receipt_sent_at (migration 0033) and
     // last_reconciled_at/receipt_delivered_at (migration 0036) were missing
     // here — same latent-drop shape as refunded_at/refund_reference/
@@ -314,7 +318,8 @@ const PAYMENT_FIELD_MAP = {
   // reconcile.service.js write these today via raw snake_case updates, so
   // this half was latent, not live.
   receiptSentAt: 'receipt_sent_at', receiptDeliveredAt: 'receipt_delivered_at',
-  lastReconciledAt: 'last_reconciled_at'
+  lastReconciledAt: 'last_reconciled_at',
+  referralReservationId: 'referral_reservation_id', refundClaimedAt: 'refund_claimed_at'
 }
 
 // AUDIT FIX (Section 10 build-out): needed for the new admin
@@ -430,6 +435,8 @@ function commissionLedgerRowToCamel(row) {
     // Section 8 audit: a reversal is a NEGATIVE row pointing at the row it undoes.
     reversesLedgerId:      row.reverses_ledger_id ?? null,
     reversalReason:        row.reversal_reason ?? null,
+    // Migration 0046: false while the referral code's usage count has not yet been credited for this row.
+    usageCounted:          row.usage_counted ?? true,
     createdAt:             row.created_at
   }
 }

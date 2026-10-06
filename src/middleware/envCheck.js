@@ -4,9 +4,20 @@
 // further down (see lib/env.js for what counts as fatal).
 const { validateEnv } = require('../lib/env')
 
+// "https://passthrough.dev/" would break CORS and put a double slash in every emailed link —
+// strip trailing slashes in place (cron and queue entry points call this too, since they
+// build emailed links without ever passing through the HTTP middleware).
+function normalizeEnv(env) {
+  try {
+    if (env && typeof env.FRONTEND_URL === 'string' && /\/+$/.test(env.FRONTEND_URL))
+      env.FRONTEND_URL = env.FRONTEND_URL.replace(/\/+$/, '')
+  } catch (_) { /* a frozen env object: validateEnv still warns about it */ }
+}
+
 let cached = null
 function result(env) {
   if (!cached) {
+    normalizeEnv(env)
     cached = validateEnv(env)
     for (const f of cached.fatal) console.error(`[CONFIG] FATAL: ${f}`)
     for (const w of cached.warnings) console.error(`[CONFIG] warning: ${w}`)
@@ -25,6 +36,7 @@ envCheck.status = env => {
   const r = result(env)
   return { configured: r.fatal.length === 0, warnings: r.warnings.length }
 }
+envCheck.normalizeEnv = normalizeEnv
 envCheck._reset = () => { cached = null }   // tests only
 
 module.exports = envCheck

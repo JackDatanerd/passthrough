@@ -43,6 +43,8 @@ function validateEnv(env) {
     if (!env[k]) warnings.push(`${k} is not set — ${why} will not work`)
   for (const [k, why] of Object.entries(BINDINGS))
     if (!env[k]) warnings.push(`binding ${k} is missing — ${why} will not work`)
+  if (!env.RATE_LIMIT_DO)
+    warnings.push('binding RATE_LIMIT_DO is missing — rate limits and account lockout fall back to best-effort KV counters that a burst of parallel requests can overrun (see DEPLOYMENT.md)')
 
   const fe = env.FRONTEND_URL
   if (fe) {

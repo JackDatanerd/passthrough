@@ -12,7 +12,6 @@
 // That is fine and expected — do not convert any other file to ESM.
 
 import { Hono } from 'hono'
-import { cors } from 'hono/cors'
 
 // All requires below are CommonJS — esbuild bundles them cleanly.
 const optionalAuth     = require('./middleware/optionalAuth')
@@ -21,6 +20,8 @@ const rateLimiter      = require('./middleware/rateLimiter')
 const bodyLimit         = require('./middleware/bodyLimit')
 const envCheck          = require('./middleware/envCheck')
 const securityHeaders   = require('./middleware/securityHeaders')
+const corsMiddleware    = require('./middleware/cors')
+const { normalizeEnv }  = envCheck
 
 const authRoutes         = require('./routes/auth.routes')
 const scanRoutes         = require('./routes/scan.routes')
@@ -55,27 +56,12 @@ const app = new Hono()
 // the 503 it was built to produce. Wiring them in is the fix; nothing about
 // their own logic needed to change.
 app.use('*', securityHeaders)   // wraps every response, success or error — mount first
+// CORS comes BEFORE envCheck/bodyLimit on purpose: both can answer early (503 / 413), and a
+// response without CORS headers reaches the SPA as an opaque network error rather than the JSON
+// message it knows how to show. Origin list, exposed headers and preflight caching: middleware/cors.js.
+app.use('*', corsMiddleware)
 app.use('/api/*', envCheck)     // fail fast on a broken config before any route runs
 app.use('/api/*', bodyLimit())  // caps non-multipart bodies before a handler reads one
-
-// ── 1. CORS ──────────────────────────────────────────────────────────────────
-// origin is set at request time from env.FRONTEND_URL (not hardcoded) so the
-// same Worker build works against both dev (localhost:3000) and prod.
-app.use('*', async (c, next) => {
-  const corsMiddleware = cors({
-    origin:      c.env.FRONTEND_URL,
-    credentials: true,
-    // Readable by the frontend — a cross-origin response hides every header outside
-    // the CORS-safelisted set unless it is exposed here:
-    //  - X-Export-Parts: how many parts the account's data export has (GET /api/profile/export)
-    //  - Retry-After: sent on every 429/503. The client's one automatic retry
-    //    (lib/api.js) and its "wait N seconds" copy both key off it, and without
-    //    this they never see it in production (API and site are different origins).
-    //  - Content-Disposition: the server's chosen filename for downloads.
-    exposeHeaders: ['X-Export-Parts', 'Retry-After', 'Content-Disposition'],
-  })
-  return corsMiddleware(c, next)
-})
 
 // ── 1b. Health check ──────────────────────────────────────────────────────────
 // AUDIT FIX (Section 9, feature gap): nothing existed for an uptime monitor
@@ -117,6 +103,7 @@ app.notFound(c => c.json({ success: false, message: 'Not found.' }, 404))
 // Deletes anonymous scans whose anon_expires_at has passed, and removes
 // their files from R2. Functionally identical to the v8 setInterval cleanup.
 async function scheduled(event, env, ctx) {
+  normalizeEnv(env)
   ctx.waitUntil(
     (async () => {
       try {
@@ -352,6 +339,7 @@ async function pendingSweep(event, env, ctx) {
 // own error handling didn't catch (a genuine platform-level failure), which
 // is the correct place for the queue's built-in retry/DLQ behavior to apply.
 async function queue(batch, env, ctx) {
+  normalizeEnv(env)
   // Cloudflare routes every queue this Worker consumes (the fix-jobs queue
   // AND its dead-letter queue — see wrangler.toml) to this same export,
   // distinguished by batch.queue. A job that ends up HERE already exhausted
@@ -404,7 +392,7 @@ async function queue(batch, env, ctx) {
           `scanId: ${scanId}\ntype: ${type}\nerror: ${err.message}\nstack: ${err.stack || '(none)'}`
         )
       } catch (_) {}
-      message.retry()
+      message.retry({ delaySeconds: 60 })
     }
   }
 }
@@ -458,6 +446,10 @@ async function retentionSweep(event, env, ctx) {
     })()
   )
 }
+
+// The Durable Object class behind RATE_LIMIT_DO (wrangler.toml) must be a named export of the
+// entry module. See lib/rateLimiterDO.js for what it does and why KV was not enough.
+export { RateLimiterDO } from './lib/rateLimiterDO'
 
 export default {
   fetch: app.fetch,

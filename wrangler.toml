@@ -8,10 +8,33 @@ compatibility_flags = ["nodejs_compat"]
 binding     = "RESUMES_BUCKET"
 bucket_name = "passthrough-resumes"
 
-# ── KV: rate limiting (best-effort fixed window, see middleware/rateLimiter.js) ──
+# ── Durable Object: ATOMIC rate limits + account lockout ──────────────
+# One object per rate-limit key (lib/rateLimiterDO.js). Counting in KV was
+# not safe: parallel requests all read the same count, and KV rejects a 2nd
+# write to one key within a second — so a burst of parallel login guesses
+# sailed past the limiter and the lockout. SQLite-backed, so it is also
+# available on the free plan. First deploy applies the migration below on its own.
+# If this binding is missing the limiter falls back to the KV counters (and
+# envCheck logs a warning).
+[[durable_objects.bindings]]
+name       = "RATE_LIMIT_DO"
+class_name = "RateLimiterDO"
+
+[[migrations]]
+tag               = "v1"
+new_sqlite_classes = ["RateLimiterDO"]
+
+# ── KV: dedupe flags + the rate-limit fallback (see middleware/rateLimiter.js) ──
 [[kv_namespaces]]
 binding = "RATE_LIMIT_KV"
 id      = "489f1b7c413744efb066df3335bff8c2"
+
+# ── Logs: persist console output + exceptions in Workers Logs ──────────
+# Without this the many console.error calls (webhook alerts, queue failures,
+# limiter outages) were only visible to a live `wrangler tail` session.
+[observability]
+enabled = true
+head_sampling_rate = 1
 
 # ── Browser Rendering: replaces local Puppeteer / the entire VPS requirement ──
 [browser]
@@ -32,6 +55,7 @@ queue              = "passthrough-fix-jobs"
 max_batch_size     = 1
 max_batch_timeout  = 5
 max_retries        = 3
+retry_delay        = 60          # seconds between redeliveries (also set per-message in index.js)
 dead_letter_queue  = "passthrough-fix-jobs-dlq"
 
 # AUDIT FIX (Section 9, feature gap): the dead_letter_queue above had no
@@ -83,8 +107,11 @@ OWNER_ALERT_EMAIL       = "passthrough672@gmail.com"
 # deadline, not a fake one ticking down to a date that was never going to
 # matter. Set PROMO_ACTIVE = "false" to kill the promo immediately regardless
 # of the date.
-PROMO_ACTIVE            = "true"
-PROMO_ENDS_AT           = "2026-08-11T23:59:59Z"   # placeholder — set to your real launch-week end time before deploying
+# The launch promo ended on PROMO_ENDS_AT (2026-08-11): it is switched off here so a
+# lapsed date no longer logs a config warning on every cold start. To run a new promo, set
+# PROMO_ACTIVE = "true" and PROMO_ENDS_AT to the new deadline, then redeploy.
+PROMO_ACTIVE            = "false"
+PROMO_ENDS_AT           = "2026-08-11T23:59:59Z"
 
 # ── Local dev overrides ──────────────────────────────────────────────
 # `wrangler dev` reads [vars] above + .dev.vars (gitignored) for secrets.

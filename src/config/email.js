@@ -47,12 +47,18 @@ async function sendViaResend(env, { from, to, subject, html, text, headers }, { 
         body: JSON.stringify({ from, to, subject, html, ...(text ? { text } : {}), ...(headers && Object.keys(headers).length ? { headers } : {}) }),
         signal: AbortSignal.timeout(ATTEMPT_TIMEOUT_MS)
       })
-      if (res.ok) return res.json()
+      // 2xx = Resend accepted the email. A body that isn't JSON must not turn that into a
+      // "failure" (and a retry) for a message that is already on its way.
+      if (res.ok) return res.json().catch(() => ({}))
 
       const body = await res.text().catch(() => '')
       lastErr = new Error(`Resend API error (${res.status}): ${body}`)
       lastErr.status = res.status
+      // 409 concurrent_idempotent_requests: our previous attempt (same Idempotency-Key) is still in
+      // flight at Resend — typically after a client-side timeout. Resend documents it as safe to
+      // retry; the retry then returns the original result instead of sending a second email.
       retryable = res.status === 429 || res.status >= 500
+        || (res.status === 409 && /concurrent_idempotent_requests/i.test(body))
       const hinted = retryAfterMs(res)
       if (hinted !== null) waitMs = Math.max(waitMs ?? 0, hinted)
     } catch (err) {

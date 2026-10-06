@@ -104,6 +104,7 @@ const TEMPLATES = {
   partner_email_changed: "<h2>Your partner account email was changed</h2>\n<p>Hi {{NAME}}, the email address on file for your Passthrough partner account was just changed from {{OLD_EMAIL}} to {{NEW_EMAIL}}.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't request this, reply to this email or contact support@passthrough.dev immediately \u2014 future payout links, payout confirmations, and referral-code notifications will go to the new address.</p>\n",
   // Sent when an admin regenerates a partner's payout-details link \u2014
   // the OLD link stops working the moment this is sent.
+  partner_link_regenerated: "<h2>Your payout link was reset</h2>\n<p>Hi {{NAME}}, we've issued you a new, private link for your Passthrough payout details.</p>\n<p>Use it to check or update where your payouts are sent:</p>\n<a href=\"{{PAYOUT_URL}}\" class=\"btn\">Open Payout Details \u2192</a>\n<p style=\"color:#9ca3af;font-size:13px\">Any earlier payout link no longer works. This link is unique to you \u2014 don't share it.\nIf you didn't expect this, reply to this email or contact support@passthrough.dev.</p>\n",
   // AUDIT FIX (feature gap): every OTHER partner-facing account change in
   // this file gets an email (payout sent, payout details changed, a code
   // created, email changed) — status (PAUSED/ACTIVE) previously didn't. A

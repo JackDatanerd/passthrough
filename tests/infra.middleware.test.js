@@ -38,14 +38,40 @@ describe('bodyLimit', () => {
     await bodyLimit(1024)(c, async () => {})
     expect(await c.req.raw.json()).toEqual({ ok: true })
   })
-  it('does not touch multipart uploads (upload.js owns those) or GETs', async () => {
-    const mp = new Request('https://x', { method: 'POST', headers: { 'content-type': 'multipart/form-data; boundary=b', 'content-length': '999999999' }, body: 'x' })
+  it('does not touch the upload route\'s multipart body (upload.js owns it) or GETs', async () => {
+    const mp = new Request('https://x/api/scan', { method: 'POST', headers: { 'content-type': 'multipart/form-data; boundary=b', 'content-length': '999999999' }, body: 'x' })
     let passed = false
     await bodyLimit(1024)(ctxFor(mp), async () => { passed = true })
     expect(passed).toBe(true)
     passed = false
     await bodyLimit(1024)(ctxFor(new Request('https://x', { method: 'GET' })), async () => { passed = true })
     expect(passed).toBe(true)
+  })
+})
+
+describe('bodyLimit — the multipart exemption cannot be claimed by the client', () => {
+  it('a spoofed multipart Content-Type on a JSON route is still capped (413 on declared size)', async () => {
+    const req = new Request('https://x/api/auth/login', { method: 'POST', headers: { 'content-type': 'multipart/form-data; boundary=b', 'content-length': '50000000' }, body: 'x' })
+    let passed = false
+    const res = await bodyLimit(1024)(ctxFor(req), async () => { passed = true })
+    expect(passed).toBe(false)
+    expect(res.s).toBe(413)
+  })
+  it('a spoofed multipart Content-Type on a JSON route is still capped when CHUNKED', async () => {
+    const req = new Request('https://x/api/auth/login', { method: 'POST', headers: { 'content-type': 'multipart/form-data; boundary=b' }, body: streamOf(10 * 1024 * 1024), duplex: 'half' })
+    const c = ctxFor(req)
+    await bodyLimit(1024 * 1024)(c, async () => {})
+    let err; try { await c.req.raw.arrayBuffer() } catch (e) { err = e }
+    expect(err && err.status).toBe(413)
+  })
+  it('only POST /api/scan is exempt (not other methods or paths, trailing slash tolerated)', async () => {
+    const mk = (method, path) => new Request(`https://x${path}`, { method, headers: { 'content-type': 'multipart/form-data; boundary=b', 'content-length': '999999999' }, body: method === 'GET' ? undefined : 'x' })
+    const passes = async (method, path) => { let p = false; await bodyLimit(1024)(ctxFor(mk(method, path)), async () => { p = true }); return p }
+    expect(await passes('POST', '/api/scan')).toBe(true)
+    expect(await passes('POST', '/api/scan/')).toBe(true)
+    expect(await passes('PUT', '/api/scan')).toBe(false)
+    expect(await passes('POST', '/api/scan/abc/edit')).toBe(false)
+    expect(await passes('POST', '/api/profile/saved-profile')).toBe(false)
   })
 })
 
@@ -79,7 +105,7 @@ describe('securityHeaders', () => {
 })
 
 describe('validateEnv', () => {
-  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://passthrough.dev', RATE_LIMIT_KV: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, NODE_ENV: 'production' }
+  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://passthrough.dev', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, NODE_ENV: 'production' }
   it('a complete environment has no fatal problems and no warnings', () => {
     expect(validateEnv(good)).toEqual({ fatal: [], warnings: [] })
   })

@@ -8,6 +8,15 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege: nothing here writes to the repository.
+permissions:
+  contents: read
+
+# A newer push to the same branch/PR supersedes a run that is still going.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   worker:
     name: Worker — lint + tests
@@ -24,8 +33,15 @@ jobs:
       - run: npm i --no-save typescript@5
       - name: Undefined identifiers + syntax (would have caught the webhook fix_tier bug)
         run: npm run lint
+      # Backend only (vitest.worker.config.mjs): needs nothing beyond the root `npm ci`.
+      # `npm test` also runs the React component tests, which need frontend/'s own dependencies.
       - name: Unit tests
-        run: npm test
+        run: npm run test:worker
+      # Bundles the Worker exactly as `wrangler deploy` would (no credentials, nothing is
+      # uploaded): a missing export (the RateLimiterDO class), a bad binding or an unresolvable
+      # require fails here instead of in production.
+      - name: Bundle check (wrangler deploy --dry-run)
+        run: npm run bundle-check
 
   frontend:
     name: Frontend — production build

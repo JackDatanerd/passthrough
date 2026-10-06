@@ -15,10 +15,37 @@
 
 const { createClient } = require('@supabase/supabase-js')
 
+// supabase-js has NO request timeout of its own, and every other upstream this app calls
+// (Claude, Paystack, Resend, Turnstile) has one. A hung PostgREST call otherwise holds the
+// request — or a queue consumer's whole batch — until the platform gives up on it. Every
+// request is now aborted after SUPABASE_TIMEOUT_MS (default 25s: well above any real query here,
+// well below "stuck"). An abort surfaces as an ordinary Supabase error, so every caller's existing
+// error path (must(), the fail-open/fail-closed choices) handles it.
+const DEFAULT_TIMEOUT_MS = 25_000
+
+function linkSignals(a, b) {
+  const ctl = new AbortController()
+  for (const sig of [a, b]) {
+    if (sig.aborted) { ctl.abort(sig.reason); break }
+    sig.addEventListener('abort', () => ctl.abort(sig.reason), { once: true })
+  }
+  return ctl.signal
+}
+
+function timeoutFetch(ms = DEFAULT_TIMEOUT_MS, baseFetch = (...a) => fetch(...a)) {
+  return (input, init = {}) => {
+    const timeout = AbortSignal.timeout(ms)
+    const signal = init.signal ? linkSignals(init.signal, timeout) : timeout
+    return baseFetch(input, { ...init, signal })
+  }
+}
+
 function getSupabase(env) {
+  const ms = parseInt(env.SUPABASE_TIMEOUT_MS, 10)
   return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false }
+    auth: { persistSession: false, autoRefreshToken: false },
+    global: { fetch: timeoutFetch(ms > 0 ? ms : DEFAULT_TIMEOUT_MS) }
   })
 }
 
-module.exports = { getSupabase }
+module.exports = { getSupabase, timeoutFetch, DEFAULT_TIMEOUT_MS }
