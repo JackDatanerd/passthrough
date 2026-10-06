@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext } from '../src/lib/session.js'
+import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext, tokenSessionId, failureAppliesToCurrentSession } from '../src/lib/session.js'
 
 describe('classifyAuthFailure', () => {
   // REGRESSION: a wrong password (401 "Invalid credentials") used to be treated as
@@ -80,5 +80,33 @@ describe('safeNext — open-redirect protection', () => {
   })
   it('still accepts an ordinary path with no control characters', () => {
     expect(safeNext('/dashboard/settings?tab=security')).toBe('/dashboard/settings?tab=security')
+  })
+})
+
+// A JWT with just enough shape to read the `sid` claim from (the signature is never checked client-side).
+const jwt = claims => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`
+
+describe('tokenSessionId', () => {
+  it('reads the sid claim', () => expect(tokenSessionId(jwt({ sid: 'abc-123', sub: 'u1' }))).toBe('abc-123'))
+  it('is null for a token without one, and for anything that is not a token', () => {
+    for (const t of [jwt({ sub: 'u1' }), 'opaque', '', null, undefined, 'a.%%%.c', 'a..c', jwt({ sid: 5 })])
+      expect(tokenSessionId(t)).toBeNull()
+  })
+})
+
+// A request fired under session A can fail after the person has signed out and in as someone else;
+// that failure must not end session B. Same session (a renewed token) still counts.
+describe('failureAppliesToCurrentSession', () => {
+  it('is true for the identical token', () => expect(failureAppliesToCurrentSession('tok', 'tok')).toBe(true))
+  it('is false once a different account is signed in', () => {
+    expect(failureAppliesToCurrentSession(jwt({ sid: 'A' }), jwt({ sid: 'B' }))).toBe(false)
+    expect(failureAppliesToCurrentSession('old-opaque', 'new-opaque')).toBe(false)
+  })
+  it('is true when the token was renewed but still belongs to the same session', () => {
+    expect(failureAppliesToCurrentSession(jwt({ sid: 'A', iat: 1 }), jwt({ sid: 'A', iat: 2 }))).toBe(true)
+  })
+  it('is false when nobody is signed in now, or no token was sent', () => {
+    expect(failureAppliesToCurrentSession('tok', null)).toBe(false)
+    expect(failureAppliesToCurrentSession(null, 'tok')).toBe(false)
   })
 })

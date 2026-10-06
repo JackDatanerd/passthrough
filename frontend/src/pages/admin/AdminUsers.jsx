@@ -9,6 +9,8 @@ import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
+import EmptyState from '../../components/ui/EmptyState'
 
 const PAGE_SIZE = 25
 
@@ -70,13 +72,15 @@ export default function AdminUsers() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Users</h1>
 
       <div className="flex gap-3 flex-wrap items-end">
         <Input label="Search" placeholder="Email or name" value={search}
-          onChange={e => { setPage(1); setSearch(e.target.value) }} className="w-64" />
+          onChange={e => { setPage(1); setSearch(e.target.value) }} wrapperClassName="w-64" />
         <Select label="Status" value={status} onChange={e => { setPage(1); setStatus(e.target.value) }}>
           <option value="">All</option>
           <option value="ACTIVE">Active</option>
@@ -87,7 +91,7 @@ export default function AdminUsers() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : users.length === 0 ? (
-        <p className="text-sm text-gray-500">No users found.</p>
+        <EmptyState>No users found.</EmptyState>
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">

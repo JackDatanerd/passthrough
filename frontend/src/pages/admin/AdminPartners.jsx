@@ -10,6 +10,7 @@ import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatRate, formatDate } from '../../lib/utils'
+import EmptyState from '../../components/ui/EmptyState'
 
 function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
@@ -178,7 +179,7 @@ export default function AdminPartners() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : partners.length === 0 ? (
-        <p className="text-sm text-gray-500">No partners yet.</p>
+        <EmptyState>No partners yet.</EmptyState>
       ) : (
         <>
         <div className="flex items-center gap-3 flex-wrap">
@@ -191,7 +192,7 @@ export default function AdminPartners() {
           </select>
           <span className="text-xs text-gray-400">{filtered.length} of {partners.length}</span>
         </div>
-        {filtered.length === 0 && <p className="text-sm text-gray-500">No partners match “{query}”.</p>}
+        {filtered.length === 0 && <EmptyState>No partners match “{query}”.</EmptyState>}
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
             <thead>

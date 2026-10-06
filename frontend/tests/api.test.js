@@ -321,3 +321,53 @@ describe('Blob error bodies are normalized before anything else sees them', () =
     }
   })
 })
+
+// Found in the Section 11 re-audit: the interceptor only remembered THAT a token was sent (__hadToken),
+// not WHICH. A slow request from the old session failing after sign-out + sign-in as someone else
+// wiped the new account's token.
+describe('a late failure from a session that is no longer current', () => {
+  const failWith401AfterSwitching = (localStorage, newToken) => async config => {
+    localStorage.setItem(TOKEN_KEY, newToken)      // the person signed in as someone else meanwhile
+    const err = new Error('Request failed'); err.isAxiosError = true; err.config = config
+    err.response = { status: 401, headers: {}, data: { code: 'SESSION_INVALID' } }
+    throw err
+  }
+
+  it('does not end the session now held, nor redirect', async () => {
+    const { localStorage, replace, dispatchEvent } = setGlobals({ pathname: '/dashboard', token: 'old-token' })
+    const api = await loadApi()
+    await expect(api.get('/scan/history', { adapter: failWith401AfterSwitching(localStorage, 'new-token') })).rejects.toBeTruthy()
+    expect(localStorage.getItem(TOKEN_KEY)).toBe('new-token')
+    expect(dispatchEvent).not.toHaveBeenCalled()
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('still ends the session when the token was only renewed (same sid)', async () => {
+    const jwt = claims => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`
+    const { localStorage, dispatchEvent } = setGlobals({ pathname: '/', token: jwt({ sid: 'S', iat: 1 }) })
+    const api = await loadApi()
+    await expect(api.get('/x', { adapter: failWith401AfterSwitching(localStorage, jwt({ sid: 'S', iat: 2 })) })).rejects.toBeTruthy()
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull()
+    expect(dispatchEvent).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('automatic GET retry', () => {
+  it('re-reads the CURRENT token instead of replaying the first attempt\'s header', async () => {
+    const { localStorage } = setGlobals({ token: 'first' })
+    const api = await loadApi()
+    let n = 0
+    const seen = []
+    const adapter = async config => {
+      seen.push(config.headers.Authorization)
+      if (++n === 1) {
+        localStorage.removeItem(TOKEN_KEY)          // signed out during the 800ms back-off
+        const err = new Error('Network Error'); err.isAxiosError = true; err.config = config; err.request = {}
+        throw err
+      }
+      return { data: {}, status: 200, statusText: 'OK', headers: {}, config }
+    }
+    await api.get('/scan/history', { adapter })
+    expect(seen).toEqual(['Bearer first', undefined])
+  }, 10_000)
+})

@@ -11,6 +11,8 @@ import Modal from '../../components/ui/Modal'
 import Input from '../../components/ui/Input'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
+import EmptyState from '../../components/ui/EmptyState'
 
 const PAGE_SIZE = 25
 // SECTION 8 AUDIT: REFUNDED/DISPUTED added (migration 0023) — payments in
@@ -200,13 +202,15 @@ export default function AdminPayments() {
   }
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
+
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   const badgeVariant = s => ({ SUCCESS: 'green', PENDING: 'amber', FAILED: 'red', ABANDONED: 'gray', REFUNDED: 'gray', DISPUTED: 'red' }[s] || 'gray')
 
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Payments</h1>
 
-      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
         <option value="">All</option>
         {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
       </Select>
@@ -221,7 +225,7 @@ export default function AdminPayments() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : payments.length === 0 ? (
-        <p className="text-sm text-gray-500">No payments found.</p>
+        <EmptyState>No payments found.</EmptyState>
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">

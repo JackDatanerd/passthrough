@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import api from '../lib/api'
+import { formatMoney } from '../lib/utils'
 
 // Fetches /api/pricing once per referral-code key and shares it across every
 // component using that same key. Backend is the single source of truth for
@@ -146,8 +147,7 @@ export function usePricing(referralCode = '') {
 // then showed "$29" (or "$30" for 2950) while Paystack charged the exact
 // amount. Whole-dollar amounts keep the clean "$49" look; anything with real
 // cents now renders exactly as formatCents does everywhere else.
-export const fmtPrice = (cents, currency = 'USD') => {
-  const value = cents / 100
-  const decimals = Number.isInteger(value) ? 0 : 2
-  return currency === 'USD' ? `$${value.toFixed(decimals)}` : `${value.toFixed(decimals)} ${currency}`
-}
+export const fmtPrice = (cents, currency = 'USD') =>
+  // One money formatter for the whole UI (lib/utils.js): same symbol/suffix rule and the same
+  // thousands grouping as the admin and partner screens. Whole-dollar amounts drop the cents.
+  formatMoney(cents, { currency, decimals: Number.isInteger(Number(cents) / 100) ? 0 : 2 })

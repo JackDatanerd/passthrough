@@ -52,3 +52,34 @@ export function safeNext(next) {
   if (/[\x00-\x20\x7f]/.test(next)) return null
   return next
 }
+
+// The `sid` claim of a JWT (the server-side session it is bound to), or null for
+// anything that isn't a decodable token. Read-only: the signature is NOT checked
+// here — the server does that; this only tells two tokens' sessions apart.
+export function tokenSessionId(token) {
+  try {
+    const part = String(token || '').split('.')[1]
+    if (!part) return null
+    const b64 = part.replace(/-/g, '+').replace(/_/g, '/')
+    const json = typeof atob === 'function'
+      ? atob(b64.padEnd(Math.ceil(b64.length / 4) * 4, '='))
+      : Buffer.from(b64, 'base64').toString('utf8')
+    const sid = JSON.parse(json)?.sid
+    return typeof sid === 'string' && sid ? sid : null
+  } catch (_) {
+    return null
+  }
+}
+
+// Should a session-ending response (401 expired / 403 banned) still end the
+// session the browser holds NOW? A request fires with token A; by the time it
+// fails the person may have signed out and in as someone else (any tab shares
+// localStorage). That late failure describes A's session, so acting on it would
+// wipe the new, perfectly good one. Same session = same token, or two tokens
+// bound to the same `sid` (a sliding renewal swaps the token, not the session).
+export function failureAppliesToCurrentSession(usedToken, currentToken) {
+  if (!usedToken || !currentToken) return false     // nothing held now, or nothing was sent
+  if (usedToken === currentToken) return true
+  const used = tokenSessionId(usedToken)
+  return used !== null && used === tokenSessionId(currentToken)
+}

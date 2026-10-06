@@ -1,4 +1,6 @@
+import { forwardRef } from 'react'
 import { cn } from '../../lib/utils'
+import Spinner from './Spinner'
 
 const variants = {
   primary:   'bg-blue-700 hover:bg-blue-800 text-white',
@@ -13,34 +15,37 @@ const sizes = {
   lg: 'px-6 py-3 text-base',
 }
 
-export default function Button({
+// Shared with <ButtonLink> so a link styled as a button can never drift from a real one.
+export function buttonClasses(variant = 'primary', size = 'md') {
+  return cn(
+    'inline-flex items-center justify-center gap-2 rounded-md font-medium',
+    'transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
+    'disabled:opacity-50 disabled:cursor-not-allowed',
+    variants[variant],
+    sizes[size],
+  )
+}
+
+// forwardRef so callers can focus a button programmatically (e.g. return focus
+// to the control that opened a dialog), like Input/Select/Textarea already allow.
+const Button = forwardRef(function Button({
   children, variant = 'primary', size = 'md',
   className, disabled, loading, type = 'button', onClick, ...props
-}) {
+}, ref) {
   return (
     <button
+      ref={ref}
       type={type}
       onClick={onClick}
       disabled={disabled || loading}
       aria-busy={loading || undefined}
-      className={cn(
-        'inline-flex items-center justify-center gap-2 rounded-md font-medium',
-        'transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-        'disabled:opacity-50 disabled:cursor-not-allowed',
-        variants[variant],
-        sizes[size],
-        className
-      )}
+      className={cn(buttonClasses(variant, size), className)}
       {...props}
     >
-      {loading && (
-        <svg className="animate-spin h-4 w-4" fill="none" viewBox="0 0 24 24" aria-hidden="true">
-          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-          <path className="opacity-75" fill="currentColor"
-            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-        </svg>
-      )}
+      {loading && <Spinner size="sm" tone="current" decorative />}
       {children}
     </button>
   )
-}
+})
+
+export default Button

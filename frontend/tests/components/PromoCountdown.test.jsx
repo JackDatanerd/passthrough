@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, act } from '@testing-library/react'
 import PromoCountdown from '../../src/components/ui/PromoCountdown'
 
 // PromoCountdown.jsx's own comment lists real, previously-shipped issues:
@@ -38,7 +38,7 @@ describe('PromoCountdown', () => {
   it('shows HH:MM:SS for a same-day deadline and counts down', () => {
     render(<PromoCountdown endsAt={new Date(NOW + 3723 * 1000).toISOString()} />)
     expect(screen.getByRole('timer')).toHaveTextContent('01:02:03')
-    vi.advanceTimersByTime(1000)
+    act(() => { vi.advanceTimersByTime(1000) })
     expect(screen.getByRole('timer')).toHaveTextContent('01:02:02')
   })
 

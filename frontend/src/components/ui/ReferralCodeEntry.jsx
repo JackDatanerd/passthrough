@@ -1,4 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import Input from './Input'
+import Button from './Button'
 
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G5): this used to live only
 // inside FixBanner.jsx (checkout), so a visitor with a code heard on a
@@ -15,9 +17,28 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   const [value, setValue] = useState(referralCode || '')
   const [editing, setEditing] = useState(!referralCode)
 
+  // The parent can set the code after mount (a ?ref= link captured late) or
+  // normalise what was typed (trim / casing). Follow it so the field never keeps
+  // showing text the page has since replaced.
+  useEffect(() => {
+    setValue(referralCode || '')
+    if (referralCode) setEditing(false)
+  }, [referralCode])
+
+  // Apply needs a real code: Enter on a blank field used to call onApply('') —
+  // silently wiping an applied code, while the Apply button itself was disabled
+  // for blank. Clearing is now its own explicit action (handleRemove).
   function handleApply() {
-    onApply(value)
+    const code = value.trim()
+    if (!code || disabled) return
+    onApply(code)
     setEditing(false)
+  }
+
+  function handleRemove() {
+    setValue('')
+    onApply('')
+    setEditing(true)
   }
 
   if (referralCode && pricing?.referralApplied && !editing) {
@@ -37,6 +58,11 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
           className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
           change
         </button>
+        {' '}
+        <button type="button" onClick={handleRemove} disabled={disabled}
+          className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
+          remove
+        </button>
       </p>
     )
   }
@@ -52,31 +78,37 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   // implying the code is mistyped.
   const selfReferral = invalid && pricing.selfReferral === true
 
+  const invalidMessage = !invalid ? undefined : selfReferral
+    ? "Partner codes can't be used on your own purchases — clear it to continue at the regular price."
+    : "That code doesn't look right — check it and try again, or leave it blank."
+
   return (
-    <div className="mb-3">
-      {invalid && (
-        <p className="text-sm text-red-600 mb-1">
-          {selfReferral
-            ? "Partner codes can't be used on your own purchases — clear it to continue at the regular price."
-            : "That code doesn't look right — check it and try again, or leave it blank."}
-        </p>
+    <div className="mb-3 flex items-start gap-2 flex-wrap">
+      <Input
+        aria-label="Referral code"
+        placeholder="Have a referral code?"
+        value={value}
+        onChange={e => setValue(e.target.value)}
+        onKeyDown={e => {
+          // isComposing: Enter that merely confirms an IME candidate must not apply the code
+          if (e.key === 'Enter' && !e.nativeEvent?.isComposing) { e.preventDefault(); handleApply() }
+        }}
+        error={invalidMessage}
+        autoCapitalize="characters"
+        autoComplete="off"
+        spellCheck={false}
+        disabled={disabled}
+        wrapperClassName="w-60 max-w-full"
+      />
+      <Button type="button" size="sm" variant="secondary" onClick={handleApply}
+        disabled={!value.trim() || disabled} className="mt-0.5">
+        Apply
+      </Button>
+      {referralCode && (
+        <Button type="button" size="sm" variant="ghost" onClick={handleRemove} disabled={disabled} className="mt-0.5">
+          Remove
+        </Button>
       )}
-      <div className="flex items-center gap-2">
-        <input
-          type="text"
-          value={value}
-          onChange={e => setValue(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && handleApply()}
-          placeholder="Have a referral code?"
-          disabled={disabled}
-          className={`text-sm border rounded-md px-3 py-1.5 w-52 focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:opacity-50 ${invalid ? 'border-red-300' : 'border-gray-300'}`}
-        />
-        <button type="button" onClick={handleApply}
-          disabled={!value.trim() || disabled}
-          className="text-sm font-medium text-blue-700 hover:underline disabled:opacity-40 disabled:no-underline">
-          Apply
-        </button>
-      </div>
     </div>
   )
 }

@@ -161,3 +161,15 @@ describe('CSV export (csvCell / toCsv)', () => {
     expect(toCsv([['a', null, undefined, 3], ['b']])).toBe('a,,,3\r\nb')
   })
 })
+
+// Admin revenue and partner payout totals read as "12345.67" without thousands separators.
+describe('formatMoney / formatCents — thousands grouping', () => {
+  it('groups the integer part', () => {
+    expect(formatCents(123456789)).toBe('$1,234,567.89')
+    expect(formatCents(100000)).toBe('$1,000.00')
+    expect(formatCents(99999)).toBe('$999.99')
+  })
+  it('keeps the sign outside the symbol', () => expect(formatCents(-123456)).toBe('-$1,234.56'))
+  it('groups non-USD amounts and still labels the currency', () => expect(formatCents(123400, 'KES')).toBe('1,234.00 KES'))
+  it('honours decimals:0', () => expect(formatMoney(123400, { decimals: 0 })).toBe('$1,234'))
+})

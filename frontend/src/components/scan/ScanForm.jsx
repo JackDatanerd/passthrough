@@ -9,6 +9,7 @@ import Textarea from '../ui/Textarea'
 import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
+import Alert from '../ui/Alert'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
 // constants file between frontend/backend in this project (same pattern as
@@ -377,11 +378,7 @@ export default function ScanForm() {
         )}
       </div>
 
-      {error && (
-        <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-md px-3 py-2">
-          {error}
-        </p>
-      )}
+      <Alert>{error}</Alert>
 
       <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
         {submitLabel}

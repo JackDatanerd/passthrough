@@ -3,7 +3,7 @@ import { resolveApiBase } from './apiUrl'
 import { normalizeBlobError, shouldRetryRequest } from './errors'
 import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
-  classifyAuthFailure, isProtectedPath,
+  classifyAuthFailure, isProtectedPath, failureAppliesToCurrentSession,
 } from './session'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
@@ -25,8 +25,12 @@ api.interceptors.request.use(config => {
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
   config.__hadToken = !!token
+  // Which token this request actually carried, so a late failure can be matched
+  // against the session that is current when it lands (see endSession's caller).
+  config.__token = token || null
   // Uploads legitimately take long on slow mobile links (5MB @ ~500kbps ≈ 80s);
-  // don't let the default 30s cut them off unless the caller chose a timeout.
+  // don't let the default 30s cut them off unless the caller chose a timeout
+  // (an explicit `timeout` other than 30s, or `__customTimeout: true` for exactly 30s).
   if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.__customTimeout !== true && config.timeout === 30_000)
     config.timeout = 180_000
   return config
@@ -76,7 +80,13 @@ api.interceptors.response.use(
     const code = err.response?.data?.code
     const config = err.config || {}
 
-    const verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
+    let verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
+    // A failure from a request sent under a session that is no longer the current
+    // one (signed out / signed in as someone else meanwhile) says nothing about
+    // the current session — ending it would log the new account out.
+    if (verdict && !failureAppliesToCurrentSession(config.__token, localStorage.getItem(TOKEN_KEY))) {
+      return Promise.reject(err)
+    }
     if (verdict) endSession(verdict)
 
     // A 403 from an admin-gated endpoint (server-side role check failed — see
@@ -95,6 +105,13 @@ api.interceptors.response.use(
     })
     if (decision.retry && !verdict) {
       config.__retried = true
+      // The first attempt's Authorization header is still on `config`; drop it so
+      // the request interceptor re-reads the CURRENT token (or sends none if the
+      // person signed out during the delay) instead of replaying a stale one.
+      if (config.headers) {
+        if (typeof config.headers.delete === 'function') config.headers.delete('Authorization')
+        else delete config.headers.Authorization
+      }
       await sleep(decision.delayMs)
       return api.request(config)
     }

@@ -9,6 +9,7 @@ import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import Alert from '../components/ui/Alert'
 
 export default function Login() {
   const navigate        = useNavigate()
@@ -64,14 +65,10 @@ export default function Login() {
           <h1 className="text-2xl font-bold text-gray-900 mb-6">Sign in</h1>
 
           {expired && (
-            <div className="mb-4 rounded-md bg-amber-50 border border-amber-200 px-3 py-2 text-sm text-amber-800">
-              Your session expired. Please sign in again.
-            </div>
+            <Alert variant="warning" className="mb-4">Your session expired. Please sign in again.</Alert>
           )}
           {banned && (
-            <div className="mb-4 rounded-md bg-red-50 border border-red-200 px-3 py-2 text-sm text-red-800">
-              Your account has been suspended.
-            </div>
+            <Alert variant="error" className="mb-4">Your account has been suspended.</Alert>
           )}
 
           <Form onSubmit={handleSubmit} className="flex flex-col gap-4">

@@ -9,10 +9,13 @@ import Form from '../../components/ui/Form'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Pagination from '../../components/ui/Pagination'
+import Textarea from '../../components/ui/Textarea'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel } from '../../lib/roleCategories'
+import EmptyState from '../../components/ui/EmptyState'
+import Checkbox from '../../components/ui/Checkbox'
 
 const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', ARCHIVED: 'gray' }
 const STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
@@ -358,7 +361,7 @@ export default function AdminLeads() {
 
       <div className="flex gap-3 flex-wrap items-end">
         <Input label="Search" placeholder="Name, company, email, role, note, or page code" value={searchInput}
-          onChange={e => setSearchInput(e.target.value)} className="w-64" />
+          onChange={e => setSearchInput(e.target.value)} wrapperClassName="w-64" />
         <Select id="lead-field" label="Field" value={field} onChange={e => setParams({ field: e.target.value })}>
           <option value="">All fields</option>
           <option value="none">Uncategorised</option>
@@ -388,7 +391,7 @@ export default function AdminLeads() {
       {selected.size > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
           <span className="font-medium text-blue-900">{selected.size} selected</span>
-          <Select aria-label="Set status for selected leads" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} className="w-auto">
+          <Select aria-label="Set status for selected leads" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} wrapperClassName="w-fit">
             {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </Select>
           <Button size="sm" variant="secondary" loading={bulkBusy}
@@ -402,14 +405,14 @@ export default function AdminLeads() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : leads.length === 0 ? (
-        <p className="text-sm text-gray-500">No leads found.</p>
+        <EmptyState>No leads found.</EmptyState>
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
                 <th className="px-4 py-3">
-                  <input type="checkbox" aria-label="Select all leads on this page" checked={allSelected} onChange={toggleAll} />
+                  <Checkbox aria-label="Select all leads on this page" checked={allSelected} onChange={toggleAll} />
                 </th>
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Company</th>
@@ -428,7 +431,7 @@ export default function AdminLeads() {
               {leads.map(l => (
                 <tr key={l.id}>
                   <td className="px-4 py-3">
-                    <input type="checkbox" aria-label={`Select ${l.email}`} checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} />
+                    <Checkbox aria-label={`Select ${l.email}`} checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} />
                   </td>
                   <td className="px-4 py-3 font-medium text-gray-900">{l.name}</td>
                   <td className="px-4 py-3 text-gray-600">{l.company}</td>
@@ -476,7 +479,7 @@ export default function AdminLeads() {
                         disabled={busyId === l.id}
                         onChange={e => changeStatus(l, e.target.value)}
                         size="sm"
-                        className="w-auto"
+                        wrapperClassName="w-fit"
                       >
                         {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
                       </Select>
@@ -669,11 +672,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         </Select>
         <Input label="Role title (optional)" value={form.roleTitle} onChange={set('roleTitle')} />
         {mode === 'add' && (
-          <div className="flex flex-col gap-1">
-            <label htmlFor="lead-form-notes" className="text-sm font-medium text-gray-700">Notes (optional)</label>
-            <textarea id="lead-form-notes" value={form.notes} onChange={set('notes')} rows={3} maxLength={2000}
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm" />
-          </div>
+          <Textarea id="lead-form-notes" label="Notes (optional)" value={form.notes} onChange={set('notes')} rows={3} maxLength={2000} />
         )}
         {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
         {needsOverride && (

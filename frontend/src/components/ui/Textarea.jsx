@@ -2,7 +2,7 @@ import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
 
 // See Input.jsx for what changed and why (useId, forwardRef, aria wiring).
-const Textarea = forwardRef(function Textarea({ label, error, hint, className, id, rows = 5, ...props }, ref) {
+const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
@@ -11,8 +11,10 @@ const Textarea = forwardRef(function Textarea({ label, error, hint, className, i
   const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
+  // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to
+  // its own `w-full`, and Tailwind emits w-full last, so it silently wins.
   return (
-    <div className="flex flex-col gap-1">
+    <div className={cn('flex flex-col gap-1', wrapperClassName)}>
       {label && (
         <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
           {label}

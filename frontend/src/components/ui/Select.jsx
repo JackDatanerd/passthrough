@@ -30,7 +30,7 @@ const sizes = {
   sm: 'px-2 py-1 text-xs',
 }
 
-const Select = forwardRef(function Select({ label, error, hint, className, id, size = 'md', children, ...props }, ref) {
+const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, ...props }, ref) {
   const autoId = useId()
   const selectId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
@@ -38,8 +38,10 @@ const Select = forwardRef(function Select({ label, error, hint, className, id, s
   // (it only renders when `hint && !error`), a dangling ARIA reference.
   const describedBy = [error && `${selectId}-error`, hint && !error && `${selectId}-hint`].filter(Boolean).join(' ') || undefined
 
+  // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to
+  // its own `w-full`, and Tailwind emits w-full last, so it silently wins.
   return (
-    <div className="flex flex-col gap-1">
+    <div className={cn('flex flex-col gap-1', wrapperClassName)}>
       {label && (
         <label htmlFor={selectId} className="text-sm font-medium text-gray-700">
           {label}

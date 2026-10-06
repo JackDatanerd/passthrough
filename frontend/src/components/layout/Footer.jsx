@@ -5,7 +5,7 @@ export default function Footer() {
     <footer className="bg-gray-50 border-t border-gray-200 mt-auto">
       <div className="max-w-5xl mx-auto px-4 py-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-sm text-gray-500">
         <p>© {new Date().getFullYear()} Passthrough. ATS Resume Scanner.</p>
-        <div className="flex items-center gap-4">
+        <div className="flex flex-wrap items-center justify-center sm:justify-end gap-x-4 gap-y-2">
           <Link to="/pricing" className="hover:text-gray-700 transition-colors">Pricing</Link>
           <Link to="/#employers" className="hover:text-gray-700 transition-colors">For employers</Link>
           <Link to="/check" className="hover:text-gray-700 transition-colors">Check a resume</Link>

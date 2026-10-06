@@ -26,6 +26,9 @@ function getFileInput(container) {
   return container.querySelector('input[type="file"]')
 }
 
+// `hover:border-blue-400` is always on the element; only the bare class means "drag highlight".
+const HIGHLIGHT = /(^|\s)border-blue-400(\s|$)/
+
 describe('FileUpload', () => {
   it('shows the empty-state prompt, then the file name once one is selected', async () => {
     const onFile = vi.fn()
@@ -54,7 +57,9 @@ describe('FileUpload', () => {
   it('rejects a disallowed extension without calling onFile', async () => {
     const onFile = vi.fn()
     const { container } = render(<FileUpload onFile={onFile} />)
-    const user = userEvent.setup()
+    // applyAccept:false — the real <input accept> would stop a browser offering .txt, but
+    // drag-and-drop (and some pickers) can still hand one over; this tests OUR validation.
+    const user = userEvent.setup({ applyAccept: false })
     await user.upload(getFileInput(container), pdf('resume.txt', { type: 'text/plain' }))
     expect(onFile).not.toHaveBeenCalled()
     expect(screen.getByRole('alert')).toHaveTextContent('Only PDF and DOCX files are accepted.')
@@ -104,19 +109,19 @@ describe('FileUpload', () => {
     const child = dropzone.querySelector('svg')
 
     fireEvent.dragEnter(dropzone)
-    expect(dropzone.className).toMatch(/border-blue-400/)
+    expect(dropzone.className).toMatch(HIGHLIGHT)
     fireEvent.dragEnter(child) // bubbles to dropzone's listener too — depth now 2
     fireEvent.dragLeave(child) // depth back to 1 — must still be highlighted
-    expect(dropzone.className).toMatch(/border-blue-400/)
+    expect(dropzone.className).toMatch(HIGHLIGHT)
     fireEvent.dragLeave(dropzone) // depth 0 — now it should clear
-    expect(dropzone.className).not.toMatch(/border-blue-400/)
+    expect(dropzone.className).not.toMatch(HIGHLIGHT)
   })
 
   it('a disabled dropzone does not light up on drag-over', () => {
     render(<FileUpload onFile={() => {}} disabled />)
     const dropzone = screen.getByRole('button')
     fireEvent.dragEnter(dropzone)
-    expect(dropzone.className).not.toMatch(/border-blue-400/)
+    expect(dropzone.className).not.toMatch(HIGHLIGHT)
     expect(dropzone).toHaveAttribute('aria-disabled', 'true')
     expect(dropzone).toHaveAttribute('tabIndex', '-1')
   })

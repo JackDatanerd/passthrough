@@ -6,6 +6,7 @@ import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import EmptyState from '../components/ui/EmptyState'
 
 // AUDIT FIX (bug): this local formatter put the `$` before the number's own
 // negative sign — e.g. "$-5.00" — instead of "-$5.00". Harmless while every
@@ -404,7 +405,7 @@ export default function PartnerDashboard() {
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
             {data.payouts.length === 0 ? (
-              <p className="text-sm text-gray-500">No payouts yet.</p>
+              <EmptyState>No payouts yet.</EmptyState>
             ) : (
               <ul className="flex flex-col gap-2">
                 {data.payouts.map(p => (

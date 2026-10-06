@@ -8,6 +8,7 @@ import Button from '../../components/ui/Button'
 import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatCents } from '../../lib/utils'
+import Checkbox from '../../components/ui/Checkbox'
 
 // FEATURE GAP CLOSED (Payments & Pricing re-audit): GET /api/payments/history
 // (payments.controller.js's getPaymentHistory) has existed, fully built and
@@ -130,10 +131,7 @@ export default function PaymentHistory() {
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-4 flex-wrap">
           <h1 className="text-xl font-bold text-gray-900">Payment history</h1>
-          <label className="flex items-center gap-2 text-sm text-gray-500 cursor-pointer">
-            <input type="checkbox" checked={showAbandoned} onChange={toggleAbandoned} />
-            Show unfinished checkouts
-          </label>
+          <Checkbox wrapperClassName="text-gray-500" label="Show unfinished checkouts" checked={showAbandoned} onChange={toggleAbandoned} />
         </div>
 
         {loading && payments.length === 0 ? (

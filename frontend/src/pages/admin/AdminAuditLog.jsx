@@ -6,6 +6,7 @@ import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDateTime } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
 
 const PAGE_SIZE = 20
 
@@ -59,11 +60,12 @@ export default function AdminAuditLog() {
   useEffect(() => { load() }, [load])
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Audit log</h1>
-        <Select aria-label="Filter audit log by target type" size="sm" className="w-auto"
+        <Select aria-label="Filter audit log by target type" size="sm" wrapperClassName="w-fit"
           value={targetType} onChange={e => { setPage(1); setTargetType(e.target.value) }}>
           <option value="">All types</option>
           {TARGET_TYPES.map(t => <option key={t} value={t}>{t}</option>)}

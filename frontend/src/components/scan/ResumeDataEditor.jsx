@@ -3,6 +3,7 @@ import ResumeFieldsForm from './ResumeFieldsForm'
 import api, { getErrorMessage } from '../../lib/api'
 import { downloadBlob } from '../../lib/utils'
 import Button from '../ui/Button'
+import Alert from '../ui/Alert'
 
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
 // this component closes the single biggest gap found in that audit. Before
@@ -94,9 +95,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
         <div className="mt-4 flex flex-col gap-5">
           <ResumeFieldsForm draft={draft} setDraft={setDraft} />
 
-          {saveError && (
-            <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{saveError}</p>
-          )}
+          <Alert>{saveError}</Alert>
           <div className="flex gap-3">
             <Button onClick={handleSave} loading={saving}>Save changes & rescore</Button>
             <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>

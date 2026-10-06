@@ -18,7 +18,14 @@ describe('fmtPrice', () => {
     expect(fmtPrice(5)).toBe('$0.05')
   })
   it('non-USD currencies get a plain number + code, with the same cents rule', () => {
-    expect(fmtPrice(150000, 'KES')).toBe('1500 KES')
-    expect(fmtPrice(150050, 'KES')).toBe('1500.50 KES')
+    expect(fmtPrice(150000, 'KES')).toBe('1,500 KES')
+    expect(fmtPrice(150050, 'KES')).toBe('1,500.50 KES')
+  })
+  it('groups thousands exactly like formatCents does elsewhere', () => {
+    expect(fmtPrice(123456700)).toBe('$1,234,567')
+    expect(fmtPrice(123456789)).toBe('$1,234,567.89')
+  })
+  it('an unknown amount is a dash, never "$NaN"', () => {
+    for (const v of [undefined, null, NaN]) expect(fmtPrice(v)).toBe('—')
   })
 })

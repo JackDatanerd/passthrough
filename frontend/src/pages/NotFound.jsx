@@ -1,7 +1,7 @@
-import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import usePageTitle from '../hooks/usePageTitle'
+import ButtonLink from '../components/ui/ButtonLink'
 
 // Unknown URLs used to be silently redirected to the homepage, which hid broken
 // links and told visitors nothing. (A SPA can't send a real 404 status, so this
@@ -16,9 +16,9 @@ export default function NotFound() {
           <p className="text-sm font-medium text-blue-700 mb-2">404</p>
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Page not found</h1>
           <p className="text-sm text-gray-600 mb-6">That link doesn't lead anywhere. It may have been mistyped or moved.</p>
-          <Link to="/" className="inline-block bg-blue-700 hover:bg-blue-800 text-white text-sm font-medium px-5 py-2.5 rounded-md transition-colors">
+          <ButtonLink to="/" size="lg">
             Back to home
-          </Link>
+          </ButtonLink>
         </div>
       </main>
       <Footer />

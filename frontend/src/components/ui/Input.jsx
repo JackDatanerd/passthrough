@@ -10,7 +10,7 @@ import { cn } from '../../lib/utils'
 //  - `error` is wired to aria-invalid / aria-describedby and announced.
 //  - an unlabeled input falls back to aria-label = placeholder, so it still has
 //    an accessible name (several forms used placeholder-only fields).
-const Input = forwardRef(function Input({ label, error, hint, className, id, ...props }, ref) {
+const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
@@ -22,8 +22,10 @@ const Input = forwardRef(function Input({ label, error, hint, className, id, ...
   const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
+  // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to
+  // its own `w-full`, and Tailwind emits w-full last, so it silently wins.
   return (
-    <div className="flex flex-col gap-1">
+    <div className={cn('flex flex-col gap-1', wrapperClassName)}>
       {label && (
         <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
           {label}

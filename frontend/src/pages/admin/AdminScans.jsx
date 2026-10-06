@@ -7,6 +7,8 @@ import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, statusLabel, scoreColor } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
+import EmptyState from '../../components/ui/EmptyState'
 
 const PAGE_SIZE = 25
 const STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
@@ -43,6 +45,8 @@ export default function AdminScans() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   // SECTION 7 AUDIT (feature gap G7-2): the public verification page had no
   // admin off switch — abuse or a takedown request had no lever here at all.
   async function handleSetVerification(scan, action) {
@@ -64,7 +68,7 @@ export default function AdminScans() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Scans</h1>
 
-      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
         <option value="">All</option>
         {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
       </Select>
@@ -72,7 +76,7 @@ export default function AdminScans() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : scans.length === 0 ? (
-        <p className="text-sm text-gray-500">No scans found.</p>
+        <EmptyState>No scans found.</EmptyState>
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">

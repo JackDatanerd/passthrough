@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 import { getErrorMessage } from '../../lib/api'
@@ -16,7 +16,36 @@ export default function TermsUpdateBanner() {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
-  if (!user || user.termsCurrent !== false) return null
+  const visible = !!user && user.termsCurrent === false
+  const bannerRef = useRef(null)
+
+  // The banner is fixed to the bottom edge, so it used to sit on top of the last
+  // ~70px (all of the footer, on a phone) of every page until accepted. Reserve
+  // its real height as bottom padding on <body>, and publish it as --bottom-inset
+  // so the toast stack can clear it too.
+  useEffect(() => {
+    if (!visible) return
+    const el = bannerRef.current
+    if (!el) return
+    const root = document.documentElement
+    const apply = () => {
+      const h = Math.ceil(el.getBoundingClientRect().height)
+      document.body.style.paddingBottom = `${h}px`
+      root.style.setProperty('--bottom-inset', `${h}px`)
+    }
+    apply()
+    let ro
+    if (typeof ResizeObserver !== 'undefined') { ro = new ResizeObserver(apply); ro.observe(el) }
+    window.addEventListener('resize', apply)
+    return () => {
+      ro?.disconnect()
+      window.removeEventListener('resize', apply)
+      document.body.style.paddingBottom = ''
+      root.style.removeProperty('--bottom-inset')
+    }
+  }, [visible])
+
+  if (!visible) return null
 
   async function handleAccept() {
     setLoading(true); setError('')
@@ -30,7 +59,7 @@ export default function TermsUpdateBanner() {
   }
 
   return (
-    <div role="region" aria-label="Updated terms"
+    <div ref={bannerRef} role="region" aria-label="Updated terms"
       className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-gray-200 shadow-lg">
       <div className="max-w-3xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <p className="text-sm text-gray-700">

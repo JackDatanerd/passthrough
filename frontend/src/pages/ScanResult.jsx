@@ -21,6 +21,8 @@ import Button from '../components/ui/Button'
 import { statusLabel, formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken } from '../lib/anonScans'
+import Alert from '../components/ui/Alert'
+import Checkbox from '../components/ui/Checkbox'
 
 // These used to be a single `TERMINAL` array serving two different jobs at
 // once: "when should we stop polling" and "which statuses render the
@@ -703,11 +705,7 @@ export default function ScanResult() {
                     )}
                     {scan.fixRetryCount < MAX_FIX_RETRIES ? (
                       <div className="mb-3">
-                        {retryError && (
-                          <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-2">
-                            {retryError}
-                          </p>
-                        )}
+                        <Alert className="mb-2">{retryError}</Alert>
                         <Button onClick={handleRetryFix} loading={retryLoading} variant="secondary">
                           Try Again — Free ({MAX_FIX_RETRIES - scan.fixRetryCount} left)
                         </Button>
@@ -757,11 +755,7 @@ export default function ScanResult() {
                     )}
                   </p>
                 )}
-                {dlError && (
-                  <p className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2 mb-3">
-                    {dlError}
-                  </p>
-                )}
+                <Alert className="mb-3">{dlError}</Alert>
                 <div className="flex flex-col sm:flex-row gap-3">
                   <Button onClick={() => handleDownload('ats')} variant="secondary">
                     Download .docx (ATS)
@@ -798,38 +792,14 @@ export default function ScanResult() {
                       <p className="text-xs text-red-600 mb-2">{visibilityError}</p>
                     )}
                     <div className="flex flex-col gap-2">
-                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={!!scan.verifyExposeDocx}
-                          onChange={e => handleToggleExposure('verifyExposeDocx', 'exposeDocx', e.target.checked)}
-                          className="rounded border-gray-300"
-                        />
-                        Allow public .docx download
-                      </label>
-                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={!!scan.verifyExposePdf}
-                          onChange={e => handleToggleExposure('verifyExposePdf', 'exposePdf', e.target.checked)}
-                          className="rounded border-gray-300"
-                        />
-                        Allow public PDF download
-                      </label>
+                      <Checkbox label="Allow public .docx download" checked={!!scan.verifyExposeDocx} onChange={e => handleToggleExposure('verifyExposeDocx', 'exposeDocx', e.target.checked)} />
+                      <Checkbox label="Allow public PDF download" checked={!!scan.verifyExposePdf} onChange={e => handleToggleExposure('verifyExposePdf', 'exposePdf', e.target.checked)} />
                       {/* SECTION 7 AUDIT (feature gap): hide the candidate's
                           first name from the public page — useful for someone
                           sharing the link more widely than a direct employer
                           submission (e.g. a portfolio) who'd rather not have
                           their name attached to the score itself. */}
-                      <label className="flex items-center gap-2 text-sm text-gray-700 cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={!!scan.verifyHideName}
-                          onChange={e => handleToggleExposure('verifyHideName', 'hideName', e.target.checked)}
-                          className="rounded border-gray-300"
-                        />
-                        Hide my name on the public page
-                      </label>
+                      <Checkbox label="Hide my name on the public page" checked={!!scan.verifyHideName} onChange={e => handleToggleExposure('verifyHideName', 'hideName', e.target.checked)} />
                       {/* ROUND-3 AUDIT FIX (bug): this only hides the first name shown ON the page.
                           A downloadable .docx/PDF carries the full name, email and phone, so hiding
                           the name while allowing either download hid nothing that matters. */}

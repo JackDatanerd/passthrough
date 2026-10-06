@@ -52,7 +52,9 @@ export default function FileUpload({ onFile, value, accept = '.pdf,.docx', maxMB
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled || undefined}
         aria-label={file ? `Selected file ${file.name}. Press to replace.` : 'Upload your resume (PDF or DOCX)'}
-        onClick={openPicker}
+        // input.click() bubbles back up to this div; ignore it rather than lean on the
+        // browser's re-entrancy guard to stop a second picker request.
+        onClick={e => { if (e.target === inputRef.current) return; openPicker() }}
         onKeyDown={e => {
           if ((e.key === 'Enter' || e.key === ' ') && e.target === e.currentTarget) { e.preventDefault(); openPicker() }
         }}

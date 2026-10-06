@@ -65,10 +65,14 @@ app.use('*', async (c, next) => {
   const corsMiddleware = cors({
     origin:      c.env.FRONTEND_URL,
     credentials: true,
-    // Readable by the frontend: how many parts the account's data export has
-    // (GET /api/profile/export) — a cross-origin response hides custom
-    // headers unless they are exposed here.
-    exposeHeaders: ['X-Export-Parts'],
+    // Readable by the frontend — a cross-origin response hides every header outside
+    // the CORS-safelisted set unless it is exposed here:
+    //  - X-Export-Parts: how many parts the account's data export has (GET /api/profile/export)
+    //  - Retry-After: sent on every 429/503. The client's one automatic retry
+    //    (lib/api.js) and its "wait N seconds" copy both key off it, and without
+    //    this they never see it in production (API and site are different origins).
+    //  - Content-Disposition: the server's chosen filename for downloads.
+    exposeHeaders: ['X-Export-Parts', 'Retry-After', 'Content-Disposition'],
   })
   return corsMiddleware(c, next)
 })

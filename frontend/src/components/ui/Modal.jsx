@@ -89,6 +89,11 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       if (items.length === 0) { e.preventDefault(); dialog.focus(); return }
       const first = items[0], last = items[items.length - 1]
       const active = document.activeElement
+      // Focus can end up OUTSIDE the dialog (on <body>) — e.g. after the backdrop
+      // is clicked while the dialog is not dismissible, or when a focused button
+      // is disabled mid-request. Only wrapping at the edges let Tab walk straight
+      // into the page behind the overlay from there, so pull it back in first.
+      if (!dialog.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return }
       if (e.shiftKey && (active === first || active === dialog)) { e.preventDefault(); last.focus() }
       else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus() }
     }
@@ -123,6 +128,8 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       <div
         className="absolute inset-0 bg-black/50"
         aria-hidden="true"
+        // Stops a click on the backdrop from blurring the dialog to <body>.
+        onMouseDown={e => e.preventDefault()}
         onClick={() => { if (dismissible) onClose?.() }}
       />
       <div

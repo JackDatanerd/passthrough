@@ -114,7 +114,9 @@ describe('Modal', () => {
         <input placeholder="two" />
       </Modal>
     )
-    const first = screen.getByPlaceholderText('one')
+    // The header's Close button precedes the body in the DOM, so it is the FIRST
+    // focusable element — that is where Tab wraps to, and Shift+Tab wraps back from.
+    const first = screen.getByRole('button', { name: 'Close' })
     const last = screen.getByPlaceholderText('two')
     last.focus()
     await user.tab()

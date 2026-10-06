@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
-import { render, screen, act } from '@testing-library/react'
+import { render, screen, act, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ToastProvider, useToast } from '../../src/components/ui/Toast'
 
@@ -53,8 +53,8 @@ describe('Toast', () => {
 
   it('auto-dismisses after its duration, and duration:0 never auto-dismisses', () => {
     const toast = setup()
-    act(() => { toast.show({ message: 'Goes away', duration: 1000 }) })
-    act(() => { toast.show({ message: 'Stays', duration: 0 }) })
+    act(() => { toast({ message: 'Goes away', duration: 1000 }) })
+    act(() => { toast({ message: 'Stays', duration: 0 }) })
     expect(screen.getByText('Goes away')).toBeInTheDocument()
 
     act(() => { vi.advanceTimersByTime(1000) })
@@ -66,10 +66,10 @@ describe('Toast', () => {
   })
 
   it('the X button dismisses immediately and cancels that toast\'s own timer', async () => {
-    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    // fireEvent, not userEvent: user-event's internal waits never resolve under fake timers.
     const toast = setup()
     act(() => { toast.success('Dismiss me') })
-    await user.click(screen.getByLabelText('Dismiss notification'))
+    fireEvent.click(screen.getByLabelText('Dismiss notification'))
     expect(screen.queryByText('Dismiss me')).toBeNull()
 
     // If the timer wasn't cleared, advancing past the default 4000ms duration
@@ -101,7 +101,7 @@ describe('Toast', () => {
   it('dismiss(id) removes a specific toast by id', () => {
     const toast = setup()
     let id
-    act(() => { id = toast.show({ message: 'Target', duration: 0 }) })
+    act(() => { id = toast({ message: 'Target', duration: 0 }) })
     act(() => { toast.info('Other', { duration: 0 }) })
     act(() => { toast.dismiss(id) })
     expect(screen.queryByText('Target')).toBeNull()

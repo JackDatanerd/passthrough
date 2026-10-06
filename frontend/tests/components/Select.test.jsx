@@ -14,7 +14,10 @@ import Select from '../../src/components/ui/Select'
 describe('Select', () => {
   it('renders its option children and reports the selected value via onChange', async () => {
     const user = userEvent.setup()
-    const onChange = vi.fn()
+    // Read the value INSIDE the handler: the select is controlled, so React puts it back to
+    // "NEW" as soon as the event finishes and a stored event's target would report that.
+    const seen = []
+    const onChange = vi.fn(e => seen.push(e.target.value))
     render(
       <Select label="Status" value="NEW" onChange={onChange}>
         <option value="NEW">New</option>
@@ -23,7 +26,7 @@ describe('Select', () => {
     )
     await user.selectOptions(screen.getByRole('combobox'), 'DONE')
     expect(onChange).toHaveBeenCalled()
-    expect(onChange.mock.calls[0][0].target.value).toBe('DONE')
+    expect(seen[0]).toBe('DONE')
   })
 
   it('size="md" (the default) uses the normal padding/text size; size="sm" uses the compact one', () => {

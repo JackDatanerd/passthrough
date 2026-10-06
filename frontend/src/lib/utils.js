@@ -35,7 +35,10 @@ export function formatDateTime(dateStr) {
 export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
   if (cents === null || cents === undefined || cents === '' || !Number.isFinite(Number(cents))) return '—'
   const value = Number(cents) / 100
-  const abs = Math.abs(value).toFixed(decimals)
+  // Grouped ("12,345.67"): bare "12345.67" is hard to read on admin revenue and
+  // partner payout totals. Fixed 'en-US' so the separators match the rest of
+  // the UI's en-US dates regardless of the browser's locale.
+  const abs = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   const symbol = currency === 'USD' ? '$' : ''
   const suffix = currency === 'USD' ? '' : ` ${currency}`
   return `${value < 0 ? '-' : ''}${symbol}${abs}${suffix}`

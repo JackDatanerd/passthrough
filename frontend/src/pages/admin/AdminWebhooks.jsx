@@ -5,10 +5,13 @@ import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
+import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
+import EmptyState from '../../components/ui/EmptyState'
 
 // SECTION 8 AUDIT (feature gap): webhook_events is the durable inbox every
 // verified Paystack event lands in — an audit trail and the dedupe record — but
@@ -94,27 +97,23 @@ export default function AdminWebhooks() {
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Webhook events</h1>
 
       <div className="flex flex-wrap items-end gap-4">
-        <Select id="wh-status" label="Status" value={status} onChange={e => setStatus(e.target.value)} className="w-56">
+        <Select id="wh-status" label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
           <option value="">All</option>
           <option value="ATTENTION">Needs attention</option>
           {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
         </Select>
         <form className="flex flex-wrap items-end gap-3" onSubmit={e => { e.preventDefault(); applyFilters({ reference: refDraft.trim(), type: typeDraft.trim() }) }}>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="wh-ref" className="text-sm font-medium text-gray-700">Payment reference</label>
-            <input id="wh-ref" value={refDraft} onChange={e => setRefDraft(e.target.value)} placeholder="contains…"
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm w-56 font-mono" />
-          </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor="wh-type" className="text-sm font-medium text-gray-700">Event type</label>
-            <input id="wh-type" value={typeDraft} onChange={e => setTypeDraft(e.target.value)} placeholder="e.g. refund.processed"
-              className="rounded-md border border-gray-300 px-3 py-2 text-sm w-56 font-mono" />
-          </div>
+          <Input id="wh-ref" label="Payment reference" value={refDraft} onChange={e => setRefDraft(e.target.value)}
+            placeholder="contains…" wrapperClassName="w-56" className="font-mono" />
+          <Input id="wh-type" label="Event type" value={typeDraft} onChange={e => setTypeDraft(e.target.value)}
+            placeholder="e.g. refund.processed" wrapperClassName="w-56" className="font-mono" />
           <Button type="submit" size="sm" variant="secondary">Search</Button>
         </form>
       </div>
@@ -130,7 +129,7 @@ export default function AdminWebhooks() {
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : events.length === 0 ? (
-        <p className="text-sm text-gray-500">No events found.</p>
+        <EmptyState>No events found.</EmptyState>
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">

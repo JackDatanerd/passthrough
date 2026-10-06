@@ -6,6 +6,7 @@ import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
+import usePageClamp from '../../hooks/usePageClamp'
 
 const PAGE_SIZE = 15
 
@@ -33,11 +34,12 @@ function EmailLogsSection() {
   useEffect(() => { load() }, [load])
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   return (
     <div>
       <div className="flex items-center justify-between mb-3">
         <h2 className="font-semibold text-gray-900">Email delivery log</h2>
-        <Select aria-label="Filter email delivery log by status" size="sm" className="w-auto"
+        <Select aria-label="Filter email delivery log by status" size="sm" wrapperClassName="w-fit"
           value={status} onChange={e => { setPage(1); setStatus(e.target.value) }}>
           <option value="">All statuses</option>
           <option value="sent">Sent</option>
@@ -94,6 +96,7 @@ function AlertsSection() {
   useEffect(() => { load() }, [load])
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
+  usePageClamp({ page, total, pageSize: PAGE_SIZE, setPage, loading })
   return (
     <div>
       <h2 className="font-semibold text-gray-900 mb-3">Alert history</h2>

@@ -1,0 +1,48 @@
+Shared frontend (Section 11) — round 2: close G1-G4, fix B1-B7 (+ two bugs found while fixing)
+Base: 56a2007 (webhooks: close G1, fix B1-B7)
+
+FEATURE GAPS CLOSED
+G1  Shared pagination clamp. lib/pagination.js (totalPagesFor, clampPage) + hooks/usePageClamp.js,
+    wired into AdminUsers, AdminScans, AdminPayments, AdminWebhooks, AdminAuditLog and both lists in
+    AdminSystemHealth. A list that shrinks under the person (ban the only user on the last page of a
+    filtered list) no longer strands them on an empty page with no Pagination controls.
+G2  Missing shared components. New: Alert (replaces 9 hand-rolled error boxes, correct live-region
+    role), EmptyState (8 pages), Checkbox (6 sites), ButtonLink (NotFound). Button is now a forwardRef
+    and uses the shared Spinner instead of a duplicated SVG (Spinner gains tone="current"/decorative).
+    ReferralCodeEntry now uses the shared Input and Button. AdminWebhooks filter inputs -> Input,
+    AdminLeads add-form notes -> Textarea.
+G3  formatMoney/formatCents group thousands ($1,234,567.89). usePricing's fmtPrice (a second copy of the
+    formatter) now delegates to formatMoney so the two can never disagree.
+G4  CORS exposes Retry-After and Content-Disposition (was only X-Export-Parts). Cross-origin, the
+    browser hid Retry-After, so the 429 auto-retry in lib/api.js and its wait copy never saw it.
+
+BUGS FIXED
+B1  Modal: Tab from <body> (after a backdrop click while not dismissible, or a focused button disabled
+    mid-request) walked into the page behind the overlay. Focus is now pulled back in; backdrop
+    mousedown no longer blurs the dialog; ConfirmDialog starts on Cancel (Confirm if non-destructive)
+    instead of the header X.
+B2  Footer: seven links in a no-wrap row overflowed phone widths on all 19 pages that render it. Wraps.
+B3  TermsUpdateBanner covered the footer/bottom content until accepted, and toasts covered its button.
+    It reserves its own height as body padding and publishes --bottom-inset; the toast stack clears it.
+B4  api.js: a late 401/403 from a request sent under an OLD session ended the NEW one (sign out and in
+    as someone else while a request is in flight). The request now remembers which token it carried;
+    a failure only ends the session if it is still the current one (same token, or same `sid`).
+    The automatic GET retry also dropped its stale Authorization header, so it re-reads the current token.
+B5  ReferralCodeEntry: Enter on a blank field silently cleared an applied code (Apply was disabled for
+    blank, Enter was not). Clearing is now an explicit "remove"/"Remove". Also: accessible name, trimmed
+    code, IME-safe Enter, follows the parent when it changes the code.
+B6  api.js: the __customTimeout opt-out was documented but nothing could discover it; comment now states
+    both ways to opt out of the 180s upload timeout.
+B7  Admin lists: out-of-range page after the list shrank (see G1). Traced into the other five lists.
+Found while fixing:
+B8  Nine call sites passed width classes (w-56, w-64, w-auto) in `className` of Input/Select next to the
+    component's own `w-full`; Tailwind emits .w-full AFTER them, so every one was silently ignored.
+    Input/Select/Textarea now take `wrapperClassName`; the nine sites use it.
+B9  FileUpload: input.click() bubbled back to the dropzone and requested the picker twice.
+
+TESTS
+New: pagination, usePageClamp, Alert, SharedFrontendRegressions, SharedComponents.round2 (incl. a static
+guard against dead width overrides), AdminUsers.pageClamp, cors.exposeHeaders, session/api/utils/fmtPrice cases.
+Fixed 10 tests that were already failing on the base commit (stale API usage / jsdom quirks):
+FileUpload x4, Modal, PromoCountdown, Select, Toast x3.
+Result: backend 2471 passed; frontend 433 passed; `vite build` OK.

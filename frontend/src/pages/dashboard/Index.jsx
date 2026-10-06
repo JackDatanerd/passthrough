@@ -15,6 +15,7 @@ import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD } from '../../lib/scoreThreshol
 import { createPoller } from '../../lib/poller'
 import { describeQuota } from '../../lib/quota'
 import { isLive, canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
+import Alert from '../../components/ui/Alert'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
 // .js's SCAN_STATUSES allowlist, for the filter dropdown below.
@@ -311,7 +312,7 @@ export default function DashboardIndex() {
         {(total > 0 || hasFilters) && (
           <div className="flex gap-3 flex-wrap items-end">
             <Input placeholder="Search by job, filename or name" value={searchInput}
-              onChange={e => setSearchInput(e.target.value)} className="w-64" />
+              onChange={e => setSearchInput(e.target.value)} wrapperClassName="w-64" />
             <Select id="scan-status-filter" label="Status" value={status} onChange={e => setStatus(e.target.value)}>
               <option value="">All</option>
               {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
@@ -319,9 +320,7 @@ export default function DashboardIndex() {
           </div>
         )}
 
-        {deleteError && (
-          <div role="alert" className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-4 py-3">{deleteError}</div>
-        )}
+        <Alert>{deleteError}</Alert>
 
         {loading && (
           <div className="flex justify-center py-12">

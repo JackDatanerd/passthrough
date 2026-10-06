@@ -3,6 +3,7 @@ import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
 import Spinner from '../ui/Spinner'
 import ResumeFieldsForm from '../scan/ResumeFieldsForm'
+import Alert from '../ui/Alert'
 
 // FEATURE GAP CLOSED (Profile & Dashboard round 5): a saved profile could be viewed only as
 // counts and replaced only by saving a different scan, so a wrong job date or a stale skills
@@ -51,9 +52,7 @@ export default function SavedProfileEditor({ onSaved, onClose }) {
   return (
     <div className="mt-4 flex flex-col gap-5">
       <ResumeFieldsForm draft={draft} setDraft={setDraft} />
-      {saveError && (
-        <p role="alert" className="text-sm text-red-600 bg-red-50 border border-red-200 rounded px-3 py-2">{saveError}</p>
-      )}
+      <Alert>{saveError}</Alert>
       <div className="flex gap-3">
         <Button onClick={handleSave} loading={saving}>Save changes</Button>
         <Button variant="ghost" onClick={onClose} disabled={saving}>Cancel</Button>
