@@ -9,6 +9,7 @@ import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { passwordProblem } from '../lib/passwordRules'
+import { useAuth } from '../hooks/useAuth'
 
 export default function ResetPassword() {
   const navigate  = useNavigate()
@@ -18,6 +19,7 @@ export default function ResetPassword() {
   const [confirm,     setConfirm    ] = useState('')
   const [success,     setSuccess    ] = useState(false)
   const { loading, error, execute } = useApi()
+  const { refreshUser } = useAuth()
 
   // FEATURE GAP CLOSED (Auth/Scan round): the page used to find out the link
   // was dead only AFTER the person had typed a new password and submitted.
@@ -85,6 +87,13 @@ export default function ResetPassword() {
       await execute(() => api.post('/auth/reset-password', { token, newPassword }),
         { fallback: 'Reset failed. Link may have expired.' })
       setSuccess(true)
+      // A successful reset revokes every session of that account. If this browser holds one
+      // (signed in, then "forgot password"), Login would see the cached user, bounce to
+      // /dashboard, get a 401 and land on "Your session expired" right after a success.
+      // Asking the server now settles it: a revoked session is dropped here (this page isn't
+      // protected, so no redirect), while a session of a DIFFERENT account is left alone.
+      // Best-effort — refreshUser never throws.
+      if (localStorage.getItem('passthrough_token')) refreshUser()
       redirectTimer.current = setTimeout(() => navigate('/login'), 2000)
     } catch (_) { /* error already captured by useApi */ }
   }

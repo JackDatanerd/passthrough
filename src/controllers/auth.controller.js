@@ -50,12 +50,9 @@ function maybeSendLockoutAlert(c, result, user) {
 // but a SUCCESSFUL one — the one that matters if a password actually
 // leaked — left no trace anywhere the owner could see, and "Sign out other
 // sessions" (Settings) had nothing behind it to tell them WHY they might
-// want to click it. Deliberately short of a real session/device table: this
-// app's tokens carry a single global token_version, not a per-session id, so
-// there is no way today to list or individually revoke "sessions" — that's a
-// genuine re-architecture (per-token jti + a lookup on every authenticated
-// request), not a small addition here, and out of scope for this pass. What
-// this buys instead, migration 0040's columns:
+// want to click it. (This predates server-side sessions: migration 0047 added
+// the user_sessions table, per-device listing and revoke — see lib/sessions.js
+// — and these columns now sit alongside it.) Migration 0040's columns:
 //   - previousLoginAt/previousLoginIp: shown in Settings as "your previous
 //     sign-in" — deliberately the login BEFORE this one, not this one, since
 //     "last sign-in: just now" (which is what showing the current session's

@@ -367,3 +367,47 @@ describe('employer_lead_ack — failed sends and List-Unsubscribe', () => {
     expect(m.sent[1].headers).toBeUndefined()
   })
 })
+
+// Auth round 3: callers that rotate a single-use link token reserve the slot first and pass
+// slotReserved. When the provider then fails, the link was never mailed — the slot must come
+// back so the person can ask again instead of being locked out for the hour.
+describe('link emails — failed sends give the reserved slot back', () => {
+  it('a failed reserved reset send refunds its slot (bounded), so a retry is still allowed', async () => {
+    t = setup({ sendFails: true })
+    for (let i = 0; i < 3; i++) expect(await t.mod.reserveRecipientSlot(t.env, 'owner@example.com', 'password_reset')).toBe(true)
+    expect(await t.mod.reserveRecipientSlot(t.env, 'owner@example.com', 'password_reset')).toBe(false) // budget gone
+    // three reserved sends each fail -> three slots handed back
+    for (let i = 0; i < 3; i++)
+      expect(await t.mod.sendPasswordReset(t.env, t.db, 'owner@example.com', 'O', 'tok', { slotReserved: true })).toBe(false)
+    expect(await t.mod.reserveRecipientSlot(t.env, 'owner@example.com', 'password_reset')).toBe(true)
+    expect(logs(t.db).map(l => l.status)).toEqual(['failed', 'failed', 'failed'])
+  })
+  it('verification and email-change confirmation refund too', async () => {
+    t = setup({ sendFails: true })
+    for (let i = 0; i < 5; i++) await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'email_verification')
+    expect(await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'email_verification')).toBe(false)
+    await t.mod.sendVerification(t.env, t.db, 'a@b.co', 'A', 'tok', { slotReserved: true })
+    expect(await t.mod.reserveRecipientSlot(t.env, 'a@b.co', 'email_verification')).toBe(true)
+
+    for (let i = 0; i < 5; i++) await t.mod.reserveRecipientSlot(t.env, 'n@b.co', 'email_change_confirm')
+    expect(await t.mod.reserveRecipientSlot(t.env, 'n@b.co', 'email_change_confirm')).toBe(false)
+    await t.mod.sendEmailChangeConfirmation(t.env, t.db, 'n@b.co', 'N', 'tok', { slotReserved: true })
+    expect(await t.mod.reserveRecipientSlot(t.env, 'n@b.co', 'email_change_confirm')).toBe(true)
+  })
+  it('refunds are capped per window — a provider that keeps failing is not unlimited retries', async () => {
+    t = setup({ sendFails: true })
+    let granted = 0
+    for (let i = 0; i < 30; i++) {
+      if (!(await t.mod.reserveRecipientSlot(t.env, 'loop@example.com', 'password_reset'))) break
+      granted++
+      await t.mod.sendPasswordReset(t.env, t.db, 'loop@example.com', 'L', 'tok', { slotReserved: true })
+    }
+    expect(granted).toBe(3 + 6)   // max + refundOnFailure
+  })
+  it('a successful reserved send is not refunded', async () => {
+    t = setup()
+    for (let i = 0; i < 3; i++) await t.mod.reserveRecipientSlot(t.env, 'ok@example.com', 'password_reset')
+    await t.mod.sendPasswordReset(t.env, t.db, 'ok@example.com', 'O', 'tok', { slotReserved: true })
+    expect(await t.mod.reserveRecipientSlot(t.env, 'ok@example.com', 'password_reset')).toBe(false)
+  })
+})

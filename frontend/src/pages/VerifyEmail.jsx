@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import api from '../lib/api'
+import api, { getErrorMessage } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
@@ -10,20 +10,16 @@ import Footer from '../components/layout/Footer'
 // This page reads the token from the URL and calls the API
 export default function VerifyEmail() {
   const [params] = useSearchParams()
-  const { refreshUser } = useAuth()
-  const [status, setStatus] = useState('loading') // loading | success | error
+  const { user, refreshUser } = useAuth()
+  // loading | success | error (the link itself is dead) | retry (we couldn't find out)
+  const [status, setStatus] = useState('loading')
+  const [detail, setDetail] = useState('')
+  const [resend, setResend] = useState({ state: 'idle', message: '' })   // idle | sending | sent | failed
   const ran = useRef(false)
+  const token = params.get('token')
 
-  useEffect(() => {
-    // AUDIT FIX (Auth/Scan round): ConfirmEmailChange already guards against the
-    // effect running twice (StrictMode in dev); this page didn't, so the second
-    // request hit an already-used link and replaced the success screen with
-    // "Verification failed". (The API also now answers a replayed link with
-    // "already verified", covering double clicks and link scanners.)
-    if (ran.current) return
-    ran.current = true
-    const token = params.get('token')
-    if (!token) { setStatus('error'); return }
+  const verify = useCallback(() => {
+    setStatus('loading'); setDetail('')
     api.get(`/auth/verify-email?token=${encodeURIComponent(token)}`)
       .then(() => {
         setStatus('success')
@@ -35,8 +31,40 @@ export default function VerifyEmail() {
         // silently if there's no token in this browser at all.
         refreshUser()
       })
-      .catch(() => setStatus('error'))
+      .catch(err => {
+        // Only a 400 means the server looked at the link and rejected it. A 429 (too many
+        // attempts), a 5xx or no response at all says nothing about the link — telling the
+        // person it is "invalid or expired" sent them off to request a new one (and, since the
+        // old token stays valid, burned a resend) for what a retry would have fixed.
+        if (err.response?.status === 400) { setStatus('error'); return }
+        setDetail(getErrorMessage(err, "We couldn't reach the server."))
+        setStatus('retry')
+      })
+  }, [token])
+
+  useEffect(() => {
+    // AUDIT FIX (Auth/Scan round): ConfirmEmailChange already guards against the
+    // effect running twice (StrictMode in dev); this page didn't, so the second
+    // request hit an already-used link and replaced the success screen with
+    // "Verification failed". (The API also now answers a replayed link with
+    // "already verified", covering double clicks and link scanners.)
+    if (ran.current) return
+    ran.current = true
+    if (!token) { setStatus('error'); return }
+    verify()
   }, [])
+
+  async function sendNewLink() {
+    setResend({ state: 'sending', message: '' })
+    try {
+      await api.post('/auth/resend-verification')
+      setResend({ state: 'sent', message: 'New link sent — check your inbox.' })
+    } catch (err) {
+      setResend({ state: 'failed', message: getErrorMessage(err, "Couldn't send a new link. Please try again.") })
+    }
+  }
+
+  const btn = 'inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors disabled:opacity-60'
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -56,10 +84,18 @@ export default function VerifyEmail() {
               <p className="text-sm text-gray-500 mb-6">
                 You can now download your fixed resumes.
               </p>
-              <Link to="/dashboard"
-                className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+              <Link to="/dashboard" className={btn}>
                 Go to dashboard →
               </Link>
+            </>
+          )}
+          {status === 'retry' && (
+            <>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't verify just now</h1>
+              <p role="alert" className="text-sm text-gray-500 mb-6">
+                {detail} Your link hasn't been used up — try again in a moment.
+              </p>
+              <button type="button" onClick={verify} className={btn}>Try again</button>
             </>
           )}
           {status === 'error' && (
@@ -67,12 +103,30 @@ export default function VerifyEmail() {
               <div className="text-red-500 text-4xl mb-3">✕</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Verification failed</h1>
               <p className="text-sm text-gray-500 mb-6">
-                The link is invalid or has expired. Request a new one from your dashboard.
+                {user
+                  ? 'The link is invalid or has expired. We can send you a new one.'
+                  : 'The link is invalid or has expired. Sign in and request a new one from your dashboard.'}
               </p>
-              <Link to="/login"
-                className="text-sm text-blue-600 hover:underline">
-                Sign in
-              </Link>
+              {user ? (
+                <>
+                  {resend.state !== 'sent' && (
+                    <button type="button" onClick={sendNewLink} disabled={resend.state === 'sending'} className={btn}>
+                      {resend.state === 'sending' ? 'Sending…' : 'Send me a new link'}
+                    </button>
+                  )}
+                  {resend.message && (
+                    <p role={resend.state === 'failed' ? 'alert' : 'status'}
+                      className={`text-sm mt-3 ${resend.state === 'failed' ? 'text-red-600' : 'text-green-700'}`}>
+                      {resend.message}
+                    </p>
+                  )}
+                </>
+              ) : (
+                <Link to={`/login?next=${encodeURIComponent('/dashboard')}`}
+                  className="text-sm text-blue-600 hover:underline">
+                  Sign in
+                </Link>
+              )}
             </>
           )}
         </div>

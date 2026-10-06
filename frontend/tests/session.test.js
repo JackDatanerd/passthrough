@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext, tokenSessionId, failureAppliesToCurrentSession } from '../src/lib/session.js'
+import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext, tokenSessionId, failureAppliesToCurrentSession, signedOutElsewhereTarget } from '../src/lib/session.js'
 
 describe('classifyAuthFailure', () => {
   // REGRESSION: a wrong password (401 "Invalid credentials") used to be treated as
@@ -108,5 +108,22 @@ describe('failureAppliesToCurrentSession', () => {
   it('is false when nobody is signed in now, or no token was sent', () => {
     expect(failureAppliesToCurrentSession('tok', null)).toBe(false)
     expect(failureAppliesToCurrentSession(null, 'tok')).toBe(false)
+  })
+})
+
+// Auth round 3: another tab signed the browser out.
+describe('signedOutElsewhereTarget', () => {
+  it('sends a tab on a page that needs a session to sign-in, remembering where it was', () => {
+    expect(signedOutElsewhereTarget('/dashboard', '')).toBe('/login?next=%2Fdashboard')
+    expect(signedOutElsewhereTarget('/dashboard/settings', '?tab=x')).toBe('/login?next=%2Fdashboard%2Fsettings%3Ftab%3Dx')
+    expect(signedOutElsewhereTarget('/admin/users', '')).toBe('/login?next=%2Fadmin%2Fusers')
+  })
+  it('leaves public pages alone', () => {
+    for (const p of ['/', '/login', '/pricing', '/scan/abc', '/v/ABC123', '/reset-password', '/verify-email'])
+      expect(signedOutElsewhereTarget(p, '?token=x')).toBeNull()
+  })
+  it('produces a destination safeNext accepts', () => {
+    const to = signedOutElsewhereTarget('/dashboard/payments', '?page=2')
+    expect(safeNext(decodeURIComponent(to.split('next=')[1]))).toBe('/dashboard/payments?page=2')
   })
 })

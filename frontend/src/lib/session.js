@@ -37,6 +37,16 @@ export function isProtectedPath(pathname) {
   return /^\/(dashboard|admin)(\/|$)/.test(pathname || '')
 }
 
+// Where a tab should go when ANOTHER tab signed the browser out (the shared token was removed
+// from localStorage). Only pages that require a session move; public pages just carry on
+// logged-out. Without this the tab stayed on /dashboard with no token: every call answered
+// 401 "Authentication required", which classifyAuthFailure rightly ignores (nothing was
+// presented, so nothing "expired") — so nothing ever sent the person to the sign-in page.
+export function signedOutElsewhereTarget(pathname, search) {
+  if (!isProtectedPath(pathname)) return null
+  return `/login?next=${encodeURIComponent(`${pathname}${search || ''}`)}`
+}
+
 // `?next=` must be a same-site relative path; anything else (absolute URLs,
 // protocol-relative "//evil.com", backslash tricks) would be an open redirect.
 export function safeNext(next) {

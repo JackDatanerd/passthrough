@@ -115,7 +115,7 @@ export default function ConfirmEmailChange() {
               <h1 className="text-xl font-bold text-gray-900 mb-2">Sign in to confirm</h1>
               <p className="text-sm text-gray-500 mb-6">{message}</p>
               {signInReason === 'WRONG_ACCOUNT' ? (
-                <button type="button" onClick={() => { logout(); window.location.assign(loginHref) }}
+                <button type="button" onClick={async () => { await Promise.race([logout(), new Promise(r => setTimeout(r, 3000))]); window.location.assign(loginHref) }}
                   className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
                   Sign out and sign in
                 </button>

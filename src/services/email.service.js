@@ -61,12 +61,18 @@ const { must } = require('../lib/db')
 // fat-fingered an address or didn't see the first email) just reached
 // through a different route.
 const RECIPIENT_LIMITS = {
-  email_verification:    { max: 5, windowSeconds: 3600 },
-  password_reset:        { max: 3, windowSeconds: 3600 },
+  // `refundOnFailure` on the three link-carrying templates below: their callers rotate the
+  // stored single-use token and reserve the slot BEFORE the send, so a provider failure
+  // (Resend outage) used to leave the old link dead, the new one never mailed, and the slot
+  // spent — three tries and the owner was locked out of password reset for an hour with
+  // nothing delivered. A failed send hands its slot back (bounded per window) so the
+  // person can simply ask again.
+  email_verification:    { max: 5, windowSeconds: 3600, refundOnFailure: 10 },
+  password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
   account_lockout_alert:  { max: 4, windowSeconds: 3600 },
-  email_change_confirm:   { max: 5, windowSeconds: 3600 },
+  email_change_confirm:   { max: 5, windowSeconds: 3600, refundOnFailure: 10 },
   // Auth round 2: one per completed change; bounded the same as the request notice.
   email_change_completed: { max: 5, windowSeconds: 3600 },
   // Section 9 audit: email_changed_old_address and password_changed were
@@ -212,8 +218,11 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
       status = 'failed'
       error  = err.message
       console.error(`Email [${template}] to ${to}:`, err.message)
-      // Only when THIS call spent the slot; a caller that reserved its own owns that decision.
-      if (!opts.slotReserved) await refundRecipientSlot(env, to, template)
+      // The slot is this send's either way: spent here, or reserved by a caller that rotated
+      // its link token first (`slotReserved`) and handed the send to us. A failed send reached
+      // no inbox, so it gives the slot back (refundRecipientSlot is a no-op for templates
+      // without `refundOnFailure`, and bounded for those that have it).
+      await refundRecipientSlot(env, to, template)
     }
   }
 

@@ -1,5 +1,6 @@
 import { createContext, useState, useEffect } from 'react'
 import api, { SESSION_ENDED_EVENT } from '../lib/api'
+import { signedOutElsewhereTarget } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken } from '../lib/anonScans'
 
 // PATCH 3: exported so hooks/useAuth.js can import it directly
@@ -97,7 +98,18 @@ export function AuthProvider({ children }) {
   // leave the others showing a logged-in UI until they were reloaded.
   useEffect(() => {
     function onStorage(e) {
-      if (e.key === 'passthrough_token' && !e.newValue) setUser(null)
+      // e.key === null is localStorage.clear() in another tab.
+      if ((e.key === 'passthrough_token' && !e.newValue) || e.key === null) {
+        setUser(null)
+        // Another tab signed out. A tab sitting on a page that needs a session must follow:
+        // AuthProvider lives outside the router, so a hard replace is the way. Re-check the
+        // token first — a sign-out immediately followed by a sign-in elsewhere (token removed,
+        // then set again) must not bounce this tab.
+        if (!localStorage.getItem('passthrough_token')) {
+          const to = signedOutElsewhereTarget(window.location.pathname, window.location.search)
+          if (to) window.location.replace(to)
+        }
+      }
       if (e.key === 'passthrough_user') {
         try { setUser(e.newValue ? JSON.parse(e.newValue) : null) } catch (_) {}
       }
@@ -171,9 +183,11 @@ export function AuthProvider({ children }) {
     localStorage.removeItem('passthrough_token')
     localStorage.removeItem('passthrough_user')
     setUser(null)
-    if (token) {
-      api.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } }).catch(() => {}) // best-effort
-    }
+    if (!token) return Promise.resolve()
+    // Best-effort, and it never rejects. Returned so a caller that is about to leave the page
+    // with a hard navigation can wait for the request to go out first (an unload can cancel an
+    // in-flight XHR, leaving the session alive on the server). Everyone else ignores it.
+    return api.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } }).then(() => {}, () => {})
   }
 
   return (
