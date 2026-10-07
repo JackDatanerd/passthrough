@@ -12,7 +12,7 @@ const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
 
-function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true } = {}) {
+function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false } = {}) {
   const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
     suppressed: new Set(suppressed), audit: [] }
   let seq = 0
@@ -37,6 +37,8 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
         return { data: q.returning ? { ...row } : null, error: null }
       }
       if (q.op === 'update') {
+        // Independent audit round 7: lets a test fail ONLY the first-contact stamp (a lone contacted_at patch).
+        if (failContactStamp && Object.keys(q.patch || {}).join() === 'contacted_at') return { data: null, error: { message: 'stamp failed' } }
         const hit = rows.filter(match)
         hit.forEach(r => Object.assign(r, q.patch))
         if (q.maybe || q.single) return { data: hit[0] ? { ...hit[0] } : null, error: null }
@@ -1611,5 +1613,143 @@ describe('R6-G1 — adminNotifyCandidates', () => {
   it('is admin-only at the route', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/routes/employer-leads.routes.js'), 'utf8')
     expect(src).toMatch(/router\.post\('\/notify-candidates', admin, c\.adminNotifyCandidates\)/)
+  })
+})
+
+
+describe('R7 — independent audit round 7', () => {
+  const ctxWith = (query, env = { FRONTEND_URL: 'https://passthrough.dev/' }) => ({
+    env, req: { query: k => query[k] }, redirect: (url, status) => ({ redirected: true, url, status }) })
+
+  it('GET /unsubscribe hands a plain link-follower to the remove page (and removes nobody)', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const token = await tokenFor('remove', 'dana@acme.com')
+    const res = t.mod.unsubscribeRedirect(ctxWith({ token }))
+    expect(res).toEqual({ redirected: true, status: 302, url: `https://passthrough.dev/employer/remove?token=${encodeURIComponent(token)}` })
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.suppressed.size).toBe(0)
+  })
+  it('GET /unsubscribe with a missing or absurd token still lands on the remove page, without echoing it', () => {
+    t = setup()
+    expect(t.mod.unsubscribeRedirect(ctxWith({})).url).toBe('https://passthrough.dev/employer/remove')
+    expect(t.mod.unsubscribeRedirect(ctxWith({ token: 'x'.repeat(701) })).url).toBe('https://passthrough.dev/employer/remove')
+    expect(t.mod.unsubscribeRedirect(ctxWith({ token: 'a&b=c#d.e-f-ghij' })).url).toContain('token=a%26b%3Dc%23d.e-f-ghij')
+  })
+
+  describe('lead-link secrets', () => {
+    const NEW_SECRET = 'a-brand-new-lead-link-secret-000000000000'
+    const post = async (mod, env, token) => mod.confirmLead({ ...t.c(), env: { ...t.c().env, ...env }, req: { json: async () => ({ token }) } })
+    it('signs with LEAD_LINK_SECRET when set, else JWT_SECRET', async () => {
+      t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: null })] })
+      const ctx = t.c({ body: valid({ email: 'new@acme.com' }) })
+      ctx.env = { ...ctx.env, LEAD_LINK_SECRET: NEW_SECRET }
+      await t.mod.createLead(ctx); await Promise.all(ctx._waits)
+      const { verifyLeadToken } = await import('../src/lib/leadTokens.js')
+      expect(await verifyLeadToken(NEW_SECRET, 'confirm', new URL(t.state.ackLinks[0].confirmUrl).searchParams.get('token'))).toBe('new@acme.com')
+      expect(await verifyLeadToken(SECRET, 'confirm', new URL(t.state.ackLinks[0].confirmUrl).searchParams.get('token'))).toBeNull()
+    })
+    it('links signed before LEAD_LINK_SECRET existed (with JWT_SECRET) keep working once it is set', async () => {
+      t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: null })] })
+      const res = await post(t.mod, { LEAD_LINK_SECRET: NEW_SECRET }, await tokenFor('confirm', 'dana@acme.com'))
+      expect(res.body.status).toBe('confirmed')
+    })
+    it('rotating: the previous key still verifies, an unrelated key does not — and a removal link survives a JWT_SECRET change', async () => {
+      t = setup({ leads: [mkLead({ email: 'dana@acme.com', confirmed_at: null })] })
+      const old = await tokenFor('remove', 'dana@acme.com')                    // signed with the OLD JWT_SECRET
+      const rotated = { JWT_SECRET: 'the-rotated-session-secret-0000000000000', LEAD_LINK_SECRET: NEW_SECRET, LEAD_LINK_SECRET_PREVIOUS: SECRET }
+      const ok = await t.mod.removeLead({ ...t.c(), env: { ...t.c().env, ...rotated }, req: { json: async () => ({ token: old }) } })
+      expect(ok.status).toBe(200)
+      expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+      t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+      const bad = await t.mod.removeLead({ ...t.c(), env: { ...t.c().env, JWT_SECRET: 'the-rotated-session-secret-0000000000000' }, req: { json: async () => ({ token: old }) } })
+      expect(bad.status).toBe(400)                                              // no PREVIOUS configured: old links are dead, as before
+      expect(t.state.leads).toHaveLength(1)
+    })
+  })
+
+  describe('invisible characters', () => {
+    const tag = String.fromCodePoint(0xE0049, 0xE0067)
+    it('strips Unicode tag characters and the other invisible format controls from name, company and role title', async () => {
+      t = setup()
+      await submit(valid({ name: `Dana${tag}\u206a\u2065\u180b\ufff9`, company: `Acme${tag}`, roleTitle: `Eng${tag}` }))
+      expect(t.state.leads[0]).toMatchObject({ name: 'Dana', company: 'Acme', role_title: 'Eng' })
+      expect(t.state.notices[0].message).not.toMatch(/[\u{e0000}-\u{e007f}]/u)
+    })
+    it('a name made only of tag characters is not a name', async () => {
+      t = setup()
+      const ctx = t.c({ body: valid({ name: tag }) })
+      await expect(t.mod.createLead(ctx)).rejects.toThrow()
+      expect(t.state.leads).toHaveLength(0)
+    })
+    it('still keeps joiners and emoji variation selectors', async () => {
+      t = setup()
+      await submit(valid({ name: 'می\u200cخواهم \u2764\ufe0f' }))
+      expect(t.state.leads[0].name).toBe('می\u200cخواهم \u2764\ufe0f')
+    })
+    it('admin notes lose them too, but keep their line breaks', async () => {
+      t = setup()
+      const res = await t.mod.adminCreateLead(t.c({ body: { name: 'A', company: 'B', email: 'x@y.com', notes: `line one${tag}\nline two` } }))
+      expect(res.body.data.notes).toBe('line one\nline two')
+    })
+  })
+
+  describe('honeypot', () => {
+    it('the new `trap` field trips it exactly like `website` did: success answer, nothing stored', async () => {
+      t = setup()
+      const res = await submit(valid({ trap: 'http://spam.example' }))
+      expect(res.body.success).toBe(true)
+      expect(t.state.leads).toHaveLength(0)
+      expect(t.state.notices).toHaveLength(0)
+    })
+    it('an empty trap (what a person submits) stores the lead', async () => {
+      t = setup()
+      await submit(valid({ trap: '' }))
+      expect(t.state.leads).toHaveLength(1)
+    })
+  })
+
+  describe('contacted_at', () => {
+    it('is stamped when a lead goes straight to CONVERTED (single update, bulk, manual add)', async () => {
+      t = setup({ leads: [mkLead({ id: ID1, email: 'a@b.com' }), mkLead({ id: ID2, email: 'c@d.com' })] })
+      await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { status: 'CONVERTED' } }))
+      expect(t.state.leads.find(l => l.id === ID1).contacted_at).toBeTruthy()
+      await t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID2], action: 'setStatus', status: 'CONVERTED' } }))
+      expect(t.state.leads.find(l => l.id === ID2).contacted_at).toBeTruthy()
+      const created = await t.mod.adminCreateLead(t.c({ body: { name: 'A', company: 'B', email: 'm@n.com', status: 'CONVERTED' } }))
+      expect(created.body.data.contactedAt).toBeTruthy()
+    })
+    it('NEW and ARCHIVED still do not stamp it', async () => {
+      t = setup({ leads: [mkLead({ id: ID1, email: 'a@b.com' })] })
+      await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 }, body: { status: 'ARCHIVED' } }))
+      expect(t.state.leads[0].contacted_at).toBeNull()
+    })
+  })
+
+  describe('bulk status — the first-contact stamp failing halfway', () => {
+    it('still records the status change in the audit log, then reports the failure', async () => {
+      t = setup({ failContactStamp: true, leads: [mkLead({ id: ID1, email: 'a@b.com' })] })
+      await expect(t.mod.adminBulkUpdateLeads(t.c({ body: { ids: [ID1], action: 'setStatus', status: 'CONTACTED' } }))).rejects.toMatchObject({ message: 'stamp failed' })
+      expect(t.state.leads[0].status).toBe('CONTACTED')                          // the first write did land
+      expect(t.state.audit.at(-1)).toMatchObject({ action: 'lead.bulk_status', detail: { status: 'CONTACTED', ids: [ID1], contactedStampFailed: true } })
+    })
+  })
+
+  describe('notify-candidates — unmailable leads cannot starve the rest', () => {
+    it('25 leads that cannot be mailed at the front of the queue do not stop the ones behind them', async () => {
+      const supply = [{ role_category: 'sales', candidate_count: '2' }]
+      const mk = (i, over = {}) => mkLead({ id: `lead-${String(i).padStart(3, '0')}`, email: `l${i}@acme.com`, role_category: 'sales',
+        confirmed_at: '2026-02-01T00:00:00.000Z', created_at: `2026-01-01T00:${String(i % 60).padStart(2, '0')}:00.000Z`, ...over })
+      const leads = Array.from({ length: 30 }, (_, i) => mk(i))
+      t = setup({ supply, leads, candidateMailResult: (to) => !/^l([0-9]|1[0-9]|2[0-4])@/.test(to) })   // the first 25 bounce
+      const res = await t.mod.adminNotifyCandidates(t.c({ body: { field: 'sales' } }))
+      expect(res.body.data).toMatchObject({ sent: 5, failed: 25 })
+    })
+    it('still mails at most 25 per call', async () => {
+      const supply = [{ role_category: 'sales', candidate_count: '2' }]
+      const leads = Array.from({ length: 40 }, (_, i) => mkLead({ id: `lead-${String(i).padStart(3, '0')}`, email: `l${i}@acme.com`, role_category: 'sales', confirmed_at: '2026-02-01T00:00:00.000Z' }))
+      t = setup({ supply, leads })
+      const res = await t.mod.adminNotifyCandidates(t.c({ body: { field: 'sales' } }))
+      expect(res.body.data).toMatchObject({ sent: 25, failed: 0, remaining: 15 })
+    })
   })
 })

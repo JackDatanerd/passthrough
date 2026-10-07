@@ -50,7 +50,9 @@ describe('employer-leads routes', () => {
     expect(await call(a, 'POST', '/remove', { token: 'x' })).toEqual({ status: 200, json: { handler: 'removeLead' } })
     // Fresh audit pass 2 (G4): the RFC 8058 one-click target mail providers POST to.
     expect(await call(a, 'POST', '/unsubscribe')).toEqual({ status: 200, json: { handler: 'unsubscribeLead' } })
-    expect((await call(a, 'GET', '/unsubscribe')).status).toBe(404)   // POST-only: a scanner's GET removes nobody
+    // A plain GET (a client without one-click support following the header URL) never removes anyone: it
+    // reaches the redirect-to-the-remove-page handler, not unsubscribeLead.
+    expect(await call(a, 'GET', '/unsubscribe')).toEqual({ status: 200, json: { handler: 'unsubscribeRedirect' } })
   })
   it('every admin route rejects anonymous callers (401) and non-admins (403)', async () => {
     const a = app()

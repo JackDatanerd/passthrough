@@ -82,7 +82,7 @@ export default function Verify() {
   const [captchaReset, setCaptchaReset] = useState(0)
   const [leadErr,     setLeadErr    ] = useState('')
   const [leadLoading, setLeadLoading] = useState(false)
-  const [website,     setWebsite    ] = useState('')  // honeypot — real visitors never see or fill this
+  const [trap,        setTrap       ] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
 
   const [linkCopied, setLinkCopied] = useState(false)
 
@@ -117,7 +117,7 @@ export default function Verify() {
     const seq = ++loadSeq.current
     setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
     setDownloadErr(''); setCheckResult(null)
-    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setWebsite('')
+    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
     setLeadSent(false); setLeadErr('')
     // encodeURIComponent: the code comes straight from the URL; never let it
     // add path segments or a query string to the API call.
@@ -161,7 +161,7 @@ export default function Verify() {
         // SECTION 7 AUDIT (feature gap): which candidate's page this lead came
         // from, so the admin list isn't just an undifferentiated pile.
         verificationCode: code,
-        website,
+        trap,
         turnstileToken: captcha || undefined
       })
       setLeadSent(true)
@@ -582,8 +582,8 @@ export default function Verify() {
                   {/* Honeypot: invisible to a real person, tempting to a bot filling
                       every field it finds. Off-screen rather than display:none/hidden —
                       some bots skip fields a screen reader would also skip. */}
-                  <input type="text" name="website" value={website} onChange={e => setWebsite(e.target.value)}
-                    tabIndex={-1} autoComplete="off" aria-hidden="true"
+                  <input type="text" name="lead_ref_code" value={trap} onChange={e => setTrap(e.target.value)}
+                    tabIndex={-1} autoComplete="off" aria-hidden="true" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
                     style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
                   <div className="flex gap-3">
                     <Button type="submit" loading={leadLoading}>

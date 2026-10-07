@@ -39,6 +39,13 @@ function validateEnv(env) {
     if (PLACEHOLDER_SECRETS.includes(String(secret))) warnings.push('JWT_SECRET is still the .dev.vars.example placeholder')
   }
 
+  // Employer-lead links (confirm / remove / one-click unsubscribe) are signed with LEAD_LINK_SECRET,
+  // falling back to JWT_SECRET — see lib/leadTokens.js leadLinkSecrets.
+  for (const k of ['LEAD_LINK_SECRET', 'LEAD_LINK_SECRET_PREVIOUS'])
+    if (env[k] && String(env[k]).length < 32) warnings.push(`${k} is shorter than 32 characters (see DEPLOYMENT.md)`)
+  if (env.LEAD_LINK_SECRET && env.JWT_SECRET && env.LEAD_LINK_SECRET === env.JWT_SECRET)
+    warnings.push('LEAD_LINK_SECRET is the same value as JWT_SECRET — it only helps if it is different')
+
   for (const [k, why] of Object.entries(FEATURE_SECRETS))
     if (!env[k]) warnings.push(`${k} is not set — ${why} will not work`)
   for (const [k, why] of Object.entries(BINDINGS))

@@ -7,13 +7,16 @@ const { UUID_RE } = require('../middleware/validateUuidParam')
 const { normalizeCode, isPlausibleCode } = require('../lib/verification')
 const { isRangeError } = require('../lib/db')
 const { sha256 } = require('../lib/crypto')
-const { signLeadToken, verifyLeadToken } = require('../lib/leadTokens')
+const { signLeadToken, verifyLeadToken, leadLinkSecrets } = require('../lib/leadTokens')
 const { logAdminAction } = require('../lib/adminAudit')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { clientIp } = require('../lib/clientIp')
 const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
+// A lead that reaches either of these has, by definition, been contacted: contacted_at is stamped
+// the first time it does (a lead moved straight to CONVERTED used to keep a blank "Contacted at").
+const CONTACTED_STATUSES = ['CONTACTED', 'CONVERTED']
 // Statuses match lead_status_enum (migration 0018). Sources are whitelisted
 // rather than accepted as a client string: the value only exists for internal
 // reporting and a submitter shouldn't be able to set it to anything.
@@ -44,7 +47,16 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
 // prevent. (2) U+061C ARABIC LETTER MARK is a direction-changing control like
 // the LRM/RLM already listed, and U+034F / U+17B4 / U+17B5 are default-
 // ignorable marks with no visible glyph of their own.
-const INVISIBLE_CHARS = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\u3164\ufeff\uffa0]/g
+//
+// BUG FIX (independent audit round 7, Section 5): the pattern had no `u` flag, so nothing
+// above U+FFFF could ever match — the Unicode TAG block (U+E0000–E007F), the best-known channel
+// for hiding text that renders as nothing (a name that reads "Dana" and carries a hidden
+// instruction for whoever, or whatever, later reads the owner's email or the CSV), passed
+// straight through into the table, the owner notice and the export. Also missed: the deprecated
+// format controls U+2065 / U+206A–206F, the Mongolian free variation selectors U+180B–180D, and
+// the interlinear annotation marks U+FFF9–FFFB. Variation selectors U+FE00–FE0F (emoji) and the
+// ideographic ones U+E0100–E01EF (real Japanese names) are deliberately kept.
+const INVISIBLE_CHARS = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\ufff9-\ufffb\u{1d173}-\u{1d17a}\u{e0000}-\u{e007f}]/gu
 const cleanText = (s) => s.replace(CONTROL_CHARS, ' ').replace(INVISIBLE_CHARS, '').replace(/\s+/g, ' ').trim()
 const text = (max, { min = 0 } = {}) =>
   z.string().transform(cleanText).pipe(z.string().min(min).max(max))
@@ -81,6 +93,12 @@ const schema = z.object({
   verificationCode: z.string().max(32).nullish(),
   // Honeypot: hidden from humans, irresistible to form-filling bots.
   website: z.string().nullish(),
+  // Independent audit round 7: the forms now send the honeypot as `trap` under an unremarkable
+  // field name. A field called "website" is exactly what password managers and browser autofill
+  // fill in on a person's behalf — and a tripped honeypot answers "success" and stores nothing,
+  // so an autofilled real employer's lead vanished without trace. `website` is still honoured for
+  // cached older clients.
+  trap: z.string().nullish(),
   // Cloudflare Turnstile response token (see lib/turnstile.js). Only required
   // when the deployment has TURNSTILE_SECRET_KEY set.
   turnstileToken: z.string().max(2048).nullish()
@@ -213,8 +231,8 @@ function apiOrigin(c) {
 
 async function leadLinks(env, email, origin = null) {
   const [confirmTok, removeTok] = await Promise.all([
-    signLeadToken(env.JWT_SECRET, 'confirm', email),
-    signLeadToken(env.JWT_SECRET, 'remove', email)
+    signLeadToken(leadLinkSecrets(env).sign, 'confirm', email),
+    signLeadToken(leadLinkSecrets(env).sign, 'remove', email)
   ])
   return {
     confirmUrl: `${env.FRONTEND_URL}/employer/confirm?token=${confirmTok}`,
@@ -378,7 +396,7 @@ async function mergeIntoExistingLead(c, supabase, existing, row) {
 async function createLead(c) {
   const body = await c.req.json()
   const data = schema.parse(body)
-  if (data.website) return ok(c)   // honeypot tripped: pretend success, store nothing
+  if (data.website || data.trap) return ok(c)   // honeypot tripped: pretend success, store nothing
 
   // Fresh audit pass 2 (G5): bot challenge, active only when TURNSTILE_SECRET_KEY is
   // configured. Unlike the honeypot this answers with a REAL error: a person whose
@@ -721,7 +739,7 @@ async function adminCreateLead(c) {
     name: d.name, company: d.company, email: d.email,
     role_category: d.roleCategory || null, role_title: d.roleTitle || null,
     notes: d.notes || null, status: d.status || 'NEW', source: 'manual',
-    contacted_at: d.status === 'CONTACTED' ? now : null,
+    contacted_at: CONTACTED_STATUSES.includes(d.status) ? now : null,
     // Typed in by an admin from a conversation they had — not a stranger's
     // claim to an inbox — so there is nothing left to confirm.
     confirmed_at: now
@@ -775,7 +793,7 @@ const updateSchema = z.object({
 }).refine(d => Object.values(d).some(v => v !== undefined), { message: 'Nothing to update.' })
 
 // PATCH /api/employer-leads/:id — admin only. Any subset of the fields.
-// contacted_at is stamped the first time a lead reaches CONTACTED.
+// contacted_at is stamped the first time a lead reaches CONTACTED (or CONVERTED).
 async function adminUpdateLeadStatus(c) {
   const id = c.req.param('id')
   if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid lead id.' }, 400)
@@ -795,7 +813,7 @@ async function adminUpdateLeadStatus(c) {
   if (d.company !== undefined) patch.company = d.company
   if (d.roleCategory !== undefined) patch.role_category = d.roleCategory
   if (d.roleTitle    !== undefined) patch.role_title    = d.roleTitle || null
-  if (d.status === 'CONTACTED' && !existing.contacted_at) patch.contacted_at = patch.updated_at
+  if (CONTACTED_STATUSES.includes(d.status) && !existing.contacted_at) patch.contacted_at = patch.updated_at
 
   const { data, error } = await supabase
     .from('employer_leads').update(patch).eq('id', id).select().maybeSingle()
@@ -833,12 +851,17 @@ async function adminBulkUpdateLeads(c) {
   const { data, error } = await supabase
     .from('employer_leads').update({ status, updated_at: now }).in('id', ids).select('id')
   if (error) throw error
-  if (status === 'CONTACTED') {
-    const { error: stampErr } = await supabase
-      .from('employer_leads').update({ contacted_at: now }).in('id', ids).is('contacted_at', null)
-    if (stampErr) throw stampErr
+  // Two writes (status, then the first-contact stamp), so the second can fail after the first
+  // landed. The status change is real either way and must reach the audit trail: it used to be
+  // skipped when the stamp threw, leaving a bulk change nobody could later account for.
+  let stampErr = null
+  if (CONTACTED_STATUSES.includes(status)) {
+    ;({ error: stampErr } = await supabase
+      .from('employer_leads').update({ contacted_at: now }).in('id', ids).is('contacted_at', null))
   }
-  await logAdminAction(c, supabase, 'lead.bulk_status', 'employer_lead', null, { status, ids: (data || []).map(r => r.id) })
+  await logAdminAction(c, supabase, 'lead.bulk_status', 'employer_lead', null,
+    { status, ids: (data || []).map(r => r.id), ...(stampErr ? { contactedStampFailed: true } : {}) })
+  if (stampErr) throw stampErr
   return c.json({ success: true, affected: (data || []).length })
 }
 
@@ -870,7 +893,7 @@ const INVALID_LINK = { success: false, message: 'This link is not valid. Use the
 // POST /api/employer-leads/confirm { token }
 async function confirmLead(c) {
   const { token } = tokenBodySchema.parse(await c.req.json())
-  const email = await verifyLeadToken(c.env.JWT_SECRET, 'confirm', token)
+  const email = await verifyLeadToken(leadLinkSecrets(c.env).verify, 'confirm', token)
   if (!email) return c.json(INVALID_LINK, 400)
 
   const supabase = getSupabase(c.env)
@@ -913,7 +936,7 @@ async function confirmLead(c) {
 // other order could leave a deleted lead the public form re-creates.
 async function removeLead(c) {
   const { token } = tokenBodySchema.parse(await c.req.json())
-  const email = await verifyLeadToken(c.env.JWT_SECRET, 'remove', token)
+  const email = await verifyLeadToken(leadLinkSecrets(c.env).verify, 'remove', token)
   if (!email) return c.json(INVALID_LINK, 400)
 
   await performRemoval(getSupabase(c.env), email)
@@ -935,10 +958,23 @@ async function performRemoval(supabase, email) {
 // same reason removeLead is: a scanner or link previewer only ever GETs.
 async function unsubscribeLead(c) {
   const token = c.req.query('token') || ''
-  const email = token.length >= 10 && token.length <= 700 ? await verifyLeadToken(c.env.JWT_SECRET, 'remove', token) : null
+  const email = token.length >= 10 && token.length <= 700 ? await verifyLeadToken(leadLinkSecrets(c.env).verify, 'remove', token) : null
   if (!email) return c.json(INVALID_LINK, 400)
   await performRemoval(getSupabase(c.env), email)
   return c.json({ success: true, message: "You've been removed. We won't contact you again." })
+}
+
+// GET /api/employer-leads/unsubscribe?token=… — what a mail client opens when it does NOT do
+// RFC 8058 one-click (it only follows the List-Unsubscribe URL as a link). It used to answer a
+// bare JSON 404, so the person trying to opt out landed on an error page. It never removes
+// anything (a GET must not — scanners and previewers issue them): it sends the visitor to the
+// remove page, which asks for a button press. It does not look at the token, so it reveals
+// nothing about whether it is valid.
+function unsubscribeRedirect(c) {
+  const token = c.req.query('token') || ''
+  const base = String((c.env && c.env.FRONTEND_URL) || '').replace(/\/+$/, '')
+  const plausible = token.length >= 10 && token.length <= 700
+  return c.redirect(`${base}/employer/remove${plausible ? `?token=${encodeURIComponent(token)}` : ''}`, 302)
 }
 
 // ── Admin: do-not-contact list ──────────────────────────────────────────────
@@ -1088,6 +1124,11 @@ async function adminMarkConfirmed(c) {
 // actually mailed is stamped, and a NEW one moves to CONTACTED (contacted_at set once).
 // `dryRun` reports the counts without sending anything.
 const NOTIFY_BATCH_MAX = 25
+// How many eligible leads one call will LOOK at to find NOTIFY_BATCH_MAX it can actually mail.
+// A lead that cannot be mailed (a mailbox the provider rejects, an address already at its
+// per-recipient cap) is never stamped, so it stays eligible and sorts first on every call; with
+// a batch of exactly 25, 25 such leads would have blocked everyone behind them for good.
+const NOTIFY_EXAMINE_MAX = 100
 const NOTIFY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
 const notifySchema = z.object({ field: z.enum(ROLE_CATEGORIES), dryRun: z.boolean().optional() })
 const MISSING_COLUMN = ['42703', 'PGRST204']
@@ -1108,7 +1149,7 @@ async function adminNotifyCandidates(c) {
     .eq('role_category', field).not('confirmed_at', 'is', null).in('status', OPEN_STATUSES)
     .or(`last_candidates_notified_at.is.null,last_candidates_notified_at.lt.${cutoff}`)
   const { data: batch, error: selErr, count } = await eligible()
-    .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_BATCH_MAX)
+    .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_EXAMINE_MAX)
   if (selErr) {
     if (MISSING_COLUMN.includes(selErr.code))
       return c.json({ success: false, message: 'Run migration 0054 before using this.' }, 409)
@@ -1121,6 +1162,7 @@ async function adminNotifyCandidates(c) {
   let sent = 0, failed = 0, skipped = 0
   const sentIds = []
   for (const lead of batch || []) {
+    if (sent >= NOTIFY_BATCH_MAX) break
     let ok = false
     try {
       // Re-checked right before each send: someone who clicked "remove" after this batch was
@@ -1146,7 +1188,7 @@ async function adminNotifyCandidates(c) {
 }
 
 module.exports = {
-  createLead, confirmLead, removeLead, unsubscribeLead, adminMarkConfirmed,
+  createLead, confirmLead, removeLead, unsubscribeLead, unsubscribeRedirect, adminMarkConfirmed,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,

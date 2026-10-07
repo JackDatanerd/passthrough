@@ -521,8 +521,18 @@ every limiter failed open until it recovered.
 ### Secret rotation
 
 - `JWT_SECRET`: changing it signs every user out at once (no overlap window).
-  Rotate in a quiet hour; it is also the key for lead-confirmation tokens, so
-  outstanding employer-lead links stop working.
+  Rotate in a quiet hour. Employer-lead links (confirm / remove / one-click
+  unsubscribe) are signed with `JWT_SECRET` unless `LEAD_LINK_SECRET` is set, so
+  rotating it with no preparation kills the "remove me" link in every email
+  already delivered. Prepare once, ahead of time (see below).
+- `LEAD_LINK_SECRET` (optional, recommended): a separate key for employer-lead
+  links, so rotating `JWT_SECRET` no longer touches them. Setting it later is safe:
+  links signed with `JWT_SECRET` keep verifying. To rotate it (or to rotate
+  `JWT_SECRET` while it is unset): `wrangler secret put LEAD_LINK_SECRET_PREVIOUS`
+  with the OLD value (the old `LEAD_LINK_SECRET`, or the old `JWT_SECRET`),
+  `wrangler secret put LEAD_LINK_SECRET` with the new one, deploy; delete
+  `LEAD_LINK_SECRET_PREVIOUS` once old emails no longer matter. Generate with the
+  same command as `JWT_SECRET`.
 - `RESEND_API_KEY`, `PAYSTACK_SECRET_KEY`, `ANTHROPIC_API_KEY`: `wrangler secret put`
   the new value and redeploy; no other step.
 

@@ -14,7 +14,8 @@
 // The purpose is part of the MAC input, so a confirm link can never be
 // replayed as a removal link (or the reverse). Nothing here expires: a
 // removal link must keep working for as long as the email exists, and a
-// confirm link only ever sets a timestamp.
+// confirm link only ever sets a timestamp. (Expiry-free, but not rotation-proof by
+// accident: see leadLinkSecrets for how the signing key can change safely.)
 
 const enc = new TextEncoder()
 const dec = new TextDecoder()
@@ -55,18 +56,41 @@ async function signLeadToken(secret, purpose, email) {
 }
 
 // Returns the (lowercased) address the token was issued for, or null for
-// anything that is not a genuine, matching-purpose token.
+// anything that is not a genuine, matching-purpose token. `secret` may be one
+// secret or a list (see leadLinkSecrets): a link is genuine if ANY of them
+// signed it, which is what lets the signing key be rotated without killing the
+// links already sitting in people's inboxes.
 async function verifyLeadToken(secret, purpose, token) {
   try {
-    if (!secret || !PURPOSES.includes(purpose) || typeof token !== 'string') return null
+    const secrets = (Array.isArray(secret) ? secret : [secret]).filter(Boolean)
+    if (!secrets.length || !PURPOSES.includes(purpose) || typeof token !== 'string') return null
     const parts = token.split('.')
     if (parts.length !== 2 || !parts[0] || !parts[1]) return null
     const email = dec.decode(fromB64url(parts[0]))
     if (!email || email.length > MAX_EMAIL_LENGTH || email !== email.trim().toLowerCase()) return null
-    return safeEqual(parts[1], await mac(secret, purpose, email)) ? email : null
+    for (const s of secrets)
+      if (safeEqual(parts[1], await mac(s, purpose, email))) return email
+    return null
   } catch (_) {
     return null   // malformed base64 / bad UTF-8
   }
 }
 
-module.exports = { signLeadToken, verifyLeadToken, PURPOSES }
+// Which secrets sign and verify these links.
+//
+// These links used to be keyed by JWT_SECRET alone, so rotating the session secret (routine
+// after any suspected leak) silently killed every confirm / remove link already delivered —
+// including the one-click "remove me" link a person most needs to keep working. Now:
+//   sign   : LEAD_LINK_SECRET, else JWT_SECRET (so nothing changes until it is set);
+//   verify : LEAD_LINK_SECRET, LEAD_LINK_SECRET_PREVIOUS (the key being rotated out), and
+//            JWT_SECRET (so links signed before LEAD_LINK_SECRET existed keep working).
+// To rotate: put the old LEAD_LINK_SECRET (or old JWT_SECRET) in LEAD_LINK_SECRET_PREVIOUS,
+// set the new LEAD_LINK_SECRET, deploy; drop PREVIOUS once old emails no longer matter.
+function leadLinkSecrets(env) {
+  const e = env || {}
+  const sign = e.LEAD_LINK_SECRET || e.JWT_SECRET
+  const verify = [...new Set([e.LEAD_LINK_SECRET, e.LEAD_LINK_SECRET_PREVIOUS, e.JWT_SECRET].filter(Boolean))]
+  return { sign, verify }
+}
+
+module.exports = { signLeadToken, verifyLeadToken, leadLinkSecrets, PURPOSES }

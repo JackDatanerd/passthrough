@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { signLeadToken, verifyLeadToken } from '../src/lib/leadTokens.js'
+import { signLeadToken, verifyLeadToken, leadLinkSecrets } from '../src/lib/leadTokens.js'
 
 const SECRET = 'a-secret-that-is-long-enough-for-hmac-000'
 
@@ -30,5 +30,25 @@ describe('leadTokens', () => {
   it('handles non-ASCII local parts', async () => {
     const t = await signLeadToken(SECRET, 'remove', 'josé@acme.com')
     expect(await verifyLeadToken(SECRET, 'remove', t)).toBe('josé@acme.com')
+  })
+})
+
+describe('leadLinkSecrets and multi-secret verification', () => {
+  const A = 'secret-a-secret-a-secret-a-secret-a-000', B = 'secret-b-secret-b-secret-b-secret-b-000', C = 'secret-c-secret-c-secret-c-secret-c-000'
+  it('signs with LEAD_LINK_SECRET, else JWT_SECRET; verifies against every configured key, de-duplicated', () => {
+    expect(leadLinkSecrets({ JWT_SECRET: A })).toEqual({ sign: A, verify: [A] })
+    expect(leadLinkSecrets({ JWT_SECRET: A, LEAD_LINK_SECRET: B })).toEqual({ sign: B, verify: [B, A] })
+    expect(leadLinkSecrets({ JWT_SECRET: A, LEAD_LINK_SECRET: B, LEAD_LINK_SECRET_PREVIOUS: C })).toEqual({ sign: B, verify: [B, C, A] })
+    expect(leadLinkSecrets({ JWT_SECRET: A, LEAD_LINK_SECRET: A })).toEqual({ sign: A, verify: [A] })
+    expect(leadLinkSecrets({})).toEqual({ sign: undefined, verify: [] })
+    expect(leadLinkSecrets(undefined).verify).toEqual([])
+  })
+  it('accepts a token signed by any listed secret, rejects one signed by none', async () => {
+    const tok = await signLeadToken(C, 'remove', 'dana@acme.com')
+    expect(await verifyLeadToken([A, B, C], 'remove', tok)).toBe('dana@acme.com')
+    expect(await verifyLeadToken([A, B], 'remove', tok)).toBeNull()
+    expect(await verifyLeadToken([], 'remove', tok)).toBeNull()
+    expect(await verifyLeadToken([undefined, ''], 'remove', tok)).toBeNull()
+    expect(await verifyLeadToken([A, C], 'confirm', tok)).toBeNull()   // purpose is still bound
   })
 })

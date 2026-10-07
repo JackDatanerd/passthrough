@@ -94,7 +94,7 @@ function EmployerLeadForm() {
   const [email,   setEmail  ] = useState('')
   const [field,   setField  ] = useState('')
   const [title,   setTitle  ] = useState('')
-  const [website, setWebsite] = useState('')  // honeypot — real visitors never see or fill this
+  const [trap, setTrap] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
   const [sent,    setSent   ] = useState(false)
   const [err,     setErr    ] = useState('')
   const [loading, setLoading] = useState(false)
@@ -109,7 +109,7 @@ function EmployerLeadForm() {
     try {
       await api.post('/employer-leads', {
         name, company, email, roleCategory: field || undefined, roleTitle: title || undefined,
-        source: 'homepage', website, turnstileToken: captcha || undefined
+        source: 'homepage', trap, turnstileToken: captcha || undefined
       })
       setSent(true)
     } catch (e) {
@@ -143,8 +143,8 @@ function EmployerLeadForm() {
         {/* Honeypot: invisible to a real person, tempting to a bot filling every
             field it finds. Off-screen rather than display:none/hidden — some
             bots skip fields a screen reader would also skip. */}
-        <input type="text" name="website" value={website} onChange={e => setWebsite(e.target.value)}
-          tabIndex={-1} autoComplete="off" aria-hidden="true"
+        <input type="text" name="lead_ref_code" value={trap} onChange={e => setTrap(e.target.value)}
+          tabIndex={-1} autoComplete="off" aria-hidden="true" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
           style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
         <Button type="submit" loading={loading}>Get early access</Button>
       </Form>

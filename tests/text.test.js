@@ -8,6 +8,11 @@ describe('cleanName', () => {
     expect(cleanName('Ann\u2028Lee')).toBe('Ann Lee')
     expect(cleanName(null)).toBe('')
   })
+  it('strips Unicode tag characters and deprecated format controls (invisible, above U+FFFF too)', () => {
+    expect(cleanName('Ann' + String.fromCodePoint(0xe0041, 0xe0042) + ' Lee')).toBe('Ann Lee')
+    expect(cleanName('Ann\u206a\u2065 Lee\ufff9')).toBe('Ann Lee')
+    expect(hasSubstance(cleanName(String.fromCodePoint(0xe0041)))).toBe(false)
+  })
   it('keeps the joiners and directional marks real names need', () => {
     expect(cleanName('می\u200cخواهم')).toContain('\u200c')   // Persian ZWNJ
     expect(cleanName('\u200fمحمد')).toContain('\u200f')       // RLM

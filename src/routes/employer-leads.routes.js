@@ -20,6 +20,9 @@ router.post('/remove',  rl.employerLeadLink, c.removeLead)
 // audit pass 2, G4). Mail providers POST a form body here with the signed token in the
 // query string; POST-only so a scanner's GET can never remove anyone.
 router.post('/unsubscribe', rl.employerLeadLink, c.unsubscribeLead)
+// Independent audit round 7: the same URL opened as a plain link (clients without one-click
+// support) used to hit a JSON 404. A GET never removes anyone — it hands off to the remove page.
+router.get('/unsubscribe', rl.employerLeadLink, c.unsubscribeRedirect)
 
 // AUDIT FIX (Section 5): the retrieval side of the lead-capture gap — leads
 // were being written with no way for anyone to ever read them back short of

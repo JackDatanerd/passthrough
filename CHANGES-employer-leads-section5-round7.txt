@@ -1,0 +1,38 @@
+Section 5 (Employer leads) - independent audit round 7 (controller + routes, with the token, email, retention,
+digest, frontend and migration code they touch)
+Base: 412e465 "payments & pricing: round 4 ..."   NO MIGRATION. No new env var is required.
+
+Already closed upstream while this round ran (verified, not redone): atomic notice/ack budgets (hitQuota),
+the "already exists" suppression-lift retry, export truncation notice, resubmission cooldown clocks, notify-candidates.
+
+GAPS
+G1  GET /api/employer-leads/unsubscribe?token=... used to answer a bare JSON 404. A mail client without RFC 8058
+    one-click support follows the List-Unsubscribe URL as a plain link, so the person opting out hit an error page.
+    It now 302s to FRONTEND_URL/employer/remove (token passed through, never inspected); that page still needs a
+    button press, so a GET removes nobody.
+G2  Lead links (confirm / remove / one-click unsubscribe) were keyed by JWT_SECRET only; rotating it killed every
+    "remove me" link already delivered. New optional LEAD_LINK_SECRET signs them (falls back to JWT_SECRET, so nothing
+    changes until set); links verify against LEAD_LINK_SECRET, LEAD_LINK_SECRET_PREVIOUS and JWT_SECRET, so setting it
+    later or rotating it never strands an old email. DEPLOYMENT.md "Secret rotation" documents the steps; env.js warns
+    on a short/duplicate value.
+
+BUGS
+B1  INVISIBLE_CHARS had no `u` flag, so nothing above U+FFFF could match: Unicode TAG characters (U+E0000-E007F) -
+    text that renders as nothing - went through into name/company/role/notes, the owner notice and the CSV. Also missed:
+    U+2065, U+206A-206F, U+180B-180D, U+FFF9-FFFB. Added (emoji variation selectors, joiners and ideographic variation
+    selectors deliberately kept). Traced: lib/text.js cleanName (account names) had the same gap - same fix.
+B2  Honeypot field was named "website" - what password managers / autofill fill on a person's behalf. A tripped honeypot
+    answers success and stores nothing, so an autofilled real employer's lead vanished silently. Both forms now send it as
+    `trap` from an unremarkable field name with autofill-ignore hints; the API trips on `trap` OR the old `website`
+    (cached clients).
+B3  contacted_at was stamped only for CONTACTED; a lead moved straight to CONVERTED (or added as CONVERTED) kept a blank
+    "Contacted at". Now stamped (first time only) for CONTACTED and CONVERTED, in PATCH, bulk and manual add.
+B4  Bulk "set status" is two writes; if the contacted_at stamp failed after the status landed, the audit entry was skipped.
+    The audit entry is now written first (flagged contactedStampFailed) and the error still reported.
+B5  notify-candidates took exactly 25 leads per call; a lead that can't be mailed is never stamped, so 25 of them at the
+    front of the queue blocked everyone behind them forever. It now examines up to 100 and mails up to 25.
+
+Tests: +19 (controller, routes wiring, leadTokens, text); the 14 that exercise a fix fail on the previous code.
+Full suite: 2634 tests, same 29 pre-existing frontend failures as the untouched base (frontend deps not resolvable from
+the repo root runner), none in this section. lint-undefined clean. Frontend builds.
+Not verified: behaviour of real password managers against the renamed field; Resend handling of the unsubscribe header.

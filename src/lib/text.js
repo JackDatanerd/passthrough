@@ -11,7 +11,11 @@ const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/g
 // Characters that render as nothing and carry no meaning in a name:
 // zero-width space, word joiner, soft hyphen, BOM/zero-width no-break space,
 // line and paragraph separators.
-const INVISIBLE_FILLER = /[\u200b\u2060\u00ad\ufeff]/g
+// Independent audit round 7 (traced from the employer-leads section): also the Unicode TAG block
+// (U+E0000–E007F, text that renders as nothing — a hidden-instruction channel), the deprecated
+// format controls U+2061–206F and the interlinear annotation marks U+FFF9–FFFB. Needs the `u`
+// flag to see past U+FFFF. Kept: joiners, directional marks and variation selectors (see above).
+const INVISIBLE_FILLER = /[\u200b\u2060-\u206f\u00ad\ufeff\ufff9-\ufffb\u{e0000}-\u{e007f}]/gu
 const LINE_SEPARATORS = /[\u2028\u2029]/g
 
 function cleanName(input) {
