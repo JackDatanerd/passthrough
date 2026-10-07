@@ -32,6 +32,9 @@ router.get('/export.csv', admin, c.adminExportLeads)
 // routes so 'manual' / 'bulk' can never be read as an id.
 router.post('/manual', admin, c.adminCreateLead)
 router.post('/bulk',   admin, c.adminBulkUpdateLeads)
+// FEATURE GAP CLOSED (independent audit round 6, G1): tell confirmed leads in a field that now has
+// Verified candidates. Not keyed by :id, so it sits with the other fixed-path writes.
+router.post('/notify-candidates', admin, c.adminNotifyCandidates)
 
 // FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way to learn an
 // address was suppressed used to be trying to re-add it via /manual and

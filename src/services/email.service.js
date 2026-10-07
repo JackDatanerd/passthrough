@@ -120,6 +120,9 @@ const RECIPIENT_LIMITS = {
   // and lock the address out for 30 days without a single email delivered. Bounded per
   // window (that many refunds) so a provider that keeps failing can't become unlimited retries.
   employer_lead_ack:      { max: 2, windowSeconds: 30 * 24 * 3600, refundOnFailure: 4 },
+  // One "there are Verified candidates in your field" email per address per 30 days: an admin
+  // pressing the notify action twice (or two admins at once) can never mail the same person twice.
+  employer_candidates_available: { max: 1, windowSeconds: 30 * 24 * 3600, refundOnFailure: 2 },
 }
 
 async function recipientKey(to, template) {
@@ -697,8 +700,28 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
   })
 }
 
+// Sent by an admin to a CONFIRMED lead whose field now has Verified candidates (see
+// employer-leads.controller.js's adminNotifyCandidates). Carries the same signed one-click
+// removal link and RFC 8058 header as the acknowledgement. Never names a candidate — only a count.
+async function sendEmployerCandidatesAvailable(env, supabase, email, name, fieldLabel, count, { removeUrl, unsubscribeUrl } = {}) {
+  if (!removeUrl) throw new Error('sendEmployerCandidatesAvailable needs removeUrl')
+  const n = Number(count) || 0
+  return send(env, supabase, email, `Verified candidates in ${fieldLabel} are now available`, 'employer_candidates_available', {
+    NAME:          name,
+    FIELD:         fieldLabel,
+    COUNT_PHRASE:  n === 1 ? 'there is 1 Verified candidate' : `there are ${n} Verified candidates`,
+    SUPPORT_EMAIL: 'support@passthrough.dev',
+    REMOVE_URL:    removeUrl
+  }, {
+    headers: unsubscribeUrl ? {
+      'List-Unsubscribe':      `<${unsubscribeUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+    } : undefined
+  })
+}
+
 module.exports = {
-  htmlToPlainText, fmtMoney, sendEmployerLeadAck,
+  htmlToPlainText, fmtMoney, sendEmployerLeadAck, sendEmployerCandidatesAvailable,
   reserveRecipientSlot: recipientAllowed,
   refundReservedSlot: refundRecipientSlot,
   sendWelcome, sendVerification, sendPasswordReset,

@@ -11,6 +11,7 @@ const { signLeadToken, verifyLeadToken } = require('../lib/leadTokens')
 const { logAdminAction } = require('../lib/adminAudit')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { clientIp } = require('../lib/clientIp')
+const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
 // Statuses match lead_status_enum (migration 0018). Sources are whitelisted
@@ -146,67 +147,53 @@ const ACK_RESEND_COOLDOWN_MS = 10 * 60 * 1000
 const NOTICE_MAX_REFUNDS_PER_HOUR = 10
 const ACK_MAX_REFUNDS_PER_HOUR = 15
 
-async function readBudgetState(kv, key) {
-  const raw = await kv.get(key)
-  if (!raw) return { count: 0, refunds: 0 }
-  try {
-    const parsed = JSON.parse(raw)
-    if (typeof parsed.count === 'number')
-      return { count: parsed.count, refunds: typeof parsed.refunds === 'number' ? parsed.refunds : 0 }
-  } catch (_) { /* fall through */ }
-  return { count: parseInt(raw, 10) || 0, refunds: 0 }   // pre-fix value was a bare integer string
-}
+// BUG FIX (independent audit round 6, Section 5): this budget used to be a hand-rolled
+// get-then-put against RATE_LIMIT_KV. KV is the wrong primitive for counting (see
+// lib/rateLimitCore.js and wrangler.toml): parallel requests all read the same count, and KV
+// rejects a second write to one key within a second — which the old code treated as an outage
+// and failed OPEN on. Under a burst of fake leads (exactly what the budget exists for) nearly
+// every increment was lost: 200 concurrent submissions against a limit of 20 sent 200 notices.
+// It now goes through the same atomic Durable Object limiter every other quota in the app uses
+// (hitQuota / refundQuota), including its bounded-refund rule. Still fails open if the limiter
+// backend is down — a lost lead notice is the worse failure.
+const BUDGET_WINDOW_SECONDS = 60 * 60
 
-// Returns { allowed, refund }. `refund` gives back the slot this call just
-// consumed if the send it was reserved for turns out to have failed — bound
-// to the SAME key the slot was consumed from (not a key re-derived from
-// "now" later), so a refund that happens to land right at an hour boundary
-// can never touch a different hour's count than the one it actually spent.
+// Returns { allowed, refund }. `refund` hands back the slot this call just consumed if the send
+// it was reserved for turns out to have failed.
 async function withinBudget(env, name, max, maxRefunds) {
   const noRefund = async () => {}
-  const kv = env.RATE_LIMIT_KV
-  if (!kv) return { allowed: true, refund: noRefund }
-  const key = `rl:${name}:${Math.floor(Date.now() / 3_600_000)}`
-  // BUG FIX (fresh audit pass 2, Section 5): a KV error here (a 429 or an
-  // outage) used to propagate out of sendNotice/sendAck — both run inside
-  // waitUntil — so the lead was stored but the owner notice AND the
-  // acknowledgement were silently lost. Every other limiter in this app
-  // fails OPEN on a KV error; this budget only bounds a flood, and a lost
-  // lead notice is the worse failure, so it does the same.
-  let count, refunds
-  try {
-    ;({ count, refunds } = await readBudgetState(kv, key))
-    if (count >= max) return { allowed: false, refund: noRefund }
-    await kv.put(key, JSON.stringify({ count: count + 1, refunds }), { expirationTtl: 7200 })
-  } catch (err) {
-    console.error(`Employer-lead budget (${name}) unavailable — allowing the send:`, err.message)
-    return { allowed: true, refund: noRefund }
-  }
-  return {
-    allowed: true,
-    refund: async () => {
-      try {
-        const cur = await readBudgetState(kv, key)
-        if (cur.count <= 0 || cur.refunds >= maxRefunds) return
-        await kv.put(key, JSON.stringify({ count: cur.count - 1, refunds: cur.refunds + 1 }), { expirationTtl: 7200 })
-      } catch (err) {
-        console.error(`Employer-lead budget (${name}) refund failed:`, err.message)
-      }
-    }
-  }
+  const key = `rl:${name}:budget`
+  if (!(await hitQuota(env, key, max, BUDGET_WINDOW_SECONDS))) return { allowed: false, refund: noRefund }
+  return { allowed: true, refund: () => refundQuota(env, key, BUDGET_WINDOW_SECONDS, maxRefunds) }
 }
 
 async function sendNotice(env, subject, message) {
   const budget = await withinBudget(env, 'leadnotice', NOTICE_BUDGET_PER_HOUR, NOTICE_MAX_REFUNDS_PER_HOUR)
   if (!budget.allowed) {
     console.warn(`Employer-lead notice budget (${NOTICE_BUDGET_PER_HOUR}/h) exhausted — skipped: ${subject}`)
-    return
+    return false
   }
   try {
-    await emailService.sendOwnerNotice(env, subject, message)
+    // sendOwnerNotice answers false (it does not throw) when no owner inbox is configured.
+    return (await emailService.sendOwnerNotice(env, subject, message)) !== false
   } catch (err) {
     console.error('Employer-lead notice failed:', err.message)
     await budget.refund()
+    return false
+  }
+}
+
+// Best-effort bookkeeping on a lead row: a failure (or a database that has not run migration
+// 0054 yet) is logged and swallowed — it must never fail the submission or the send it follows.
+// Deliberately does NOT touch updated_at: that column is mergeIntoExistingLead's concurrency token.
+async function stampLead(env, match, patch) {
+  try {
+    let q = getSupabase(env).from('employer_leads').update(patch)
+    q = match.id ? q.eq('id', match.id) : q.eq('email', match.email)
+    const { error } = await q
+    if (error) console.error('employer-leads: could not record', Object.keys(patch).join(', '), '-', error.message)
+  } catch (err) {
+    console.error('employer-leads: could not record', Object.keys(patch).join(', '), '-', err.message)
   }
 }
 
@@ -261,6 +248,7 @@ async function sendAck(env, row, { skipBudget = false, origin = null } = {}) {
     const sent = await emailService.sendEmployerLeadAck(
       env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email, origin))
     if (!sent) await refund()
+    else await stampLead(env, { email: row.email }, { last_ack_at: new Date().toISOString() })
     return sent
   } catch (err) {
     console.error('Employer-lead acknowledgement failed:', err.message)
@@ -355,19 +343,34 @@ async function mergeIntoExistingLead(c, supabase, existing, row) {
   if (updErr) throw updErr
   if (!updated) return 'retry'
 
+  // BUG FIX (independent audit round 6, Section 5): both cooldowns below used to be measured
+  // from last_submitted_at — which THIS very function resets on every resubmission. A person
+  // retrying every few minutes because the first email never arrived kept that clock from ever
+  // expiring and was never sent a second one (and the owner's "resubmitted" notice could never
+  // fire for a lead that keeps coming back). They now run from when the email / notice actually
+  // went out (last_ack_at / last_notice_at, migration 0054), falling back to created_at — the
+  // moment the first of each was attempted — for rows that predate the columns.
+  const sinceMs = (...stamps) => { const v = stamps.find(Boolean); const t = v ? Date.parse(v) : NaN; return Number.isNaN(t) ? 0 : t }
+  const lastAckMs = sinceMs(existing.last_ack_at, existing.created_at)
+  const lastNoticeMs = sinceMs(existing.last_notice_at, existing.created_at)
+
   // Never confirmed and not dismissed: they may simply not have seen the first
   // email, so send it again (capped per recipient in email.service.js).
-  const lastMs = existing.last_submitted_at ? Date.parse(existing.last_submitted_at) : 0
-  if (!existing.confirmed_at && existing.status !== 'ARCHIVED' && now.getTime() - lastMs > ACK_RESEND_COOLDOWN_MS)
+  if (!existing.confirmed_at && existing.status !== 'ARCHIVED' && now.getTime() - lastAckMs > ACK_RESEND_COOLDOWN_MS)
     await runInBackground(c, sendAck(c.env, existing, { origin: apiOrigin(c) }))
 
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
-  if (existing.status !== 'ARCHIVED' && now.getTime() - lastMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
+  if (existing.status !== 'ARCHIVED' && now.getTime() - lastNoticeMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
     const changed = ['name', 'company'].filter(k => existing[k] !== row[k]).map(k => `${k}: ${row[k]}`)
-    await notifyOwner(c, 'Employer lead resubmitted',
-      `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
-      (changed.length ? `\n\nThis time they entered different details (not saved over the lead):\n${changed.join('\n')}` : ''))
+    const message = `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
+      (changed.length ? `\n\nThis time they entered different details (not saved over the lead):\n${changed.join('\n')}` : '')
+    // Stamped only if the notice really went out, so a skipped (budget) or failed one is retried
+    // by the next resubmission rather than silenced for a day.
+    await runInBackground(c, (async () => {
+      if (await sendNotice(c.env, 'Employer lead resubmitted', message))
+        await stampLead(c.env, { id: existing.id }, { last_notice_at: now.toISOString() })
+    })())
   }
   return 'ok'
 }
@@ -653,21 +656,29 @@ async function adminExportLeads(c) {
   const filters = parseFilters(c)
   const rows = []
   let cursor = null
-  while (rows.length < EXPORT_MAX_ROWS) {
+  // Asks for ONE row past the cap so "exactly at the cap" and "more than the cap" can be told apart.
+  let truncated = false
+  for (;;) {
+    const want = Math.min(EXPORT_CHUNK, EXPORT_MAX_ROWS + 1 - rows.length)
     const { data, error } = await applyCursor(
       applySort(applyFilters(supabase.from('employer_leads').select('*'), filters), filters.sort),
       filters.sort, cursor
-    ).limit(EXPORT_CHUNK)
+    ).limit(want)
     if (error) throw error
     if (!data.length) break
     rows.push(...data)
-    if (data.length < EXPORT_CHUNK) break
+    if (rows.length > EXPORT_MAX_ROWS) { rows.length = EXPORT_MAX_ROWS; truncated = true; break }
+    if (data.length < want) break
     cursor = cursorFor(data[data.length - 1], filters.sort)
   }
-  if (rows.length >= EXPORT_MAX_ROWS) console.warn(`Employer-lead export hit the ${EXPORT_MAX_ROWS}-row cap — the file is truncated`)
+  // FEATURE GAP CLOSED (independent audit round 6, Section 5): a capped export used to be
+  // flagged only by a console.warn — the admin got a file that looked complete and wasn't.
+  // The response now says so (X-Export-Truncated, exposed to the SPA via middleware/cors.js).
+  if (truncated) console.warn(`Employer-lead export hit the ${EXPORT_MAX_ROWS}-row cap — the file is truncated`)
   // Exporting every lead's name and email is exactly what an audit trail is for.
   await logAdminAction(c, supabase, 'lead.export', 'employer_leads', null, {
     rows: rows.length,
+    truncated,
     filters: Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && k !== 'search')),
     searched: !!filters.search
   })
@@ -675,7 +686,9 @@ async function adminExportLeads(c) {
   for (const r of rows) lines.push(CSV_COLUMNS.map(([, get]) => csvCell(get(r))).join(','))
   return c.body(CSV_BOM + lines.join('\r\n') + '\r\n', 200, {
     'Content-Type': 'text/csv; charset=utf-8',
-    'Content-Disposition': 'attachment; filename="employer-leads.csv"'
+    'Content-Disposition': 'attachment; filename="employer-leads.csv"',
+    'X-Export-Rows': String(rows.length),
+    'X-Export-Truncated': truncated ? 'true' : 'false'
   })
 }
 
@@ -721,18 +734,30 @@ async function adminCreateLead(c) {
       message: 'This address asked to be removed and is on the do-not-contact list. Only add it again if they have since asked you to.'
     }, 409)
 
-  const { data, error } = await supabase.from('employer_leads').insert(row).select().single()
-  if (error) {
-    if (error.code === '23505')
-      return c.json({ success: false, message: 'A lead with that email already exists.' }, 409)
-    throw error
-  }
-  if (suppressed) {
-    // Explicitly re-added: lift the suppression so the public form and the
-    // acknowledgement flow treat them like any other lead again.
+  // The suppression is lifted AFTER the insert (a failed insert must not silently undo someone's
+  // removal request), so the lift has to be safe to RETRY. BUG FIX (independent audit round 6,
+  // Section 5): if the lift failed, the lead already existed, the admin saw a 500, and every retry
+  // hit the unique index and answered 409 before ever reaching the lift — leaving the address
+  // suppressed for good (the public form silently ignoring it) next to a lead that exists. The
+  // lift now also runs on the "already exists" answer when the admin said to override.
+  const liftSuppression = async () => {
     const { error: liftErr } = await supabase.from('employer_lead_suppressions').delete().eq('email_hash', await sha256(d.email))
     if (liftErr) throw liftErr
   }
+  const { data, error } = await supabase.from('employer_leads').insert(row).select().single()
+  if (error) {
+    if (error.code === '23505') {
+      if (suppressed) {
+        await liftSuppression()
+        await logAdminAction(c, supabase, 'lead.suppression_lift', 'employer_lead_suppression', await sha256(d.email), { via: 'manual_add_retry' })
+      }
+      return c.json({ success: false, message: 'A lead with that email already exists.', ...(suppressed ? { suppressionLifted: true } : {}) }, 409)
+    }
+    throw error
+  }
+  // Explicitly re-added: lift the suppression so the public form and the
+  // acknowledgement flow treat them like any other lead again.
+  if (suppressed) await liftSuppression()
   await logAdminAction(c, supabase, 'lead.create', 'employer_lead', data.id, { liftedRemoval: !!suppressed })
   return c.json({ success: true, data: leadRowToCamel(data) }, 201)
 }
@@ -1046,10 +1071,84 @@ async function adminMarkConfirmed(c) {
   return c.json({ success: true, message: 'Marked as confirmed.', data: { confirmedAt: now } })
 }
 
+// POST /api/employer-leads/notify-candidates { field, dryRun? } — admin only.
+// FEATURE GAP CLOSED (independent audit round 6, Section 5): both employer forms promise "we'll
+// email you when there are Verified candidates in your field", but nothing could ever do it —
+// the owner digest (lead-match.service.js) tells the OWNER, and the owner then had to write to
+// each lead by hand. This is the admin's one-click follow-through.
+//
+// Deliberately an admin ACTION, not an automatic send: a person still decides when. It goes only
+// to leads that are (a) in that field, (b) CONFIRMED — an unconfirmed address may be a stranger's
+// typo or a bot — (c) still open (NEW or CONTACTED), and (d) not already told in the last 30 days
+// (last_candidates_notified_at). It refuses when the field has no Verified candidates, mails at
+// most NOTIFY_BATCH_MAX per call (the response says how many remain), names no candidate (only a
+// count), and every email carries the signed one-click removal link and List-Unsubscribe header.
+// A second per-recipient guard lives in email.service.js (1 per address per 30 days), so a
+// double-click or two admins at once can never mail the same person twice. Each lead that was
+// actually mailed is stamped, and a NEW one moves to CONTACTED (contacted_at set once).
+// `dryRun` reports the counts without sending anything.
+const NOTIFY_BATCH_MAX = 25
+const NOTIFY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
+const notifySchema = z.object({ field: z.enum(ROLE_CATEGORIES), dryRun: z.boolean().optional() })
+const MISSING_COLUMN = ['42703', 'PGRST204']
+
+async function adminNotifyCandidates(c) {
+  const { field, dryRun } = notifySchema.parse(await c.req.json())
+  const supabase = getSupabase(c.env)
+
+  const { data: supplyRows, error: supplyErr } = await supabase.rpc('verified_candidate_counts', { p_min_score: constants.ATS_BADGE_THRESHOLD })
+  if (supplyErr) throw supplyErr
+  const candidates = Number((supplyRows || []).find(r => r.role_category === field)?.candidate_count) || 0
+  if (!candidates)
+    return c.json({ success: false, code: 'NO_CANDIDATES', message: `There are no Verified candidates in ${fieldLabel(field)} yet, so there is nothing to tell leads.` }, 409)
+
+  const cutoff = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString()
+  const eligible = () => supabase.from('employer_leads')
+    .select('id, name, email, status, contacted_at', { count: 'exact' })
+    .eq('role_category', field).not('confirmed_at', 'is', null).in('status', OPEN_STATUSES)
+    .or(`last_candidates_notified_at.is.null,last_candidates_notified_at.lt.${cutoff}`)
+  const { data: batch, error: selErr, count } = await eligible()
+    .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_BATCH_MAX)
+  if (selErr) {
+    if (MISSING_COLUMN.includes(selErr.code))
+      return c.json({ success: false, message: 'Run migration 0054 before using this.' }, 409)
+    throw selErr
+  }
+  const total = count || 0
+  if (dryRun) return c.json({ success: true, data: { field, candidates, eligible: total, sent: 0, failed: 0, remaining: total, dryRun: true } })
+
+  const origin = apiOrigin(c)
+  let sent = 0, failed = 0, skipped = 0
+  const sentIds = []
+  for (const lead of batch || []) {
+    let ok = false
+    try {
+      // Re-checked right before each send: someone who clicked "remove" after this batch was
+      // selected must not be emailed. (Their lead row is normally already gone; this covers the gap.)
+      if (await isSuppressed(supabase, lead.email)) { skipped++; continue }
+      const { removeUrl, unsubscribeUrl } = await leadLinks(c.env, lead.email, origin)
+      ok = await emailService.sendEmployerCandidatesAvailable(
+        c.env, supabase, lead.email, lead.name, fieldLabel(field), candidates, { removeUrl, unsubscribeUrl })
+    } catch (err) {
+      console.error('Employer-lead candidate notification failed:', err.message)
+    }
+    if (!ok) { failed++; continue }
+    sent++; sentIds.push(lead.id)
+    const stamp = new Date().toISOString()
+    const patch = { last_candidates_notified_at: stamp, updated_at: stamp }
+    if (lead.status === 'NEW') patch.status = 'CONTACTED'
+    if (!lead.contacted_at) patch.contacted_at = stamp
+    const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id)
+    if (stampErr) console.error('Employer-lead candidate notification sent but not recorded:', stampErr.message)
+  }
+  await logAdminAction(c, supabase, 'lead.notify_candidates', 'employer_lead', null, { field, candidates, sent, failed, skipped, ids: sentIds })
+  return c.json({ success: true, data: { field, candidates, eligible: total, sent, failed, skipped, remaining: Math.max(0, total - sent - skipped) } })
+}
+
 module.exports = {
   createLead, confirmLead, removeLead, unsubscribeLead, adminMarkConfirmed,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
-  adminCheckSuppression, adminAddSuppression, adminLiftSuppression,
+  adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,
   LEAD_STATUSES, LEAD_SOURCES
 }

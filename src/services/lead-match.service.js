@@ -7,6 +7,10 @@
 //       has confirmed may be a typo or a bot, so it never triggers a digest by itself, and
 //   (b) verified-candidate supply has grown since the last digest.
 //
+// A third trigger (independent audit round 6): CONFIRMED open leads with NO field can never be
+// matched to anyone, so they used to be invisible here. They are announced as "need a field"
+// whenever their number grows, with a link to the list filtered to exactly them.
+//
 // The digest goes to the owner only (a person decides whom to write to and
 // what to say); nothing here emails a lead. State is one small JSON blob in
 // KV — `supply` is the per-field count as of the last digest (lowered
@@ -28,9 +32,10 @@ async function loadState(kv) {
     const raw = await kv.get(STATE_KEY)
     const parsed = raw ? JSON.parse(raw) : null
     if (parsed && typeof parsed === 'object')
-      return { supply: (parsed.supply && typeof parsed.supply === 'object') ? parsed.supply : {}, sentAt: Number(parsed.sentAt) || 0 }
+      return { supply: (parsed.supply && typeof parsed.supply === 'object') ? parsed.supply : {}, sentAt: Number(parsed.sentAt) || 0,
+        uncategorised: Number(parsed.uncategorised) || 0 }
   } catch (_) { /* corrupt state: start over */ }
-  return { supply: {}, sentAt: 0 }
+  return { supply: {}, sentAt: 0, uncategorised: 0 }
 }
 
 // Pure: which fields are worth announcing, given supply now, leads waiting and
@@ -66,6 +71,14 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
   const waiting = Object.fromEntries((leadRows || []).map(r =>
     [r.role_category, r.confirmed_count == null ? Number(r.lead_count) : Number(r.confirmed_count)]))
 
+  // Optional garnish: a database that has not run migration 0054 yet has no such function —
+  // the field digest must still work, so an error just means "nothing to report here".
+  let uncategorised = null
+  const { data: uncatRows, error: uncatErr } = await supabase.rpc('uncategorised_lead_counts')
+  if (!uncatErr && Array.isArray(uncatRows) && uncatRows[0]) {
+    uncategorised = { open: Number(uncatRows[0].lead_count) || 0, confirmed: Number(uncatRows[0].confirmed_count) || 0 }
+  }
+
   const state = await loadState(kv)
 
   // Keep the baseline honest when supply falls, so a later recovery counts as
@@ -76,9 +89,14 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
     if (cur < state.supply[cat]) { state.supply[cat] = cur; dirty = true }
   }
 
+  // Same bookkeeping as the supply baseline: when the number falls (the admin categorised some),
+  // lower it so a later rise announces again.
+  if (uncategorised && uncategorised.confirmed < state.uncategorised) { state.uncategorised = uncategorised.confirmed; dirty = true }
+  const uncatDue = !!uncategorised && uncategorised.confirmed > state.uncategorised
+
   const due = computeAnnouncements(supply, waiting, state.supply)
   let sent = false
-  if (due.length && now - state.sentAt >= MIN_INTERVAL_MS) {
+  if ((due.length || uncatDue) && now - state.sentAt >= MIN_INTERVAL_MS) {
     const base = env.FRONTEND_URL || ''
     const lines = due.map(a => {
       const unconfirmed = Math.max(0, (open[a.cat] || 0) - a.leads)
@@ -86,8 +104,16 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
         `${unconfirmed ? ` (+${unconfirmed} unconfirmed)` : ''} · ${a.candidates} verified candidate${a.candidates === 1 ? '' : 's'}` +
         `${a.before ? ` (was ${a.before})` : ''}\n  ${base}/admin/leads?field=${a.cat}&status=OPEN`
     })
-    const delivered = await emailService.sendOwnerNotice(env, 'Verified candidates now available for waiting leads',
-      `Fields where leads are waiting and verified supply has grown:\n\n${lines.join('\n\n')}`)
+    const sections = []
+    if (lines.length) sections.push(`Fields where leads are waiting and verified supply has grown:\n\n${lines.join('\n\n')}`)
+    if (uncatDue) {
+      const extra = uncategorised.open - uncategorised.confirmed
+      sections.push(`Confirmed open leads with no field: ${uncategorised.confirmed}${extra ? ` (+${extra} unconfirmed)` : ''}. ` +
+        `Without a field they can never be matched to candidates. Give them one:\n  ${base}/admin/leads?field=none&status=OPEN&confirmed=yes`)
+    }
+    const delivered = await emailService.sendOwnerNotice(env,
+      due.length ? 'Verified candidates now available for waiting leads' : 'Employer leads need a field',
+      sections.join('\n\n'))
     // sendOwnerNotice answers false (it does not throw) when there is no owner
     // inbox configured. Recording the announcement anyway would swallow it for
     // good — adding OWNER_ALERT_EMAIL later would never re-announce fields
@@ -95,6 +121,7 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
     // not announced: state stays put and the next sweep tries again.
     if (delivered) {
       for (const a of due) state.supply[a.cat] = a.candidates
+      if (uncatDue) state.uncategorised = uncategorised.confirmed
       state.sentAt = now
       sent = true
       dirty = true
@@ -103,7 +130,7 @@ async function runLeadMatchSweep(env, supabase, now = Date.now()) {
     }
   }
   if (dirty) await kv.put(STATE_KEY, JSON.stringify(state), { expirationTtl: STATE_TTL_SECONDS })
-  return { announced: sent ? due.length : 0, pending: sent ? 0 : due.length }
+  return { announced: sent ? due.length : 0, pending: sent ? 0 : due.length, ...(uncatDue ? { uncategorised: sent ? 'announced' : 'pending' } : {}) }
 }
 
 module.exports = { runLeadMatchSweep, computeAnnouncements, MIN_INTERVAL_MS }

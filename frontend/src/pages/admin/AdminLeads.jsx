@@ -13,7 +13,7 @@ import Textarea from '../../components/ui/Textarea'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
-import { ROLE_CATEGORIES, roleLabel } from '../../lib/roleCategories'
+import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
 
@@ -68,6 +68,10 @@ export default function AdminLeads() {
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
   const [editing, setEditing] = useState(null)     // lead being edited
   const [adding, setAdding] = useState(false)
+  // Independent audit round 6 (G1): "tell confirmed leads in this field there are Verified
+  // candidates now" — a dry run first (how many would be emailed), then the real send.
+  const [notifyPlan, setNotifyPlan] = useState(null)   // { field, candidates, eligible } while the confirm dialog is open
+  const [notifyBusy, setNotifyBusy] = useState(false)
 
   // Do-not-contact lookup/lift modal (adminCheckSuppression / adminLiftSuppression).
   // Only a SHA-256 hash is stored server-side — there's no browsable list of
@@ -307,6 +311,39 @@ export default function AdminLeads() {
     }
   }
 
+  async function startNotify() {
+    setNotifyBusy(true)
+    try {
+      const res = await api.post('/employer-leads/notify-candidates', { field, dryRun: true })
+      const d = res.data.data
+      if (!d.eligible) toast({ message: `No confirmed, open ${roleLabel(field)} leads are waiting to be told (anyone told in the last 30 days is skipped).`, type: 'info' })
+      else setNotifyPlan(d)
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Could not check who would be notified.'), type: 'error' })
+    } finally {
+      setNotifyBusy(false)
+    }
+  }
+
+  async function confirmNotify() {
+    setNotifyBusy(true)
+    try {
+      const res = await api.post('/employer-leads/notify-candidates', { field: notifyPlan.field })
+      const d = res.data.data
+      const parts = [`Emailed ${d.sent} lead${d.sent === 1 ? '' : 's'}`]
+      if (d.failed) parts.push(`${d.failed} could not be sent`)
+      if (d.remaining) parts.push(`${d.remaining} still waiting — press the button again to continue`)
+      toast({ message: parts.join('; ') + '.', type: d.failed ? 'warning' : 'success' })
+      setNotifyPlan(null)
+      await refresh()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Could not send the notifications.'), type: 'error' })
+      setNotifyPlan(null)
+    } finally {
+      setNotifyBusy(false)
+    }
+  }
+
   async function exportCsv() {
     setExporting(true)
     try {
@@ -319,6 +356,9 @@ export default function AdminLeads() {
       a.href = url; a.download = 'employer-leads.csv'
       document.body.appendChild(a); a.click(); a.remove()
       URL.revokeObjectURL(url)
+      // The server caps an export (50,000 rows) — say so instead of handing over a file that looks complete.
+      if (res.headers?.['x-export-truncated'] === 'true')
+        toast({ message: `The export hit its ${Number(res.headers['x-export-rows'] || 0).toLocaleString()}-row limit and is incomplete. Narrow the filters (status, field, source) and export again.`, type: 'warning', duration: 12000 })
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Export failed.'), type: 'error' })
     } finally {
@@ -344,6 +384,13 @@ export default function AdminLeads() {
           <Button size="sm" variant="secondary" onClick={() => { setSuppressionOpen(true) }}>
             Do-not-contact{suppressed != null ? ` (${suppressed})` : ''}
           </Button>
+          {isRoleCategory(field) && (
+            <Button size="sm" variant="secondary" loading={notifyBusy && !notifyPlan} onClick={startNotify}
+              disabled={!!candidateSupply && !candidateSupply[field]}
+              title={candidateSupply && !candidateSupply[field] ? 'There are no Verified candidates in this field yet.' : 'Email the confirmed, open leads in this field that there are now Verified candidates.'}>
+              Notify {roleLabel(field)} leads
+            </Button>
+          )}
           <Button size="sm" variant="secondary" onClick={() => setAdding(true)}>Add lead</Button>
           <Button size="sm" variant="secondary" loading={exporting} onClick={exportCsv}>Export CSV</Button>
         </div>
@@ -440,6 +487,11 @@ export default function AdminLeads() {
                     {l.confirmedAt
                       ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}`}>✓ confirmed</span>
                       : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
+                    {l.lastCandidatesNotifiedAt && (
+                      <span className="block text-xs text-gray-400" title="The last time Verified candidates were announced to this lead from here.">
+                        told about candidates {formatDate(l.lastCandidatesNotifiedAt)}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-500">
                     {l.roleCategory ? (
@@ -545,6 +597,15 @@ export default function AdminLeads() {
         loading={busyId === pendingMarkConfirmed?.id}
         onConfirm={confirmMarkConfirmed}
         onCancel={() => setPendingMarkConfirmed(null)}
+      />
+      <ConfirmDialog
+        open={!!notifyPlan}
+        title="Notify leads"
+        message={notifyPlan ? `Email ${Math.min(notifyPlan.eligible, 25)} of ${notifyPlan.eligible} confirmed lead${notifyPlan.eligible === 1 ? '' : 's'} in ${roleLabel(notifyPlan.field)} that there ${notifyPlan.candidates === 1 ? 'is 1 Verified candidate' : `are ${notifyPlan.candidates} Verified candidates`} now? Each gets one email with a remove link, and NEW leads move to CONTACTED. Nobody is emailed twice within 30 days.` : ''}
+        confirmLabel="Send emails"
+        loading={notifyBusy}
+        onConfirm={confirmNotify}
+        onCancel={() => setNotifyPlan(null)}
       />
       <ConfirmDialog
         open={confirmBulkDelete}

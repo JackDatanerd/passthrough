@@ -458,6 +458,9 @@ function leadRowToCamel(row) {
     lastSubmittedAt: row.last_submitted_at ?? row.created_at,
     contactedAt:  row.contacted_at ?? null,
     confirmedAt:  row.confirmed_at ?? null,
+    lastAckAt:    row.last_ack_at ?? null,
+    lastNoticeAt: row.last_notice_at ?? null,
+    lastCandidatesNotifiedAt: row.last_candidates_notified_at ?? null,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }

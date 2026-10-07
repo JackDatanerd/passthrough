@@ -5,13 +5,15 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 const NOW = Date.parse('2026-09-24T12:00:00Z')
 const DAY = 86400000
 
-function setup({ supply = [], leads = [], state = null, rpcError = null, leadError = null, delivered = true } = {}) {
+function setup({ supply = [], leads = [], state = null, rpcError = null, leadError = null, delivered = true, uncat = null, uncatError = null } = {}) {
   const notices = []
   const store = new Map()
   if (state) store.set('leadmatch:state', JSON.stringify(state))
   const db = createFakeSupabase(q => {
     if (q.op === 'rpc' && q.name === 'verified_candidate_counts') return rpcError ? { error: rpcError } : { data: supply, error: null }
     if (q.op === 'rpc' && q.name === 'open_lead_counts') return leadError ? { error: leadError } : { data: leads, error: null }
+    if (q.op === 'rpc' && q.name === 'uncategorised_lead_counts')
+      return uncatError ? { error: uncatError } : { data: uncat ? [{ lead_count: String(uncat[0]), confirmed_count: String(uncat[1]) }] : [{ lead_count: '0', confirmed_count: '0' }], error: null }
   })
   const { mod, restore } = loadWithStubs('services/lead-match.service.js', {
     'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }); return delivered } },
@@ -49,7 +51,7 @@ describe('runLeadMatchSweep', () => {
     expect(t.notices[0].message).toContain('Sales: 2 confirmed open leads · 2 verified candidates')
     expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=sales&status=OPEN')
     expect(t.notices[0].message).not.toContain('Design')
-    expect(t.saved()).toEqual({ supply: { sales: 2 }, sentAt: NOW })
+    expect(t.saved()).toEqual({ supply: { sales: 2 }, sentAt: NOW, uncategorised: 0 })
   })
   it('takes waiting-lead counts from the database (open_lead_counts) instead of tallying a capped row fetch', async () => {
     t = setup({ supply: [sup('sales', 1)], leads: [] })
@@ -114,5 +116,58 @@ describe('runLeadMatchSweep', () => {
     expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW)).toEqual({ error: 'no such function' })
     t.restore(); t = setup({ leadError: { message: 'db down' } })
     expect(await t.mod.runLeadMatchSweep(t.env, t.db, NOW)).toEqual({ error: 'db down' })
+  })
+})
+
+// ══ Independent audit round 6 (Section 5, G2): confirmed open leads with no field ═══════════════
+describe('runLeadMatchSweep — leads nobody has given a field', () => {
+  it('announces confirmed open leads with no field (they can never be matched), linking to exactly them', async () => {
+    t = setup({ supply: [], leads: [], uncat: [5, 3] })
+    const r = await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(r).toEqual({ announced: 0, pending: 0, uncategorised: 'announced' })
+    expect(t.notices).toHaveLength(1)
+    expect(t.notices[0].subject).toBe('Employer leads need a field')
+    expect(t.notices[0].message).toContain('Confirmed open leads with no field: 3 (+2 unconfirmed).')
+    expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=none&status=OPEN&confirmed=yes')
+    expect(t.saved().uncategorised).toBe(3)
+  })
+  it('does not repeat while the number has not grown, and announces again when it does', async () => {
+    t = setup({ uncat: [3, 3], state: { supply: {}, sentAt: NOW - 3 * DAY, uncategorised: 3 } })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(0)
+    t.restore()
+    t = setup({ uncat: [4, 4], state: { supply: {}, sentAt: NOW - 3 * DAY, uncategorised: 3 } })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(1)
+    expect(t.saved().uncategorised).toBe(4)
+  })
+  it('lowers the baseline when the admin categorises some, so a later rise counts as growth', async () => {
+    t = setup({ uncat: [1, 1], state: { supply: {}, sentAt: NOW - 3 * DAY, uncategorised: 5 } })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(0)
+    expect(t.saved().uncategorised).toBe(1)
+  })
+  it('never announces unconfirmed-only uncategorised leads, and respects the once-a-day limit', async () => {
+    t = setup({ uncat: [4, 0] })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(0)
+    t.restore()
+    t = setup({ uncat: [2, 2], state: { supply: {}, sentAt: NOW - 3600_000, uncategorised: 0 } })
+    const r = await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(0)
+    expect(r.uncategorised).toBe('pending')
+  })
+  it('rides along in the field digest instead of sending a second email', async () => {
+    t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), uncat: [1, 1] })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(1)
+    expect(t.notices[0].subject).toBe('Verified candidates now available for waiting leads')
+    expect(t.notices[0].message).toContain('Confirmed open leads with no field: 1.')
+  })
+  it('a database without migration 0054 still gets its field digest', async () => {
+    t = setup({ supply: [sup('sales', 2)], leads: waiting('sales'), uncatError: { message: 'function does not exist' } })
+    await t.mod.runLeadMatchSweep(t.env, t.db, NOW)
+    expect(t.notices).toHaveLength(1)
+    expect(t.notices[0].message).not.toContain('with no field')
   })
 })

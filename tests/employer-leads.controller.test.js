@@ -12,8 +12,8 @@ const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
 
-function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true } = {}) {
-  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], inserts: 0, kv,
+function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true } = {}) {
+  const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
     suppressed: new Set(suppressed), audit: [] }
   let seq = 0
   const db = createFakeSupabase(q => {
@@ -51,11 +51,14 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true 
       // select
       if (q.selectOpts?.head) return { count: rows.filter(match).length, error: null }
       if (q.maybe) return { data: rows.find(match) ? { ...rows.find(match) } : null, error: null }
-      const filtered = rows.filter(match)
+      // `.or('last_candidates_notified_at.is.null,last_candidates_notified_at.lt.<cutoff>')`
+      const orNotified = (q.or || []).find(e => e.includes('last_candidates_notified_at'))
+      const cutoff = orNotified && /\.lt\.(.+)$/.exec(orNotified)?.[1]
+      const filtered = rows.filter(match).filter(r => !cutoff || !r.last_candidates_notified_at || r.last_candidates_notified_at < cutoff)
       // PostgREST answers an offset past the end with 416 when a count was requested.
       if (q.range && q.range[0] > 0 && q.range[0] >= filtered.length && q.selectOpts?.count)
         return { error: { code: 'PGRST103', message: 'Requested range not satisfiable' } }
-      return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : undefined), count: filtered.length, error: null }
+      return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : q.limit || undefined), count: filtered.length, error: null }
     }
     if (q.table === 'employer_lead_suppressions') {
       const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
@@ -66,6 +69,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true 
       // this used to always answer `data: null`, which made a real deletion
       // indistinguishable from "nothing to delete."
       if (q.op === 'delete') {
+        if (liftError) return { data: null, error: liftError }
         const existed = state.suppressed.has(h)
         state.suppressed.delete(h)
         return { data: existed ? { email_hash: h } : null, error: null }
@@ -83,10 +87,11 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true 
       sendOwnerNotice: async (env, subject, message) => { state.notices.push({ subject, message }) },
       sendOwnerAlert: async (...a) => { state.alerts.push(a) },
       sendEmployerLeadAck: async (env, sb, to, name, field, links) => { state.acks.push({ to, name, field }); state.ackLinks.push(links); return ackResult },
+      sendEmployerCandidatesAvailable: async (env, sb, to, name, field, count, links) => { state.candidateMails.push({ to, name, field, count, links }); return typeof candidateMailResult === 'function' ? candidateMailResult(to) : candidateMailResult },
     },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
-    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev' }
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev', ...envExtra }
   const c = (over = {}) => {
     const waits = []
     return {
@@ -99,7 +104,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true 
       _waits: waits,
     }
   }
-  return { mod, restore, state, db, c }
+  return { mod, restore, state, db, c, env }
 }
 
 let t, realErr, realWarn
@@ -232,7 +237,7 @@ describe('createLead — resubmission of a known email', () => {
   })
 
   it('does not re-announce within 24h, and never for an ARCHIVED (dismissed) lead', async () => {
-    t = setup({ leads: [{ ...existing(), last_submitted_at: new Date(Date.now() - HOURS(1)).toISOString() }] })
+    t = setup({ leads: [{ ...existing(), last_notice_at: new Date(Date.now() - HOURS(1)).toISOString() }] })
     await submit(valid())
     expect(t.state.notices).toHaveLength(0)
     t.restore()
@@ -306,7 +311,8 @@ describe('createLead — resilience to a second collision on the same email', ()
     expect(notices[0].subject).toBe('Employer lead resubmitted')
     // ...via exactly the insert/select/insert/select/update sequence above —
     // proving it reached the merge rather than bailing out early.
-    expect(step).toBe(5)
+    // (+1: the resubmission notice is recorded on the lead as last_notice_at once it really went out)
+    expect(step).toBe(6)
   })
 
   it('gives up gracefully (still answers success) if every retry keeps racing', async () => {
@@ -342,8 +348,8 @@ describe('createLead — resilience to a second collision on the same email', ()
 describe('notice/ack budget: refunded when the send does not actually go out', () => {
   it('refunds the notice-budget slot on a thrown send failure, so the next lead is not starved', async () => {
     const hourBucket = Math.floor(Date.now() / 3_600_000)
-    const key = `rl:leadnotice:${hourBucket}`
-    t = setup({ kv: { [key]: JSON.stringify({ count: 19, refunds: 0 }) } })
+    const key = 'rl:leadnotice:budget'
+    t = setup({ kv: { [key]: JSON.stringify({ count: 19, windowStart: Date.now(), refunds: 0 }) } })
     const { db, c, state } = t
     t.restore()
     let call = 0
@@ -372,8 +378,8 @@ describe('notice/ack budget: refunded when the send does not actually go out', (
 
   it('refunds the ack-budget slot when the acknowledgement does not actually go out', async () => {
     const hourBucket = Math.floor(Date.now() / 3_600_000)
-    const key = `rl:leadack:${hourBucket}`
-    t = setup({ kv: { [key]: JSON.stringify({ count: 29, refunds: 0 }) } })
+    const key = 'rl:leadack:budget'
+    t = setup({ kv: { [key]: JSON.stringify({ count: 29, windowStart: Date.now(), refunds: 0 }) } })
     const { db, c, state } = t
     t.restore()
     let call = 0
@@ -686,7 +692,7 @@ describe('createLead — acknowledgement to the submitter', () => {
     expect(t.state.acks).toHaveLength(0)
   })
   it('has its own hourly budget, and a failing send never fails the submission', async () => {
-    t = setup({ kv: { [`rl:leadack:${Math.floor(Date.now() / 3_600_000)}`]: '30' } })
+    t = setup({ kv: { 'rl:leadack:budget': JSON.stringify({ count: 30, windowStart: Date.now(), refunds: 0 }) } })
     const res = await submit(valid())
     expect(res.body.success).toBe(true)
     expect(t.state.acks).toHaveLength(0)
@@ -1120,7 +1126,7 @@ describe('adminCreateLead — confirmation and do-not-contact', () => {
 
 describe('adminRequestConfirmation', () => {
   it('sends the confirmation to an unconfirmed lead (bypassing only the public form budget) and audits it', async () => {
-    t = setup({ leads: [mkLead({ email: 'dana@acme.com', role_category: 'legal' })], kv: { [`rl:leadack:${Math.floor(Date.now() / 3_600_000)}`]: '30' } })
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com', role_category: 'legal' })], kv: { 'rl:leadack:budget': JSON.stringify({ count: 30, windowStart: Date.now(), refunds: 0 }) } })
     const res = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
     expect(res.body.success).toBe(true)
     expect(t.state.acks).toEqual([{ to: 'dana@acme.com', name: 'A', field: 'Legal' }])
@@ -1210,7 +1216,7 @@ describe('B1 — a failing KV never costs a lead its notices', () => {
 
 describe('B2 — an unconfirmed lead resubmitting does not spend both acknowledgement slots at once', () => {
   const unconfirmed = (minutesAgo) => mkLead({ email: 'dana@acme.com', name: 'Dana', company: 'Acme',
-    last_submitted_at: new Date(Date.now() - minutesAgo * 60_000).toISOString(), created_at: '2026-01-01T00:00:00.000Z' })
+    last_ack_at: new Date(Date.now() - minutesAgo * 60_000).toISOString(), created_at: '2026-01-01T00:00:00.000Z' })
   it('does not re-send within the cooldown (a double-click)', async () => {
     t = setup({ leads: [unconfirmed(1)] })
     await submit(valid())
@@ -1362,5 +1368,248 @@ describe('G5 — Turnstile on the public form', () => {
     expect((await t.mod.createLead(ctx)).status).toBe(200)
     await Promise.all(ctx._waits)
     expect(t.state.leads).toHaveLength(1)
+  })
+})
+
+// ══ Independent audit round 6 (Section 5) ═══════════════════════════════════════════════════════
+// A Durable-Object-style limiter: one object per key, every operation serialised — the same
+// guarantee RateLimiterDO gives in production (lib/rateLimiterDO.js runs these very OPS).
+function fakeDO() {
+  const core = require('../src/lib/rateLimitCore.js')
+  const stores = new Map()
+  const storeFor = (name) => {
+    if (!stores.has(name)) { const m = new Map(); stores.set(name, { m, get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, delete: async k => { m.delete(k) } }) }
+    return stores.get(name)
+  }
+  const chain = new Map()
+  return {
+    idFromName: n => n,
+    get: name => ({ fetch: (url, init) => {
+      const { op, args } = JSON.parse(init.body)
+      const run = (chain.get(name) || Promise.resolve()).then(() => core.OPS[op](storeFor(name), args))
+      chain.set(name, run.catch(() => {}))
+      return run.then(result => ({ ok: true, json: async () => result }))
+    } }),
+  }
+}
+
+describe('R6-B1 — the hourly notice / acknowledgement budgets hold under a concurrent burst', () => {
+  // Workers KV as production behaves: reads/writes are asynchronous, and a SECOND write to one key
+  // within a second is rejected with a 429. (The old hand-rolled counter treated that rejection as an
+  // outage and let the send through, so under a burst almost no increment was ever recorded.)
+  const strictKv = () => {
+    const m = new Map(), wrote = new Map()
+    return {
+      get: async k => { await new Promise(r => setTimeout(r, 1)); return m.get(k) ?? null },
+      put: async (k, v) => { await new Promise(r => setTimeout(r, 1)); if (Date.now() - (wrote.get(k) || 0) < 1000) throw new Error('KV PUT failed: 429'); wrote.set(k, Date.now()); m.set(k, v) },
+    }
+  }
+  it('40 simultaneous brand-new leads send at most 20 owner notices and 30 acknowledgements', async () => {
+    t = setup({ envExtra: { RATE_LIMIT_DO: fakeDO(), RATE_LIMIT_KV: strictKv() } })
+    await Promise.all(Array.from({ length: 40 }, (_, i) => submit(valid({ email: `lead${i}@corp${i}.com` }))))
+    expect(t.state.leads).toHaveLength(40)          // every lead is still stored — only the EMAILS are budgeted
+    expect(t.state.notices).toHaveLength(20)
+    expect(t.state.acks).toHaveLength(30)
+  })
+  it('goes through the shared limiter (a Durable Object when bound), never a hand-rolled KV counter', async () => {
+    t = setup({ envExtra: { RATE_LIMIT_DO: fakeDO() } })
+    await submit(valid())
+    expect(Object.keys(t.state.kv).filter(k => k.startsWith('rl:lead'))).toEqual([])
+  })
+  it('a failing limiter backend never costs a lead its notices (fails open)', async () => {
+    t = setup({ envExtra: { RATE_LIMIT_DO: { idFromName: n => n, get: () => ({ fetch: async () => { throw new Error('DO down') } }) } } })
+    await submit(valid())
+    expect(t.state.notices).toHaveLength(1)
+    expect(t.state.acks).toHaveLength(1)
+  })
+})
+
+describe('R6-B2 — resubmission cooldowns run from when the email actually went out', () => {
+  const unconfirmed = (over = {}) => mkLead({ email: 'dana@acme.com', name: 'Dana', company: 'Acme', created_at: '2026-01-01T00:00:00.000Z', ...over })
+  const minutesAgo = (m) => new Date(Date.now() - m * 60_000).toISOString()
+  it('re-sends the confirmation to someone retrying every few minutes, because the CLOCK is the last email, not the last submission', async () => {
+    t = setup({ leads: [unconfirmed({ last_submitted_at: minutesAgo(2), last_ack_at: minutesAgo(11) })] })
+    await submit(valid())
+    expect(t.state.acks).toHaveLength(1)
+  })
+  it('records last_ack_at when a confirmation really goes out, so the next retry measures from it', async () => {
+    t = setup()
+    await submit(valid())
+    expect(t.state.leads[0].last_ack_at).toBeTruthy()
+    await submit(valid())                       // an immediate double-click
+    expect(t.state.acks).toHaveLength(1)
+  })
+  it('does not record last_ack_at for an acknowledgement that did not go out', async () => {
+    t = setup({ ackResult: false })
+    await submit(valid())
+    expect(t.state.leads[0].last_ack_at).toBeUndefined()
+  })
+  it('a lead that predates the columns falls back to created_at (first email attempted at creation)', async () => {
+    t = setup({ leads: [unconfirmed({ created_at: minutesAgo(3), last_submitted_at: minutesAgo(3) })] })
+    await submit(valid())
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('the owner "resubmitted" notice is measured from the last notice, and stamped only when it really went out', async () => {
+    const day = 24 * 60 * 60_000
+    t = setup({ leads: [unconfirmed({ confirmed_at: '2026-01-02T00:00:00.000Z', last_submitted_at: minutesAgo(5), last_notice_at: new Date(Date.now() - 2 * day).toISOString() })] })
+    await submit(valid())
+    expect(t.state.notices).toHaveLength(1)     // old behaviour: silenced forever by the 5-minute-old submission
+    expect(Date.now() - Date.parse(t.state.leads[0].last_notice_at)).toBeLessThan(60_000)
+    await submit(valid())
+    expect(t.state.notices).toHaveLength(1)     // and not again within 24h
+  })
+  it('a notice the budget skipped is not stamped, so the next resubmission can still deliver it', async () => {
+    t = setup({ leads: [unconfirmed({ confirmed_at: '2026-01-02T00:00:00.000Z' })],
+      kv: { 'rl:leadnotice:budget': JSON.stringify({ count: 20, windowStart: Date.now(), refunds: 0 }) } })
+    await submit(valid())
+    expect(t.state.notices).toHaveLength(0)
+    expect(t.state.leads[0].last_notice_at).toBeUndefined()
+  })
+})
+
+describe('R6-B3 — adminCreateLead with overrideRemoval is safe to retry', () => {
+  const body = (over = {}) => ({ name: 'Ann', company: 'Co', email: 'ann@co.com', ...over })
+  it('a failed lift after the insert leaves a retry able to finish the job (it used to 409 forever)', async () => {
+    t = setup({ suppressed: [sha('ann@co.com')], liftError: { message: 'db hiccup' } })
+    await expect(t.mod.adminCreateLead(t.c({ body: body({ overrideRemoval: true }) }))).rejects.toBeTruthy()
+    expect(t.state.leads).toHaveLength(1)           // the lead did get created
+    t.restore()
+    // retry against the same table, now with the database healthy
+    const leads = t.state.leads, suppressed = t.state.suppressed
+    t = setup({ leads, suppressed: [...suppressed] })
+    const res = await t.mod.adminCreateLead(t.c({ body: body({ overrideRemoval: true }) }))
+    expect(res.status).toBe(409)
+    expect(res.body.suppressionLifted).toBe(true)
+    expect(t.state.suppressed.size).toBe(0)
+    expect(t.state.audit[0]).toMatchObject({ action: 'lead.suppression_lift' })
+  })
+  it('without the override, an existing lead + suppression is left exactly as it was', async () => {
+    t = setup({ leads: [mkLead({ email: 'ann@co.com' })], suppressed: [sha('ann@co.com')] })
+    const res = await t.mod.adminCreateLead(t.c({ body: body() }))
+    expect(res.status).toBe(409)
+    expect(t.state.suppressed.size).toBe(1)
+  })
+})
+
+describe('R6-G3 — a capped CSV export says so', () => {
+  it('reports X-Export-Truncated: false and the row count for a complete export', async () => {
+    t = setup({ leads: [mkLead()] })
+    const res = await t.mod.adminExportLeads(t.c({}))
+    expect(res.headers['X-Export-Truncated']).toBe('false')
+    expect(res.headers['X-Export-Rows']).toBe('1')
+  })
+  it('flags truncation exactly when more rows exist than the cap — and not when there are exactly cap rows', async () => {
+    const mk = (n) => Array.from({ length: n }, (_, i) => ({ id: `id-${String(i).padStart(6, '0')}`, name: 'N', company: 'C', email: `e${i}@x.com`,
+      status: 'NEW', notes: null, submission_count: 1, created_at: new Date(Date.UTC(2026, 0, 1) - i * 1000).toISOString() }))
+    const run = async (total) => {
+      const all = mk(total)
+      const db = createFakeSupabase(q => {
+        if (q.table === 'admin_audit_log') return { data: null, error: null }
+        if (q.table !== 'employer_leads') return undefined
+        // keyset cursor is irrelevant to this fake: hand out the next slice by how many were already given
+        db.given = db.given || 0
+        const slice = all.slice(db.given, db.given + q.limit)
+        db.given += slice.length
+        return { data: slice, error: null }
+      })
+      const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', { 'config/supabase.js': { getSupabase: () => db }, 'services/email.service.js': {} })
+      try { return await mod.adminExportLeads({ env: {}, get: () => ({ id: 'a', role: 'ADMIN' }), req: { query: () => undefined, header: () => undefined },
+        json: b => b, body: (raw, status, headers) => ({ raw, headers }) }) } finally { restore() }
+    }
+    const exact = await run(50_000)
+    expect(exact.headers['X-Export-Truncated']).toBe('false')
+    expect(exact.headers['X-Export-Rows']).toBe('50000')
+    const over = await run(50_001)
+    expect(over.headers['X-Export-Truncated']).toBe('true')
+    expect(over.headers['X-Export-Rows']).toBe('50000')
+    expect(over.raw.split('\r\n').filter(Boolean)).toHaveLength(50_001)   // header + exactly 50,000 rows
+  })
+})
+
+describe('R6-G1 — adminNotifyCandidates', () => {
+  const NOW_ISO = () => new Date().toISOString()
+  const confirmedLead = (over = {}) => mkLead({ role_category: 'sales', confirmed_at: '2026-02-01T00:00:00.000Z', ...over })
+  const post = (body) => t.mod.adminNotifyCandidates(t.c({ body }))
+  const supply = [{ role_category: 'sales', candidate_count: '3' }]
+
+  it('emails confirmed open leads in the field, names no candidate, carries a removal link, and moves NEW to CONTACTED', async () => {
+    t = setup({ supply, leads: [confirmedLead({ id: ID1, email: 'a@acme.com' }), confirmedLead({ id: ID2, email: 'b@acme.com', status: 'CONTACTED', contacted_at: '2026-03-01T00:00:00.000Z' })] })
+    const res = await post({ field: 'sales' })
+    expect(res.body.data).toMatchObject({ field: 'sales', candidates: 3, eligible: 2, sent: 2, failed: 0, remaining: 0 })
+    expect(t.state.candidateMails.map(m => m.to).sort()).toEqual(['a@acme.com', 'b@acme.com'])
+    expect(t.state.candidateMails[0]).toMatchObject({ field: 'Sales', count: 3 })
+    expect(t.state.candidateMails[0].links.removeUrl).toContain('/remove')
+    const [a, b] = [t.state.leads.find(l => l.id === ID1), t.state.leads.find(l => l.id === ID2)]
+    expect(a).toMatchObject({ status: 'CONTACTED' }); expect(a.contacted_at).toBeTruthy(); expect(a.last_candidates_notified_at).toBeTruthy()
+    expect(b.contacted_at).toBe('2026-03-01T00:00:00.000Z')            // an existing contacted_at is never rewound
+    expect(t.state.audit.at(-1)).toMatchObject({ action: 'lead.notify_candidates', detail: { field: 'sales', sent: 2, failed: 0 } })
+    expect(JSON.stringify(t.state.audit.at(-1))).not.toContain('@acme.com')   // ids and counts only, never an address
+  })
+  it('skips unconfirmed leads, other fields, closed leads, uncategorised leads, and anyone told in the last 30 days', async () => {
+    t = setup({ supply, leads: [
+      confirmedLead({ id: ID1, email: 'ok@acme.com' }),
+      confirmedLead({ id: 'x2', email: 'unconfirmed@acme.com', confirmed_at: null }),
+      confirmedLead({ id: 'x3', email: 'legal@acme.com', role_category: 'legal' }),
+      confirmedLead({ id: 'x4', email: 'archived@acme.com', status: 'ARCHIVED' }),
+      confirmedLead({ id: 'x5', email: 'converted@acme.com', status: 'CONVERTED' }),
+      confirmedLead({ id: 'x6', email: 'none@acme.com', role_category: null }),
+      confirmedLead({ id: 'x7', email: 'recent@acme.com', last_candidates_notified_at: new Date(Date.now() - 5 * 86400_000).toISOString() }),
+      confirmedLead({ id: 'x8', email: 'old@acme.com', last_candidates_notified_at: new Date(Date.now() - 40 * 86400_000).toISOString() }),
+    ] })
+    const res = await post({ field: 'sales' })
+    expect(t.state.candidateMails.map(m => m.to).sort()).toEqual(['ok@acme.com', 'old@acme.com'])
+    expect(res.body.data).toMatchObject({ eligible: 2, sent: 2 })
+  })
+  it('pressing it twice mails nobody twice', async () => {
+    t = setup({ supply, leads: [confirmedLead({ id: ID1, email: 'a@acme.com' })] })
+    await post({ field: 'sales' })
+    const second = await post({ field: 'sales' })
+    expect(t.state.candidateMails).toHaveLength(1)
+    expect(second.body.data).toMatchObject({ eligible: 0, sent: 0 })
+  })
+  it('refuses when the field has no Verified candidates — there is nothing to tell anyone', async () => {
+    t = setup({ supply: [], leads: [confirmedLead()] })
+    const res = await post({ field: 'sales' })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('NO_CANDIDATES')
+    expect(t.state.candidateMails).toHaveLength(0)
+  })
+  it('dryRun reports who would be emailed and sends nothing', async () => {
+    t = setup({ supply, leads: [confirmedLead()] })
+    const res = await post({ field: 'sales', dryRun: true })
+    expect(res.body.data).toMatchObject({ eligible: 1, sent: 0, dryRun: true, candidates: 3 })
+    expect(t.state.candidateMails).toHaveLength(0)
+    expect(t.state.audit.some(a => a.action === 'lead.notify_candidates')).toBe(false)
+  })
+  it('sends at most 25 per call and says how many remain', async () => {
+    t = setup({ supply, leads: Array.from({ length: 30 }, (_, i) => confirmedLead({ id: `id-${i}`, email: `l${i}@acme.com` })) })
+    const res = await post({ field: 'sales' })
+    expect(res.body.data).toMatchObject({ eligible: 30, sent: 25, remaining: 5 })
+    const next = await post({ field: 'sales' })
+    expect(next.body.data).toMatchObject({ eligible: 5, sent: 5, remaining: 0 })
+  })
+  it('a lead whose email did not go out is neither stamped nor moved to CONTACTED, and is counted as failed', async () => {
+    t = setup({ supply, candidateMailResult: (to) => to !== 'bad@acme.com',
+      leads: [confirmedLead({ id: ID1, email: 'bad@acme.com' }), confirmedLead({ id: ID2, email: 'good@acme.com' })] })
+    const res = await post({ field: 'sales' })
+    expect(res.body.data).toMatchObject({ sent: 1, failed: 1, remaining: 1 })
+    const bad = t.state.leads.find(l => l.id === ID1)
+    expect(bad.status).toBe('NEW'); expect(bad.last_candidates_notified_at).toBeUndefined()
+  })
+  it('never emails an address that is on the do-not-contact list, even if its lead row still exists', async () => {
+    t = setup({ supply, suppressed: [sha('gone@acme.com')],
+      leads: [confirmedLead({ id: ID1, email: 'gone@acme.com' }), confirmedLead({ id: ID2, email: 'here@acme.com' })] })
+    const res = await post({ field: 'sales' })
+    expect(t.state.candidateMails.map(m => m.to)).toEqual(['here@acme.com'])
+    expect(res.body.data).toMatchObject({ sent: 1, failed: 0, skipped: 1, remaining: 0 })
+  })
+  it('rejects a field outside the taxonomy', async () => {
+    t = setup({ supply })
+    await expect(post({ field: 'plumbing' })).rejects.toBeTruthy()
+    await expect(post({})).rejects.toBeTruthy()
+  })
+  it('is admin-only at the route', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/routes/employer-leads.routes.js'), 'utf8')
+    expect(src).toMatch(/router\.post\('\/notify-candidates', admin, c\.adminNotifyCandidates\)/)
   })
 })

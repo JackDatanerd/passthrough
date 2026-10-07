@@ -16,7 +16,8 @@ const { cors } = require('hono/cors')
 //  - Retry-After:         sent on every 429/503; the SPA's one automatic retry and
 //                         its "wait N seconds" copy key off it
 //  - Content-Disposition: the server's chosen filename for downloads
-const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition']
+//  - X-Export-Truncated / X-Export-Rows: the employer-leads CSV says whether it hit its row cap
+const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows']
 
 // Browsers cap this themselves (Chrome 2h, Firefox 24h). Without it every
 // credentialed API call re-sent a preflight on top of itself.

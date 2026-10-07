@@ -368,6 +368,55 @@ describe('employer_lead_ack — failed sends and List-Unsubscribe', () => {
   })
 })
 
+// Independent audit round 6 (Section 5, G1): the admin-triggered "candidates are available" email.
+describe('employer_candidates_available — per-address cap, honest failures, one-click unsubscribe', () => {
+  const links = { removeUrl: 'https://x/r' }
+  const mk2 = (sendImpl) => {
+    const sent = []
+    const { mod, restore } = loadWithStubs('services/email.service.js', {
+      'config/email.js': { sendViaResend: async (env, msg) => { sent.push(msg); return sendImpl(sent.length) } },
+    })
+    const kv = {}
+    const env = { RATE_LIMIT_KV: { get: async k => kv[k] ?? null, put: async (k, v) => { kv[k] = v } }, EMAIL_FROM: 'a@b.c', FRONTEND_URL: 'https://x.y' }
+    const sb = { from: () => ({ insert: async () => ({ error: null }) }) }
+    return { mod, restore, sent, env, sb }
+  }
+  let m
+  afterEach(() => m?.restore())
+
+  it('names the field and the count (singular and plural), never a candidate, and carries the removal link', async () => {
+    m = mk2(() => ({}))
+    await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'a@acme.com', 'Ann', 'Sales', 1, links)
+    await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'b@acme.com', 'Bo', 'Sales', 4, links)
+    expect(m.sent[0].subject).toBe('Verified candidates in Sales are now available')
+    expect(m.sent[0].html).toContain('there is 1 Verified candidate in Sales')
+    expect(m.sent[1].html).toContain('there are 4 Verified candidates in Sales')
+    expect(m.sent[0].html).toContain('href="https://x/r"')
+    expect(m.sent[0].html).not.toMatch(/{{\w+}}/)
+  })
+  it('mails one address at most once per 30 days, whoever asks', async () => {
+    m = mk2(() => ({}))
+    const r = []
+    for (let i = 0; i < 3; i++) r.push(await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'a@acme.com', 'Ann', 'Sales', 2, links))
+    expect(r).toEqual([true, false, false])
+    expect(m.sent).toHaveLength(1)
+  })
+  it('a failed send does not use up the address\'s one slot', async () => {
+    const err = console.error; console.error = () => {}
+    m = mk2(n => { if (n === 1) throw new Error('Resend API error (503)'); return {} })
+    const a = await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'a@acme.com', 'Ann', 'Sales', 2, links)
+    const b = await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'a@acme.com', 'Ann', 'Sales', 2, links)
+    console.error = err
+    expect([a, b]).toEqual([false, true])
+  })
+  it('sends List-Unsubscribe headers when given a one-click URL, and refuses to send without a removal link', async () => {
+    m = mk2(() => ({}))
+    await m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'a@acme.com', 'Ann', 'Sales', 2, { ...links, unsubscribeUrl: 'https://api.x/u?token=t' })
+    expect(m.sent[0].headers).toEqual({ 'List-Unsubscribe': '<https://api.x/u?token=t>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' })
+    await expect(m.mod.sendEmployerCandidatesAvailable(m.env, m.sb, 'b@acme.com', 'Bo', 'Sales', 2, {})).rejects.toThrow(/removeUrl/)
+  })
+})
+
 // Auth round 3: callers that rotate a single-use link token reserve the slot first and pass
 // slotReserved. When the provider then fails, the link was never mailed — the slot must come
 // back so the person can ask again instead of being locked out for the hour.
