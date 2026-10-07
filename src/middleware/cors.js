@@ -13,11 +13,12 @@ const { cors } = require('hono/cors')
 // A cross-origin response hides every header outside the CORS-safelisted set
 // unless it is listed here (API and site are different origins in production):
 //  - X-Export-Parts:      how many parts the account's data export has
+//  - X-Export-Cursor:     where the next part of that export starts (keyset paging; survives deletions)
 //  - Retry-After:         sent on every 429/503; the SPA's one automatic retry and
 //                         its "wait N seconds" copy key off it
 //  - Content-Disposition: the server's chosen filename for downloads
 //  - X-Export-Truncated / X-Export-Rows: the employer-leads CSV says whether it hit its row cap
-const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows']
+const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows', 'X-Export-Cursor']
 
 // Browsers cap this themselves (Chrome 2h, Firefox 24h). Without it every
 // credentialed API call re-sent a preflight on top of itself.

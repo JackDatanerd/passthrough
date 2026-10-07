@@ -1,0 +1,37 @@
+Profile & Dashboard (Section 6) - round 6
+
+APPLY supabase/migrations/0056_profile_dashboard_round6.sql BEFORE deploying the Worker.
+
+G1  Saving a scan's profile no longer silently overwrites hand corrections.
+    - 0056: save_profile_from_scan(user, profile, replace_edited) - one atomic statement; a profile
+      carrying `editedAt` is replaced only when replace_edited is true.
+    - POST /api/profile/save answers 409 { code: 'PROFILE_EDITED' } otherwise; body.replaceEdited
+      must be the literal boolean true.
+    - SaveProfilePrompt: says the profile was hand-edited, asks before replacing ("Keep my edits" /
+      "Replace it"), and turns a 409 from a second tab into the same question.
+G2  "Delete these N scans" on the dashboard: removes exactly what the search / status filter shows.
+    - DELETE /api/profile/scans?status=&search= - same definitions as GET /scan/history (new
+      lib/scanSearch.js, now used by both). `remaining` counts under the same filters.
+    - An unknown status, or a search that sanitizes to nothing with no status, is refused (400)
+      instead of widening to "delete everything".
+    - frontend/src/lib/purgeScans.js is the shared batch loop (Settings uses it too).
+B1  Index.jsx: the out-of-range page clamp and the debounced search commit REPLACE the history
+    entry (no Back-button trap, no history entry per pause in typing).
+B2  Purge batches delete their R2 objects in ONE bulk call (falls back key-by-key on failure)
+    instead of up to ~75 sequential calls.
+B3  Export: keyset paging. A full part returns X-Export-Cursor (now exposed via CORS); the next part
+    is requested with ?cursor= so a scan deleted between downloads cannot fall through the gap.
+    Settings chains the parts in order when cursors are present; without them it pages by offset
+    as before. A cursor part never 404s because the total shrank. The cursor is validated against a
+    strict shape before it is spliced into the filter.
+B4  Export: an EXPIRED staged email change is no longer exported as pending; the mail list now
+    says which address it covers (emailsNote). KNOWN LIMIT: mail sent to an address the account
+    used earlier cannot be linked to it - email_logs has no user_id and the old address is not
+    recorded. Closing it needs a schema change that also touches the auth and account-deletion
+    paths; left for a decision.
+B5  Settings export copy no longer claims the resume TEXT is included (pasted text is dropped after
+    scoring; the structured data is what is exported).
+
+Tests: tests/profile.round6.test.js, frontend/tests/{purgeScans.test.js, components/SaveProfilePrompt.test.jsx,
+pages/DashboardIndex.round6.test.jsx, pages/Settings.round6.test.jsx}; existing profile / cors tests updated
+for the RPC save, bulk R2 delete, live pending email, and the new exposed header.

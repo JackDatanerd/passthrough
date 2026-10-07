@@ -236,6 +236,11 @@ wrangler secret put COMMISSION_HOLD_DAYS
 # partner page. Apply supabase/migrations/0055_partners_round4.sql BEFORE deploying the
 # Worker that reads dashboard_token / payouts.internal_note / partner_applications.review_note.
 
+# PROFILE & DASHBOARD (migration 0056): saving a profile from a scan now goes through the
+# save_profile_from_scan() function, which refuses to overwrite a profile the person has
+# corrected by hand unless they confirm. Apply supabase/migrations/0056_profile_dashboard_round6.sql
+# BEFORE deploying the Worker — without it POST /api/profile/save fails.
+
 # Lets specific IPs (comma-separated) skip every rate limiter entirely —
 # for load-testing or manual QA against production limits. Unset = no
 # bypass = normal behavior for everyone, which is the fail-safe default.

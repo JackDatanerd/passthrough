@@ -206,7 +206,7 @@ describe('saveProfile — only a finished scan with a real background can become
   })
   it('accepts every completed / paid status', async () => {
     for (const status of ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']) {
-      t = setup(q => scan({ status })(q) || (q.op === 'update' ? { data: null, error: null } : undefined))
+      t = setup(q => scan({ status })(q) || (q.op === 'rpc' ? { data: true, error: null } : undefined))
       expect((await save()).body.success, status).toBe(true)
       t.restore()
     }
@@ -216,7 +216,7 @@ describe('saveProfile — only a finished scan with a real background can become
 describe('exportMyData — what the account holds about its owner', () => {
   const rows = {
     users: { data: { name: 'Jane', email: 'jane@x.com', email_verified: true, free_fix_credits: 0, created_at: 'c', saved_profile: null,
-      pending_email: 'new@x.com', notify_scan_results: false, terms_accepted_at: 'ta', terms_version: '2026-01',
+      pending_email: 'new@x.com', pending_email_expiry: new Date(Date.now() + 3600_000).toISOString(), notify_scan_results: false, terms_accepted_at: 'ta', terms_version: '2026-01',
       last_login_at: 'l1', last_login_ip: '1.1.1.1', previous_login_at: 'l0', previous_login_ip: '2.2.2.2' }, error: null },
     scans: { data: [], count: 0, error: null },
     payments: { data: [], error: null },
@@ -263,7 +263,9 @@ describe('deleteScanHistory — batched, safe deletion of the whole history', ()
   const R = (id, over = {}) => ({ id, status: 'COMPLETE_PASS', updated_at: '2020-01-01', resume_path: `r/${id}.pdf`, resume_ats_path: null, resume_pdf_path: `r/${id}.out.pdf`, verification_code: null, ...over })
   function history({ list, held = [], removed, remaining = 0, delError, listError } = {}) {
     const state = { deleted: [], r2: [] }
-    const bucket = { delete: async k => { if (state.failKey === k) throw new Error('r2 down'); state.r2.push(k) } }
+    state.r2Calls = []
+    // R2's delete() takes one key or a list; a bulk call that includes the failing key fails whole.
+    const bucket = { delete: async k => { const keys = [].concat(k); state.r2Calls.push(keys); if (keys.includes(state.failKey)) throw new Error('r2 down'); state.r2.push(...keys) } }
     const tombstones = []
     const x = setup(q => {
       if (q.table === 'scans' && q.op === 'select' && q.selectOpts?.head) return { count: remaining, error: null }
@@ -287,7 +289,7 @@ describe('deleteScanHistory — batched, safe deletion of the whole history', ()
     const del = t.db.calls.find(c => c.op === 'delete')
     expect(del.filters).toContainEqual(['eq', 'user_id', 'u1'])           // never deletes by id alone
     expect(t.state.deleted).toEqual(['a', 'b'])
-    expect(t.state.r2.sort()).toEqual(['r/a.out.pdf', 'r/a.pdf', 'r/b.out.pdf', 'r/b.pdf'])
+    expect([...t.state.r2].sort()).toEqual(['r/a.out.pdf', 'r/a.pdf', 'r/b.out.pdf', 'r/b.pdf'])
     expect(t.tombstones.map(r => r.id)).toEqual(['a', 'b'])
     const rpc = t.db.calls.find(c => c.op === 'rpc')
     expect(rpc).toMatchObject({ name: 'clear_saved_profile_source', args: { p_user_id: 'u1', p_scan_ids: ['a', 'b'] } })
@@ -319,11 +321,22 @@ describe('deleteScanHistory — batched, safe deletion of the whole history', ()
     expect(res.body.data).toEqual({ deleted: 0, remaining: 0 })
     expect(t.db.calls.some(c => c.op === 'delete' || c.table === 'payments' || c.op === 'rpc')).toBe(false)
   })
-  it('a failing R2 delete never fails the request or skips the other objects', async () => {
+  it('removes the whole batch\'s files in ONE R2 call, not one subrequest per object', async () => {
+    t = history({ list: [R('a'), R('b'), R('c')], remaining: 0 })
+    await run()
+    expect(t.state.r2Calls).toHaveLength(1)
+    expect(t.state.r2Calls[0].sort()).toEqual(['r/a.out.pdf', 'r/a.pdf', 'r/b.out.pdf', 'r/b.pdf', 'r/c.out.pdf', 'r/c.pdf'])
+  })
+  it('a failing R2 delete never fails the request or skips the other objects (falls back key by key)', async () => {
     t = history({ list: [R('a')], remaining: 0 }); t.state.failKey = 'r/a.pdf'
     const res = await run()
     expect(res.body.data.deleted).toBe(1)
     expect(t.state.r2).toEqual(['r/a.out.pdf'])
+  })
+  it('a batch with no stored files makes no R2 call', async () => {
+    t = history({ list: [R('a', { resume_path: null, resume_pdf_path: null })], remaining: 0 })
+    await run()
+    expect(t.state.r2Calls).toHaveLength(0)
   })
   it('a failing pointer RPC never fails a deletion that already happened', async () => {
     t = history({ list: [R('a')] })

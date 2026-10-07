@@ -16,6 +16,7 @@ import { createPoller } from '../../lib/poller'
 import { describeQuota } from '../../lib/quota'
 import { isLive, canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
 import Alert from '../../components/ui/Alert'
+import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
 // .js's SCAN_STATUSES allowlist, for the filter dropdown below.
@@ -54,6 +55,12 @@ export default function DashboardIndex() {
   const [pendingDelete, setPendingDelete] = useState(null)   // scan awaiting confirmation
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  // "Delete these N scans": removes what the current search / status filter shows, in batches.
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkRunning, setBulkRunning] = useState(false)
+  const [bulkCount, setBulkCount] = useState(0)
+  const [bulkError, setBulkError] = useState('')
+  const [bulkResult, setBulkResult] = useState(null)   // { deleted, remaining }
 
   // FEATURE GAP CLOSED (Section 6, fixing-time pass): page/search/status now
   // live in the URL instead of plain component state — refreshing or
@@ -105,12 +112,14 @@ export default function DashboardIndex() {
   useEffect(() => {
     const handle = setTimeout(() => {
       if (searchInput === search) return
+      // replace: a pause in typing is not a place to come back to — every debounced commit used
+      // to add a history entry, so Back stepped through half-typed searches.
       setSearchParams(prev => {
         const next = new URLSearchParams(prev)
         if (searchInput) next.set('search', searchInput); else next.delete('search')
         next.delete('page') // a new search always starts back at page 1
         return next
-      })
+      }, { replace: true })
     }, 350)
     return () => clearTimeout(handle)
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,12 +134,12 @@ export default function DashboardIndex() {
     })
   }
 
-  function setPage(newPage) {
+  function setPage(newPage, options) {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
       if (newPage > 1) next.set('page', String(newPage)); else next.delete('page')
       return next
-    })
+    }, options)
   }
 
   // Only the newest request may write state: a quick filter change or page
@@ -148,7 +157,9 @@ export default function DashboardIndex() {
         // A page past the end (scans removed since, a stale bookmark, a hand-
         // edited ?page=): step back to the last page that exists.
         const lastPage = Math.max(Math.ceil((data.total ?? 0) / SCANS_PER_PAGE), 1)
-        if (page > lastPage) { setPage(lastPage); return }
+        // replace: the out-of-range page is not somewhere Back should return to — it would just
+        // bounce forward again, trapping the person on this page.
+        if (page > lastPage) { setPage(lastPage, { replace: true }); return }
         setScans(data.scans)
         setTotal(data.total ?? 0)
         setLoading(false)
@@ -238,6 +249,21 @@ export default function DashboardIndex() {
 
   const hasFilters = !!(search || status)
 
+  // What the filters currently show, in words, for the confirmation ("status Failed and “pm”").
+  const filterWords = [status && `status ${statusLabel(status)}`, search && `“${search}”`].filter(Boolean).join(' and ')
+
+  async function confirmBulkDelete() {
+    setBulkRunning(true); setBulkError(''); setBulkResult(null); setBulkCount(0)
+    try {
+      setBulkResult(await purgeScans(api, { status, search, onProgress: setBulkCount }))
+    } catch (err) {
+      setBulkError(getErrorMessage(err, 'Could not delete those scans.') + partialDeleteNote(err.purgeDeleted))
+    } finally {
+      setBulkRunning(false); setBulkOpen(false)
+      setReloadTick(t => t + 1)   // the list is shorter now; the load effect steps back a page if needed
+    }
+  }
+
   return (
     <DashboardLayout>
       <div className="flex flex-col gap-6">
@@ -317,10 +343,25 @@ export default function DashboardIndex() {
               <option value="">All</option>
               {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
             </Select>
+            {/* Clearing out e.g. every failed scan used to mean deleting them one at a time. */}
+            {hasFilters && total > 0 && !loading && !loadError && (
+              <Button size="sm" variant="secondary" onClick={() => { setBulkError(''); setBulkResult(null); setBulkOpen(true) }}>
+                Delete these {total} scan{total === 1 ? '' : 's'}
+              </Button>
+            )}
           </div>
         )}
 
         <Alert>{deleteError}</Alert>
+        <Alert>{bulkError}</Alert>
+        {bulkResult && (
+          <p role="status" className="text-sm text-gray-700">
+            {bulkResult.deleted === 0 && bulkResult.remaining === 0
+              ? 'No scans matched.'
+              : `Deleted ${bulkResult.deleted} scan${bulkResult.deleted === 1 ? '' : 's'}.`}
+            {bulkResult.remaining > 0 && ` ${bulkResult.remaining} ${bulkResult.remaining === 1 ? 'is' : 'are'} still being processed and ${bulkResult.remaining === 1 ? 'was' : 'were'} kept — try again in a few minutes.`}
+          </p>
+        )}
 
         {loading && (
           <div className="flex justify-center py-12">
@@ -442,6 +483,18 @@ export default function DashboardIndex() {
           />
         )}
       </div>
+
+      <ConfirmDialog
+        open={bulkOpen}
+        title="Delete these scans"
+        message={bulkRunning
+          ? `Deleting… ${bulkCount} scan${bulkCount === 1 ? '' : 's'} removed so far.`
+          : `Permanently delete the ${total} scan${total === 1 ? '' : 's'} matching ${filterWords}? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. Payment records and your saved profile are kept.\n\nScans that are still being processed are skipped.`}
+        confirmLabel={`Delete ${total} scan${total === 1 ? '' : 's'}`}
+        loading={bulkRunning}
+        onConfirm={confirmBulkDelete}
+        onCancel={() => setBulkOpen(false)}
+      />
 
       <ConfirmDialog
         open={!!pendingDelete}

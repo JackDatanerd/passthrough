@@ -7,7 +7,7 @@ import { EXPOSED_HEADERS } from '../src/middleware/cors.js'
 // list fails silently in production and nowhere else. (The list lives in middleware/cors.js;
 // tests/cors.middleware.test.js asserts the headers on real responses too.)
 describe('CORS exposeHeaders (src/middleware/cors.js)', () => {
-  it.each(['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows'])('exposes %s to the browser', h => {
+  it.each(['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows', 'X-Export-Cursor'])('exposes %s to the browser', h => {
     expect(EXPOSED_HEADERS.map(x => x.toLowerCase())).toContain(h.toLowerCase())
   })
 })

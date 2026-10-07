@@ -160,32 +160,60 @@ describe('saveProfile', () => {
     expect(res.status).toBe(400)
   })
 
-  it('saves resumeData + sourceScanId + roleCategory for an owned, structured scan', async () => {
-    let updatePatch = null
+  const SAVE_RPC = 'save_profile_from_scan'
+  const ownedScan = over => ({ id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] }, role_category: 'engineering', ...over })
+
+  it('saves resumeData + sourceScanId + roleCategory for an owned, structured scan, through the atomic RPC', async () => {
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] }, role_category: 'engineering' }, error: null }
-      if (q.table === 'users' && q.op === 'update') { updatePatch = q.patch; return { data: null, error: null } }
+      if (q.table === 'scans') return { data: ownedScan(), error: null }
+      if (q.op === 'rpc' && q.name === SAVE_RPC) return { data: true, error: null }
     })
     const res = await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))
     expect(res.body.success).toBe(true)
-    expect(updatePatch.saved_profile).toMatchObject({ resumeData: { name: 'Jane', skills: ['a'] }, sourceScanId: 's1', roleCategory: 'engineering' })
-    expect(typeof updatePatch.saved_profile.savedAt).toBe('string')
+    const rpc = t.db.calls.find(c => c.op === 'rpc')
+    expect(rpc.name).toBe(SAVE_RPC)
+    expect(rpc.args.p_user_id).toBe('u1')
+    expect(rpc.args.p_replace_edited).toBe(false)
+    expect(rpc.args.p_profile).toMatchObject({ resumeData: { name: 'Jane', skills: ['a'] }, sourceScanId: 's1', roleCategory: 'engineering' })
+    expect(typeof rpc.args.p_profile.savedAt).toBe('string')
+    expect(t.db.calls.some(c => c.table === 'users' && c.op === 'update')).toBe(false)   // never an unconditional write
   })
 
   it('stores roleCategory as null rather than undefined when the scan has none', async () => {
-    let updatePatch = null
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] }, role_category: null }, error: null }
-      if (q.table === 'users' && q.op === 'update') { updatePatch = q.patch; return { data: null, error: null } }
+      if (q.table === 'scans') return { data: ownedScan({ role_category: null }), error: null }
+      if (q.op === 'rpc') return { data: true, error: null }
     })
     await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))
-    expect(updatePatch.saved_profile.roleCategory).toBe(null)
+    expect(t.db.calls.find(c => c.op === 'rpc').args.p_profile.roleCategory).toBe(null)
   })
 
-  it('propagates a database error on the update', async () => {
+  it('409s PROFILE_EDITED when the existing profile has hand edits and replacement was not confirmed', async () => {
     t = setup(q => {
-      if (q.table === 'scans') return { data: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', original_resume_data: { name: 'Jane', skills: ['a'] } }, error: null }
-      if (q.table === 'users' && q.op === 'update') return { data: null, error: new Error('write failed') }
+      if (q.table === 'scans') return { data: ownedScan(), error: null }
+      if (q.op === 'rpc') return { data: false, error: null }   // the SQL refused: editedAt present, p_replace_edited false
+    })
+    const res = await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, code: 'PROFILE_EDITED' })
+  })
+
+  it('replaceEdited: true is passed through; anything else (a string, 1, "true") is NOT confirmation', async () => {
+    for (const [replaceEdited, expected] of [[true, true], ['true', false], [1, false], [undefined, false]]) {
+      t = setup(q => {
+        if (q.table === 'scans') return { data: ownedScan(), error: null }
+        if (q.op === 'rpc') return { data: true, error: null }
+      })
+      await t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111', replaceEdited } }))
+      expect(t.db.calls.find(c => c.op === 'rpc').args.p_replace_edited, String(replaceEdited)).toBe(expected)
+      t.restore()
+    }
+  })
+
+  it('propagates a database error on the write', async () => {
+    t = setup(q => {
+      if (q.table === 'scans') return { data: ownedScan(), error: null }
+      if (q.op === 'rpc') return { data: null, error: new Error('write failed') }
     })
     await expect(t.mod.saveProfile(t.c({ userId: 'u1', body: { scanId: '11111111-1111-1111-1111-111111111111' } }))).rejects.toThrow('write failed')
   })

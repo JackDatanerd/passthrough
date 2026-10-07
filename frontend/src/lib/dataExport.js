@@ -21,3 +21,13 @@ export async function exportPartsFrom(res) {
     return 1
   }
 }
+
+// Where the NEXT part of the export starts: the server's keyset cursor for the last scan of a
+// full part (X-Export-Cursor, exposed through CORS). Sending it back as ?cursor= makes the next
+// part immune to scans being deleted in between — offset paging alone would shift by one and
+// leave a scan in neither file. null when the response has none (the last part, or a header a
+// proxy hid), in which case the part falls back to the offset.
+export function exportCursorFrom(res) {
+  const v = res?.headers?.['x-export-cursor']
+  return typeof v === 'string' && v.includes('|') ? v : null
+}

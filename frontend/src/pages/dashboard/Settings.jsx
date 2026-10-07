@@ -11,7 +11,8 @@ import { setToken, storageSet } from '../../lib/storage'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatDateTime } from '../../lib/utils'
-import { exportFileName, exportPartsFrom } from '../../lib/dataExport'
+import { exportFileName, exportPartsFrom, exportCursorFrom } from '../../lib/dataExport'
+import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 import { passwordProblem } from '../../lib/passwordRules'
 import { roleLabel } from '../../lib/roleCategories'
 import SessionsCard from '../../components/account/SessionsCard'
@@ -258,19 +259,10 @@ export default function Settings() {
 
   async function handlePurgeHistory() {
     setPurging(true); setPurgeError(''); setPurgeResult(null); setPurgeCount(0)
-    let deleted = 0, remaining = null
     try {
-      for (let batch = 0; batch < 400; batch++) {
-        const res = await api.delete('/profile/scans')
-        deleted += res.data.data.deleted
-        remaining = res.data.data.remaining
-        setPurgeCount(deleted)
-        // Nothing left, or nothing more can go right now (scans still being processed stay).
-        if (res.data.data.deleted === 0 || remaining === 0) break
-      }
-      setPurgeResult({ deleted, remaining })
+      setPurgeResult(await purgeScans(api, { onProgress: setPurgeCount }))
     } catch (err) {
-      setPurgeError(getErrorMessage(err, 'Could not delete your scan history.') + (deleted ? ` ${deleted} scan${deleted === 1 ? ' was' : 's were'} deleted before it stopped.` : ''))
+      setPurgeError(getErrorMessage(err, 'Could not delete your scan history.') + partialDeleteNote(err.purgeDeleted))
     } finally {
       setPurging(false); setPurgeOpen(false)
       loadProfile()   // the saved profile's "view source scan" link may have just been cleared
@@ -286,19 +278,34 @@ export default function Settings() {
   const [exportParts, setExportParts] = useState(0)          // 0 until a first part has been downloaded
   const [exportedParts, setExportedParts] = useState([])
   const [exportingPart, setExportingPart] = useState(0)
+  // Where each later part starts (part number -> server cursor), learned from the part before it.
+  // With cursors, a scan deleted between two downloads cannot fall through the gap between
+  // files, so a part is offered only once its predecessor has been downloaded. An empty map
+  // after part 1 means the server sent none (a hidden header): parts then page by offset, in any order.
+  const [exportCursors, setExportCursors] = useState({})
+  const [cursorMode, setCursorMode] = useState(false)
 
   async function downloadExportPart(part) {
     setExportError('')
     part === 1 ? setExporting(true) : setExportingPart(part)
     try {
-      const res = await api.get('/profile/export', { params: { part }, responseType: 'blob' })
+      const params = { part }
+      if (exportCursors[part]) params.cursor = exportCursors[part]
+      const res = await api.get('/profile/export', { params, responseType: 'blob' })
       const url = URL.createObjectURL(res.data)
       const a = document.createElement('a')
       a.href = url; a.download = exportFileName(part)
       document.body.appendChild(a); a.click(); a.remove()
       setTimeout(() => URL.revokeObjectURL(url), 1000)
-      if (part === 1) { setExportParts(await exportPartsFrom(res)); setExportedParts([1]) }
-      else setExportedParts(prev => prev.includes(part) ? prev : [...prev, part])
+      const next = exportCursorFrom(res)
+      if (part === 1) {
+        setExportParts(await exportPartsFrom(res)); setExportedParts([1])
+        // A fresh part 1 starts the chain over: cursors from an earlier run may be stale.
+        setExportCursors(next ? { 2: next } : {}); setCursorMode(!!next)
+      } else {
+        setExportedParts(prev => prev.includes(part) ? prev : [...prev, part])
+        if (next) setExportCursors(prev => ({ ...prev, [part + 1]: next }))
+      }
     } catch (err) {
       setExportError(getErrorMessage(err, 'Could not export your data.'))
     } finally {
@@ -619,8 +626,8 @@ export default function Settings() {
           <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
           <p className="text-sm text-gray-500 mb-4">
             Download a copy of what we hold for your account — profile and settings, sign-in history and signed-in
-            devices, scans (including job descriptions and the text and structured data of your resumes), payment
-            history, and a list of the emails we've sent you — as JSON. The uploaded resume files and generated
+            devices, scans (including job descriptions and the structured data extracted from your resumes), payment
+            history, and a list of the emails we've sent you at your current address — as JSON. The uploaded resume files and generated
             documents themselves aren't included; the data extracted from them is. Accounts with many scans are
             split into several files.
           </p>
@@ -631,12 +638,12 @@ export default function Settings() {
             <div role="status" className="mt-4 text-sm text-gray-600">
               <p className="mb-2">
                 Your data is split into <strong>{exportParts} files</strong> — each one holds a batch of your scans, and the first also holds your
-                account, saved profile, devices, email history and payments. Part 1 is downloaded; download the rest to have everything:
+                account, saved profile, devices, email history and payments. Part 1 is downloaded; download the rest{cursorMode ? ', in order,' : ''} to have everything:
               </p>
               <div className="flex flex-wrap gap-2">
                 {Array.from({ length: exportParts - 1 }, (_, i) => i + 2).map(part => (
                   <Button key={part} variant="secondary" size="sm" loading={exportingPart === part}
-                    disabled={exporting || (exportingPart !== 0 && exportingPart !== part)} onClick={() => downloadExportPart(part)}>
+                    disabled={exporting || (exportingPart !== 0 && exportingPart !== part) || (cursorMode && !exportCursors[part])} onClick={() => downloadExportPart(part)}>
                     {exportedParts.includes(part) ? `✓ Part ${part} of ${exportParts}` : `Part ${part} of ${exportParts}`}
                   </Button>
                 ))}

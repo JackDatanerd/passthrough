@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
+import ConfirmDialog from '../ui/ConfirmDialog'
 import { formatDate } from '../../lib/utils'
 
 // Phase 4 — explicit opt-in only. Profile data (name, email, phone, work
@@ -22,31 +23,46 @@ export default function SaveProfilePrompt({ scanId }) {
   // What is already saved (if anything). Saving overwrites it — one profile per
   // account — so the prompt says so, and says when THIS scan is already it,
   // instead of offering an unexplained button every visit.
-  const [existing, setExisting] = useState(null)   // { savedAt, sourceScanId } | null
+  const [existing, setExisting] = useState(null)   // { savedAt, editedAt, sourceScanId } | null
+  // Saving REPLACES the saved profile — including corrections typed into the Settings editor.
+  // Replacing those takes an explicit yes (the server refuses with 409 PROFILE_EDITED otherwise).
+  const [confirmOpen, setConfirmOpen] = useState(false)
 
   useEffect(() => {
     let cancelled = false
     api.get('/profile')
       .then(res => {
         const d = res.data.data
-        if (!cancelled && d.hasSavedProfile) setExisting({ savedAt: d.savedAt, sourceScanId: d.sourceScanId })
+        if (!cancelled && d.hasSavedProfile) setExisting({ savedAt: d.savedAt, editedAt: d.editedAt || null, sourceScanId: d.sourceScanId })
       })
       .catch(() => {})
     return () => { cancelled = true }
   }, [scanId])
 
-  async function handleSave() {
+  async function handleSave(replaceEdited = false) {
     setStatus('saving')
     setError('')
     try {
-      await api.post('/profile/save', { scanId })
-      setExisting({ savedAt: new Date().toISOString(), sourceScanId: scanId })
+      await api.post('/profile/save', replaceEdited ? { scanId, replaceEdited: true } : { scanId })
+      setConfirmOpen(false)
+      setExisting({ savedAt: new Date().toISOString(), editedAt: null, sourceScanId: scanId })
       setStatus('saved')
     } catch (err) {
+      if (err.response?.status === 409 && err.response?.data?.code === 'PROFILE_EDITED') {
+        // Corrected by hand since this page loaded (another tab): ask, don't overwrite.
+        setExisting(prev => ({ ...(prev || {}), editedAt: prev?.editedAt || new Date().toISOString() }))
+        setStatus('idle')
+        setConfirmOpen(true)
+        return
+      }
+      setConfirmOpen(false)
       setError(getErrorMessage(err, 'Could not save profile.'))
       setStatus('error')
     }
   }
+
+  // A profile with hand corrections is replaced only after the person has agreed.
+  const onSaveClick = () => (existing?.editedAt ? setConfirmOpen(true) : handleSave(false))
 
   const alreadyThis = !!existing && existing.sourceScanId === scanId
 
@@ -63,7 +79,9 @@ export default function SaveProfilePrompt({ scanId }) {
       <div>
         <p className="text-sm font-medium text-gray-800">Save this profile for next time</p>
         <p className="text-xs text-gray-500 mt-0.5">
-          {alreadyThis
+          {existing?.editedAt
+            ? `Your saved profile has corrections you made by hand (${formatDate(existing.editedAt)}). Saving this scan replaces them.`
+            : alreadyThis
             ? `This scan is your saved profile (saved ${formatDate(existing.savedAt)}). Save again to pick up any edits you've made since.`
             : existing
               ? `Reuse your background against a new job description in one step. This replaces the profile you saved on ${formatDate(existing.savedAt)}.`
@@ -71,9 +89,19 @@ export default function SaveProfilePrompt({ scanId }) {
         </p>
         {status === 'error' && <p className="text-xs text-red-600 mt-1">{error}</p>}
       </div>
-      <Button onClick={handleSave} loading={status === 'saving'} variant="secondary" size="sm" className="shrink-0">
+      <Button onClick={onSaveClick} loading={status === 'saving'} variant="secondary" size="sm" className="shrink-0">
         {alreadyThis ? 'Save again' : existing ? 'Replace saved profile' : 'Save profile'}
       </Button>
+      <ConfirmDialog
+        open={confirmOpen}
+        title="Replace your edited profile?"
+        message={`Your saved profile has corrections you made by hand${existing?.editedAt ? ` (${formatDate(existing.editedAt)})` : ''}. Saving this scan's profile replaces it, and those corrections are lost.`}
+        confirmLabel="Replace it"
+        cancelLabel="Keep my edits"
+        loading={status === 'saving'}
+        onConfirm={() => handleSave(true)}
+        onCancel={() => setConfirmOpen(false)}
+      />
     </div>
   )
 }

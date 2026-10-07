@@ -77,6 +77,7 @@ const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
+const { sanitizeSearch, applyScanFilters } = require('../lib/scanSearch')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -1263,25 +1264,17 @@ async function downloadFile(ctx) {
   return ctx.body(obj.body)
 }
 
-// GET /api/scan/history?page=&limit=
-// Allowlist for the ?status= filter below — mirrors the same
-// allowlist-rather-than-validate-and-error pattern used by
-// employer-leads.controller.js's LEAD_STATUSES (an unrecognized value is
-// silently ignored rather than filtered on, since this is a narrowing
-// convenience, not a security boundary).
-const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
+// GET /api/scan/history?page=&limit=&search=&status=
+// The ?status= allowlist, the search sanitizer and the filter itself live in lib/scanSearch.js,
+// shared with the filtered "delete these scans" endpoint (profile.controller.js) so the list and
+// the delete can never disagree about what a filter means. An unrecognized status is silently
+// ignored here (a narrowing convenience, not a security boundary) — the DELETE refuses it instead.
 
 // Same reasoning as admin.controller.js's pageParams() (see its comment): a
 // client-controlled limit with no ceiling lets a stray/malicious
 // ?limit=1000000 turn a paginated endpoint into a full-table dump in one
 // request. That was already fixed there; it wasn't fixed here.
 const MAX_SCAN_HISTORY_LIMIT = 100
-
-// What the dashboard search box matches: the uploaded file's name, the
-// candidate's first name (brain-dump / saved-profile scans have no file), and
-// the job title taken from the JD — so "Google" or "analyst" finds the scan.
-const HISTORY_SEARCH = (term) =>
-  `resume_original_name.ilike.%${term}%,candidate_first_name.ilike.%${term}%,job_title.ilike.%${term}%`
 
 async function getScanHistory(ctx) {
   const user = ctx.get('user')
@@ -1306,7 +1299,7 @@ async function getScanHistory(ctx) {
   // status pattern as those.
   // Same stripping as the employer-leads search: everything with meaning inside
   // a PostgREST .or() string or an ilike pattern (`_` stays — it only widens a match).
-  const search = String(ctx.req.query('search') || '').replace(/[,()"%\\*]/g, '').trim()
+  const search = sanitizeSearch(ctx.req.query('search'))
   const status = ctx.req.query('status')
 
   const supabase = getSupabase(ctx.env)
@@ -1329,8 +1322,7 @@ async function getScanHistory(ctx) {
   // runAtsScan now sets it at scoring time for those two modes (see above) —
   // file-mode doesn't need it here since it already has resume_original_name
   // to search on instead.
-  if (search) query = query.or(HISTORY_SEARCH(search))
-  if (status && SCAN_STATUSES.includes(status)) query = query.eq('status', status)
+  query = applyScanFilters(query, { search, status })
 
   let { data: rows, error, count } = await query
     .order('created_at', { ascending: false })
@@ -1341,8 +1333,7 @@ async function getScanHistory(ctx) {
     // ?page=): an empty page with the real total, so the dashboard can step
     // back to the last real page instead of dead-ending on an error.
     let head = supabase.from('scans').select('id', { count: 'exact', head: true }).eq('user_id', user.id)
-    if (search) head = head.or(HISTORY_SEARCH(search))
-    if (status && SCAN_STATUSES.includes(status)) head = head.eq('status', status)
+    head = applyScanFilters(head, { search, status })
     const totals = await head
     if (totals.error) throw totals.error
     rows = []; count = totals.count; error = null
