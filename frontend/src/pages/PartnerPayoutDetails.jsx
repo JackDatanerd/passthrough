@@ -13,6 +13,13 @@ import Footer from '../components/layout/Footer'
 // adminResendPayoutLink — identity is the ?token= in the URL, not a login.
 // No account system for partners exists yet; the token IS the auth.
 
+// Mirrors the server's formats (partners.controller.js: ACCOUNT_NUMBER_RE / PHONE_RE) so a
+// typo is caught here with a plain message instead of a round trip — and, together with the
+// re-enter-to-confirm fields, before real money is sent to a wrong account later.
+const ACCOUNT_NUMBER_RE = /^[A-Za-z0-9][A-Za-z0-9 \-]{3,33}$/
+const PHONE_RE          = /^\+?\(?[0-9][0-9 ()\-]{6,19}$/
+const squash = v => String(v || '').replace(/\s+/g, '')
+
 export default function PartnerPayoutDetails() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -22,6 +29,9 @@ export default function PartnerPayoutDetails() {
   const [loadError, setLoadError] = useState(false)
   const [partnerName, setPartnerName] = useState('')
   const [alreadySubmittedAt, setAlreadySubmittedAt] = useState(null)
+  // Read-only token for the "view your dashboard" link, so the write-capable token in this
+  // page's URL never travels into a dashboard URL.
+  const [dashboardToken, setDashboardToken] = useState(null)
 
   const [method, setMethod] = useState('BANK')
   const [bankName, setBankName] = useState('')
@@ -29,6 +39,7 @@ export default function PartnerPayoutDetails() {
   const [accountNumber, setAccountNumber] = useState('')
   const [provider, setProvider] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
+  const [confirmNumber, setConfirmNumber] = useState('')
 
   const [saved,  setSaved ] = useState(false)
   const { loading: saving, error, execute } = useApi()
@@ -40,6 +51,7 @@ export default function PartnerPayoutDetails() {
         const p = res.data.data
         setPartnerName(p.name)
         setAlreadySubmittedAt(p.payoutDetailsSubmittedAt)
+        setDashboardToken(p.dashboardToken || null)
         if (p.payoutMethod) {
           setMethod(p.payoutMethod)
           const d = p.payoutDetails || {}
@@ -48,6 +60,8 @@ export default function PartnerPayoutDetails() {
           setAccountNumber(d.accountNumber || '')
           setProvider(d.provider || '')
           setPhoneNumber(d.phoneNumber || '')
+          // Prefilled so editing only the bank name doesn't force a re-type; changing the number does.
+          setConfirmNumber(d.accountNumber || d.phoneNumber || '')
         }
       })
       .catch(err => {
@@ -70,6 +84,15 @@ export default function PartnerPayoutDetails() {
         { fallback: 'Please fill in every field.' }).catch(() => {})
       return
     }
+
+    const fail = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+    const number = method === 'BANK' ? body.accountNumber : body.phoneNumber
+    if (method === 'BANK' && !ACCOUNT_NUMBER_RE.test(body.accountNumber))
+      return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
+    if (method === 'MOBILE_MONEY' && !PHONE_RE.test(body.phoneNumber))
+      return fail('That phone number doesn\'t look right — include the country code, e.g. +254 712 345 678.')
+    if (squash(number) !== squash(confirmNumber))
+      return fail(`The two ${method === 'BANK' ? 'account numbers' : 'phone numbers'} don't match — please re-enter to confirm.`)
 
     try {
       await execute(() => api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body),
@@ -106,7 +129,7 @@ export default function PartnerPayoutDetails() {
                 Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
                 You can revisit this link anytime to update them.
               </p>
-              <Link to={`/partner/dashboard?token=${encodeURIComponent(token)}`} className="text-sm text-blue-600 hover:underline">
+              <Link to={`/partner/dashboard?token=${encodeURIComponent(dashboardToken || token)}`} className="text-sm text-blue-600 hover:underline">
                 View your dashboard →
               </Link>
             </div>
@@ -123,13 +146,13 @@ export default function PartnerPayoutDetails() {
 
               <div className="flex gap-2 mb-6">
                 <button type="button"
-                  onClick={() => setMethod('BANK')}
+                  onClick={() => { setMethod('BANK'); setConfirmNumber('') }}
                   className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
                     method === 'BANK' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
                   Bank account
                 </button>
                 <button type="button"
-                  onClick={() => setMethod('MOBILE_MONEY')}
+                  onClick={() => { setMethod('MOBILE_MONEY'); setConfirmNumber('') }}
                   className={`flex-1 py-2 rounded-md text-sm font-medium border transition-colors ${
                     method === 'MOBILE_MONEY' ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-gray-700 border-gray-300'}`}>
                   Mobile money
@@ -141,13 +164,15 @@ export default function PartnerPayoutDetails() {
                   <>
                     <Input label="Bank name" value={bankName} onChange={e => setBankName(e.target.value)} />
                     <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
-                    <Input label="Account number" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} />
+                    <Input label="Account number" value={accountNumber} onChange={e => setAccountNumber(e.target.value)} inputMode="text" autoComplete="off" />
+                    <Input label="Re-enter account number" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} autoComplete="off" />
                   </>
                 ) : (
                   <>
                     <Input label="Provider (e.g. M-Pesa, MTN MoMo)" value={provider} onChange={e => setProvider(e.target.value)} />
                     <Input label="Account name" value={accountName} onChange={e => setAccountName(e.target.value)} />
-                    <Input label="Phone number" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} />
+                    <Input label="Phone number (with country code)" value={phoneNumber} onChange={e => setPhoneNumber(e.target.value)} inputMode="tel" placeholder="+254 712 345 678" autoComplete="off" />
+                    <Input label="Re-enter phone number" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} inputMode="tel" autoComplete="off" />
                   </>
                 )}
 

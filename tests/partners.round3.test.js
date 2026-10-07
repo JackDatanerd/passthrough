@@ -98,7 +98,13 @@ describe('held / ready / net figures', () => {
   const old = '2020-01-01T00:00:00Z'
   function setupList(ledger, partnerOver = {}) {
     const row = { id: 'p1', name: 'K', email: 'k@x.co', status: 'ACTIVE', commission_rate: 0.2, payouts: [], referral_codes: [], commission_ledger: ledger, ...partnerOver }
-    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: [row], error: null } : undefined))
+    // Round 4: the list reads the unpaid ledger in its own query (see adminListPartners).
+    const { commission_ledger, ...bare } = row
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners') return { data: [bare], error: null }
+      if (q.table === 'commission_ledger') return { data: ledger.filter(l => !l.payout_id).map(l => ({ partner_id: 'p1', ...l })), error: null }
+      return undefined
+    })
     return loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
   }
   it('commission on a DISPUTED payment is held, not ready to pay', async () => {
@@ -114,12 +120,18 @@ describe('held / ready / net figures', () => {
     const r = await t.mod.adminListPartners(ctxOf({ COMMISSION_MIN_PAYOUT_CENTS: '2000' }))
     expect(r.body.data[0]).toMatchObject({ readyToPayCents: 0, carriedForwardCents: 580, belowMinimum: true, minPayoutCents: 2000 })
   })
-  it('netConversions drops a refunded sale', async () => {
-    t = setupList([
-      { id: 'a', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: null, created_at: old },
-      { id: 'r', reverses_ledger_id: 'a', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: null, created_at: old },
-    ])
-    expect((await t.mod.adminListPartners(ctxOf({}))).body.data[0].netConversions).toBe(0)
+  it('netConversions (detail view) drops a refunded sale; the list no longer carries it', async () => {
+    const ledger = [
+      { id: 'a', gross_amount_cents: 2900, commission_amount_cents: 580, payout_id: 'po1', created_at: old },
+      { id: 'r', reverses_ledger_id: 'a', gross_amount_cents: -2900, commission_amount_cents: -580, payout_id: 'po1', created_at: old },
+    ]
+    t = setupList(ledger)
+    expect((await t.mod.adminListPartners(ctxOf({}))).body.data[0].netConversions).toBeUndefined()
+    t.restore()
+    const row = { id: 'p1', name: 'K', email: 'k@x.co', status: 'ACTIVE', commission_rate: 0.2, payouts: [], referral_codes: [], commission_ledger: ledger }
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: row, error: null } : undefined))
+    t = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    expect((await t.mod.adminGetPartner(ctxOf({}, { params: { id: 'p1' } }))).body.data.netConversions).toBe(0)
   })
 })
 
@@ -191,7 +203,7 @@ describe('partner applications', () => {
       if (q.table === 'partner_applications' && q.op === 'insert') { st.inserts.push(q.values); return { data: null, error: o.insertError || null } }
       if (q.table === 'partner_applications' && q.op === 'update') {
         st.updates.push(q.patch)
-        return { data: q.patch.status === 'APPROVED' ? (o.claimable === false ? null : { id: 'a1', name: 'Ann', email: 'ann@x.co' }) : { id: 'a1' }, error: null }
+        return { data: q.patch.status === 'APPROVED' ? (o.claimable === false ? null : { id: 'a1', name: 'Ann', email: 'ann@x.co' }) : { id: 'a1', name: 'Ann', email: 'ann@x.co' }, error: null }
       }
     })
     return { st, ...loadWithStubs('controllers/partners.controller.js', {
@@ -199,6 +211,7 @@ describe('partner applications', () => {
       'services/email.service.js': {
         sendOwnerAlert: async (e, s) => { st.alerts.push(s) },
         sendPartnerPayoutDetailsRequest: async () => true,
+        sendPartnerApplicationRejected: async (...a) => { st.rejectedEmails = (st.rejectedEmails || []).concat([a.slice(3)]); return true },
       },
     }) }
   }

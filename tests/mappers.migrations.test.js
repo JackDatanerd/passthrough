@@ -19,7 +19,8 @@ const TABLE_TO_MAPPER = {
 // Columns a mapper must NOT surface: single-use secrets/tokens. Anything else missing is a bug.
 const DELIBERATELY_UNMAPPED = {
   users: ['email_change_done_token'],
-  partners: ['payout_details_token'],
+  // Both partner bearer tokens are secrets: payout_details_token (write) and dashboard_token (read-only, migration 0055).
+  partners: ['payout_details_token', 'dashboard_token'],
 }
 
 function columnsFromMigrations() {

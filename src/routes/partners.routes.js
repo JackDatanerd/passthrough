@@ -17,6 +17,7 @@ const router = new Hono()
 router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
 router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
 router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
+router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 
 // Public — click tracking. Rate-limited with its own dedicated bucket
 // (rl.click) rather than sharing rl.employerLead's lead-spam bucket — see
@@ -47,6 +48,7 @@ router.get(  '/:id',                       admin, validateUuidParam(), c.adminGe
 router.patch('/:id',                       admin, validateUuidParam(), c.adminUpdatePartner)
 router.post( '/:id/resend-link',           admin, validateUuidParam(), c.adminResendPayoutLink)
 router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRegeneratePayoutLink)
+router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGetPartnerLinks)
 router.post( '/:id/payouts',               admin, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)

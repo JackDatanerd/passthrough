@@ -68,6 +68,9 @@ const RECIPIENT_LIMITS = {
   // nothing delivered. A failed send hands its slot back (bounded per window) so the
   // person can simply ask again.
   email_verification:    { max: 5, windowSeconds: 3600, refundOnFailure: 10 },
+  // Round 4: a partner can ask for their payout-details link from the read-only dashboard.
+  // Bounded per recipient so the button can't be used to mail-bomb a partner's inbox.
+  partner_payout_details_request: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
   password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
@@ -465,6 +468,18 @@ async function sendPartnerStatusChanged(env, supabase, email, name, status) {
     })
 }
 
+// Sent when an admin rejects a partner application (see adminRejectApplication). `reason`
+// is optional free text the admin chose to share; it is passed as plain text and escaped
+// by the template engine like every other variable.
+async function sendPartnerApplicationRejected(env, supabase, email, name, reason) {
+  const body = (reason ? `we're not able to move forward with your application right now. ${String(reason).trim()} ` : "we're not able to move forward with your application right now. ")
+    + "You're welcome to apply again after 30 days."
+  return send(env, supabase, email, 'Your Passthrough partner application', 'partner_application_rejected', {
+    NAME: name,
+    BODY: body
+  })
+}
+
 async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
   const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
   return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
@@ -732,5 +747,5 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed
+  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected
 }

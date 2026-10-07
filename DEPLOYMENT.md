@@ -223,6 +223,19 @@ wrangler secret put VERIFY_PREVIEW_KEY
 # deliberate override). Can also be set as a plain [vars] entry in wrangler.toml.
 wrangler secret put COMMISSION_MIN_PAYOUT_CENTS
 
+# Commission hold window, in days (e.g. 7). Unset or 0 = no hold. A commission younger
+# than this is shown as "held" and left out of "ready to pay" and of any payout (a refund
+# that lands during the hold voids the sale together with its commission, and a commission
+# on a DISPUTED payment is held regardless of age). Also settable as a plain [vars] entry.
+wrangler secret put COMMISSION_HOLD_DAYS
+
+# PARTNER LINKS (migration 0055): every partner has TWO bearer tokens. The READ-ONLY
+# dashboard token is what conversion / reversal / code emails carry; the payout-details
+# token (which can change where payouts go) is only ever mailed on its own, on request
+# (POST /api/partners/request-payout-link, rate limited), or copied by an admin from the
+# partner page. Apply supabase/migrations/0055_partners_round4.sql BEFORE deploying the
+# Worker that reads dashboard_token / payouts.internal_note / partner_applications.review_note.
+
 # Lets specific IPs (comma-separated) skip every rate limiter entirely —
 # for load-testing or manual QA against production limits. Unset = no
 # bypass = normal behavior for everyone, which is the fail-safe default.

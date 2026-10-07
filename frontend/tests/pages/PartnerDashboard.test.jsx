@@ -21,10 +21,16 @@ const show = data => {
 beforeEach(() => api.get.mockReset())
 
 describe('PartnerDashboard — payout details prompt', () => {
-  it('asks for payout details when money is owed and none are on file', async () => {
-    show({ hasPayoutDetails: false, stats: { ...base.stats, pendingCents: 580 } })
+  it('asks for payout details when money is owed and none are on file (write-capable link: direct link)', async () => {
+    show({ hasPayoutDetails: false, scope: 'payout', stats: { ...base.stats, pendingCents: 580 } })
     expect(await screen.findByText(/don't have your payout details/i)).toBeInTheDocument()
     expect(screen.getByRole('link', { name: /add them now/i }).getAttribute('href')).toContain('/partner/payout-details?token=tok')
+  })
+  it('read-only dashboard link: the prompt offers to EMAIL the payout link instead of linking to the form (section 4 round 4)', async () => {
+    show({ hasPayoutDetails: false, scope: 'dashboard', stats: { ...base.stats, pendingCents: 580 } })
+    expect(await screen.findByText(/don't have your payout details/i)).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /add them now/i })).toBeNull()
+    expect(screen.getByRole('button', { name: /email me a link to add them/i })).toBeInTheDocument()
   })
   it('does not nag a brand-new partner with nothing earned yet', async () => {
     show({ hasPayoutDetails: false })
@@ -40,16 +46,5 @@ describe('PartnerDashboard — payout details prompt', () => {
     show({ belowMinimum: true, minPayoutCents: 2000, carriedForwardCents: 580 })
     expect(await screen.findByText(/carries/i)).toBeInTheDocument()
     expect(screen.getByText(/Payouts start at \$20\.00/)).toBeInTheDocument()
-  })
-})
-
-describe('PartnerDashboard — how crediting works (G6)', () => {
-  it('shows the same terms an applicant saw, in an expandable note', async () => {
-    show({})
-    const note = await screen.findByTestId('attribution-terms')
-    expect(note).toHaveTextContent('How crediting works')
-    expect(note).toHaveTextContent(/30 days after their most recent click/)
-    expect(note).toHaveTextContent(/not just the first/)
-    expect(note).toHaveTextContent(/refunded, its commission is reversed/)
   })
 })

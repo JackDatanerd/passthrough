@@ -9,13 +9,25 @@ import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatRate, formatDate } from '../../lib/utils'
+import { formatCents, formatRate, formatDate, downloadCsv } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
+
+// A percentage typed by the admin ("25", "12.5") -> the fraction the API stores (0.25, 0.125),
+// or null when blank / out of range. Same conversion as the Edit partner modal.
+function percentToRate(text) {
+  const raw = String(text ?? '').trim()
+  if (!raw) return undefined
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0 || n > 100) return null
+  return Math.round(n * 100) / 10000
+}
+const dollarsToCents = v => Math.round(Number(v) * 100)
 
 function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
+  const [rate, setRate] = useState('')
   const { loading: saving, error, execute } = useApi()
 
   async function handleCreate() {
@@ -24,8 +36,14 @@ function AddPartnerModal({ onClose, onCreated }) {
         { fallback: 'Name and email are required.' }).catch(() => {})
       return
     }
+    const commissionRate = percentToRate(rate)
+    if (commissionRate === null) {
+      await execute(() => Promise.reject(new Error('Commission rate must be between 0 and 100.')),
+        { fallback: 'Commission rate must be between 0 and 100.' }).catch(() => {})
+      return
+    }
     try {
-      await execute(() => api.post('/partners', { name, email }), { fallback: 'Failed to add partner.' })
+      await execute(() => api.post('/partners', { name, email, ...(commissionRate !== undefined ? { commissionRate } : {}) }), { fallback: 'Failed to add partner.' })
       toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
       onCreated()
       onClose()
@@ -37,6 +55,8 @@ function AddPartnerModal({ onClose, onCreated }) {
       <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
+        <Input label="Commission rate % (optional — blank uses the default)" type="number" step="0.01" value={rate}
+          onChange={e => setRate(e.target.value)} placeholder="25" />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
@@ -55,56 +75,198 @@ const SORTS = {
   accruing: { label: 'Most still accruing', cmp: (a, b) => (b.currentCycleAccruedCents || 0) - (a.currentCycleAccruedCents || 0) },
 }
 
-// Pending "become a partner" applications (public form -> POST /partners/apply).
-// Approve creates the partner and emails their payout-details link; reject just closes it.
-function ApplicationsPanel({ onApproved }) {
+// "Become a partner" applications (public form -> POST /partners/apply).
+// Approve opens a dialog to set the rate and (optionally) a first referral code in the same
+// step; reject takes an optional reason that is emailed to the applicant. Approved/rejected
+// history is browsable (it used to vanish the moment it was reviewed).
+function ApproveApplicationModal({ app, onClose, onDone }) {
   const toast = useToast()
-  const [apps, setApps] = useState([])
-  const [busyId, setBusyId] = useState(null)
+  const [rate, setRate] = useState('')
+  const [withCode, setWithCode] = useState(false)
+  const [code, setCode] = useState('')
+  const [fix, setFix] = useState('')
+  const [badge, setBadge] = useState('')
+  const [plain, setPlain] = useState('')
+  const { loading: saving, error, execute } = useApi()
 
-  async function load() {
+  async function handleApprove() {
+    const commissionRate = percentToRate(rate)
+    const fail = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+    if (commissionRate === null) return fail('Commission rate must be between 0 and 100.')
+    const body = commissionRate !== undefined ? { commissionRate } : {}
+    if (withCode) {
+      const tierPrices = {}
+      for (const [key, val] of [['FIX', fix], ['BADGE', badge], ['FIX_PLAIN', plain]]) {
+        if (String(val).trim() === '') continue
+        const cents = dollarsToCents(val)
+        if (!Number.isFinite(cents) || cents <= 0) return fail('Prices must be positive amounts.')
+        tierPrices[key] = cents
+      }
+      if (code.trim().length < 2) return fail('Enter a code (at least 2 characters).')
+      if (Object.keys(tierPrices).length === 0) return fail('Give at least one tier a price for the code.')
+      body.referralCode = { code: code.trim(), tierPrices }
+    }
     try {
-      const res = await api.get('/partners/applications?status=PENDING')
+      const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
+      toast({ message: data.codeError
+        ? `${app.name} approved, but: ${data.codeError} Add the code from their page.`
+        : `${app.name} approved — payout-details link sent${data.codeCreated ? ` and code ${data.codeCreated.code} created` : ''}.`,
+      type: data.codeError ? 'warning' : 'success' })
+      onDone()
+      onClose()
+    } catch (_) { /* captured by useApi */ }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Approve ${app.name}`}>
+      <Form onSubmit={handleApprove} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-500">Creates the partner and emails them a link to enter payout details.</p>
+        <Input label="Commission rate % (optional — blank uses the default)" type="number" step="0.01" value={rate}
+          onChange={e => setRate(e.target.value)} placeholder="25" />
+        <label className="flex items-center gap-2 text-sm text-gray-700">
+          <input type="checkbox" checked={withCode} onChange={e => setWithCode(e.target.checked)} />
+          Also create their first referral code
+        </label>
+        {withCode && (
+          <div className="flex flex-col gap-3 rounded-md bg-gray-50 p-3">
+            <Input label="Code" value={code} onChange={e => setCode(e.target.value)} placeholder="ANNA20" />
+            <div className="grid grid-cols-3 gap-2">
+              <Input label="Fix price" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
+              <Input label="Badge price" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
+              <Input label="Plain fix" type="number" step="0.01" value={plain} onChange={e => setPlain(e.target.value)} />
+            </div>
+            <p className="text-xs text-gray-400">Prices in the platform currency; leave a tier blank to keep its normal price.</p>
+          </div>
+        )}
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={saving}>Approve</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
+function RejectApplicationModal({ app, onClose, onDone }) {
+  const toast = useToast()
+  const [reason, setReason] = useState('')
+  const { loading: saving, error, execute } = useApi()
+
+  async function handleReject() {
+    try {
+      const data = await execute(() => api.post(`/partners/applications/${app.id}/reject`, reason.trim() ? { reason: reason.trim() } : {}), { fallback: 'Failed to reject application.' })
+      toast({ message: data.emailed ? `${app.name}'s application rejected — they've been emailed.` : `${app.name}'s application rejected (the notification email failed to send).`, type: data.emailed ? 'success' : 'warning' })
+      onDone()
+      onClose()
+    } catch (_) { /* captured by useApi */ }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Reject ${app.name}?`}>
+      <Form onSubmit={handleReject} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-500">
+          {app.name} will be emailed the decision. They can re-apply after 30 days.
+        </p>
+        <Input label="Reason (optional — included in the email)" value={reason} onChange={e => setReason(e.target.value)} maxLength={500}
+          placeholder="e.g. We're only onboarding career-coaching audiences right now." />
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" loading={saving}>Reject & notify</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
+const APP_TABS = [['PENDING', 'Waiting'], ['APPROVED', 'Approved'], ['REJECTED', 'Rejected']]
+
+function ApplicationsPanel({ onApproved }) {
+  const [tab, setTab] = useState('PENDING')
+  const [apps, setApps] = useState([])
+  const [pendingCount, setPendingCount] = useState(0)
+  const [open, setOpen] = useState(false)
+  const [approving, setApproving] = useState(null)
+  const [rejecting, setRejecting] = useState(null)
+
+  async function load(which = tab) {
+    try {
+      const res = await api.get(`/partners/applications?status=${which}`)
       setApps(res.data.data)
+      if (which === 'PENDING') setPendingCount(res.data.data.length)
     } catch (_) { /* the panel is optional — the partner list still works without it */ }
   }
-  useEffect(() => { load() }, [])
+  useEffect(() => { load('PENDING') }, [])
+  useEffect(() => { load(tab) }, [tab])
 
-  async function act(app, action) {
-    setBusyId(app.id)
-    try {
-      await api.post(`/partners/applications/${app.id}/${action}`)
-      toast({ message: action === 'approve' ? `${app.name} approved — payout-details link sent.` : `${app.name}'s application rejected.`, type: 'success' })
-      await load()
-      if (action === 'approve') onApproved()
-    } catch (err) {
-      toast({ message: err?.response?.data?.message || `Failed to ${action} application.`, type: 'error' })
-      load()
-    } finally {
-      setBusyId(null)
-    }
+  const refresh = () => { load(tab); if (tab !== 'PENDING') load('PENDING') }
+  const expanded = open || pendingCount > 0
+
+  if (!expanded) {
+    return (
+      <button type="button" onClick={() => setOpen(true)} className="self-start text-xs text-gray-400 hover:text-gray-600">
+        Application history →
+      </button>
+    )
   }
-
-  if (apps.length === 0) return null
   return (
-    <div className="border border-amber-200 bg-amber-50 rounded-lg p-4 flex flex-col gap-3">
-      <h2 className="font-semibold text-gray-900">Applications waiting for review ({apps.length})</h2>
+    <div className={`border rounded-lg p-4 flex flex-col gap-3 ${tab === 'PENDING' && pendingCount > 0 ? 'border-amber-200 bg-amber-50' : 'border-gray-200 bg-white'}`}>
+      <div className="flex items-center gap-4 flex-wrap">
+        <h2 className="font-semibold text-gray-900">Applications{pendingCount > 0 ? ` (${pendingCount} waiting)` : ''}</h2>
+        <div className="flex gap-3 text-sm">
+          {APP_TABS.map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setTab(key)}
+              className={tab === key ? 'font-medium text-blue-700 underline underline-offset-4' : 'text-gray-500 hover:text-gray-700'}>{label}</button>
+          ))}
+        </div>
+      </div>
+      {apps.length === 0 && <p className="text-sm text-gray-400">Nothing here.</p>}
       {apps.map(app => (
         <div key={app.id} className="bg-white border border-gray-200 rounded-md p-3 flex items-start justify-between gap-3 flex-wrap">
           <div className="text-sm min-w-0">
             <div className="font-medium text-gray-900">{app.name} <span className="text-gray-400 font-normal">· {app.email}</span></div>
-            <div className="text-xs text-gray-400">Applied {formatDate(app.createdAt)}{app.website ? ` · ${app.website}` : ''}</div>
+            <div className="text-xs text-gray-400">
+              Applied {formatDate(app.createdAt)}{app.website ? ` · ${app.website}` : ''}
+              {app.reviewedAt ? ` · ${app.status === 'APPROVED' ? 'approved' : 'rejected'} ${formatDate(app.reviewedAt)}` : ''}
+            </div>
             {app.audience && <p className="text-gray-600 mt-1 whitespace-pre-wrap break-words">{app.audience}</p>}
             {app.message && <p className="text-gray-500 mt-1 whitespace-pre-wrap break-words">{app.message}</p>}
+            {app.reviewNote && <p className="text-xs text-gray-500 mt-1">Reason given: {app.reviewNote}</p>}
+            {app.status === 'APPROVED' && app.partnerId && (
+              <Link to={`/admin/partners/${app.partnerId}`} className="text-xs text-blue-600 hover:underline">Open partner →</Link>
+            )}
           </div>
-          <div className="flex gap-2 shrink-0">
-            <Button size="sm" variant="secondary" disabled={busyId === app.id} onClick={() => act(app, 'reject')}>Reject</Button>
-            <Button size="sm" loading={busyId === app.id} onClick={() => act(app, 'approve')}>Approve</Button>
-          </div>
+          {app.status === 'PENDING' && (
+            <div className="flex gap-2 shrink-0">
+              <Button size="sm" variant="secondary" onClick={() => setRejecting(app)}>Reject</Button>
+              <Button size="sm" onClick={() => setApproving(app)}>Approve</Button>
+            </div>
+          )}
         </div>
       ))}
+      {approving && <ApproveApplicationModal app={approving} onClose={() => setApproving(null)} onDone={() => { refresh(); onApproved() }} />}
+      {rejecting && <RejectApplicationModal app={rejecting} onClose={() => setRejecting(null)} onDone={refresh} />}
     </div>
   )
+}
+
+// One row per partner that is actually payable right now and has somewhere to send it — the
+// sheet an admin works through for a payout run. Clamped/zero/no-details partners are left out
+// (their figures are on the page); details come straight from the list payload.
+function exportPayoutRun(partners) {
+  const payable = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod)
+  const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted']]
+  for (const p of payable) {
+    const d = p.payoutDetails || {}
+    rows.push([
+      p.name, p.email, p.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
+      d.accountNumber || d.phoneNumber || '', ((p.readyToPayCents || 0) / 100).toFixed(2), p.currency || '',
+      p.payoutDetailsSubmittedAt || ''
+    ])
+  }
+  downloadCsv(`payout-run-${new Date().toISOString().slice(0, 10)}.csv`, rows)
+  return payable.length
 }
 
 export default function AdminPartners() {
@@ -138,14 +300,23 @@ export default function AdminPartners() {
   const safePage = Math.min(page, pageCount - 1)
   const visible = filtered.slice(safePage * PAGE_SIZE, (safePage + 1) * PAGE_SIZE)
 
-  const totalReadyToPay = partners.reduce((sum, p) => sum + (p.readyToPayCents || 0), 0)
+  // readyToPayCents is already clamped at 0 per partner by the server (a refund credit is not
+  // payable and must not net against another partner's real payable); credits are separate.
+  const totalReadyToPay = partners.reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
+  const payableCount = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod).length
   const totalAccruing   = partners.reduce((sum, p) => sum + (p.currentCycleAccruedCents || 0), 0)
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-gray-900">Partners</h1>
-        <Button onClick={() => setShowAdd(true)}>Add partner</Button>
+        <div className="flex gap-2">
+          <Button variant="secondary" disabled={payableCount === 0}
+            onClick={() => toast({ message: `Exported ${exportPayoutRun(partners)} payable partner(s).`, type: 'success' })}>
+            Export payout run
+          </Button>
+          <Button onClick={() => setShowAdd(true)}>Add partner</Button>
+        </div>
       </div>
 
       <ApplicationsPanel onApproved={load} />

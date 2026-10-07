@@ -658,7 +658,15 @@ describe('adminUpdatePartner', () => {
 
 describe('adminListPartners', () => {
   function setupList(rows) {
-    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: rows, error: null } : undefined))
+    // Round 4: the list reads partners and the UNPAID ledger in two queries (it used to embed
+    // every partner's whole ledger), so the fixtures' per-partner commission_ledger arrays
+    // are served from the commission_ledger table, unpaid rows only — as the real query does.
+    const ledger = rows.flatMap(r => (r.commission_ledger || []).filter(l => !l.payout_id).map(l => ({ partner_id: r.id, ...l })))
+    const db = createFakeSupabase(q => {
+      if (q.table === 'partners') return { data: rows.map(({ commission_ledger, ...r }) => r), error: null }
+      if (q.table === 'commission_ledger') return { data: ledger, error: null }
+      return undefined
+    })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     const c = { env: {}, req: {}, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, c }
@@ -976,9 +984,9 @@ describe('submitPayoutDetails', () => {
 
   it('rejects whitespace-only fields and trims what it stores', async () => {
     t = setupSubmit({ updated: { name: 'K', email: 'k@x.co' } })
-    await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: '   ', accountName: 'K', accountNumber: '1' } }))).rejects.toThrow()
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: ' Equity ', accountName: ' K ', accountNumber: ' 123 ' } }))
-    expect(t.state.patch.payout_details).toEqual({ bankName: 'Equity', accountName: 'K', accountNumber: '123' })
+    await expect(t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: '   ', accountName: 'K', accountNumber: '12345678' } }))).rejects.toThrow()
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: ' Equity ', accountName: ' K ', accountNumber: ' 12345678 ' } }))
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'Equity', accountName: 'K', accountNumber: '12345678' })
   })
 
   it('rejects a body missing required BANK fields', async () => {
@@ -988,26 +996,26 @@ describe('submitPayoutDetails', () => {
 
   it('accepts BANK details and stores them under payout_details', async () => {
     t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Coach K', accountNumber: '123' } }))
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Coach K', accountNumber: '12345678' } }))
     expect(t.state.patch.payout_method).toBe('BANK')
-    expect(t.state.patch.payout_details).toEqual({ bankName: 'X', accountName: 'Coach K', accountNumber: '123' })
+    expect(t.state.patch.payout_details).toEqual({ bankName: 'X', accountName: 'Coach K', accountNumber: '12345678' })
   })
 
   it('accepts MOBILE_MONEY details', async () => {
     t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'Coach K', phoneNumber: '0700' } }))
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'Coach K', phoneNumber: '0700123456' } }))
     expect(t.state.patch.payout_method).toBe('MOBILE_MONEY')
   })
 
   it('404s for an unknown/expired token', async () => {
     t = setupSubmit({ updated: null })
-    const res = await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '1' } }))
+    const res = await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '12345678' } }))
     expect(res.status).toBe(404)
   })
 
   it('notifies both the partner and the owner on a successful change', async () => {
     t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
-    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '1' } }))
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '12345678' } }))
     expect(t.state.notified.sort()).toEqual(['owner', 'partner'])
   })
 })

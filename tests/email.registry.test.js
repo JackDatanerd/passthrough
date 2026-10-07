@@ -35,7 +35,7 @@ const CALLS = {
   sendPaymentReceipt: ['u@x.y', 'Ann', { fixTier: 'FIX', amountCents: 4900, currency: 'USD', reference: 'ref1', createdAt: '2026-10-05T23:30:00Z' }],
   sendPartnerPayoutDetailsRequest: ['p@x.y', 'P', 'https://u'], sendPayoutSent: ['p@x.y', 'P', 1000, 'USD'], sendReferralCodeCreated: ['p@x.y', 'P', 'CODE', 'https://d'],
   sendPayoutDetailsChanged: ['p@x.y', 'P', 'BANK'], sendPartnerLinkRegenerated: ['p@x.y', 'P', 'https://u'], sendPartnerEmailChanged: ['p@x.y', 'P', 'o@x.y', 'n@x.y'],
-  sendPartnerConversionEarned: ['p@x.y', 'P', 'CODE', 500, 'USD', 'https://d'], sendPartnerStatusChanged: ['p@x.y', 'P', 'PAUSED'],
+  sendPartnerConversionEarned: ['p@x.y', 'P', 'CODE', 500, 'USD', 'https://d'], sendPartnerStatusChanged: ['p@x.y', 'P', 'PAUSED'], sendPartnerApplicationRejected: ['p@x.y', 'P', 'Not a fit yet.'],
   sendPartnerRateChanged: ['p@x.y', 'P', 0.2, 0.25], sendPartnerCommissionReversed: ['p@x.y', 'P', 500, 'USD', 'https://d'],
   sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
   sendEmployerCandidatesAvailable: ['l@x.y', 'Lee', 'Design', 3, { removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],

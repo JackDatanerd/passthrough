@@ -562,6 +562,14 @@ const partnerRead = makeLimiter({
   windowSeconds: 5 * 60, max: 30, keyPrefix: 'rl:partnerread',
   message: msg('Too many requests. Please wait a moment.')
 })
+// Round 4: "email me my payout-details link" (POST /api/partners/request-payout-link). Its
+// own bucket — the same fate-sharing mistake partnerRead/partnerWrite were split to avoid:
+// sharing partnerWrite's 5-per-15-min budget would let a few applications (or payout-detail
+// edits) from one office/NAT IP block a partner from getting their own link.
+const partnerLinkRequest = makeLimiter({
+  windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerlinkreq',
+  message: msg('Too many requests. Please wait a few minutes.')
+})
 const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
@@ -766,7 +774,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, historyPurge, webhook, click,
-  partnerRead, partnerWrite, verifyRead, isBypassed,
+  partnerRead, partnerWrite, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName

@@ -349,7 +349,9 @@ const PARTNER_FIELD_MAP = {
 // adminResendPayoutLink and adminRegeneratePayoutLink — never from here.
 function partnerRowToCamel(row) {
   if (!row) return row
-  const { payout_details_token, ...rest } = row
+  // Both partner bearer tokens (payout_details_token = write, dashboard_token = read-only)
+  // are secrets and never leave through this mapper.
+  const { payout_details_token, dashboard_token, ...rest } = row
   return {
     id:                        rest.id,
     name:                      rest.name,
@@ -368,6 +370,8 @@ function partnerRowToCamel(row) {
     payoutMethod:              rest.payout_method,
     payoutDetails:             rest.payout_details,
     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
+    website:                   rest.website ?? null,
+    audience:                  rest.audience ?? null,
     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
     referralCodes:             rest.referral_codes ? rest.referral_codes.map(referralCodeRowToCamel) : undefined,
     commissionLedger:          rest.commission_ledger ? rest.commission_ledger.map(commissionLedgerRowToCamel) : undefined,
@@ -386,6 +390,8 @@ function payoutRowToCamel(row) {
     payoutMethod:          row.payout_method,
     payoutDetailsSnapshot: row.payout_details_snapshot,
     note:                  row.note,
+    // Admin-only: never selected by the partner dashboard query (see getPartnerDashboard).
+    internalNote:          row.internal_note ?? null,
     settledCommissionCents: row.settled_commission_cents ?? null,
     status:                row.status,
     // AUDIT FIX (Admin panel — twice-monthly payout cycles): added by

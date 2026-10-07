@@ -115,6 +115,10 @@ const TEMPLATES = {
   // own dashboard they'd have to think to go check — see
   // partners.controller.js's adminUpdatePartner.
   partner_status_changed: "<h2>{{HEADING}}</h2>\n<p>Hi {{NAME}}, {{BODY}}</p>\n<p style=\"color:#9ca3af;font-size:13px\">If this wasn't expected, reply to this email or contact support@passthrough.dev.</p>\n",
+  // Round 4 (bug): the partner-apply form promises "we'll email you after we've reviewed
+  // it", but only approval ever sent anything. BODY carries the (optional) reason as plain
+  // text; the sender builds it so the template stays one shape.
+  partner_application_rejected: "<h2>About your partner application</h2>\n<p>Hi {{NAME}}, thanks for applying to the Passthrough partner program and for the time you put into your application.</p>\n<p>{{BODY}}</p>\n<p style=\"color:#9ca3af;font-size:13px\">Questions? Reply to this email or contact support@passthrough.dev.</p>\n",
 }
 
 // Every var gets HTML-entity-escaped before substitution. NAME in

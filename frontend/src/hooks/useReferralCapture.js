@@ -1,7 +1,6 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
 import api from '../lib/api'
-import { ATTRIBUTION_WINDOW_DAYS } from '../lib/partnerTerms'
 
 const STORAGE_KEY = 'passthrough_referral_code'
 
@@ -19,9 +18,7 @@ const STORAGE_KEY = 'passthrough_referral_code'
 // windows (e.g. ANON_SCAN_TTL_HOURS) in spirit; a click always refreshes it,
 // exactly like Passthrough's other captured state (see the click-vs-
 // navigation dedup below, which is unaffected by this).
-// G6 (Payments & Pricing round 4): the window length lives in lib/partnerTerms.js so what partners
-// are TOLD can never drift from what this enforces.
-const ATTRIBUTION_TTL_MS = ATTRIBUTION_WINDOW_DAYS * 24 * 60 * 60 * 1000
+const ATTRIBUTION_TTL_MS = 30 * 24 * 60 * 60 * 1000
 
 // Codes already click-tracked in THIS page session. localStorage can be blocked (some in-app
 // browsers / private modes), in which case readStored() always returns null and every route
@@ -57,6 +54,39 @@ function writeStored(code) {
   storageSet(JSON.stringify({ code, capturedAt: Date.now() }))
 }
 
+// Codes captured synchronously (see getStoredReferralCode) whose click has not been logged
+// yet — the effect below still owes the server that click.
+const pendingClicks = new Set()
+// The last location.search the synchronous capture looked at. It runs ONCE per distinct
+// query string so a visitor who deliberately clears the code (setStoredReferralCode(''))
+// while ?ref= is still in the URL doesn't get it silently re-applied by the next read.
+let lastSyncedSearch = null
+
+function codeFromSearch(search) {
+  try { return (new URLSearchParams(search).get('ref') || '').trim().toUpperCase() } catch (_) { return '' }
+}
+
+// SECTION 4 ROUND 4 (bug): pages seed their referral state from storage while rendering —
+// `useState(getStoredReferralCode())` in Pricing and ScanResult — but the capture below
+// runs in an effect, i.e. AFTER that first render. Landing straight on /pricing?ref=CODE
+// therefore rendered the page with no code at all (full price, no discount banner) while
+// storage received the code a moment later; a visitor arriving with a DIFFERENT code than
+// the one already stored saw the stale one. Reading now captures a ?ref= that is in the
+// URL right then, so the first render already has it. The effect still logs the click
+// and refreshes the attribution window.
+function captureFromLocationNow() {
+  if (typeof window === 'undefined') return
+  const search = window.location.search
+  if (search === lastSyncedSearch) return
+  lastSyncedSearch = search
+  const code = codeFromSearch(search)
+  if (!code) return
+  if (readStored() !== code) {
+    writeStored(code)
+    pendingClicks.add(code)
+  }
+}
+
 // Mounted once, globally (see App.jsx), so a ?ref=CODE landing on ANY page
 // — not just the homepage — gets captured. Runs on every route change
 // (useLocation), but only re-fires the click-tracking call when the code
@@ -66,32 +96,27 @@ export function useReferralCapture() {
   const location = useLocation()
 
   useEffect(() => {
-    const params = new URLSearchParams(location.search)
-    // AUDIT FIX (bug): the guard below used to check the RAW `ref` value
-    // before trimming — `?ref=%20` (or a marketing link template with an
-    // unfilled `&ref=` placeholder) has a truthy raw value, so it slipped
-    // past `if (!ref) return`, got trimmed down to '', and writeStored('')
-    // then overwrote whatever real code was previously captured. Trimming
-    // BEFORE the emptiness check closes that: a blank/whitespace-only ref
-    // is now treated exactly like no ref param at all, so it can never
-    // clobber a real, already-stored attribution.
-    const ref = params.get('ref')
-    const code = (ref || '').trim().toUpperCase()
+    // A blank/whitespace-only ref is treated exactly like no ref param at all, so it can
+    // never clobber a real, already-stored attribution.
+    const code = codeFromSearch(location.search)
     if (!code) return
 
     const previous = readStored()
     writeStored(code)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
+    lastSyncedSearch = location.search
 
-    if (previous !== code && !trackedThisSession.has(code)) {
+    if ((previous !== code || pendingClicks.has(code)) && !trackedThisSession.has(code)) {
       trackedThisSession.add(code)
       // Fire-and-forget — a failed click log should never block navigation
       // or surface an error to the visitor.
       api.post('/partners/track-click', { code }).catch(() => {})
     }
+    pendingClicks.delete(code)
   }, [location.search])
 }
 
 export function getStoredReferralCode() {
+  captureFromLocationNow()
   return readStored() || ''
 }
 

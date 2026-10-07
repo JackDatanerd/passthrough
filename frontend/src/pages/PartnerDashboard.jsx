@@ -7,7 +7,6 @@ import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import EmptyState from '../components/ui/EmptyState'
-import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
 
 // AUDIT FIX (bug): this local formatter put the `$` before the number's own
 // negative sign — e.g. "$-5.00" — instead of "-$5.00". Harmless while every
@@ -245,6 +244,38 @@ function CycleRow({ cycle, currency }) {
   )
 }
 
+// SECTION 4 ROUND 4: this page's link is READ-ONLY (it is what every earnings email carries),
+// so it can no longer open the payout-details form. A holder of the older, write-capable link
+// (data.scope === 'payout') still gets the direct link; everyone else asks for the real
+// payout-details link to be emailed to the address on file — a forwarded or leaked
+// notification email can read earnings but can't redirect where payouts go.
+function PayoutDetailsAccess({ token, scope, children, className }) {
+  const [state, setState] = useState('idle')   // idle | sending | sent | error
+  if (scope === 'payout') {
+    return (
+      <Link to={`/partner/payout-details?token=${encodeURIComponent(token)}`} className={className}>
+        {children}
+      </Link>
+    )
+  }
+  async function request() {
+    setState('sending')
+    try {
+      await api.post(`/partners/request-payout-link?token=${encodeURIComponent(token)}`)
+      setState('sent')
+    } catch (_) { setState('error') }
+  }
+  if (state === 'sent') return <span className="text-sm text-green-700">Sent — check the inbox of the email address we have on file.</span>
+  return (
+    <span>
+      <button type="button" onClick={request} disabled={state === 'sending'} className={className}>
+        {state === 'sending' ? 'Sending…' : children}
+      </button>
+      {state === 'error' && <span className="text-xs text-red-600 ml-2">Couldn't send — try again in a few minutes.</span>}
+    </span>
+  )
+}
+
 export default function PartnerDashboard() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -295,10 +326,9 @@ export default function PartnerDashboard() {
               <h1 className="text-2xl font-bold text-gray-900">
                 {data.name}'s Passthrough dashboard
               </h1>
-              <Link to={`/partner/payout-details?token=${encodeURIComponent(token)}`}
-                className="text-sm text-blue-600 hover:underline">
-                Update payout details →
-              </Link>
+              <PayoutDetailsAccess token={token} scope={data.scope} className="text-sm text-blue-600 hover:underline">
+                {data.scope === 'payout' ? 'Update payout details →' : 'Email me a payout-details link →'}
+              </PayoutDetailsAccess>
             </div>
             {/* AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard
                 has always returned commissionRate — the rate applied to every
@@ -311,12 +341,6 @@ export default function PartnerDashboard() {
                 You earn {formatRate(data.commissionRate)} commission on every sale through your link.
               </p>
             )}
-            <details className="text-sm text-gray-500 mb-5" data-testid="attribution-terms">
-              <summary className="cursor-pointer text-gray-600 hover:text-gray-800">How crediting works</summary>
-              <ul className="list-disc pl-5 mt-2 space-y-1">
-                {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
-              </ul>
-            </details>
 
             {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
                 this is the account-level half of that fix. Without it, a
@@ -333,9 +357,9 @@ export default function PartnerDashboard() {
             {!data.hasPayoutDetails && (data.stats.pendingCents > 0 || data.stats.paidCents > 0) && (
               <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
                 We don't have your payout details yet, so we can't pay you.{' '}
-                <Link to={`/partner/payout-details?token=${encodeURIComponent(token)}`} className="underline font-medium">
-                  Add them now →
-                </Link>
+                <PayoutDetailsAccess token={token} scope={data.scope} className="underline font-medium">
+                  {data.scope === 'payout' ? 'Add them now →' : 'Email me a link to add them →'}
+                </PayoutDetailsAccess>
               </div>
             )}
             {data.belowMinimum && (

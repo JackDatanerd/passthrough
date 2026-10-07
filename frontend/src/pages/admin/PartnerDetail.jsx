@@ -65,6 +65,7 @@ function PayoutRow({ payout }) {
             <span className="text-gray-400 ml-2">· {formatDate(payout.periodStart)}–{formatDate(payout.periodEnd)}</span>
           )}
           {payout.note && <span className="text-gray-400 ml-2">({payout.note})</span>}
+          {payout.internalNote && <span className="text-amber-600 ml-2" title="Internal — the partner never sees this">[internal: {payout.internalNote}]</span>}
           {payout.settledCommissionCents != null && payout.settledCommissionCents !== payout.amountCents && (
             <div className="text-xs text-amber-600 mt-0.5">
               Settled {formatCents(payout.settledCommissionCents, payout.currency)} of commission —{' '}
@@ -235,6 +236,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
     : partner.pendingCommissionCents - (partner.heldCents || 0)
   const [amount, setAmount] = useState(defaultCents > 0 ? (defaultCents / 100).toFixed(2) : '')
   const [note, setNote] = useState('')
+  const [internalNote, setInternalNote] = useState('')
   const [ack, setAck] = useState(false)
   const { loading: saving, error, execute } = useApi()
   const amountCentsNow = Math.round(Number(amount || 0) * 100)
@@ -248,8 +250,8 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       return
     }
 
-    if (differs && (!ack || !note.trim())) {
-      await execute(() => Promise.reject(new Error('Amount differs from the commission being settled — tick the confirmation and add a note explaining why.')),
+    if (differs && (!ack || !(note.trim() || internalNote.trim()))) {
+      await execute(() => Promise.reject(new Error('Amount differs from the commission being settled — tick the confirmation and add an internal note explaining why.')),
         { fallback: 'Confirm the difference and add a note.' }).catch(() => {})
       return
     }
@@ -271,6 +273,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
         // adminGetPartner (partners.controller.js).
         currency: partner.currency || 'USD',
         note: note.trim() || undefined,
+        internalNote: internalNote.trim() || undefined,
         ...(cycle ? { periodStart: cycle.start, periodEnd: cycle.end } : {})
       }), { fallback: 'Failed to record payout.' })
       // AUDIT FIX (bug): ledgerSettlementFailed means the payout row was
@@ -332,8 +335,10 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
             <Checkbox wrapperClassName="mt-2" label="I confirm the amount differs on purpose" checked={ack} onChange={e => setAck(e.target.checked)} />
           </div>
         )}
-        <Input label={differs ? 'Note (required — explain the difference)' : 'Note (optional)'} value={note}
+        <Input label="Note to partner (optional — shown on their dashboard)" value={note}
           onChange={e => setNote(e.target.value)} placeholder="e.g. September referrals" />
+        <Input label={differs ? 'Internal note (required — explain the difference; admin only)' : 'Internal note (optional, admin only)'} value={internalNote}
+          onChange={e => setInternalNote(e.target.value)} placeholder="e.g. short-paid: owes us for a chargeback" />
         {error && <p className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
@@ -718,8 +723,12 @@ export default function PartnerDetail() {
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
 
-  async function load() {
-    setLoading(true)
+  // `silent` reloads (after an action) refresh the data WITHOUT swapping the page for a
+  // spinner. The spinner used to unmount every tab — and any modal open inside one — so a
+  // PAYOUT_DETAILS_CHANGED conflict reloaded the partner and closed the modal before the
+  // admin could read the error that explained why nothing was recorded.
+  async function load(silent = false) {
+    if (!silent) setLoading(true)
     try {
       const res = await api.get(`/partners/${id}`)
       setPartner(res.data.data)
@@ -731,6 +740,7 @@ export default function PartnerDetail() {
   }
 
   useEffect(() => { load() }, [id])
+  const reload = () => load(true)
 
   async function resendLink() {
     try {
@@ -751,6 +761,20 @@ export default function PartnerDetail() {
       })
     } catch (_) {
       toast({ message: 'Failed to resend link.', type: 'error' })
+    }
+  }
+
+  // Round 4 (feature gap): admins had no way to get a partner's dashboard link at all, only
+  // the payout link. Both are bearer credentials: fetched on demand (never part of the
+  // partner payload), audit-logged server-side, and copied straight to the clipboard.
+  async function copyLink(which) {
+    try {
+      const res = await api.get(`/partners/${id}/links`)
+      const url = which === 'dashboard' ? res.data.data.dashboardUrl : res.data.data.payoutUrl
+      const ok = await copyToClipboard(url)
+      toast({ message: ok ? `${which === 'dashboard' ? 'Dashboard' : 'Payout-details'} link copied.` : 'Could not copy — your browser blocked clipboard access.', type: ok ? 'success' : 'warning' })
+    } catch (_) {
+      toast({ message: 'Failed to get the link.', type: 'error' })
     }
   }
 
@@ -809,8 +833,18 @@ export default function PartnerDetail() {
         </StatCard>
       </div>
 
+      {(partner.website || partner.audience) && (
+        <div className="rounded-md bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600">
+          <div className="text-xs font-medium text-gray-400 mb-1">From their application</div>
+          {partner.website && <div><span className="text-gray-400">Website:</span> {partner.website}</div>}
+          {partner.audience && <div><span className="text-gray-400">Audience:</span> {partner.audience}</div>}
+        </div>
+      )}
+
       <div className="flex gap-2 flex-wrap">
         <Button size="sm" variant="secondary" onClick={resendLink}>Resend payout-details link</Button>
+        <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
+        <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link (revoke old one)</Button>
       </div>
 
@@ -842,6 +876,12 @@ export default function PartnerDetail() {
               submitted payout details yet — resend the payout-details link above.
             </div>
           )}
+          {(partner.creditCents || 0) > 0 && (
+            <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
+              {partner.name} has a {formatCents(partner.creditCents, partner.currency)} refund credit — refunds/chargebacks on
+              commission that was already paid. It nets against their future commission.
+            </div>
+          )}
           <div className="text-sm text-gray-600">
             Added {formatDate(partner.createdAt)}.
             {partner.holdDays > 0 && ` Commission is held ${partner.holdDays} day${partner.holdDays === 1 ? '' : 's'} before it becomes payable.`}
@@ -849,11 +889,11 @@ export default function PartnerDetail() {
           </div>
         </div>
       )}
-      {tab === 'cycles' && <CyclesTab partner={partner} onChanged={load} />}
+      {tab === 'cycles' && <CyclesTab partner={partner} onChanged={reload} />}
       {tab === 'conversions' && <ConversionsTab partner={partner} />}
-      {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={load} />}
+      {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={reload} />}
 
-      {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={load} />}
+      {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
 
       <ConfirmDialog
         open={confirmRegenerate}

@@ -310,7 +310,7 @@ async function recordConversionInner(supabase, payment, env) {
     if (!codeRow) return { ok: true, recorded: false, reason: 'code-not-found' }
 
     const partnerRes = await withOneRetry(() => supabase
-      .from('partners').select('name, email, commission_rate, payout_details_token').eq('id', codeRow.partner_id).maybeSingle())
+      .from('partners').select('name, email, commission_rate, dashboard_token').eq('id', codeRow.partner_id).maybeSingle())
     if (partnerRes.error) {
       console.error('recordConversion partner lookup:', partnerRes.error.message)
       return { ok: false, recorded: false, reason: 'partner-lookup', error: partnerRes.error.message }
@@ -465,14 +465,14 @@ async function notifyConversionFailure(env, payment, result, source) {
 
 // AUDIT FIX (Section 3/4 pass, feature gap): see the call site's comment in
 // recordConversionInner. Deliberately swallows everything — a partner with
-// no email on file, a throttled/failed send, or a missing payout_details_
+// no email on file, a throttled/failed send, or a missing dashboard_
 // token (no dashboard link to send them yet) must never turn an already-
 // successful commission record into a failure response.
 async function notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, currency) {
-  if (!partner?.email || !partner?.payout_details_token) return
+  if (!partner?.email || !partner?.dashboard_token) return
   try {
     const emailService = require('./email.service')
-    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.payout_details_token}`
+    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
     await emailService.sendPartnerConversionEarned(env, supabase, partner.email, partner.name,
       codeRow.code, commissionAmountCents, currency || c.CURRENCY, dashboardUrl)
   } catch (_) {}
@@ -484,10 +484,10 @@ async function notifyPartnerConversion(env, supabase, partner, codeRow, commissi
 async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, currency) {
   try {
     const { data: partner } = await supabase.from('partners')
-      .select('name, email, payout_details_token, status').eq('id', partnerId).maybeSingle()
-    if (!partner?.email || !partner?.payout_details_token) return
+      .select('name, email, dashboard_token, status').eq('id', partnerId).maybeSingle()
+    if (!partner?.email || !partner?.dashboard_token) return
     const emailService = require('./email.service')
-    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.payout_details_token}`
+    const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
     await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
       commissionCents, currency || env.PAYSTACK_CURRENCY || c.CURRENCY, dashboardUrl)
   } catch (_) {}
