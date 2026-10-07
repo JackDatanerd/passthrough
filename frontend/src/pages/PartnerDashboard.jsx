@@ -7,6 +7,7 @@ import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import EmptyState from '../components/ui/EmptyState'
+import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
 
 // AUDIT FIX (bug): this local formatter put the `$` before the number's own
 // negative sign — e.g. "$-5.00" — instead of "-$5.00". Harmless while every
@@ -310,6 +311,12 @@ export default function PartnerDashboard() {
                 You earn {formatRate(data.commissionRate)} commission on every sale through your link.
               </p>
             )}
+            <details className="text-sm text-gray-500 mb-5" data-testid="attribution-terms">
+              <summary className="cursor-pointer text-gray-600 hover:text-gray-800">How crediting works</summary>
+              <ul className="list-disc pl-5 mt-2 space-y-1">
+                {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
+              </ul>
+            </details>
 
             {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
                 this is the account-level half of that fix. Without it, a

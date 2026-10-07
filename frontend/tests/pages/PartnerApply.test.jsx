@@ -49,3 +49,14 @@ describe('PartnerApply', () => {
     expect(screen.queryByText(/application received/i)).toBeNull()
   })
 })
+
+describe('PartnerApply — how crediting works (G6)', () => {
+  it('tells an applicant up front: 30 days from last click, repeat purchases count, refunds reverse', () => {
+    renderIt()
+    const box = screen.getByTestId('attribution-terms')
+    expect(box).toHaveTextContent(/30 days after their most recent click/)
+    expect(box).toHaveTextContent(/each new click restarts/)
+    expect(box).toHaveTextContent(/not just the first/)
+    expect(box).toHaveTextContent(/refunded, its commission is reversed/)
+  })
+})

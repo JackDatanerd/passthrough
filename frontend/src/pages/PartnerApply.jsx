@@ -7,6 +7,7 @@ import Input from '../components/ui/Input'
 import Textarea from '../components/ui/Textarea'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
 
 // Public "become a partner" application. Reviewed by hand under Admin -> Partners;
 // approval creates the partner and emails their payout-details link, so nothing
@@ -59,6 +60,12 @@ export default function PartnerApply() {
                 Share Passthrough with your audience and earn commission on every sale made through your link.
                 Tell us a bit about you — we review every application by hand.
               </p>
+              <div className="mb-6 rounded-md bg-gray-50 border border-gray-200 px-4 py-3" data-testid="attribution-terms">
+                <p className="text-xs font-semibold text-gray-700 mb-1">How crediting works</p>
+                <ul className="list-disc pl-4 text-xs text-gray-600 space-y-1">
+                  {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
+                </ul>
+              </div>
               <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <Input label="Your name" value={name} onChange={e => setName(e.target.value)} maxLength={200} />
                 <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} maxLength={320} />

@@ -1,0 +1,16 @@
+Payments & Pricing — round 5 (owner decisions on the two open items from round 4)
+
+G6  Decision: keep the behaviour (discount + commission on every purchase inside the 30-day
+    attribution window) and make it CLEAR TO PARTNERS instead of changing it.
+    - new frontend/src/lib/partnerTerms.js: one statement of the terms (30 days from the visitor's
+      LAST click, each click restarts it; every purchase in the window earns commission, repeat
+      purchases included; refunds reverse the commission and net against future payouts).
+    - PartnerApply shows it before applying; PartnerDashboard has it as an expandable
+      "How crediting works" note.
+    - useReferralCapture now derives its 30-day window from the same constant, so what partners are
+      told cannot drift from what is enforced.
+B2  Decision: accepted as a known limitation (no code change). A late payment on a cancelled checkout
+    can exceed a limited code's usage_limit by one; warnIfOverLimit already emails the owner.
+
+Tests: PartnerApply / PartnerDashboard (terms shown), new partnerTerms.test.js; existing
+useReferralCapture tests continue to pin the 30-day enforcement.

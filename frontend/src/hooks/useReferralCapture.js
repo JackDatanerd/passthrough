@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
 import api from '../lib/api'
+import { ATTRIBUTION_WINDOW_DAYS } from '../lib/partnerTerms'
 
 const STORAGE_KEY = 'passthrough_referral_code'
 
@@ -18,7 +19,9 @@ const STORAGE_KEY = 'passthrough_referral_code'
 // windows (e.g. ANON_SCAN_TTL_HOURS) in spirit; a click always refreshes it,
 // exactly like Passthrough's other captured state (see the click-vs-
 // navigation dedup below, which is unaffected by this).
-const ATTRIBUTION_TTL_MS = 30 * 24 * 60 * 60 * 1000
+// G6 (Payments & Pricing round 4): the window length lives in lib/partnerTerms.js so what partners
+// are TOLD can never drift from what this enforces.
+const ATTRIBUTION_TTL_MS = ATTRIBUTION_WINDOW_DAYS * 24 * 60 * 60 * 1000
 
 // Codes already click-tracked in THIS page session. localStorage can be blocked (some in-app
 // browsers / private modes), in which case readStored() always returns null and every route
