@@ -249,7 +249,7 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     })
     const m = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'middleware/rateLimiter.js': { isBypassed: () => false, hitQuota: async () => true },
+      'middleware/rateLimiter.js': { isBypassed: () => false, anonScanSlotKey: () => 'rl:anonscan:test', refundAnonScanSlot: async () => {}, hitQuota: async () => true },
       'services/jd.parser.js': { fetchJobDescriptionFromUrl: async () => { state.jdFetches++; return opts.jdFetch ?? { success: true, text: 'F'.repeat(80) } } },
     })
     return { ...m, state, db }
@@ -262,7 +262,7 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     const ctx = csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd, contactName: 'A', contactEmail: 'a@b.co' } })
     const res = await t.mod.createScan(ctx)
     expect(res.body.success).toBe(true)
-    expect(ctx.__sent).toEqual([{ type: 'runAtsScan', scanId: res.body.data.scanId, anonToken: res.body.data.anonToken }])
+    expect(ctx.__sent).toEqual([{ type: 'runAtsScan', scanId: res.body.data.scanId, anonToken: res.body.data.anonToken, anonRlKey: 'rl:anonscan:test' }])
     expect(ctx.__waits).toHaveLength(0)
   })
   it('a logged-in scan enqueues with no token', async () => {
@@ -338,7 +338,8 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
       t = setup({ source: { id: SRC, user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Corrected Name' } } })
       const res = await t.mod.createScan(csCtx({ user, fields: { sourceScanId: SRC, jobDescriptionText: validJd } }))
       expect(res.body.success).toBe(true)
-      expect(t.state.inserts[0]).toMatchObject({ input_mode: 'saved_profile', original_resume_data: { name: 'Corrected Name' } })
+      // a rescan of a typed background stays "built from scratch" (it used to be relabelled saved_profile)
+      expect(t.state.inserts[0]).toMatchObject({ input_mode: 'brain_dump', original_resume_data: { name: 'Corrected Name' } })
       expect(t.state.inserts[0].raw_brain_dump_text).toBeUndefined()
     })
     it('a source with no structured data yet (still scanning) is refused', async () => {
@@ -501,10 +502,10 @@ describe('small controller fixes', () => {
     })
     it('a corrected name updates the search column; clearing the name keeps the earlier one (not "Candidate")', async () => {
       t = setup()
-      await t.mod.updateResumeData(call({ resumeData: { name: 'Maria Lopez' } }))
+      await t.mod.updateResumeData(call({ resumeData: { name: 'Maria Lopez', skills: ['Go'] } }))
       expect(t.state.patch.candidate_first_name).toBe('Maria')
       t.restore(); t = setup()
-      await t.mod.updateResumeData(call({ resumeData: { name: '   ' } }))
+      await t.mod.updateResumeData(call({ resumeData: { name: '   ', skills: ['Go'] } }))
       expect(t.state.patch.candidate_first_name).toBe('Old')
     })
   })

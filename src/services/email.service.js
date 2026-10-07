@@ -374,7 +374,8 @@ async function sendAnonScanResult(env, supabase, email, name, scanId, anonToken,
     NAME:     name,
     SCORE:    String(score),
     PASSED:   passed ? 'passed' : 'is failing',
-    SCAN_URL: scanUrl
+    SCAN_URL: scanUrl,
+    HOURS:    String(c.ANON_SCAN_TTL_HOURS)
   })
 }
 

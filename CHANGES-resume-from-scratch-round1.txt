@@ -1,0 +1,28 @@
+RESUME FROM SCRATCH — round 1 (gaps G1–G6, bugs B1–B10)
+
+BUGS
+B1  Structuring timed out at 20s on long backgrounds. Queue consumer now allows 90s; max_tokens 5000 -> 7000.
+B2  Multipart CRLF counted double against the length cap (text silently truncated). upload.js normalises to LF first.
+B3  Anonymous visitor kept their 1/hour slot when the background job failed. Slot is now refunded (job, waitUntil fallback, dead-letter).
+B4  Magic-link ?token was not persisted; revisiting lost access. ScanResult now stores it.
+B5  CsvInput kept stale text after removing a row (wrong technologies shown). Now re-syncs from props.
+B6  Saving an empty resume in the editor was accepted. updateResumeData now 400s.
+B7  Anonymous name/email typed in the form now fill what structuring leaves empty.
+B8  <background> tag was not stripped by stripPromptTags (prompt-injection surface).
+B9  raw_brain_dump_text kept forever. Nulled on completion; interrupted reruns reuse structured data.
+B10 Rescan of a from-scratch scan was relabelled saved_profile. Stays brain_dump.
+
+GAPS
+G1  Draft persistence (localStorage) + "Try again" path after an error.
+G2  New "Fill it in myself" entry mode (structured form, no AI structuring) via resumeDataJson.
+G3  Schema: languages, awards, publications, volunteer, education details, job location — through
+    schema, extraction, rewrite (restoreFactualFields keeps them factual), docx, PDF, scoring text.
+G4  PDF draft download (GET /api/scan/:id/download-draft-pdf, own rate limit); draft files named after the person.
+G5  "Worth adding" hints in the editor (email, phone, dates, empty roles, summary).
+G6  Home page cards deep-link to each mode; length cap 12,000 chars (UI + server); aria-pressed on mode tabs;
+    anon disclosure + result email now state the 24-hour expiry.
+
+TESTS
+New: tests/resume.scratch.test.js, tests/resume.scratch.controller.test.js, frontend/tests/components/resumeFromScratch.test.jsx.
+Updated: scan.controller, scan.ats.closeout, claude.service.audit-round.
+Full suite: no new failures vs. baseline (pre-existing react-router-dom failures; ResetPassword/VerifyEmail share that cause).

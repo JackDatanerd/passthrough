@@ -22,18 +22,33 @@ const resumeDataSchema = z.object({
   portfolio: z.string().nullable().optional(),
   summary:   z.string().nullable().optional(),
   experience: z.array(z.object({
-    company: z.string().nullable().optional(),
-    title:   z.string().nullable().optional(),
-    dates:   z.string().nullable().optional(),
-    bullets: z.array(z.string()).optional()
+    company:  z.string().nullable().optional(),
+    title:    z.string().nullable().optional(),
+    dates:    z.string().nullable().optional(),
+    // Where the job was (city / "Remote"). Optional; most resumes show it.
+    location: z.string().nullable().optional(),
+    bullets:  z.array(z.string()).optional()
   })).optional(),
   education: z.array(z.object({
     institution: z.string().nullable().optional(),
     degree:      z.string().nullable().optional(),
-    dates:       z.string().nullable().optional()
+    dates:       z.string().nullable().optional(),
+    // GPA / honours / relevant coursework, as the person wrote it.
+    details:     z.string().nullable().optional()
   })).optional(),
   skills:         z.array(z.string()).optional(),
   certifications: z.array(z.string()).optional(),
+  // Sections a from-scratch resume commonly needs and the schema used to have no place for
+  // (anything the person wrote about them was silently dropped).
+  languages:    z.array(z.string()).optional(),
+  awards:       z.array(z.string()).optional(),
+  publications: z.array(z.string()).optional(),
+  volunteer: z.array(z.object({
+    organization: z.string().nullable().optional(),
+    role:         z.string().nullable().optional(),
+    dates:        z.string().nullable().optional(),
+    bullets:      z.array(z.string()).optional()
+  })).optional(),
   projects: z.array(z.object({
     name:         z.string().nullable().optional(),
     description:  z.string().nullable().optional(),
@@ -55,9 +70,14 @@ function dropBlankEntries(rd) {
     ...rd,
     skills: keep(rd.skills),
     certifications: keep(rd.certifications),
+    languages: keep(rd.languages),
+    awards: keep(rd.awards),
+    publications: keep(rd.publications),
+    volunteer: Array.isArray(rd.volunteer)
+      ? keepEntries(rd.volunteer.map(v => ({ ...v, bullets: keep(v?.bullets) })), ['organization', 'role', 'dates', 'bullets']) : rd.volunteer,
     experience: Array.isArray(rd.experience)
       ? keepEntries(rd.experience.map(e => ({ ...e, bullets: keep(e?.bullets) })), ['company', 'title', 'dates', 'bullets']) : rd.experience,
-    education: keepEntries(rd.education, ['institution', 'degree', 'dates']),
+    education: keepEntries(rd.education, ['institution', 'degree', 'dates', 'details']),
     projects: Array.isArray(rd.projects)
       ? keepEntries(rd.projects.map(p => ({ ...p, technologies: keep(p?.technologies) })), ['name', 'description', 'technologies', 'link']) : rd.projects,
   }
@@ -72,6 +92,8 @@ function hasResumeContent(rd) {
   if (list(rd.experience).some(e => text(e?.title) || text(e?.company) || list(e?.bullets).some(text))) return true
   if (list(rd.education).some(e => text(e?.institution) || text(e?.degree))) return true
   if (list(rd.skills).some(text)) return true
+  if (list(rd.volunteer).some(v => text(v?.organization) || text(v?.role))) return true
+  if (['awards', 'publications', 'certifications'].some(k => list(rd[k]).some(text))) return true
   if (list(rd.projects).some(p => text(p?.name) || text(p?.description))) return true
   return !!text(rd.summary)
 }

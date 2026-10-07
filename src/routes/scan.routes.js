@@ -40,5 +40,6 @@ router.delete('/:id',            auth,        validateUuidParam(), c.deleteScan)
 // extracted data and get their free draft back without registering first.
 router.patch('/:id/resume-data',   rl.resumeEdit, validateUuidParam(), c.updateResumeData)
 router.get( '/:id/download-draft', rl.draftDownload, validateUuidParam(), c.downloadDraft)
+router.get( '/:id/download-draft-pdf', rl.pdfRegen, validateUuidParam(), c.downloadDraftPdf)
 
 module.exports = router

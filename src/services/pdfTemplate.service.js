@@ -59,7 +59,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const summary = str(d.summary) ? `<p class="summary">${esc(d.summary)}</p>` : ''
 
   const experience = list(d.experience).map(job => {
-    const head = [str(job?.title), str(job?.company)].filter(Boolean).map(esc).join(' &mdash; ')
+    const head = [str(job?.title), str(job?.company), str(job?.location)].filter(Boolean).map(esc).join(' &mdash; ')
     const dates = str(job?.dates)
     const bullets = list(job?.bullets).map(str).filter(Boolean)
     if (!head && !dates && !bullets.length) return ''
@@ -70,8 +70,10 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const education = list(d.education).map(e => {
     const head = [str(e?.degree), str(e?.institution)].filter(Boolean).map(esc).join(' &mdash; ')
     const dates = str(e?.dates)
+    const details = str(e?.details)
     if (!head && !dates) return ''
-    return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div></div>`
+    return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
+      (details ? `<p>${esc(details)}</p>` : '') + `</div>`
   }).join('')
 
   const skills = list(d.skills).map(str).filter(Boolean)
@@ -92,11 +94,25 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
       (link ? `<p class="link">${l ? `<a href="${esc(l)}">${esc(link)}</a>` : esc(link)}</p>` : '') + `</div>`
   }).join('')
 
+  const volunteer = list(d.volunteer).map(v => {
+    const head = [str(v?.role), str(v?.organization)].filter(Boolean).map(esc).join(' &mdash; ')
+    const dates = str(v?.dates)
+    const bullets = list(v?.bullets).map(str).filter(Boolean)
+    if (!head && !dates && !bullets.length) return ''
+    return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
+      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : '') + `</div>`
+  }).join('')
+  const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '' }
+  const languages = list(d.languages).map(str).filter(Boolean)
+  const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(' &middot; ')}</p>` : ''
+
   // Projects lead for candidates with no formal experience — the same rule the AI layout is given.
   const projectsSection = section('Projects', projects)
   const experienceSection = section('Experience', experience)
   const body = (experience ? [experienceSection, projectsSection] : [projectsSection, experienceSection]).join('') +
-    section('Education', education) + section('Skills', skillsHtml) + section('Certifications', certsHtml)
+    section('Education', education) + section('Skills', skillsHtml) + section('Certifications', certsHtml) +
+    section('Volunteer Experience', volunteer) + section('Awards', plainList(d.awards)) +
+    section('Publications', plainList(d.publications)) + section('Languages', languagesHtml)
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>

@@ -4,6 +4,7 @@ import api, { getErrorMessage } from '../../lib/api'
 import { downloadBlob } from '../../lib/utils'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
+import { missingHints } from '../../lib/resumeForm'
 
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
 // this component closes the single biggest gap found in that audit. Before
@@ -34,6 +35,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [dlError, setDlError] = useState('')
+  const [pdfLoading, setPdfLoading] = useState(false)
 
   const data = scan.originalResumeData
   if (!data) return null
@@ -58,15 +60,20 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
     setSaving(false)
   }
 
-  async function handleDownloadDraft() {
+  // type: 'docx' | 'pdf'. The PDF is rendered on demand (a browser render), so it shows a busy state.
+  async function handleDownloadDraft(type = 'docx') {
     setDlError('')
+    if (type === 'pdf') setPdfLoading(true)
     try {
-      const url = `/scan/${scan.id}/download-draft${anonToken ? `?token=${anonToken}` : ''}`
+      const path = type === 'pdf' ? 'download-draft-pdf' : 'download-draft'
+      const url = `/scan/${scan.id}/${path}${anonToken ? `?token=${anonToken}` : ''}`
       const res = await api.get(url, { responseType: 'blob' })
-      downloadBlob(res.data, 'resume-draft.docx')
+      const stem = String(data.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+      downloadBlob(res.data, `${stem ? `${stem}-` : ''}resume-draft.${type === 'pdf' ? 'pdf' : 'docx'}`)
     } catch (err) {
       setDlError(getErrorMessage(err, 'Could not download your draft — try again.'))
     }
+    if (type === 'pdf') setPdfLoading(false)
   }
 
   return (
@@ -82,8 +89,11 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
           {!editing && (
             <Button variant="secondary" size="sm" onClick={startEditing}>Review & edit</Button>
           )}
-          <Button variant="secondary" size="sm" onClick={handleDownloadDraft}>
+          <Button variant="secondary" size="sm" onClick={() => handleDownloadDraft('docx')}>
             Download draft (.docx)
+          </Button>
+          <Button variant="secondary" size="sm" onClick={() => handleDownloadDraft('pdf')} loading={pdfLoading}>
+            Download draft (.pdf)
           </Button>
         </div>
       </div>
@@ -151,6 +161,29 @@ function ResumeDataSummary({ data }) {
         <div>
           <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Skills</p>
           <p>{data.skills.join(', ')}</p>
+        </div>
+      )}
+      {data.volunteer?.length > 0 && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Volunteer ({data.volunteer.length})</p>
+          <ul className="list-disc list-inside space-y-0.5">
+            {data.volunteer.map((v, i) => <li key={i}>{v.role || 'Volunteer'}{v.organization ? ` at ${v.organization}` : ''}</li>)}
+          </ul>
+        </div>
+      )}
+      {['languages', 'awards', 'publications'].some(k => data[k]?.length > 0) && (
+        <div>
+          <p className="text-xs font-medium text-gray-500 uppercase tracking-wide mb-1">Also captured</p>
+          <p>{[['languages', 'Languages'], ['awards', 'Awards'], ['publications', 'Publications']]
+            .filter(([k]) => data[k]?.length > 0).map(([k, label]) => `${data[k].length} ${label.toLowerCase()}`).join(' · ')}</p>
+        </div>
+      )}
+      {missingHints(data).length > 0 && (
+        <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2">
+          <p className="text-xs font-medium text-amber-900 mb-1">Worth adding before you send this anywhere:</p>
+          <ul className="text-xs text-amber-800 list-disc list-inside space-y-0.5">
+            {missingHints(data).map(h => <li key={h}>{h}</li>)}
+          </ul>
         </div>
       )}
       {!data.experience?.length && !data.education?.length && !data.projects?.length && !data.skills?.length && (

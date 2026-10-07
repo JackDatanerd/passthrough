@@ -354,7 +354,7 @@ async function queue(batch, env, ctx) {
   const supabase = getSupabase(env)
 
   for (const message of batch.messages) {
-    const { type, scanId, anonToken } = message.body || {}
+    const { type, scanId, anonToken, anonRlKey } = message.body || {}
     if (!scanId || (type !== 'generateFix' && type !== 'generateBadge' && type !== 'runAtsScan')) {
       console.error('Queue message malformed, dropping:', JSON.stringify(message.body))
       message.ack()  // not retryable — will never become valid
@@ -367,7 +367,8 @@ async function queue(batch, env, ctx) {
       // "here is your result" e-mail); it is idempotent per scan (claims the
       // scan before working), so an at-least-once redelivery is harmless.
       const outcome = type === 'runAtsScan'
-        ? await runAtsScan(env, supabase, scanId, anonToken || null)
+        // The queue has no 30s wall-clock cap, so structuring a long background gets the long budget.
+        ? await runAtsScan(env, supabase, scanId, anonToken || null, { structureTimeoutMs: 90000, anonRlKey: anonRlKey || null })
         : await (type === 'generateBadge' ? generateBadge : generateFix)(env, supabase, scanId)
       if (outcome?.success) {
         console.log(`Queue job succeeded: ${type} ${scanId}`)

@@ -91,7 +91,7 @@ module.exports = {
   MAX_FIX_RETRIES: 2,
   MAX_JD_CHARS:     5000,
   // Brain-dump input box (the frontend mirrors this value).
-  MAX_RESUME_CHARS: 8000,
+  MAX_RESUME_CHARS: 12000,
   // Text extracted from an UPLOADED resume, for scoring and structuring. Much
   // larger than the brain-dump cap: 8000 chars silently truncated any resume
   // beyond ~2.5 pages.

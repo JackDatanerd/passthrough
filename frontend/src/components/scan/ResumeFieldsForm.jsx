@@ -42,13 +42,14 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
           <EditSection
             title="Experience"
             items={draft.experience || []}
-            onAdd={() => addListItem('experience', { company: '', title: '', dates: '', bullets: [] })}
+            onAdd={() => addListItem('experience', { company: '', title: '', dates: '', location: '', bullets: [] })}
             onRemove={i => removeListItem('experience', i)}
             renderItem={(item, i) => (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
                 <Input placeholder="Company" value={item.company || ''} onChange={e => updateListItem('experience', i, 'company', e.target.value)} />
                 <Input placeholder="Title"   value={item.title   || ''} onChange={e => updateListItem('experience', i, 'title', e.target.value)} />
                 <Input placeholder="Dates (e.g. Jan 2022 – Present)" value={item.dates || ''} onChange={e => updateListItem('experience', i, 'dates', e.target.value)} />
+                <Input className="sm:col-span-3" placeholder="Location (optional, e.g. Nairobi or Remote)" value={item.location || ''} onChange={e => updateListItem('experience', i, 'location', e.target.value)} />
                 <Textarea
                   className="sm:col-span-3"
                   rows={4}
@@ -63,13 +64,14 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
           <EditSection
             title="Education"
             items={draft.education || []}
-            onAdd={() => addListItem('education', { institution: '', degree: '', dates: '' })}
+            onAdd={() => addListItem('education', { institution: '', degree: '', dates: '', details: '' })}
             onRemove={i => removeListItem('education', i)}
             renderItem={(item, i) => (
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
                 <Input placeholder="Institution" value={item.institution || ''} onChange={e => updateListItem('education', i, 'institution', e.target.value)} />
                 <Input placeholder="Degree"      value={item.degree      || ''} onChange={e => updateListItem('education', i, 'degree', e.target.value)} />
                 <Input placeholder="Dates"       value={item.dates       || ''} onChange={e => updateListItem('education', i, 'dates', e.target.value)} />
+                <Input className="sm:col-span-3" placeholder="GPA, honours, relevant coursework (optional)" value={item.details || ''} onChange={e => updateListItem('education', i, 'details', e.target.value)} />
               </div>
             )}
           />
@@ -91,8 +93,35 @@ export default function ResumeFieldsForm({ draft, setDraft }) {
             )}
           />
 
+          <EditSection
+            title="Volunteer experience"
+            items={draft.volunteer || []}
+            onAdd={() => addListItem('volunteer', { organization: '', role: '', dates: '', bullets: [] })}
+            onRemove={i => removeListItem('volunteer', i)}
+            renderItem={(item, i) => (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-2">
+                <Input placeholder="Organization" value={item.organization || ''} onChange={e => updateListItem('volunteer', i, 'organization', e.target.value)} />
+                <Input placeholder="Role"         value={item.role         || ''} onChange={e => updateListItem('volunteer', i, 'role', e.target.value)} />
+                <Input placeholder="Dates"        value={item.dates        || ''} onChange={e => updateListItem('volunteer', i, 'dates', e.target.value)} />
+                <Textarea
+                  className="sm:col-span-3"
+                  rows={3}
+                  placeholder="One bullet per line"
+                  value={(item.bullets || []).join('\n')}
+                  onChange={e => updateListItem('volunteer', i, 'bullets', e.target.value.split('\n'))}
+                />
+              </div>
+            )}
+          />
+
           <CsvInput label="Skills (comma-separated)" value={draft.skills} onChange={arr => updateField('skills', arr)} />
           <CsvInput label="Certifications (comma-separated)" value={draft.certifications} onChange={arr => updateField('certifications', arr)} />
+          <CsvInput label="Languages (comma-separated)" value={draft.languages} onChange={arr => updateField('languages', arr)} />
+          {/* One per line, not comma-separated: award and publication titles contain commas. */}
+          <Textarea label="Awards & honours (one per line)" rows={2} value={(draft.awards || []).join('\n')}
+            onChange={e => updateField('awards', e.target.value.split('\n'))} />
+          <Textarea label="Publications (one per line)" rows={2} value={(draft.publications || []).join('\n')}
+            onChange={e => updateField('publications', e.target.value.split('\n'))} />
     </>
   )
 }

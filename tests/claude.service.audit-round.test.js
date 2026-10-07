@@ -68,7 +68,7 @@ describe('sanitizeResumeShape', () => {
     })
     expect(r.skills).toEqual(['Go', 'SQL', 'Rust'])
     expect(r.certifications).toEqual([])
-    expect(r.experience).toEqual([{ company: 'Acme', title: 'Eng', dates: '2019', bullets: [] }])
+    expect(r.experience).toEqual([{ company: 'Acme', title: 'Eng', dates: '2019', location: null, bullets: [] }])
     expect(r.education).toEqual([])
     expect(r.projects[0]).toEqual({ name: 'P', description: '', technologies: ['a', 'b'], link: null })
     expect('extra' in r).toBe(false)

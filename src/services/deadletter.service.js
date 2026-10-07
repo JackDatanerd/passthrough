@@ -19,7 +19,7 @@ const { must } = require('../lib/db')
 
 async function handleDeadLetterBatch(batch, env, supabase, emailService) {
   for (const message of batch.messages) {
-    const { type, scanId } = message.body || {}
+    const { type, scanId, anonRlKey } = message.body || {}
     try {
       if (scanId && type === 'runAtsScan') {
         // A free scan that never ran: nothing was produced, so the person gets the
@@ -29,6 +29,9 @@ async function handleDeadLetterBatch(batch, env, supabase, emailService) {
           const { data: failed } = await supabase.from('scans').update({ status: 'ERROR' })
             .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id, user_id, created_at')
           for (const row of Array.isArray(failed) ? failed : []) {
+            // An anonymous scan has no daily counter — it spent the visitor's one-an-hour slot.
+            if (!row.user_id && anonRlKey && row.created_at && Date.now() - Date.parse(row.created_at) < 55 * 60 * 1000)
+              await require('../middleware/rateLimiter').refundAnonScanSlot(env, anonRlKey)
             const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
             if (row.user_id && row.created_at && new Date(row.created_at) >= startOfToday) {
               const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })

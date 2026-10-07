@@ -64,7 +64,7 @@ const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
 const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
-const { parseClientResumeData } = require('../lib/resumeData')
+const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { purgeBadgeCache } = require('../lib/badgeCache')
 const badgeService     = require('../services/badge.service')
 const pdfService        = require('../services/pdf.service')
@@ -157,16 +157,19 @@ async function renderStructuredResumeText(resumeData) {
 // is unavailable the old in-request path remains as the fallback, so a queue
 // outage degrades the scan rather than losing it.
 async function dispatchAtsScan(ctx, supabase, scanId, anonToken) {
+  // An anonymous scan carries the limiter bucket it spent, so a failure on OUR side can hand
+  // the visitor's one-an-hour slot back (see refundScanSlot).
+  const anonRlKey = anonToken ? rateLimiter.anonScanSlotKey(ctx) : null
   if (ctx.env.FIX_QUEUE) {
     try {
-      await ctx.env.FIX_QUEUE.send({ type: 'runAtsScan', scanId, anonToken: anonToken || null })
+      await ctx.env.FIX_QUEUE.send({ type: 'runAtsScan', scanId, anonToken: anonToken || null, anonRlKey })
       return
     } catch (err) {
       console.error(`createScan: could not enqueue runAtsScan (${scanId}) — falling back to waitUntil:`, err.message)
     }
   }
   ctx.executionCtx?.waitUntil(
-    runAtsScan(ctx.env, supabase, scanId, anonToken || undefined).catch(err => console.error('Unhandled runAtsScan:', err.message))
+    runAtsScan(ctx.env, supabase, scanId, anonToken || undefined, { anonRlKey }).catch(err => console.error('Unhandled runAtsScan:', err.message))
   )
 }
 
@@ -188,6 +191,9 @@ async function createScan(ctx) {
   // a brain dump had to re-upload / re-type it for every job they applied to —
   // the main loop of the product. Owner-only, logged-in only.
   const sourceScanId = String(fields.sourceScanId || '').trim()
+  // Fourth way in: the person filled the structured form in themselves (JSON from the editor
+  // form). No Claude structuring, no 12,000-character box — validated exactly like a correction.
+  const manualJson = (fields.resumeDataJson || '').trim()
 
   const user = ctx.get('user')
 
@@ -200,13 +206,13 @@ async function createScan(ctx) {
   // must be present. More than one present is rejected explicitly rather
   // than silently preferring one, so a frontend bug that sends two never
   // produces surprising behavior.
-  const modesPresent = [!!file, !!brainDumpText, useSavedProfile, !!sourceScanId].filter(Boolean).length
+  const modesPresent = [!!file, !!brainDumpText, useSavedProfile, !!sourceScanId, !!manualJson].filter(Boolean).length
   if (modesPresent === 0)
     return ctx.json({ success: false,
-      message: 'Upload a resume, tell us about your background, or use your saved profile.' }, 400)
+      message: 'Upload a resume, tell us about your background, fill in your details, or use your saved profile.' }, 400)
   if (modesPresent > 1)
     return ctx.json({ success: false,
-      message: 'Choose one: a resume file, your background, or your saved profile — not more than one.' }, 400)
+      message: 'Choose one: a resume file, your background, your own details, or your saved profile — not more than one.' }, 400)
   if (useSavedProfile && !user)
     return ctx.json({ success: false, message: 'Sign in to use a saved profile.' }, 401)
   if (sourceScanId && !user)
@@ -214,11 +220,23 @@ async function createScan(ctx) {
 
   const supabase = getSupabase(ctx.env)
 
+  let manualData = null
+  if (manualJson) {
+    let parsedJson
+    try { parsedJson = JSON.parse(manualJson) } catch (_) { parsedJson = undefined }
+    const checked = parseClientResumeData(parsedJson)
+    if (!checked.ok) return ctx.json({ success: false, message: checked.message }, 400)
+    if (!hasResumeContent(checked.data))
+      return ctx.json({ success: false, message: 'Add at least one job, school, project, skill or a summary — there is nothing to score yet.' }, 400)
+    manualData = checked.data
+  }
+
   // Rescan source: reuse the earlier scan's resume. A file scan hands its stored
   // file back to the normal upload path below (so size/type/R2/cleanup/quota all
   // behave exactly as for a fresh upload); a typed or profile scan reuses its
   // already-structured (and possibly corrected) data, with no new structuring call.
   let rescanData = null
+  let rescanInputMode = 'saved_profile'
   if (sourceScanId) {
     if (!z.string().uuid().safeParse(sourceScanId).success)
       return ctx.json({ success: false, message: 'That scan could not be found.' }, 404)
@@ -241,6 +259,10 @@ async function createScan(ctx) {
       if (!source.originalResumeData)
         return ctx.json({ success: false, message: 'That scan has no resume content to reuse yet — wait for it to finish, or start a new one.' }, 400)
       rescanData = source.originalResumeData
+      // A rescan of a typed background is still "built from scratch" (it used to be relabelled
+      // "saved profile" everywhere it was shown). The structured data is already there, so the
+      // brain-dump pipeline reuses it instead of structuring again.
+      if (source.inputMode === 'brain_dump') rescanInputMode = 'brain_dump'
     }
   }
 
@@ -364,7 +386,21 @@ async function createScan(ctx) {
       }
     }
     if (rescanData) {
-      return { input_mode: 'saved_profile', original_resume_data: rescanData }
+      return { input_mode: rescanInputMode, original_resume_data: rescanData }
+    }
+    if (manualData) {
+      // Typed straight into the structured form: stored like a finished extraction. For an
+      // anonymous submitter the name / email they entered double as the contact for the
+      // "here is your result" link — only an address that passes the same check as the
+      // brain-dump contact field.
+      const manualEmail = String(manualData.email || '').trim().toLowerCase()
+      const emailOk = !user && manualEmail && z.string().email().safeParse(manualEmail).success
+      return {
+        input_mode:           'brain_dump',
+        original_resume_data: manualData,
+        contact_name:   !user ? (String(manualData.name || '').trim().slice(0, 100) || null) : null,
+        contact_email:  emailOk ? manualEmail : null
+      }
     }
     if (useSavedProfile) {
       // Structured data is already available — no file, no structuring
@@ -610,6 +646,16 @@ async function refundScanQuota(supabase, scan, label) {
   warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: scan.userId }), label)
 }
 
+// Gives back whatever "one more scan" the submitter spent: a signed-in person's daily slot, or an
+// anonymous visitor's one-an-hour slot (the bucket createScan recorded on the job). The anonymous
+// refund only applies inside the limiter's own window — after that the slot has already reset.
+async function refundScanSlot(env, supabase, scan, label, anonRlKey) {
+  if (scan && scan.userId) return refundScanQuota(supabase, scan, label)
+  if (!scan || !anonRlKey || !scan.createdAt) return
+  if (Date.now() - Date.parse(scan.createdAt) > 55 * 60 * 1000) return
+  await rateLimiter.refundAnonScanSlot(env, anonRlKey)
+}
+
 // AUDIT FIX (Auth/Scan round): the AI's number went into the blend unchecked.
 // An aiScore of 1000 — from a hallucination, or from text hidden in the resume
 // or JD telling the model what to answer — produced a flat 100 and unlocked
@@ -731,6 +777,11 @@ async function updateResumeData(ctx) {
   const checked = parseClientResumeData(body?.resumeData)
   if (!checked.ok) return ctx.json({ success: false, message: checked.message }, 400)
   const resumeData = checked.data
+  // The saved-profile editor refuses a resume with nothing in it (PUT /api/profile); this one
+  // used to accept it, rescore an empty document, overwrite the person's real data with it, and
+  // leave a blank resume they could still pay to "fix".
+  if (!hasResumeContent(resumeData))
+    return ctx.json({ success: false, message: 'Add at least one job, school, project, skill or a summary — an empty resume cannot be scored. Your earlier version is unchanged.' }, 400)
 
   // Same WYSIWYG scoring basis as runAtsScan's own brain_dump/saved_profile
   // branches (see renderStructuredResumeText above) and the same AI/rule
@@ -807,28 +858,62 @@ async function updateResumeData(ctx) {
 // data already on the row. Same ownership model as getScan (anon_token via
 // query param) — an anonymous user shouldn't have to register just to get
 // back the resume they already built for free.
-async function downloadDraft(ctx) {
+// Shared by the two draft downloads: owner (account or anon token) of a brain-dump / saved-profile
+// scan that already has structured data. Returns { scan } or { res } (the response to send).
+async function loadDraftScan(ctx) {
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
-  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+  if (!scan) return { res: ctx.json({ success: false, message: 'Not found.' }, 404) }
 
   const user = ctx.get('user')
   const isOwner = (scan.userId && scan.userId === user?.id) ||
                   (await anonTokenMatches(scan, ctx.req.query('token')))
-  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!isOwner) return { res: ctx.json({ success: false, message: 'Access denied.' }, 403) }
 
   if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
-    return ctx.json({ success: false,
-      message: 'A draft download is only available for brain-dump or saved-profile scans — file uploads already have your original file.' }, 400)
+    return { res: ctx.json({ success: false,
+      message: 'A draft download is only available for brain-dump or saved-profile scans — file uploads already have your original file.' }, 400) }
   if (!scan.originalResumeData)
-    return ctx.json({ success: false, message: 'Not ready yet — the scan needs to finish first.' }, 404)
+    return { res: ctx.json({ success: false, message: 'Not ready yet — the scan needs to finish first.' }, 404) }
+  return { scan }
+}
 
+// "Jane Doe" -> "jane-doe"; nothing usable -> ''. Used only for the downloaded file's name.
+function draftFileStem(resumeData) {
+  const stem = String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return stem ? `${stem}-resume-draft` : 'resume-draft'
+}
+
+async function downloadDraft(ctx) {
+  const { scan, res } = await loadDraftScan(ctx)
+  if (res) return res
   const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null)
-  ctx.header('Content-Disposition', 'attachment; filename="resume-draft.docx"')
+  ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(docxBytes)
+}
+
+// GET /api/scan/:id/download-draft-pdf
+// FEATURE GAP CLOSED (resume-from-scratch pass): the free draft was a .docx only, but the PDF is the
+// file most people send to employers. Rendered from the SAME deterministic template the paid
+// delivery falls back to (pdfTemplate.service.js — no Claude call, no credential line), on demand
+// and not stored. It costs a headless-browser render, so it has its own tighter limiter.
+async function downloadDraftPdf(ctx) {
+  const { scan, res } = await loadDraftScan(ctx)
+  if (res) return res
+  let pdfBytes
+  try {
+    const html = pdfTemplate.buildResumeHTML(scan.originalResumeData, undefined, null, { verified: false })
+    pdfBytes = await pdfService.generateResumePDF(ctx.env, html)
+  } catch (err) {
+    console.error(`downloadDraftPdf ${scan.id}:`, err.message)
+    return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute — the .docx draft is still available.' }, 502)
+  }
+  ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.pdf"`)
+  ctx.header('Content-Type', 'application/pdf')
+  return ctx.body(pdfBytes)
 }
 
 // POST /api/scan/:id/initiate-fix
@@ -1379,8 +1464,13 @@ async function getScanWithUser(supabase, scanId) {
 // product/cost tradeoff, not something to decide unilaterally while fixing
 // a stale comment.
 
-async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
+async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   let scanForRefund = null
+  // Only the queue consumer passes structureTimeoutMs: it has no 30s wall-clock cap, so
+  // structuring a long background may use the long budget. The waitUntil fallback keeps the
+  // default (20s) that fits under its cap.
+  const structureOpts = opts.structureTimeoutMs ? { timeoutMs: opts.structureTimeoutMs } : {}
+  const anonRlKey = opts.anonRlKey || null
   try {
     // CLAIM, not a blind write. The job now arrives through an at-least-once
     // queue: a redelivery of a scan that already finished would re-score it
@@ -1409,59 +1499,50 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
       // into the same resumeData shape parseResumeStructure produces for
       // uploaded resumes, then deterministically render it back to plain
       // text so ats.service.js's rule-based scorer runs unchanged.
-      const { resumeData, parseError, parseErrorMessage } =
-        await resumeParser.structureBrainDump(env, scan.rawBrainDumpText)
-      if (parseError || !resumeData) {
-        await supabase.from('scans').update({
-          status: 'ERROR',
-          full_ats_report: { error: parseErrorMessage || 'Could not structure background.' }
-        }).eq('id', scanId)
-        // Only a failure of OUR structuring call is refunded — "tell us more"
-        // (too little text) is the person's to fix, and refunding those would
-        // make an unlimited free retry loop.
-        if (/could not structure/i.test(parseErrorMessage || '')) await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (structure failure)')
-        return { success: false, error: parseErrorMessage || 'Could not structure background.' }
+      //
+      // Already structured? (typed straight into the structured form, a rescan of an earlier
+      // scan, or this job interrupted after structuring and picked up again) — reuse it: no
+      // second Claude call, and the person's own entries are never re-interpreted.
+      let resumeData = scan.originalResumeData ? JSON.parse(JSON.stringify(scan.originalResumeData)) : null
+      if (!resumeData) {
+        const structured = await resumeParser.structureBrainDump(env, scan.rawBrainDumpText, structureOpts)
+        const { parseError, parseErrorMessage } = structured
+        resumeData = structured.resumeData
+        if (parseError || !resumeData) {
+          await supabase.from('scans').update({
+            status: 'ERROR',
+            full_ats_report: { error: parseErrorMessage || 'Could not structure background.' }
+          }).eq('id', scanId)
+          // Only a failure of OUR structuring call is refunded — "tell us more"
+          // (too little text) is the person's to fix, and refunding those would
+          // make an unlimited free retry loop.
+          if (/could not structure/i.test(parseErrorMessage || '')) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (structure failure)', anonRlKey)
+          return { success: false, error: parseErrorMessage || 'Could not structure background.' }
+        }
       }
       // People describing their own career rarely think to state their own
       // name or email — Claude is correctly instructed never to invent one
       // (see structureFreeformText's prompt), which means it's frequently
-      // null. For a logged-in user, fall back to what's already on their
-      // account rather than shipping a resume with a blank name line.
-      // Doesn't help an ANONYMOUS brain-dump with no account to fall back
-      // to — that case still needs either explicit name/email form fields
-      // or clearer copy nudging the user to include them in the text.
+      // null. A logged-in user falls back to what's on their account; an
+      // anonymous one to the name / email they typed into the form for exactly this.
       if (scan.userId && (!resumeData.name || !resumeData.email)) {
         const { data: userRow } = await supabase.from('users').select('name, email').eq('id', scan.userId).maybeSingle()
         if (userRow) {
           resumeData.name  = resumeData.name  || userRow.name
           resumeData.email = resumeData.email || userRow.email
         }
+      } else if (!scan.userId) {
+        resumeData.name  = resumeData.name  || scan.contactName  || resumeData.name
+        resumeData.email = resumeData.email || scan.contactEmail || resumeData.email
       }
       // AUDIT FIX (bug): see renderStructuredResumeText's comment above —
       // this used to be a direct resumeParser.serializeResumeData(resumeData)
       // call, scoring synthetic text instead of the real generated document.
       rawResumeText = await renderStructuredResumeText(resumeData)
 
-      // Persist the structured data now. This is a functional requirement
-      // for brain-dump mode specifically — generateFix/generateBadge need
-      // this exact structured object later, and unlike file-mode there is
-      // no R2 object to re-derive it from a second time. (Phase 2 will
-      // additionally persist rewrittenResumeData, and do the equivalent
-      // capture for file-mode scans, purely for the diff-view feature —
-      // this write here is separate from that and would exist even if
-      // Phase 2 never shipped.)
-      //
-      // BUG FIX (audit): candidate_first_name used to only get set inside
-      // generateFix/generateBadge — i.e. only once a Fix or Badge was
-      // purchased. getScanHistory's ?search= filter matches against this
-      // column specifically so brain-dump/saved-profile scans (which have
-      // no resume_original_name) are still findable by name — but since
-      // most free scans are never purchased, that search silently did
-      // nothing for the majority of the exact scans it exists to help.
-      // resumeData.name is already sitting right here, already paid for
-      // (this Claude call already ran), so persisting it costs nothing extra.
-      // Checked: generateFix/generateBadge read original_resume_data back
-      // and have no other source for it.
+      // Persist the structured data now: generateFix/generateBadge need this exact object later
+      // and, unlike file-mode, there is no R2 object to re-derive it from. candidate_first_name
+      // is set here so the dashboard's name search finds scans that are never purchased.
       must(await supabase.from('scans').update({
         original_resume_data: resumeData,
         candidate_first_name: candidateFirstNameFrom(resumeData)
@@ -1477,7 +1558,7 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
           status: 'ERROR',
           full_ats_report: { error: 'Saved profile data missing.' }
         }).eq('id', scanId)
-        await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (saved profile missing)')
+        await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (saved profile missing)', anonRlKey)
         return { success: false, error: 'Saved profile data missing.' }
       }
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
@@ -1507,7 +1588,7 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
       }).eq('id', scanId)
       // No Claude call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.
-      await refundScanQuota(supabase, scan, 'runAtsScan: quota refund (unparseable resume)')
+      await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey)
       return { success: false, error: 'Resume could not be parsed.' }
     }
 
@@ -1538,6 +1619,11 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
       role_category:   atsService.detectRoleCategory(jdText),
       seniority_level: atsService.detectSeniority(jdText),
       scan_completed_at: new Date().toISOString(),
+      // The pasted text has done its job once a result exists (the structured copy is the
+      // record from here on). Kept until then so a failed run still has it; and dropped so the
+      // typed Name/Email preamble and the whole career narrative don't sit in the row for the
+      // life of the account.
+      ...(scan.inputMode === 'brain_dump' ? { raw_brain_dump_text: null } : {}),
       status: finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
     }).eq('id', scanId), 'runAtsScan: save result')
 
@@ -1594,7 +1680,7 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null) {
       await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
     } catch (_) {}
     // An unexpected throw mid-pipeline is our fault, not the person's.
-    try { await refundScanQuota(supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)') } catch (_) {}
+    try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey) } catch (_) {}
     return { success: false, error: err.message }
   }
 }
@@ -2382,6 +2468,6 @@ async function generateBadge(env, supabase, scanId) {
 
 module.exports = {
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
-  updateResumeData, downloadDraft,  // section audit: "generate a resume from scratch"
+  updateResumeData, downloadDraft, downloadDraftPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

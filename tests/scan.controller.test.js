@@ -703,6 +703,15 @@ describe('updateResumeData', () => {
     expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: huge } }))).status).toBe(400)
   })
 
+  it('400s on an empty resume (nothing to score) and leaves the stored data alone', async () => {
+    t = setup()
+    for (const empty of [{}, { name: 'Jane' }, { name: 'Jane', experience: [{ company: '', title: '', dates: '', bullets: ['  '] }], skills: [''] }]) {
+      const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: empty } }))
+      expect(res.status).toBe(400)
+    }
+    expect(t.state.updates).toHaveLength(0)
+  })
+
   it('400s on a shape that fails the schema (wrong type for a field)', async () => {
     t = setup()
     expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 12345 } } }))).status).toBe(400)
@@ -710,7 +719,7 @@ describe('updateResumeData', () => {
 
   it('persists the corrected data plus a fresh rescore, and reports COMPLETE_PASS/FAIL from the new score', async () => {
     t = setup({ ruleResult: { score: 85, keywordScore: 85, formatScore: 85, sectionsScore: 85, contentScore: 85, detail: { keywords: { matched: ['x'] } } } })
-    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go'] } } }))
     expect(res.body.success).toBe(true)
     expect(res.body.data.atsScore).toBe(85)
     expect(res.body.data.status).toBe('COMPLETE_PASS')
@@ -721,7 +730,7 @@ describe('updateResumeData', () => {
   // AUDIT FIX (Auth/Scan round): the checks run before a multi-second Claude call.
   it('the write only applies while the scan is still unpurchased and complete — a purchase landing mid-edit gets a 409, not a silent overwrite', async () => {
     t = setup({ updateReturn: [] })
-    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go'] } } }))
     expect(res.status).toBe(409)
     const f = t.state.updateFilters[0]
     expect(f).toContainEqual(['eq', 'fix_purchased', false])
@@ -738,7 +747,7 @@ describe('updateResumeData', () => {
 
   it('a below-threshold rescore reports COMPLETE_FAIL', async () => {
     t = setup({ ruleResult: { score: 50, keywordScore: 50, formatScore: 50, sectionsScore: 50, contentScore: 50, detail: {} } })
-    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane' } } }))
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go'] } } }))
     expect(res.body.data.status).toBe('COMPLETE_FAIL')
     expect(t.state.updates[0].status).toBe('COMPLETE_FAIL')
   })
@@ -806,7 +815,7 @@ describe('createScan', () => {
     })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'middleware/rateLimiter.js': { isBypassed: () => opts.bypassed ?? false, hitQuota: async (env, key) => { (state.ipCapKeys = state.ipCapKeys || []).push(key); return !opts.ipCapExceeded } },
+      'middleware/rateLimiter.js': { isBypassed: () => opts.bypassed ?? false, anonScanSlotKey: () => 'rl:anonscan:test', refundAnonScanSlot: async (env, key) => { (state.anonRefunds = state.anonRefunds || []).push(key) }, hitQuota: async (env, key) => { (state.ipCapKeys = state.ipCapKeys || []).push(key); return !opts.ipCapExceeded } },
       'services/jd.parser.js': { fetchJobDescriptionFromUrl: async () => opts.jdFetch ?? { success: false, message: 'fetch disabled in test' } },
     })
     return { mod, restore, state, db }

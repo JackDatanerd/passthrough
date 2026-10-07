@@ -152,6 +152,19 @@ async function refundQuota(env, key, windowSeconds, maxRefunds) {
   catch (err) { console.error(`quota (${key.split(':').slice(0, 2).join(':')}) refund failed:`, err.message) }
 }
 
+// The anonymous-scan limiter's bucket for this request, and the way to hand its slot back
+// LATER. The refund inside makeLimiter only covers a request that failed while it was being
+// answered; an anonymous scan that fails afterwards (the background job could not structure or
+// score it — our fault, not the visitor's) used to keep the slot, so "try again" answered 429
+// for an hour. createScan passes the key to the job; the job gives the slot back through this.
+const ANON_SCAN_WINDOW_SECONDS = 60 * 60
+const ANON_SCAN_MAX_REFUNDS = 10
+function anonScanSlotKey(c) { return `rl:anonscan:${rateKeyIp(clientIp(c))}` }
+async function refundAnonScanSlot(env, key) {
+  if (!key || typeof key !== 'string' || !key.startsWith('rl:anonscan:')) return
+  return refundQuota(env, key, ANON_SCAN_WINDOW_SECONDS, ANON_SCAN_MAX_REFUNDS)
+}
+
 // `refund: { maxRefunds }` — the request is counted up front (so concurrent
 // bursts can't slip past), but if the downstream handler then answers with a
 // 4xx/5xx the slot is handed back, up to maxRefunds per window. Used by
@@ -306,7 +319,7 @@ const verifyRead = makeLimiter({
 })
 
 const anonScan = makeLimiter({
-  windowSeconds: 60 * 60, max: 1, keyPrefix: 'rl:anonscan',
+  windowSeconds: ANON_SCAN_WINDOW_SECONDS, max: 1, keyPrefix: 'rl:anonscan',
   message: msg('Anon limit: 1/hr. Create account for 3/day.'),
   skip: c => !!c.get('user'),
   // The slot is counted before the upload is validated (so a burst can't race
@@ -314,7 +327,7 @@ const anonScan = makeLimiter({
   // oversized upload or a server error must not burn the one anonymous scan
   // per hour the visitor never actually got. Bounded (10 refunds/hour) so it
   // can't become unlimited free invalid attempts against the upload parser.
-  refund: { maxRefunds: 10 }
+  refund: { maxRefunds: ANON_SCAN_MAX_REFUNDS }
 })
 
 // HARDENING: previously every auth-adjacent endpoint (register, login,
@@ -744,5 +757,5 @@ module.exports = {
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
-  clientIp, rateKeyIp, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName
+  clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName
 }

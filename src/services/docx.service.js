@@ -70,7 +70,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
       // stringify that as the literal text "null" in a paying customer's
       // delivered resume. Build from filtered, joined parts instead — same
       // pattern resume.parser.js's serializeResumeData already uses.
-      const titleLine = [job.title, job.company].filter(Boolean).join(' — ')
+      const titleLine = [job.title, job.company, job.location].filter(Boolean).join(' — ')
       children.push(new Paragraph({
         children: [
           new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
@@ -97,6 +97,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
           ...(e.dates ? [new TextRun({ text: `  ${e.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
         ]
       }))
+      if (e.details)
+        children.push(new Paragraph({ children: [new TextRun({ text: e.details, font: 'Calibri', size: 22 })] }))
     }
     children.push(new Paragraph({ text: '' }))
   }
@@ -142,6 +144,36 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
         }))
       children.push(new Paragraph({ text: '' }))
     }
+  }
+
+  // Sections the schema gained for from-scratch resumes (see lib/resumeData.js). Same plain
+  // literal-bullet style as everything above, so they extract and score like the rest.
+  if (resumeData.volunteer?.length) {
+    children.push(new Paragraph({ text: 'VOLUNTEER EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
+    for (const v of resumeData.volunteer) {
+      const titleLine = [v.role, v.organization].filter(Boolean).join(' — ')
+      children.push(new Paragraph({
+        children: [
+          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
+          ...(v.dates ? [new TextRun({ text: `  ${v.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
+        ]
+      }))
+      for (const b of (v.bullets || []))
+        children.push(new Paragraph({ style: 'ListParagraph', children: [new TextRun({ text: `•  ${b}`, font: 'Calibri', size: 22 })] }))
+      children.push(new Paragraph({ text: '' }))
+    }
+  }
+  for (const [title, key] of [['AWARDS', 'awards'], ['PUBLICATIONS', 'publications']]) {
+    if (!resumeData[key]?.length) continue
+    children.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_2 }))
+    for (const item of resumeData[key])
+      children.push(new Paragraph({ style: 'ListParagraph', children: [new TextRun({ text: `•  ${item}`, font: 'Calibri', size: 22 })] }))
+    children.push(new Paragraph({ text: '' }))
+  }
+  if (resumeData.languages?.length) {
+    children.push(new Paragraph({ text: 'LANGUAGES', heading: HeadingLevel.HEADING_2 }))
+    children.push(new Paragraph({ children: [new TextRun({ text: resumeData.languages.join(' · '), font: 'Calibri', size: 22 })] }))
+    children.push(new Paragraph({ text: '' }))
   }
 
   // ListParagraph style is used purely for left-indentation on bullet lines

@@ -20,7 +20,8 @@ import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
-import { getAnonScanToken } from '../lib/anonScans'
+import { getAnonScanToken, addAnonScanToken } from '../lib/anonScans'
+import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
 import Checkbox from '../components/ui/Checkbox'
 
@@ -54,6 +55,14 @@ export default function ScanResult() {
   // "the" token to fall back to. getAnonScanToken(id) looks up the token
   // for THIS specific scan by id instead.
   const anonToken     = params.get('token') || getAnonScanToken(id)
+  // BUG FIX (resume-from-scratch pass): a result opened from the e-mailed link (another browser,
+  // cleared storage) carried its token only in the URL. Registering from there left nothing for
+  // postAuthActions to claim, so the scan never became the new account's and could not be paid
+  // for. A token that arrived in the URL is remembered like one from the form.
+  const urlToken = params.get('token')
+  useEffect(() => {
+    if (urlToken && !getAnonScanToken(id)) addAnonScanToken(id, urlToken)
+  }, [id, urlToken])
   const [scan,        setScan      ] = useState(null)
   const [loading,     setLoading   ] = useState(true)
   const [payLoading,  setPayLoading] = useState(false)
@@ -226,6 +235,11 @@ export default function ScanResult() {
     pollRef.current.start()              // first tick runs immediately
     return () => pollRef.current?.stop()
   }, [id])
+
+  // A typed background is only kept in the browser (lib/brainDumpDraft.js) until it has produced a
+  // result; after that the structured copy on the scan is the record.
+  const draftDone = scan && scan.inputMode === 'brain_dump' && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)
+  useEffect(() => { if (draftDone) clearBrainDumpDraft() }, [draftDone])
 
   // Don't let the fallback timer fire (and setState) after this page unmounts.
   useEffect(() => () => clearTimeout(popupFallbackTimerRef.current), [])
@@ -568,7 +582,10 @@ export default function ScanResult() {
                 </p>
               </>
             )}
-            {!scan.fixPurchased && <Link to="/" className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>}
+            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && (
+              <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
+            )}
+            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : '/'} className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>}
           </div>
         )}
 

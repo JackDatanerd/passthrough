@@ -248,7 +248,7 @@ async function parse(env, bytes, mimeType) {
 // straight to structuring via claude.service's structureFreeformText.
 // Same return shape as parse() so runAtsScan/generateFix/generateBadge can
 // treat both entry paths identically after this point.
-async function structureBrainDump(env, rawText) {
+async function structureBrainDump(env, rawText, opts = {}) {
   if (!rawText || rawText.trim().length < 100)
     return {
       text: '',
@@ -261,7 +261,7 @@ async function structureBrainDump(env, rawText) {
   // MAX_RESUME_CHARS by the controller.
   const truncated = rawText.slice(0, c.MAX_RESUME_CHARS + 500)
   const claude = require('./claude.service')
-  const result = await claude.structureFreeformText(env, truncated)
+  const result = await claude.structureFreeformText(env, truncated, opts)
   if (!result.success)
     return {
       text: truncated,
@@ -303,7 +303,7 @@ function serializeResumeData(resumeData) {
   if (resumeData.experience?.length) {
     lines.push('EXPERIENCE')
     for (const job of resumeData.experience) {
-      const header = [job.title, job.company, job.dates].filter(Boolean).join(' — ')
+      const header = [job.title, job.company, job.location, job.dates].filter(Boolean).join(' — ')
       if (header) lines.push(header)
       for (const bullet of (job.bullets || [])) lines.push(`- ${bullet}`)
     }
@@ -315,6 +315,7 @@ function serializeResumeData(resumeData) {
     for (const edu of resumeData.education) {
       const header = [edu.degree, edu.institution, edu.dates].filter(Boolean).join(' — ')
       if (header) lines.push(header)
+      if (edu.details) lines.push(edu.details)
     }
     lines.push('')
   }
@@ -328,6 +329,28 @@ function serializeResumeData(resumeData) {
   if (resumeData.certifications?.length) {
     lines.push('CERTIFICATIONS')
     for (const cert of resumeData.certifications) lines.push(`- ${cert}`)
+    lines.push('')
+  }
+
+  if (resumeData.volunteer?.length) {
+    lines.push('VOLUNTEER EXPERIENCE')
+    for (const v of resumeData.volunteer) {
+      const header = [v.role, v.organization, v.dates].filter(Boolean).join(' — ')
+      if (header) lines.push(header)
+      for (const bullet of (v.bullets || [])) lines.push(`- ${bullet}`)
+    }
+    lines.push('')
+  }
+  for (const [title, key] of [['AWARDS', 'awards'], ['PUBLICATIONS', 'publications']]) {
+    if (resumeData[key]?.length) {
+      lines.push(title)
+      for (const item of resumeData[key]) lines.push(`- ${item}`)
+      lines.push('')
+    }
+  }
+  if (resumeData.languages?.length) {
+    lines.push('LANGUAGES')
+    lines.push(resumeData.languages.join(', '))
     lines.push('')
   }
 

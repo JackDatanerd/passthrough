@@ -181,7 +181,7 @@ export default function Home() {
         </section>
 
         {/* ── SCAN FORM ─────────────────────────────────────────────────── */}
-        <section className="max-w-2xl mx-auto px-4 -mt-6 pb-8">
+        <section id="scan-form" className="max-w-2xl mx-auto px-4 -mt-6 pb-8 scroll-mt-4">
           <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
             <h2 className="text-lg font-semibold text-gray-900 mb-5">
               Upload your resume + paste a job description
@@ -253,20 +253,23 @@ export default function Home() {
                 {
                   title: 'Upload your resume',
                   body: 'Already have one? Upload it as a PDF or .docx and we\'ll score it against the job.',
+                  to: '/#scan-form',
                 },
                 {
                   title: 'Start from scratch',
-                  body: 'No resume yet? Paste a brain dump, an old resume, or just describe your background in your own words. We\'ll structure it for you.',
+                  body: 'No resume yet? Paste a brain dump, an old resume, or just describe your background in your own words — or fill the details in yourself. We\'ll structure it for you.',
+                  to: '/?mode=brainDump#scan-form',
                 },
                 {
                   title: 'Reuse a saved profile',
                   body: 'Applying to multiple roles? Save your profile once and re-score it against every new job description in seconds.',
+                  to: '/?mode=savedProfile#scan-form',
                 },
-              ].map(({ title, body }) => (
-                <div key={title} className="rounded-xl border border-gray-200 p-6">
+              ].map(({ title, body, to }) => (
+                <a key={title} href={to} className="block rounded-xl border border-gray-200 p-6 hover:border-blue-300 hover:shadow-sm transition">
                   <h3 className="font-semibold text-gray-900 mb-2">{title}</h3>
                   <p className="text-sm text-gray-500">{body}</p>
-                </div>
+                </a>
               ))}
             </div>
           </div>

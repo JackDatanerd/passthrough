@@ -29,6 +29,7 @@ const MAX_REQUEST_BYTES = MAX_FILE_BYTES + (1 * 1024 * 1024)
 // MAX_RESUME_CHARS) — truncated, not rejected, so pasting a long posting still
 // works. The cap only keeps a multi-MB string from being copied around.
 const TEXT_FIELD_CAP  = 100_000
+const MAX_RESUME_JSON_CHARS = 100_000   // = lib/resumeData.js MAX_RESUME_DATA_JSON_CHARS
 const URL_MAX_CHARS   = 2048     // the practical URL limit; anything longer is not a job link
 const NAME_MAX_CHARS  = 100      // matches the account-name limit
 const EMAIL_MAX_CHARS = 254      // RFC 5321 maximum
@@ -118,7 +119,11 @@ async function uploadResume(ctx, next) {
     const v = formData.get(name)
     if (v == null) return ''
     if (typeof v !== 'string') return null
-    return v.slice(0, cap)
+    // Multipart form data carries every newline as CRLF (that is what browsers send), so a
+    // 12,000-character box arrives as 12,000 + one extra character per line. Every cap below
+    // and in the controller counts characters, so the extra CRs silently cut the END off a long
+    // background or job posting that the form said fit. LF-only before anything is measured.
+    return v.replace(/\r\n?/g, '\n').slice(0, cap)
   }
 
   const fields = {
@@ -129,6 +134,9 @@ async function uploadResume(ctx, next) {
     // applies (and rejects if both or neither are present).
     brainDumpText:      textField('brainDumpText',      TEXT_FIELD_CAP),
     useSavedProfile:    textField('useSavedProfile',    10),
+    // Manual entry: the structured resume the person typed into the form themselves (JSON).
+    // Validated, size-capped and shape-checked by lib/resumeData.js in createScan.
+    resumeDataJson:     textField('resumeDataJson',     MAX_RESUME_JSON_CHARS + 1),
     // Explicit name/email for anonymous brain-dump submissions — see
     // createScan (validated there) for how these are used.
     contactName:        textField('contactName',        NAME_MAX_CHARS),
@@ -136,6 +144,8 @@ async function uploadResume(ctx, next) {
   }
   if (Object.values(fields).some(v => v === null))
     return ctx.json({ success: false, message: 'Invalid form data.' }, 400)
+  if (fields.resumeDataJson.length > MAX_RESUME_JSON_CHARS)
+    return ctx.json({ success: false, message: 'Resume data is too large.' }, 400)
   if (fields.jobDescriptionUrl.length > URL_MAX_CHARS)
     return ctx.json({ success: false, message: 'That job link is too long.' }, 400)
   if (fields.contactEmail.length > EMAIL_MAX_CHARS)

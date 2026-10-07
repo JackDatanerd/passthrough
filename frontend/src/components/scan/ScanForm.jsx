@@ -10,6 +10,9 @@ import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
 import Alert from '../ui/Alert'
+import ResumeFieldsForm from './ResumeFieldsForm'
+import { loadBrainDumpDraft, saveBrainDumpDraft } from '../../lib/brainDumpDraft'
+import { manualHasContent, EMPTY_MANUAL } from '../../lib/resumeForm'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
 // constants file between frontend/backend in this project (same pattern as
@@ -24,7 +27,7 @@ const MIN_BRAIN_DUMP_CHARS = 100
 // narrative (naturally more verbose per fact than a bullet-formatted resume)
 // could lose an entire job or degree off the end with zero indication why
 // the AI "forgot" it.
-const MAX_RESUME_CHARS = 8000
+const MAX_RESUME_CHARS = 12000
 // FEATURE GAP CLOSED (Scan/ATS pass): mirrors backend MAX_JD_CHARS. The
 // backend silently cuts the job description at this length (and a URL fetch
 // cuts at the same point), but only the brain-dump box had a counter — so a
@@ -43,14 +46,19 @@ export default function ScanForm() {
   // a pasted brain dump when the user doesn't have a polished resume yet.
   // PHASE 4 — a third mode, 'savedProfile', only available (and only shown
   // as an option) to a logged-in user who has previously saved one.
-  const [entryMode, setEntryMode] = useState('upload') // 'upload' | 'brainDump' | 'savedProfile' | 'rescan'
+  const [entryMode, setEntryMode] = useState('upload') // 'upload' | 'brainDump' | 'manual' | 'savedProfile' | 'rescan'
+  // Fourth way in: fill the structured form yourself (no AI structuring, no length box).
+  const [manualData, setManualData] = useState(EMPTY_MANUAL)
   // FEATURE GAP CLOSED (Scan/ATS pass): "scan this same resume against another job"
   // for scans that came from an upload or a typed background (saved-profile users
   // always had it). Arrives as /?from=<scanId> from a results page; holds the
   // earlier scan's label once it has loaded.
   const [rescanSource, setRescanSource] = useState(null)
   const [file,          setFile         ] = useState(null)
-  const [brainDumpText, setBrainDumpText] = useState('')
+  // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
+  // see lib/brainDumpDraft.js. Dropped by ScanResult once a result exists.
+  const [draft0] = useState(() => loadBrainDumpDraft())
+  const [brainDumpText, setBrainDumpText] = useState(() => (draft0?.text || '').slice(0, MAX_RESUME_CHARS))
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
   // Today's free-scan allowance, shown next to the submit button (signed-in only).
   const [quota, setQuota] = useState(null)
@@ -59,8 +67,9 @@ export default function ScanForm() {
   // invent one, which means it's frequently left blank. Logged-in users
   // already have a server-side fallback to their account name/email; this
   // covers the case that fallback can't reach.
-  const [contactName,  setContactName ] = useState('')
-  const [contactEmail, setContactEmail] = useState('')
+  const [contactName,  setContactName ] = useState(draft0?.name || '')
+  const [contactEmail, setContactEmail] = useState(draft0?.email || '')
+  const restored = !!(draft0 && draft0.text.trim())
 
   const [useUrl,  setUseUrl ] = useState(false)
   const [jobUrl,  setJobUrl ] = useState('')
@@ -77,6 +86,16 @@ export default function ScanForm() {
       .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile); setQuota(res.data.data.quota || null) })
       .catch(() => {}) // fail silently — worst case the toggle just doesn't show
   }, [user])
+
+  useEffect(() => {
+    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail })
+  }, [brainDumpText, contactName, contactEmail])
+
+  // Deep links from the landing page's "three ways to start" cards: /?mode=brainDump | manual.
+  useEffect(() => {
+    const m = params.get('mode')
+    if (m === 'brainDump' || m === 'manual') setEntryMode(m)
+  }, [])
 
   // PHASE 4 — the dashboard's "Rescan with new JD" button links here with
   // ?mode=savedProfile. Pre-select that tab once we've confirmed the
@@ -121,6 +140,14 @@ export default function ScanForm() {
       return setError('We could not load that earlier scan. Upload your resume instead.')
     if (entryMode === 'brainDump' && brainDumpText.trim().length < MIN_BRAIN_DUMP_CHARS)
       return setError(`Tell us a bit more about your background (min ${MIN_BRAIN_DUMP_CHARS} characters).`)
+    if (entryMode === 'manual' && !manualHasContent(manualData))
+      return setError('Add at least one job, school, project, skill or a summary first.')
+    if (entryMode === 'manual' && !user) {
+      if (!filled(manualData.name))
+        return setError('Please enter your name.')
+      if (filled(manualData.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualData.email.trim()))
+        return setError('Please enter a valid email address.')
+    }
     if (entryMode === 'brainDump' && !user) {
       if (!contactName.trim())
         return setError('Please enter your name.')
@@ -142,6 +169,8 @@ export default function ScanForm() {
         formData.append('useSavedProfile', 'true')
       } else if (entryMode === 'rescan') {
         formData.append('sourceScanId', rescanSource.id)
+      } else if (entryMode === 'manual') {
+        formData.append('resumeDataJson', JSON.stringify(manualData))
       } else {
         formData.append('brainDumpText', brainDumpText.trim())
         if (!user) {
@@ -194,7 +223,9 @@ export default function ScanForm() {
       ? 'Score My Profile Against This JD — Free'
       : entryMode === 'rescan'
         ? 'Scan Against This Job — Free'
-        : 'Build & Score My Resume — Free'
+        : entryMode === 'manual'
+          ? 'Score My Resume — Free'
+          : 'Build & Score My Resume — Free'
 
   return (
     <Form onSubmit={handleSubmit} className="flex flex-col gap-5">
@@ -202,19 +233,29 @@ export default function ScanForm() {
         <div className="flex rounded-md overflow-hidden border border-gray-300 text-sm mb-3 w-fit flex-wrap">
           <button type="button"
             onClick={() => switchEntryMode('upload')}
+            aria-pressed={entryMode === 'upload'}
             className={`px-3 py-1.5 transition-colors ${entryMode === 'upload' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Upload resume
           </button>
           <button type="button"
             onClick={() => switchEntryMode('brainDump')}
+            aria-pressed={entryMode === 'brainDump'}
             className={`px-3 py-1.5 transition-colors ${entryMode === 'brainDump' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Start from scratch
           </button>
+          <button type="button"
+            onClick={() => switchEntryMode('manual')}
+            aria-pressed={entryMode === 'manual'}
+            className={`px-3 py-1.5 transition-colors ${entryMode === 'manual' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+          >
+            Fill it in myself
+          </button>
           {rescanSource && (
             <button type="button"
               onClick={() => switchEntryMode('rescan')}
+            aria-pressed={entryMode === 'rescan'}
               className={`px-3 py-1.5 transition-colors ${entryMode === 'rescan' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Same resume
@@ -223,6 +264,7 @@ export default function ScanForm() {
           {hasSavedProfile && (
             <button type="button"
               onClick={() => switchEntryMode('savedProfile')}
+            aria-pressed={entryMode === 'savedProfile'}
               className={`px-3 py-1.5 transition-colors ${entryMode === 'savedProfile' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Use saved profile
@@ -234,6 +276,11 @@ export default function ScanForm() {
 
         {entryMode === 'brainDump' && (
           <div>
+            {restored && (
+              <p role="status" className="mb-2 text-xs text-blue-800 bg-blue-50 border border-blue-100 rounded-md px-3 py-1.5">
+                We kept what you were writing last time — it's back in the box below.
+              </p>
+            )}
             <Textarea
               placeholder="Tell us about your work in your own words — companies, roles, what you actually did. Doesn't need to be tidy, we'll structure it for you."
               value={brainDumpText}
@@ -295,9 +342,28 @@ export default function ScanForm() {
                 </div>
                 <p className="col-span-full text-xs text-gray-500">
                   People describing their own career rarely think to mention their own name —
-                  we ask separately so your resume header isn't blank.
+                  we ask separately so your resume header isn't blank. We'll also email you a
+                  link back to your result; it works for 24 hours.
                 </p>
               </div>
+            )}
+          </div>
+        )}
+
+        {entryMode === 'manual' && (
+          <div>
+            <p className="text-xs text-gray-500 mb-3">
+              Prefer to type it in yourself? Fill in what you have — nothing is guessed or rewritten
+              before your score, and you can add more any time after.
+            </p>
+            <div className="flex flex-col gap-5">
+              <ResumeFieldsForm draft={manualData} setDraft={setManualData} />
+            </div>
+            {!user && (
+              <p className="mt-3 text-xs text-gray-500">
+                Your name is required. If you add an email we'll send you a link back to your result;
+                it works for 24 hours.
+              </p>
             )}
           </div>
         )}
