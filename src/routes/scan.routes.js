@@ -32,7 +32,9 @@ router.post('/:id/regenerate-pdf', auth, rl.pdfRegen, validateUuidParam(), c.reg
 router.patch('/:id/verify-visibility', auth, validateUuidParam(), c.updateVerifyVisibility)
 router.get( '/:id/download',     auth,        validateUuidParam(), c.downloadFile)
 // Owner-only removal of one scan and everything stored for it (see deleteScan).
-router.delete('/:id',            auth,        validateUuidParam(), c.deleteScan)
+// Anonymous results are deleted by their token (checked inside deleteScan), signed-in ones by
+// their owner — so no `auth` here.
+router.delete('/:id',            validateUuidParam(), c.deleteScan)
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
 // deliberately NOT behind `auth` — ownership is enforced inside the
 // controllers via anon_token (same model as GET /:id above), since an
@@ -41,5 +43,11 @@ router.delete('/:id',            auth,        validateUuidParam(), c.deleteScan)
 router.patch('/:id/resume-data',   rl.resumeEdit, validateUuidParam(), c.updateResumeData)
 router.get( '/:id/download-draft', rl.draftDownload, validateUuidParam(), c.downloadDraft)
 router.get( '/:id/download-draft-pdf', rl.pdfRegen, validateUuidParam(), c.downloadDraftPdf)
+// Build (and store) the structure of an uploaded file so it can be reviewed/corrected before paying.
+router.post('/:id/structure',      rl.resumeEdit, validateUuidParam(), c.structureResume)
+// Owner edits to the DELIVERED resume (both files rebuilt and re-scored), and its cover letter.
+router.patch('/:id/delivered-resume', auth, rl.resumeEdit, validateUuidParam(), c.updateDeliveredResume)
+router.post('/:id/cover-letter',   auth, rl.resumeEdit, validateUuidParam(), c.generateCoverLetter)
+router.get( '/:id/cover-letter',   auth, rl.draftDownload, validateUuidParam(), c.downloadCoverLetter)
 
 module.exports = router

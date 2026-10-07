@@ -27,6 +27,10 @@ function str(v) {
   return typeof v === 'string' ? v : ''
 }
 
+// Array-ness is not guaranteed either (a skills list that is one string, an entry list that is an
+// object) — `x || []` lets those through to `.map`/`.forEach` and the page white-screens.
+const arr = v => (Array.isArray(v) ? v : [])
+
 function normCompany(s) {
   return str(s).toLowerCase().replace(/[.,]/g, '').trim()
 }
@@ -214,10 +218,10 @@ export function buildResumeDiff(original, rewritten) {
   return {
     contact:        diffContact(original, rewritten),
     summary:        diffText(original.summary, rewritten?.summary),
-    experience:     diffExperience(original.experience || [], rewritten?.experience || []),
-    education:      diffEntryList(original.education || [], rewritten?.education || [], diffEducation, e => e?.institution),
-    projects:       diffEntryList(original.projects || [], rewritten?.projects || [], diffProject, p => p?.name),
-    skills:         diffList(original.skills || [], rewritten?.skills || []),
-    certifications: diffList(original.certifications || [], rewritten?.certifications || [])
+    experience:     diffExperience(arr(original?.experience), arr(rewritten?.experience)),
+    education:      diffEntryList(arr(original?.education), arr(rewritten?.education), diffEducation, e => e?.institution),
+    projects:       diffEntryList(arr(original?.projects), arr(rewritten?.projects), diffProject, p => p?.name),
+    skills:         diffList(arr(original?.skills), arr(rewritten?.skills)),
+    certifications: diffList(arr(original?.certifications), arr(rewritten?.certifications))
   }
 }

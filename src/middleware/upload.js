@@ -134,6 +134,10 @@ async function uploadResume(ctx, next) {
     // applies (and rejects if both or neither are present).
     brainDumpText:      textField('brainDumpText',      TEXT_FIELD_CAP),
     useSavedProfile:    textField('useSavedProfile',    10),
+    // Rescan: the id of the person's earlier scan whose resume is reused (a UUID — createScan
+    // validates it). This field used to be missing here, so the form's "same resume" submit
+    // reached createScan with nothing in it and was rejected as "no input".
+    sourceScanId:       textField('sourceScanId',       64),
     // Manual entry: the structured resume the person typed into the form themselves (JSON).
     // Validated, size-capped and shape-checked by lib/resumeData.js in createScan.
     resumeDataJson:     textField('resumeDataJson',     MAX_RESUME_JSON_CHARS + 1),

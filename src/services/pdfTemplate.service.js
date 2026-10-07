@@ -117,12 +117,16 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>
 <style>
-@page { size: A4; margin: 0 }
+/* Top/bottom page margins belong to the PRINT ENGINE (pdf.service.js passes the same 14mm), not to
+   the container: padding on one tall box only pads its first top and last bottom edge, so on a
+   2-page resume page 1 ran to the bottom edge and page 2 started at the top edge. */
+@page { size: A4; margin: 14mm 0 }
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0 }
+html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.45 }
-.page { width: 210mm; min-height: 297mm; padding: 16mm 16mm 16mm 18mm; border-left: 4px solid ${esc(palette.primary)} }
+.page { width: 210mm; min-height: 269mm; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 2pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin: 0 0 3pt }
 .cred { font-size: 8pt; font-variant: small-caps; color: ${esc(palette.primary)}; text-decoration: none }

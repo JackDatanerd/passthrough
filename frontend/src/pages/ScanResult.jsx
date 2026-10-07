@@ -16,12 +16,14 @@ import { fmtPrice } from '../hooks/usePricing'
 import DiffView from '../components/scan/DiffView'
 import ResumeDataEditor from '../components/scan/ResumeDataEditor'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
+import DeliveredResumeEditor from '../components/scan/DeliveredResumeEditor'
+import CoverLetterPanel from '../components/scan/CoverLetterPanel'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate, copyToClipboard } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
-import { getAnonScanToken, addAnonScanToken } from '../lib/anonScans'
+import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
 import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
 import Checkbox from '../components/ui/Checkbox'
@@ -226,6 +228,21 @@ export default function ScanResult() {
     pollRef.current?.stop()
     pollRef.current = createPoller(pollScan)
     pollRef.current.start({ immediate: false })
+  }
+
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState('')
+  async function handleDeleteAnon() {
+    if (!window.confirm('Delete this result? Your resume text and score are removed and this link stops working.')) return
+    setDeleting(true); setDeleteError('')
+    try {
+      await api.delete(`/scan/${id}?token=${encodeURIComponent(anonToken)}`)
+      removeAnonScanToken(id)
+      navigate('/')
+    } catch (err) {
+      setDeleteError(getErrorMessage(err, 'Could not delete it — try again.'))
+      setDeleting(false)
+    }
   }
 
   async function handleRetryFix() {
@@ -738,8 +755,8 @@ export default function ScanResult() {
                 exists, retryFix's feedback loop is the intended way to
                 iterate, and the backend endpoints this drives
                 (resume-data / download-draft) enforce the same gate. */}
-            {['brain_dump', 'saved_profile'].includes(scan.inputMode) &&
-              scan.originalResumeData && !scan.fixPurchased &&
+            {(scan.inputMode === 'file' || (['brain_dump', 'saved_profile'].includes(scan.inputMode) && scan.originalResumeData)) &&
+              !scan.fixPurchased &&
               ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
                 <ResumeDataEditor
                   scan={scan}
@@ -786,6 +803,12 @@ export default function ScanResult() {
                         ? '✓ Your fixed resume is ready'
                         : '✓ Your Passthrough Verified resume is ready'}
                     </p>
+                    {scan.rewriteFailed && (
+                      <p className="text-sm text-green-800 mb-1" data-testid="rewrite-failed-note">
+                        Heads up: we couldn't generate an improved rewrite this time, so this is your original content
+                        in the Passthrough format — it already clears the bar. We've added a free fix credit to your account for the trouble.
+                      </p>
+                    )}
                     {scan.fixTier === 'BADGE' && (
                       <p className="text-sm text-green-800 mb-1">
                         Your score was already {ATS_BADGE_THRESHOLD}+, so nothing was rewritten — this verifies and formats your existing content as a Passthrough Verified document.
@@ -805,7 +828,17 @@ export default function ScanResult() {
                         automatically server-side (see generateFix) — this
                         message says so rather than leaving the person to
                         wonder why a "Try Again" costs nothing. */}
-                    {scan.rewriteFailed ? (
+                    {scan.fixTier === 'BADGE' ? (
+                      <>
+                        <p className="font-semibold text-amber-900 mb-1">We couldn't issue the Verified credential for this file</p>
+                        <p className="text-sm text-amber-800 mb-3" data-testid="badge-below-threshold">
+                          Your original scored {scan.atsScore ?? '—'}, but the ATS-formatted file we build from it scored {scan.fixAtsScore ?? '—'}/100 —
+                          under the {ATS_BADGE_THRESHOLD}+ needed for Passthrough Verified. Your files carry the plain Scan Report wording instead,
+                          and we've added a free fix credit to your account. To use it on this resume, scan it again
+                          ("Scan this same resume against another job" above) and choose Fix — that rewrites it, which a Verified-only purchase doesn't.
+                        </p>
+                      </>
+                    ) : scan.rewriteFailed ? (
                       <>
                         <p className="font-semibold text-amber-900 mb-1">We hit a snag generating your rewrite</p>
                         <p className="text-sm text-amber-800 mb-3">
@@ -825,7 +858,7 @@ export default function ScanResult() {
                         </p>
                       </>
                     )}
-                    {scan.fixRetryCount < MAX_FIX_RETRIES ? (
+                    {scan.fixTier === 'BADGE' ? null : scan.fixRetryCount < MAX_FIX_RETRIES ? (
                       <div className="mb-3">
                         <Alert className="mb-2">{retryError}</Alert>
                         <Button onClick={handleRetryFix} loading={retryLoading} variant="secondary">
@@ -1000,6 +1033,21 @@ export default function ScanResult() {
               <QuantificationPrompts prompts={scan.quantificationPrompts} />
             )}
 
+            {/* Owner tools on a delivered resume: edit it (both files rebuilt and re-scored), and a
+                cover letter for the same job. Signed-in owner only — the endpoints enforce it too. */}
+            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
+              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') && (
+              <>
+                <DeliveredResumeEditor
+                  scan={scan}
+                  onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
+                />
+                {(scan.jobDescriptionText || '').trim().length >= 50 && (
+                  <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
+                )}
+              </>
+            )}
+
             {/* Save profile for reuse — logged-in users only (anonymous visitors
                 have no account to save to), and only if there's structured data
                 to actually save.
@@ -1019,6 +1067,19 @@ export default function ScanResult() {
                 file-upload scan that hasn't had a fix generated. */}
             {user && scan.originalResumeData && (
               <SaveProfilePrompt scanId={scan.id} />
+            )}
+
+            {/* An anonymous result can hold a typed career history and an e-mail address: whoever holds
+                its link can remove it now instead of waiting for the 24-hour expiry. */}
+            {!scan.userId && anonToken && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'ERROR'].includes(scan.status) && (
+              <div className="text-xs text-gray-500 -mt-2">
+                <Alert className="mb-1">{deleteError}</Alert>
+                <button type="button" onClick={handleDeleteAnon} disabled={deleting}
+                  className="underline underline-offset-2 hover:text-gray-700 disabled:opacity-50">
+                  {deleting ? 'Deleting…' : 'Delete this result now'}
+                </button>
+                {' '}— removes your resume text and score from our servers.
+              </div>
             )}
 
             {/* Fix banner — only when not yet purchased */}

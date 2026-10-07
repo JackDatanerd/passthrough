@@ -140,6 +140,21 @@ function tokenizeRaw(text) {
     .filter(Boolean)
 }
 
+// Punctuation that separates one phrase from the next. A JD bigram must sit INSIDE one of
+// these segments: tokenizing strips the punctuation, so "Python, Kubernetes, Docker" used to
+// yield the "phrases" "python kubernetes" and "kubernetes docker" — list neighbours, not terms —
+// and a resume that said "Docker and Kubernetes" was then docked for "missing" them (and the
+// nonsense showed up in "Why this score"). Applied to the JD side only: the resume side stays
+// permissive (any two adjacent words), so a real compound term is still found wherever it sits.
+const PHRASE_BREAK = /[\n\r,;:|•·()[\]{}<>\\/]|\s[-\u2013\u2014]\s|[.!?](?=\s|$)/u
+function tokenizeSegments(text) {
+  return normalizeTechTerms(text)
+    .toLowerCase()
+    .split(PHRASE_BREAK)
+    .map(seg => seg.replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter(Boolean))
+    .filter(seg => seg.length)
+}
+
 // BUG FIX (Scan/ATS pass, verified): any 3+ character token was kept, so a
 // posting's pay line ("$120,000 - $150,000"), a year ("2024") or a postcode
 // became keywords — the top "missing" list for that JD started with `000`,
@@ -160,16 +175,19 @@ function displayKeyword(kw) {
 // (e.g. "quality assurance", "machine learning") that single-word
 // extraction would split into two separate, less meaningful words.
 function extractKeywords(text) {
-  const raw = tokenizeRaw(text)
   const freq = {}
-  for (const w of raw) {
-    if (keepToken(w) && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
+  for (const seg of tokenizeSegments(text)) {
+    for (const w of seg) {
+      if (keepToken(w) && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
+    }
   }
-  for (let i = 0; i < raw.length - 1; i++) {
-    const a = raw[i], b = raw[i + 1]
-    if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
-      const phrase = `${a} ${b}`
-      freq[phrase] = (freq[phrase] || 0) + 1
+  for (const seg of tokenizeSegments(text)) {
+    for (let i = 0; i < seg.length - 1; i++) {
+      const a = seg[i], b = seg[i + 1]
+      if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+        const phrase = `${a} ${b}`
+        freq[phrase] = (freq[phrase] || 0) + 1
+      }
     }
   }
   return freq
@@ -218,13 +236,16 @@ function scoreKeywords(resumeText, jdText) {
   })
   const missing = top25.filter(kw => !matched.includes(kw))
   return {
-    score: top25.length ? Math.round((matched.length / top25.length) * 100) : 100,
+    // null (not 100) when the JD yielded nothing to match — a posting made only of filler words
+    // used to hand out a perfect keyword score, 35 free points. scoreResume() re-weights.
+    score: top25.length ? Math.round((matched.length / top25.length) * 100) : null,
     // Canonical tokens (cplusplus, dotnet, ...) are internal — show users the
     // real spelling (C++, .NET, ...).
     detail: {
       matched: matched.map(displayKeyword),
       missing: missing.map(displayKeyword),
-      matchRate: top25.length ? matched.length / top25.length : 1
+      matchRate: top25.length ? matched.length / top25.length : null,
+      noKeywords: top25.length === 0
     }
   }
 }
@@ -388,9 +409,11 @@ function scoreFormat(resumeText, structure = null) {
 function scoreSections(resumeText) {
   const lower = resumeText.toLowerCase()
   const required = [
-    { name: 'Experience', patterns: ['experience','work history','employment history'] },
-    { name: 'Education',  patterns: ['education','academic background'] },
-    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise'] },
+    // English first, then the common section words of French / Spanish / Portuguese / German
+    // resumes (diacritics are folded away before matching, so "Expérience" is "experience").
+    { name: 'Experience', patterns: ['experience','work history','employment history','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois'] },
+    { name: 'Education',  patterns: ['education','academic background','formation','formations','formacion','educacion','formacao','educacao','ausbildung','bildung','studium','parcours academique'] },
+    { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten'] },
     { name: 'Contact',    patterns: null },
   ]
   // Certifications was previously weighted equally with Summary as one of
@@ -403,7 +426,7 @@ function scoreSections(resumeText) {
   // this 15-point loss wasn't even visible to the user. Certifications is
   // still tracked below for informational purposes, just no longer
   // penalized numerically.
-  const summaryPatterns  = ['summary','objective','profile']
+  const summaryPatterns  = ['summary','objective','profile','profil','perfil','resumen','objectif','objetivo','sintese','zusammenfassung','kurzprofil']
   const certPatterns     = ['certification','certifications','certificates','licenses','licences','awards']
   // AUDIT FIX (section audit — "generate a resume from scratch"): Projects
   // is new to the schema (see claude.service.js) and, like Certifications,
@@ -437,7 +460,7 @@ function scoreSections(resumeText) {
   const headings = rawLines
     .map(l => l.trim())
     .filter(l => l && l.length <= 50 && !/[.!?]$/.test(l) && !/^\d/.test(l) && !/\byears?\b/i.test(l))
-    .map(l => l.toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim())
+    .map(l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim())
     .filter(l => l && l.split(' ').length <= 6)
   const hasSection = patterns => structured
     ? headings.some(h => patterns.some(pt => new RegExp(`(?:^| )${pt}(?: |$)`).test(h)))
@@ -539,7 +562,7 @@ const ROLE_SIGNALS = {
   design:               ['designer', 'ui/ux', 'ux', 'figma', 'user experience', 'visual design'],
   data_science:         ['data scientist', 'machine learning', 'data analyst', 'data science', 'data engineer'],
   marketing:            ['marketing', 'growth marketing', 'seo', 'content marketing', 'content strategy', 'copywriter', 'social media', 'brand'],
-  sales:                ['sales', 'account executive', 'business development', 'quota', 'account manager'],
+  sales:                ['sales(?!force)', 'account executive', 'business development', 'quota', 'account manager'],
   operations:           ['operations', 'ops', 'supply chain', 'logistics', 'project manager', 'program manager'],
   finance:              ['finance', 'accounting', 'accountant', 'financial analyst', 'audit', 'bookkeep'],
   healthcare:           ['nurse', 'nursing', 'doctor', 'physician', 'clinical', 'medical', 'patient'],
@@ -575,9 +598,13 @@ function detectRoleCategory(jdText) {
 // requirement, and never for reporting-line mentions.
 const SENIORITY_PATTERNS = [
   ['executive', /\b(?:vp|vice president|cto|ceo|coo|cfo|cmo|chief)\b/],
-  ['lead',      /\b(?:head of|director|principal|staff|lead)\b(?!\s+gen)/],
+  // "staff" is a level only in front of a technical/managerial title ("Staff Engineer"); "Staff
+  // Nurse" / "Staff Accountant" / "staff of 40" are not.
+  ['lead',      /\b(?:head of|director|principal|lead)\b(?!\s+gen)|\bstaff\s+(?:\w+\s+)?(?:engineer|developer|scientist|designer|architect|researcher|programmer|swe|sre|product|program|data|machine|software)\b/],
   ['senior',    /\b(?:senior|sr)\b/],
-  ['junior',    /\b(?:junior|jr|entry.?level|associate|intern(?:ship)?|graduate|trainee|apprentice)\b/],
+  // "Associate" is a junior level in most fields but a mid/senior rank for attorneys, professors
+  // and partners, so those never read as junior.
+  ['junior',    /\b(?:junior|jr|entry.?level|intern(?:ship)?|graduate|trainee|apprentice)\b|\bassociate\b(?!\s+(?:attorney|lawyer|counsel|professor|dean|partner|general|vice|principal|director|judge|justice))/],
 ]
 // "reports to the VP of Sales" / "works closely with the Director of X" name
 // somebody ELSE's level, not the role's own.
@@ -619,14 +646,24 @@ function scoreResume(resumeText, jdText, { structure = null } = {}) {
   const fmt = scoreFormat(resumeText, structure)
   const sec = scoreSections(resumeText)
   const cnt = scoreContent(resumeText)
-  const score = Math.max(0, Math.min(100, Math.round(
-    kw.score * 0.35 + fmt.score * 0.25 + sec.score * 0.20 + cnt.score * 0.20
-  )))
+  // A JD with no scoreable keywords says nothing about keyword fit: the category is dropped and
+  // the other three carry its weight (0.65 total), instead of scoring 100 or 0 on nothing. The
+  // reported keywordScore is then the same re-weighted blend so the four numbers still add up.
+  let keywordScore = kw.score
+  let score
+  if (keywordScore === null) {
+    const other = (fmt.score * 0.25 + sec.score * 0.20 + cnt.score * 0.20) / 0.65
+    keywordScore = Math.round(other)
+    score = other
+  } else {
+    score = kw.score * 0.35 + fmt.score * 0.25 + sec.score * 0.20 + cnt.score * 0.20
+  }
+  score = Math.max(0, Math.min(100, Math.round(score)))
   return {
     score,
     passed:        score >= constants.ATS_PASS_THRESHOLD,
     badgeEligible: score >= constants.ATS_BADGE_THRESHOLD,
-    keywordScore:  kw.score,
+    keywordScore,
     formatScore:   fmt.score,
     sectionsScore: sec.score,
     contentScore:  cnt.score,

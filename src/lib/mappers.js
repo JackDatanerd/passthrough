@@ -88,6 +88,10 @@ function scanRowToCamel(row) {
     // through this mapper) but any future read path expecting it back from
     // scanRowToCamel would have silently gotten undefined.
     fixErrorRecoveries: row.fix_error_recoveries ?? 0,
+    // Migration 0057: the job lease (claim_fix_job) and the once-per-round compensation marker
+    // (grant_fix_credit_once). Both are written only by those RPCs.
+    fixJobLockUntil:   row.fix_job_lock_until ?? null,
+    fixCreditRound:    row.fix_credit_round ?? null,
     passed:              row.passed,
     keywordScore:        row.keyword_score,
     formatScore:         row.format_score,
@@ -294,6 +298,8 @@ const SCAN_FIELD_MAP = {
   // writer is the claim_errored_fix RPC, called directly, never through
   // this map.
   fixErrorRecoveries: 'fix_error_recoveries',
+  fixJobLockUntil: 'fix_job_lock_until',
+  fixCreditRound: 'fix_credit_round',
   // AUDIT FIX (Section 9/10 pass): jobTitle (migration 0035) had no reverse-
   // map entry either — scan.controller.js's one writer (createScan) builds
   // a raw snake_case insert object rather than going through

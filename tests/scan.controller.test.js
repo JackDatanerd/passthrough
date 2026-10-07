@@ -1245,7 +1245,7 @@ describe('generateFix', () => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
       if (q.table === 'users' && q.op === 'select') return { data: userRow, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.deliverError ? null : [{ id: 's1' }], error: opts.deliverError || null } }
-      if (q.op === 'rpc' && q.name === 'increment_free_fix_credits') { state.credits.push(q.args); return { data: true, error: opts.creditErr || null } }
+      if (q.op === 'rpc' && q.name === 'grant_fix_credit_once') { state.credits.push(q.args); return { data: true, error: opts.creditErr || null } }
     })
     const rewriteCalls = []
     let rewriteCallIdx = 0
@@ -1440,7 +1440,7 @@ describe('generateFix', () => {
     const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
     expect(finalUpdate.rewrite_failed).toBe(true)
     expect(finalUpdate.rewritten_resume_data).toEqual({ name: 'Jane' })  // == original, unchanged
-    expect(t.state.credits).toEqual([{ p_user_id: 'u1' }])
+    expect(t.state.credits).toEqual([{ p_scan_id: 's1', p_user_id: 'u1', p_round: 0 }])
   })
 
   it('a credit-grant failure on total rewrite failure alerts the owner but does not abort delivery', async () => {
@@ -1456,7 +1456,7 @@ describe('generateFix', () => {
       scoreSequence: [65],
     })
     await t.mod.generateFix(t.env, t.db, 's1')
-    expect(t.state.credits).toEqual([{ p_user_id: 'u1' }])
+    expect(t.state.credits).toEqual([{ p_scan_id: 's1', p_user_id: 'u1', p_round: 2 }])
   })
 
   it('below-threshold delivery keeps the verification link but marks the docx call as unverified', async () => {
@@ -1615,7 +1615,7 @@ describe('generateFix — Auth/Scan audit round', () => {
     const res = await t.mod.generateFix(t.env, t.db, 's1')
     expect(res.success).toBe(false)
     expect(t.state.scanUpdates.some(u => u.status === 'ERROR')).toBe(false)
-    expect(t.state.rpcs).toEqual([{ name: 'revert_fix_retry', args: { p_scan_id: 's1' } }])
+    expect(t.state.rpcs.filter(r => r.name === 'revert_fix_retry')).toEqual([{ name: 'revert_fix_retry', args: { p_scan_id: 's1' } }])
     expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(false)
     expect(t.state.alerts.length).toBe(1)
   })

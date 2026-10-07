@@ -50,7 +50,9 @@ function getDesignTokens(userId, scanId, industry = 'default') {
   const filtered = allowed ? PALETTES.filter(p => allowed.includes(p.id)) : PALETTES
   return {
     palette: filtered[seed % filtered.length],
-    fonts:   FONTS[seed % FONTS.length]
+    // A second, independent hash for the font: indexing both lists with the SAME number made the
+    // pair follow gcd(palettes, fonts) — only a fraction of palette/font combinations ever occurred.
+    fonts:   FONTS[djb2(`font:${userId || 'anon'}${scanId}`) % FONTS.length]
   }
 }
 

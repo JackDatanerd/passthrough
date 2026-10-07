@@ -3,9 +3,8 @@
 // where a number would strengthen the line, but where the user didn't
 // provide one — rather than inventing a metric (which the prompt explicitly
 // forbids), it surfaces the gap here for the user to fill in themselves,
-// manually, outside the app for now. A v1.1 version of this feature would
-// let the user type a number in and regenerate the affected bullet; that's
-// deliberately out of scope for this pass.
+// themselves. The delivered-resume editor (DeliveredResumeEditor.jsx) is where they add it:
+// both files are rebuilt and re-scored, and a prompt disappears once its bullet changes.
 //
 // Renders nothing if there are no prompts — this is the common case for
 // well-quantified resumes, and for badge-only purchases (which never run
@@ -19,7 +18,7 @@ export default function QuantificationPrompts({ prompts }) {
       <p className="text-sm font-semibold text-gray-900 mb-1">Strengthen these lines</p>
       <p className="text-xs text-gray-500 mb-4">
         These bullets could be more persuasive with a specific number — we won't invent one,
-        but if you have it, add it yourself before applying.
+        but if you have it, use "Edit your delivered resume" below to add it — both files are rebuilt and re-checked.
       </p>
       <ul className="flex flex-col gap-3">
         {prompts.map((p, i) => (

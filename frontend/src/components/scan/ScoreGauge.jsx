@@ -10,8 +10,9 @@ export default function ScoreGauge({ score, passed }) {
   const gap    = circ - dash
 
   const isPass = passed ?? score >= ATS_PASS_THRESHOLD
-  const color = isPass ? '#16a34a' : score >= 50 ? '#d97706' : '#dc2626'
-  const label = isPass ? 'Pass' : score >= 50 ? 'Marginal' : 'Fail'
+  const hasScore = typeof score === 'number'
+  const color = isPass ? '#16a34a' : hasScore && score >= 50 ? '#d97706' : '#dc2626'
+  const label = !hasScore ? '—' : isPass ? 'Pass' : score >= 50 ? 'Marginal' : 'Fail'
 
   return (
     <div className="flex flex-col items-center gap-2">

@@ -36,9 +36,43 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   const [saveError, setSaveError] = useState('')
   const [dlError, setDlError] = useState('')
   const [pdfLoading, setPdfLoading] = useState(false)
+  const [structuring, setStructuring] = useState(false)
+  const [structError, setStructError] = useState('')
 
   const data = scan.originalResumeData
-  if (!data) return null
+  const isFile = scan.inputMode === 'file'
+
+  // An UPLOADED file is only structured when asked (one Claude call): the same structure the paid
+  // job would otherwise build later, where a misreading is first seen on a delivered, paid file.
+  async function handleStructure() {
+    setStructuring(true)
+    setStructError('')
+    try {
+      const url = `/scan/${scan.id}/structure${anonToken ? `?token=${anonToken}` : ''}`
+      const res = await api.post(url)
+      onUpdated({ originalResumeData: res.data.data.originalResumeData })
+    } catch (err) {
+      setStructError(getErrorMessage(err, 'We couldn\'t read your file just now — try again in a minute.'))
+    }
+    setStructuring(false)
+  }
+
+  if (!data) {
+    if (!isFile) return null
+    return (
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="structure-preview">
+        <h3 className="font-semibold text-gray-900">See what we read from your file</h3>
+        <p className="text-sm text-gray-500 mt-0.5">
+          If you buy a fix, we rebuild your resume from this. Check it first — a misread date or a missing job is
+          easier to correct now than on the finished document.
+        </p>
+        <Alert className="mt-3">{structError}</Alert>
+        <div className="mt-3">
+          <Button variant="secondary" size="sm" onClick={handleStructure} loading={structuring}>Preview what we extracted</Button>
+        </div>
+      </div>
+    )
+  }
 
   function startEditing() {
     setDraft(JSON.parse(JSON.stringify(data)))
@@ -80,9 +114,11 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="font-semibold text-gray-900">The resume we built from your text</h3>
+          <h3 className="font-semibold text-gray-900">{isFile ? 'The resume we read from your file' : 'The resume we built from your text'}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
-            Review what we extracted before deciding anything — fix anything that's missing or wrong.
+            {isFile
+              ? 'This is what a fix would rebuild your document from. Correct anything we misread — your score is re-checked from the corrected version.'
+              : 'Review what we extracted before deciding anything — fix anything that\'s missing or wrong.'}
           </p>
         </div>
         <div className="flex gap-2 shrink-0">

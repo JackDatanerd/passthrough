@@ -1,0 +1,50 @@
+SCAN / ATS CORE — round 2 close-out (independent re-audit; base: 1ec7007)
+APPLY MIGRATION 0057_fix_job_lock_and_credit_once.sql BEFORE (or together with) DEPLOYING THE CODE.
+No wrangler change.
+
+Already closed by concurrent sessions and verified, not redone: queue-path structuring budget (90s), `<background>` delimiter
+stripping, languages/awards/publications/volunteer + education.details + job location fields.
+
+BUGS FIXED
+ B1  Rescan ("same resume, new job") was dead: middleware/upload.js never copied sourceScanId into formFields, so createScan
+     answered 400. Tested through the REAL middleware (the controller tests mock formFields, which hid it).
+ B3  Extraction output (parseResumeStructure / structureFreeformText) is now coerced to the schema like the rewrite's already was.
+     string skills / null entries / string bullets crashed the DOCX + scorer + results page (or made one-character bullets).
+ B4  JD bigrams no longer span list separators: "Python, Kubernetes, Docker" produced phantom "python kubernetes" phrases that
+     were then "missing" from a resume saying "Docker and Kubernetes" (35% of the score + junk in "Why this score").
+ B5  inventedNumbers no longer treats the word "one" as a figure ("one-on-one", "no one" rejected clean rewrites as fabrication).
+ B6  BADGE delivered under the threshold: free fix credit granted (once), page explains it, no dead "Try Again" button (retryFix
+     refuses BADGE).
+ B7  Multi-page PDFs had no top margin on page 2+ / no bottom margin on page 1 (padding on one tall box). Real @page margins
+     (14mm) in the template, pdf.service and the AI-layout prompt. NOT render-tested here: please eyeball one 2-page PDF.
+ B8  A total rewrite failure whose original already scores 80+ was hidden behind the green "Verified" panel.
+ B9  Resume JSON is now delimited + "<"-escaped in the rewrite / HTML / cover-letter prompts.
+ B10 HTML sanitizer: <input src>, <use>/<feImage>, image-set("..."), srcset/poster/ping/formaction/xlink:href no longer pass.
+ B11 generateFix/generateBadge take a 10-minute lease on the scan (claim_fix_job): a duplicate delivery stands down instead of
+     double-billing Claude, orphaning R2 objects and e-mailing twice. Compensating credits are granted at most once per
+     (scan, round) in one statement (grant_fix_credit_once) — a re-run after a crash can't pay twice.
+ B12 A posting with nothing scoreable no longer gives a free 100 keyword score; the category is re-weighted out.
+ B13 'Candidate' is no longer written into candidate_first_name when there is no name.
+ B14 "Staff Nurse" != lead, "Associate Attorney" != junior, "Salesforce Administrator" != sales.
+ B15 createScan returns the per-IP ceiling slot when the scan insert fails (the account slot always was).
+ B16 ScoreGauge null score no longer reads "Fail"; rescan label for an unnamed file scan; palette/font use independent hashes;
+     resumeDiff tolerates non-array fields.
+
+FEATURE GAPS CLOSED
+ G2  Uploaded files can be previewed + corrected BEFORE paying: POST /scan/:id/structure builds the structure (one Claude call,
+     stored as original_resume_data), the editor/draft download then work for files, and the paid job reuses it.
+ G3  Edit the DELIVERED resume: PATCH /scan/:id/delivered-resume rebuilds DOCX + PDF, scores them as delivery does, moves the old
+     hashes to history, keeps the verification link, drops quantification prompts that were acted on, clears a stale cover letter.
+ G4  Cover letter (scans.cover_letter_text finally written): POST/GET /scan/:id/cover-letter, only from the delivered resume +
+     JD, rejects a draft with an invented figure (retry once), .docx download.
+ G5  DOCX: document title/creator (was "Un-named"); real hyperlinks for e-mail, profile URLs and the verification link.
+ G6  Anonymous results can be deleted by their link-holder (DELETE /scan/:id?token=).
+ G7  Section-heading detection recognises French/Spanish/Portuguese/German headings (diacritics folded).
+
+NOT DONE (needs a product call / next pass)
+ - Sections still outside the schema: interests, leadership/activities, memberships, references.
+ - Accept/reject per AI change in DiffView — superseded by G3 (the person can now edit anything after delivery).
+
+TESTS: tests/scan.ats.passC.test.js, frontend/tests/components/scanPassC.test.jsx, frontend/tests/pages/ScanResult.passC.test.jsx (new);
+ scan.controller / routes.wiring / mappers tests updated for the new RPC + the anonymous-delete route. Verified that the new tests fail
+ against the pre-fix code.

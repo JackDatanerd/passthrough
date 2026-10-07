@@ -167,9 +167,10 @@ describe('payments routes — refund, receipt, verify', () => {
 
 describe('scan routes — DELETE /:id', () => {
   const app = () => mount('routes/scan.routes.js', 'controllers/scan.controller.js')
-  it('requires a login, rejects a malformed id, and reaches deleteScan for an owner', async () => {
+  it('rejects a malformed id and reaches deleteScan (the controller decides ownership: account or anonymous token)', async () => {
     const a = app()
-    expect((await call(a, 'DELETE', `/${ID}`)).status).toBe(401)
+    expect((await call(a, 'DELETE', '/not-a-uuid')).status).toBe(400)
+    expect((await call(a, 'DELETE', `/${ID}`)).status).toBe(200)
     current = { id: 'u1' }
     expect((await call(a, 'DELETE', '/not-a-uuid')).status).toBe(400)
     expect(await call(a, 'DELETE', `/${ID}`)).toEqual({ status: 200, json: { handler: 'deleteScan' } })

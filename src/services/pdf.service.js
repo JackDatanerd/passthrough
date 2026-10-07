@@ -52,7 +52,9 @@ async function generateResumePDF(env, html) {
         await page.emulateMediaType('print')
         return page.pdf({
           format: 'A4', printBackground: true,
-          margin: { top: '0', right: '0', bottom: '0', left: '0' }
+          // Vertical margins are real page margins so every page of a multi-page resume has them;
+          // the layouts (pdfTemplate.service.js, the AI prompt) declare the same @page margin.
+          margin: { top: '14mm', right: '0', bottom: '14mm', left: '0' }
         })
       }
       try {

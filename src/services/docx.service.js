@@ -1,4 +1,4 @@
-const { Document, Packer, Paragraph, TextRun, HeadingLevel } = require('docx')
+const { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } = require('docx')
 
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
@@ -27,6 +27,19 @@ function xmlSafe(v) {
   return v
 }
 
+// A contact detail as a clickable link where it plainly is one (an address, a profile URL). Only
+// http(s) and mailto targets are ever produced; anything else stays plain text. Word does not
+// turn typed URLs into links when it opens a file, so plain text meant the verification link and
+// the profile links on a delivered resume could not be clicked.
+function hrefFor(text) {
+  const t = String(text || '').trim()
+  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return `mailto:${t}`
+  if (/^https?:\/\/\S+$/i.test(t)) return t
+  if (/^(?:www\.|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|co|me|app|ai|xyz|info|ke|uk)(?:\/|$))\S*$/i.test(t) && !/\s/.test(t)) return `https://${t}`
+  return null
+}
+const linkRun = (text, size = 18) => new TextRun({ text, size, font: 'Calibri', color: '0563C1', underline: {} })
+
 async function generateAtsDocx(resumeData, verificationUrl, { verified = true } = {}) {
   resumeData = xmlSafe(resumeData)
   verificationUrl = xmlSafe(verificationUrl)
@@ -36,23 +49,37 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
     children: [new TextRun({ text: resumeData.name || '', bold: true, size: 32, font: 'Calibri Light' })]
   }))
 
+  // [{ text, href? }] — joined with " | " below.
   const parts = []
-  if (resumeData.email) parts.push(resumeData.email)
-  if (resumeData.location) parts.push(resumeData.location)
-  if (resumeData.phone)    parts.push(resumeData.phone)
+  const addPart = (text, href = hrefFor(text)) => { if (text) parts.push({ text, href }) }
+  addPart(resumeData.email)
+  addPart(resumeData.location, null)
+  addPart(resumeData.phone, null)
   // AUDIT FIX (section audit — "generate a resume from scratch"): linkedin/
   // portfolio previously had no schema field at all, so there was nothing to
   // render here even when a candidate provided one — see the schema note on
   // claude.service.js's parseResumeStructure.
-  if (resumeData.linkedin)  parts.push(resumeData.linkedin)
-  if (resumeData.portfolio) parts.push(resumeData.portfolio)
-  // Plain text URL — ATS ignores it, humans can click it in a document viewer.
-  // Omitted entirely (not just left blank) when there's no verification link
-  // for this tier — see FIX_PLAIN in scan.controller.js's generateFix.
-  if (verificationUrl) parts.push(`${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: ${verificationUrl}`)
-  children.push(new Paragraph({
-    children: [new TextRun({ text: parts.join(' | '), size: 18, font: 'Calibri' })]
-  }))
+  addPart(resumeData.linkedin)
+  addPart(resumeData.portfolio)
+  // The credential line: a real link to the verification page. Omitted entirely (not just left
+  // blank) when there's no verification link for this tier — see FIX_PLAIN in
+  // scan.controller.js's generateFix. The label stays plain text so it extracts as before.
+  const credLabel = verificationUrl ? `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: ` : ''
+  const contactRuns = []
+  parts.forEach((p, i) => {
+    if (i > 0) contactRuns.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
+    contactRuns.push(p.href
+      ? new ExternalHyperlink({ link: p.href, children: [linkRun(p.text)] })
+      : new TextRun({ text: p.text, size: 18, font: 'Calibri' }))
+  })
+  if (verificationUrl) {
+    if (contactRuns.length) contactRuns.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
+    contactRuns.push(new TextRun({ text: credLabel, size: 18, font: 'Calibri' }))
+    contactRuns.push(hrefFor(verificationUrl)
+      ? new ExternalHyperlink({ link: hrefFor(verificationUrl), children: [linkRun(verificationUrl)] })
+      : new TextRun({ text: verificationUrl, size: 18, font: 'Calibri' }))
+  }
+  children.push(new Paragraph({ children: contactRuns }))
   children.push(new Paragraph({ text: '' }))
 
   if (resumeData.summary) {
@@ -185,6 +212,12 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   // silently broke our own content scorer's bullet/action-verb detection on
   // any resume we generated ourselves.
   const doc = new Document({
+    // Without these the file's properties read creator "Un-named" and no title — what a
+    // recruiter sees in a file listing / document inspector / ATS import.
+    title:   resumeData.name ? `${resumeData.name} — Resume` : 'Resume',
+    creator: resumeData.name || 'Passthrough',
+    lastModifiedBy: 'Passthrough',
+    description: 'ATS-friendly resume',
     styles: {
       paragraphStyles: [{
         id:         'ListParagraph',
@@ -200,4 +233,25 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   return Packer.toBuffer(doc)
 }
 
-module.exports = { generateAtsDocx, xmlSafe }
+// A plain cover letter: one paragraph per blank-line-separated block, line breaks kept inside a
+// block (the salutation / sign-off). The candidate's name is only the file's title.
+async function generateCoverLetterDocx(text, name) {
+  const body = xmlSafe(String(text || ''))
+  const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
+  const children = blocks.map(b => new Paragraph({
+    spacing: { after: 200 },
+    children: b.split('\n').flatMap((line, i) => [
+      new TextRun({ text: line, font: 'Calibri', size: 22, break: i > 0 ? 1 : 0 })
+    ])
+  }))
+  const who = xmlSafe(name || '')
+  const doc = new Document({
+    title: who ? `${who} — Cover letter` : 'Cover letter',
+    creator: who || 'Passthrough',
+    lastModifiedBy: 'Passthrough',
+    sections: [{ children }]
+  })
+  return Packer.toBuffer(doc)
+}
+
+module.exports = { generateAtsDocx, generateCoverLetterDocx, xmlSafe }

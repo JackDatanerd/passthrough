@@ -473,12 +473,14 @@ async function createScan(ctx) {
     // accounts' worth; SCAN_IP_DAILY_CAP overrides it, 0 disables it; the
     // testing-bypass IPs are exempt). The slot is only spent AFTER the account
     // quota said yes, and the account slot is handed back if this refuses.
+    let ipSlotKey = null   // set once this request has spent a slot of the per-IP ceiling
     {
       const ip = clientIp(ctx)
       const envCap = parseInt(ctx.env.SCAN_IP_DAILY_CAP, 10)
       const ipCap = Number.isFinite(envCap) ? envCap : c.FREE_SCANS_PER_IP_PER_DAY
       if (ipCap > 0 && !rateLimiter.isBypassed(ctx.env, ip)) {
         const ipOk = await rateLimiter.hitQuota(ctx.env, `rl:scanip:${rateKeyIp(ip)}`, ipCap, 24 * 3600)
+        if (ipOk) ipSlotKey = `rl:scanip:${rateKeyIp(ip)}`
         if (!ipOk) {
           warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: user.id }), 'scan quota rollback (ip cap)')
           await cleanupFile()
@@ -514,6 +516,12 @@ async function createScan(ctx) {
         // supabase-js reports a failed RPC as `{ error }` and never throws, so
         // the result must be inspected — a bare try/catch around it can't fire.
         warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: user.id }), 'scan quota rollback')
+      }
+      // The per-IP ceiling is a shared budget: a scan that was never created must not eat a
+      // slot of it (the account slot above was always handed back; this one was not).
+      if (ipSlotKey) {
+        try { await rateLimiter.refundQuota(ctx.env, ipSlotKey, 24 * 3600, 10) }
+        catch (refundErr) { console.error('scan ip-cap rollback failed:', refundErr.message) }
       }
       await cleanupFile()
       throw createErr
@@ -760,8 +768,12 @@ async function updateResumeData(ctx) {
                   (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
 
-  if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
-    return ctx.json({ success: false, message: 'Only available for brain-dump or saved-profile scans.' }, 400)
+  // An uploaded file becomes editable once its structure has been built (POST /:id/structure).
+  const editable = ['brain_dump', 'saved_profile'].includes(scan.inputMode) || (scan.inputMode === 'file' && !!scan.originalResumeData)
+  if (!editable)
+    return ctx.json({ success: false, message: scan.inputMode === 'file'
+      ? 'Preview what we extracted from your file first, then you can correct it.'
+      : 'Only available for brain-dump or saved-profile scans.' }, 400)
   if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
     return ctx.json({ success: false, message: 'Scan must be complete to edit.' }, 400)
   if (scan.fixPurchased)
@@ -873,9 +885,12 @@ async function loadDraftScan(ctx) {
                   (await anonTokenMatches(scan, ctx.req.query('token')))
   if (!isOwner) return { res: ctx.json({ success: false, message: 'Access denied.' }, 403) }
 
-  if (!['brain_dump', 'saved_profile'].includes(scan.inputMode))
+  // An uploaded file qualifies once its structure exists (the cleaned, ATS-formatted version of it).
+  if (scan.inputMode === 'file' && !scan.originalResumeData)
     return { res: ctx.json({ success: false,
-      message: 'A draft download is only available for brain-dump or saved-profile scans — file uploads already have your original file.' }, 400) }
+      message: 'Preview what we extracted from your file first — the draft is built from that.' }, 400) }
+  if (!['brain_dump', 'saved_profile', 'file'].includes(scan.inputMode))
+    return { res: ctx.json({ success: false, message: 'No draft is available for this scan.' }, 400) }
   if (!scan.originalResumeData)
     return { res: ctx.json({ success: false, message: 'Not ready yet — the scan needs to finish first.' }, 404) }
   return { scan }
@@ -915,6 +930,206 @@ async function downloadDraftPdf(ctx) {
   ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.pdf"`)
   ctx.header('Content-Type', 'application/pdf')
   return ctx.body(pdfBytes)
+}
+
+// POST /api/scan/:id/structure
+// FEATURE GAP CLOSED (Scan/ATS pass): a typed background is structured during the free scan and
+// the person can review and correct it before paying — but an UPLOADED file was only ever
+// structured at paid time, inside generateFix/generateBadge. A misread date, a dropped job or a
+// scrambled two-column layout was therefore first seen on a delivered, paid document, and every
+// "Try Again" rebuilt from the same wrong structure. This builds that structure on request (one
+// Claude call, same parser the paid job uses) and stores it as original_resume_data: the editor
+// then works for files too, and the paid job reuses it instead of parsing again.
+async function structureResume(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+  const user = ctx.get('user')
+  const isOwner = (scan.userId && scan.userId === user?.id) ||
+                  (await anonTokenMatches(scan, ctx.req.query('token')))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+
+  if (scan.inputMode !== 'file')
+    return ctx.json({ success: false, message: 'Only needed for uploaded files.' }, 400)
+  if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
+    return ctx.json({ success: false, message: 'Scan must be complete first.' }, 400)
+  if (scan.fixPurchased)
+    return ctx.json({ success: false, message: 'Already purchased.' }, 400)
+  if (scan.originalResumeData)
+    return ctx.json({ success: true, data: { originalResumeData: scan.originalResumeData } })
+
+  if (!scan.resumePath) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
+  const obj = await ctx.env.RESUMES_BUCKET.get(scan.resumePath)
+  if (!obj) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
+  const bytes = new Uint8Array(await obj.arrayBuffer())
+  const parsed = await resumeParser.parse(ctx.env, bytes, scan.resumeMimeType)
+  if (parsed.parseError || !parsed.resumeData) {
+    console.error(`structureResume ${scan.id}:`, parsed.parseErrorMessage)
+    return ctx.json({ success: false, message: 'We couldn\'t read the structure of that file just now. Please try again in a minute.' }, 502)
+  }
+
+  // Only attach it if nobody else did, and only while the scan is still pre-purchase.
+  const { data: updated, error: updErr } = await supabase.from('scans').update({
+    original_resume_data: parsed.resumeData,
+    candidate_first_name: candidateFirstNameFrom(parsed.resumeData) ?? scan.candidateFirstName ?? null
+  }).eq('id', scan.id).eq('fix_purchased', false).is('original_resume_data', null).select('id')
+  if (updErr) throw updErr
+  if (Array.isArray(updated) && updated.length === 0) {
+    const { data: fresh } = await supabase.from('scans').select('original_resume_data').eq('id', scan.id).maybeSingle()
+    if (fresh?.original_resume_data) return ctx.json({ success: true, data: { originalResumeData: fresh.original_resume_data } })
+    return ctx.json({ success: false, message: 'This scan changed while we were reading it. Refresh the page and try again.' }, 409)
+  }
+  return ctx.json({ success: true, data: { originalResumeData: parsed.resumeData } })
+}
+
+// PATCH /api/scan/:id/delivered-resume
+// FEATURE GAP CLOSED (Scan/ATS pass): once a fix was delivered the content could not be changed —
+// not a typo, not a number the "Strengthen these lines" panel asks for, not a job the person
+// wants dropped for this application. The only route was "Try Again" (an AI rewrite, capped, only
+// below the threshold). This applies the person's OWN edit to the delivered resume: both files
+// are rebuilt from it, it is scored exactly as the delivery was (so the credential wording always
+// matches what the public page will confirm), the superseded file's hashes move to the history
+// ("earlier version", never "modified"), and the verification link stays the same.
+async function updateDeliveredResume(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your resume must be delivered before it can be edited.' }, 400)
+  if (scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== REVOKE_REASON.OWNER)
+    return ctx.json({ success: false, message: 'This resume was taken down by Passthrough and can\'t be edited here.' }, 403)
+
+  let body
+  try { body = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Invalid request body.' }, 400) }
+  const checked = parseClientResumeData(body?.resumeData)
+  if (!checked.ok) return ctx.json({ success: false, message: checked.message }, 400)
+  const resumeData = checked.data
+  if (!hasResumeContent(resumeData))
+    return ctx.json({ success: false, message: 'Add at least one job, school, project, skill or a summary — an empty resume can\'t replace your delivered one.' }, 400)
+
+  const isPlain = scan.fixTier === 'FIX_PLAIN'
+  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+  const code = isPlain ? null : (scan.verificationCode || null)
+  const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
+
+  // Same procedure as generateFix's delivery: build with the credential wording, score the file
+  // as delivered, and rebuild with the honest wording if it misses the bar.
+  let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
+  const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
+  let fixAtsScore
+  if (text && text.trim().length >= 100) fixAtsScore = (await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume')).score
+  else return ctx.json({ success: false, message: 'That resume is too short to score. Add more detail and try again.' }, 400)
+  const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
+  if (verificationUrl && !credentialVerified)
+    docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false })
+
+  const version = cryptoLib.randomToken(6)
+  const docxKey = storage.atsDocxKey(scan.id, version)
+  await ctx.env.RESUMES_BUCKET.put(docxKey, docxBytes, { httpMetadata: { contentType: DOCX_MIME } })
+  const resumeHash = await badgeService.hashBytes(docxBytes)
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
+  const { pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
+  const finalPdfKey  = pdfKey || null
+  const finalPdfHash = pdfKey ? pdfHash : null
+
+  // A prompt whose bullet is no longer in the resume has been acted on (or removed).
+  const bulletsNow = new Set()
+  for (const e of Array.isArray(resumeData.experience) ? resumeData.experience : [])
+    for (const b of Array.isArray(e?.bullets) ? e.bullets : []) if (typeof b === 'string') bulletsNow.add(b.trim())
+  const prompts = (Array.isArray(scan.quantificationPrompts) ? scan.quantificationPrompts : [])
+    .filter(p => p && bulletsNow.has(String(p.bullet || '').trim()))
+
+  // Which column holds the delivered content: a rewrite's text lives in rewritten_resume_data;
+  // a credential-only delivery (BADGE) delivers original_resume_data verbatim.
+  const dataColumn = scan.rewrittenResumeData ? { rewritten_resume_data: resumeData } : { original_resume_data: resumeData }
+  const retrySeen = scan.fixRetryCount ?? 0
+  const { data: updated, error: updErr } = await supabase.from('scans').update({
+    ...dataColumn,
+    resume_ats_path:     docxKey,
+    resume_pdf_path:     finalPdfKey,
+    resume_pdf_hash:     finalPdfHash,
+    resume_hash:         resumeHash,
+    resume_hash_history: isPlain ? [] : nextHashHistory(scan),
+    fix_ats_score:       fixAtsScore,
+    fix_generated_at:    new Date().toISOString(),
+    verified_at:         isPlain ? null : new Date().toISOString(),
+    rewrite_failed:      false,
+    quantification_prompts: prompts,
+    candidate_first_name: candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null,
+    // The cover letter was written from the previous version.
+    cover_letter_text:   null
+  }).eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retrySeen).select('id')
+  if (updErr) {
+    await deleteSuperseded(ctx.env, [docxKey, finalPdfKey], [])
+    throw updErr
+  }
+  if (Array.isArray(updated) && updated.length === 0) {
+    await deleteSuperseded(ctx.env, [docxKey, finalPdfKey], [])
+    return ctx.json({ success: false, message: 'Your resume changed while you were editing (a retry may be running). Refresh the page and try again.' }, 409)
+  }
+  await deleteSuperseded(ctx.env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
+  if (code) await purgeBadgeCache(code)
+
+  return ctx.json({ success: true, data: {
+    fixAtsScore, hasPdf: !!finalPdfKey, quantificationPrompts: prompts,
+    credentialVerified,
+    ...(scan.rewrittenResumeData ? { rewrittenResumeData: resumeData } : { originalResumeData: resumeData }),
+    coverLetterText: null
+  } })
+}
+
+// POST /api/scan/:id/cover-letter  — and GET for the .docx
+// FEATURE GAP CLOSED (Scan/ATS pass): scans.cover_letter_text has existed since the first
+// migration and nothing ever wrote it. The delivered resume is already tailored to one job; the
+// cover letter for the same job is the other half of an application. Written from the DELIVERED
+// resume (never from anything else) and the job description, held to the same rule as the
+// rewrite — no figure the resume doesn't contain — and stored on the scan.
+async function generateCoverLetter(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your resume must be delivered before a cover letter can be written.' }, 400)
+  const data = scan.rewrittenResumeData || scan.originalResumeData
+  if (!data) return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
+  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+  if (jdText.trim().length < 50) return ctx.json({ success: false, message: 'There is no job description stored for this scan.' }, 400)
+
+  const result = await claudeService.generateCoverLetter(ctx.env, data, jdText)
+  if (!result.success) {
+    console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
+    return ctx.json({ success: false, message: 'We couldn\'t write the cover letter just now. Please try again in a minute.' }, 502)
+  }
+  const { data: updated, error: updErr } = await supabase.from('scans')
+    .update({ cover_letter_text: result.data })
+    .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', scan.fixRetryCount ?? 0).select('id')
+  if (updErr) throw updErr
+  if (Array.isArray(updated) && updated.length === 0)
+    return ctx.json({ success: false, message: 'Your resume changed while the letter was being written. Please try again.' }, 409)
+  return ctx.json({ success: true, data: { coverLetterText: result.data } })
+}
+
+async function downloadCoverLetter(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!row.cover_letter_text) return ctx.json({ success: false, message: 'No cover letter yet.' }, 404)
+  const data = row.rewritten_resume_data || row.original_resume_data
+  const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name)
+  const stem = draftFileStem(data).replace(/-resume-draft$/, '')
+  ctx.header('Content-Disposition', `attachment; filename="${stem ? `${stem}-cover-letter` : 'cover-letter'}.docx"`)
+  ctx.header('Content-Type', DOCX_MIME)
+  return ctx.body(bytes)
 }
 
 // POST /api/scan/:id/initiate-fix
@@ -1385,10 +1600,16 @@ async function deleteScan(ctx) {
   const supabase = getSupabase(ctx.env)
 
   const { data: row, error } = await supabase.from('scans')
-    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
+    .select('id, user_id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history, anon_token, anon_expires_at')
     .eq('id', id).maybeSingle()
   if (error) throw error
-  if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  // FEATURE GAP CLOSED (Scan/ATS pass): an ANONYMOUS result (which can hold a typed career
+  // history and an e-mail address) could not be removed before its 24-hour expiry. The person
+  // who holds its token may now delete it — the same capability that lets them read it.
+  const anonOwner = !!row && !row.user_id && !!row.anon_token &&
+    await anonTokenMatches({ anonTokenHash: row.anon_token, anonExpiresAt: row.anon_expires_at }, ctx.req.query('token'))
+  const accountOwner = !!row && !!user && row.user_id === user.id
+  if (!row || (!accountOwner && !anonOwner)) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
 
   const since = new Date(Date.now() - SCAN_IN_FLIGHT_WINDOW_MS).toISOString()
   if (SCAN_IN_FLIGHT_STATUSES.includes(row.status) && row.updated_at > since)
@@ -1401,8 +1622,9 @@ async function deleteScan(ctx) {
   if (pendingPayments > 0)
     return ctx.json({ success: false, message: 'A payment for this scan is still in progress. Try again in a few minutes.' }, 409)
 
-  const { data: removed, error: delErr } = await supabase.from('scans')
-    .delete().eq('id', id).eq('user_id', user.id).select('id').maybeSingle()
+  let delQuery = supabase.from('scans').delete().eq('id', id)
+  delQuery = accountOwner ? delQuery.eq('user_id', user.id) : delQuery.is('user_id', null)
+  const { data: removed, error: delErr } = await delQuery.select('id').maybeSingle()
   if (delErr) throw delErr
   if (!removed) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
 
@@ -1418,10 +1640,12 @@ async function deleteScan(ctx) {
   // Only the "view source scan" pointer is cleared, atomically (0052): the profile itself is a
   // separate copy the user chose to keep, and a profile saved or edited while this request ran
   // must not be overwritten by a stale copy of itself.
-  try {
-    warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: [id] }),
-      'deleteScan: clear saved-profile source')
-  } catch (e) { console.error('deleteScan: saved-profile pointer:', e.message) }
+  if (accountOwner) {
+    try {
+      warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: [id] }),
+        'deleteScan: clear saved-profile source')
+    } catch (e) { console.error('deleteScan: saved-profile pointer:', e.message) }
+  }
 
   return ctx.json({ success: true, message: 'Scan deleted.' })
 }
@@ -1757,6 +1981,45 @@ async function regeneratePdf(ctx) {
 
 // ─── Section 7 (Verify) audit: deliverable storage helpers ───────────────────
 
+// A job takes a short lease on its scan so a duplicate delivery (admin requeue racing the sweep,
+// platform redelivery) stands down instead of running the whole pipeline a second time. Fails
+// OPEN: if the lease can't be taken for a reason other than "someone holds it" (an RPC error, a
+// stub), the job runs — a rare duplicate is better than a paid fix that never starts.
+const FIX_JOB_LEASE_SECONDS = 600
+async function claimFixJob(supabase, scanId) {
+  try {
+    const { data, error } = await supabase.rpc('claim_fix_job', { p_scan_id: scanId, p_lease_seconds: FIX_JOB_LEASE_SECONDS })
+    if (error) { console.error(`[WARN] claim_fix_job ${scanId}:`, error.message); return true }
+    return data !== false
+  } catch (err) {
+    console.error(`[WARN] claim_fix_job ${scanId}:`, err.message)
+    return true
+  }
+}
+async function releaseFixJob(supabase, scanId) {
+  try { await supabase.rpc('release_fix_job', { p_scan_id: scanId }) }
+  catch (err) { console.error(`[WARN] release_fix_job ${scanId}:`, err.message) }
+}
+
+// The compensating free credit, at most once per (scan, round) — a job that crashes after granting
+// and is re-run must not grant again. Never throws: a credit that cannot be written is reported to
+// the owner with the exact restore instruction. Returns true when this call granted one.
+async function grantFixCreditOnce(env, supabase, scan, round, why) {
+  if (!scan?.userId) return false
+  try {
+    const { data, error } = await supabase.rpc('grant_fix_credit_once', { p_scan_id: scan.id, p_user_id: scan.userId, p_round: round })
+    if (error) throw error
+    return data !== false
+  } catch (creditErr) {
+    console.error(`[CRITICAL] Failed to grant fix credit (${why}) to ${scan.userId}:`, creditErr.message)
+    try {
+      await emailService.sendOwnerAlert(env, 'Free fix credit NOT granted',
+        `userId: ${scan.userId}\nscanId: ${scan.id}\nerror: ${creditErr.message}\n\nReason: ${why}. The compensating free credit was not written. Restore it with increment_free_fix_credits.`)
+    } catch (_) {}
+    return false
+  }
+}
+
 // Hashes of a superseded delivery, kept so a hiring manager holding an OLDER
 // file is told "earlier version", not "modified" (see verify.controller).
 function nextHashHistory(scan) {
@@ -1839,7 +2102,7 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   return { pdfKey: null, pdfHash: null, error: lastErr ? lastErr.message : (htmlError || 'PDF generation failed') }
 }
 
-async function generateFix(env, supabase, scanId) {
+async function generateFixRun(env, supabase, scanId) {
   // True once this scan already HAS a delivered fix and this run is a retry on
   // top of it — a crash then must not take the delivered fix away (see catch).
   let priorDelivery = false
@@ -1912,7 +2175,7 @@ async function generateFix(env, supabase, scanId) {
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
-    const candidateFirstName = candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? 'Candidate'
+    const candidateFirstName = candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null
     // DOCX_MIME is now module-level — see top of file.
 
     // Verification code/URL computed BEFORE the loop now (was previously
@@ -2110,34 +2373,14 @@ async function generateFix(env, supabase, scanId) {
         )).score
 
     if (rewriteFailed && scan.userId) {
-      // A total rewrite failure, not a quality shortfall — compensate every
-      // time it happens rather than waiting for retries to run out. Same
-      // must()+owner-alert hardening as the exhausted-retries branch below,
-      // so a credit that fails to write is never silently lost either way.
-      try {
-        must(await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId }), 'grant free fix credit (rewrite failure)')
-      } catch (creditErr) {
-        console.error(`[CRITICAL] Failed to grant fix credit (rewrite failure) to ${scan.userId}:`, creditErr.message)
-        try {
-          await emailService.sendOwnerAlert(env, 'Free fix credit NOT granted',
-            `userId: ${scan.userId}\nscanId: ${scanId}\nerror: ${creditErr.message}\n\nEvery rewrite attempt hard-failed (rewriteFailed); the compensating free credit was not written. Restore it with increment_free_fix_credits.`)
-        } catch (_) {}
-      }
+      // A total rewrite failure, not a quality shortfall — compensate every time it happens
+      // rather than waiting for retries to run out. Once per round (grantFixCreditOnce), so a
+      // re-run of a crashed job can't pay twice.
+      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'rewrite failure')
     } else if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
-      // Retries are exhausted (this was the last one allowed) and still
-      // short of the badge threshold — grant a free credit for next time
-      // rather than leaving the user with nothing to show for it. Mutually
-      // exclusive with the rewriteFailed branch above so a total failure on
-      // the final retry can never grant two credits for one occurrence.
-      try {
-        must(await supabase.rpc('increment_free_fix_credits', { p_user_id: scan.userId }), 'grant free fix credit')
-      } catch (creditErr) {
-        console.error(`[CRITICAL] Failed to grant fix credit to ${scan.userId}:`, creditErr.message)
-        try {
-          await emailService.sendOwnerAlert(env, 'Free fix credit NOT granted',
-            `userId: ${scan.userId}\nscanId: ${scanId}\nerror: ${creditErr.message}\n\nRetries were exhausted below the badge threshold; the promised free credit was not written. Restore it with increment_free_fix_credits.`)
-        } catch (_) {}
-      }
+      // Retries are exhausted (this was the last one allowed) and still short of the badge
+      // threshold — a free credit for next time. Mutually exclusive with the branch above.
+      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount, 'retries exhausted below threshold')
     }
 
     // Reuse the winning attempt's already-generated docx bytes instead of
@@ -2290,7 +2533,7 @@ async function generateFix(env, supabase, scanId) {
 
 // ─── generateBadge — no AI rewrite, original content, parse fallback ────────
 
-async function generateBadge(env, supabase, scanId) {
+async function generateBadgeRun(env, supabase, scanId) {
   // True once this scan already HAS a delivered badge and this run is a
   // redelivery on top of it (queues are at-least-once) — a crash then must
   // not take the delivered badge away (see catch). Unlike generateFix there
@@ -2338,7 +2581,7 @@ async function generateBadge(env, supabase, scanId) {
     }
 
     // Use finalData.name — correct source after fallback
-    const candidateFirstName = candidateFirstNameFrom(finalData) ?? scan.candidateFirstName ?? 'Candidate'
+    const candidateFirstName = candidateFirstNameFrom(finalData) ?? scan.candidateFirstName ?? null
     // Same reasoning as generateFix: never orphan an already-delivered link.
     const code            = scan.verificationCode || await badgeService.generateShortCode(supabase)
     const verificationUrl = badgeService.buildVerificationUrl(env, code)
@@ -2369,6 +2612,11 @@ async function generateBadge(env, supabase, scanId) {
     if (!credentialVerified) {
       console.error(`[WARN] generateBadge ${scanId}: delivered document scored ${fixAtsScore} (< ${c.ATS_BADGE_THRESHOLD}) — issuing the honest, unverified wording`)
       docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false })
+      // The buyer paid for the CREDENTIAL and the file we can hand over doesn't earn it (the
+      // free scan measured their upload; this is the regenerated, ATS-formatted document). They
+      // get the honest wording AND a free fix credit — a Badge can't be retried, so the credit is
+      // the way to a rewrite that does clear the bar. Once per scan (grantFixCreditOnce).
+      await grantFixCreditOnce(env, supabase, scan, 0, 'badge delivered below the verified threshold')
     }
     const version = cryptoLib.randomToken(6)
     const docxKey = storage.atsDocxKey(scanId, version)
@@ -2462,8 +2710,27 @@ async function generateBadge(env, supabase, scanId) {
   }
 }
 
+// Public entry points: take the scan's lease, run, give it back (see claimFixJob).
+async function generateFix(env, supabase, scanId) {
+  if (!(await claimFixJob(supabase, scanId))) {
+    console.log(`generateFix: scan ${scanId} already has a job in flight — duplicate, standing down`)
+    return { success: true, skipped: true }
+  }
+  try { return await generateFixRun(env, supabase, scanId) }
+  finally { await releaseFixJob(supabase, scanId) }
+}
+async function generateBadge(env, supabase, scanId) {
+  if (!(await claimFixJob(supabase, scanId))) {
+    console.log(`generateBadge: scan ${scanId} already has a job in flight — duplicate, standing down`)
+    return { success: true, skipped: true }
+  }
+  try { return await generateBadgeRun(env, supabase, scanId) }
+  finally { await releaseFixJob(supabase, scanId) }
+}
+
 module.exports = {
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
-  updateResumeData, downloadDraft, downloadDraftPdf,  // section audit: "generate a resume from scratch"
+  updateResumeData, downloadDraft, downloadDraftPdf,
+  structureResume, updateDeliveredResume, generateCoverLetter, downloadCoverLetter,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

@@ -119,7 +119,8 @@ export default function ScanForm() {
         if (cancelled || !d || !['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(d.status)) return
         setRescanSource({
           id: d.id,
-          label: d.resumeOriginalName || (d.inputMode === 'brain_dump' ? 'the background you wrote' : 'your saved profile'),
+          label: d.resumeOriginalName
+            || (d.inputMode === 'brain_dump' ? 'the background you wrote' : d.inputMode === 'file' ? 'the resume you uploaded' : 'your saved profile'),
         })
         setEntryMode('rescan')
       })
