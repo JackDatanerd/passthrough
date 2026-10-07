@@ -1,0 +1,28 @@
+Payments & Pricing — round 3 (fresh independent pass)
+
+FEATURE GAPS CLOSED
+ G1  Verified-email gate at checkout. downloadFile already refused unverified accounts, but nothing stopped one paying
+     first (paid, then locked out of the files, receipt sent to an unconfirmed address). initializePayment and
+     redeemCredit now refuse with 403 EMAIL_NOT_VERIFIED before any Paystack call / credit spend; ScanResult re-reads the
+     user from the server (the cached flag can be stale), explains, and offers "Resend verification email".
+ G2  /api/pricing now returns freeScansPerDay + anonScansPerHour (new constants.ANON_SCANS_PER_HOUR, now also what the
+     anonScan limiter enforces); Pricing.jsx's free-tier copy reads them instead of hardcoded "1/hour, 3/day".
+ G3  GET /payments/pending?scanId= (caller's own fresh PENDING checkout). ScanResult shows an "in progress" notice with
+     Check payment status / Cancel that payment, so a closed popup or failed verify no longer returns the buyer to an
+     unchanged "buy" screen.
+
+BUGS FIXED
+ B1  GET /payments/history?page=N past the end threw (PostgREST 416 / PGRST103 with count=exact) -> 500, and
+     PaymentHistory's "step back a page" logic only runs on a 200. Now an empty page with the real total (lib/db.js).
+ B2  initializePayment / cancelPayment retired a PENDING checkout (ABANDONED, then a new one) without asking Paystack
+     whether it had already been paid -> double charge after a failed verify + lost webhook. They now ask Paystack first:
+     paid -> settled through the sweep's own path and answered 409 { alreadyPaid } (ScanResult adopts it and waits for
+     delivery); still in flight (mobile money etc.) -> 409 { inFlight }, nothing abandoned; lookup failure on a stale row
+     or a cancel -> 502, nothing abandoned. A fresh row is still just resumed.
+ B3  usePricing's cache was keyed by referral code only while /api/pricing varies by viewer (self-referral guard): a partner
+     who opened their own link logged out and then logged in kept seeing the discounted price on the checkout button for up
+     to 5 minutes while checkout charged the standard price. Cache is now keyed by viewer + code (null-safe without an
+     AuthProvider).
+
+TESTS: payments (B1/B2/G1/G3, 15 new), pricing (G2), scan.redeemCredit (G1), usePricing viewer cache, Pricing free-tier
+copy, ScanResult payment flows (10 new). Full suite: 147 files / 2665+ tests green; frontend builds.

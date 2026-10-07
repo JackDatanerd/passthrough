@@ -91,6 +91,9 @@ async function getPricing(ctx) {
     // badge eligibility and retry count). The frontend now reads them here.
     badgeThreshold: c.ATS_BADGE_THRESHOLD,
     maxFixRetries:  c.MAX_FIX_RETRIES,
+    // G2 (round 3): the free-tier copy on the Pricing page, read live like the two above.
+    freeScansPerDay:   c.FREE_SCANS_PER_DAY,
+    anonScansPerHour:  c.ANON_SCANS_PER_HOUR,
     tiers
   } })
 }

@@ -36,6 +36,7 @@
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { isTrustedPreview } = require('../lib/verification')
 const core = require('../lib/rateLimitCore')
+const constants = require('../config/constants')
 const { runInBackground } = require('../lib/background')
 
 // ── Storage backend ───────────────────────────────────────────────────────
@@ -319,8 +320,8 @@ const verifyRead = makeLimiter({
 })
 
 const anonScan = makeLimiter({
-  windowSeconds: ANON_SCAN_WINDOW_SECONDS, max: 1, keyPrefix: 'rl:anonscan',
-  message: msg('Anon limit: 1/hr. Create account for 3/day.'),
+  windowSeconds: ANON_SCAN_WINDOW_SECONDS, max: constants.ANON_SCANS_PER_HOUR, keyPrefix: 'rl:anonscan',
+  message: msg(`Anon limit: ${constants.ANON_SCANS_PER_HOUR}/hr. Create account for ${constants.FREE_SCANS_PER_DAY}/day.`),
   skip: c => !!c.get('user'),
   // The slot is counted before the upload is validated (so a burst can't race
   // past it), then handed back if the request fails — a wrong file type, an

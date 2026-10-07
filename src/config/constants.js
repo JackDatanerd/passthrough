@@ -99,6 +99,9 @@ module.exports = {
   MIN_BRAIN_DUMP_CHARS: 100,   // Phase 1 — brain-dump entry path minimum length
   MAX_UPLOAD_MB:    5,
   FREE_SCANS_PER_DAY:  3,
+  // Scans an ACCOUNT-LESS visitor gets per hour (rateLimiter.js's anonScan). Exposed through
+  // /api/pricing so the pricing page's free-tier copy can never drift from the real limit.
+  ANON_SCANS_PER_HOUR: 1,
   // Ceiling on scans per IP per 24h across ALL accounts (five accounts' worth) —
   // stops throwaway-account farming of the free tier. SCAN_IP_DAILY_CAP env var
   // overrides it; 0 disables the ceiling.

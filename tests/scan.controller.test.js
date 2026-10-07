@@ -102,6 +102,14 @@ describe('redeemCredit', () => {
     return { mod, restore, state, db }
   }
 
+  it('G1 (payments round 3): an unverified account is refused before any lookup or credit spend', async () => {
+    t = setup()
+    const res = await t.mod.redeemCredit(baseCtx({ user: { id: 'u1', emailVerified: false } }))
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED')
+    expect(t.db.calls).toHaveLength(0)
+  })
+
   it('403s for someone else\'s scan, and never spends a credit', async () => {
     t = setup({ scan: { id: 's1', user_id: 'someone-else', status: 'COMPLETE_PASS' } })
     const res = await t.mod.redeemCredit(baseCtx())

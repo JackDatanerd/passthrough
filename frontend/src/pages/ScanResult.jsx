@@ -38,6 +38,9 @@ import Checkbox from '../components/ui/Checkbox'
 // taking an action (paying) or starting a new scan. Deliberately excludes
 // FIX_PURCHASED and FIX_GENERATING, which the backend transitions through
 // automatically without any user input.
+// G3 (payments round 3): how the open-checkout notice names the tier being paid for.
+const PENDING_TIER_LABEL = { FIX: 'resume fix', FIX_PLAIN: 'plain-text fix', BADGE: 'verified badge' }
+
 const POLLING_STOP = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_DELIVERED', 'ERROR']
 // RESULTS_READY: statuses where the score/results section should render at
 // all (as opposed to the plain "Scanning your resume…" placeholder).
@@ -81,6 +84,15 @@ export default function ScanResult() {
   // this holds it so the error message can offer a real "cancel that
   // payment" action instead of leaving the user stuck for up to 30 minutes.
   const [stuckPayment, setStuckPayment] = useState(null)
+  // FEATURE GAP CLOSED (Payments & Pricing round 3 — G1): the server now refuses to take payment (or
+  // spend a credit) from an account whose email is unverified — downloads need it, and the receipt
+  // goes to it. needsVerify turns the error into a "resend the verification email" action.
+  const [needsVerify, setNeedsVerify] = useState(false)
+  const [verifyResent, setVerifyResent] = useState('')
+  // FEATURE GAP CLOSED (round 3 — G3): the caller's own open checkout for this scan, if any (see
+  // loadPendingPayment). Without it, a buyer whose popup closed or whose verify call failed came
+  // back to an unchanged "buy" screen with nothing saying a payment was already in progress.
+  const [pendingPayment, setPendingPayment] = useState(null)
   // AUDIT FIX (feature gap): the inline Paystack popup script loads at
   // runtime from Paystack's own domain (see index.html — nothing local or
   // bundled backs it up). An ad blocker, corporate proxy, or blocked/slow
@@ -241,6 +253,13 @@ export default function ScanResult() {
   const draftDone = scan && scan.inputMode === 'brain_dump' && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)
   useEffect(() => { if (draftDone) clearBrainDumpDraft() }, [draftDone])
 
+  // G3: look for an open checkout once the scan is on screen and still buyable.
+  const buyable = !!(user && scan && !scan.fixPurchased && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
+  useEffect(() => {
+    if (!buyable) { setPendingPayment(null); return }
+    loadPendingPayment()
+  }, [buyable, id])  // eslint-disable-line react-hooks/exhaustive-deps
+
   // Don't let the fallback timer fire (and setState) after this page unmounts.
   useEffect(() => () => clearTimeout(popupFallbackTimerRef.current), [])
 
@@ -261,6 +280,48 @@ export default function ScanResult() {
     setReferralCode(getStoredReferralCode())  // re-read: normalizes casing/trim, empty string if cleared
   }
 
+  // G1: the cached user can be stale (verified in another tab or on another device since this page
+  // loaded), so ask the server before telling anyone they are unverified.
+  async function ensureVerified() {
+    if (user.emailVerified) return true
+    const fresh = await refreshUser()
+    if (fresh?.emailVerified) return true
+    setNeedsVerify(true); setVerifyResent('')
+    setPayError('Please verify your email address before buying — your downloads and receipt are sent to it.')
+    return false
+  }
+
+  async function handleResendVerification() {
+    setVerifyResent('')
+    try {
+      await api.post('/auth/resend-verification')
+      setVerifyResent('Verification email sent — open the link in it, then come back and try again.')
+    } catch (err) {
+      setVerifyResent(getErrorMessage(err, 'Could not send the verification email — please try again shortly.'))
+    }
+  }
+
+  // G3: the caller's own fresh PENDING checkout for this scan, or null.
+  async function loadPendingPayment() {
+    try {
+      const res = await api.get(`/payments/pending?scanId=${encodeURIComponent(id)}`)
+      setPendingPayment(res.data?.data?.pending || null)
+    } catch (_) { setPendingPayment(null) }   // a convenience only — never block the page on it
+  }
+
+  // B2 (round 3): the server found the earlier checkout had in fact been paid and is delivering it.
+  // Show its message and wait for delivery exactly as after a popup success.
+  async function adoptPaidElsewhere(message) {
+    setStuckPayment(null); setPendingPayment(null); setPayError(message || '')
+    await fetchScan()
+    if (['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
+      awaitingPaymentRef.current = true
+      awaitingDeadlineRef.current = Date.now() + 5 * 60 * 1000
+      setConfirmingPayment(true)
+    }
+    restartPolling()
+  }
+
   async function handlePay(fixTier) {
     if (!user) return navigate(`/register`)
     // Re-entrancy guard — belt-and-suspenders alongside the buttons now
@@ -268,6 +329,13 @@ export default function ScanResult() {
     // this, a click that lands between render and the disabled state
     // taking effect could still double-fire.
     if (payLoading) return
+    setNeedsVerify(false); setVerifyResent('')
+    if (!user.emailVerified) {
+      setPayLoading(true); setPayError('')
+      const ok = await ensureVerified()
+      setPayLoading(false)
+      if (!ok) return
+    }
     setPayLoading(true); setPayingTier(fixTier); setPayError(''); setStuckPayment(null)
     clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null)
     try {
@@ -318,7 +386,7 @@ export default function ScanResult() {
             restartPolling()
             setPayLoading(false); setPayingTier(null)
           },
-          onCancel: () => { clearFallback(); setPayLoading(false); setPayingTier(null) },
+          onCancel: () => { clearFallback(); setPayLoading(false); setPayingTier(null); loadPendingPayment() },
           onError: () => {
             clearFallback()
             setPayError('Payment failed. Please try again.')
@@ -339,6 +407,12 @@ export default function ScanResult() {
       // payments.controller.js. The reference to cancel now comes back in
       // the error body; hang onto it so the error message can offer a real
       // way out instead of the old dead-end "please cancel it" text.
+      if (err.response?.data?.code === 'EMAIL_NOT_VERIFIED') setNeedsVerify(true)
+      if (err.response?.status === 409 && err.response?.data?.alreadyPaid) {
+        await adoptPaidElsewhere(getErrorMessage(err, ''))
+        setPayLoading(false); setPayingTier(null)
+        return
+      }
       const stuck = err.response?.status === 409 ? err.response?.data?.data : null
       setStuckPayment(stuck?.reference ? stuck : null)
       setPayError(getErrorMessage(err, 'Payment failed to initialize.'))
@@ -348,24 +422,46 @@ export default function ScanResult() {
 
   // AUDIT FIX (feature gap): the other half of the fix above — actually lets
   // the user act on "please cancel it" instead of just reading it.
-  async function handleCancelStuckPayment() {
-    if (!stuckPayment) return
+  async function cancelCheckout(reference) {
+    if (!reference) return
     setPayLoading(true)
     try {
-      await api.post(`/payments/${stuckPayment.reference}/cancel`)
-      setStuckPayment(null)
+      await api.post(`/payments/${reference}/cancel`)
+      setStuckPayment(null); setPendingPayment(null)
       setPayError('')
     } catch (err) {
-      setPayError(getErrorMessage(err, 'Could not cancel that payment — please try again.'))
+      if (err.response?.status === 409 && err.response?.data?.alreadyPaid)
+        await adoptPaidElsewhere(getErrorMessage(err, ''))
+      else setPayError(getErrorMessage(err, 'Could not cancel that payment — please try again.'))
     } finally {
       setPayLoading(false)
     }
+  }
+  const handleCancelStuckPayment = () => cancelCheckout(stuckPayment?.reference)
+
+  // G3: "is my payment done?" — the same verify call the popup and /payment/success make.
+  async function handleCheckPendingPayment() {
+    if (!pendingPayment || payLoading) return
+    setPayLoading(true); setPayError('')
+    try {
+      await api.get(`/payments/verify?reference=${encodeURIComponent(pendingPayment.reference)}`)
+    } catch (err) {
+      setPayError(err.response?.status === 400
+        ? 'That payment has not been completed — click the button for your fix to continue it, or cancel it and choose again.'
+        : getErrorMessage(err, 'Could not check that payment just now — please try again.'))
+    }
+    await fetchScan()
+    restartPolling()
+    await loadPendingPayment()
+    setPayLoading(false)
   }
 
   async function handleRedeemCredit() {
     if (!user) return navigate(`/register`)
     if (payLoading) return
+    setNeedsVerify(false); setVerifyResent('')
     setPayLoading(true); setPayError('')
+    if (!(await ensureVerified())) { setPayLoading(false); return }
     try {
       await api.post(`/scan/${id}/redeem-credit`)
       // Unlike handlePay, there's no Paystack redirect/page-reload to
@@ -376,6 +472,7 @@ export default function ScanResult() {
       restartPolling()
       refreshUser()  // freeFixCredits just decremented server-side
     } catch (err) {
+      if (err.response?.data?.code === 'EMAIL_NOT_VERIFIED') setNeedsVerify(true)
       setPayError(getErrorMessage(err, 'Could not redeem credit.'))
     }
     setPayLoading(false)
@@ -919,9 +1016,34 @@ export default function ScanResult() {
             {/* Fix banner — only when not yet purchased */}
             {!scan.fixPurchased && (
               <>
+                {pendingPayment && !payLoading && !confirmingPayment && (
+                  <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <p>
+                      You have a payment in progress for the {PENDING_TIER_LABEL[pendingPayment.fixTier] || 'fix'}. If you already paid,
+                      check its status; otherwise continue it from the button below, or cancel it and choose again.
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                      <button type="button" onClick={handleCheckPendingPayment} className="underline underline-offset-2 hover:text-amber-950">
+                        Check payment status
+                      </button>
+                      <button type="button" onClick={() => cancelCheckout(pendingPayment.reference)} className="underline underline-offset-2 hover:text-amber-950">
+                        Cancel that payment
+                      </button>
+                    </div>
+                  </div>
+                )}
                 {payError && (
                   <div className="text-sm text-red-600">
                     <p>{payError}</p>
+                    {needsVerify && (
+                      <div className="mt-1">
+                        <button type="button" onClick={handleResendVerification}
+                          className="underline underline-offset-2 hover:text-red-800">
+                          Resend verification email
+                        </button>
+                        {verifyResent && <p className="mt-1 text-gray-600">{verifyResent}</p>}
+                      </div>
+                    )}
                     {stuckPayment && (
                       <button
                         type="button"

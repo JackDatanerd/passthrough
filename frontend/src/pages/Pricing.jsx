@@ -6,7 +6,7 @@ import PromoCountdown from '../components/ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import { ReferralCodeEntry, PricingFailedNotice } from '../components/ui/ReferralCodeEntry'
-import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
+import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES, FREE_SCANS_PER_DAY, ANON_SCANS_PER_HOUR } from '../lib/scoreThresholds'
 
 // AUDIT FIX (bug): currency now threaded through from the page's own
 // /api/pricing response (see usePricing.js's fmtPrice comment) — this page
@@ -55,6 +55,9 @@ export default function Pricing() {
   // lands (or if it never does).
   const badgeThreshold = pricing?.badgeThreshold ?? ATS_BADGE_THRESHOLD
   const maxFixRetries  = pricing?.maxFixRetries ?? MAX_FIX_RETRIES
+  // G2 (round 3): the free-tier limits were the one pair of numbers on this page still hardcoded.
+  const freeScansPerDay  = pricing?.freeScansPerDay ?? FREE_SCANS_PER_DAY
+  const anonScansPerHour = pricing?.anonScansPerHour ?? ANON_SCANS_PER_HOUR
 
   // AUDIT FIX (Section 3/4 re-audit, bug): pricing.referralApplied (from
   // pricing.controller.js) is true if the code discounts ANY ONE of the
@@ -126,7 +129,7 @@ export default function Pricing() {
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Free forever</div>
             <div className="text-4xl font-bold text-gray-900 mb-1">$0</div>
-            <p className="text-sm text-gray-500 mb-6">1 scan/hour with no account, or 3/day with a free account</p>
+            <p className="text-sm text-gray-500 mb-6">{anonScansPerHour} scan{anonScansPerHour === 1 ? '' : 's'}/hour with no account, or {freeScansPerDay}/day with a free account</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score','No account required to start'].map(f => (
                 <li key={f} className="flex items-start gap-2">

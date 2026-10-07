@@ -22,6 +22,8 @@ router.post('/:reference/cancel', auth, rl.paymentCancel, c.cancelPayment)
 // a live Paystack round trip. rl.paymentVerify is per-account (rateLimiter.js).
 router.get( '/verify',     auth, rl.paymentVerify, c.verifyPayment)
 router.get( '/history',    auth,             c.getPaymentHistory)
+// G3 (Payments & Pricing round 3): the caller's own open checkout for a scan, if any.
+router.get( '/pending',    auth,             c.getPendingPayment)
 // Manual recovery for a payment stuck between "marked SUCCESS" and "fix
 // actually enqueued" — see reconcilePayment's comment in
 // payments.controller.js and the matching hardening in

@@ -25,6 +25,44 @@ const fulfillmentService = require('../services/fulfillment.service')
 const reconcileService = require('../services/reconcile.service')
 const { logAdminAction } = require('../lib/adminAudit')
 const { UUID_RE } = require('../middleware/validateUuidParam')
+const { isRangeError } = require('../lib/db')
+
+// A PENDING checkout younger than this is resumed (same access code) instead of replaced.
+const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
+
+// AUDIT FIX (Payments & Pricing round 3, bug — B2): initializePayment and cancelPayment used to
+// retire a PENDING checkout (ABANDONED, then a brand-new one) without ever asking Paystack
+// whether the buyer had ALREADY paid it. A buyer whose popup-success verify failed and whose
+// webhook was lost still saw "buy" and, once the 30-minute reuse window passed, paid a SECOND
+// time — a double charge that ends as a DUPLICATE needing a manual refund. This asks Paystack
+// first and, if the money is there, settles + delivers it through the same path the sweep and the
+// admin recheck use. Resolves null when Paystack says it was not paid; THROWS when the lookup
+// itself fails (the caller decides whether that blocks).
+async function settleIfAlreadyPaid(env, supabase, payment) {
+  const r = await reconcileService.recheckPayment(env, supabase, payment, { source: 'checkout-guard' })
+  if (r.outcome === 'NOT_PAID') {
+    // A payment Paystack still reports as in flight (mobile money awaiting approval, an OTP step,
+    // a queued bank transfer) is not "unpaid": retiring it now and starting another lets BOTH
+    // complete. Callers decide what that means for them (a fresh checkout is simply resumed).
+    return paystackService.isPendingStatus(r.paystackStatus) ? { outcome: 'IN_FLIGHT' } : null
+  }
+  await fulfillmentService.notifySettlementProblem(env, r, payment, 'checkout-guard')
+  return r
+}
+
+function inFlightResponse(c2, what) {
+  return c2.json({ success: false, inFlight: true,
+    message: `An earlier payment attempt is still being processed by Paystack, so ${what}. Give it a few minutes — if it completes, your fix is delivered automatically; if not, it expires and you can try again.` }, 409)
+}
+
+function alreadyPaidResponse(c2, result, payment) {
+  return c2.json({ success: false, alreadyPaid: true,
+    message: result.outcome === 'MISMATCH'
+      ? `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email support@passthrough.dev with reference ${payment.paystack_ref} if you hear nothing.`
+      : 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.',
+    data: { paidReference: payment.paystack_ref, scanId: payment.scan_id }
+  }, 409)
+}
 
 // AUDIT FIX (Payments & Pricing pass 1, bug — B4): the body used to be read
 // bare — `await c2.req.json()` then a destructure. A body that is the JSON
@@ -48,6 +86,13 @@ async function initializePayment(c2) {
   if (!parsed.success)
     return c2.json({ success: false, message: 'scanId and valid fixTier required.' }, 400)
   const { scanId, fixTier } = parsed.data
+  // FEATURE GAP CLOSED (Payments & Pricing round 3 — G1): downloads (scan.controller.js's
+  // downloadFile) require a verified email, but nothing stopped an unverified account paying
+  // first — a buyer could pay and then be locked out of their own files, with the receipt going to
+  // an unconfirmed (possibly mistyped) address. Refused BEFORE any Paystack call.
+  if (!user.emailVerified)
+    return c2.json({ success: false, code: 'EMAIL_NOT_VERIFIED',
+      message: 'Please verify your email address before buying — your downloads and receipt are sent to it.' }, 403)
   const referralCode = typeof parsed.data.referralCode === 'string' ? parsed.data.referralCode.slice(0, 100) : undefined
 
   const supabase = getSupabase(c2.env)
@@ -82,13 +127,32 @@ async function initializePayment(c2) {
   //   - different tier OR different referral code, fresh -> block with a clear message
   //   - stale (access code has long since expired anyway) -> fall through,
   //     the old row is harmless dead weight at that point
-  const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
   const { data: existingPending, error: pendingErr } = await supabase
     .from('payments')
-    .select('paystack_ref, paystack_access_code, fix_tier, referral_code, referral_reservation_id, created_at')
+    .select('*')
     .eq('scan_id', scanId).eq('status', 'PENDING')
     .order('created_at', { ascending: false }).limit(1).maybeSingle()
   if (pendingErr) throw pendingErr
+
+  // B2 — see settleIfAlreadyPaid. A stale row is about to be abandoned, so a failed lookup blocks
+  // (retiring a checkout we cannot rule out as paid risks a double charge); a fresh row is only
+  // being resumed, which Paystack itself refuses to charge twice, so a failed lookup falls through.
+  if (existingPending) {
+    const stale = (Date.now() - Date.parse(existingPending.created_at)) >= PENDING_REUSE_WINDOW_MS
+    let paid = null
+    try { paid = await settleIfAlreadyPaid(c2.env, supabase, existingPending) }
+    catch (err) {
+      console.error(`initializePayment: Paystack lookup of earlier checkout ${existingPending.paystack_ref} failed:`, err.message)
+      if (stale)
+        return c2.json({ success: false,
+          message: 'We could not confirm the status of an earlier payment attempt just now. Please try again in a moment.' }, 502)
+    }
+    if (paid && paid.outcome === 'IN_FLIGHT') {
+      if (stale) return inFlightResponse(c2, 'a new checkout cannot be started yet')
+      paid = null   // fresh: resumed below, same access code
+    }
+    if (paid) return alreadyPaidResponse(c2, paid, existingPending)
+  }
 
   // Single source of truth for the amount — same resolver the public
   // /api/pricing quote goes through (pricing.controller.js), so whatever
@@ -362,6 +426,25 @@ async function cancelPayment(c2) {
   const user = c2.get('user')
   const reference = c2.req.param('reference')
   const supabase = getSupabase(c2.env)
+
+  // AUDIT FIX (Payments & Pricing round 3, bug — B2): ask Paystack first. Cancelling a checkout the
+  // buyer had in fact paid (verify failed, webhook lost) lets them start — and pay — a second one.
+  const { data: pendingRow, error: pendErr } = await supabase
+    .from('payments').select('*')
+    .eq('paystack_ref', reference).eq('user_id', user.id).eq('status', 'PENDING').maybeSingle()
+  if (pendErr) throw pendErr
+  if (!pendingRow)
+    return c2.json({ success: false,
+      message: 'Nothing to cancel — this payment is not pending, or does not belong to you.' }, 404)
+  let paid = null
+  try { paid = await settleIfAlreadyPaid(c2.env, supabase, pendingRow) }
+  catch (err) {
+    console.error(`cancelPayment: Paystack lookup failed (ref ${reference}):`, err.message)
+    return c2.json({ success: false,
+      message: 'We could not confirm with Paystack whether that payment went through, so it was not cancelled. Please try again in a moment.' }, 502)
+  }
+  if (paid && paid.outcome === 'IN_FLIGHT') return inFlightResponse(c2, 'it cannot be cancelled yet')
+  if (paid) return alreadyPaidResponse(c2, paid, pendingRow)
 
   const { data: updated, error } = await supabase
     .from('payments')
@@ -939,6 +1022,29 @@ function intParam(v, def, min, max) {
   return Number.isFinite(n) ? Math.min(Math.max(n, min), max) : def
 }
 
+// GET /api/payments/pending?scanId=…
+// FEATURE GAP CLOSED (Payments & Pricing round 3 — G3): a buyer whose popup closed, whose tab died
+// or whose verify call failed came back to an unchanged "buy" screen with nothing saying a checkout
+// was already open for this scan. Returns the caller's own fresh PENDING checkout for it (same
+// freshness window initializePayment resumes within), or null.
+async function getPendingPayment(c2) {
+  const user = c2.get('user')
+  const scanId = c2.req.query('scanId')
+  if (!scanId || !UUID_RE.test(scanId))
+    return c2.json({ success: false, message: 'scanId required.' }, 400)
+  const supabase = getSupabase(c2.env)
+  const { data: row, error } = await supabase.from('payments')
+    .select('paystack_ref, fix_tier, amount_cents, currency, created_at')
+    .eq('user_id', user.id).eq('scan_id', scanId).eq('status', 'PENDING')
+    .order('created_at', { ascending: false }).limit(1).maybeSingle()
+  if (error) throw error
+  if (!row || (Date.now() - Date.parse(row.created_at)) >= PENDING_REUSE_WINDOW_MS)
+    return c2.json({ success: true, data: { pending: null } })
+  return c2.json({ success: true, data: { pending: {
+    reference: row.paystack_ref, fixTier: row.fix_tier, amountCents: row.amount_cents,
+    currency: row.currency, createdAt: row.created_at } } })
+}
+
 // GET /api/payments/history?page=1&pageSize=20&includeAbandoned=1
 //
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): this returned EVERY
@@ -957,15 +1063,25 @@ async function getPaymentHistory(c2) {
   const includeAbandoned = c2.req.query('includeAbandoned') === '1'
   const from = (page - 1) * pageSize
 
-  let q = supabase
-    .from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier', { count: 'exact' })
-    .eq('user_id', user.id)
-  if (!includeAbandoned) q = q.neq('status', 'ABANDONED')
-  const { data: rows, error, count } = await q
+  const base = (cols, opts) => {
+    let b = supabase.from('payments').select(cols, opts).eq('user_id', user.id)
+    if (!includeAbandoned) b = b.neq('status', 'ABANDONED')
+    return b
+  }
+  let { data: rows, error, count } = await base(
+    'id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier', { count: 'exact' })
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
     .range(from, from + pageSize - 1)
+  // AUDIT FIX (Payments & Pricing round 3, bug — B1): a page past the end (a toggle or a cancel
+  // shrank the list, a stale ?page=) makes PostgREST answer 416 / PGRST103 when a count is asked
+  // for, which `throw error` turned into a 500 — and PaymentHistory.jsx's "step back a page" logic
+  // only runs on a 200. Answer an empty page that still reports the real total (lib/db.js).
+  if (isRangeError(error)) {
+    const head = await base('id', { count: 'exact', head: true })
+    if (head.error) throw head.error
+    rows = []; count = head.count; error = null
+  }
   if (error) throw error
 
   // AUDIT FIX (Section 9, feature gap): fix_tier was never selected or
@@ -982,4 +1098,4 @@ async function getPaymentHistory(c2) {
   return c2.json({ success: true, data: { payments, total: count ?? payments.length, page, pageSize } })
 }
 
-module.exports = { initializePayment, cancelPayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment, refundPayment, resendPaymentReceipt }
+module.exports = { initializePayment, cancelPayment, getPendingPayment, verifyPayment, getPaymentHistory, reconcilePayment, recheckPayment, resolvePayment, refundPayment, resendPaymentReceipt }

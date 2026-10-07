@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useContext, useEffect, useState } from 'react'
 import api from '../lib/api'
+import { AuthContext } from '../context/AuthContext'
 import { formatMoney } from '../lib/utils'
 
 // Fetches /api/pricing once per referral-code key and shares it across every
@@ -23,9 +24,15 @@ export const STANDARD_PRICES = { FIX: 4900, BADGE: 3900, FIX_PLAIN: 3900 }
 // deadline passes, and each mounted hook schedules a refetch for that moment.
 const CACHE_TTL_MS = 5 * 60 * 1000
 
-// Keyed by referral code ('' = no code) — a code changes what /api/pricing
-// returns, so the no-code cache and a per-code cache can't share one slot.
-const cacheByKey = {}     // key -> { data, fetchedAt, clockOffsetMs }
+// Keyed by VIEWER + referral code ('' = no code). A code changes what /api/pricing returns, so the
+// no-code cache and a per-code cache can't share one slot — and so does WHO is asking: the server
+// withholds a referral discount from the code's own owner (the self-referral guard, B11), so an
+// anonymous quote of the discounted price is wrong for the same person once they log in.
+// AUDIT FIX (Payments & Pricing round 3, bug — B3): the cache used to be keyed by code alone, so a
+// partner who opened their own link logged out, then logged in without a reload, kept seeing the
+// discounted price on the checkout button for up to the 5-minute TTL while checkout charged the
+// standard one. Logging in or out (or switching accounts) now lands on a different slot.
+const cacheByKey = {}     // `${viewer}|${code}` -> { data, fetchedAt, clockOffsetMs }
 const inflightByKey = {}
 
 function promoLapsed(entry) {
@@ -39,10 +46,10 @@ function isFresh(entry) {
   return !!entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS && !promoLapsed(entry)
 }
 
-function fetchPricing(key, { force = false } = {}) {
+function fetchPricing(key, code, { force = false } = {}) {
   if (!force && isFresh(cacheByKey[key])) return Promise.resolve(cacheByKey[key])
   if (!inflightByKey[key]) {
-    const qs = key ? `?ref=${encodeURIComponent(key)}` : ''
+    const qs = code ? `?ref=${encodeURIComponent(code)}` : ''
     const startedAt = Date.now()
     inflightByKey[key] = api.get(`/pricing${qs}`).then(res => {
       const data = res.data.data
@@ -66,15 +73,18 @@ function fetchPricing(key, { force = false } = {}) {
 //
 // Also returns `refresh()` and `clockOffsetMs` (see PromoCountdown).
 export function usePricing(referralCode = '') {
-  const key = referralCode ? referralCode.trim().toUpperCase() : ''
+  const code = referralCode ? referralCode.trim().toUpperCase() : ''
+  // Null-safe on purpose (not useAuth(), which throws): this hook must keep working in a bare render.
+  const viewer = useContext(AuthContext)?.user?.id ?? 'anon'
+  const key = `${viewer}|${code}`
   const [entry, setEntry] = useState(cacheByKey[key] || null)
   const [failed, setFailed] = useState(false)
 
   const refresh = useCallback(() => {
-    return fetchPricing(key, { force: true }).then(e => {
+    return fetchPricing(key, code, { force: true }).then(e => {
       if (e) { setEntry(e); setFailed(false) } else setFailed(true)
     })
-  }, [key])
+  }, [key, code])
 
   useEffect(() => {
     let cancelled = false
@@ -87,12 +97,12 @@ export function usePricing(referralCode = '') {
     // some other code's discounted price) if the fetch never comes back.
     if (cacheByKey[key]) setEntry(cacheByKey[key])
     else setEntry(null)
-    fetchPricing(key).then(e => {
+    fetchPricing(key, code).then(e => {
       if (cancelled) return
       if (e) { setEntry(e); setFailed(false) } else setFailed(true)
     })
     return () => { cancelled = true }
-  }, [key])
+  }, [key, code])
 
   // Refetch at the instant the promo deadline passes.
   useEffect(() => {

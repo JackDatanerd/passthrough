@@ -48,7 +48,7 @@ function setup(opts = {}) {
 // payments-table queries (existing-PENDING lookup + insert, not the
 // select-then-update-by-reference pattern verifyPayment/reconcilePayment use.
 function setupInit(opts = {}) {
-  const state = { paymentInserts: [], paymentUpdates: [], alerts: [], rpcCalls: [] }
+  const state = { paymentInserts: [], paymentUpdates: [], alerts: [], rpcCalls: [], verifyCalls: [] }
   const scan = 'scan' in opts
     ? opts.scan
     : { id: 's1', user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
@@ -89,14 +89,21 @@ function setupInit(opts = {}) {
         if (opts.paystackThrows) throw opts.paystackThrows
         return { access_code: 'AC_1', authorization_url: 'https://paystack.test/pay/AC_1' }
       },
-      verifyTransaction: async () => ({}),
+      // Round 3 (B2): initializePayment now asks Paystack about an earlier PENDING checkout before
+      // retiring or resuming it. Default = Paystack says "not paid" ({} -> NOT_PAID).
+      isPendingStatus: st => ['ongoing', 'pending', 'processing', 'queued'].includes(st),
+      verifyTransaction: async () => {
+        state.verifyCalls.push(1)
+        if (opts.verifyThrows) throw opts.verifyThrows
+        return opts.verifyResult ?? {}
+      },
     },
   })
 
   const env = {}
   const c = (over = {}) => ({
     env,
-    get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
+    get: k => (k === 'user' ? (opts.user ?? { id: 'u1', email: 'a@b.co', emailVerified: true }) : undefined),
     req: { json: async () => (over.body ?? { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX' }) },
     json: (body, status = 200) => ({ body, status }),
   })
@@ -375,7 +382,7 @@ describe('initializePayment — concurrent-insert race (payments_scan_id_pending
 
     const c = (over = {}) => ({
       env: {},
-      get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
+      get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co', emailVerified: true } : undefined),
       req: { json: async () => (over.body ?? { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX' }) },
       json: (body, status = 200) => ({ body, status }),
     })
@@ -819,6 +826,9 @@ function setupCancel(opts = {}) {
   const state = { updates: [], rpcs: [] }
   const db = createFakeSupabase(q => {
     if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: null, error: null } }
+    // Round 3 (B2): cancelPayment reads the caller's own PENDING row first, to ask Paystack.
+    if (q.table === 'payments' && q.op === 'select')
+      return { data: 'pending' in opts ? opts.pending : { id: 'pay1', paystack_ref: 'ref1', user_id: 'u1', scan_id: 's1', status: 'PENDING', amount_cents: 4900, currency: 'USD', fix_tier: 'FIX' }, error: opts.selectError ?? null }
     if (q.table === 'payments' && q.op === 'update') {
       state.updates.push(q)
       return { data: 'updated' in opts ? opts.updated : [{ id: 'pay1' }], error: opts.error ?? null }
@@ -826,6 +836,14 @@ function setupCancel(opts = {}) {
   })
   const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
     'config/supabase.js': { getSupabase: () => db },
+    'services/paystack.service.js': {
+      isPendingStatus: st => ['ongoing', 'pending', 'processing', 'queued'].includes(st),
+      verifyTransaction: async () => {
+        state.verifyCalls = (state.verifyCalls || 0) + 1
+        if (opts.verifyThrows) throw opts.verifyThrows
+        return opts.verifyResult ?? {}
+      },
+    },
   })
   const c = (over = {}) => ({
     env: {},
@@ -1391,5 +1409,188 @@ describe('admin payment actions — audit trail', () => {
     const res = await t.mod.resolvePayment(t.c({ body: { action: 'reverse' } }))
     expect(res.body.success).toBe(true)
     expect(t.world.t.payments[0].status).toBe('REFUNDED')
+  })
+})
+
+// ── Payments & Pricing round 3 ────────────────────────────────────────────────────────────
+// B1 history past-the-end · B2 ask Paystack before retiring a PENDING checkout · G1 verified-email
+// gate · G3 pending-checkout lookup.
+describe('round 3 — payments & pricing', () => {
+  const SCAN = '11111111-1111-1111-1111-111111111111'
+  const minutesAgo = m => new Date(Date.now() - m * 60 * 1000).toISOString()
+  const pendingRow = (over = {}) => ({ id: 'p1', paystack_ref: 'old-ref', paystack_access_code: 'old-ac', fix_tier: 'FIX',
+    referral_code: null, scan_id: SCAN, user_id: 'u1', amount_cents: 4900, currency: 'USD', status: 'PENDING', created_at: minutesAgo(45), ...over })
+
+  // Loads the controller with the reconcile/fulfillment seams stubbed so these tests pin the
+  // CONTROLLER's decisions (what it asks, what it refuses), not settlement internals.
+  function load(resolver, { recheck = async () => ({ outcome: 'NOT_PAID' }), user } = {}) {
+    const state = { rechecks: [], problems: [], inits: 0, inserts: 0, updates: [] }
+    const db = createFakeSupabase(q => {
+      if (q.op === 'insert' && q.table === 'payments') state.inserts++
+      if (q.op === 'update' && q.table === 'payments') state.updates.push(q.patch)
+      return resolver(q, state)
+    })
+    const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/reconcile.service.js': { recheckPayment: async (...a) => { state.rechecks.push(a[2].paystack_ref); return recheck(...a) } },
+      'services/fulfillment.service.js': { notifySettlementProblem: async (e, r, p, src) => { state.problems.push({ outcome: r.outcome, src }) } },
+      'services/paystack.service.js': { initializeTransaction: async () => { state.inits++; return { access_code: 'AC_NEW', authorization_url: 'u' } }, verifyTransaction: async () => ({}), isPendingStatus: st => ['ongoing', 'pending', 'processing', 'queued'].includes(st) },
+    })
+    const c = (extra = {}) => ({
+      env: {}, get: k => (k === 'user' ? (user ?? { id: 'u1', email: 'a@b.co', emailVerified: true }) : undefined),
+      req: { json: async () => ({ scanId: SCAN, fixTier: 'FIX' }), param: () => 'old-ref', query: k => (extra.query || {})[k] },
+      json: (body, status = 200) => ({ body, status }),
+    })
+    return { mod, restore, state, db, c }
+  }
+  const scanRow = { id: SCAN, user_id: 'u1', fix_purchased: false, status: 'COMPLETE_PASS', ats_score: 90 }
+  const initResolver = pending => (q) => {
+    if (q.table === 'scans' && q.op === 'select') return { data: scanRow, error: null }
+    if (q.table === 'payments' && q.op === 'select') return { data: pending, error: null }
+    if (q.table === 'payments' && q.op === 'update') return { data: [{ id: 'p1' }], error: null }
+    return undefined
+  }
+
+  it('B2: a stale PENDING row Paystack reports as PAID is settled — never abandoned, no second checkout', async () => {
+    t = load(initResolver(pendingRow()), { recheck: async () => ({ outcome: 'FULFILLED' }) })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.alreadyPaid).toBe(true)
+    expect(res.body.data).toEqual({ paidReference: 'old-ref', scanId: SCAN })
+    expect(t.state.rechecks).toEqual(['old-ref'])
+    expect(t.state.updates).toHaveLength(0)   // not flipped to ABANDONED
+    expect(t.state.inits).toBe(0)             // no new Paystack transaction
+    expect(t.state.inserts).toBe(0)
+    expect(t.state.problems).toEqual([{ outcome: 'FULFILLED', src: 'checkout-guard' }])
+  })
+
+  it('B2: a paid-but-amount-mismatched earlier checkout says it is being checked, and still blocks a second payment', async () => {
+    t = load(initResolver(pendingRow()), { recheck: async () => ({ outcome: 'MISMATCH' }) })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.message).toMatch(/checked by hand/)
+    expect(res.body.message).toMatch(/old-ref/)
+    expect(t.state.inits).toBe(0)
+  })
+
+  it('B2: Paystack says NOT paid → the stale row is abandoned and a fresh checkout proceeds, as before', async () => {
+    t = load(initResolver(pendingRow()))
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(t.state.rechecks).toEqual(['old-ref'])
+    expect(t.state.updates).toEqual([{ status: 'ABANDONED' }])
+    expect(t.state.inits).toBe(1)
+  })
+
+  it('B2: a failed Paystack lookup BLOCKS retiring a stale row (502) — it could have been paid', async () => {
+    t = load(initResolver(pendingRow()), { recheck: async () => { throw new Error('paystack down') } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(502)
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.inits).toBe(0)
+  })
+
+  it('B2: a failed lookup on a FRESH row still resumes it (Paystack will not charge one access code twice)', async () => {
+    t = load(initResolver(pendingRow({ created_at: minutesAgo(5) })), { recheck: async () => { throw new Error('paystack down') } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.reference).toBe('old-ref')
+    expect(t.state.inits).toBe(0)
+  })
+
+  it('B2: a stale row Paystack still reports as IN FLIGHT (e.g. mobile money awaiting approval) blocks a new checkout — never abandoned', async () => {
+    t = load(initResolver(pendingRow()), { recheck: async () => ({ outcome: 'NOT_PAID', paystackStatus: 'processing' }) })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.inFlight).toBe(true)
+    expect(t.state.updates).toHaveLength(0)
+    expect(t.state.inits).toBe(0)
+    expect(t.state.problems).toHaveLength(0)   // not a settlement problem — nothing to page the owner about
+  })
+
+  it('B2: a FRESH row that is in flight is simply resumed', async () => {
+    t = load(initResolver(pendingRow({ created_at: minutesAgo(5) })), { recheck: async () => ({ outcome: 'NOT_PAID', paystackStatus: 'ongoing' }) })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data.reference).toBe('old-ref')
+    expect(t.state.inits).toBe(0)
+  })
+
+  it('B2: cancelPayment refuses while Paystack still reports the checkout in flight', async () => {
+    t = load((q) => (q.table === 'payments' && q.op === 'select' ? { data: pendingRow(), error: null } : undefined),
+      { recheck: async () => ({ outcome: 'NOT_PAID', paystackStatus: 'queued' }) })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.inFlight).toBe(true)
+    expect(t.state.updates).toHaveLength(0)
+  })
+
+  it('B2: cancelPayment settles instead of cancelling when Paystack says the checkout was paid', async () => {
+    t = load((q) => (q.table === 'payments' && q.op === 'select' ? { data: pendingRow(), error: null } : undefined),
+      { recheck: async () => ({ outcome: 'FULFILLED' }) })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.alreadyPaid).toBe(true)
+    expect(t.state.updates).toHaveLength(0)
+  })
+
+  it('B2: cancelPayment does not cancel when it cannot reach Paystack (502, row untouched)', async () => {
+    t = load((q) => (q.table === 'payments' && q.op === 'select' ? { data: pendingRow(), error: null } : undefined),
+      { recheck: async () => { throw new Error('timeout') } })
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(502)
+    expect(t.state.updates).toHaveLength(0)
+  })
+
+  it('B2: cancelPayment 404s without calling Paystack when the caller has no such PENDING row', async () => {
+    t = load((q) => (q.table === 'payments' && q.op === 'select' ? { data: null, error: null } : undefined))
+    const res = await t.mod.cancelPayment(t.c())
+    expect(res.status).toBe(404)
+    expect(t.state.rechecks).toHaveLength(0)
+  })
+
+  it('G1: an unverified account is refused at checkout before ANY lookup or Paystack call', async () => {
+    t = load(initResolver(null), { user: { id: 'u1', email: 'a@b.co', emailVerified: false } })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED')
+    expect(t.db.calls).toHaveLength(0)
+    expect(t.state.inits).toBe(0)
+  })
+
+  it('B1: a history page past the end (PostgREST 416 / PGRST103) answers an empty page with the real total, not a 500', async () => {
+    const rangeErr = Object.assign(new Error('Requested range not satisfiable'), { code: 'PGRST103' })
+    t = load((q) => {
+      if (q.table !== 'payments') return undefined
+      return q.selectOpts && q.selectOpts.head ? { data: null, error: null, count: 20 } : { data: null, error: rangeErr, count: null }
+    })
+    const res = await t.mod.getPaymentHistory(t.c({ query: { page: '2' } }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.payments).toEqual([])
+    expect(res.body.data.total).toBe(20)
+    expect(res.body.data.page).toBe(2)
+    const head = t.db.calls.find(c => c.selectOpts && c.selectOpts.head)
+    expect(head.filters).toEqual(expect.arrayContaining([['eq', 'user_id', 'u1'], ['neq', 'status', 'ABANDONED']]))
+  })
+
+  it('B1: a genuine history error is still thrown', async () => {
+    t = load((q) => (q.table === 'payments' ? { data: null, error: new Error('db down'), count: null } : undefined))
+    await expect(t.mod.getPaymentHistory(t.c())).rejects.toThrow('db down')
+  })
+
+  it('G3: getPendingPayment returns the caller\'s fresh PENDING checkout for the scan, scoped to user + scan + PENDING', async () => {
+    t = load((q) => (q.table === 'payments' ? { data: pendingRow({ created_at: minutesAgo(5) }), error: null } : undefined))
+    const res = await t.mod.getPendingPayment(t.c({ query: { scanId: SCAN } }))
+    expect(res.body.data.pending).toMatchObject({ reference: 'old-ref', fixTier: 'FIX', amountCents: 4900, currency: 'USD' })
+    expect(t.db.calls[0].filters).toEqual(expect.arrayContaining([['eq', 'user_id', 'u1'], ['eq', 'scan_id', SCAN], ['eq', 'status', 'PENDING']]))
+  })
+
+  it('G3: a stale or missing PENDING row is reported as null; a bad scanId is a 400', async () => {
+    t = load((q) => (q.table === 'payments' ? { data: pendingRow({ created_at: minutesAgo(45) }), error: null } : undefined))
+    expect((await t.mod.getPendingPayment(t.c({ query: { scanId: SCAN } }))).body.data.pending).toBeNull()
+    t.restore()
+    t = load(() => ({ data: null, error: null }))
+    expect((await t.mod.getPendingPayment(t.c({ query: { scanId: SCAN } }))).body.data.pending).toBeNull()
+    expect((await t.mod.getPendingPayment(t.c({ query: { scanId: 'nope' } }))).status).toBe(400)
   })
 })

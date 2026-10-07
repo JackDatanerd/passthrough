@@ -129,6 +129,12 @@ describe('getPricing — Payments & Pricing pass 1 additions', () => {
     expect(res.body.data.badgeThreshold).toBe(80)
     expect(res.body.data.maxFixRetries).toBe(2)
   })
+  it('G2 (round 3): returns the free-tier scan limits so the Pricing page copy can never drift from them', async () => {
+    t = setup()
+    const res = await t.mod.getPricing(t.c())
+    expect(res.body.data.freeScansPerDay).toBe(3)
+    expect(res.body.data.anonScansPerHour).toBe(1)
+  })
 })
 
 // Payments & Pricing round 2: top-level discountApplied/selfReferral (B2), ref cap.

@@ -979,6 +979,11 @@ async function initiateFix(ctx) {
 async function redeemCredit(ctx) {
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
+  // G1 (Payments & Pricing round 3): same gate as initializePayment — a redeemed credit is a purchase,
+  // and downloadFile refuses unverified accounts, so spending one before verifying only strands it.
+  if (!user.emailVerified)
+    return ctx.json({ success: false, code: 'EMAIL_NOT_VERIFIED',
+      message: 'Please verify your email address before redeeming — your downloads are sent to it.' }, 403)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
