@@ -5,6 +5,7 @@ import { useAuth } from '../hooks/useAuth'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import { useCooldown } from '../hooks/useCooldown'
 
 // Email links point to FRONTEND_URL/verify-email?token=xxx — NOT the API URL
 // This page reads the token from the URL and calls the API
@@ -15,6 +16,7 @@ export default function VerifyEmail() {
   const [status, setStatus] = useState('loading')
   const [detail, setDetail] = useState('')
   const [resend, setResend] = useState({ state: 'idle', message: '' })   // idle | sending | sent | failed
+  const { remaining, start: startCooldown } = useCooldown(30)
   const ran = useRef(false)
   const token = params.get('token')
 
@@ -59,6 +61,7 @@ export default function VerifyEmail() {
     try {
       await api.post('/auth/resend-verification')
       setResend({ state: 'sent', message: 'New link sent — check your inbox.' })
+      startCooldown()
     } catch (err) {
       setResend({ state: 'failed', message: getErrorMessage(err, "Couldn't send a new link. Please try again.") })
     }
@@ -109,11 +112,14 @@ export default function VerifyEmail() {
               </p>
               {user ? (
                 <>
-                  {resend.state !== 'sent' && (
-                    <button type="button" onClick={sendNewLink} disabled={resend.state === 'sending'} className={btn}>
-                      {resend.state === 'sending' ? 'Sending…' : 'Send me a new link'}
-                    </button>
-                  )}
+                  {/* After a send the button stays, counting down, instead of vanishing: a link that
+                      never arrived could otherwise only be re-requested by reloading the page. */}
+                  <button type="button" onClick={sendNewLink}
+                    disabled={resend.state === 'sending' || remaining > 0} className={btn}>
+                    {resend.state === 'sending' ? 'Sending…'
+                      : remaining > 0 ? `Send again in ${remaining}s`
+                      : resend.state === 'sent' ? 'Send another link' : 'Send me a new link'}
+                  </button>
                   {resend.message && (
                     <p role={resend.state === 'failed' ? 'alert' : 'status'}
                       className={`text-sm mt-3 ${resend.state === 'failed' ? 'text-red-600' : 'text-green-700'}`}>

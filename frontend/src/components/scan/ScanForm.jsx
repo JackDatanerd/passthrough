@@ -12,7 +12,7 @@ import { addAnonScanToken } from '../../lib/anonScans'
 import Alert from '../ui/Alert'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import { loadBrainDumpDraft, saveBrainDumpDraft } from '../../lib/brainDumpDraft'
-import { manualHasContent, EMPTY_MANUAL } from '../../lib/resumeForm'
+import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
 // constants file between frontend/backend in this project (same pattern as

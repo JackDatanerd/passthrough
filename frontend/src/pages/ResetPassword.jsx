@@ -4,7 +4,8 @@ import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
-import Input from '../components/ui/Input'
+import PasswordInput from '../components/ui/PasswordInput'
+import { getToken } from '../lib/storage'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -93,7 +94,7 @@ export default function ResetPassword() {
       // Asking the server now settles it: a revoked session is dropped here (this page isn't
       // protected, so no redirect), while a session of a DIFFERENT account is left alone.
       // Best-effort — refreshUser never throws.
-      if (localStorage.getItem('passthrough_token')) refreshUser()
+      if (getToken()) refreshUser()
       redirectTimer.current = setTimeout(() => navigate('/login'), 2000)
     } catch (_) { /* error already captured by useApi */ }
   }
@@ -110,10 +111,10 @@ export default function ResetPassword() {
             </p>
           ) : (
             <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
-              <Input label="New password" type="password" value={newPassword}
+              <PasswordInput label="New password" value={newPassword}
                 onChange={e => setNewPassword(e.target.value)}
                 autoComplete="new-password" placeholder="Min. 8 characters" />
-              <Input label="Confirm password" type="password" value={confirm}
+              <PasswordInput label="Confirm password" value={confirm}
                 onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
               {error && <p className="text-sm text-red-600">{error}</p>}
               <Button type="submit" loading={loading} className="w-full">

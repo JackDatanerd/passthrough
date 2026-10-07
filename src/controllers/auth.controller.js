@@ -29,6 +29,7 @@ const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
+const { verifyTurnstile } = require('../lib/turnstile')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
 // FEATURE (Auth section round 2): fires the one-time lockout email exactly
@@ -191,10 +192,36 @@ function lockoutBlocks(c, lockout, lastKnownIp) {
   return true
 }
 
+// BUG FIX (Auth round 3, B2): forgotPassword / resendVerification / updateEmail
+// reserve the per-recipient email slot BEFORE rotating the stored token. If the
+// token write then failed (a database blip), nothing was mailed yet the slot
+// stayed spent — three blips and the owner was locked out of the flow for an
+// hour. Hands the slot back; the email service bounds refunds per window and
+// no-ops for templates that don't allow them. Never throws.
+async function refundSlot(c, to, template) {
+  try { await emailService.refundReservedSlot(c.env, to, template) }
+  catch (e) { console.error(`refund ${template} slot:`, e && e.message) }
+}
+
 function lockedResponse(c, lockout) {
   return c.json({ success: false,
     message: `Too many failed attempts. Try again in ${Math.ceil(lockout.retryAfterSeconds / 60)} minute(s).`
   }, 429)
+}
+
+// FEATURE GAP CLOSED (Auth round 3, G1): register and forgot-password make us
+// email an address a stranger typed (welcome + verification / a reset link), and
+// until now were bounded only by per-IP and per-recipient throttles — rotating
+// IPs gets unlimited junk accounts and burns the sending domain's reputation.
+// Same Cloudflare Turnstile check the employer-lead form uses: opt-in by
+// configuration (no TURNSTILE_SECRET_KEY = skipped), and fail-open when
+// Cloudflare itself is unreachable (see lib/turnstile.js). Login is deliberately
+// NOT challenged: it emails no one, and the per-account lockout already covers it.
+// Returns a ready 400 response when the challenge fails, else null.
+async function challengeFailure(c, token) {
+  if (await verifyTurnstile(c.env, token, clientIp(c))) return null
+  return c.json({ success: false, code: 'CHALLENGE_FAILED',
+    message: 'Please complete the security check and try again.' }, 400)
 }
 
 // FEATURE GAP CLOSED (Auth section, second independent pass): terms_accepted_at
@@ -336,7 +363,7 @@ function passwordEmailProblem(password, email) {
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
-  const { name, email, password } = z.object({
+  const { name, email, password, turnstileToken } = z.object({
     // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for — or
     // recorded — acceptance of the Terms/Privacy Policy. Required now, and
     // stored with the version accepted so a later terms change can tell who
@@ -349,6 +376,7 @@ async function register(c) {
     // "Hi ," in every email and an empty heading in the app.
     name:     nameSchema,
     email:    emailSchema,
+    turnstileToken: z.string().max(2048).nullish(),
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
     // that is quietly ignored with no error, giving false confidence in
@@ -357,6 +385,9 @@ async function register(c) {
     // no-op — byte-aware, not just character-count-aware.
     password: passwordSchema()
   }).parse(body)
+
+  const challenge = await challengeFailure(c, turnstileToken)
+  if (challenge) return challenge
 
   const emailProblem = passwordEmailProblem(password, email)
   if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
@@ -441,6 +472,12 @@ async function login(c) {
     if (error) throw error
     return userRowToCamel(row)
   }
+
+  // BUG FIX (Auth round 3, B7): the dummy hash is built lazily, so the first
+  // unknown-email sign-in on a cold isolate paid hash + compare (~2x bcrypt)
+  // while a known email paid one compare — a one-off timing tell per isolate.
+  // Building it up front, on EVERY path, makes both branches pay the same.
+  await getDummyPasswordHash()
 
   const lockout = await checkAccountLockout(c.env, email)
   let user
@@ -538,7 +575,13 @@ async function getMe(c) {
 // POST /api/auth/forgot-password
 async function forgotPassword(c) {
   const body = await c.req.json()
-  const { email } = z.object({ email: emailSchema }).parse(body)
+  const { email, turnstileToken } = z.object({
+    email: emailSchema,
+    turnstileToken: z.string().max(2048).nullish()
+  }).parse(body)
+  // The challenge says nothing about any account, so failing it can't be used to probe for one.
+  const challenge = await challengeFailure(c, turnstileToken)
+  if (challenge) return challenge
   const supabase = getSupabase(c.env)
 
   // BUG FIX: this was the one query in the file that didn't capture/check
@@ -582,7 +625,12 @@ async function forgotPassword(c) {
 
   if (user && allowed) {
     // Checked: mailing a reset link whose token was never stored gives the user a dead link.
-    must(await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id), 'store reset token')
+    try {
+      must(await supabase.from('users').update({ reset_token: stored, reset_token_expiry: exp }).eq('id', user.id), 'store reset token')
+    } catch (err) {
+      await refundSlot(c, email, 'password_reset')
+      throw err
+    }
     // waitUntil, not fire-and-forget — see register()'s comment for why.
     c.executionCtx.waitUntil(
       emailService.sendPasswordReset(c.env, supabase, email, user.name, raw, { slotReserved: true })
@@ -782,7 +830,12 @@ async function resendVerification(c) {
       message: 'We\'ve already sent several verification emails to this address in the last hour. Please check your inbox (and spam folder) for the latest one, or try again later.' }, 429)
   }
 
-  must(await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id), 'store verify token')
+  try {
+    must(await supabase.from('users').update({ email_verify_token: stored, email_verify_expiry: exp }).eq('id', user.id), 'store verify token')
+  } catch (err) {
+    await refundSlot(c, user.email, 'email_verification')
+    throw err
+  }
   // waitUntil, not fire-and-forget — see register()'s comment for why. This
   // was the exact cause of "resend verification never arrives": the request
   // returned successfully, but the actual Resend API call was getting
@@ -1032,11 +1085,15 @@ async function revokeSession(c) {
 async function acceptTerms(c) {
   const sessionUser = c.get('user')
   const supabase = getSupabase(c.env)
+  // maybeSingle, not single (Auth round 3, B6): the row can vanish between the auth
+  // middleware and here (account deleted in another tab); that is an authentication
+  // answer, not an unhandled PGRST116 500 — same as changePassword/updateEmail.
   const { data: row, error } = await supabase.from('users').update({
     terms_accepted_at: new Date().toISOString(),
     terms_version:     constants.TERMS_VERSION
-  }).eq('id', sessionUser.id).select().single()
+  }).eq('id', sessionUser.id).select().maybeSingle()
   if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
 
   return c.json({ success: true, message: 'Terms accepted.', data: { user: safeUser(userRowToCamel(row)) } })
 }
@@ -1052,8 +1109,9 @@ async function updateName(c) {
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase
-    .from('users').update({ name }).eq('id', sessionUser.id).select().single()
+    .from('users').update({ name }).eq('id', sessionUser.id).select().maybeSingle()
   if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
 
   return c.json({ success: true, message: 'Name updated.', data: { user: safeUser(userRowToCamel(row)) } })
 }
@@ -1166,7 +1224,10 @@ async function updateEmail(c) {
     pending_email_token:  stored,
     pending_email_expiry: exp
   }).eq('id', user.id)
-  if (updateErr) throw updateErr
+  if (updateErr) {
+    await refundSlot(c, newEmail, 'email_change_confirm')
+    throw updateErr
+  }
 
   c.executionCtx.waitUntil(
     emailService.sendEmailChangeConfirmation(c.env, supabase, newEmail, user.name, raw, { slotReserved: true })

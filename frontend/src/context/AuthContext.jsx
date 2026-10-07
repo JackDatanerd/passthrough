@@ -2,15 +2,16 @@ import { createContext, useState, useEffect } from 'react'
 import api, { SESSION_ENDED_EVENT } from '../lib/api'
 import { signedOutElsewhereTarget } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken } from '../lib/anonScans'
+import { getToken, setToken, getCachedUser, setCachedUser, storageRemove } from '../lib/storage'
+import { TOKEN_KEY, USER_KEY } from '../lib/session'
 
 // PATCH 3: exported so hooks/useAuth.js can import it directly
 export const AuthContext = createContext(null)
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(() => {
-    try { return JSON.parse(localStorage.getItem('passthrough_user')) }
-    catch (_) { return null }
-  })
+  // All storage access goes through lib/storage.js: a browser with storage blocked used to
+  // throw right here, in the first render, and white-screen the whole app.
+  const [user, setUser] = useState(() => getCachedUser())
 
   // AUDIT FIX (Admin panel): exposed so route guards (see AdminRoute in
   // App.jsx) can tell "we don't know yet" apart from "there's no user".
@@ -22,7 +23,7 @@ export function AuthProvider({ children }) {
   // away. The actual data was always safe (adminOnly.js re-checks role from
   // the DB on every request), but the UI shouldn't render as if a role is
   // known when it isn't yet.
-  const [authLoading, setAuthLoading] = useState(() => !!localStorage.getItem('passthrough_token'))
+  const [authLoading, setAuthLoading] = useState(() => !!getToken())
 
   // `user` was previously populated once at login/register and cached in
   // localStorage — nothing ever re-synced it with the server afterward. Any
@@ -54,10 +55,10 @@ export function AuthProvider({ children }) {
     // into storage, silently resurrecting the session that had just ended.
     // The response only counts if the session it was requested under is
     // still the current one.
-    const tokenAtStart = localStorage.getItem('passthrough_token')
+    const tokenAtStart = getToken()
     try {
       const res = await api.get('/auth/me')
-      if (localStorage.getItem('passthrough_token') !== tokenAtStart) return null
+      if (getToken() !== tokenAtStart) return null
       const fresh = res.data.data.user
       // AUDIT FIX (feature gap): getMe() now silently reissues a token when
       // the current one is within 24h of expiring (see auth.controller.js).
@@ -67,8 +68,8 @@ export function AuthProvider({ children }) {
       // tokens all day and the client would keep using the old one until it
       // hard-expired anyway.
       const renewedToken = res.data.data.token
-      if (renewedToken) localStorage.setItem('passthrough_token', renewedToken)
-      localStorage.setItem('passthrough_user', JSON.stringify(fresh))
+      if (renewedToken) setToken(renewedToken)
+      setCachedUser(fresh)
       setUser(fresh)
       return fresh
     } catch (_) {
@@ -82,7 +83,7 @@ export function AuthProvider({ children }) {
   // after opening/reloading the app reflects current server state rather
   // than whatever was cached at the last login.
   useEffect(() => {
-    if (localStorage.getItem('passthrough_token')) refreshUser().finally(() => setAuthLoading(false))
+    if (getToken()) refreshUser().finally(() => setAuthLoading(false))
     else setAuthLoading(false)
   }, [])
 
@@ -99,18 +100,18 @@ export function AuthProvider({ children }) {
   useEffect(() => {
     function onStorage(e) {
       // e.key === null is localStorage.clear() in another tab.
-      if ((e.key === 'passthrough_token' && !e.newValue) || e.key === null) {
+      if ((e.key === TOKEN_KEY && !e.newValue) || e.key === null) {
         setUser(null)
         // Another tab signed out. A tab sitting on a page that needs a session must follow:
         // AuthProvider lives outside the router, so a hard replace is the way. Re-check the
         // token first — a sign-out immediately followed by a sign-in elsewhere (token removed,
         // then set again) must not bounce this tab.
-        if (!localStorage.getItem('passthrough_token')) {
+        if (!getToken()) {
           const to = signedOutElsewhereTarget(window.location.pathname, window.location.search)
           if (to) window.location.replace(to)
         }
       }
-      if (e.key === 'passthrough_user') {
+      if (e.key === USER_KEY) {
         try { setUser(e.newValue ? JSON.parse(e.newValue) : null) } catch (_) {}
       }
     }
@@ -123,8 +124,8 @@ export function AuthProvider({ children }) {
   // scanned anonymously and then signed in was left holding a scan they could
   // never pay for (initializePayment requires scan.userId === user.id).
   async function postAuthActions(token, newUser) {
-    localStorage.setItem('passthrough_token', token)
-    localStorage.setItem('passthrough_user', JSON.stringify(newUser))
+    setToken(token)
+    setCachedUser(newUser)
     setUser(newUser)
 
     // AUDIT FIX (feature gap): this used to read a single stored anon token
@@ -161,7 +162,7 @@ export function AuthProvider({ children }) {
   async function acceptTerms() {
     const res = await api.post('/auth/accept-terms')
     const fresh = res.data.data.user
-    localStorage.setItem('passthrough_user', JSON.stringify(fresh))
+    setCachedUser(fresh)
     setUser(fresh)
     return fresh
   }
@@ -179,9 +180,9 @@ export function AuthProvider({ children }) {
     // api.js's request interceptor reads the token from localStorage at
     // request time — it has to be sent explicitly here, BEFORE it's cleared
     // below, or this call would go out with no Authorization header at all.
-    const token = localStorage.getItem('passthrough_token')
-    localStorage.removeItem('passthrough_token')
-    localStorage.removeItem('passthrough_user')
+    const token = getToken()
+    storageRemove(TOKEN_KEY)
+    storageRemove(USER_KEY)
     setUser(null)
     if (!token) return Promise.resolve()
     // Best-effort, and it never rejects. Returned so a caller that is about to leave the page

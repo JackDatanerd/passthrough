@@ -7,6 +7,8 @@ import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
+import PasswordInput from '../components/ui/PasswordInput'
+import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { passwordProblem } from '../lib/passwordRules'
@@ -22,6 +24,9 @@ export default function Register() {
   // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for consent to
   // the Terms / Privacy Policy. The API requires it and records the version.
   const [acceptTerms, setAcceptTerms] = useState(false)
+  // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
+  const [captcha, setCaptcha] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
   const { loading, error, execute } = useApi()
 
   // AUDIT FIX (Auth section round 1, feature gap G5): same "next" handoff
@@ -51,9 +56,10 @@ export default function Register() {
     if (pwProblem) return fail(pwProblem)
     if (password !== confirm) return fail('Passwords do not match.')
     if (!acceptTerms) return fail('Please accept the Terms of Service and Privacy Policy to continue.')
+    if (TURNSTILE_ENABLED && !captcha) return fail('Please complete the security check below.')
     try {
       await execute(async () => {
-        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true })
+        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true, turnstileToken: captcha || undefined })
         const { token, user } = res.data.data
         const scanId = await postRegisterActions(token, user)
         // A pending anon scan still wins — it's a specific piece of work the
@@ -62,7 +68,10 @@ export default function Register() {
         navigate(scanId ? `/scan/${scanId}` : (next || '/dashboard'))
         return res
       }, { fallback: 'Registration failed.' })
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (_) {
+      // error already captured by useApi. A Turnstile token is single-use, so the next try needs a fresh one.
+      setCaptchaReset(n => n + 1)
+    }
   }
 
   return (
@@ -78,10 +87,10 @@ export default function Register() {
               onChange={e => setName(e.target.value)} autoComplete="name" />
             <Input label="Email" type="email" value={email}
               onChange={e => setEmail(e.target.value)} autoComplete="email" />
-            <Input label="Password" type="password" value={password}
+            <PasswordInput label="Password" value={password}
               onChange={e => setPassword(e.target.value)} autoComplete="new-password"
               placeholder="Min. 8 characters" />
-            <Input label="Confirm password" type="password" value={confirm}
+            <PasswordInput label="Confirm password" value={confirm}
               onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
 
             <label className="flex items-start gap-2 text-sm text-gray-600">
@@ -94,6 +103,8 @@ export default function Register() {
                 <Link to="/privacy" target="_blank" className="text-blue-600 hover:underline">Privacy Policy</Link>.
               </span>
             </label>
+
+            <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
 
             {error && <p className="text-sm text-red-600">{error}</p>}
 

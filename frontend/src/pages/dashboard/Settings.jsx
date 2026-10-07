@@ -6,6 +6,8 @@ import DashboardLayout from '../../components/layout/DashboardLayout'
 import Button from '../../components/ui/Button'
 import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
+import PasswordInput from '../../components/ui/PasswordInput'
+import { setToken, storageSet } from '../../lib/storage'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatDateTime } from '../../lib/utils'
@@ -65,7 +67,7 @@ export default function Settings() {
   // does not depend on a second request succeeding.
   function applyUserPatch(patch) {
     const next = { ...(user || {}), ...patch }
-    try { localStorage.setItem(USER_KEY, JSON.stringify(next)) } catch (_) { /* storage unavailable */ }
+    storageSet(USER_KEY, JSON.stringify(next))
     setUser(next)
   }
 
@@ -338,7 +340,7 @@ export default function Settings() {
       // anywhere in the app 401'd and silently bounced to /login, right
       // after this screen told the user everything was fine.
       const token = res.data?.data?.token
-      if (token) localStorage.setItem('passthrough_token', token)
+      if (token) setToken(token)
       // BUG FIX (fresh audit pass, Section 6): a successful password change
       // never refreshed the cached user — unlike every other mutating
       // action on this page (handleUpdateEmail, handleCancelPendingEmail).
@@ -372,7 +374,7 @@ export default function Settings() {
       // the endpoint hands back or its very next request 401s and bounces
       // to /login right after this screen said everything was fine.
       const token = res.data?.data?.token
-      if (token) localStorage.setItem('passthrough_token', token)
+      if (token) setToken(token)
       setSignOutSuccess(true)
       setSessionsReload(n => n + 1)
     } catch (err) {
@@ -460,7 +462,7 @@ export default function Settings() {
               )}
               <Input label="New email" type="email" value={newEmail}
                 onChange={e => { setNewEmail(e.target.value); setEmailSuccess(false) }} />
-              <Input label="Password" type="password" value={emailPassword}
+              <PasswordInput label="Password" value={emailPassword}
                 onChange={e => { setEmailPassword(e.target.value); setEmailSuccess(false) }}
                 autoComplete="current-password" />
               {emailError   && <p role="alert" className="text-sm text-red-600">{emailError}</p>}
@@ -476,12 +478,12 @@ export default function Settings() {
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Change password</h2>
           <Form onSubmit={handleChangePassword} className="flex flex-col gap-3">
-            <Input label="Current password" type="password" value={current}
+            <PasswordInput label="Current password" value={current}
               onChange={e => { setCurrent(e.target.value); setPwSuccess(false) }} autoComplete="current-password" />
-            <Input label="New password" type="password" value={newPass}
+            <PasswordInput label="New password" value={newPass}
               onChange={e => { setNewPass(e.target.value); setPwSuccess(false) }} autoComplete="new-password"
               placeholder="Min. 8 characters" />
-            <Input label="Confirm new password" type="password" value={confirm}
+            <PasswordInput label="Confirm new password" value={confirm}
               onChange={e => { setConfirm(e.target.value); setPwSuccess(false) }} autoComplete="new-password" />
             {pwError   && <p role="alert" className="text-sm text-red-600">{pwError}</p>}
             {pwSuccess && <p role="status" className="text-sm text-green-700">Password updated. Other sessions signed out.</p>}
@@ -704,7 +706,7 @@ export default function Settings() {
           Enter your password to cancel the pending change{user?.pendingEmail ? <> to <strong>{user.pendingEmail}</strong></> : ''}.
         </p>
         <Form onSubmit={handleCancelPendingEmail} className="flex flex-col gap-3">
-          <Input type="password" placeholder="Your password" value={cancelPassword}
+          <PasswordInput placeholder="Your password" value={cancelPassword}
             autoComplete="current-password" onChange={e => setCancelPassword(e.target.value)} />
           {cancelError && <p role="alert" className="text-sm text-red-600">{cancelError}</p>}
           <div className="flex gap-3">
@@ -729,7 +731,7 @@ export default function Settings() {
           <p>Want a copy first? Close this and use “Download my data”. Enter your password to confirm.</p>
         </div>
         <Form onSubmit={handleDeleteAccount} className="flex flex-col gap-3">
-          <Input type="password" placeholder="Your password" value={deletePass}
+          <PasswordInput placeholder="Your password" value={deletePass}
             autoComplete="current-password" onChange={e => setDeletePass(e.target.value)} />
           {deleteError && <p role="alert" className="text-sm text-red-600">{deleteError}</p>}
           <div className="flex gap-3">

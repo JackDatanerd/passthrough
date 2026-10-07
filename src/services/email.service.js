@@ -700,6 +700,7 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
 module.exports = {
   htmlToPlainText, fmtMoney, sendEmployerLeadAck,
   reserveRecipientSlot: recipientAllowed,
+  refundReservedSlot: refundRecipientSlot,
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,

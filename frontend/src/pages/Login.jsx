@@ -7,6 +7,7 @@ import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
+import PasswordInput from '../components/ui/PasswordInput'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import Alert from '../components/ui/Alert'
@@ -51,7 +52,10 @@ export default function Login() {
         const { token, user } = res.data.data
         // Also claims a pending anonymous scan, exactly like registering does.
         const claimedScanId = await postAuthActions(token, user)
-        navigate(next || (claimedScanId ? `/scan/${claimedScanId}` : '/dashboard'))
+        // BUG FIX (Auth round 3, B3): a scan the visitor just claimed wins over `next`, exactly as it
+        // does on Register — it is the specific piece of work they did a moment ago. `next` used to
+        // win here, so the claimed scan was silently never shown.
+        navigate(claimedScanId ? `/scan/${claimedScanId}` : (next || '/dashboard'))
         return res
       }, { fallback: 'Login failed.' })
     } catch (_) { /* error already captured by useApi */ }
@@ -74,7 +78,7 @@ export default function Login() {
           <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <Input label="Email" type="email" value={email}
               onChange={e => setEmail(e.target.value)} autoComplete="email" />
-            <Input label="Password" type="password" value={password}
+            <PasswordInput label="Password" value={password}
               onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
 
             {error && <p className="text-sm text-red-600">{error}</p>}
@@ -85,7 +89,9 @@ export default function Login() {
           </Form>
 
           <div className="mt-4 flex flex-col gap-2 text-sm text-center text-gray-500">
-            <Link to="/forgot-password" className="text-blue-600 hover:underline">
+            {/* Carries what was already typed, so the next page doesn't ask for it again. */}
+            <Link to={email.trim() ? `/forgot-password?email=${encodeURIComponent(email.trim())}` : '/forgot-password'}
+              className="text-blue-600 hover:underline">
               Forgot password?
             </Link>
             {/* AUDIT FIX (Auth section round 1, feature gap G5): ?next= used to

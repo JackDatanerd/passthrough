@@ -39,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
+  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -141,6 +141,8 @@ async function setup(opts = {}) {
       // single-use link token is rotated; opts.slotDenied simulates the
       // throttle being exhausted. Every send* stub returns true (= "sent").
       reserveRecipientSlot: async (env, to, template) => { state.slots.push({ to, template }); return !opts.slotDenied },
+      // Auth round 3 (B2): hands a reserved slot back when the token write failed before any send.
+      refundReservedSlot: async (env, to, template) => { if (opts.refundThrows) throw new Error('refund exploded'); state.refunds.push({ to, template }) },
       sendWelcome:       async (...a) => { state.emails.push({ type: 'welcome', to: a[2] }); return true },
       sendVerification:  async (...a) => { state.emails.push({ type: 'verify', to: a[2], raw: a[4], opts: a[5] }); return true },
       sendPasswordReset: async (...a) => { state.emails.push({ type: 'reset', to: a[2], raw: a[4], opts: a[5] }); return true },
@@ -178,6 +180,8 @@ async function setup(opts = {}) {
     },
     // Auth round 1: the breached-password check must never reach the network in a
     // unit test. opts.pwned = true simulates a hit.
+    // Auth round 3 (G1): opts.challengePasses = false simulates a failed Turnstile check.
+    'lib/turnstile.js': { verifyTurnstile: async (env, token, ip) => { state.turnstile.push({ token, ip }); return opts.challengePasses !== false } },
     'lib/pwned.js': { isPwnedPassword: async pw => { state.pwnedChecks.push(pw); return !!opts.pwned } },
     'middleware/rateLimiter.js': {
       checkAccountLockout: async (env, email) => { state.lockoutChecks.push(email); return opts.locked ?? { locked: false, retryAfterSeconds: null } },
@@ -1801,5 +1805,115 @@ describe('login — new-sign-in alert baseline (B4)', () => {
   })
   it('a genuinely different network still alerts', async () => {
     expect(await alertsFor('1.2.3.4', '9.9.9.9')).toHaveLength(1)
+  })
+})
+
+
+// ── Auth round 3 ────────────────────────────────────────────────────────────
+describe('Turnstile challenge on register + forgot-password (G1)', () => {
+  const reg = (over = {}) => ({ name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true, ...over })
+
+  it('register: a failed challenge is a 400 CHALLENGE_FAILED before any DB write or email', async () => {
+    t = await setup({ challengePasses: false })
+    const res = await t.mod.register(t.c({ body: reg({ turnstileToken: 'bad' }) }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('CHALLENGE_FAILED')
+    expect(t.db.calls).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('register: the token and the requester IP are handed to the verifier', async () => {
+    t = await setup()
+    const res = await t.mod.register(t.c({ body: reg({ turnstileToken: 'tok-1' }) }))
+    expect(res.status).toBe(201)
+    expect(t.state.turnstile).toEqual([{ token: 'tok-1', ip: '1.2.3.4' }])
+  })
+  it('register: an absent token still goes to the verifier (which skips it when unconfigured)', async () => {
+    t = await setup()
+    await t.mod.register(t.c({ body: reg() }))
+    expect(t.state.turnstile).toHaveLength(1)
+    expect(t.state.turnstile[0].token == null).toBe(true)
+  })
+  it('register: an oversized token is a validation error, not a verifier call', async () => {
+    t = await setup()
+    await expect(t.mod.register(t.c({ body: reg({ turnstileToken: 'x'.repeat(3000) }) }))).rejects.toBeTruthy()
+    expect(t.state.turnstile).toHaveLength(0)
+  })
+  it('forgotPassword: a failed challenge is a 400 and nothing is looked up, reserved, rotated or sent', async () => {
+    t = await setup({ challengePasses: false })
+    const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com', turnstileToken: 'bad' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('CHALLENGE_FAILED')
+    expect(t.db.calls).toHaveLength(0)
+    expect(t.state.slots).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('forgotPassword: a passing challenge behaves exactly as before', async () => {
+    t = await setup()
+    const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com', turnstileToken: 'ok' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.emails.map(e => e.type)).toEqual(['reset'])
+  })
+  it('login is NOT challenged (it emails no one; the account lockout covers it)', async () => {
+    t = await setup()
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    expect(t.state.turnstile).toHaveLength(0)
+  })
+})
+
+describe('reserved email slot is refunded when the token write fails (B2)', () => {
+  it('forgotPassword: store-token failure refunds the password_reset slot and still surfaces the error', async () => {
+    t = await setup({ userUpdateError: { message: 'db down' } })
+    await expect(t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))).rejects.toBeTruthy()
+    expect(t.state.refunds).toEqual([{ to: 'user@example.com', template: 'password_reset' }])
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('forgotPassword: no refund on the happy path', async () => {
+    t = await setup()
+    await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
+    expect(t.state.refunds).toHaveLength(0)
+  })
+  it('resendVerification: store-token failure refunds the email_verification slot', async () => {
+    t = await setup({ userUpdateError: { message: 'db down' }, sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: false, email: 'user@example.com', name: 'Ada' } })
+    await expect(t.mod.resendVerification(t.c())).rejects.toBeTruthy()
+    expect(t.state.refunds).toEqual([{ to: 'user@example.com', template: 'email_verification' }])
+  })
+  it('updateEmail: staging failure refunds the email_change_confirm slot for the NEW address', async () => {
+    t = await setup({ userUpdateError: { message: 'db down' } })
+    await expect(t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'correct-password' } }))).rejects.toBeTruthy()
+    expect(t.state.refunds).toEqual([{ to: 'new@example.com', template: 'email_change_confirm' }])
+  })
+  it('a refund that itself throws never masks the original error', async () => {
+    t = await setup({ userUpdateError: { message: 'original failure' }, refundThrows: true })
+    await expect(t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } })))
+      .rejects.toMatchObject({ message: expect.stringContaining('original failure') })
+  })
+})
+
+describe('acceptTerms / updateName when the row vanished mid-request (B6)', () => {
+  it('acceptTerms answers 401 USER_NOT_FOUND instead of an unhandled 500', async () => {
+    t = await setup({ casLost: true })
+    const res = await t.mod.acceptTerms(t.c())
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+  it('updateName answers 401 USER_NOT_FOUND instead of an unhandled 500', async () => {
+    t = await setup({ casLost: true })
+    const res = await t.mod.updateName(t.c({ body: { name: 'Ada L' } }))
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+})
+
+describe('login builds the timing-equalizer hash up front (B7)', () => {
+  it('a known-email sign-in on a cold module pays the same one-off hash cost an unknown email does', async () => {
+    const { vi } = await import('vitest')
+    const spy = vi.spyOn(bcrypt, 'hash')
+    try {
+      t = await setup()
+      const hashesBefore = spy.mock.calls.filter(a => a[0] === 'passthrough-timing-equalizer').length
+      await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+      const after = spy.mock.calls.filter(a => a[0] === 'passthrough-timing-equalizer').length
+      expect(after - hashesBefore).toBe(1)
+    } finally { spy.mockRestore() }
   })
 })

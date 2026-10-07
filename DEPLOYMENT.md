@@ -230,15 +230,16 @@ wrangler secret put COMMISSION_MIN_PAYOUT_CENTS
 #   wrangler secret delete RATE_LIMIT_BYPASS_IPS
 wrangler secret put RATE_LIMIT_BYPASS_IPS
 
-# Cloudflare Turnstile bot challenge on the public employer-lead form (the one
-# unauthenticated endpoint that emails an address a stranger typed). Off by
+# Cloudflare Turnstile bot challenge on the public forms that email an address a
+# stranger typed: the employer-lead form, sign-up and forgot-password (login is
+# not challenged — it emails no one, and the per-account lockout covers it). Off by
 # default. To turn it on set BOTH halves: this secret on the Worker, and
 # VITE_TURNSTILE_SITE_KEY on Pages (see section 6) followed by a frontend
 # rebuild — the widget only renders when the site key was baked into the
 # bundle, and the Worker only demands a token when this secret is set, so
 # enabling one half alone is harmless. Create the widget under Cloudflare
 # dashboard -> Turnstile. If Cloudflare itself is unreachable the form still
-# accepts submissions (an outage must not lose leads).
+# accepts submissions (an outage must not lose leads or lock people out).
 wrangler secret put TURNSTILE_SECRET_KEY
 
 # Optional. The public origin the Worker is reached at (no path), used to build

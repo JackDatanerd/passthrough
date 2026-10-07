@@ -68,3 +68,20 @@ describe('VerifyEmail', () => {
     expect(api.get).not.toHaveBeenCalled()
   })
 })
+
+// Auth round 3 (G3): after a resend the button used to vanish for good — a link that never arrived
+// could only be re-requested by reloading. It now stays, counting down.
+describe('VerifyEmail — resend timer', () => {
+  it('keeps the resend button after a send, disabled with a countdown', async () => {
+    api.get.mockRejectedValue(Object.assign(new Error('x'), { response: { status: 400, data: { message: 'bad' } } }))
+    api.post.mockResolvedValue({ data: { success: true } })
+    const u = userEvent.setup()
+    render(
+      <MemoryRouter initialEntries={['/verify-email?token=dead']}>
+        <AuthContext.Provider value={{ user: { id: 'u1' }, refreshUser: vi.fn() }}><VerifyEmail /></AuthContext.Provider>
+      </MemoryRouter>)
+    await u.click(await screen.findByRole('button', { name: /send me a new link/i }))
+    expect(await screen.findByText(/new link sent/i)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /send again in \d+s/i })).toBeDisabled()
+  })
+})

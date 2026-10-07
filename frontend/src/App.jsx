@@ -2,6 +2,7 @@ import { Suspense } from 'react'
 import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
+import { getToken } from './lib/storage'
 import { ToastProvider } from './components/ui/Toast'
 import Spinner from './components/ui/Spinner'
 import ErrorBoundary from './components/ErrorBoundary'
@@ -62,7 +63,7 @@ function loginRedirect(location) {
 // ProtectedRoute — redirects to /login if no token
 // Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
 function ProtectedRoute({ children }) {
-  const token = localStorage.getItem('passthrough_token')
+  const token = getToken()
   const location = useLocation()
   if (!token) return loginRedirect(location)
   return children
@@ -73,7 +74,7 @@ function ProtectedRoute({ children }) {
 // check. AuthProvider already refreshes `user` from /auth/me on load (see
 // AuthContext.jsx), so `role` here reflects the server, not a stale cache.
 function AdminRoute({ children }) {
-  const token = localStorage.getItem('passthrough_token')
+  const token = getToken()
   const { user, authLoading } = useAuth()
   const location = useLocation()
   if (!token) return loginRedirect(location)

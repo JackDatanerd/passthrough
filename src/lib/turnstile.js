@@ -1,7 +1,6 @@
-// Cloudflare Turnstile verification for the public employer-lead form.
-//
-// That form is the one unauthenticated endpoint here that makes us email an address a
-// stranger typed, so a honeypot plus a per-IP limit was the only thing standing between it
+// Cloudflare Turnstile verification for the public forms that make us email an address a
+// stranger typed: the employer-lead form, and (Auth round 3) register + forgot-password.
+// A honeypot plus per-IP / per-recipient limits used to be all that stood between them
 // and being used to mail third parties. Turnstile adds a real challenge.
 //
 // Opt-in by configuration: with no TURNSTILE_SECRET_KEY the check is skipped and the form

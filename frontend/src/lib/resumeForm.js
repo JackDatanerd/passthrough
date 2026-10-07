@@ -2,7 +2,7 @@
 
 // Does the hand-filled structured form carry anything worth scoring? (Mirrors the server's
 // hasResumeContent in lib/resumeData.js, which is the authority.)
-const filled = v => typeof v === 'string' && v.trim()
+export const filled = v => typeof v === 'string' && v.trim()
 export function manualHasContent(d) {
   if (!d) return false
   const list = v => (Array.isArray(v) ? v : [])

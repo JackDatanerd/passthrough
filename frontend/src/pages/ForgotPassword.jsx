@@ -1,21 +1,34 @@
 import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
+import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
+import { useCooldown } from '../hooks/useCooldown'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 
 export default function ForgotPassword() {
-  const [email, setEmail] = useState('')
+  // Login's "Forgot password?" link carries whatever was typed there.
+  const [params] = useSearchParams()
+  const [email, setEmail] = useState(() => (params.get('email') || '').slice(0, 254))
   const [sent,  setSent ] = useState(false)
+  const [captcha, setCaptcha] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
+  // The server throttles reset emails per address; a visible timer beats a bare "Too many attempts".
+  const { remaining, start: startCooldown } = useCooldown(30)
   const { loading, error, execute } = useApi()
 
   async function handleSubmit() {
     if (!email) {
       await execute(() => Promise.reject(new Error('Email required.')), { fallback: 'Email required.' }).catch(() => {})
+      return
+    }
+    if (TURNSTILE_ENABLED && !captcha) {
+      await execute(() => Promise.reject(new Error('Please complete the security check below.')),
+        { fallback: 'Please complete the security check below.' }).catch(() => {})
       return
     }
     try {
@@ -24,10 +37,14 @@ export default function ForgotPassword() {
       // is never "unknown email". It's a rate limit, a bad address, an outage
       // or a dead network, and claiming "check your inbox" for those left
       // people waiting on an email that was never sent.
-      await execute(() => api.post('/auth/forgot-password', { email: email.trim() }),
+      await execute(() => api.post('/auth/forgot-password', { email: email.trim(), turnstileToken: captcha || undefined }),
         { fallback: "Couldn't send the reset link. Please try again." })
       setSent(true)
-    } catch (_) { /* error already captured by useApi */ }
+      startCooldown()
+      setCaptcha(''); setCaptchaReset(n => n + 1)   // a Turnstile token is single-use
+    } catch (_) {
+      setCaptcha(''); setCaptchaReset(n => n + 1)
+    }
   }
 
   return (
@@ -52,6 +69,14 @@ export default function ForgotPassword() {
                   Use a different email
                 </button>
               </div>
+              <div className="mt-4 text-center">
+                {/* With the challenge on, a fresh one is needed for every send, so go back to the form. */}
+                <button type="button" onClick={TURNSTILE_ENABLED ? () => setSent(false) : handleSubmit} disabled={loading || remaining > 0}
+                  className="text-sm text-blue-600 hover:underline disabled:text-gray-400 disabled:no-underline">
+                  {remaining > 0 ? `Send again in ${remaining}s` : 'Send the link again'}
+                </button>
+                {error && <p role="alert" className="mt-2 text-sm text-red-600">{error}</p>}
+              </div>
             </div>
           ) : (
             <>
@@ -61,6 +86,7 @@ export default function ForgotPassword() {
               <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
                 <Input label="Email" type="email" value={email}
                   onChange={e => setEmail(e.target.value)} autoComplete="email" />
+                <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
                 {error && <p className="text-sm text-red-600">{error}</p>}
                 <Button type="submit" loading={loading} className="w-full">
                   Send reset link

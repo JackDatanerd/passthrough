@@ -24,7 +24,6 @@ export default function ConfirmEmailChange() {
   const { postAuthActions, logout } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
   const [message, setMessage] = useState('')
-  const [keptOtherSession, setKeptOtherSession] = useState(false)
   // AUDIT FIX (Auth round 2, B1): the API now only completes a change for a
   // session of the account itself. 'signin' = nobody signed in (or signed in as
   // someone else): nothing was consumed, the same link works once they are.
@@ -47,19 +46,14 @@ export default function ConfirmEmailChange() {
       .then(async res => {
         const { user, token: sessionToken, alreadyConfirmed: replay } = res.data.data
         if (replay) { setAlreadyConfirmed(true); setStatus('success'); return }
-        // AUDIT FIX (Auth/Scan round): this used to adopt the returned session
-        // unconditionally — so following a confirmation link in a browser
-        // that was signed in as a DIFFERENT account silently swapped that
-        // session for this one (and claimed the browser's anonymous scans
-        // into it). Adopt it only when nobody is signed in, or the browser is
-        // already this same account; otherwise leave the existing session
-        // alone and say to sign in.
-        let signedInAs = null
-        try { signedInAs = JSON.parse(localStorage.getItem('passthrough_user'))?.id ?? null } catch (_) { /* ignore */ }
-        const hasSession = !!localStorage.getItem('passthrough_token')
-        const sameAccount = signedInAs && user && signedInAs === user.id
-        if (sessionToken && user && (!hasSession || sameAccount)) await postAuthActions(sessionToken, user)
-        else setKeptOtherSession(true)
+        // BUG FIX (Auth round 3, B4): this used to adopt the returned session only when the cached
+        // user's id matched. But the server now completes a change ONLY for a request carrying a
+        // session of this very account, so a returned token always belongs to the account the
+        // browser is signed in as — and by then the old token is already dead (token_version
+        // bumped, sessions revoked). A missing or stale cached user made the old check skip the
+        // adoption, leaving a dead token and a message claiming a "different account". The server
+        // is the authority; always adopt what it hands back.
+        if (sessionToken && user) await postAuthActions(sessionToken, user)
         setStatus('success')
       })
       .catch(err => {
@@ -100,8 +94,6 @@ export default function ConfirmEmailChange() {
               <p className="text-sm text-gray-500 mb-6">
                 {alreadyConfirmed
                   ? 'This link has already been used and your email was updated earlier.'
-                  : keptOtherSession
-                  ? 'The account now uses this email address. You are signed in to a different account in this browser, so sign out and sign in with the new email to use it.'
                   : 'Your account now uses this email address.'}
               </p>
               <Link to="/dashboard/settings"

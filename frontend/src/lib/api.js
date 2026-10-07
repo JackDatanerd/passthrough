@@ -5,6 +5,7 @@ import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
   classifyAuthFailure, isProtectedPath, failureAppliesToCurrentSession,
 } from './session'
+import { getToken, storageRemove } from './storage'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
 export { getErrorMessage } from './errors'
@@ -20,7 +21,7 @@ const api = axios.create({
 })
 
 api.interceptors.request.use(config => {
-  const token = localStorage.getItem(TOKEN_KEY)
+  const token = getToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
@@ -41,8 +42,8 @@ let sessionEnding = false
 function endSession(reason) {
   if (sessionEnding) return            // several in-flight requests can all fail at once
   sessionEnding = true
-  localStorage.removeItem(TOKEN_KEY)
-  localStorage.removeItem(USER_KEY)
+  storageRemove(TOKEN_KEY)
+  storageRemove(USER_KEY)
   // Let AuthProvider drop `user` in-place (Navbar flips to "Sign in") without a page reload.
   window.dispatchEvent(new CustomEvent(SESSION_ENDED_EVENT, { detail: { reason } }))
 
@@ -84,7 +85,7 @@ api.interceptors.response.use(
     // A failure from a request sent under a session that is no longer the current
     // one (signed out / signed in as someone else meanwhile) says nothing about
     // the current session — ending it would log the new account out.
-    if (verdict && !failureAppliesToCurrentSession(config.__token, localStorage.getItem(TOKEN_KEY))) {
+    if (verdict && !failureAppliesToCurrentSession(config.__token, getToken())) {
       return Promise.reject(err)
     }
     if (verdict) endSession(verdict)
