@@ -24,6 +24,7 @@ const { getSupabase } = require('../config/supabase')
 const { userRowToCamel, scanRowToCamel } = require('../lib/mappers')
 const { must, warnOnError } = require('../lib/db')
 const sessionsLib = require('../lib/sessions')
+const { toClientUser } = require('../lib/authUser')
 const { isPwnedPassword } = require('../lib/pwned')
 const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
@@ -237,25 +238,7 @@ async function challengeFailure(c, token) {
 // retroactively blocked by a check that didn't exist when they signed up;
 // this only flags accounts that DID accept a version, once a newer one ships.
 function safeUser(user) {
-  const {
-    passwordHash, paystackAuthCode, paystackCustomerCode,
-    resetToken, emailVerifyToken, resetTokenExpiry, emailVerifyExpiry,
-    pendingEmailToken, pendingEmailExpiry,
-    // tokenVersion is the server-side revocation counter (AUDIT FIX, Auth
-    // section round 1): nothing on the client uses it, and handing out the
-    // current value only tells a token-forger which number to sign.
-    tokenVersion,
-    // lastLoginAlertAt is purely internal throttle bookkeeping for
-    // recordLoginMetadata below (migration 0040) — nothing in the frontend
-    // has any use for it, unlike previousLoginAt/previousLoginIp, which
-    // Settings.jsx shows.
-    lastLoginAlertAt,
-    savedProfile, ...safe
-  } = user
-  return {
-    ...safe,
-    termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION
-  }
+  return toClientUser(user)
 }
 
 function expiry(hours) {

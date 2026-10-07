@@ -1,7 +1,8 @@
 import { createContext, useState, useEffect } from 'react'
 import api, { SESSION_ENDED_EVENT } from '../lib/api'
 import { signedOutElsewhereTarget } from '../lib/session'
-import { getAnonScanTokens, removeAnonScanToken } from '../lib/anonScans'
+import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
+import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
 import { getToken, setToken, getCachedUser, setCachedUser, storageRemove } from '../lib/storage'
 import { TOKEN_KEY, USER_KEY } from '../lib/session'
 
@@ -183,6 +184,14 @@ export function AuthProvider({ children }) {
     const token = getToken()
     storageRemove(TOKEN_KEY)
     storageRemove(USER_KEY)
+    // Personal data this browser holds for whoever was typing — the brain-dump draft (name, email,
+    // up to 12,000 characters of background) and any unclaimed anonymous-scan tokens — must not
+    // outlive the sign-out (or the account deletion, which also lands here): on a shared computer
+    // the next visitor would see the draft in the form, and the next person to sign in would
+    // have login claim those scans into THEIR account. An expired or banned session (api.js) is
+    // not a choice to leave, so it keeps the draft; only an explicit sign-out clears it.
+    clearBrainDumpDraft()
+    clearAnonScanTokens()
     setUser(null)
     if (!token) return Promise.resolve()
     // Best-effort, and it never rejects. Returned so a caller that is about to leave the page

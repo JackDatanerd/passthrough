@@ -39,25 +39,42 @@ const SECRET_USER_FIELDS = [
  *   requestUser — what c.set('user', …) gets: secrets removed, termsCurrent added
  *
  * termsCurrent: null terms_version (an account created before terms were
- * recorded) counts as current — see safeUser() in auth.controller.js.
+ * recorded) counts as current — see toClientUser() below.
  * tokenVersion stays on requestUser for server-side use only; anything that
- * serializes the user to a client must strip it (getMe and safeUser do).
+ * serializes the user to a client must strip it (getMe and toClientUser do).
  */
 function toRequestUser(row) {
   const user = userRowToCamel(row)
   if (!user) return { user, requestUser: null }
+  return { user, requestUser: { ...clientFields(user), tokenVersion: user.tokenVersion } }
+}
+
+// The ONE serializer for "the user as the client sees them". getMe() (via the request user) and
+// every auth response that hands a user back (login, register, updateName, acceptTerms,
+// confirmEmailChange) used to build this in two places that had drifted: the request user hid
+// an expired staged email change and carried pendingEmailExpiry for the Settings countdown,
+// while safeUser() showed the expired one as still pending and dropped the expiry — so the
+// "confirmation pending" notice flickered back after any action that replaced the cached user.
+function clientFields(user) {
   const safe = { ...user }
   for (const k of SECRET_USER_FIELDS) delete safe[k]
   // A staged email change whose link has expired is dead — the confirmation endpoint refuses it —
   // but the row keeps it until the hourly sweep. Telling the client it is still "pending" showed
   // a "check that inbox" banner for a link that could no longer work. pendingEmailExpiry itself
-  // is not a credential (the token is), so it rides along for the countdown.
+  // is not a credential (the token is), so it rides along for the countdown while the change is live.
   const expiresAt = user.pendingEmailExpiry ? Date.parse(user.pendingEmailExpiry) : NaN
-  safe.pendingEmail = user.pendingEmail && Number.isFinite(expiresAt) && expiresAt > Date.now() ? user.pendingEmail : null
-  return {
-    user,
-    requestUser: { ...safe, termsCurrent: user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION },
-  }
+  const live = !!user.pendingEmail && Number.isFinite(expiresAt) && expiresAt > Date.now()
+  safe.pendingEmail = live ? user.pendingEmail : null
+  safe.pendingEmailExpiry = live ? user.pendingEmailExpiry : null
+  safe.termsCurrent = user.termsVersion == null || user.termsVersion === constants.TERMS_VERSION
+  return safe
 }
 
-module.exports = { AUTH_USER_COLUMNS, SECRET_USER_FIELDS, toRequestUser }
+// What may be serialized to a client: clientFields() minus tokenVersion (server-side revocation
+// counter — handing out the current value only tells a token-forger which number to sign).
+function toClientUser(user) {
+  const { tokenVersion, ...rest } = clientFields(user)
+  return rest
+}
+
+module.exports = { AUTH_USER_COLUMNS, SECRET_USER_FIELDS, toRequestUser, toClientUser }

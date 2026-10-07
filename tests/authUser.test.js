@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { AUTH_USER_COLUMNS, SECRET_USER_FIELDS, toRequestUser } from '../src/lib/authUser.js'
+import { AUTH_USER_COLUMNS, SECRET_USER_FIELDS, toRequestUser, toClientUser } from '../src/lib/authUser.js'
 import { userRowToCamel } from '../src/lib/mappers.js'
 
 // AUDIT FIX (Auth section round 1, bug B5): auth.js/optionalAuth.js used to
@@ -91,5 +91,35 @@ describe('authUser.js — a pending email change whose link has expired is not "
   it('exposes the notification preference, defaulting to on for a row from before the column', () => {
     expect(toRequestUser({ ...base, notify_scan_results: false }).requestUser.notifyScanResults).toBe(false)
     expect(toRequestUser(base).requestUser.notifyScanResults).toBe(true)
+  })
+})
+
+describe('authUser.js — toClientUser(): one serializer for every response that hands a user to the client', () => {
+  const base = { id: 'u1', email: 'a@b.co', name: 'A', role: 'USER', status: 'ACTIVE', token_version: 7, deleted_at: null,
+    password_hash: 'h', reset_token: 'rt', saved_profile: { x: 1 }, pending_email_token: 'secret', last_login_alert_at: 't' }
+  const inMs = ms => new Date(Date.now() + ms).toISOString()
+  const full = over => toRequestUser({ ...base, ...over }).user
+
+  it('never carries a secret field or tokenVersion', () => {
+    const out = toClientUser(full({ pending_email: 'n@b.co', pending_email_expiry: inMs(60_000) }))
+    for (const k of SECRET_USER_FIELDS) expect(out[k], k).toBeUndefined()
+    expect(out.tokenVersion).toBeUndefined()
+  })
+  it('a live staged email change keeps its expiry (Settings countdown) — same as the request user', () => {
+    const row = { ...base, pending_email: 'n@b.co', pending_email_expiry: inMs(60_000) }
+    const out = toClientUser(toRequestUser(row).user)
+    expect(out.pendingEmail).toBe('n@b.co')
+    expect(out.pendingEmailExpiry).toBeTruthy()
+    const { tokenVersion, ...req } = toRequestUser(row).requestUser
+    expect(out).toEqual(req)
+  })
+  it('an expired staged change reads as none, expiry included', () => {
+    const out = toClientUser(full({ pending_email: 'n@b.co', pending_email_expiry: inMs(-60_000) }))
+    expect(out.pendingEmail).toBe(null)
+    expect(out.pendingEmailExpiry).toBe(null)
+  })
+  it('termsCurrent is set, null terms_version counting as current', () => {
+    expect(toClientUser(full({ terms_version: null })).termsCurrent).toBe(true)
+    expect(toClientUser(full({ terms_version: '2020-01' })).termsCurrent).toBe(false)
   })
 })
