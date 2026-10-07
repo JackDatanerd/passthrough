@@ -70,9 +70,64 @@ describe('PaymentSuccess', () => {
     expect(api.get).toHaveBeenCalledTimes(2)
   })
 
-  it('no reference in the URL fails immediately without calling the API', async () => {
+  it('no reference in the URL gets its own state (not "Verification failed") without calling the API', async () => {
     renderAt('/payment/success')
-    expect(await screen.findByText('Verification failed')).toBeInTheDocument()
+    expect(await screen.findByText(/couldn't find a payment to check/)).toBeInTheDocument()
+    expect(screen.queryByText('Verification failed')).toBeNull()
+    expect(screen.getByRole('link', { name: 'View my payments' })).toHaveAttribute('href', '/dashboard/payments')
     expect(api.get).not.toHaveBeenCalled()
+  })
+
+  it('G2: a definite decline says the payment was not completed and links back to the resume', async () => {
+    reject(400, { success: false, declined: true, message: 'This payment was not completed, so you have not been charged.', data: { scanId: 's9' } })
+    renderAt()
+    expect(await screen.findByText('Payment not completed')).toBeInTheDocument()
+    expect(screen.getByText(/have not been charged/)).toBeInTheDocument()
+    expect(screen.queryByText(/may still have gone through/)).toBeNull()
+    expect(screen.getByRole('link', { name: 'Back to your resume' })).toHaveAttribute('href', '/scan/s9')
+    expect(api.get).toHaveBeenCalledTimes(1)          // no retries
+  })
+
+  it('a plain 400 without the declined flag still shows the generic failure', async () => {
+    reject(400, { message: 'Payment verification failed.' })
+    renderAt()
+    expect(await screen.findByText('Verification failed')).toBeInTheDocument()
+  })
+})
+
+describe('PaymentSuccess — long processing (G3)', () => {
+  it('keeps checking slowly after the fast polls, and goes to the resume when it clears', async () => {
+    vi.useFakeTimers()
+    try {
+      const pending = { data: { success: false, pending: true, data: { scanId: 's7' } } }
+      api.get.mockResolvedValue(pending)
+      renderAt()
+      // 5 fast attempts (4s apart) …
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(4100)
+      expect(api.get).toHaveBeenCalledTimes(5)
+      expect(screen.getByText('Still processing')).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Back to your resume' })).toHaveAttribute('href', '/scan/s7')
+      // … then a quiet 30s poll, which this time succeeds.
+      api.get.mockResolvedValue({ data: { success: true, data: { scanId: 's7' } } })
+      await vi.advanceTimersByTimeAsync(30100)
+      expect(api.get).toHaveBeenCalledTimes(6)
+      expect(screen.getByText('Payment confirmed!')).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a manual "Check again" replaces the waiting slow poll instead of running beside it', async () => {
+    vi.useFakeTimers()
+    try {
+      api.get.mockResolvedValue({ data: { success: false, pending: true, data: { scanId: 's7' } } })
+      renderAt()
+      for (let i = 0; i < 5; i++) await vi.advanceTimersByTimeAsync(4100)
+      const before = api.get.mock.calls.length
+      screen.getByRole('button', { name: 'Check again' }).click()
+      await vi.advanceTimersByTimeAsync(0)
+      expect(api.get.mock.calls.length).toBe(before + 1)
+      // the old 30s timer is gone: advancing 30s yields exactly the NEW chain's next fast poll(s), not an extra one
+      await vi.advanceTimersByTimeAsync(4100)
+      expect(api.get.mock.calls.length).toBe(before + 2)
+    } finally { vi.useRealTimers() }
   })
 })

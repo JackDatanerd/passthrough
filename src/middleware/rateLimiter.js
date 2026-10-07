@@ -427,6 +427,17 @@ const paymentReceipt = makeLimiter({
   message: msg('Receipt already sent a few times. Please try again in an hour.')
 })
 
+// AUDIT FIX (Payments & Pricing round 4, gap G5): GET /api/pricing is public and, with ?ref=, does a
+// referral_codes lookup whose answer (referralApplied true/false) says whether a code exists — a
+// code-guessing oracle held back only by the app-wide 100-per-15-minutes limiter. Per IP, and ONLY
+// when a code is actually being looked up (a plain quote stays on the general limiter alone).
+// Generous for a person typing a few codes; hopeless for enumeration.
+const pricingRef = makeLimiter({
+  windowSeconds: 10 * 60, max: 30, keyPrefix: 'rl:pricingref',
+  skip: c => !c.req.query('ref'),
+  message: msg('Too many referral code checks. Please wait a few minutes and try again.')
+})
+
 // Backs PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
 // (scan.controller.js's updateResumeData/downloadDraft). Reachable by
 // anonymous visitors too (ownership is enforced via anon_token, not the
@@ -754,7 +765,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, historyPurge, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, historyPurge, webhook, click,
   partnerRead, partnerWrite, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

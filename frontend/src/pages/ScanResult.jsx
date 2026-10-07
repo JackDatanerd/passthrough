@@ -12,6 +12,7 @@ import CategoryScores from '../components/scan/CategoryScores'
 import AtsDetailPanel from '../components/scan/AtsDetailPanel'
 import FixBanner from '../components/scan/FixBanner'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
+import { fmtPrice } from '../hooks/usePricing'
 import DiffView from '../components/scan/DiffView'
 import ResumeDataEditor from '../components/scan/ResumeDataEditor'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
@@ -78,6 +79,8 @@ export default function ScanResult() {
   // payingTier additionally drives which specific button shows the spinner.
   const [payingTier,  setPayingTier] = useState(null)
   const [payError,    setPayError  ] = useState('')
+  // G1 (round 4): a heads-up that is not an error (the price at checkout differs from the quote).
+  const [payNotice,   setPayNotice  ] = useState('')
   // AUDIT FIX (feature gap): initializePayment's 409 ("...finish or cancel
   // it") had no actual cancel path anywhere behind it — see cancelPayment's
   // comment in payments.controller.js. When the 409 carries a reference,
@@ -336,13 +339,18 @@ export default function ScanResult() {
       setPayLoading(false)
       if (!ok) return
     }
-    setPayLoading(true); setPayingTier(fixTier); setPayError(''); setStuckPayment(null)
+    setPayLoading(true); setPayingTier(fixTier); setPayError(''); setPayNotice(''); setStuckPayment(null)
     clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null)
     try {
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined
       })
-      const { access_code, reference } = res.data.data
+      const { access_code, reference, amount, currency, referralDropped } = res.data.data
+      // B1/G1 (round 4): the code stopped applying between the quote and now (it lost the race for
+      // its last use), so the checkout opens at the standard price. Say so BEFORE the buyer pays,
+      // instead of letting the popup's price be the first they hear of it.
+      if (referralDropped && Number.isFinite(amount))
+        setPayNotice(`Your referral code just reached its usage limit, so this checkout is at the regular price of ${fmtPrice(amount, currency)}. You can close the payment window if you'd rather not continue.`)
 
       // access_code works two ways: the inline popup below, or a plain
       // redirect to Paystack's own hosted checkout page for it — same
@@ -1031,6 +1039,9 @@ export default function ScanResult() {
                       </button>
                     </div>
                   </div>
+                )}
+                {payNotice && !payError && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payNotice}</p>
                 )}
                 {payError && (
                   <div className="text-sm text-red-600">

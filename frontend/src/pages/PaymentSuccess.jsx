@@ -18,13 +18,20 @@ import Footer from '../components/layout/Footer'
 // the customer sees while that happens.
 const PENDING_MAX_ATTEMPTS = 5
 const PENDING_RETRY_MS = 4000
+// G3 (round 4): after the fast polls above give up, keep checking quietly, slowly, for a few more
+// minutes — a mobile-money approval can take longer than 16 seconds, and the buyer should be taken
+// to their resume the moment it clears instead of having to find the "Check again" link. Spaced
+// so the whole sequence stays inside rl.paymentVerify's 20-per-5-minutes budget (5 + 10 calls).
+const SLOW_POLL_MAX_ATTEMPTS = 15
+const SLOW_POLL_MS = 30000
 
 export default function PaymentSuccess() {
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
-  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | error
+  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | declined | no-reference | error
   const [scanId,  setScanId ] = useState(null)
   const [supportMessage, setSupportMessage] = useState('')
+  const [declinedMessage, setDeclinedMessage] = useState('')
 
   const reference = params.get('reference') || params.get('trxref')
 
@@ -43,7 +50,7 @@ export default function PaymentSuccess() {
   const mountedRef = useRef(true)
   useEffect(() => {
     mountedRef.current = true
-    return () => { mountedRef.current = false }
+    return () => { mountedRef.current = false; clearTimeout(pollTimerRef.current) }
   }, [])
 
   // BUGFIX: previously any failure here — a network blip, a brief 5xx,
@@ -82,14 +89,22 @@ export default function PaymentSuccess() {
   // into the pending-poll sequence we are, and resets on every successful
   // response (pending or final) so it never carries stale count forward.
   const errorRetriesRef = useRef(0)
+  // ONE scheduled re-check at a time: a manual "Check again" while a slow poll is waiting must
+  // replace it, not run alongside it (two chains would double the calls against the verify limiter).
+  const pollTimerRef = useRef(null)
+  function scheduleVerify(attempt, ms) {
+    clearTimeout(pollTimerRef.current)
+    pollTimerRef.current = setTimeout(() => verify(attempt), ms)
+  }
 
   function verify(attempt = 1) {
     // AUDIT FIX (Section 3/4 pass, bug): see mountedRef's comment above —
     // bail before touching state OR making the network call at all, so an
     // unmounted retry doesn't even poll Paystack pointlessly.
     if (!mountedRef.current) return
-    if (!reference) { setStatus('error'); return }
-    setStatus(attempt > 1 ? 'pending' : 'loading')
+    clearTimeout(pollTimerRef.current)
+    if (!reference) { setStatus('no-reference'); return }
+    setStatus(attempt > PENDING_MAX_ATTEMPTS ? 'still-pending' : attempt > 1 ? 'pending' : 'loading')
     // AUDIT FIX (Payments & Pricing pass 1, bug): `reference` went straight
     // into the query string unencoded. Paystack references are normally
     // URL-safe, but nothing here actually guarantees that — encoding costs
@@ -103,11 +118,14 @@ export default function PaymentSuccess() {
         // number of times before settling on "still processing" rather than
         // ever showing this as an error.
         if (res.data.pending) {
+          if (res.data.data?.scanId) setScanId(res.data.data.scanId)
           if (attempt < PENDING_MAX_ATTEMPTS) {
             setStatus('pending')
-            setTimeout(() => verify(attempt + 1), PENDING_RETRY_MS)
+            scheduleVerify(attempt + 1, PENDING_RETRY_MS)
           } else {
             setStatus('still-pending')
+            if (attempt < PENDING_MAX_ATTEMPTS + SLOW_POLL_MAX_ATTEMPTS)
+              scheduleVerify(attempt + 1, SLOW_POLL_MS)
           }
           return
         }
@@ -152,10 +170,17 @@ export default function PaymentSuccess() {
         // wasn't even true. A 429 gets its own wait-and-check-again state; other
         // 4xx go straight to the failure screen.
         if (httpStatus === 429) { setStatus('rate-limited'); return }
+        // G2 (round 4): Paystack says the payment definitely did not go through.
+        if (httpStatus === 400 && err.response?.data?.declined) {
+          if (err.response.data.data?.scanId) setScanId(err.response.data.data.scanId)
+          setDeclinedMessage(err.response.data.message || '')
+          setStatus('declined')
+          return
+        }
         if (httpStatus && httpStatus >= 400 && httpStatus < 500 && httpStatus !== 408) { setStatus('error'); return }
         if (errorRetriesRef.current < 2) {
           errorRetriesRef.current += 1
-          setTimeout(() => verify(attempt), 1500)   // same attempt — not a pending-poll advance
+          scheduleVerify(attempt, 1500)   // same attempt — not a pending-poll advance
           return
         }
         setStatus('error')
@@ -203,9 +228,37 @@ export default function PaymentSuccess() {
                 <button type="button" onClick={() => verify()} className="text-sm text-blue-600 hover:underline">
                   Check again
                 </button>
+                {scanId && <a href={`/scan/${scanId}`} className="text-sm text-blue-600 hover:underline">Back to your resume</a>}
                 <a href="/dashboard" className="text-sm text-blue-600 hover:underline">
                   Go to dashboard
                 </a>
+              </div>
+            </>
+          )}
+          {status === 'declined' && (
+            <>
+              <div className="text-red-500 text-5xl mb-4">✕</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Payment not completed</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                {declinedMessage || 'This payment was not completed, so you have not been charged.'}
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                {scanId && <a href={`/scan/${scanId}`} className="text-sm font-medium text-blue-600 hover:underline">Back to your resume</a>}
+                <a href="/dashboard" className="text-sm text-blue-600 hover:underline">Go to dashboard</a>
+              </div>
+            </>
+          )}
+          {status === 'no-reference' && (
+            <>
+              <div className="text-amber-500 text-5xl mb-4">?</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">We couldn't find a payment to check</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                This page needs the payment reference Paystack adds to the link. If you just paid, your payment is safe —
+                open your dashboard to see it, or email support@passthrough.dev.
+              </p>
+              <div className="flex items-center justify-center gap-4">
+                <a href="/dashboard/payments" className="text-sm font-medium text-blue-600 hover:underline">View my payments</a>
+                <a href="/dashboard" className="text-sm text-blue-600 hover:underline">Go to dashboard</a>
               </div>
             </>
           )}

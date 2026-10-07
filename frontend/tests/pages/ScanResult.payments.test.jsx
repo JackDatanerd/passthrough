@@ -142,3 +142,22 @@ describe('ScanResult — open checkout notice (G3) and already-paid (B2)', () =>
     expect(screen.queryByText('Cancel that payment and choose again')).toBeNull()
   })
 })
+
+describe('ScanResult — price notice at checkout (round 4, B1/G1)', () => {
+  it('tells the buyer when their code stopped applying, with the amount that will be charged', async () => {
+    setupApi()
+    api.post.mockResolvedValue({ data: { data: { access_code: 'AC', reference: 'R', amount: 4900, currency: 'USD', referralDropped: true } } })
+    renderPage()
+    fireEvent.click(await screen.findByText('pay-fix'))
+    expect(await screen.findByText(/referral code just reached its usage limit.*\$49/)).toBeInTheDocument()
+  })
+
+  it('says nothing extra when the code applied (or there was none)', async () => {
+    setupApi()
+    api.post.mockResolvedValue({ data: { data: { access_code: 'AC', reference: 'R', amount: 2900, currency: 'USD', referralDropped: false } } })
+    renderPage()
+    fireEvent.click(await screen.findByText('pay-fix'))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/payments/initialize', expect.anything()))
+    expect(screen.queryByText(/usage limit/)).toBeNull()
+  })
+})

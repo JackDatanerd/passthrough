@@ -1,0 +1,26 @@
+Payments & Pricing — round 4 (fresh independent audit; closes B1 and gaps G1–G5)
+
+B1  (bug)  /api/pricing quoted a referral discount that checkout then silently withheld.
+           isCodeUsable() only compares uses_so_far with usage_limit; the checkout claim
+           (reserve_referral_code_slot) also counts live reservations. The quote now applies
+           the same rule (referral.service.js countLiveReservations, fails open on a DB error).
+G1  (gap)  POST /payments/initialize now returns { amount, currency, referralDropped } (also on a
+           resumed checkout). ScanResult shows a notice BEFORE the popup when a code lost the
+           race for its last use and the checkout is at the regular price.
+G2  (gap)  GET /payments/verify: Paystack failed/abandoned/reversed answer 400 { declined: true }
+           (+ scanId) instead of the generic failure. PaymentSuccess shows "Payment not
+           completed" with a link back to the resume, not "may still have gone through".
+G3  (gap)  PaymentSuccess: no-reference gets its own state with links; after the fast polls it keeps
+           checking every 30s for ~7 minutes (inside rl.paymentVerify's budget), one timer at a
+           time; the 202 now carries scanId so "Still processing" links back to the resume.
+G4  (gap)  Pricing page: signed-in visitors' paid-card buttons go to /dashboard, not home.
+G5  (hardening) GET /api/pricing?ref= has its own per-IP limiter (30 / 10 min) — it was a
+           code-existence oracle behind only the 100/15min general limiter.
+
+Not changed (decisions for the owner)
+G6  Referral discount + commission apply to EVERY purchase within the 30-day attribution window.
+B2  A cancelled/abandoned checkout releases its referral slot but its Paystack link stays payable;
+    a late payment can exceed a limited code's usage_limit (warnIfOverLimit already emails).
+
+Tests: tests/referral.quote.test.js (new), tests/payments.controller.test.js, tests/rateLimiter.test.js,
+frontend/tests/pages/{PaymentSuccess,ScanResult.payments}.test.jsx, frontend/tests/pages/Pricing.cta.test.jsx (new).

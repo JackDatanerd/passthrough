@@ -501,3 +501,30 @@ describe('payment-family limiters — budget belongs to the account, not the net
     expect((await hit(rl.paymentReceipt, asUser('u1', '9.9.9.9', env))).passed).toBe(true)
   })
 })
+
+// Payments & Pricing round 4, G5: GET /api/pricing?ref= is a code-existence oracle.
+describe('pricingRef limiter', () => {
+  const withRef = (env, ref = 'CODE') => ({ ...ctx({ env }), req: { method: 'GET', path: '/api/pricing', query: k => (k === 'ref' ? ref : undefined), header: h => (h === 'cf-connecting-ip' ? '1.2.3.4' : undefined) } })
+  const noRef  = env => ({ ...ctx({ env }), req: { method: 'GET', path: '/api/pricing', query: () => undefined, header: h => (h === 'cf-connecting-ip' ? '1.2.3.4' : undefined) } })
+
+  it('never limits a plain quote (no ?ref=)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 60; i++) expect((await hit(rl.pricingRef, noRef(env))).passed).toBe(true)
+  })
+
+  it('allows 30 code lookups per 10 minutes per IP, then answers 429', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    let last
+    for (let i = 0; i < 30; i++) last = await hit(rl.pricingRef, withRef(env, `C${i}`))
+    expect(last.passed).toBe(true)
+    const over = await hit(rl.pricingRef, withRef(env, 'ONE-MORE'))
+    expect(over.passed).toBe(false)
+    expect(over.res.status).toBe(429)
+  })
+
+  it('code lookups do not eat the general or payment budgets', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 31; i++) await hit(rl.pricingRef, withRef(env))
+    expect((await hit(rl.payment, ctx({ env }))).passed).toBe(true)
+  })
+})

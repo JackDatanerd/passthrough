@@ -27,6 +27,9 @@ const { logAdminAction } = require('../lib/adminAudit')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const { isRangeError } = require('../lib/db')
 
+// Paystack verify statuses that are final and not a success (see verifyPayment).
+const DEFINITE_FAILURE_STATUSES = ['failed', 'abandoned', 'reversed']
+
 // A PENDING checkout younger than this is resumed (same access code) instead of replaced.
 const PENDING_REUSE_WINDOW_MS = 30 * 60 * 1000
 
@@ -213,7 +216,11 @@ async function initializePayment(c2) {
     if (sameTier && sameCode && pendingRow.paystack_access_code) {
       return c2.json({ success: true, data: {
         access_code: pendingRow.paystack_access_code,
-        reference:   pendingRow.paystack_ref
+        reference:   pendingRow.paystack_ref,
+        // G1 (round 4): what this checkout will actually charge, so the client can show it.
+        amount:      pendingRow.amount_cents ?? null,
+        currency:    pendingRow.currency || c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+        referralDropped: false
       }})
     }
     return c2.json({ success: false,
@@ -378,7 +385,7 @@ async function initializePayment(c2) {
     if (insertErr.code === '23505') {
       const { data: freshPending, error: reErr } = await supabase
         .from('payments')
-        .select('paystack_ref, paystack_access_code, fix_tier, referral_code, created_at')
+        .select('paystack_ref, paystack_access_code, fix_tier, referral_code, created_at, amount_cents, currency')
         .eq('scan_id', scanId).eq('status', 'PENDING')
         .order('created_at', { ascending: false }).limit(1).maybeSingle()
       const racedResponse = !reErr && respondForExistingPending(freshPending)
@@ -402,10 +409,19 @@ async function initializePayment(c2) {
     }, 502)
   }
 
+  // AUDIT FIX (Payments & Pricing round 4, gap G1 / bug B1): the client was never told what this
+  // checkout will charge, so a code that stopped applying between the quote and now (lost the
+  // race for its last slot) changed the price with no word to the buyer. `referralDropped` is
+  // true exactly when a code resolved for this request but could not claim a slot.
   return c2.json({ success: true, data: {
     authorization_url: result.authorization_url,
     access_code:        result.access_code,
-    reference
+    reference,
+    amount,
+    currency: c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    // Only when it changed what the buyer pays: if the site promo already beat the code's price,
+    // losing the code leaves the amount identical and there is nothing to warn about.
+    referralDropped: !!(priced.referralCode && !finalPriced.referralCode && finalPriced.amount !== priced.amount)
   }})
 }
 
@@ -535,9 +551,22 @@ async function verifyPayment(c2) {
   // "failed" in the meantime). Checked BEFORE the currency/success check
   // below so a still-processing transaction never reaches it.
   if (paystackService.isPendingStatus(pResult.data?.status))
-    return c2.json({ success: false, pending: true,
+    return c2.json({ success: false, pending: true, data: { scanId: paymentRow.scan_id },
       message: 'Your payment is still processing — this can take a minute or two, especially for mobile money. Check back shortly.'
     }, 202)
+
+  // AUDIT FIX (Payments & Pricing round 4, gap G2): Paystack's failed / abandoned / reversed are
+  // DEFINITE outcomes — the buyer was not charged (or was charged and got it back). They used to
+  // share the generic "verification failed" with real lookup trouble, so PaymentSuccess told a
+  // buyer whose card was simply declined that their payment "may still have gone through". The
+  // row stays PENDING exactly as before (a retry on the same checkout can still succeed).
+  const paystackStatus = pResult.data?.status
+  if (DEFINITE_FAILURE_STATUSES.includes(paystackStatus))
+    return c2.json({ success: false, declined: true, paystackStatus, data: { scanId: paymentRow.scan_id },
+      message: paystackStatus === 'reversed'
+        ? 'This payment was reversed, so nothing was delivered.'
+        : 'This payment was not completed, so you have not been charged. You can go back to your resume and try again.'
+    }, 400)
 
   if (pResult.data?.status !== 'success')
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)

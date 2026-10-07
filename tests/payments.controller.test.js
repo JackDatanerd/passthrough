@@ -1594,3 +1594,84 @@ describe('round 3 — payments & pricing', () => {
     expect((await t.mod.getPendingPayment(t.c({ query: { scanId: 'nope' } }))).status).toBe(400)
   })
 })
+
+// ── round 4 — payments & pricing ─────────────────────────────────────────────
+describe('round 4 — initialize reports the charged amount (G1/B1)', () => {
+  const limitedCode = { id: 'rc1', code: 'LIMITED', active: true, usage_limit: 5, uses_so_far: 0, expires_at: null,
+    tier_prices: { FIX: 1500 }, partners: { status: 'ACTIVE' } }
+  const body = { scanId: '11111111-1111-1111-1111-111111111111', fixTier: 'FIX', referralCode: 'LIMITED' }
+  const user = { id: 'u1', email: 'a@b.co', emailVerified: true }
+
+  it('returns the amount and currency that were actually charged', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode }, reservationId: 'res-1' })
+    const res = await t.mod.initializePayment(t.c({ body, user }))
+    expect(res.status).toBe(200)
+    expect(res.body.data).toMatchObject({ amount: 1500, currency: 'USD', referralDropped: false })
+  })
+
+  it('B1: a code that lost the race for its last slot says so — referralDropped, with the standard amount', async () => {
+    t = setupInit({ referralCodes: { LIMITED: limitedCode }, reservationId: null })
+    const res = await t.mod.initializePayment(t.c({ body, user }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.referralDropped).toBe(true)
+    expect(res.body.data.amount).toBe(t.state.paymentInserts[0].amount_cents)
+    expect(res.body.data.amount).toBeGreaterThan(1500)
+  })
+
+  it('losing a code that was not cheaper than today\'s price anyway is NOT reported (the amount did not change)', async () => {
+    t = setupInit({ referralCodes: { LIMITED: { ...limitedCode, tier_prices: { FIX: 99999 } } }, reservationId: null })
+    const res = await t.mod.initializePayment(t.c({ body, user }))
+    expect(res.status).toBe(200)
+    expect(res.body.data.referralDropped).toBe(false)
+  })
+
+  it('a code that never resolved is NOT reported as dropped', async () => {
+    t = setupInit({ referralCodes: {} })
+    const res = await t.mod.initializePayment(t.c({ body: { ...body, referralCode: 'NOPE' }, user }))
+    expect(res.body.data.referralDropped).toBe(false)
+  })
+
+  it('a resumed checkout reports the amount it was created with', async () => {
+    const fresh = { paystack_ref: 'r0', paystack_access_code: 'ac0', fix_tier: 'FIX', referral_code: null,
+      created_at: new Date().toISOString(), amount_cents: 3900, currency: 'USD' }
+    t = setupInit({ existingPending: fresh })
+    const res = await t.mod.initializePayment(t.c({ body: { ...body, referralCode: undefined }, user }))
+    expect(res.status).toBe(200)
+    expect(res.body.data).toMatchObject({ access_code: 'ac0', reference: 'r0', amount: 3900, currency: 'USD', referralDropped: false })
+  })
+})
+
+describe('round 4 — verifyPayment tells a definite failure from a lookup problem (G2)', () => {
+  for (const status of ['failed', 'abandoned']) {
+    it(`Paystack "${status}" -> 400 declined, with the scan to go back to; the row is left alone`, async () => {
+      t = setup({ paystack: { data: { status, currency: 'USD', amount: 2900 } } })
+      const res = await t.mod.verifyPayment(t.c())
+      expect(res.status).toBe(400)
+      expect(res.body).toMatchObject({ success: false, declined: true, paystackStatus: status, data: { scanId: 's1' } })
+      expect(res.body.message).toMatch(/not been charged/)
+      expect(t.state.queue).toHaveLength(0)
+    })
+  }
+
+  it('"reversed" says the payment was reversed', async () => {
+    t = setup({ paystack: { data: { status: 'reversed', currency: 'USD', amount: 2900 } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(400)
+    expect(res.body.declined).toBe(true)
+    expect(res.body.message).toMatch(/reversed/)
+  })
+
+  it('an unknown non-success status keeps the generic failure (not "declined")', async () => {
+    t = setup({ paystack: { data: { status: 'mystery', currency: 'USD', amount: 2900 } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(400)
+    expect(res.body.declined).toBeUndefined()
+  })
+
+  it('a still-processing answer carries the scan id so the success page can link back', async () => {
+    t = setup({ paystack: { data: { status: 'pending' } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(202)
+    expect(res.body).toMatchObject({ pending: true, data: { scanId: 's1' } })
+  })
+})

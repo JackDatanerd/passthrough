@@ -1,8 +1,9 @@
-import { useState } from 'react'
+import { useContext, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import PromoCountdown from '../components/ui/PromoCountdown'
+import { AuthContext } from '../context/AuthContext'
 import { usePricing, fmtPrice } from '../hooks/usePricing'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import { ReferralCodeEntry, PricingFailedNotice } from '../components/ui/ReferralCodeEntry'
@@ -27,6 +28,13 @@ function PriceBlock({ tier, currency }) {
 const PAID_TIERS = ['BADGE', 'FIX_PLAIN', 'FIX']
 
 export default function Pricing() {
+  // G4 (round 4): the three paid cards all said "Scan first →" and went to the home page, even for
+  // someone already signed in with scans waiting. Signed-in visitors go to their dashboard (where
+  // their scans, and the buy buttons on them, live). Null-safe, like usePricing: a bare render
+  // without a provider is an anonymous visitor.
+  const signedIn = !!useContext(AuthContext)?.user
+  const buyTo = signedIn ? '/dashboard' : '/'
+  const buyLabel = signedIn ? 'Choose one of your scans →' : 'Scan first →'
   // AUDIT FIX (feature gap): this page used to call usePricing() with no
   // code at all, so a visitor referred via ?ref=CODE — captured globally by
   // useReferralCapture in App.jsx the same as on any other page — never saw
@@ -155,9 +163,9 @@ export default function Pricing() {
                 </li>
               ))}
             </ul>
-            <Link to="/"
+            <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
-              Scan first →
+              {buyLabel}
             </Link>
           </div>
 
@@ -173,9 +181,9 @@ export default function Pricing() {
                 </li>
               ))}
             </ul>
-            <Link to="/"
+            <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
-              Scan first →
+              {buyLabel}
             </Link>
           </div>
 
@@ -194,9 +202,9 @@ export default function Pricing() {
                 </li>
               ))}
             </ul>
-            <Link to="/"
+            <Link to={buyTo}
               className="text-center bg-blue-700 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
-              Scan first →
+              {buyLabel}
             </Link>
           </div>
         </div>

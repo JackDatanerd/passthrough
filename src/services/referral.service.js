@@ -151,8 +151,37 @@ async function resolvePrice(supabase, fixTier, env, rawReferralCode, opts = {}) 
 async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts = {}) {
   if (!rawReferralCode)
     return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, null)]))
-  const codeRow = await lookupCode(supabase, rawReferralCode)
+  let codeRow = await lookupCode(supabase, rawReferralCode)
+  // AUDIT FIX (Payments & Pricing round 4, bug — B1): isCodeUsable only compares uses_so_far with
+  // usage_limit, but initializePayment claims a slot with reserve_referral_code_slot, which
+  // counts uses_so_far PLUS live reservations. A limited code whose last slots were held by
+  // checkouts in progress therefore QUOTED its discount here and then silently charged the full
+  // price at checkout. The quote now applies the same rule the claim does.
+  if (codeRow && isCodeUsable(codeRow) && codeRow.usage_limit != null) {
+    const live = await countLiveReservations(supabase, codeRow.id)
+    if ((codeRow.uses_so_far || 0) + live >= codeRow.usage_limit) codeRow = null
+  }
   return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow, opts)]))
+}
+
+// Must match reserve_referral_code_slot's default p_ttl_seconds (migration 0044).
+const RESERVATION_TTL_SECONDS = 3600
+
+// Reservations still counting toward a code's limit. A QUOTE helper only — never reserves.
+// Fails OPEN (0): a failed count must not hide a discount that checkout may well still honour;
+// the claim at checkout is the real enforcement.
+async function countLiveReservations(supabase, codeId) {
+  try {
+    const since = new Date(Date.now() - RESERVATION_TTL_SECONDS * 1000).toISOString()
+    const { count, error } = await supabase.from('referral_code_reservations')
+      .select('id', { count: 'exact', head: true })
+      .eq('referral_code_id', codeId).gt('created_at', since)
+    if (error) { console.error('countLiveReservations:', error.message); return 0 }
+    return count || 0
+  } catch (err) {
+    console.error('countLiveReservations unexpected:', err.message)
+    return 0
+  }
 }
 
 /**
@@ -468,4 +497,5 @@ module.exports = {
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
+  countLiveReservations,
 }
