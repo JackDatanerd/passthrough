@@ -12,3 +12,19 @@ describe('partnerTerms', () => {
     expect(ATTRIBUTION_TERMS).toHaveLength(3)
   })
 })
+
+// Guards against the regression that already happened once: a later push to these files silently
+// dropped the wiring, and no behavioural test failed. These read the sources so it fails loudly.
+import { readFileSync } from 'node:fs'
+describe('partnerTerms stays wired in', () => {
+  const src = f => readFileSync(new URL(`../src/${f}`, import.meta.url), 'utf8')
+  it('the capture hook derives its window from the shared constant', () => {
+    const s = src('hooks/useReferralCapture.js')
+    expect(s).toMatch(/import \{ ATTRIBUTION_WINDOW_DAYS \} from '..\/lib\/partnerTerms'/)
+    expect(s).toMatch(/ATTRIBUTION_TTL_MS = ATTRIBUTION_WINDOW_DAYS/)
+  })
+  it('both partner pages render the shared terms', () => {
+    for (const f of ['pages/PartnerApply.jsx', 'pages/PartnerDashboard.jsx'])
+      expect(src(f)).toContain('ATTRIBUTION_TERMS.map')
+  })
+})

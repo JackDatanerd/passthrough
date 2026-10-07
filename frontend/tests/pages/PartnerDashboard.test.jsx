@@ -48,3 +48,14 @@ describe('PartnerDashboard — payout details prompt', () => {
     expect(screen.getByText(/Payouts start at \$20\.00/)).toBeInTheDocument()
   })
 })
+
+describe('PartnerDashboard — how crediting works (G6)', () => {
+  it('shows the same terms an applicant saw, in an expandable note', async () => {
+    show({})
+    const note = await screen.findByTestId('attribution-terms')
+    expect(note).toHaveTextContent('How crediting works')
+    expect(note).toHaveTextContent(/30 days after their most recent click/)
+    expect(note).toHaveTextContent(/not just the first/)
+    expect(note).toHaveTextContent(/refunded, its commission is reversed/)
+  })
+})

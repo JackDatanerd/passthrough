@@ -14,3 +14,10 @@ B2  Decision: accepted as a known limitation (no code change). A late payment on
 
 Tests: PartnerApply / PartnerDashboard (terms shown), new partnerTerms.test.js; existing
 useReferralCapture tests continue to pin the 30-day enforcement.
+
+Round 5 follow-up — restored after being overwritten by the partners round-4 push (5bb52d1)
+- useReferralCapture.js: window derived from lib/partnerTerms.js again.
+- PartnerDashboard.jsx: "How crediting works" note re-added (merged into the round-4 version of the file).
+- PartnerDashboard.test.jsx: its test re-added.
+- partnerTerms.test.js: new source-level guards so a future overwrite of either file fails a test
+  instead of passing silently.
