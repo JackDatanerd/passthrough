@@ -15,6 +15,7 @@
 // the others, or the rest of the cron). All return counts for the cron's log.
 
 const c = require('../config/constants')
+const { sha256 } = require('../lib/crypto')
 
 const EMAIL_LOG_RETENTION_DAYS = 90
 const ALERT_LOG_RETENTION_DAYS = 180
@@ -109,13 +110,31 @@ async function clearExpiredTokens(supabase, now = Date.now()) {
   return out
 }
 
-async function purgeArchivedLeads(supabase, now = Date.now()) {
+// `suppress` (env ARCHIVED_LEAD_PURGE_SUPPRESSES=true; off by default) — independent audit round 8,
+// Section 5. Purging forgets the address entirely, so a dismissed spammer who comes back after
+// the window arrives as a brand-new lead and notifies the owner again. With it on, each purged
+// address goes onto the do-not-contact list (hash only) and its employer mail history is cleared,
+// so the dismissal outlives the row. Off by default because the list answers the public form
+// with a silent "success": an employer who was merely not a fit would never be able to sign up again.
+async function purgeArchivedLeads(supabase, now = Date.now(), { suppress = false } = {}) {
   try {
     const cutoff = new Date(now - ARCHIVED_LEAD_RETENTION_DAYS * DAY).toISOString()
     const { data, error } = await supabase.from('employer_leads')
-      .delete().eq('status', 'ARCHIVED').lt('updated_at', cutoff).select('id')
+      .delete().eq('status', 'ARCHIVED').lt('updated_at', cutoff).select(suppress ? 'id, email' : 'id')
     if (error) return { deleted: 0, error: error.message }
-    return { deleted: data?.length || 0 }
+    const out = { deleted: data?.length || 0 }
+    if (suppress && data?.length) {
+      const emails = [...new Set(data.map(r => r.email).filter(Boolean))]
+      const hashes = await Promise.all(emails.map(async (e) => ({ email_hash: await sha256(e) })))
+      const { error: supErr } = await supabase.from('employer_lead_suppressions')
+        .upsert(hashes, { onConflict: 'email_hash', ignoreDuplicates: true })
+      if (supErr) return { ...out, error: `suppression: ${supErr.message}` }
+      const { error: logErr } = await supabase.from('email_logs').delete()
+        .in('to', emails).in('template', ['employer_lead_ack', 'employer_candidates_available'])
+      if (logErr) return { ...out, error: `mail log: ${logErr.message}` }
+      out.suppressed = emails.length
+    }
+    return out
   } catch (err) {
     return { deleted: 0, error: err.message }
   }
@@ -139,7 +158,7 @@ async function runRetention(env, supabase, now = Date.now()) {
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
-    purgeArchivedLeads(supabase, now),
+    purgeArchivedLeads(supabase, now, { suppress: !!env && String(env.ARCHIVED_LEAD_PURGE_SUPPRESSES).toLowerCase() === 'true' }),
     purgeStaleUnconfirmedLeads(supabase, now),
   ])
   return { anon, logs, tokens, leads, staleLeads }

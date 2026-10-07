@@ -39,6 +39,29 @@ describe('general limiter', () => {
       expect(passed).toBe(true)
     }
   })
+  it('skips the employer-lead opt-out endpoints, which have their own bucket, but not confirm or the form', async () => {
+    const reads = { n: 0 }
+    const kv = { get: async () => { reads.n++; return null }, put: async () => {} }
+    for (const [method, path] of [['POST', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/unsubscribe'], ['GET', '/api/employer-leads/unsubscribe'], ['POST', '/api/employer-leads/unsubscribe/']]) {
+      reads.n = 0
+      const { passed } = await hit(rl.general, ctx({ method, path, env: { RATE_LIMIT_KV: kv } }))
+      expect(passed).toBe(true)
+      expect(reads.n, `${method} ${path} should skip the generic bucket`).toBe(0)
+    }
+    for (const [method, path] of [['POST', '/api/employer-leads/confirm'], ['POST', '/api/employer-leads'], ['GET', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/remove-me']]) {
+      reads.n = 0
+      await hit(rl.general, ctx({ method, path, env: { RATE_LIMIT_KV: kv } }))
+      expect(reads.n, `${method} ${path} should still be counted`).toBeGreaterThan(0)
+    }
+  })
+  it('the opt-out limiter has its own, much larger, per-IP bucket', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 31; i++) await hit(rl.employerLeadOptOut, ctx({ env, method: 'POST', path: '/api/employer-leads/remove' }))
+    // 31 > the 30/hour that confirm gets, and still allowed
+    expect((await hit(rl.employerLeadOptOut, ctx({ env, method: 'POST', path: '/api/employer-leads/remove' }))).passed).toBe(true)
+    for (let i = 0; i < 30; i++) await hit(rl.employerLeadLink, ctx({ env, method: 'POST', path: '/api/employer-leads/confirm' }))
+    expect((await hit(rl.employerLeadLink, ctx({ env, method: 'POST', path: '/api/employer-leads/confirm' }))).passed).toBe(false)
+  })
   it('allows 100 requests then answers 429 on the 101st, per IP', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
     let last

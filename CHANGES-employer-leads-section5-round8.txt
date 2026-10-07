@@ -1,0 +1,53 @@
+Section 5 (Employer leads) - independent audit round 8 (controller + routes, with the rate limiter, retention, mail log,
+admin UI and tests they touch)
+Base: c266764 "profile & dashboard: round 6 ..."   NO MIGRATION. One new OPTIONAL env var: ARCHIVED_LEAD_PURGE_SUPPRESSES.
+
+BUGS
+B1  adminExportLeads treated a page shorter than the 1000 it asked for as "the last page". A Supabase project whose max-rows
+    setting is below 1000 answers every page short, so the export stopped after one page, silently, with
+    X-Export-Truncated: false. Only an empty page ends it now (one extra cheap request on a normal export).
+B2  createLead checked the do-not-contact list, then inserted. A "remove me" landing in between left a brand-new lead standing
+    for an address that had just opted out, and mailed the owner and the address about it. The list is re-read once the row
+    exists; if the address is on it the row is deleted and nothing is sent.
+B3  /remove and /unsubscribe (POST and the GET hand-off) shared a 30-per-hour per-IP bucket with /confirm, and the generic
+    100-per-15-minutes bucket on top. Mailbox providers send RFC 8058 one-click requests from shared IPs, so recipients could
+    429 each other's opt-outs. They now use their own 600/hour bucket (rl:leadoptout) and skip the generic one; the signed token
+    stays the real gate. /confirm and the form are unchanged.
+B4  Emailed confirm / remove links used FRONTEND_URL raw: a trailing slash (env.js only warns) put "//" in them, while the
+    unsubscribe redirect already trimmed it. One helper, used by both.
+B5  adminNotifyCandidates: a send refused because the address already got this email inside the cooldown (its stamp lost - the
+    lead was deleted and re-added, or the stamp write failed) was counted "failed" and "still waiting" on every call, stayed
+    eligible, sorted first and held a slot in the 100-lead examine window for good. The mail log is now consulted on a failed
+    send: if the address really was told, that time becomes the stamp and the lead is counted skipped. `remaining` no longer
+    includes leads that failed (the UI told you to press again for them forever).
+B6  The public form answered after very different amounts of work (suppressed: 1 query; new: insert; already a lead: insert, read,
+    update, plus the sends), so response time told anyone who measured it whether an employer's address was already on the
+    list. A new lead and a duplicate now cost the submitter the same single insert; merging a resubmission, announcing a new
+    lead and the post-insert suppression check all run after the response (waitUntil), each bounded and logged on failure.
+B7  Cosmetic: the lead.export audit entry always listed the default sort as a filter.
+
+GAPS
+G1  Delete-and-block. `DELETE /api/employer-leads/:id?suppress=true` and bulk action `deleteAndSuppress` also put the address(es)
+    on the do-not-contact list (hash only). A plain delete (and the 90-day archived purge) forgot the address, so a spam
+    address could resubmit at once and notify the owner again. Admin UI: an unticked "Also block" checkbox in both delete dialogs.
+    Retention: optional ARCHIVED_LEAD_PURGE_SUPPRESSES=true makes the archived purge block what it purges (off by default - the
+    form answers a blocked address with a silent success, so an employer who was merely not a fit could never sign up).
+G2  Removal now also clears the address's employer mail history (email_logs rows for employer_lead_ack and
+    employer_candidates_available) - it used to stay for the 90-day log retention, beside a remove page that promises deletion.
+    Applies to /remove, one-click unsubscribe, admin add-to-do-not-contact, delete-and-block and the optional archived purge.
+    Best effort and always the LAST step: the opt-out itself (hash + deleted lead) is never held up by it.
+G3  Bulk actions (admin UI bulk bar): setField (categorise leads that arrived without a field; "No field" clears it),
+    markConfirmed (only leads still unconfirmed; a real confirmation time is never overwritten; asks first; audited) and
+    requestConfirmation (at most 25 per call; per-address email cap still applies; reports sent / failed / skipped).
+G4  CSV export gained trailing columns: Acknowledgement last sent, Resubmission notice last sent, Candidates last notified,
+    Lead id. Existing column positions are unchanged.
+
+FILES
+src/controllers/employer-leads.controller.js, src/routes/employer-leads.routes.js, src/middleware/rateLimiter.js,
+src/services/retention.service.js, DEPLOYMENT.md, frontend/src/components/ui/ConfirmDialog.jsx (optional `children`),
+frontend/src/pages/admin/AdminLeads.jsx, tests/employer-leads.controller.test.js, tests/rateLimiter.test.js,
+tests/retention.deadletter.test.js, tests/routes.wiring.test.js, frontend/tests/pages/AdminLeads.round8.test.jsx
+
+TESTS  Full suite 2904 passed (162 files); lint-undefined clean. 23 of the new controller tests fail against the previous
+controller. Two existing tests were updated for the new behaviour (a duplicate is settled after the response, so the test waits
+for it; the `remaining` count) and the controller test fake now answers a keyset cursor with an empty page.

@@ -82,17 +82,18 @@ describe('employer-leads routes', () => {
   // rate-limiter export with a distinguishable marker (rather than the
   // blanket passThrough every other test here uses) so this can tell WHICH
   // limiter a route actually goes through, not just that some limiter ran.
-  it('confirm/remove use their own rate limiter, not the public form\'s', async () => {
+  it('confirm/remove use their own rate limiter, not the public form\'s — and the opt-outs a third, larger one', async () => {
     const hit = []
     const taggedLimiter = (name) => async (c, next) => { hit.push(name); return next() }
     const a = mount('routes/employer-leads.routes.js', 'controllers/employer-leads.controller.js', {
-      'middleware/rateLimiter.js': { employerLead: taggedLimiter('employerLead'), employerLeadLink: taggedLimiter('employerLeadLink') },
+      'middleware/rateLimiter.js': { employerLead: taggedLimiter('employerLead'), employerLeadLink: taggedLimiter('employerLeadLink'), employerLeadOptOut: taggedLimiter('employerLeadOptOut') },
     })
     await call(a, 'POST', '', { name: 'x' })
     await call(a, 'POST', '/confirm', { token: 'x' })
     await call(a, 'POST', '/remove', { token: 'x' })
     await call(a, 'POST', '/unsubscribe')
-    expect(hit).toEqual(['employerLead', 'employerLeadLink', 'employerLeadLink', 'employerLeadLink'])
+    await call(a, 'GET', '/unsubscribe?token=x')
+    expect(hit).toEqual(['employerLead', 'employerLeadLink', 'employerLeadOptOut', 'employerLeadOptOut', 'employerLeadOptOut'])
   })
 })
 

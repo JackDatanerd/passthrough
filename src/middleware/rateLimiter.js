@@ -273,8 +273,17 @@ const general = makeLimiter({
   // (GitHub camo, LinkedIn) fetching every embedded badge, and office NATs full
   // of hiring managers. The miss-limiter comment below promised those were never
   // punished for each other's lookups; this bucket quietly did exactly that.
-  skip: c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c)
+  skip: c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c) || isLeadOptOutRequest(c)
 })
+
+// The employer-lead opt-out endpoints (see `employerLeadOptOut`): they have their own limiter, and
+// this generic 100-per-15-min per-IP bucket would otherwise still apply to the shared IPs
+// mailbox providers unsubscribe from.
+function isLeadOptOutRequest(c) {
+  const p = c.req.path.replace(/\/+$/, '')
+  return (c.req.method === 'POST' && (p === '/api/employer-leads/remove' || p === '/api/employer-leads/unsubscribe'))
+    || (c.req.method === 'GET' && p === '/api/employer-leads/unsubscribe')
+}
 
 // Scan-status polling: the SPA polls GET /api/scan/:id every ~2.5s while a
 // scan or a fix is generating (a fix can take a minute or two). Counted
@@ -542,6 +551,14 @@ const employerLeadLink = makeLimiter({
   message: msg('Slow down.')
 })
 
+// Independent audit round 8 (Section 5): the opt-out endpoints (remove, RFC 8058 unsubscribe and
+// its GET hand-off) get their own bucket, sized for shared mail-provider IPs rather than one
+// person clicking one link. Still a backstop against a flood — the signed token is the real gate.
+const employerLeadOptOut = makeLimiter({
+  windowSeconds: 60 * 60, max: 600, keyPrefix: 'rl:leadoptout',
+  message: msg('Slow down.')
+})
+
 // AUDIT FIX (Payments & Pricing / Partners re-audit, bug — no live incident,
 // hardening only): partners.routes.js's three public, TOKEN-gated endpoints
 // (GET /payout-details, POST /payout-details, GET /dashboard) had no rate
@@ -773,7 +790,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, dataExport, historyPurge, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, webhook, click,
   partnerRead, partnerWrite, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

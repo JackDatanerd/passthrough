@@ -90,6 +90,50 @@ describe('purgeArchivedLeads', () => {
   })
 })
 
+// Independent audit round 8 (Section 5): with ARCHIVED_LEAD_PURGE_SUPPRESSES on, a purged lead's
+// address goes onto the do-not-contact list instead of being forgotten.
+describe('purgeArchivedLeads — suppress option', () => {
+  const resolver = (state) => (q) => {
+    state.ops.push(`${q.table}:${q.op}`)
+    if (q.table === 'employer_leads') return { data: [{ id: 'l1', email: 'a@x.com' }, { id: 'l2', email: 'a@x.com' }, { id: 'l3', email: 'b@x.com' }], error: null }
+    if (q.table === 'employer_lead_suppressions') { state.hashes = q.values; return { data: null, error: state.supErr || null } }
+    if (q.table === 'email_logs') { state.logFilters = q.filters; return { data: null, error: null } }
+  }
+  it('is off by default: nothing but the delete, and only ids are read back', async () => {
+    const state = { ops: [] }
+    const db = createFakeSupabase(resolver(state))
+    expect(await purgeArchivedLeads(db, NOW)).toEqual({ deleted: 3 })
+    expect(state.ops).toEqual(['employer_leads:delete'])
+    expect(db.calls[0].cols).toBe('id')
+  })
+  it('on: records each distinct address once as a hash and clears its employer mail history', async () => {
+    const state = { ops: [] }
+    const db = createFakeSupabase(resolver(state))
+    const r = await purgeArchivedLeads(db, NOW, { suppress: true })
+    expect(r).toEqual({ deleted: 3, suppressed: 2 })
+    expect(state.hashes).toHaveLength(2)
+    expect(state.hashes.every(h => /^[0-9a-f]{64}$/.test(h.email_hash))).toBe(true)
+    expect(JSON.stringify(state.hashes)).not.toContain('@')
+    expect(state.logFilters.find(f => f[1] === 'to')[2].sort()).toEqual(['a@x.com', 'b@x.com'])
+    expect(state.logFilters.find(f => f[1] === 'template')[2]).toEqual(['employer_lead_ack', 'employer_candidates_available'])
+  })
+  it('reports (does not throw) when the list write fails, and leaves the mail history alone', async () => {
+    const state = { ops: [], supErr: { message: 'nope' } }
+    const db = createFakeSupabase(resolver(state))
+    const r = await purgeArchivedLeads(db, NOW, { suppress: true })
+    expect(r.error).toMatch(/suppression: nope/)
+    expect(state.ops).not.toContain('email_logs:delete')
+  })
+  it('runRetention turns it on only for ARCHIVED_LEAD_PURGE_SUPPRESSES=true', async () => {
+    for (const [flag, expected] of [[undefined, false], ['false', false], ['true', true], ['TRUE', true]]) {
+      const state = { ops: [] }
+      const db = createFakeSupabase(resolver(state))
+      await runRetention({ RESUMES_BUCKET: { delete: async () => {} }, ARCHIVED_LEAD_PURGE_SUPPRESSES: flag }, db, NOW)
+      expect(state.ops.includes('employer_lead_suppressions:upsert')).toBe(expected)
+    }
+  })
+})
+
 describe('purgeStaleUnconfirmedLeads', () => {
   it('deletes only NEW, never-confirmed, note-less leads not resubmitted within the window', async () => {
     const db = createFakeSupabase(() => ({ data: [{ id: 'l1' }], error: null }))

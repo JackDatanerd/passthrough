@@ -12,9 +12,9 @@ const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
 
-function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false } = {}) {
+function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false, mailLogs = [], logPurgeError = null } = {}) {
   const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
-    suppressed: new Set(suppressed), audit: [] }
+    suppressed: new Set(suppressed), audit: [], logPurges: [] }
   let seq = 0
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
@@ -53,6 +53,11 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       // select
       if (q.selectOpts?.head) return { count: rows.filter(match).length, error: null }
       if (q.maybe) return { data: rows.find(match) ? { ...rows.find(match) } : null, error: null }
+      // Round 8: an export no longer treats a short page as the last one, so it asks again with a
+      // keyset cursor until a page comes back empty. Every fixture served by this fake fits in its first
+      // page; a cursored request therefore has nothing left to give. (Chunking itself is covered by the
+      // tests with their own resolvers.)
+      if ((q.or || []).some(e => /(created_at|last_submitted_at)\.lt\./.test(e))) return { data: [], count: 0, error: null }
       // `.or('last_candidates_notified_at.is.null,last_candidates_notified_at.lt.<cutoff>')`
       const orNotified = (q.or || []).find(e => e.includes('last_candidates_notified_at'))
       const cutoff = orNotified && /\.lt\.(.+)$/.exec(orNotified)?.[1]
@@ -64,7 +69,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     }
     if (q.table === 'employer_lead_suppressions') {
       const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
-      if (q.op === 'upsert') { state.suppressed.add(q.values.email_hash); return { data: null, error: null } }
+      if (q.op === 'upsert') { [].concat(q.values).forEach(v => state.suppressed.add(v.email_hash)); return { data: null, error: null } }
       // TEST FIX (fresh audit pass, Section 5): adminLiftSuppression chains
       // .select().maybeSingle() onto the delete to learn whether a row was
       // actually removed (real Postgres/Supabase returns the deleted row);
@@ -79,6 +84,13 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       return { data: state.suppressed.has(h) ? { email_hash: h } : null, error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
+    if (q.table === 'email_logs') {
+      if (q.op === 'delete') {
+        state.logPurges.push(Object.fromEntries(q.filters.map(f => [f[1], f[2]])))
+        return { data: null, error: logPurgeError }
+      }
+      return { data: mailLogs, error: null }
+    }
     if (q.op === 'rpc' && q.name === 'verified_candidate_counts')
       return supply === 'error' ? { error: { message: 'no such function' } } : { data: supply || [], error: null }
     return undefined
@@ -336,9 +348,10 @@ describe('createLead — resilience to a second collision on the same email', ()
     t.restore()
     t.restore = restore
     const res = await mod.createLead(ctx)
+    await Promise.all(ctx._waits)   // round 8: a duplicate is settled after the response
     expect(res.body.success).toBe(true)
-    // Bounded: 3 attempts, insert then select each time.
-    expect(step).toBe(6)
+    // Bounded: the one insert the response waits for, then 3 background passes of select + insert.
+    expect(step).toBe(7)
   })
 })
 
@@ -1594,7 +1607,8 @@ describe('R6-G1 — adminNotifyCandidates', () => {
     t = setup({ supply, candidateMailResult: (to) => to !== 'bad@acme.com',
       leads: [confirmedLead({ id: ID1, email: 'bad@acme.com' }), confirmedLead({ id: ID2, email: 'good@acme.com' })] })
     const res = await post({ field: 'sales' })
-    expect(res.body.data).toMatchObject({ sent: 1, failed: 1, remaining: 1 })
+    // round 8: a lead that failed is reported as failed, not also as "still waiting"
+    expect(res.body.data).toMatchObject({ sent: 1, failed: 1, remaining: 0 })
     const bad = t.state.leads.find(l => l.id === ID1)
     expect(bad.status).toBe('NEW'); expect(bad.last_candidates_notified_at).toBeUndefined()
   })
@@ -1751,5 +1765,279 @@ describe('R7 — independent audit round 7', () => {
       const res = await t.mod.adminNotifyCandidates(t.c({ body: { field: 'sales' } }))
       expect(res.body.data).toMatchObject({ sent: 25, failed: 0, remaining: 15 })
     })
+  })
+})
+
+
+// ═════════════════════════════════════════════════════════════════════════
+// Independent audit round 8 (Section 5)
+// ═════════════════════════════════════════════════════════════════════════
+describe('R8 — adminExportLeads', () => {
+  const exportWith = async (resolverRows, perRequest) => {
+    const all = resolverRows
+    const db = createFakeSupabase(q => {
+      if (q.table === 'admin_audit_log') return { data: null, error: null }
+      if (q.table !== 'employer_leads') return undefined
+      db.given = db.given || 0
+      const slice = all.slice(db.given, db.given + Math.min(q.limit, perRequest))
+      db.given += slice.length
+      return { data: slice, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', { 'config/supabase.js': { getSupabase: () => db }, 'services/email.service.js': {} })
+    try { return await mod.adminExportLeads({ env: {}, get: () => ({ id: 'a', role: 'ADMIN' }), req: { query: () => undefined, header: () => undefined },
+      json: b => b, body: (raw, status, headers) => ({ raw, headers }) }) } finally { restore() }
+  }
+  const rows = (n) => Array.from({ length: n }, (_, i) => ({ id: `id-${String(i).padStart(4, '0')}`, name: 'N', company: 'C', email: `e${i}@x.com`,
+    status: 'NEW', notes: null, submission_count: 1, created_at: new Date(Date.UTC(2026, 0, 1) - i * 1000).toISOString() }))
+
+  it('keeps paging when the server answers short pages (a max-rows setting below the chunk size) — it used to stop after one', async () => {
+    const res = await exportWith(rows(5), 2)
+    expect(res.headers['X-Export-Rows']).toBe('5')
+    expect(res.headers['X-Export-Truncated']).toBe('false')
+    expect(res.raw.split('\r\n').filter(Boolean)).toHaveLength(6)   // header + 5
+  })
+
+  it('adds the outreach clocks and the lead id as trailing columns', async () => {
+    t = setup({ leads: [mkLead({ last_ack_at: '2026-03-01T00:00:00.000Z', last_notice_at: '2026-03-02T00:00:00.000Z', last_candidates_notified_at: '2026-03-03T00:00:00.000Z' })] })
+    const res = await t.mod.adminExportLeads(t.c({}))
+    const [header, line] = res.raw.replace('\uFEFF', '').split('\r\n')
+    expect(header.startsWith('"Name","Company","Email"')).toBe(true)   // existing positions unchanged
+    expect(header.endsWith('"Acknowledgement last sent","Resubmission notice last sent","Candidates last notified","Lead id"')).toBe(true)
+    expect(line.endsWith(`"2026-03-01T00:00:00.000Z","2026-03-02T00:00:00.000Z","2026-03-03T00:00:00.000Z","${ID1}"`)).toBe(true)
+  })
+
+  it('does not record the default sort as a filter in the audit entry, but does record a chosen one', async () => {
+    t = setup({ leads: [mkLead()] })
+    await t.mod.adminExportLeads(t.c({}))
+    await t.mod.adminExportLeads(t.c({ query: { sort: 'activity', status: 'NEW' } }))
+    const entries = t.state.audit.filter(a => a.action === 'lead.export')
+    expect(entries[0].detail.filters).toEqual({})
+    expect(entries[1].detail.filters).toEqual({ status: 'NEW', sort: 'activity' })
+  })
+})
+
+describe('R8 — createLead answers after one insert and settles the rest afterwards', () => {
+  it('hands a new lead and a duplicate to the background the same way (one waited task each)', async () => {
+    t = setup({ leads: [mkLead({ email: 'old@acme.com', confirmed_at: '2026-01-02T00:00:00.000Z' })] })
+    const fresh = t.c({ body: valid({ email: 'new@acme.com' }) })
+    await t.mod.createLead(fresh)
+    const dup = t.c({ body: valid({ email: 'old@acme.com' }) })
+    await t.mod.createLead(dup)
+    expect(fresh._waits).toHaveLength(1)
+    expect(dup._waits).toHaveLength(1)
+    await Promise.all([...fresh._waits, ...dup._waits])
+    expect(t.state.leads.find(l => l.email === 'old@acme.com').submission_count).toBe(2)
+  })
+
+  it('a failing background merge never turns into an error for the submitter (the lead already exists)', async () => {
+    const db = createFakeSupabase(q => {
+      if (q.table !== 'employer_leads') return { data: null, error: null }
+      if (q.op === 'insert') return { error: { code: '23505', message: 'duplicate key' } }
+      return { error: { message: 'db down' } }   // the read the merge starts with
+    })
+    const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/email.service.js': { sendOwnerNotice: async () => {}, sendEmployerLeadAck: async () => true },
+    })
+    t = setup(); t.restore(); t.restore = restore
+    const ctx = t.c({ body: valid() })
+    const res = await mod.createLead(ctx)
+    await Promise.all(ctx._waits)
+    expect(res.body.success).toBe(true)
+  })
+})
+
+describe('R8 — an address removed while its lead is being created does not keep the lead', () => {
+  it('re-reads the do-not-contact list after the insert: drops the row, sends nothing', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    let reads = 0
+    const real = t.state.suppressed.has.bind(t.state.suppressed)
+    t.state.suppressed.has = (h) => ++reads > 1 && real(h)   // not on the list when the form checks, on it by the time the row exists
+    const res = await submit(valid({ email: 'dana@acme.com' }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.notices).toHaveLength(0)
+    expect(t.state.acks).toHaveLength(0)
+  })
+  it('a lead for an address that is NOT on the list is kept and announced as before', async () => {
+    t = setup()
+    await submit(valid())
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.notices).toHaveLength(1)
+    expect(t.state.acks).toHaveLength(1)
+  })
+})
+
+describe('R8 — FRONTEND_URL with a trailing slash', () => {
+  it('does not put "//" in the emailed confirm and remove links', async () => {
+    t = setup({ envExtra: { FRONTEND_URL: 'https://passthrough.dev/' } })
+    await submit(valid())
+    const { confirmUrl, removeUrl } = t.state.ackLinks[0]
+    expect(confirmUrl.startsWith('https://passthrough.dev/employer/confirm?token=')).toBe(true)
+    expect(removeUrl.startsWith('https://passthrough.dev/employer/remove?token=')).toBe(true)
+  })
+})
+
+describe('R8 — removal also clears the address from the mail log', () => {
+  const employerTemplates = ['employer_lead_ack', 'employer_candidates_available']
+  it('removeLead: hash first, then the lead, then the mail history of the two employer templates', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    await postToken(t.mod.removeLead, await tokenFor('remove', 'dana@acme.com'))
+    expect(t.state.logPurges).toEqual([{ to: ['dana@acme.com'], template: employerTemplates }])
+    const ops = t.db.calls.map(q => `${q.table}:${q.op}`)
+    expect(ops.indexOf('employer_lead_suppressions:upsert')).toBeLessThan(ops.indexOf('employer_leads:delete'))
+    expect(ops.indexOf('employer_leads:delete')).toBeLessThan(ops.indexOf('email_logs:delete'))
+  })
+  it('a failed purge never holds up the opt-out: the person is removed and told so', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })], logPurgeError: { message: 'db down' } })
+    const res = await postToken(t.mod.removeLead, await tokenFor('remove', 'dana@acme.com'))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+  })
+  it('...and neither does it hold up an admin\'s add-to-do-not-contact or delete-and-block', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })], logPurgeError: { message: 'db down' } })
+    expect((await t.mod.adminDeleteLead(t.c({ params: { id: ID1 }, query: { suppress: 'true' } }))).body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.suppressed.has(sha('dana@acme.com'))).toBe(true)
+  })
+  it('the one-click unsubscribe does the same', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    const token = await tokenFor('remove', 'dana@acme.com')
+    await t.mod.unsubscribeLead({ ...t.c(), req: { query: () => token } })
+    expect(t.state.logPurges).toHaveLength(1)
+    expect(t.state.leads).toHaveLength(0)
+  })
+  it('adminAddSuppression clears it too', async () => {
+    t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
+    await t.mod.adminAddSuppression(t.c({ body: { email: 'Dana@Acme.com' } }))
+    expect(t.state.logPurges).toEqual([{ to: ['dana@acme.com'], template: employerTemplates }])
+  })
+})
+
+describe('R8 — delete and block (single)', () => {
+  it('?suppress=true records the address, clears its mail history, deletes the lead and says so in the audit entry', async () => {
+    t = setup({ leads: [mkLead({ email: 'spam@x.com' })] })
+    const res = await t.mod.adminDeleteLead(t.c({ params: { id: ID1 }, query: { suppress: 'true' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.suppressed.has(sha('spam@x.com'))).toBe(true)
+    expect(t.state.logPurges).toHaveLength(1)
+    expect(t.state.audit.find(a => a.action === 'lead.delete').detail).toEqual({ suppressed: true })
+    expect(JSON.stringify(t.state.audit)).not.toContain('spam@x.com')
+  })
+  it('a plain delete still leaves the address free to come back', async () => {
+    t = setup({ leads: [mkLead({ email: 'spam@x.com' })] })
+    await t.mod.adminDeleteLead(t.c({ params: { id: ID1 } }))
+    expect(t.state.suppressed.size).toBe(0)
+    expect(t.state.logPurges).toHaveLength(0)
+  })
+  it('404s an unknown lead without recording anything', async () => {
+    t = setup()
+    const res = await t.mod.adminDeleteLead(t.c({ params: { id: ID1 }, query: { suppress: 'true' } }))
+    expect(res.status).toBe(404)
+    expect(t.state.suppressed.size).toBe(0)
+  })
+})
+
+describe('R8 — bulk actions', () => {
+  const bulk = (body) => t.mod.adminBulkUpdateLeads(t.c({ body }))
+  const three = () => [
+    mkLead({ id: ID1, email: 'a@x.com' }),
+    mkLead({ id: ID2, email: 'b@x.com', confirmed_at: '2026-01-05T00:00:00.000Z' }),
+    mkLead({ id: '33333333-3333-4333-8333-333333333333', email: 'c@x.com', role_category: 'sales' })
+  ]
+  const ID3 = '33333333-3333-4333-8333-333333333333'
+
+  it('deleteAndSuppress: blocks every deleted address (one write), clears their mail history, deletes, audits', async () => {
+    t = setup({ leads: three() })
+    const res = await bulk({ ids: [ID1, ID2], action: 'deleteAndSuppress' })
+    expect(res.body).toEqual({ success: true, affected: 2 })
+    expect(t.state.leads.map(l => l.id)).toEqual([ID3])
+    expect(t.state.suppressed.has(sha('a@x.com')) && t.state.suppressed.has(sha('b@x.com'))).toBe(true)
+    expect(t.state.suppressed.has(sha('c@x.com'))).toBe(false)
+    expect(t.state.logPurges[0].to.sort()).toEqual(['a@x.com', 'b@x.com'])
+    expect(t.db.calls.filter(q => q.table === 'employer_lead_suppressions' && q.op === 'upsert')).toHaveLength(1)
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_delete').detail).toMatchObject({ suppressed: true })
+  })
+  it('plain bulk delete blocks nobody', async () => {
+    t = setup({ leads: three() })
+    await bulk({ ids: [ID1], action: 'delete' })
+    expect(t.state.suppressed.size).toBe(0)
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_delete').detail).toEqual({ ids: [ID1] })
+  })
+  it('setField categorises the chosen leads, and null clears it', async () => {
+    t = setup({ leads: three() })
+    await bulk({ ids: [ID1, ID2], action: 'setField', field: 'finance' })
+    expect(t.state.leads.map(l => l.role_category)).toEqual(['finance', 'finance', 'sales'])
+    const res = await bulk({ ids: [ID1], action: 'setField', field: null })
+    expect(res.body.affected).toBe(1)
+    expect(t.state.leads[0].role_category).toBeNull()
+    expect(t.state.audit.some(a => a.action === 'lead.bulk_field')).toBe(true)
+  })
+  it('setField needs a field, and only a real one', async () => {
+    t = setup({ leads: three() })
+    await expect(bulk({ ids: [ID1], action: 'setField' })).rejects.toBeTruthy()
+    await expect(bulk({ ids: [ID1], action: 'setField', field: 'astronaut' })).rejects.toBeTruthy()
+  })
+  it('markConfirmed stamps only the unconfirmed ones and leaves a real confirmation time alone', async () => {
+    t = setup({ leads: three() })
+    const res = await bulk({ ids: [ID1, ID2], action: 'markConfirmed' })
+    expect(res.body.affected).toBe(1)
+    expect(t.state.leads.find(l => l.id === ID1).confirmed_at).toBeTruthy()
+    expect(t.state.leads.find(l => l.id === ID2).confirmed_at).toBe('2026-01-05T00:00:00.000Z')
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_mark_confirmed').detail.ids).toEqual([ID1])
+  })
+  it('requestConfirmation mails only the unconfirmed ones, reports failures and skips, and does not spend the public hourly budget', async () => {
+    t = setup({ leads: three() })
+    const res = await bulk({ ids: [ID1, ID2, ID3], action: 'requestConfirmation' })
+    expect(res.body).toEqual({ success: true, affected: 2, sent: 2, failed: 0, skipped: 1 })
+    expect(t.state.acks.map(a => a.to).sort()).toEqual(['a@x.com', 'c@x.com'])
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_request_confirmation').detail).toMatchObject({ failed: 0, skipped: 1 })
+  })
+  it('requestConfirmation counts an email that did not go out as failed', async () => {
+    t = setup({ leads: three(), ackResult: false })
+    const res = await bulk({ ids: [ID1, ID3], action: 'requestConfirmation' })
+    expect(res.body).toMatchObject({ affected: 0, sent: 0, failed: 2 })
+  })
+  it('requestConfirmation is limited to 25 leads per call', async () => {
+    t = setup()
+    const ids = Array.from({ length: 26 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`)
+    await expect(bulk({ ids, action: 'requestConfirmation' })).rejects.toBeTruthy()
+  })
+  it('counts a repeated id once', async () => {
+    t = setup({ leads: three() })
+    const res = await bulk({ ids: [ID1, ID1.toUpperCase()], action: 'requestConfirmation' })
+    expect(res.body).toMatchObject({ sent: 1, skipped: 0 })
+  })
+})
+
+describe('R8 — notify-candidates and a lost "already told" stamp', () => {
+  const supply = [{ role_category: 'sales', candidate_count: 3 }]
+  const confirmedLead = (over = {}) => mkLead({ role_category: 'sales', confirmed_at: '2026-02-01T00:00:00.000Z', ...over })
+  const post = (body) => t.mod.adminNotifyCandidates(t.c({ body }))
+
+  it('a send refused because the address was already told adopts the logged time and counts as skipped, not failed', async () => {
+    const earlier = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString()
+    t = setup({ supply, candidateMailResult: false, mailLogs: [{ sent_at: earlier }], leads: [confirmedLead()] })
+    const res = await post({ field: 'sales' })
+    expect(res.body.data).toMatchObject({ sent: 0, failed: 0, skipped: 1, remaining: 0 })
+    expect(t.state.leads[0].last_candidates_notified_at).toBe(earlier)
+    // ...so the next call no longer even looks at it
+    const next = await post({ field: 'sales' })
+    expect(next.body.data.eligible).toBe(0)
+  })
+  it('a send that failed with no earlier email on record is a real failure and stays eligible', async () => {
+    t = setup({ supply, candidateMailResult: false, mailLogs: [], leads: [confirmedLead()] })
+    const res = await post({ field: 'sales' })
+    expect(res.body.data).toMatchObject({ sent: 0, failed: 1, skipped: 0, remaining: 0 })
+    expect(t.state.leads[0].last_candidates_notified_at).toBeUndefined()
+  })
+  it('remaining counts only leads not yet tried', async () => {
+    t = setup({ supply, candidateMailResult: (to) => to !== 'l0@acme.com',
+      leads: Array.from({ length: 30 }, (_, i) => confirmedLead({ id: `id-${i}`, email: `l${i}@acme.com` })) })
+    const res = await post({ field: 'sales' })
+    // 25 sent + 1 failed were tried; 4 are still waiting
+    expect(res.body.data).toMatchObject({ sent: 25, failed: 1, remaining: 4 })
   })
 })

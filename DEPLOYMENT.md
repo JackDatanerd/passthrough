@@ -554,6 +554,16 @@ every limiter failed open until it recovered.
 - `RESEND_API_KEY`, `PAYSTACK_SECRET_KEY`, `ANTHROPIC_API_KEY`: `wrangler secret put`
   the new value and redeploy; no other step.
 
+### Employer leads: purging dismissed leads
+
+- `ARCHIVED_LEAD_PURGE_SUPPRESSES` (optional, off by default): ARCHIVED employer leads
+  are deleted 90 days after their last activity. Set it to `true` (a plain `[vars]`
+  entry in `wrangler.toml`) and each purged address is also put on the do-not-contact
+  list (hash only) with its employer mail history cleared, so a dismissed spammer cannot
+  return as a brand-new lead afterwards. Leave it unset if an archived lead might just
+  have been a poor fit: the public form answers an address on that list with a silent
+  success, so that person could never sign up again.
+
 ### Rolling back a bad deploy
 
 Cloudflare Dashboard → Workers & Pages → passthrough-api → Deployments → pick

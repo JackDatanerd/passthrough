@@ -20,6 +20,8 @@ import Checkbox from '../../components/ui/Checkbox'
 const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', ARCHIVED: 'gray' }
 const STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
 const PAGE_SIZE = 25
+// The server's per-call limit for mailing confirmation links (BULK_MAIL_MAX in the controller).
+const BULK_MAIL_MAX = 25
 const SEARCH_DEBOUNCE_MS = 350
 // FEATURE GAP CLOSED (fresh audit pass, Section 5, traced from the
 // controller/routes): source/sourceCounts and the suppression endpoints were
@@ -66,6 +68,12 @@ export default function AdminLeads() {
   const [bulkStatus, setBulkStatus] = useState('CONTACTED')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
+  // Independent audit round 8 (Section 5): "also add the address(es) to the do-not-contact list" on
+  // delete (single and bulk) — a plain delete leaves nothing behind, so a spam address could resubmit
+  // at once. Unticked by default: blocking is permanent for the public form.
+  const [blockOnDelete, setBlockOnDelete] = useState(false)
+  const [bulkField, setBulkField] = useState('')   // '' = clear the field (uncategorised)
+  const [confirmBulkMarkConfirmed, setConfirmBulkMarkConfirmed] = useState(false)
   const [editing, setEditing] = useState(null)     // lead being edited
   const [adding, setAdding] = useState(false)
   // Independent audit round 6 (G1): "tell confirmed leads in this field there are Verified
@@ -284,13 +292,16 @@ export default function AdminLeads() {
     const lead = pendingDelete
     setBusyId(lead.id)
     try {
-      await api.delete(`/employer-leads/${lead.id}`)
-      toast({ message: 'Lead deleted.', type: 'success' })
+      if (blockOnDelete) await api.delete(`/employer-leads/${lead.id}`, { params: { suppress: true } })
+      else await api.delete(`/employer-leads/${lead.id}`)
+      toast({ message: blockOnDelete ? 'Lead deleted and its address blocked.' : 'Lead deleted.', type: 'success' })
       setPendingDelete(null)
+      setBlockOnDelete(false)
       await refresh()
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Failed to delete lead.'), type: 'error' })
       setPendingDelete(null)
+      setBlockOnDelete(false)
     } finally {
       setBusyId(null)
     }
@@ -306,6 +317,25 @@ export default function AdminLeads() {
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Bulk action failed.'), type: 'error' })
       setConfirmBulkDelete(false)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
+
+  // Mails the confirm link to the selected unconfirmed leads (the server takes at most 25 at a time and
+  // skips anyone already confirmed).
+  async function runBulkRequestConfirmation() {
+    setBulkBusy(true)
+    try {
+      const res = await api.post('/employer-leads/bulk', { ids: [...selected], action: 'requestConfirmation' })
+      const { sent = 0, failed = 0, skipped = 0 } = res.data
+      const parts = [`Confirmation sent to ${sent} lead${sent === 1 ? '' : 's'}`]
+      if (failed) parts.push(`${failed} could not be sent (delivery failed or the address has reached its email limit)`)
+      if (skipped) parts.push(`${skipped} skipped (already confirmed, or no longer there)`)
+      toast({ message: parts.join('; ') + '.', type: failed ? 'warning' : 'success' })
+      await refresh()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Bulk action failed.'), type: 'error' })
     } finally {
       setBulkBusy(false)
     }
@@ -331,7 +361,8 @@ export default function AdminLeads() {
       const res = await api.post('/employer-leads/notify-candidates', { field: notifyPlan.field })
       const d = res.data.data
       const parts = [`Emailed ${d.sent} lead${d.sent === 1 ? '' : 's'}`]
-      if (d.failed) parts.push(`${d.failed} could not be sent`)
+      if (d.skipped) parts.push(`${d.skipped} skipped (already told recently, or on the do-not-contact list)`)
+      if (d.failed) parts.push(`${d.failed} could not be sent — they will be tried again next time`)
       if (d.remaining) parts.push(`${d.remaining} still waiting — press the button again to continue`)
       toast({ message: parts.join('; ') + '.', type: d.failed ? 'warning' : 'success' })
       setNotifyPlan(null)
@@ -444,6 +475,20 @@ export default function AdminLeads() {
           <Button size="sm" variant="secondary" loading={bulkBusy}
             onClick={() => runBulk({ action: 'setStatus', status: bulkStatus }, 'Status updated')}>
             Set status
+          </Button>
+          <Select aria-label="Set field for selected leads" value={bulkField} onChange={e => setBulkField(e.target.value)} wrapperClassName="w-fit">
+            <option value="">No field</option>
+            {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+          </Select>
+          <Button size="sm" variant="secondary" disabled={bulkBusy}
+            onClick={() => runBulk({ action: 'setField', field: bulkField || null }, 'Field updated')}>
+            Set field
+          </Button>
+          <Button size="sm" variant="secondary" disabled={bulkBusy} onClick={() => setConfirmBulkMarkConfirmed(true)}>Mark confirmed</Button>
+          <Button size="sm" variant="secondary" disabled={bulkBusy || selected.size > BULK_MAIL_MAX}
+            title={selected.size > BULK_MAIL_MAX ? `Select at most ${BULK_MAIL_MAX} leads to send confirmation emails` : undefined}
+            onClick={runBulkRequestConfirmation}>
+            Request confirmation
           </Button>
           <Button size="sm" variant="danger" disabled={bulkBusy} onClick={() => setConfirmBulkDelete(true)}>Delete</Button>
         </div>
@@ -587,8 +632,11 @@ export default function AdminLeads() {
         confirmLabel="Delete"
         loading={busyId === pendingDelete?.id}
         onConfirm={confirmRemoveLead}
-        onCancel={() => setPendingDelete(null)}
-      />
+        onCancel={() => { setPendingDelete(null); setBlockOnDelete(false) }}
+      >
+        <Checkbox label="Also block this address (do-not-contact): the form will ignore it from now on" checked={blockOnDelete}
+          onChange={e => setBlockOnDelete(e.target.checked)} />
+      </ConfirmDialog>
       <ConfirmDialog
         open={!!pendingMarkConfirmed}
         title="Mark as confirmed"
@@ -613,8 +661,21 @@ export default function AdminLeads() {
         message={`Delete ${selected.size} lead${selected.size === 1 ? '' : 's'}? This can't be undone.`}
         confirmLabel="Delete"
         loading={bulkBusy}
-        onConfirm={() => runBulk({ action: 'delete' }, 'Leads deleted')}
-        onCancel={() => setConfirmBulkDelete(false)}
+        onConfirm={async () => { await runBulk({ action: blockOnDelete ? 'deleteAndSuppress' : 'delete' }, blockOnDelete ? 'Leads deleted and blocked' : 'Leads deleted'); setBlockOnDelete(false) }}
+        onCancel={() => { setConfirmBulkDelete(false); setBlockOnDelete(false) }}
+      >
+        <Checkbox label="Also block these addresses (do-not-contact): the form will ignore them from now on" checked={blockOnDelete}
+          onChange={e => setBlockOnDelete(e.target.checked)} />
+      </ConfirmDialog>
+      <ConfirmDialog
+        open={confirmBulkMarkConfirmed}
+        title="Mark selected as confirmed"
+        message={`Mark ${selected.size} lead${selected.size === 1 ? '' : 's'} as confirmed? Only do this if you know the addresses are theirs (a reply, a call). Already-confirmed leads are left alone. It is recorded in the audit log.`}
+        confirmLabel="Mark confirmed"
+        danger={false}
+        loading={bulkBusy}
+        onConfirm={async () => { await runBulk({ action: 'markConfirmed' }, 'Marked as confirmed'); setConfirmBulkMarkConfirmed(false) }}
+        onCancel={() => setConfirmBulkMarkConfirmed(false)}
       />
 
       <Modal open={suppressionOpen} onClose={closeSuppression} title="Do-not-contact list" dismissible={!suppressionChecking && !suppressionLifting && !suppressionAdding}>

@@ -15,14 +15,19 @@ router.post('/', rl.employerLead, c.createLead)
 // `employerLeadLink` comment for why that's the same fate-sharing mistake
 // already fixed for partner click-tracking. Given their own dedicated bucket.
 router.post('/confirm', rl.employerLeadLink, c.confirmLead)
-router.post('/remove',  rl.employerLeadLink, c.removeLead)
+// BUG FIX (independent audit round 8): the two OPT-OUT endpoints left the shared 30/hour bucket
+// above. Mailbox providers send RFC 8058 one-click requests from a small pool of shared IPs, so
+// a modest number of recipients could 429 each other's unsubscribes — and failing to honour an
+// opt-out is the one failure here that is not just an inconvenience. A signed token already
+// gates both, so they get their own, much larger bucket (and skip the generic per-IP one).
+router.post('/remove',  rl.employerLeadOptOut, c.removeLead)
 // RFC 8058 one-click target for the acknowledgement's List-Unsubscribe header (fresh
 // audit pass 2, G4). Mail providers POST a form body here with the signed token in the
 // query string; POST-only so a scanner's GET can never remove anyone.
-router.post('/unsubscribe', rl.employerLeadLink, c.unsubscribeLead)
+router.post('/unsubscribe', rl.employerLeadOptOut, c.unsubscribeLead)
 // Independent audit round 7: the same URL opened as a plain link (clients without one-click
 // support) used to hit a JSON 404. A GET never removes anyone — it hands off to the remove page.
-router.get('/unsubscribe', rl.employerLeadLink, c.unsubscribeRedirect)
+router.get('/unsubscribe', rl.employerLeadOptOut, c.unsubscribeRedirect)
 
 // AUDIT FIX (Section 5): the retrieval side of the lead-capture gap — leads
 // were being written with no way for anyone to ever read them back short of

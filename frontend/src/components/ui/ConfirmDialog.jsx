@@ -34,11 +34,13 @@ import Button from './Button'
 export default function ConfirmDialog({
   open, title = 'Are you sure?', message,
   confirmLabel = 'Confirm', cancelLabel = 'Cancel',
-  danger = true, loading = false, onConfirm, onCancel
+  danger = true, loading = false, onConfirm, onCancel, children
 }) {
   return (
     <Modal open={open} onClose={onCancel} title={title} dismissible={!loading}>
       <p className="text-sm text-gray-600 whitespace-pre-line">{message}</p>
+      {/* Optional extra controls (a "also block this address" checkbox, say) between the message and the buttons. */}
+      {children && <div className="mt-4">{children}</div>}
       <div className="mt-5 flex justify-end gap-2">
         {/* Initial focus: Cancel for a destructive action (a stray Enter must not
             confirm it), Confirm otherwise. Without this it landed on the header's X. */}
