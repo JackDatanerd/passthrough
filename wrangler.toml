@@ -84,6 +84,9 @@ NODE_ENV               = "production"
 FRONTEND_URL            = "https://passthrough.dev"
 PAYSTACK_CURRENCY       = "USD"
 PAYSTACK_CALLBACK_URL   = "https://passthrough.dev/payment/success"
+# A second successful payment for a scan another payment already delivered is refunded automatically.
+# Set to "false" to go back to alert-only (you then refund duplicates by hand in Paystack / Admin).
+AUTO_REFUND_DUPLICATES  = "true"
 ANTHROPIC_MODEL         = "claude-sonnet-4-6"
 EMAIL_FROM              = "Passthrough <hello@passthrough.dev>"
 JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"

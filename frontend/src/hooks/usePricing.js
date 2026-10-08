@@ -23,6 +23,8 @@ export const STANDARD_PRICES = { FIX: 4900, BADGE: 3900, FIX_PLAIN: 3900 }
 // price. Entries now expire on a TTL, are treated as stale the instant the promo
 // deadline passes, and each mounted hook schedules a refetch for that moment.
 const CACHE_TTL_MS = 5 * 60 * 1000
+const MAX_AUTO_RETRIES = 4
+const RETRY_BASE_MS = 10_000
 
 // Keyed by VIEWER + referral code ('' = no code). A code changes what /api/pricing returns, so the
 // no-code cache and a per-code cache can't share one slot — and so does WHO is asking: the server
@@ -79,10 +81,20 @@ export function usePricing(referralCode = '') {
   const key = `${viewer}|${code}`
   const [entry, setEntry] = useState(cacheByKey[key] || null)
   const [failed, setFailed] = useState(false)
+  // Consecutive failed fetches for this key — drives the bounded automatic retry below.
+  const [failures, setFailures] = useState(0)
 
   const refresh = useCallback(() => {
     return fetchPricing(key, code, { force: true }).then(e => {
-      if (e) { setEntry(e); setFailed(false) } else setFailed(true)
+      if (e) { setEntry(e); setFailed(false); setFailures(0) }
+      else {
+        setFailed(true); setFailures(n => n + 1)
+        // PAYMENTS & PRICING ROUND 6 (bug): when the refetch at the promo deadline failed, the expired
+        // promo entry stayed on screen — struck-through prices and a discount nobody can get — right
+        // beside a notice saying "showing standard pricing". A lapsed promo entry is dropped so byTier()
+        // really does fall back to the standard price (the retry below then fetches the real answer).
+        setEntry(cur => (cur && promoLapsed(cur) ? null : cur))
+      }
     })
   }, [key, code])
 
@@ -99,10 +111,19 @@ export function usePricing(referralCode = '') {
     else setEntry(null)
     fetchPricing(key, code).then(e => {
       if (cancelled) return
-      if (e) { setEntry(e); setFailed(false) } else setFailed(true)
+      if (e) { setEntry(e); setFailed(false); setFailures(0) } else { setFailed(true); setFailures(n => n + 1) }
     })
     return () => { cancelled = true }
   }, [key, code])
+
+  // Round 6: a failed fetch used to be final until the next mount or tab-visibility change, so a brief
+  // network blip at the promo deadline (or on first load) left the page on fallback prices for good.
+  // Retry a few times with a growing wait, then stop — the failure notice's own Retry stays available.
+  useEffect(() => {
+    if (!failures || failures > MAX_AUTO_RETRIES) return undefined
+    const t = setTimeout(refresh, RETRY_BASE_MS * failures)
+    return () => clearTimeout(t)
+  }, [failures, refresh])
 
   // Refetch at the instant the promo deadline passes.
   useEffect(() => {

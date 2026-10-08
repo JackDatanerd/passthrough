@@ -23,6 +23,7 @@ const emailService = require('../services/email.service')
 const referralService = require('../services/referral.service')
 const fulfillmentService = require('../services/fulfillment.service')
 const reconcileService = require('../services/reconcile.service')
+const refundService = require('../services/refund.service')
 const { logAdminAction } = require('../lib/adminAudit')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const { isRangeError } = require('../lib/db')
@@ -62,7 +63,9 @@ function alreadyPaidResponse(c2, result, payment) {
   return c2.json({ success: false, alreadyPaid: true,
     message: result.outcome === 'MISMATCH'
       ? `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email support@passthrough.dev with reference ${payment.paystack_ref} if you hear nothing.`
-      : 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.',
+      : result.outcome === 'DUPLICATE'
+        ? 'An earlier payment for this resume already went through and your resume was delivered by it. The extra payment is being refunded automatically, so there is no need to pay again.'
+        : 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.',
     data: { paidReference: payment.paystack_ref, scanId: payment.scan_id }
   }, 409)
 }
@@ -213,7 +216,13 @@ async function initializePayment(c2) {
     if (!pendingRow || (Date.now() - Date.parse(pendingRow.created_at)) >= PENDING_REUSE_WINDOW_MS) return null
     const sameTier = pendingRow.fix_tier === fixTier
     const sameCode = (pendingRow.referral_code || null) === resolvedRequestedCode
-    if (sameTier && sameCode && pendingRow.paystack_access_code) {
+    // PAYMENTS & PRICING ROUND 6 (bug): tier + code alone said "same checkout", but the amount was fixed when
+    // the row was created. A promo that ended (or started), or a partner's tier price edited, inside the
+    // 30-minute window meant the buyer resumed — and was charged — the OLD amount while the page showed the
+    // new one, breaking the promise that the displayed deadline is the enforced one. `priced.amount` is what
+    // this request would be charged right now; the same-code resume is only safe when it still matches.
+    const sameAmount = pendingRow.amount_cents == null || pendingRow.amount_cents === priced.amount
+    if (sameTier && sameCode && sameAmount && pendingRow.paystack_access_code) {
       return c2.json({ success: true, data: {
         access_code: pendingRow.paystack_access_code,
         reference:   pendingRow.paystack_ref,
@@ -224,7 +233,9 @@ async function initializePayment(c2) {
       }})
     }
     return c2.json({ success: false,
-      message: sameTier
+      message: sameTier && sameCode && !sameAmount
+        ? 'The price changed since you started this checkout (a promotion ended or began, or your code\'s price changed). Please cancel it to continue at the current price.'
+        : sameTier
         ? 'A payment is already in progress for this resume at a different price — a referral code changed since you started it. Please finish or cancel it before continuing.'
         : 'A payment is already in progress for this resume. Please finish or cancel it before choosing a different option.',
       // AUDIT FIX (feature gap): this message told the user to "cancel it"
@@ -691,6 +702,16 @@ async function verifyPayment(c2) {
         : `We received your payment but couldn't attach it to a resume, so nothing was generated yet. We've been notified and will sort it out — you can also email support@passthrough.dev with reference ${reference}.`
     }, 409)
   }
+  // PAYMENTS & PRICING ROUND 6 (feature gap): the buyer who paid twice used to see the same "Payment
+  // confirmed!" as everyone else and learned about the extra charge from their bank statement. The
+  // second payment is now refunded automatically (fulfillment.settlePayment); this tells the buyer so.
+  // `refund`: QUEUED = a refund is on its way, REVIEW = it could not be started automatically and the
+  // owner has been alerted (the buyer is told we are looking into it either way).
+  if (result.outcome === 'DUPLICATE') {
+    const st = result.autoRefund && result.autoRefund.status
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id, duplicate: true,
+      refund: (st === 'QUEUED' || st === 'IN_PROGRESS') ? 'QUEUED' : 'REVIEW' } })
+  }
   return c2.json({ success: true, data: { scanId: paymentRow.scan_id } })
 }
 
@@ -788,7 +809,8 @@ async function recheckPayment(ctx) {
 
   // FEATURE GAP CLOSED (Section 12 audit): see reconcilePayment's comment above.
   await logAdminAction(ctx, supabase, 'payment.recheck', 'payment', payment.id, {
-    reference, outcome: r.outcome, acceptAmountMismatch: !!body.acceptAmountMismatch
+    reference, outcome: r.outcome, acceptAmountMismatch: !!body.acceptAmountMismatch,
+    ...(r.amountAdjusted ? { amountAdjusted: r.amountAdjusted } : {}),
   })
 
   // Webhooks round 4 (G1): the amount was accepted / the payment settled, so the inbox row that was
@@ -873,47 +895,10 @@ const refundSchema = z.object({
   amountCents: z.number().int().positive().optional(),
   note:        z.string().max(200).optional(),
 })
-const OPEN_REFUND_STATUSES = ['pending', 'processing', 'needs-attention']
-
-// AUDIT FIX (Payments & Pricing round 2, bug — B5): the "never a double-refund"
-// guard below is check-then-act across an EXTERNAL API — list Paystack's
-// refunds, then create one — with nothing local serialising two admins (or a
-// double-click once the UI exists). Two requests with an explicit amountCents
-// could both see "nothing open" and both queue a refund. This claim (migration
-// 0048, payments.refund_claimed_at) makes the check-then-act atomic per payment:
-// a single UPDATE ... WHERE refund_claimed_at IS NULL OR older than the TTL.
-// The claim is kept after a SUCCESSFUL queue for the rest of the TTL (Paystack's
-// refund list can lag a just-created refund) and handed back immediately on any
-// failure so the admin can retry at once.
-const REFUND_CLAIM_TTL_MS = 60 * 1000
-
-// -> { claimed: boolean, unsupported?: boolean }. `unsupported` = the column does
-// not exist yet (migration 0048 not applied): proceed on the old, unlocked
-// behaviour with a loud log rather than blocking every refund until deploy.
-async function claimRefund(supabase, paymentId, now = Date.now()) {
-  const cutoff = new Date(now - REFUND_CLAIM_TTL_MS).toISOString()
-  const { data, error } = await supabase.from('payments')
-    .update({ refund_claimed_at: new Date(now).toISOString() })
-    .eq('id', paymentId)
-    .or(`refund_claimed_at.is.null,refund_claimed_at.lt.${cutoff}`)
-    .select('id')
-  if (error) {
-    if (error.code === '42703' || error.code === 'PGRST204') {
-      console.error('[refund] refund_claimed_at column missing — apply migration 0048; refunding WITHOUT the concurrency lock')
-      return { claimed: true, unsupported: true }
-    }
-    throw error
-  }
-  return { claimed: !!(data && data.length > 0) }
-}
-
-async function releaseRefundClaim(supabase, paymentId) {
-  try {
-    const { error } = await supabase.from('payments').update({ refund_claimed_at: null }).eq('id', paymentId)
-    if (error) console.error('releaseRefundClaim:', error.message)
-  } catch (err) { console.error('releaseRefundClaim unexpected:', err.message) }
-}
-
+// The queue-a-refund mechanics (per-payment claim — migration 0048 — Paystack refund-list check that
+// fails closed, open/processed refund guards, completing-leg maths) live in services/refund.service.js
+// since Payments & Pricing round 6, because the automatic refund of a DUPLICATE payment needs the exact
+// same guards. This handler keeps the admin-facing checks, the audit entry and the response shapes.
 async function refundPayment(ctx) {
   const reference = ctx.req.param('reference')
   const body = refundSchema.parse(await ctx.req.json().catch(() => ({})))
@@ -934,83 +919,28 @@ async function refundPayment(ctx) {
   if (body.amountCents != null && body.amountCents > payment.amount_cents)
     return ctx.json({ success: false, message: 'amountCents is more than the amount paid.' }, 400)
 
-  const claim = await claimRefund(supabase, payment.id)
-  if (!claim.claimed)
-    return ctx.json({ success: false,
-      message: 'Another refund request for this payment was just submitted — wait a minute and check Paystack before trying again.' }, 409)
-
-  let keepClaim = false
-  try {
-    // What Paystack already knows about this transaction. Fails CLOSED: if we
-    // cannot see existing refunds we must not risk a second one.
-    let existing
-    try {
-      existing = await paystackService.listRefunds(ctx.env, reference)
-    } catch (err) {
-      return ctx.json({ success: false, message: `Could not check existing refunds with Paystack (${err.message}) — nothing was sent. Try again.` }, 502)
-    }
-    const refunds = Array.isArray(existing?.data) ? existing.data : []
-    const open = refunds.filter(r => OPEN_REFUND_STATUSES.includes(r?.status))
-    if (open.length)
-      return ctx.json({ success: false,
-        message: 'A refund for this payment is already in progress on Paystack — wait for it to finish (or fix it there) before sending another.',
-        data: { openRefunds: open.length } }, 409)
-    const processedSoFar = refunds.filter(r => r?.status === 'processed').reduce((n, r) => n + (Number(r.amount) || 0), 0)
-    const remaining = payment.amount_cents - processedSoFar
-    if (remaining <= 0)
-      return ctx.json({ success: false,
-        message: 'Paystack already shows this payment fully refunded. Our record follows on its own (hourly sweep), or use Resolve → reverse now.' }, 409)
-
-    const amountCents = body.amountCents ?? remaining
-    if (amountCents > remaining)
-      return ctx.json({ success: false, message: `Only ${remaining} (minor units) is left to refund on this payment.` }, 400)
-
-    // AUDIT FIX (Payments & Pricing round 2, bug — B3): `partial` used to be
-    // `amountCents < payment.amount_cents`, which ignores refunds Paystack has
-    // ALREADY processed. Refunding the last $29 of a $49 payment after $20 went
-    // back is the refund that COMPLETES the total — the webhook's summed
-    // full-refund detection will reverse the sale — yet this answered "partial
-    // … the payment stays SUCCESS … never revokes the delivered work". The
-    // outcome is now judged on what the total will be AFTER this refund.
-    const completesRefund = processedSoFar + amountCents >= payment.amount_cents
-    const partial = !completesRefund
-    // Omit `amount` only for a genuine first-and-only full refund; any follow-up
-    // leg states its amount explicitly.
-    const sendFull = processedSoFar === 0 && amountCents === payment.amount_cents
-
-    let queued
-    try {
-      queued = await paystackService.createRefund(ctx.env, reference, {
-        amount:       sendFull ? undefined : amountCents,
-        currency:     payment.currency,
-        customerNote: 'Refund from Passthrough',
-        merchantNote: body.note || 'Refund issued from the Passthrough admin panel',
-      })
-    } catch (err) {
-      if (err.paystackRejected)
-        return ctx.json({ success: false, message: `Paystack rejected the refund: ${err.message}` }, 409)
-      console.error(`[CRITICAL] Paystack refund failed (ref ${reference}):`, err.message)
-      return ctx.json({ success: false, message: `Paystack refund failed: ${err.message}. Nothing was refunded.` }, 502)
-    }
-    keepClaim = true
-
-    // AUDIT FIX (Payments & Pricing round 2, bug — B4): this logged `note:
-    // body.note` — an admin-typed string — into admin_audit_log, whose own
-    // header (lib/adminAudit.js) forbids values a person typed ("a note like
-    // 'refund for jane@…' ends up in an append-only log nobody can scrub").
-    // The note still goes to Paystack as merchant_note, where it belongs; the
-    // audit row records only THAT one was given.
-    await logAdminAction(ctx, supabase, 'payment.refund_requested', 'payment', payment.id, {
-      reference, amountCents, partial, completesRefund, hasNote: !!body.note, refundStatus: queued?.data?.status || null,
-    })
-    return ctx.json({ success: true,
-      message: partial
-        ? 'Partial refund queued with Paystack. The payment stays SUCCESS — a partial refund never revokes the delivered work.'
-        : 'Refund queued with Paystack. The payment is marked REFUNDED (commission reversed, credential revoked) once Paystack confirms it — usually within minutes, up to a few business days for some channels.',
-      data: { amountCents, partial, refundStatus: queued?.data?.status || null } })
-  } finally {
-    if (!keepClaim && !claim.unsupported) await releaseRefundClaim(supabase, payment.id)
+  const r = await refundService.queueRefund(ctx.env, supabase, payment, {
+    amountCents: body.amountCents ?? null,
+    merchantNote: body.note || null,
+  })
+  if (!r.ok) {
+    const out = { success: false, message: r.message }
+    if (r.data) out.data = r.data
+    return ctx.json(out, r.status)
   }
+  const { amountCents, partial, completesRefund, queued } = r
+
+  // AUDIT FIX (Payments & Pricing round 2, bug — B4): the admin-typed note is never logged — the
+  // audit log forbids values a person typed (lib/adminAudit.js). The note still goes to Paystack as
+  // merchant_note, where it belongs; the audit row records only THAT one was given.
+  await logAdminAction(ctx, supabase, 'payment.refund_requested', 'payment', payment.id, {
+    reference, amountCents, partial, completesRefund, hasNote: !!body.note, refundStatus: queued?.data?.status || null,
+  })
+  return ctx.json({ success: true,
+    message: partial
+      ? 'Partial refund queued with Paystack. The payment stays SUCCESS — a partial refund never revokes the delivered work.'
+      : 'Refund queued with Paystack. The payment is marked REFUNDED (commission reversed, credential revoked) once Paystack confirms it — usually within minutes, up to a few business days for some channels.',
+    data: { amountCents, partial, refundStatus: queued?.data?.status || null } })
 }
 
 // POST /api/payments/:reference/receipt

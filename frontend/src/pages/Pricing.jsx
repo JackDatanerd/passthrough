@@ -95,15 +95,13 @@ export default function Pricing() {
         <div className="text-center mb-12">
           <h1 className="text-4xl font-bold text-gray-900 mb-3">Pricing</h1>
           <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix. No subscriptions.</p>
-          {referralCode && pricing?.referralApplied && (
-            <p className="text-sm font-medium text-emerald-700 mb-4">
-              ✓ Referral code <span className="font-mono">{referralCode}</span> {
-                discountedTierCount === 0
-                  ? "recognised — today's prices are already as low as your code's, so nothing changes."
-                  : discountedTierCount >= PAID_TIERS.length
-                    ? 'applied — prices below reflect your discount.'
-                    : 'applied — reflected in the discounted plan(s) below.'
-              }
+          {/* Round 6 (bug): this used to print its own "✓ Referral code … applied" line directly above
+              the one ReferralCodeEntry (below) already renders — two stacked confirmations of the same
+              thing. The entry owns the confirmation and the change/remove controls; the only thing it
+              cannot say is that the code discounts SOME plans and not others, so that is all this adds. */}
+          {referralCode && pricing?.referralApplied && discountedTierCount > 0 && discountedTierCount < PAID_TIERS.length && (
+            <p className="text-sm text-emerald-700 mb-4">
+              Your code lowers some of the plans below — the rest are already at today's price.
             </p>
           )}
           {/* AUDIT FIX (feature gap): usePricing()'s pricingFailed signal was

@@ -414,7 +414,17 @@ async function sendPaymentReceipt(env, supabase, email, name, { fixTier, amountC
 // verification page, and the buyer used to hear nothing from us about it (Paystack's own refund mail
 // says nothing about the page). Sent once, by the call that actually moved the payment to REFUNDED
 // (see fulfillment.reversePayment). Downloads are never revoked — the copy says so.
-async function sendPaymentReversed(env, supabase, email, name, { amountCents, currency, reference, reason, verificationRevoked }) {
+async function sendPaymentReversed(env, supabase, email, name, { amountCents, currency, reference, reason, verificationRevoked, duplicate = false }) {
+  // Payments & Pricing round 6: a refunded DUPLICATE is the extra charge going back — the buyer's resume
+  // (and its verification page) is untouched, so it must not read as a closed purchase.
+  if (duplicate && reason !== 'DISPUTE') {
+    return send(env, supabase, email, 'Your duplicate Passthrough payment was refunded', 'payment_reversed', {
+      NAME:      name,
+      BODY:      'you paid for the same resume twice, so the extra payment below was refunded to your original payment method (it can take a few business days to show up). Your resume and everything you already downloaded are unaffected.',
+      AMOUNT:    fmtMoney(amountCents, currency),
+      REFERENCE: reference
+    })
+  }
   const why = reason === 'DISPUTE'
     ? 'the payment below was reversed following a dispute, so your purchase has been closed.'
     : 'the payment below was refunded, so your purchase has been closed.'

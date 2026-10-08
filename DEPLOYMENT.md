@@ -310,6 +310,12 @@ PAYSTACK_CALLBACK_URL = "https://passthrough.dev/payment/success"
 ```
 Then redeploy (CI).
 
+**Duplicate-charge auto-refund (Payments & Pricing round 6).** `AUTO_REFUND_DUPLICATES` (default on, set in
+`wrangler.toml` `[vars]`) refunds a second successful payment for an already-delivered scan in full, using
+the same Paystack refund guards as the admin Refund button. Set it to `"false"` to return to alert-only.
+Migration 0048 (`payments.refund_claimed_at`) must be applied — without it refunds still work but lose the
+concurrency lock (a loud log line says so).
+
 ---
 
 ## 6. Deploy the Frontend (Cloudflare Pages)

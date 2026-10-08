@@ -335,7 +335,10 @@ async function processChargeSuccess(c, supabase, event) {
     alert(c, `Payment needs attention: ${result.outcome}`,
       `reference: ${reference}\nscanId: ${paymentRow.scan_id}\n` +
       (result.outcome === 'DUPLICATE'
-        ? `A different payment (${result.ownerPaymentId || 'earlier'}) already fulfilled this scan. Nothing was re-generated and no commission was recorded for this one. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED.`
+        ? `A different payment (${result.ownerPaymentId || 'earlier'}) already fulfilled this scan. Nothing was re-generated and no commission was recorded for this one. ` +
+          (result.autoRefund && result.autoRefund.status === 'SCHEDULED'
+            ? `An automatic refund of the whole amount has been started; the refund.processed webhook will mark it REFUNDED (you are told separately if it fails).`
+            : `It was NOT refunded automatically${result.autoRefund && result.autoRefund.reason ? ` (${result.autoRefund.reason})` : ''}. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED.`)
         : `Nothing was generated. Refund it in Paystack.`), reference)
     return { status: 'PROCESSED', note: result.outcome }
   }

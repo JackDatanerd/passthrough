@@ -399,12 +399,13 @@ describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCC
     expect(t.state.alerts).toHaveLength(0)
   })
 
-  it('holds (does not fulfil) an amount mismatch, without alerting again — the webhook already did', async () => {
+  it('ROUND 6 (bug): holds (does not fulfil) an amount mismatch AND alerts — the webhook may be the thing that was lost', async () => {
     t = setupRecheck({ payments: [pendingReal()], verify: { data: { status: 'success', amount: 100, currency: 'USD' } } })
     const r = await t.sweep()
     expect(r.held).toEqual([{ reference: 'ref1' }])
     expect(t.state.queue).toHaveLength(0)
-    expect(t.state.alerts).toHaveLength(0)
+    expect(t.state.alerts.length).toBeGreaterThanOrEqual(1)
+    expect(t.state.alerts.some(a => /mismatch/i.test(a.subject || a.title || JSON.stringify(a)))).toBe(true)
   })
 
   it('skips free-credit rows entirely — nothing to verify with Paystack', async () => {

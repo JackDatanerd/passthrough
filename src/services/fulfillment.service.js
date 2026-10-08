@@ -190,7 +190,42 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
     else await task
   }
 
+  // PAYMENTS & PRICING ROUND 6 (feature gap): a DUPLICATE used to end at an owner alert saying "refund it
+  // in Paystack", so a buyer who paid twice stayed double-charged until a human noticed. The second
+  // payment bought nothing, so the whole amount now goes back automatically (refund.service — same
+  // claim / refund-list guards as the admin button, so a redelivery or a second path can never refund
+  // twice). Not gated on `won`: a duplicate is re-classified on every verify / recheck / webhook
+  // redelivery, which is exactly what retries a refund that failed the first time. Never throws.
+  // With `defer` (the webhook) the Paystack calls run after the response is sent.
+  if (result.outcome === 'DUPLICATE') {
+    const refundService = require('./refund.service')
+    if (typeof defer === 'function') {
+      defer(runDuplicateAutoRefund(env, supabase, row, result.ownerPaymentId, source, { alertOnFailure: true }))
+      const scheduled = refundService.autoRefundEnabled(env) && !!result.ownerPaymentId
+      return { ...result, won, payment: row, conversion, source,
+        autoRefund: scheduled ? { status: 'SCHEDULED' } : { status: 'SKIPPED', reason: refundService.autoRefundEnabled(env) ? 'NO_OWNER' : 'DISABLED' } }
+    }
+    const autoRefund = await runDuplicateAutoRefund(env, supabase, row, result.ownerPaymentId, source, { alertOnFailure: false })
+    return { ...result, won, payment: row, conversion, source, autoRefund }
+  }
+
   return { ...result, won, payment: row, conversion, source }
+}
+
+// Wraps refund.service.autoRefundDuplicate. When it runs deferred nobody is waiting on its result, so a
+// FAILED refund pages the owner itself; inline callers get the result and alert through
+// notifySettlementProblem instead. Never throws.
+async function runDuplicateAutoRefund(env, supabase, row, ownerPaymentId, source, { alertOnFailure = false } = {}) {
+  const r = await require('./refund.service').autoRefundDuplicate(env, supabase, row, { ownerPaymentId })
+  if (alertOnFailure && r.status === 'FAILED') {
+    try {
+      await require('./email.service').sendOwnerAlert(env, 'Automatic refund of a duplicate payment FAILED — refund it by hand',
+        `source: ${source}\nreference: ${row.paystack_ref}\nscanId: ${row.scan_id}\namount: ${row.amount_cents} ${row.currency}\n` +
+        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The next verify / webhook redelivery also retries it.`,
+        { dedupeKey: `${row.paystack_ref}:autorefund` })
+    } catch (_) { /* best effort */ }
+  }
+  return r
 }
 
 // receipt_delivered_at (migration 0036) is set only AFTER the send. receipt_sent_at is a CLAIM
@@ -368,20 +403,42 @@ async function abandonPendingForScan(supabase, scanId) {
 // alert_logs, but nothing proactive. paymentRow.paystack_ref is already
 // on hand here, so this needed no change to any of the three call sites.
 async function notifySettlementProblem(env, result, paymentRow, source) {
+  // MISMATCH (Payments & Pricing round 6, bug): a mismatch found by the checkout guard, the cancel guard
+  // or the hourly sweep was never alerted — the sweep skipped it with "webhook already alerted", which is
+  // false in exactly the case these paths exist for (the webhook was LOST), while the buyer was told it
+  // "is being checked by hand". The admin's own recheck already shows them the answer, so it stays quiet.
   const needs = ['DUPLICATE', 'SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED']
-  if (!needs.includes(result.outcome)) return false
+  if (result.outcome === 'MISMATCH') {
+    if (source === 'admin-recheck') return false
+  } else if (!needs.includes(result.outcome)) return false
   const emailService = require('./email.service')
+  const auto = result.autoRefund && result.autoRefund.status
+  const autoOk = auto === 'QUEUED' || auto === 'IN_PROGRESS' || auto === 'SCHEDULED'
   const titles = {
-    DUPLICATE:       'Duplicate payment for an already-purchased scan — refund needed',
+    DUPLICATE:       autoOk
+      ? 'Duplicate payment for an already-purchased scan — automatic refund queued (no action needed)'
+      : 'Duplicate payment for an already-purchased scan — refund needed',
     SCAN_MISSING:    'Payment received for a scan that no longer exists — refund needed',
     NO_SCAN:         'Payment received with no scan attached — refund needed',
     ACCOUNT_DELETED: 'Payment received for a deleted account — refund needed',
+    MISMATCH:        'Payment amount/currency mismatch — NOT fulfilled (found without the webhook)',
   }
-  const detail = result.outcome === 'DUPLICATE'
-    ? `\nThe scan is already fulfilled by payment ${result.ownerPaymentId || '(earlier payment)'}. ` +
-      `NOT re-generated, NO commission recorded for this one. Refund it in Paystack — the refund.processed ` +
-      `webhook will mark it REFUNDED automatically.`
-    : `\nNothing was generated. Refund it in Paystack.`
+  let detail
+  if (result.outcome === 'DUPLICATE') {
+    const owner = `\nThe scan is already fulfilled by payment ${result.ownerPaymentId || '(earlier payment)'}. NOT re-generated, NO commission recorded for this one.`
+    if (autoOk)
+      detail = `${owner} The whole amount is being refunded automatically; the refund.processed webhook marks it REFUNDED. Nothing to do unless that webhook never arrives.`
+    else if (auto === 'FAILED')
+      detail = `${owner} The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the refund.processed webhook will mark it REFUNDED. The next verify / webhook redelivery also retries it.`
+    else
+      detail = `${owner} It was not refunded automatically${auto === 'SKIPPED' ? ` (${result.autoRefund.reason})` : ''}. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED automatically.`
+  } else if (result.outcome === 'MISMATCH') {
+    detail = `\nexpected: ${result.expectedAmount} ${result.expectedCurrency}\nreceived: ${result.receivedAmount} ${result.receivedCurrency}\n` +
+      `Paystack says this was PAID, but it differs from what the row expected, so nothing was generated. The buyer has been told it is being checked by hand. ` +
+      `If it is genuine use Admin → Payments → Recheck (accept amount) or POST /api/payments/${paymentRow.paystack_ref}/recheck — currency can never be accepted.`
+  } else {
+    detail = `\nNothing was generated. Refund it in Paystack.`
+  }
   try {
     await emailService.sendOwnerAlert(env, titles[result.outcome],
       `source: ${source}\nreference: ${paymentRow.paystack_ref}\nscanId: ${paymentRow.scan_id}\n` +
@@ -478,19 +535,24 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
   }
 
   let revoked = false
+  // A refund of a DUPLICATE (another payment owns the scan) leaves the buyer's purchase fully intact; the
+  // buyer email must not say it was "closed" (Payments & Pricing round 6).
+  let duplicate = false
   if (payment.scan_id) {
     const { data: scan, error: scanErr } = await supabase.from('scans')
       .select('id, fix_payment_id').eq('id', payment.scan_id).maybeSingle()
     if (scanErr) throw scanErr
     if (scan && (!scan.fix_payment_id || scan.fix_payment_id === payment.id))
       revoked = await revokeVerification(supabase, scan.id, REVOKE_REASON[reason] || REVOKE_REASON.ADMIN, now)
+    else if (scan && scan.fix_payment_id && scan.fix_payment_id !== payment.id)
+      duplicate = true
   }
 
   // WEBHOOKS ROUND 5 (feature gap): tell the buyer. Only the call that actually moved the payment to
   // REFUNDED sends it (a redelivery or a second path finds `transitioned` false), so it goes out once.
   // Live paths pass `env`; `defer` (the webhook's waitUntil) keeps the send out of the request.
   if (env && transitioned) {
-    const task = notifyBuyerReversal(env, supabase, payment, { reason, revoked })
+    const task = notifyBuyerReversal(env, supabase, payment, { reason, revoked, duplicate })
     if (typeof defer === 'function') defer(task)
     else await task
   }
@@ -499,14 +561,14 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
 
 // Best-effort, never throws. A free-credit redemption ($0 / `credit:` reference) charged nothing and
 // has nothing to reverse from the buyer's side, so it never gets one.
-async function notifyBuyerReversal(env, supabase, payment, { reason, revoked }) {
+async function notifyBuyerReversal(env, supabase, payment, { reason, revoked, duplicate = false }) {
   try {
     if (!payment.user_id || !(payment.amount_cents > 0) || String(payment.paystack_ref || '').startsWith('credit:')) return false
     const { data: buyer } = await supabase.from('users').select('email, name').eq('id', payment.user_id).maybeSingle()
     if (!buyer?.email) return false
     const sent = await require('./email.service').sendPaymentReversed(env, supabase, buyer.email, buyer.name, {
       amountCents: payment.amount_cents, currency: payment.currency, reference: payment.paystack_ref,
-      reason, verificationRevoked: !!revoked,
+      reason, verificationRevoked: !!revoked, duplicate: !!duplicate,
     })
     return sent !== false
   } catch (err) {

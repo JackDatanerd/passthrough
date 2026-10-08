@@ -131,3 +131,57 @@ describe('PaymentSuccess — long processing (G3)', () => {
     } finally { vi.useRealTimers() }
   })
 })
+
+// Payments & Pricing round 6: the double-charge notice (G1) and the 429 auto-retry (B6).
+describe('PaymentSuccess — round 6', () => {
+  it('G1: a DUPLICATE says the extra payment is being refunded, shows the reference, and does NOT auto-redirect', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      api.get.mockResolvedValue({ data: { success: true, data: { scanId: 's1', duplicate: true, refund: 'QUEUED' } } })
+      renderAt()
+      expect(await screen.findByText(/you were charged twice/)).toBeInTheDocument()
+      expect(screen.getByText(/started refunding the extra payment/)).toBeInTheDocument()
+      expect(screen.getByText(/ref1/)).toBeInTheDocument()
+      expect(screen.getByRole('link', { name: 'Go to your resume' })).toHaveAttribute('href', '/scan/s1')
+      expect(screen.queryByText('Payment confirmed!')).toBeNull()
+      await vi.advanceTimersByTimeAsync(5000)       // well past the normal 2s redirect
+      expect(screen.getByText(/you were charged twice/)).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
+  })
+
+  it('G1: when the automatic refund could not be started, it says we have been alerted instead of promising one', async () => {
+    api.get.mockResolvedValue({ data: { success: true, data: { scanId: 's1', duplicate: true, refund: 'REVIEW' } } })
+    renderAt()
+    expect(await screen.findByText(/couldn't start the refund automatically/)).toBeInTheDocument()
+    expect(screen.queryByText(/started refunding/)).toBeNull()
+  })
+
+  it('B6: a 429 retries on its own after a wait (no click needed) and lands on success', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      api.get.mockRejectedValueOnce({ response: { status: 429, data: {} } })
+        .mockResolvedValue({ data: { success: true, data: { scanId: 's1' } } })
+      renderAt()
+      expect(await screen.findByText('Checking too fast')).toBeInTheDocument()
+      expect(screen.getByText(/check again automatically/)).toBeInTheDocument()
+      await vi.advanceTimersByTimeAsync(66_000)
+      expect(await screen.findByText('Payment confirmed!')).toBeInTheDocument()
+      expect(api.get).toHaveBeenCalledTimes(2)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('B6: automatic 429 retries are bounded (two), then it waits for the buyer', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      api.get.mockRejectedValue({ response: { status: 429, data: {} } })
+      renderAt()
+      await screen.findByText('Checking too fast')
+      await vi.advanceTimersByTimeAsync(66_000)
+      await vi.advanceTimersByTimeAsync(66_000)
+      await vi.advanceTimersByTimeAsync(66_000)
+      await vi.advanceTimersByTimeAsync(66_000)
+      expect(api.get).toHaveBeenCalledTimes(3)       // the first call + two automatic retries
+      expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
+    } finally { vi.useRealTimers() }
+  })
+})

@@ -277,10 +277,29 @@ async function recheckPayment(env, supabase, payment, { acceptAmountMismatch = f
   if (mismatch && (mismatch.receivedCurrency !== mismatch.expectedCurrency || !acceptAmountMismatch))
     return { outcome: 'MISMATCH', paystackStatus: d.status, ...mismatch }
 
-  const result = await fulfillment.settlePayment(env, supabase, payment, {
+  // PAYMENTS & PRICING ROUND 6 (bug): an accepted amount mismatch settled the payment but left
+  // amount_cents at what was EXPECTED. After accepting an underpayment (4500 paid of 4900) every later
+  // figure was wrong: the commission was computed on money never received, and a full refund of what
+  // WAS received (4500) summed to less than amount_cents, so the refund webhook judged it "partial" and
+  // never reversed the sale. The row now records what Paystack actually captured when that is LESS than
+  // expected. An overpayment (the buyer covered a fee) keeps the expected amount — that is the real
+  // price, the commission base, and a refund request that omits the amount still returns everything.
+  let toSettle = payment
+  let amountAdjusted = null
+  if (mismatch && Number.isInteger(d.amount) && d.amount > 0 && d.amount < payment.amount_cents) {
+    const { data: adj, error: adjErr } = await supabase.from('payments')
+      .update({ amount_cents: d.amount }).eq('id', payment.id).in('status', fulfillment.REVIVABLE_STATUSES).select('id')
+    if (adjErr) throw adjErr
+    if (adj && adj.length) {
+      amountAdjusted = { from: payment.amount_cents, to: d.amount }
+      toSettle = { ...payment, amount_cents: d.amount }
+    }
+  }
+
+  const result = await fulfillment.settlePayment(env, supabase, toSettle, {
     authCode: d.authorization?.authorization_code, source,
   })
-  return { ...result, paystackStatus: d.status }
+  return { ...result, paystackStatus: d.status, ...(amountAdjusted ? { amountAdjusted } : {}) }
 }
 
 async function sweepPendingPayments(env, supabase, { now = Date.now(), alert = true } = {}) {
@@ -302,7 +321,13 @@ async function sweepPendingPayments(env, supabase, { now = Date.now(), alert = t
     try {
       const r = await recheckPayment(env, supabase, payment, { source: 'pending-sweep' })
       if (r.outcome === 'NOT_PAID') continue   // routine — sweepStalePendingPayments owns the eventual ABANDON
-      if (r.outcome === 'MISMATCH') { result.held.push({ reference: payment.paystack_ref }); continue }  // webhook already alerted
+      if (r.outcome === 'MISMATCH') {
+        // Payments & Pricing round 6 (bug): this used to skip with "webhook already alerted" — untrue
+        // when the webhook was the thing that got lost, and the row is abandoned 2h later. Alert now.
+        result.held.push({ reference: payment.paystack_ref })
+        await fulfillment.notifySettlementProblem(env, r, payment, 'pending-sweep')
+        continue
+      }
       if (r.won) result.recovered.push({ reference: payment.paystack_ref, scanId: payment.scan_id, outcome: r.outcome })
       await fulfillment.notifySettlementProblem(env, r, payment, 'pending-sweep')
     } catch (err) {
@@ -310,15 +335,16 @@ async function sweepPendingPayments(env, supabase, { now = Date.now(), alert = t
     }
   }
 
-  if (alert && (result.recovered.length || result.failed.length)) {
+  if (alert && (result.recovered.length || result.failed.length || result.held.length)) {
     try {
       const emailService = require('./email.service')
       const lines = [
         ...result.recovered.map(r => `RECOVERED  ${r.reference}  scan ${r.scanId}  (${r.outcome})`),
         ...result.failed.map(r => `FAILED     ${r.reference}  ${r.error}`),
+        ...result.held.map(r => `HELD       ${r.reference}  (paid, but amount/currency differ — see the separate mismatch alert)`),
       ]
       await emailService.sendOwnerAlert(env,
-        `Pending-payment sweep: ${result.recovered.length} paid-but-unsettled recovered, ${result.failed.length} failed`,
+        `Pending-payment sweep: ${result.recovered.length} paid-but-unsettled recovered, ${result.failed.length} failed, ${result.held.length} held`,
         `Paystack reports these as PAID although our own records never reached SUCCESS (checked ${result.checked}).\n\n${lines.join('\n')}\n\n` +
         `Recovered items were settled and fulfilled automatically. Any occurrence means a webhook was lost or ` +
         `the buyer never returned to the site after paying — check webhook_events and wrangler tail around the payment times.`)

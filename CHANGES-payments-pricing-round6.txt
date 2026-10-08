@@ -1,0 +1,38 @@
+Payments & Pricing — round 6 (independent audit; gap G1 + bugs B1–B6)
+
+G1  FEATURE GAP — a buyer who paid twice for one resume was never told and was never refunded unless the
+    owner noticed an alert. Now:
+    - NEW src/services/refund.service.js: the queue-a-refund logic (per-payment claim, Paystack refund-list
+      check that fails closed, open/processed guards, completing-leg maths) moved out of
+      payments.controller.refundPayment so the admin button and the automatic path share it.
+    - fulfillment.settlePayment: a DUPLICATE outcome is refunded in full automatically — only when the owning
+      payment is proven (a different row, same scan), never for a free-credit row, idempotent across verify /
+      recheck / webhook redelivery. Runs deferred behind the webhook; a deferred failure pages the owner.
+    - AUTO_REFUND_DUPLICATES=false (wrangler.toml [vars]) switches it off.
+    - verifyPayment answers { duplicate: true, refund: 'QUEUED' | 'REVIEW' }; PaymentSuccess shows a
+      "you were charged twice" screen (reference shown, no auto-redirect).
+    - owner alerts say "automatic refund queued (no action needed)" or "refund by hand — automatic refund
+      failed (reason)"; the buyer's reversal email for a refunded duplicate says "extra payment refunded, your
+      resume is unaffected" instead of "purchase closed".
+B1  An admin-ACCEPTED underpayment left payments.amount_cents at the expected amount, so a later full refund
+    of what was actually captured summed to less than amount_cents and the refund webhook judged it
+    "partial" (sale never reversed, commission never clawed back). reconcile.recheckPayment now records the
+    captured amount when it is LESS than expected (an overpayment keeps the expected price); the audit entry
+    carries amountAdjusted.
+B2  A mismatch found by the checkout guard, cancel guard or hourly sweep never alerted anyone (the sweep
+    skipped it assuming the webhook had). notifySettlementProblem now alerts MISMATCH (not for the admin's
+    own recheck); the sweep summary includes held items.
+B3  Resuming a fresh pending checkout compared only tier + referral code, so a promo ending/starting or a
+    partner tier price changing inside the 30-minute window charged the OLD amount. Resume now also requires
+    pending.amount_cents === today's price; otherwise 409 "price changed" with the cancel reference.
+B4  usePricing: a failed refetch at the promo deadline left the expired promo prices on screen beside a
+    "showing standard pricing" notice, and failures were never retried. A lapsed promo entry is dropped on a
+    failed refetch; failed fetches retry up to 4 times with a growing wait.
+B5  Pricing page printed two stacked "Referral code applied" confirmations. ReferralCodeEntry owns it now; the
+    page only adds a note when the code discounts SOME plans.
+B6  PaymentSuccess: a 429 ended polling for good and the manual "Check again" restarted the whole cycle. It now
+    retries itself after ~65s, at most twice.
+
+Tests: tests/payments.round6.test.js (27), PaymentSuccess round 6 (4), usePricing.round6 (5); updated three
+existing tests that encoded the old behaviour (DUPLICATE response shape, sweep mismatch silence, a resume
+fixture priced below the real FIX price). Full suite 3288 passing; lint clean; wrangler dry-run bundles.

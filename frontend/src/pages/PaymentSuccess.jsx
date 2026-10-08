@@ -24,12 +24,18 @@ const PENDING_RETRY_MS = 4000
 // so the whole sequence stays inside rl.paymentVerify's 20-per-5-minutes budget (5 + 10 calls).
 const SLOW_POLL_MAX_ATTEMPTS = 15
 const SLOW_POLL_MS = 30000
+// A 429 from the verify limiter clears within its 5-minute window; one short wait is enough for a
+// single stray burst, and the on-screen link covers anything longer.
+const RATE_LIMIT_RETRY_MS = 65000
 
 export default function PaymentSuccess() {
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
-  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | declined | no-reference | error
+  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | duplicate | declined | no-reference | error
   const [scanId,  setScanId ] = useState(null)
+  // Round 6: the server says this payment was a SECOND one for a resume already delivered by an earlier
+  // payment, and whether its automatic refund is on the way ('QUEUED') or needs a human ('REVIEW').
+  const [duplicate, setDuplicate] = useState(null)
   const [supportMessage, setSupportMessage] = useState('')
   const [declinedMessage, setDeclinedMessage] = useState('')
 
@@ -89,6 +95,7 @@ export default function PaymentSuccess() {
   // into the pending-poll sequence we are, and resets on every successful
   // response (pending or final) so it never carries stale count forward.
   const errorRetriesRef = useRef(0)
+  const rateRetriesRef = useRef(0)
   // ONE scheduled re-check at a time: a manual "Check again" while a slow poll is waiting must
   // replace it, not run alongside it (two chains would double the calls against the verify limiter).
   const pollTimerRef = useRef(null)
@@ -113,6 +120,7 @@ export default function PaymentSuccess() {
       .then(res => {
         if (!mountedRef.current) return
         errorRetriesRef.current = 0
+        rateRetriesRef.current = 0
         // AUDIT FIX (bug): a 202 { pending: true } means Paystack hasn't
         // reached a final status yet — not a failure. Keep polling a bounded
         // number of times before settling on "still processing" rather than
@@ -131,6 +139,13 @@ export default function PaymentSuccess() {
         }
         const sid = res.data.data.scanId
         setScanId(sid)
+        // PAYMENTS & PRICING ROUND 6 (feature gap): a double charge used to read exactly like a normal
+        // success. Say so, and do NOT auto-redirect — the buyer has to be able to read it.
+        if (res.data.data.duplicate) {
+          setDuplicate({ refund: res.data.data.refund === 'QUEUED' ? 'QUEUED' : 'REVIEW' })
+          setStatus('duplicate')
+          return
+        }
         setStatus('success')
         // Guarded separately from the mountedRef check above: this fires
         // 2s LATER, so a user who navigated away during that window (not
@@ -169,7 +184,18 @@ export default function PaymentSuccess() {
         // pointless re-asking, then a "Verification failed" that for a 429
         // wasn't even true. A 429 gets its own wait-and-check-again state; other
         // 4xx go straight to the failure screen.
-        if (httpStatus === 429) { setStatus('rate-limited'); return }
+        // Round 6 (bug): a 429 used to end the polling chain for good — the buyer had to notice and
+        // click "Check again", which then restarted the whole fast+slow cycle against the same limiter.
+        // Retry the SAME attempt once the window has had time to clear (twice at most); the manual
+        // link stays for anyone who wants it sooner.
+        if (httpStatus === 429) {
+          setStatus('rate-limited')
+          if (rateRetriesRef.current < 2) {
+            rateRetriesRef.current += 1
+            scheduleVerify(attempt, RATE_LIMIT_RETRY_MS)
+          }
+          return
+        }
         // G2 (round 4): Paystack says the payment definitely did not go through.
         if (httpStatus === 400 && err.response?.data?.declined) {
           if (err.response.data.data?.scanId) setScanId(err.response.data.data.scanId)
@@ -214,6 +240,23 @@ export default function PaymentSuccess() {
               <p className="text-sm text-gray-500">
                 Generating your resume. Redirecting…
               </p>
+            </>
+          )}
+          {status === 'duplicate' && (
+            <>
+              <div className="text-green-500 text-5xl mb-4">✓</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Your resume is ready — you were charged twice</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                You'd already paid for this resume, so this second payment bought nothing extra. Your resume is unaffected.{' '}
+                {duplicate?.refund === 'QUEUED'
+                  ? "We've started refunding the extra payment to your original payment method — it can take a few business days to appear."
+                  : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email support with the reference below."}
+              </p>
+              {reference && <p className="text-xs text-gray-400 mb-4 font-mono break-all">Reference: {reference}</p>}
+              <div className="flex items-center justify-center gap-4">
+                {scanId && <a href={`/scan/${scanId}`} className="text-sm font-medium text-blue-600 hover:underline">Go to your resume</a>}
+                <a href="mailto:support@passthrough.dev" className="text-sm text-blue-600 hover:underline">Email support</a>
+              </div>
             </>
           )}
           {status === 'still-pending' && (
@@ -298,7 +341,7 @@ export default function PaymentSuccess() {
               <div className="text-amber-500 text-5xl mb-4">⏳</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Checking too fast</h1>
               <p className="text-sm text-gray-500 mb-4">
-                We've checked your payment a lot in a short time. Your payment is unaffected — wait a minute, then check again.
+                We've checked your payment a lot in a short time. Your payment is unaffected — we'll check again automatically in about a minute, or you can check now.
               </p>
               <div className="flex items-center justify-center gap-4">
                 <button type="button" onClick={() => verify()} className="text-sm text-blue-600 hover:underline">Check again</button>

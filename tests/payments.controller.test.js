@@ -536,7 +536,7 @@ function worldSetup(over = {}, opts = {}) {
     { cols: ['payment_id'], where: r => !r.reverses_ledger_id },
     { cols: ['reverses_ledger_id'], where: r => !!r.reverses_ledger_id },
   ]
-  const state = { queue: [], alerts: [], verifyCalls: [] }
+  const state = { queue: [], alerts: [], verifyCalls: [], refunds: [], refundLists: [] }
   const paystack = opts.paystack ?? { data: { status: 'success', currency: 'USD', amount: 2900, authorization: { authorization_code: 'AUTH_1' } } }
   const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
     'config/supabase.js': { getSupabase: () => world.db },
@@ -545,9 +545,12 @@ function worldSetup(over = {}, opts = {}) {
       verifyTransaction: async (env, ref) => { state.verifyCalls.push(ref); if (opts.verifyThrows) throw opts.verifyThrows; return paystack },
       initializeTransaction: async () => ({ data: {} }),
       isPendingStatus: s => ['ongoing', 'pending', 'processing', 'queued'].includes(s),
+      // Round 6: the automatic refund of a DUPLICATE goes through refund.service → these two.
+      listRefunds: async (env, ref) => { state.refundLists.push(ref); if (opts.refundListThrows) throw opts.refundListThrows; return opts.refundList ?? { data: [] } },
+      createRefund: async (env, ref, o) => { if (opts.refundThrows) throw opts.refundThrows; state.refunds.push({ ref, ...o }); return { status: true, data: { status: 'pending' } } },
     },
   })
-  const env = { FIX_QUEUE: { send: async m => { if (opts.queueError) throw opts.queueError; state.queue.push(m) } } }
+  const env = { ...(opts.env || {}), FIX_QUEUE: { send: async m => { if (opts.queueError) throw opts.queueError; state.queue.push(m) } } }
   const c = (o = {}) => ({
     env,
     get: k => (k === 'user' ? { id: 'u1', email: 'a@b.co' } : undefined),
@@ -662,12 +665,74 @@ describe('verifyPayment — outcomes that delivered nothing (B6)', () => {
     expect(res.status).toBe(409)
     expect(res.body.message).toContain('DISPUTED')
   })
-  it('DUPLICATE stays a success — the scan IS delivered (by the earlier payment); the refund is the owner\'s job', async () => {
+  it('DUPLICATE stays a success — the scan IS delivered (by the earlier payment) — and now says so; with no provable owner payment nothing is refunded blind', async () => {
     t = worldSetup()
     Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
     const res = await t.mod.verifyPayment(t.c())
     expect(res.status).toBe(200)
-    expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
+    // 'pay-first' is not a row in this world, so the owner cannot be proven → left to the owner alert.
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1', duplicate: true, refund: 'REVIEW' } })
+    expect(t.state.refunds).toHaveLength(0)
+    expect(t.state.alerts.map(a => a.subject)).toEqual(['Duplicate payment for an already-purchased scan — refund needed'])
+  })
+  it('ROUND 6 (G1): a DUPLICATE is refunded automatically, in full, and the buyer is told it is on its way', async () => {
+    t = worldSetup({ payments: [
+      { id: 'pay-first', user_id: 'u1', paystack_ref: 'ref0', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', referral_code_id: null },
+    ] })
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1', duplicate: true, refund: 'QUEUED' } })
+    expect(t.state.refunds).toHaveLength(1)
+    expect(t.state.refunds[0]).toMatchObject({ ref: 'ref1', currency: 'USD' })
+    expect(t.state.refunds[0].amount).toBeUndefined()            // a genuine first-and-only full refund omits the amount
+    expect(t.state.queue).toHaveLength(0)                        // never re-generated
+    expect(t.world.t.commission_ledger).toHaveLength(0)          // and never a second commission
+    expect(t.state.alerts.map(a => a.subject)).toEqual(['Duplicate payment for an already-purchased scan — automatic refund queued (no action needed)'])
+  })
+  it('ROUND 6: the duplicate refund is idempotent — a second verify finds the refund already open on Paystack and sends nothing', async () => {
+    t = worldSetup({ payments: [
+      { id: 'pay-first', user_id: 'u1', paystack_ref: 'ref0', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+    ] }, { refundList: { data: [{ status: 'pending', amount: 2900 }] } })
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.data).toEqual({ scanId: 's1', duplicate: true, refund: 'QUEUED' })
+    expect(t.state.refunds).toHaveLength(0)
+  })
+  it('ROUND 6: AUTO_REFUND_DUPLICATES=false turns it off — the owner is asked to refund by hand, as before', async () => {
+    t = worldSetup({ payments: [
+      { id: 'pay-first', user_id: 'u1', paystack_ref: 'ref0', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+    ] }, { env: { AUTO_REFUND_DUPLICATES: 'false' } })
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.data).toEqual({ scanId: 's1', duplicate: true, refund: 'REVIEW' })
+    expect(t.state.refunds).toHaveLength(0)
+    expect(t.state.alerts[0].subject).toBe('Duplicate payment for an already-purchased scan — refund needed')
+  })
+  it('ROUND 6: when Paystack refuses the automatic refund the owner is told to do it by hand, with the reason', async () => {
+    t = worldSetup({ payments: [
+      { id: 'pay-first', user_id: 'u1', paystack_ref: 'ref0', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+    ] }, { refundThrows: Object.assign(new Error('HTTP 500'), {}) })
+    const origErr = console.error; console.error = () => {}
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    const res = await t.mod.verifyPayment(t.c())
+    console.error = origErr
+    expect(res.body.data).toEqual({ scanId: 's1', duplicate: true, refund: 'REVIEW' })
+    expect(t.state.alerts[0].subject).toBe('Duplicate payment for an already-purchased scan — refund needed')
+    expect(t.state.alerts[0].message).toContain('AUTOMATIC refund failed')
+  })
+  it('ROUND 6: a free-credit row is never auto-refunded', async () => {
+    t = worldSetup({ payments: [
+      { id: 'pay-first', user_id: 'u1', paystack_ref: 'ref0', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+      { id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'PENDING', amount_cents: 0, currency: 'USD', scan_id: 's1', fix_tier: 'FIX' },
+    ] }, { paystack: { data: { status: 'success', currency: 'USD', amount: 0 } } })
+    Object.assign(t.world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay-first', status: 'FIX_DELIVERED' })
+    await t.mod.verifyPayment(t.c())
+    expect(t.state.refunds).toHaveLength(0)
   })
   it('the happy path is unchanged', async () => {
     t = worldSetup()
@@ -1633,11 +1698,22 @@ describe('round 4 — initialize reports the charged amount (G1/B1)', () => {
 
   it('a resumed checkout reports the amount it was created with', async () => {
     const fresh = { paystack_ref: 'r0', paystack_access_code: 'ac0', fix_tier: 'FIX', referral_code: null,
-      created_at: new Date().toISOString(), amount_cents: 3900, currency: 'USD' }
+      created_at: new Date().toISOString(), amount_cents: 4900, currency: 'USD' }
     t = setupInit({ existingPending: fresh })
     const res = await t.mod.initializePayment(t.c({ body: { ...body, referralCode: undefined }, user }))
     expect(res.status).toBe(200)
-    expect(res.body.data).toMatchObject({ access_code: 'ac0', reference: 'r0', amount: 3900, currency: 'USD', referralDropped: false })
+    expect(res.body.data).toMatchObject({ access_code: 'ac0', reference: 'r0', amount: 4900, currency: 'USD', referralDropped: false })
+  })
+
+  it('ROUND 6 (B3): a fresh checkout whose amount no longer matches today\'s price is NOT resumed — the buyer must cancel it (409 + reference)', async () => {
+    const stale = { paystack_ref: 'r0', paystack_access_code: 'ac0', fix_tier: 'FIX', referral_code: null,
+      created_at: new Date().toISOString(), amount_cents: 900, currency: 'USD' }   // created while a promo was on
+    t = setupInit({ existingPending: stale })
+    const res = await t.mod.initializePayment(t.c({ body: { ...body, referralCode: undefined }, user }))
+    expect(res.status).toBe(409)
+    expect(res.body.message).toContain('price changed')
+    expect(res.body.data).toMatchObject({ reference: 'r0', fixTier: 'FIX' })
+    expect(t.state.paymentInserts || []).toHaveLength(0)
   })
 })
 
