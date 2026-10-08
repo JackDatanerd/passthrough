@@ -34,6 +34,7 @@ function DetailLine({ detail }) {
 const TARGET_TYPES = [
   'user', 'partner', 'payout', 'payment',
   'employer_lead', 'employer_leads', 'employer_lead_suppression',
+  'scan', 'verification',   // round 5: public-page takedowns/restores and the PDF fingerprint backfill
 ]
 
 export default function AdminAuditLog() {

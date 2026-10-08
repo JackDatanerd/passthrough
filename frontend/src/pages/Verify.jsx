@@ -1,5 +1,5 @@
 import { useEffect, useState, useRef } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useParams, useLocation, Link } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
@@ -53,6 +53,9 @@ async function downloadFile(code, type, filename) {
 
 export default function Verify() {
   const { code } = useParams()
+  // ROUND-5 AUDIT FIX (feature gap): /check hands over { code, hash, kind } for the file the reader looked up.
+  const location = useLocation()
+  const lookupCheck = location.state?.fileCheck || null
   const [data,    setData   ] = useState(null)
   const [loading, setLoading] = useState(true)
   const [notFound, setNotFound] = useState(false)
@@ -93,6 +96,9 @@ export default function Verify() {
   const [checking, setChecking] = useState(false)
   // { status: 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error', at, kind } | null
   const [checkResult, setCheckResult] = useState(null)
+  // True while the result shown is the one that came from the /check lookup (shown at the top of the
+  // page, before the headline); checking another file here replaces it with the normal card below.
+  const [fromLookup, setFromLookup] = useState(false)
   const fileInputRef = useRef(null)
   // ROUND-2 AUDIT (bug): responses used to be applied in whatever order they
   // arrived, so a slow reply for an earlier code could overwrite the page for the
@@ -116,7 +122,7 @@ export default function Verify() {
   function load() {
     const seq = ++loadSeq.current
     setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
-    setDownloadErr(''); setCheckResult(null)
+    setDownloadErr(''); setCheckResult(null); setFromLookup(false)
     setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
     setLeadSent(false); setLeadErr('')
     // encodeURIComponent: the code comes straight from the URL; never let it
@@ -130,6 +136,11 @@ export default function Verify() {
         // likely answer — pre-selected, but a plain dropdown they can change.
         const cat = res.data.data.roleCategory
         setRole(isRoleCategory(cat) ? cat : '')
+        // Arrived from /check with a file: say how THAT file relates to this page before anything else.
+        if (lookupCheck && lookupCheck.hash && String(lookupCheck.code || '').toUpperCase() === String(code || '').toUpperCase()) {
+          setCheckResult(classifyFingerprint(lookupCheck.hash, res.data.data.fingerprints, lookupCheck.kind || null))
+          setFromLookup(true)
+        }
       })
       .catch(err => {
         if (seq !== loadSeq.current) return
@@ -194,7 +205,7 @@ export default function Verify() {
   async function handleCheckFile(e) {
     const file = e.target.files?.[0]
     if (!file) return
-    setChecking(true); setCheckResult(null)
+    setChecking(true); setCheckResult(null); setFromLookup(false)
     try {
       if (file.size > MAX_CHECK_BYTES) {
         setCheckResult({ status: 'toolarge', at: null, kind: null })
@@ -278,7 +289,11 @@ export default function Verify() {
 
         {notFound && (
           <div className="text-center py-20">
-            <p className="text-gray-600">Verification not found.</p>
+            <h1 className="text-xl font-bold text-gray-900 mb-2">Verification not found</h1>
+            <p className="text-sm text-gray-500">
+              Check the link for typos, or{' '}
+              <Link to="/check" className="underline underline-offset-2 hover:text-gray-700">look it up by file or code</Link>.
+            </p>
             {/* SECTION 7 AUDIT FIX (feature gap, fresh pass): this was the only failure
                 state on the page with no "Report a problem" link — removed/revoked/the
                 fingerprint mismatch panel all got one in earlier rounds, but the most
@@ -323,6 +338,7 @@ export default function Verify() {
 
         {rateLimited && (
           <div className="text-center py-20">
+            <h1 className="text-xl font-bold text-gray-900 mb-2">Too many lookups</h1>
             <p className="text-gray-600 mb-4">
               Too many lookups from your network just now. Please wait a few minutes and try again.
             </p>
@@ -332,6 +348,7 @@ export default function Verify() {
 
         {loadError && (
           <div className="text-center py-20">
+            <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't load this page</h1>
             <p className="text-gray-600 mb-4">
               Something went wrong loading this verification page.
             </p>
@@ -341,6 +358,15 @@ export default function Verify() {
 
         {data && (
           <div className="flex flex-col gap-6">
+            {/* ROUND-5 AUDIT FIX (feature gap): arrived from /check — the verdict on the reader's own file comes first,
+                so a superseded file is not read as the page's green headline applying to it. */}
+            {fromLookup && checkLabel && (
+              <div role="status" aria-live="polite" className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
+                <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">The file you checked</p>
+                <p className={`text-sm font-medium ${checkLabel.cls}`}>{checkLabel.text}</p>
+              </div>
+            )}
+
             {/* Verification card */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
               {isVerified ? (
@@ -515,12 +541,13 @@ export default function Verify() {
                   ref={fileInputRef}
                   type="file"
                   accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                  aria-label="Choose the .docx or .pdf you were sent"
                   onChange={handleCheckFile}
                   className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm file:font-medium hover:file:bg-blue-100"
                 />
                 {checking && <Spinner size="sm" />}
               </div>
-              {checkLabel && (
+              {checkLabel && !fromLookup && (
                 <p role="status" aria-live="polite" className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
               )}
             </div>

@@ -22,6 +22,7 @@ export default function AdminScans() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
+  const [backfilling, setBackfilling] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -64,14 +65,48 @@ export default function AdminScans() {
     }
   }
 
+  // ROUND-5 AUDIT (feature gap, Section 7): POST /admin/verification/backfill-pdf-hashes existed with no
+  // way to call it except by hand, so pages issued before PDF fingerprinting stayed "Partly checked"
+  // for good. Walks the server's keyset cursor until it reports nothing remaining.
+  async function handleBackfill() {
+    setBackfilling(true)
+    let after = null, filled = 0, missing = 0
+    try {
+      for (let i = 0; i < 200; i++) {
+        const res = await api.post('/admin/verification/backfill-pdf-hashes', after ? { after } : {})
+        const d = res.data.data
+        filled += d.filled; missing += d.missing
+        if (!d.remaining || !d.nextAfter) break
+        after = d.nextAfter
+      }
+      toast({
+        message: filled === 0 && missing === 0
+          ? 'Every page with a PDF already has a fingerprint.'
+          : `Fingerprinted ${filled} PDF${filled === 1 ? '' : 's'}${missing ? `; ${missing} could not be read from storage` : ''}.`,
+        type: missing ? 'error' : 'success',
+      })
+    } catch (_) {
+      toast({ message: filled ? `Stopped after fingerprinting ${filled} PDF(s) — run it again.` : 'Backfill failed.', type: 'error' })
+    } finally {
+      setBackfilling(false)
+    }
+  }
+
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Scans</h1>
 
-      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
-        <option value="">All</option>
-        {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
-      </Select>
+      <div className="flex items-end gap-4 flex-wrap">
+        <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
+          <option value="">All</option>
+          {STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
+        </Select>
+        <button type="button" onClick={handleBackfill} disabled={backfilling}
+          title="Records a fingerprint for the stored PDF of older verification pages that have none, so their integrity check can read “verified” instead of “partly checked”."
+          className="text-sm text-blue-700 hover:text-blue-800 underline underline-offset-2 disabled:opacity-50 pb-2">
+          {backfilling ? 'Fingerprinting PDFs…' : 'Backfill PDF fingerprints'}
+        </button>
+      </div>
 
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>

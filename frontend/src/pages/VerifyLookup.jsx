@@ -5,7 +5,8 @@ import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import usePageTitle from '../hooks/usePageTitle'
-import { sha256Hex, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
+import { sha256Hex, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
+import { extractVerificationCode } from '../lib/verificationCode'
 
 // ROUND-3 AUDIT (feature gap, Section 7): the reader-side file check only worked AFTER the
 // reader already had a candidate's verification link. An ATS strips links, a printout loses
@@ -18,6 +19,8 @@ export default function VerifyLookup() {
   const inputRef = useRef(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)   // { text, tone: 'error' | 'muted' } | null
+  const [codeText, setCodeText] = useState('')
+  const [codeError, setCodeError] = useState('')
 
   async function handleFile(e) {
     const file = e.target.files?.[0]
@@ -30,7 +33,13 @@ export default function VerifyLookup() {
       }
       const hash = await sha256Hex(file)
       const res = await api.get(`/verify/by-hash/${hash}`)
-      navigate(`/v/${encodeURIComponent(res.data.data.code)}`)
+      // ROUND-5 AUDIT FIX (feature gap): the lookup knew WHICH of the page's files this was (current or an
+      // earlier delivery) and threw it away on the way to the page, so a reader holding a superseded file
+      // landed on a green "Passthrough Verified … not modified" headline that said nothing about THEIR file.
+      // The fingerprint rides along in router state (it never leaves the browser except as this request's
+      // path, as before) and the page classifies it against the fingerprints it loads.
+      const code = res.data.data.code
+      navigate(`/v/${encodeURIComponent(code)}`, { state: { fileCheck: { code, hash, kind: fileKindOf(file) } } })
     } catch (err) {
       const status = err.response?.status
       if (status === 404) setMessage({ text: "No Passthrough verification matches that file. It has been edited since it was issued, or it didn't come from Passthrough.", tone: 'error' })
@@ -40,6 +49,14 @@ export default function VerifyLookup() {
       setBusy(false)
       if (inputRef.current) inputRef.current.value = ''
     }
+  }
+
+  function handleCode(e) {
+    e.preventDefault()
+    const code = extractVerificationCode(codeText)
+    if (!code) { setCodeError("That doesn't look like a Passthrough verification link or code. A code is 10 letters and digits (older ones have 6)."); return }
+    setCodeError('')
+    navigate(`/v/${encodeURIComponent(code)}`)
   }
 
   return (
@@ -60,6 +77,8 @@ export default function VerifyLookup() {
               accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
               onChange={handleFile}
               disabled={busy}
+              aria-label="Choose the .docx or .pdf you were sent"
+
               className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm file:font-medium hover:file:bg-blue-100"
             />
             {busy && <Spinner size="sm" />}
@@ -75,6 +94,27 @@ export default function VerifyLookup() {
             <Link to="/" className="underline underline-offset-2 hover:text-gray-600">What is Passthrough?</Link>
           </p>
         </div>
+
+        {/* ROUND-5 AUDIT (feature gap): a printed resume keeps the link as text, not a clickable address —
+            the reader can type or paste the code, but had no place to put it. */}
+        <form onSubmit={handleCode} className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 mt-6" noValidate>
+          <h2 className="text-lg font-semibold text-gray-900 mb-1">Have the link or code instead?</h2>
+          <p className="text-sm text-gray-500 mb-4 leading-relaxed">
+            Paste the verification link, or type the code printed next to “Passthrough Verified” on the resume.
+          </p>
+          <div className="flex items-start gap-3 flex-wrap">
+            <input
+              type="text" value={codeText} onChange={e => { setCodeText(e.target.value); setCodeError('') }}
+              aria-label="Verification link or code" placeholder="passthrough.dev/v/… or AB3XY7K2PQ"
+              autoComplete="off" spellCheck={false}
+              className="flex-1 min-w-[14rem] rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button type="submit" className="rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-medium px-4 py-2 transition-colors">
+              Open page
+            </button>
+          </div>
+          {codeError && <p role="alert" className="text-sm font-medium text-red-600 mt-3">{codeError}</p>}
+        </form>
       </main>
       <Footer />
     </div>

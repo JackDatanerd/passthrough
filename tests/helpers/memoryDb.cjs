@@ -21,7 +21,16 @@ function matches(row, filters) {
       // .not(col, op, val) is stored as ['not', col, op, val]
       case 'not': return val === 'is' && val2 === null ? (v !== null && v !== undefined) : v !== val2
       // jsonb array containment: every wanted object appears (as a subset) in the column's array
-      case 'contains': return Array.isArray(v) && val.every(w => v.some(x => x && typeof x === 'object' && Object.entries(w).every(([k, wv]) => x[k] === wv)))
+      case 'contains': {
+        // ROUND-5: this double used to accept a JS array here, which is NOT what the real client does —
+        // supabase-js turns an array into a Postgres array literal (`cs.{[object Object]}` for objects), so
+        // the production query errored while every test passed. A jsonb containment operand must be a JSON
+        // string; anything else fails loudly, as it does against PostgREST.
+        if (typeof val !== 'string') throw Object.assign(new Error('invalid input syntax for type json (contains() needs a JSON string for a jsonb column)'), { code: '22P02' })
+        let want
+        try { want = JSON.parse(val) } catch (_) { throw Object.assign(new Error('invalid input syntax for type json'), { code: '22P02' }) }
+        return Array.isArray(v) && Array.isArray(want) && want.every(w => v.some(x => x && typeof x === 'object' && Object.entries(w).every(([k, wv]) => x[k] === wv)))
+      }
       case 'gt':  return v > val
       case 'gte': return v >= val
       case 'lt':  return v < val

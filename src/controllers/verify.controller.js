@@ -30,6 +30,14 @@
 // still resolve); downloads refuse a file that no longer matches its fingerprint;
 // integrity says 'partial' rather than 'verified' when a PDF was never fingerprinted;
 // a deleted page answers 410 "removed" instead of an indistinguishable 404; and
+// The jsonb containment operand for "a history entry whose <kind> is <hash>". A STRING, on purpose:
+// postgrest-js sends a string as-is (`cs.[{"docx":"…"}]`, valid jsonb), an array as a Postgres
+// array literal and an object as a JSON object — and only the first of those is a jsonb ARRAY
+// containing an object. Exported for the regression test.
+function historyContains(kind, hash) {
+  return JSON.stringify([{ [kind]: hash }])
+}
+
 // GET /api/verify/by-hash/:sha256 finds the page for a file a reader already holds.
 //
 // Round-2 audit additions: verify traffic is exempt from the generic per-IP
@@ -377,11 +385,21 @@ async function lookupByHash(c) {
 
   const supabase = getSupabase(c.env)
   const cols = 'verification_code, verification_status'
+  // ROUND-5 AUDIT FIX (bug, high): the two history lookups used
+  // `.contains('resume_hash_history', [{ docx: hash }])`. For an ARRAY argument supabase-js
+  // builds a Postgres array literal (`cs.{...}` — `value.join(',')`), which is how a text[]
+  // column is filtered, not a jsonb one: an array of objects went out as `cs.{[object Object]}`,
+  // Postgres rejected it as invalid JSON, and `if (error) throw error` turned EVERY lookup that
+  // did not match a CURRENT file into a 500. So an edited file never got its 404 "no match", an
+  // earlier delivered version was never recognised, and the "removed by its owner" answer below
+  // (which runs after the loop) was unreachable. The tests missed it because the in-memory
+  // database accepted the array form. A jsonb containment filter must be sent as a JSON STRING
+  // (`cs.[{"docx":"…"}]`) — see historyContains().
   const attempts = [
     () => supabase.from('scans').select(cols).eq('resume_hash', hash),
     () => supabase.from('scans').select(cols).eq('resume_pdf_hash', hash),
-    () => supabase.from('scans').select(cols).contains('resume_hash_history', [{ docx: hash }]),
-    () => supabase.from('scans').select(cols).contains('resume_hash_history', [{ pdf: hash }]),
+    () => supabase.from('scans').select(cols).contains('resume_hash_history', historyContains('docx', hash)),
+    () => supabase.from('scans').select(cols).contains('resume_hash_history', historyContains('pdf', hash)),
   ]
   const shapes = [['current', 'docx'], ['current', 'pdf'], ['previous', 'docx'], ['previous', 'pdf']]
   for (let i = 0; i < attempts.length; i++) {
@@ -440,8 +458,21 @@ function renderBadge(label, value, color) {
 //  * a real image in every case — an unknown code used to answer JSON, i.e. a
 //    broken image in someone's README, uncacheable, and re-requested forever;
 //  * bounded per IP by its own quota and its own miss counter (see loadByCode).
-const BADGE_TTL_SECONDS = 300
-const BADGE_UNSETTLED_TTL_SECONDS = 60   // an integrity check that could not run must not stick for 5 minutes
+//
+// ROUND-5 AUDIT FIX (bug, Section 7): the purge-on-revoke added in rounds 2-4 only ever reached ONE
+// data center. Cloudflare's own docs: "The cache.delete method only purges content of the cache in
+// the data center that the Worker was invoked", and "the contents of the cache do not replicate
+// outside of the originating data center". A refund / ban / admin revoke runs in whichever data
+// center handled that webhook or click, so every OTHER data center kept answering "Verified" for
+// the rest of its edge TTL (5 minutes) — the exact staleness the purge was added to close. There is
+// no cheap global purge from a Worker (KV propagation takes up to 60s itself, so a KV marker would
+// buy nothing over a short TTL). The honest bound is therefore the edge TTL, and it is now short:
+// a live badge's state (verified / scan / revoked) is cached for 60s, an unsettled one for 30s.
+// A "not found" / "removed" badge can never flip to another state, so it keeps the long TTL that
+// absorbs scrapers. The local purge stays — it makes the common case (same data center) instant.
+const BADGE_TTL_SECONDS = 60
+const BADGE_STATIC_TTL_SECONDS = 300      // not found / removed: never changes, safe to hold longer
+const BADGE_UNSETTLED_TTL_SECONDS = 30   // an integrity check that could not run must not stick
 const BADGE_IP_QUOTA = 1200              // per IP per 15 min — cache misses only; a cost ceiling, not a person-limit
 // ROUND-4 AUDIT FIX (bug, Section 7): the edge copy lives up to BADGE_TTL_SECONDS, and a revoke
 // purges it — but the response ALSO told every browser and image proxy (GitHub's camo,
@@ -519,7 +550,7 @@ async function getBadge(c) {
   if (loaded.response) {
     // A genuine "no such page" is answered with a real (grey) badge and cached;
     // only a rate-limit (429) stays a plain error.
-    if (loaded.notFound) return sendBadge(c, renderBadge('Passthrough', loaded.removed ? 'removed' : 'not found', '#6b7280'), BADGE_TTL_SECONDS, cache, key)
+    if (loaded.notFound) return sendBadge(c, renderBadge('Passthrough', loaded.removed ? 'removed' : 'not found', '#6b7280'), BADGE_STATIC_TTL_SECONDS, cache, key)
     return loaded.response
   }
   const { row } = loaded
@@ -541,4 +572,4 @@ async function getBadge(c) {
   return sendBadge(c, renderBadge(label, value, color), ttl, cache, key)
 }
 
-module.exports = { getVerification, downloadVerifiedFile, getBadge, lookupByHash, renderBadge }
+module.exports = { getVerification, downloadVerifiedFile, getBadge, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS }

@@ -1,0 +1,79 @@
+Section 7 (Verify) — round 5 (fresh independent audit of verify.controller.js, verify.routes.js, pages/Verify.jsx and what they depend on)
+Base: c66b55a "webhooks round 5: ..."
+No migration. Nothing to apply before deploying.
+
+BUGS
+B1  (high) GET /api/verify/by-hash/:sha256 returned a 500 for every file that was not a CURRENT Passthrough file.
+    The two history lookups passed a JS array of objects to .contains() on a jsonb column. supabase-js turns an array
+    into a Postgres ARRAY literal, so the request went out as `resume_hash_history=cs.{[object Object]}`, Postgres
+    rejected it as invalid JSON and `if (error) throw error` surfaced it. Consequences: an edited/unknown file never got
+    its 404 "no match"; a genuine EARLIER delivery was never recognised; and the round-4 "removed by its owner" answer
+    for a deleted page's files (which runs AFTER those lookups) was unreachable. The /check page showed "Couldn't
+    check that file — please try again" and retrying never helped.
+    Why no test caught it: the in-memory test database accepted the array form.
+    Fix: the operand is now a JSON string (`cs.[{"docx":"…"}]`) via historyContains(). tests/helpers/memoryDb.cjs now
+    REJECTS the array form (as Postgres does), and tests/verify.round5.test.js drives the controller through the real
+    supabase-js client against a PostgREST stand-in that refuses malformed jsonb. 5 of those tests fail on the old code.
+B2  (medium) Badge "purge on revoke" only ever cleared one data center. Cloudflare's Cache API `cache.delete` "only purges
+    content of the cache in the data center that the Worker was invoked" and entries "do not replicate outside of the
+    originating data center". After a refund / ban / admin revoke every OTHER data center kept serving "Verified" for the
+    rest of the edge TTL (5 min). No cheap global purge exists from a Worker, so the bound is now the edge TTL: a live
+    badge is held 60s (30s when the integrity check could not run); "not found"/"removed" badges can never change state
+    and keep 300s. The local purge stays (instant for viewers of the data center that ran the revoke). Client max-age is
+    unchanged (<= 30s). The limitation is documented in lib/badgeCache.js.
+B3  (low-medium) adminBackfillPdfHashes: (a) always re-selected the first 50 unfilled rows with no ORDER, so 50 rows whose
+    PDF is missing from storage made every call look at the same 50, fill nothing and report remaining:true forever —
+    now a keyset cursor (`after` in, `nextAfter` out, rows in id order) with the ids of the unreadable ones reported;
+    (b) filling a hash flips a page from "partial" to "verified" but never purged the cached badge — now it does;
+    (c) it was not audit-logged — now it is (counts only).
+B4  (low) adminSetVerification (admin revoke/restore of a public page) and the verification side of a ban/un-ban were not in
+    admin_audit_log. Now logged (verification.revoke / verification.restore / user.verifications_revoked /
+    user.verifications_restored), only when something actually changed, counts and ids only — never codes or names.
+    The audit-log filter on the admin page gained the `scan` and `verification` target types.
+
+GAPS
+G1  /check discarded WHICH file it had matched. A reader holding a superseded file landed on a green "Passthrough
+    Verified … not modified" page that said nothing about THEIR file. The lookup now hands { code, hash, kind } to the page
+    (router state; nothing new is sent anywhere), which classifies it against the fingerprints it loads and shows
+    "The file you checked: Matches an earlier .docx, current until <date>…" ABOVE the headline. State for a different
+    code than the URL's is ignored.
+G2  /check only took a file. A printed resume keeps the link as text. Added a "Have the link or code instead?" box: accepts a
+    pasted link (any host, markdown, tracking junk), a code typed with spaces/hyphens, old 6-character codes; rejects
+    anything outside the code alphabet/length with an explanation (lib/verificationCode.js).
+G3  Privacy page, section 6, did not say the public page also shows first name, verified date, view count and file
+    fingerprints, that files can be made downloadable, or what is kept after deletion. Added. *** POLICY COPY — please
+    read it: it states that a deleted page's code and file fingerprints are kept indefinitely and erased on request by
+    email, because that is what the code does today. ***
+G4  Verify.jsx, VerifyLookup.jsx, the preview Function and the new code extractor now have tests (52 frontend tests).
+G5  frontend/functions/v/[code].js ran for EVERY visit to /v/… and awaited an API round trip (up to 3s) before the first byte,
+    then the SPA asked the API again; crawler probes of junk URLs were counted as misses against the shared Cloudflare
+    egress IP. Now: a URL that cannot be a code never reaches the API; the answer (including 404/410 "nothing to
+    preview") is cached 60s per code per data center; timeouts/5xx/429 are not cached; timeout 3s -> 2s.
+G6  Accessibility: both file inputs are labelled; the not-found / rate-limited / load-error states have an <h1>;
+    "not found" now says what to do (look it up by file or code).
+G7  (admin) the PDF backfill endpoint had no UI. AdminScans has a "Backfill PDF fingerprints" action that walks the cursor
+    until nothing remains and reports filled / unreadable counts.
+
+NOT CHANGED (decision)
+- Badge cache purge is still best-effort and local; see B2. A durable global purge would need a Durable Object or the
+  Cloudflare API (zone cache purge by URL) and credentials the Worker does not have.
+- Tombstone retention is still indefinite; G3 states it. A retention window is a product/legal decision.
+
+TESTS
++ tests/verify.round5.test.js (22), frontend/tests/verificationCode.test.js, frontend/tests/pages/Verify.round5.test.jsx,
+  frontend/tests/pages/VerifyLookup.round5.test.jsx, frontend/tests/previewFunction.test.js (52 frontend).
+tests/verify.round4.test.js: three Cache-Control assertions updated for the 60s / 30s edge TTLs.
+tests/helpers/memoryDb.cjs: `contains` now requires a JSON string (see B1).
+Full run (frontend/ and root sharing ONE copy of react — see note): 3121 pass, 0 fail. Worker config (npm run test:worker): 2461 pass.
+`npm run build` in frontend/ succeeds; `npm run lint` clean; `wrangler deploy --dry-run` bundles.
+Note: with frontend/node_modules/react AND root node_modules/react installed side by side, ~179 component tests fail with
+"useRef of null" (two Reacts) on an untouched checkout — environment, not code.
+
+FILES
+src/controllers/verify.controller.js, admin.controller.js
+src/lib/badgeCache.js
+frontend/src/pages/Verify.jsx, VerifyLookup.jsx, Privacy.jsx, admin/AdminScans.jsx, admin/AdminAuditLog.jsx
+frontend/src/lib/verificationCode.js (new)
+frontend/functions/v/[code].js
+tests/helpers/memoryDb.cjs, tests/verify.round4.test.js, tests/verify.round5.test.js (new)
+frontend/tests/verificationCode.test.js, previewFunction.test.js, pages/Verify.round5.test.jsx, pages/VerifyLookup.round5.test.jsx (new)

@@ -32,6 +32,14 @@
 // collision-free within this Worker's own cache namespace, not a fetchable
 // URL, so it is now built purely from the normalized code on a fixed
 // synthetic authority. That is what actually makes purge-on-revoke possible.
+//
+// ROUND-5 AUDIT NOTE (what a purge can and cannot do): Cloudflare's Cache API is per data center —
+// `cache.delete` "only purges content of the cache in the data center that the Worker was invoked"
+// and entries "do not replicate outside of the originating data center" (Workers docs, Cache API).
+// So purgeBadgeCache() below makes a revoke / restore / regeneration instant for viewers served by
+// the data center that ran it, and for nobody else. Every other data center keeps its copy until its
+// own TTL runs out, which is why verify.controller.js keeps the edge TTL of a live badge short (60s)
+// — that TTL, not this purge, is the real bound on how long a stale "Verified" can be shown.
 function badgeCache() {
   try { return typeof caches !== 'undefined' && caches.default ? caches.default : null } catch (_) { return null }
 }

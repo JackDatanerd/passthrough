@@ -23,6 +23,8 @@
 // request time — VITE_API_URL is baked into the client bundle at build
 // time and isn't available here). See DEPLOYMENT.md section 6.
 //
+// Round 5: the API answer is cached per code for a minute and non-code URLs never reach the API (see below).
+//
 // Fails open on any problem (missing env var, unreachable API, unknown
 // code) by returning the untouched static response — a slow/broken API
 // call must never take the page itself down.
@@ -44,35 +46,72 @@ export async function onRequestGet(context) {
   const noTrailing = String(env.API_URL).trim().replace(/\/+$/, '')
   const apiUrl = /\/api$/i.test(noTrailing) ? noTrailing : `${noTrailing}/api`
 
+  // ROUND-5 AUDIT FIX (performance + shared-pool abuse, Section 7): this Function runs for EVERY visit to a
+  // /v/ URL — a real visitor's browser, not just a link crawler — and used to `await` an API round trip
+  // (up to 3s) before the first byte of HTML went out, then the SPA asked the API for the same page again.
+  //  * Anything that cannot be a verification code (a crawler probing /v/<junk>) never reaches the API at
+  //    all — those requests used to be counted as "misses" against the shared Cloudflare egress IP.
+  //  * The answer (including "no preview data": unknown, removed, revoked) is cached for a minute per code
+  //    in this data center, so a burst of visits or a link going viral costs one API call a minute, not one
+  //    per visitor. Errors and timeouts are NOT cached — the next visit retries.
+  //  * The timeout is 2s, not 3s.
+  const plausible = /^(?:[A-Za-z0-9]{6}|[A-Za-z0-9]{10})$/.test(String(code))
+  if (!plausible) return response
+
+  const cache = typeof caches !== 'undefined' && caches.default ? caches.default : null
+  const cacheKey = cache ? new Request(`https://verify-preview.passthrough.internal/${String(code).toUpperCase()}`) : null
+
   let data = null
-  try {
-    // SECTION 7 AUDIT (bug B7-3): this fetch used to hit the same endpoint a
-    // real visitor's browser calls — every crawler request (and there can be
-    // several per share, one per platform) counted as a view, and paid for a
-    // full R2 read + SHA-256 re-hash for an integrity check nothing here even
-    // reads. `preview=1` tells the API to skip both. A hard timeout is also
-    // new: the header comment above says a slow API "must never take the
-    // page itself down", but nothing previously enforced that — an API that
-    // hangs (rather than erroring) would have held this Function, and the
-    // visitor's page load, open indefinitely.
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 3000)
-    // ROUND-2 AUDIT: optional shared secret (VERIFY_PREVIEW_KEY — set the same value
-    // on the Pages project and on the Worker). This fetch comes from Cloudflare's
-    // egress IPs, a small shared pool; with the key the API exempts it from the
-    // per-IP limits and never counts a crawler's bad-URL probes as "misses" against
-    // that pool. Unset = old behaviour.
-    const headers = env.VERIFY_PREVIEW_KEY ? { 'x-preview-key': env.VERIFY_PREVIEW_KEY } : {}
-    const apiRes = await fetch(`${apiUrl}/verify/${encodeURIComponent(code)}?preview=1`, { signal: controller.signal, headers })
-    clearTimeout(timeout)
-    if (apiRes.ok) {
-      const json = await apiRes.json()
-      if (json.success) data = json.data
+  let resolved = false   // true once we know the answer, even when the answer is "nothing to preview"
+  if (cache) {
+    try {
+      const hit = await cache.match(cacheKey)
+      if (hit) { data = (await hit.json()).data || null; resolved = true }
+    } catch (_) { /* a cache hiccup is just a miss */ }
+  }
+
+  if (!resolved) {
+    let known = false
+    try {
+      // SECTION 7 AUDIT (bug B7-3): this fetch used to hit the same endpoint a
+      // real visitor's browser calls — every crawler request (and there can be
+      // several per share, one per platform) counted as a view, and paid for a
+      // full R2 read + SHA-256 re-hash for an integrity check nothing here even
+      // reads. `preview=1` tells the API to skip both. A hard timeout is also
+      // new: the header comment above says a slow API "must never take the
+      // page itself down", but nothing previously enforced that — an API that
+      // hangs (rather than erroring) would have held this Function, and the
+      // visitor's page load, open indefinitely.
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 2000)
+      // ROUND-2 AUDIT: optional shared secret (VERIFY_PREVIEW_KEY — set the same value
+      // on the Pages project and on the Worker). This fetch comes from Cloudflare's
+      // egress IPs, a small shared pool; with the key the API exempts it from the
+      // per-IP limits and never counts a crawler's bad-URL probes as "misses" against
+      // that pool. Unset = old behaviour.
+      const headers = env.VERIFY_PREVIEW_KEY ? { 'x-preview-key': env.VERIFY_PREVIEW_KEY } : {}
+      let apiRes
+      try { apiRes = await fetch(`${apiUrl}/verify/${encodeURIComponent(code)}?preview=1`, { signal: controller.signal, headers }) }
+      finally { clearTimeout(timeout) }
+      if (apiRes.ok) {
+        const json = await apiRes.json()
+        if (json.success) data = json.data
+        known = true
+      } else if (apiRes.status === 404 || apiRes.status === 410) {
+        known = true   // no such page / removed / revoked: a stable answer, safe to remember briefly
+      }
+    } catch (_) {
+      // API unreachable, slow (timed out above), or errored — fall through to
+      // the default static page rather than block/break the response for a
+      // real visitor. Not cached.
     }
-  } catch (_) {
-    // API unreachable, slow (timed out above), or errored — fall through to
-    // the default static page rather than block/break the response for a
-    // real visitor.
+    if (known && cache) {
+      try {
+        context.waitUntil(cache.put(cacheKey, new Response(JSON.stringify({ data }), {
+          headers: { 'Content-Type': 'application/json', 'Cache-Control': 'public, max-age=60' },
+        })))
+      } catch (_) { /* best effort */ }
+    }
   }
 
   if (!data) return response

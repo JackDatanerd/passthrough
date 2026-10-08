@@ -118,10 +118,28 @@ export default function Privacy() {
         <Section title="6. Verification Links Are Public">
           <p>
             If you purchase a Fix or Credential, a public verification page is generated
-            (passthrough.dev/v/CODE) showing your ATS score, integrity status, and role/seniority
-            category — not your full resume content. Anyone with that link can view this page; it's
-            designed to be shared with employers. Don't purchase a credential if you don't want this
-            summary information potentially viewable by anyone with the link.
+            (passthrough.dev/v/CODE) showing your ATS score, integrity status, role/seniority
+            category, the date it was verified, how many times the page has been viewed, the
+            fingerprints (SHA-256 hashes) of the files we delivered, and your first name — unless you
+            choose to hide it. Anyone with that link can view this page; it's designed to be shared
+            with employers. Don't purchase a credential if you don't want this summary information
+            potentially viewable by anyone with the link.
+          </p>
+          <p>
+            The page does not show your resume content, and the files themselves are not downloadable
+            unless you switch on “Allow public .docx download” or “Allow public PDF download” for that
+            scan. If you do, anyone with the link can download that file, including any contact details
+            on it. You can hide your name, turn the downloads off, or unpublish the page at any time from
+            the scan's page, and deleting the scan or your account takes the page down.
+          </p>
+          <p>
+            So that a link or file already in circulation still gets an honest answer, when a page is
+            deleted we keep its code and the one-way fingerprints of the files it covered — no name,
+            email or other detail — and the page then reads “removed by its owner”. These are currently
+            kept indefinitely; email us (Section 7) if you want them erased. We also count how many times
+            a page is viewed and its files downloaded, without recording who did it; to avoid counting
+            the same visitor twice we store a one-way hash of the visitor's network address and browser
+            for 24 hours.
           </p>
         </Section>
 

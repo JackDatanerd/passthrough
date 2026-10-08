@@ -18,6 +18,7 @@ const { getSupabase } = require('../config/supabase')
 const c = require('../config/constants')
 const cryptoLib = require('../lib/crypto')
 const { logAdminAction } = require('../lib/adminAudit')
+const { purgeBadgeCache } = require('../lib/badgeCache')
 
 // Shared page-param parsing — every list endpoint here is paginated the
 // same way so the frontend can use one generic table component for all of
@@ -310,6 +311,14 @@ async function adminUpdateUser(ctx) {
   let verification
   if (body.status === 'BANNED')      verification = { revoked: await revokeUserVerifications(supabase, userId) }
   else if (body.status === 'ACTIVE') verification = { restored: await restoreUserVerifications(supabase, userId) }
+  // ROUND-5 AUDIT (feature gap, Section 7): taking down (or putting back) every public page a user
+  // owns is the highest-impact thing an admin does to the verify surface, and the only trace of it
+  // was a count in this response. Counts only — no codes, no names.
+  if (verification && (verification.revoked || verification.restored)) {
+    await logAdminAction(ctx, supabase, verification.revoked ? 'user.verifications_revoked' : 'user.verifications_restored', 'user', userId, {
+      count: verification.revoked || verification.restored,
+    })
+  }
 
   // No extra token-invalidation step needed here: optionalAuth.js re-checks
   // status==='BANNED' and re-reads role fresh from the DB on every single
@@ -373,6 +382,9 @@ async function adminSetVerification(ctx) {
   const changed = action === 'revoke'
     ? await revokeVerification(supabase, scanId, REVOKE_REASON.ADMIN)
     : await restoreVerification(supabase, scanId, { asAdmin: true })
+  // ROUND-5 AUDIT FIX (feature gap, Section 7): a takedown (or restore) of someone's public
+  // credential left no record of who did it or when. Logged only when the row actually changed.
+  if (changed) await logAdminAction(ctx, supabase, action === 'revoke' ? 'verification.revoke' : 'verification.restore', 'scan', scanId, {})
   return ctx.json({ success: true, data: { changed, verificationStatus: action === 'revoke' ? 'REVOKED' : 'ACTIVE' } })
 }
 
@@ -550,30 +562,63 @@ async function adminRequeueFix(ctx) {
   return ctx.json({ success: true, message: 'Re-queued. The customer will be emailed when it is ready.' })
 }
 
-// POST /api/admin/verification/backfill-pdf-hashes
+// POST /api/admin/verification/backfill-pdf-hashes   body (optional): { after: <scan id> }
 // Pages issued before migration 0025 have a PDF on file but no fingerprint for it, so the
 // public page can only say the integrity check is "partial" (see verify.controller.js's
 // checkIntegrity). This records a fingerprint of the PDF AS IT IS IN STORAGE NOW for up to
-// 50 such pages per call — trust-on-first-use: it attests what is stored today, it cannot
-// prove the file was never touched before. Run it again until `remaining` is false.
+// BACKFILL_BATCH such pages per call — trust-on-first-use: it attests what is stored today, it
+// cannot prove the file was never touched before.
+//
+// ROUND-5 AUDIT FIX (bug, Section 7), three problems:
+//  * It always re-selected the FIRST 50 unfilled rows, in no particular order. A row whose PDF is
+//    missing from storage can never be filled, so once 50 of those existed every call looked at
+//    the same 50, filled nothing and reported `remaining: true` forever. Rows are now walked in id
+//    order with a keyset cursor (`after` in, `nextAfter` out) so a stuck row is passed over, and
+//    the ids of the ones that could not be filled are reported.
+//  * Filling a hash flips that page's integrity from "partial" to "verified" but the cached badge
+//    kept saying "scan NN/100" — purgeBadgeCache was never called here (regeneratePdf, which does the
+//    same flip for one page, has called it since an earlier round).
+//  * Nothing recorded that it ran. It is now written to the admin audit log (counts only).
+// Run it again with `after: nextAfter` until `remaining` is false.
+const BACKFILL_BATCH = 50
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
 async function adminBackfillPdfHashes(ctx) {
   const supabase = getSupabase(ctx.env)
-  const { data: rows, error } = await supabase.from('scans')
-    .select('id, resume_pdf_path')
+  const body = await ctx.req.json().catch(() => null)
+  const after = body && typeof body === 'object' && typeof body.after === 'string' && UUID_RE.test(body.after) ? body.after : null
+
+  let q = supabase.from('scans')
+    .select('id, resume_pdf_path, verification_code')
     .not('verification_code', 'is', null).not('resume_pdf_path', 'is', null).is('resume_pdf_hash', null)
-    .limit(50)
+    .order('id', { ascending: true }).limit(BACKFILL_BATCH)
+  if (after) q = q.gt('id', after)
+  const { data: rows, error } = await q
   if (error) throw error
-  let filled = 0, missing = 0
+
+  let filled = 0
+  const missingScanIds = []
   for (const r of rows || []) {
     const obj = await ctx.env.RESUMES_BUCKET.get(r.resume_pdf_path)
-    if (!obj) { missing++; continue }
+    if (!obj) { missingScanIds.push(r.id); continue }
     const hash = await cryptoLib.sha256Bytes(await obj.arrayBuffer())
     const { data: done, error: upErr } = await supabase.from('scans')
       .update({ resume_pdf_hash: hash }).eq('id', r.id).is('resume_pdf_hash', null).select('id')
     if (upErr) throw upErr
-    if ((done || []).length) filled++
+    if ((done || []).length) {
+      filled++
+      // The page's integrity read just changed (partial -> verified): do not let a cached badge keep the old one.
+      if (r.verification_code) await purgeBadgeCache(r.verification_code)
+    }
   }
-  return ctx.json({ success: true, data: { checked: (rows || []).length, filled, missing, remaining: (rows || []).length === 50 } })
+
+  const checked = (rows || []).length
+  const remaining = checked === BACKFILL_BATCH
+  if (checked > 0) await logAdminAction(ctx, supabase, 'verification.backfill_pdf_hashes', 'verification', null, { checked, filled, missing: missingScanIds.length })
+  return ctx.json({ success: true, data: {
+    checked, filled, missing: missingScanIds.length, missingScanIds: missingScanIds.slice(0, 50),
+    remaining, nextAfter: remaining ? rows[rows.length - 1].id : null,
+  } })
 }
 
 module.exports = {

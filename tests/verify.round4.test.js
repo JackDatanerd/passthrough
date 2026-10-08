@@ -93,7 +93,8 @@ describe('ROUND-4 AUDIT FIX (bug): badge client caching is short, edge caching i
     t = harness(await seedRow())
     const r = await t.mod.getBadge(t.ctx())
     expect(r.headers['Cache-Control']).toBe('public, max-age=30')
-    expect(puts[0].res.headers.get('cache-control')).toBe('public, max-age=300')
+    // Round 5: a live badge's edge TTL is 60s (cache.delete only purges one data center, so the TTL is the real bound).
+    expect(puts[0].res.headers.get('cache-control')).toBe('public, max-age=60')
   })
 
   it('a cache hit is re-served with client headers, not the edge TTL', async () => {
@@ -104,12 +105,12 @@ describe('ROUND-4 AUDIT FIX (bug): badge client caching is short, edge caching i
     expect(hit.headers.get('cache-control')).toBe('public, max-age=30')
   })
 
-  it('the unsettled (integrity could not run) badge is still capped at 30s for clients and 60s at the edge', async () => {
+  it('the unsettled (integrity could not run) badge is still capped at 30s for clients and 30s at the edge', async () => {
     const { puts } = installCache()
     t = harness(await seedRow())
     const r = await t.mod.getBadge(t.ctx({ files: {} }))        // R2 returns nothing → integrity 'unknown'
     expect(r.headers['Cache-Control']).toBe('public, max-age=30')
-    expect(puts[0].res.headers.get('cache-control')).toBe('public, max-age=60')
+    expect(puts[0].res.headers.get('cache-control')).toBe('public, max-age=30')
   })
 })
 
