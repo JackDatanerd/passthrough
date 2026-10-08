@@ -1,0 +1,38 @@
+Section 8 (Webhooks) — round 5 (fresh independent audit of webhooks.controller.js, webhooks.routes.js, resend-webhook)
+Base: cb93863 "cross-cutting infra round 1 ..."
+
+NO MIGRATION. Nothing to apply before deploying.
+
+GAP
+G1  The Resend webhook failed silently. A missing or rotated RESEND_WEBHOOK_SECRET only wrote a console line, so spam
+    complaints and permanent bounces were NOT suppressed and nobody learned of it unless watching `wrangler tail`
+    (the Paystack handler already pages the owner for both conditions). handleResend now sends a throttled owner
+    alert (max one email per 30 minutes per condition) for a missing secret and for a failed Svix signature, sent
+    after the response and never able to change it. (The startup warning for the missing secret in env.js came from
+    cross-cutting infra round 1, so env.js is not part of this delivery.) Sits next to that round's
+    recordSuppression call, which is untouched.
+
+BUGS
+B1  A charge.dispute.create that arrived (or was re-run) AFTER its charge.dispute.resolve re-marked the payment
+    DISPUTED for good: resolve(declined) on a still-SUCCESS payment was a no-op, the late create then flipped it,
+    and nothing afterwards clears it (revenue understated, alert promised a resolution that already happened).
+    Paystack does not promise delivery order, and the hourly re-drive / admin Replay can re-run an old create.
+    create now checks the inbox for a PROCESSED resolve of the same dispute id first and leaves the payment alone
+    (note "dispute already resolved — not re-marked"). A transient inbox error answers 500 so Paystack retries.
+B2  A refund.processed that matched no payment was filed PROCESSED, which the inbox treats as finished: Replay
+    answered 409, so once the missing payment row was created the refund could not be re-run. It is now IGNORED
+    (the same status an unknown-reference charge.success gets): finished for Paystack, replayable for an admin.
+B3  An ambiguous refund event (no id, no refund_reference — e.g. the second of two equal 50% refunds) can only be
+    judged against Paystack's refund list. If that lookup failed, the error was swallowed, the event was judged
+    "partial" and closed PROCESSED (200): Paystack never redelivered and the re-drive never looked at it, so the
+    sale stayed paid until the rotating reversal sweep reached it (hours). Such an event (and one with no inbox
+    row) now throws on a failed lookup -> 500 -> Paystack's retries and the hourly re-drive finish it. Events that
+    carry their own id keep the old tolerance (local total, no 500).
+
+TESTS
+tests/webhooks.controller.test.js: B1 x5, B2, B3 x2 (and the old B3 test updated to the new behaviour).
+tests/webhooks.admin.test.js: replay of an IGNORED "payment not found" refund. tests/resend-webhook.test.js: G1 x3.
+tests/infra.middleware.test.js: one test that the missing secret is warned about at startup.
+
+NOT CHANGED (reviewed, deliberate)
+- email.complained still suppresses any complaining address, whichever email drew it (documented in DEPLOYMENT.md).

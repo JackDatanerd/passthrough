@@ -91,6 +91,14 @@
 //       kept the dashboard count lit and re-sent "a customer may have paid and received nothing"
 //       every 3 days. The escalation also stopped using an un-ordered limit(10) window.
 //
+// 10. ROUND-5 AUDIT (section 8, independent pass — no migration):
+//     * B1: charge.dispute.create no longer re-marks a payment DISPUTED when that dispute's resolution
+//       has already been processed (late delivery, re-drive, Replay) — see disputeResolutionSeen.
+//     * B2: a refund that matches no payment is IGNORED (replayable), not PROCESSED (409 on Replay).
+//     * B3: an ambiguous refund whose Paystack refund-list lookup fails answers 500 instead of being
+//       closed as "partial" — the list is the only authority for it (see processRefund).
+//     * G1 (resend-webhook.controller.js): missing secret / failed signature now page the owner.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -349,7 +357,7 @@ async function processChargeSuccess(c, supabase, event) {
 
 // Sum of the refunds Paystack itself reports as PROCESSED for this payment's transaction, or null
 // when it cannot be read (no key, API error) — callers then keep their local total.
-async function paystackRefundTotal(env, payment) {
+async function paystackRefundTotal(env, payment, { strict = false } = {}) {
   try {
     const list = await paystackService.listRefunds(env, payment.paystack_ref)
     return (list?.data || [])
@@ -357,6 +365,9 @@ async function paystackRefundTotal(env, payment) {
       .reduce((sum, r) => sum + (Number.isFinite(Number(r.amount)) ? Number(r.amount) : 0), 0)
   } catch (err) {
     console.error(`refund total lookup for ${payment.paystack_ref} failed:`, err.message)
+    // WEBHOOKS ROUND 5 (B3): when Paystack's list is the ONLY authority for this event (see the caller),
+    // a failed lookup must not be read as "no more refunds" — rethrow so the delivery answers 500.
+    if (strict) throw err
     return null
   }
 }
@@ -395,8 +406,11 @@ async function processRefund(c, supabase, event, eventId) {
 
   if (!payment) {
     alert(c, 'Paystack refund.processed — payment not found',
-      `Could not match this refund to a payment.\npayload keys: ${Object.keys(event.data || {}).join(', ')}\n\nReview manually.`, incident)
-    return { status: 'PROCESSED', note: 'payment not found' }
+      `Could not match this refund to a payment.\npayload keys: ${Object.keys(event.data || {}).join(', ')}\n\nReview manually. If you create or repair the payment row, Replay this event from Admin → Webhooks.`, incident)
+    // WEBHOOKS ROUND 5 (B2, bug): this used to be filed PROCESSED, which the inbox treats as "did its work" —
+    // Replay answered 409, so once the missing payment row existed the refund could never be re-run. IGNORED
+    // is what an unknown-reference charge.success already gets: finished for Paystack, replayable for an admin.
+    return { status: 'IGNORED', note: 'payment not found' }
   }
   // ROUND-5 (B1): a refund for a payment still PENDING / ABANDONED / FAILED used to be filed PROCESSED
   // with a "payment is PENDING" note and never looked at again. That happens when charge.success was
@@ -455,8 +469,16 @@ async function processRefund(c, supabase, event, eventId) {
   // transaction is authoritative and cannot double-count, so it covers an event we deliberately
   // did not add (ambiguous), refunds from before payment_refunds existed, and a missed delivery.
   // Only reached when the local total falls short, so the common full refund costs no API call.
+  //
+  // WEBHOOKS ROUND 5 (B3, bug): for an ambiguous event (or one with no inbox row) the local total does not
+  // include this refund, so Paystack's list is the only thing that can say whether the sale is now fully
+  // refunded. A failed lookup used to fall through to "partial refund — alerted" and the event was closed
+  // PROCESSED (200): Paystack never redelivered and the re-drive never looked at it, so a second equal
+  // 50% refund left the sale paid until the rotating reversal sweep happened to reach it. Such an event now
+  // throws on a failed lookup (500 → Paystack's retries and the hourly re-drive finish the job).
+  const remoteIsOnlyAuthority = ambiguous || !eventId
   if (payment.amount_cents > 0 && total < payment.amount_cents) {
-    const remote = await paystackRefundTotal(c.env, payment)
+    const remote = await paystackRefundTotal(c.env, payment, { strict: remoteIsOnlyAuthority })
     if (remote != null) total = Math.max(total, remote)
   }
   const full = Number.isFinite(refunded) && payment.amount_cents > 0 && total >= payment.amount_cents
@@ -496,6 +518,22 @@ async function processRefund(c, supabase, event, eventId) {
   return { status: 'PROCESSED', note: 'reversed' }
 }
 
+// WEBHOOKS ROUND 5 (B1): has this dispute's resolution already been processed? Paystack does not promise
+// delivery order, and a charge.dispute.create can be re-run long after the fact (a 500 that was retried, the
+// hourly re-drive of a FAILED row, an admin Replay). Marking DISPUTED after the resolution has been handled
+// leaves the payment DISPUTED for good — nothing later clears it — so create checks the inbox first.
+async function disputeResolutionSeen(supabase, event) {
+  const id = event.data?.id
+  if (id == null) return false
+  const { data, error } = await supabase.from('webhook_events').select('id')
+    .eq('provider', 'paystack').eq('event_key', `charge.dispute.resolve:${id}`).eq('status', 'PROCESSED').limit(1)
+  if (error) {
+    if (isInboxMissing(error)) return false   // no inbox → nothing to consult, behave as before
+    throw error                               // transient → 500 → Paystack retries
+  }
+  return !!(data && data.length)
+}
+
 async function processDispute(c, supabase, event) {
   const payment = await fulfillment.findPaymentForEvent(supabase, event)
   const d = event.data || {}
@@ -513,7 +551,10 @@ async function processDispute(c, supabase, event) {
   // whether to act — worth getting right even though every case here is
   // otherwise harmless (idempotent / no-op).
   let marked = false
-  if (event.event === 'charge.dispute.create' && payment?.status === 'SUCCESS') {
+  let alreadyResolved = false
+  if (event.event === 'charge.dispute.create' && payment?.status === 'SUCCESS')
+    alreadyResolved = await disputeResolutionSeen(supabase, event)
+  if (event.event === 'charge.dispute.create' && payment?.status === 'SUCCESS' && !alreadyResolved) {
     const { data: updated, error } = await supabase.from('payments')
       .update({ status: 'DISPUTED', disputed_at: new Date().toISOString() })
       .eq('id', payment.id).eq('status', 'SUCCESS').select('id')
@@ -571,13 +612,15 @@ async function processDispute(c, supabase, event) {
       `When Paystack reports the resolution this app acts on it: a lost dispute reverses the sale (refund, commission, credential), a won one puts the payment back to SUCCESS.`
   } else if (!payment) {
     detail = `Nothing was marked — no payment could be resolved for this reference. Review manually.`
+  } else if (alreadyResolved) {
+    detail = `Nothing was marked — this dispute's resolution was already processed (this create event arrived or was re-run after it), so the payment was left as it is (${payment.status}).`
   } else {
     detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
   }
 
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
-  return { status: 'PROCESSED', note: auto || (payment ? undefined : 'payment not found') }
+  return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (payment ? undefined : 'payment not found')) }
 }
 
 async function processEvent(c, supabase, event, eventId) {

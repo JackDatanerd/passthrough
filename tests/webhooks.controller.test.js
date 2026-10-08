@@ -775,11 +775,13 @@ describe('round 4 — B5: two equal partial refunds with no id of any kind', () 
     await t.fire(half); await t.fire(half); await t.fire(half)
     expect(w.t.payments[0].status).toBe('SUCCESS')
   })
-  it('with the Paystack lookup down, an ambiguous partial is only ever judged on its own amount (never over-reverses)', async () => {
+  it('ROUND 5 (B3): with the Paystack lookup down, an ambiguous refund is NOT closed as partial — it answers 500 so it is retried, and never over-reverses', async () => {
     const w = paidWorld(); t = harness(w, { refundListError: new Error('Paystack down') })
-    await t.fire(half); await t.fire(half)
+    const r1 = await t.fire(half); const r2 = await t.fire(half)
+    expect(r1.status).toBe(500); expect(r2.status).toBe(500)
     expect(w.t.payments[0].status).toBe('SUCCESS')
-    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
+    expect(w.t.webhook_events[0].status).toBe('FAILED')
+    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(false)
   })
   it('a FULL refund by our own books never calls Paystack', async () => {
     const w = paidWorld(); t = harness(w)
@@ -952,5 +954,103 @@ describe('round 5 — fulfillment.refundUnsettledPayment', () => {
       expect(r2.transitioned).toBe(true); expect(released).toEqual(['res1'])
       expect(w.t.payments[0]).toMatchObject({ status: 'REFUNDED', refund_reference: 'rf' })
     } finally { restore() }
+  })
+})
+
+
+describe('round 5 — B1: a dispute.create that arrives (or is re-run) after its resolution does not re-mark the payment', () => {
+  function paidWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  const create  = (id = 77) => ({ event: 'charge.dispute.create',  data: { id, status: 'awaiting-merchant-feedback', refund_amount: 2900, transaction: { reference: 'ref-1' } } })
+  const resolve = (resolution, id = 77) => ({ event: 'charge.dispute.resolve', data: { id, status: 'resolved', resolution, refund_amount: 2900, transaction: { reference: 'ref-1' } } })
+
+  it('resolve(declined) first, then a late create: the payment stays SUCCESS and the alert says nothing was marked', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(resolve('declined'))
+    const res = await t.fire(create())
+    expect(res.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(w.t.payments[0].disputed_at ?? null).toBeNull()
+    const createRow = w.t.webhook_events.find(r => r.event_type === 'charge.dispute.create')
+    expect(createRow).toMatchObject({ status: 'PROCESSED', note: 'dispute already resolved — not re-marked' })
+    const a = t.state.alerts.find(x => /dispute\.create/.test(x.subject))
+    expect(a.message).toMatch(/already processed/)
+    expect(a.message).not.toMatch(/now marked DISPUTED/)
+  })
+  it('a re-run of a FAILED create after the dispute was won and cleared does not re-mark it (the re-drive / Replay path)', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(create())
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+    await t.fire(resolve('declined'))
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    // the same create is delivered again with the row left FAILED (a redelivery of a once-failed event)
+    w.t.webhook_events.find(r => r.event_type === 'charge.dispute.create').status = 'FAILED'
+    await t.fire(create())
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+  })
+  it("another dispute's resolution never blocks this dispute's create", async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(resolve('declined', 701))
+    await t.fire(create(700))
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+  })
+  it('a create with no resolution on record still marks the payment DISPUTED (normal order is unchanged)', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(create())
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+    await t.fire(resolve('declined'))
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+  })
+  it('a transient inbox error while checking answers 500 (Paystack retries) instead of guessing', async () => {
+    const w = paidWorld(); t = harness(w)
+    w.failNext('webhook_events', 'select', { message: 'fetch failed' })
+    const res = await t.fire(create())
+    expect(res.status).toBe(500)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    const retry = await t.fire(create())
+    expect(retry.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+  })
+})
+
+describe('round 5 — B2: a refund that matches no payment stays replayable', () => {
+  it('is filed IGNORED (not PROCESSED) with the owner still alerted', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire({ event: 'refund.processed', data: { id: 5, transaction_reference: 'nope', amount: 2900, currency: 'USD' } })
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'IGNORED', note: 'payment not found' })
+    expect(t.state.alerts.some(a => /payment not found/i.test(a.subject))).toBe(true)
+  })
+})
+
+describe('round 5 — B3: a refund-list outage on an ambiguous refund is retried, not closed', () => {
+  const half = { event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: null, amount: '1450', currency: 'USD' } }
+  it('the redelivery after the outage completes the reversal', async () => {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    const opts = { refundListError: new Error('Paystack refund list timed out after 15s') }
+    t = harness(w, opts)
+    t.state.refunds.push({ status: 'processed', amount: 1450, currency: 'USD' }, { status: 'processed', amount: 1450, currency: 'USD' })
+    expect((await t.fire(half)).status).toBe(500)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(w.t.webhook_events[0].status).toBe('FAILED')
+    delete opts.refundListError                                  // Paystack is back
+    expect((await t.fire(half)).status).toBe(200)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(w.t.webhook_events[0].status).toBe('PROCESSED')
+  })
+  it('an event with its own id keeps the old tolerance: a failed lookup falls back to the local total (no 500)', async () => {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    t = harness(w, { refundListError: new Error('Paystack down') })
+    const res = await t.fire({ event: 'refund.processed', data: { id: 9, transaction_reference: 'ref-1', refund_reference: 'rf-9', amount: '1450', currency: 'USD' } })
+    expect(res.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
   })
 })

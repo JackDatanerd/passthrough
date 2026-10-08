@@ -23,6 +23,9 @@ const { sha256 } = require('../lib/crypto')
 const { logAdminAction } = require('../lib/adminAudit')
 const { performRemoval } = require('./employer-leads.controller')
 const { recordSuppression } = require('../lib/emailSuppression')
+const emailService = require('../services/email.service')
+const { runInBackground } = require('../lib/background')
+const { hitQuota } = require('../middleware/rateLimiter')
 
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_RECIPIENTS = 20
@@ -36,12 +39,32 @@ function normalizeRecipient(raw) {
   return addr.length <= 254 && /^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$/.test(addr) ? addr : null
 }
 
+// WEBHOOKS ROUND 5 (G1, feature gap): the Paystack webhook pages the owner when its secret is missing or a
+// signature fails; this one only wrote a console line. A missing or rotated RESEND_WEBHOOK_SECRET therefore
+// meant spam complaints and hard bounces were silently NOT suppressed — the exact thing this endpoint exists
+// to prevent, on the domain that also sends password resets — and nobody learned of it unless they happened
+// to be running `wrangler tail`. Same shape as handlePaystack: at most one email per 30 minutes per condition
+// (every occurrence is still logged), sent after the response, and never allowed to affect the answer.
+const ALERT_COOLDOWN_SECONDS = 30 * 60
+async function alertOnce(c, key, subject, message) {
+  try {
+    if (!(await hitQuota(c.env, `webhook-alert-cooldown:${key}`, 1, ALERT_COOLDOWN_SECONDS))) return
+    runInBackground(c, emailService.sendOwnerAlert(c.env, subject, message))
+  } catch (err) {
+    console.error('Resend webhook alert failed:', err && err.message)
+  }
+}
+
 const isPermanentBounce = (data) => String(data?.bounce?.type || '').toLowerCase() === 'permanent'
 
 async function handleResend(c) {
   const secret = c.env.RESEND_WEBHOOK_SECRET
   if (!secret) {
     console.error('[CRITICAL] RESEND_WEBHOOK_SECRET is not configured — Resend bounce/complaint events cannot be verified or acted on')
+    await alertOnce(c, 'resend-secret-missing', 'Resend webhook cannot verify signatures — secret not configured',
+      'RESEND_WEBHOOK_SECRET is missing from this Worker. Every Resend bounce / spam-complaint event is being rejected with 500, ' +
+      'so complaining and permanently-bounced addresses are NOT being suppressed. Resend retries for a limited time only. ' +
+      'Set it: wrangler secret put RESEND_WEBHOOK_SECRET (the whsec_… signing secret of the Resend webhook).')
     return c.text('Webhook not configured', 500)
   }
 
@@ -58,6 +81,10 @@ async function handleResend(c) {
   })
   if (!valid) {
     console.error('Resend webhook signature verification failed')
+    await alertOnce(c, 'resend-sig-mismatch', 'Resend webhook signature verification failed',
+      `A request to /api/webhooks/resend failed Svix signature verification.\nsource IP: ${c.req.header('cf-connecting-ip') || '(unknown)'}\n\n` +
+      `Either RESEND_WEBHOOK_SECRET is wrong or was rotated in Resend (real complaints and bounces are then NOT being suppressed until it is fixed) ` +
+      `or someone is probing the endpoint. Further failures in the next 30 minutes are logged but not emailed.`)
     return c.text('Invalid signature', 401)
   }
 

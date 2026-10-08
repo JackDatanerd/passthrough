@@ -458,7 +458,9 @@ mail history cleared; same result as the person clicking Remove).
    wrangler secret put RESEND_WEBHOOK_SECRET
    ```
 3. Until it is set the endpoint answers 500 and logs `[CRITICAL] RESEND_WEBHOOK_SECRET is not
-   configured`; Resend retries, so nothing is lost once the secret is in place.
+   configured`; Resend retries, so nothing is lost once the secret is in place. The owner is also
+   emailed (at most once per 30 minutes) when the secret is missing or a signature fails, and the
+   Worker's startup check warns about the missing secret.
 
 A transient bounce, and every other event type, is acknowledged and ignored. A permanent bounce is
 acted on only when the address is currently an employer lead; a complaint always suppresses it.

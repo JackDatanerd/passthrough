@@ -49,6 +49,18 @@ describe('listWebhookEvents', () => {
 })
 
 describe('replayWebhookEvent', () => {
+  it('ROUND 5 (B2): an IGNORED "payment not found" refund replays once the payment row exists', async () => {
+    t = setup([{ ...ev(1, { status: 'IGNORED', note: 'payment not found' }), event_type: 'refund.processed',
+      payload: { event: 'refund.processed', data: { id: 5, transaction_reference: 'r1', refund_reference: 'rf-5', amount: 3900, currency: 'USD' } } }])
+    Object.assign(t.world.t, {
+      payments: [{ id: 'p1', paystack_ref: 'r1', scan_id: null, user_id: 'u1', status: 'SUCCESS', amount_cents: 3900, currency: 'USD', fix_tier: 'FIX', created_at: new Date().toISOString() }],
+      payment_refunds: [],
+    })
+    t.world.rpcs.record_refund_and_total = () => ({ data: 3900, error: null })
+    const res = await t.mod.replayWebhookEvent(t.c({ id: 1 }))
+    expect(res.status).toBe(200)
+    expect(t.world.t.payments[0].status).toBe('REFUNDED')
+  })
   it('404s an unknown event and 409s one that already did its work', async () => {
     t = setup([ev(1)])
     expect((await t.mod.replayWebhookEvent(t.c({ id: 99 }))).status).toBe(404)

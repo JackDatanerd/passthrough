@@ -57,20 +57,28 @@ function setup({ leads = [], suppressed = [], envExtra = {} } = {}) {
     return undefined
   })
   // The real performRemoval is used (it lives in the leads controller); only Supabase is faked.
-  const { mod, restore } = loadWithStubs('controllers/resend-webhook.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+  state.alerts = []
+  const { mod, restore } = loadWithStubs('controllers/resend-webhook.controller.js', {
+    'config/supabase.js': { getSupabase: () => db },
+    'services/email.service.js': { sendOwnerAlert: async (env, subject, message) => { state.alerts.push({ subject, message }); return true } },
+  })
   const env = { RESEND_WEBHOOK_SECRET: SECRET, ...envExtra }
   const call = async (event, { headers, rawBody, envOver } = {}) => {
     const body = rawBody ?? JSON.stringify(event)
     const ts = nowTs()
     const h = { 'svix-id': 'msg_1', 'svix-timestamp': ts, 'svix-signature': sign('msg_1', ts, body), ...headers }
+    const pending = []
     const c = {
       env: envOver || env,
+      executionCtx: { waitUntil: p => pending.push(p) },
       get: () => undefined,
       req: { header: k => h[k.toLowerCase()], text: async () => body },
       text: (t, status = 200) => ({ text: t, status }),
       json: (b, status = 200) => ({ body: b, status }),
     }
-    return mod.handleResend(c)
+    const res = await mod.handleResend(c)
+    await Promise.all(pending)
+    return res
   }
   return { mod, restore, state, call }
 }
@@ -79,6 +87,8 @@ let t, realErr
 beforeEach(() => { realErr = console.error; console.error = () => {} })
 afterEach(() => { console.error = realErr; t?.restore() })
 
+// A tiny KV (the rate-limit backend the cooldown goes through).
+const kv = () => { const m = new Map(); return { get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, delete: async k => { m.delete(k) } } }
 const lead = { id: 'l1', email: 'dana@acme.com' }
 const complaint = (to = ['dana@acme.com']) => ({ type: 'email.complained', data: { to } })
 const bounce = (type, to = ['dana@acme.com']) => ({ type: 'email.bounced', data: { to, bounce: { type } } })
@@ -89,6 +99,29 @@ describe('POST /api/webhooks/resend', () => {
     const res = await t.call(complaint(), { envOver: {} })
     expect(res.status).toBe(500)
     expect(t.state.leads).toHaveLength(1)
+  })
+  it('ROUND 5 (G1): a missing secret pages the owner, once per cooldown window', async () => {
+    t = setup({ leads: [lead] })
+    const env = { RATE_LIMIT_KV: kv() }
+    await t.call(complaint(), { envOver: env }); await t.call(complaint(), { envOver: env })
+    const a = t.state.alerts.filter(x => /secret not configured/i.test(x.subject))
+    expect(a).toHaveLength(1)
+    expect(a[0].message).toMatch(/wrangler secret put RESEND_WEBHOOK_SECRET/)
+  })
+  it('ROUND 5 (G1): a signature failure pages the owner once (not per request) and still answers 401', async () => {
+    const env = { RESEND_WEBHOOK_SECRET: SECRET, RATE_LIMIT_KV: kv() }
+    t = setup({ leads: [lead], envExtra: env })
+    const bad = { 'svix-signature': 'v1,AAAA' }
+    const r1 = await t.call(complaint(), { headers: bad, envOver: env })
+    await t.call(complaint(), { headers: bad, envOver: env }); await t.call(complaint(), { headers: bad, envOver: env })
+    expect(r1.status).toBe(401)
+    expect(t.state.alerts.filter(x => /signature verification failed/i.test(x.subject))).toHaveLength(1)
+    expect(t.state.leads).toHaveLength(1)
+  })
+  it('ROUND 5 (G1): a valid event never alerts', async () => {
+    t = setup({ leads: [lead] })
+    await t.call(complaint())
+    expect(t.state.alerts).toHaveLength(0)
   })
   it('rejects a bad signature with 401 and changes nothing', async () => {
     t = setup({ leads: [lead] })
