@@ -8,6 +8,7 @@
 const { Hono } = require('hono')
 const rl = require('../middleware/rateLimiter')
 const c  = require('../controllers/webhooks.controller')
+const resend = require('../controllers/resend-webhook.controller')
 
 const router = new Hono()
 
@@ -16,5 +17,7 @@ const router = new Hono()
 // dedicated, more generous `webhook` limiter below, since this route is
 // already protected by HMAC signature verification inside the handler.
 router.post('/paystack', rl.webhook, c.handlePaystack)
+// Resend bounce / complaint events (Svix-signed) — feeds the employer do-not-contact list.
+router.post('/resend', rl.webhook, resend.handleResend)
 
 module.exports = router

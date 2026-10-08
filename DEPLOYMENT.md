@@ -402,6 +402,26 @@ Every push to `main` triggers an automatic rebuild and deploy.
 
 ---
 
+### Register the Resend webhook (bounces and spam complaints)
+
+Employer-lead emails go to addresses strangers typed into a public form, from the same domain as
+password resets. A spam complaint or a permanent bounce must therefore stop all further employer
+mail to that address — the endpoint below does that automatically (hash recorded, lead removed,
+mail history cleared; same result as the person clicking Remove).
+
+1. In Resend: **Webhooks → Add endpoint**, URL `https://<your-api-domain>/api/webhooks/resend`,
+   events **`email.bounced`** and **`email.complained`** (other events are ignored).
+2. Copy the endpoint's signing secret (`whsec_…`) and set it on the Worker:
+   ```bash
+   wrangler secret put RESEND_WEBHOOK_SECRET
+   ```
+3. Until it is set the endpoint answers 500 and logs `[CRITICAL] RESEND_WEBHOOK_SECRET is not
+   configured`; Resend retries, so nothing is lost once the secret is in place.
+
+A transient bounce, and every other event type, is acknowledged and ignored. A permanent bounce is
+acted on only when the address is currently an employer lead; a complaint always suppresses it.
+Each action is written to the admin audit log as `lead.auto_suppressed` (no actor, address hash only).
+
 ## 8. Go-Live Checklist
 
 ### Secrets

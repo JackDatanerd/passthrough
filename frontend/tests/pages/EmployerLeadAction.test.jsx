@@ -44,3 +44,50 @@ describe('EmployerLeadAction — failed removal (B6)', () => {
     expect(api.post).not.toHaveBeenCalled()
   })
 })
+
+// Independent audit round 9 (Section 5): a confirmed lead with no field on file is asked for it.
+describe('EmployerLeadAction — asking for the field after confirming', () => {
+  const url = '/employer/confirm?token=abcdefghijk.lmnop'
+
+  it('shows the picker when the server says no field is on file, and saves the choice with the same token', async () => {
+    const user = userEvent.setup()
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: true } })
+      .mockResolvedValueOnce({ data: { success: true, status: 'saved' } })
+    renderAt('confirm', url)
+    expect(await screen.findByText('Email confirmed')).toBeInTheDocument()
+    const save = screen.getByRole('button', { name: 'Save' })
+    expect(save).toBeDisabled()
+    await user.selectOptions(screen.getByLabelText('Which field are you hiring in?'), 'design')
+    await user.click(save)
+    expect(await screen.findByText(/Saved — we'll email you/)).toBeInTheDocument()
+    expect(api.post).toHaveBeenLastCalledWith('/employer-leads/field', { token: 'abcdefghijk.lmnop', field: 'design' })
+  })
+  it('does not ask when a field is already on file', async () => {
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: false } })
+    renderAt('confirm', url)
+    expect(await screen.findByText('Email confirmed')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Which field are you hiring in?')).toBeNull()
+  })
+  it('asks for an already-confirmed address that still has no field', async () => {
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'already', needsField: true } })
+    renderAt('confirm', url)
+    expect(await screen.findByText('Already confirmed')).toBeInTheDocument()
+    expect(screen.getByLabelText('Which field are you hiring in?')).toBeInTheDocument()
+  })
+  it('shows the error and keeps the picker when saving fails', async () => {
+    const user = userEvent.setup()
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: true } })
+      .mockRejectedValueOnce(httpError(503, 'Server busy.'))
+    renderAt('confirm', url)
+    await screen.findByText('Email confirmed')
+    await user.selectOptions(screen.getByLabelText('Which field are you hiring in?'), 'sales')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Server busy.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Save' })).toBeEnabled()
+  })
+  it('the remove page never shows a picker', async () => {
+    renderAt('remove', '/employer/remove?token=abcdefghijk.lmnop')
+    expect(await screen.findByRole('button', { name: 'Yes, remove me' })).toBeInTheDocument()
+    expect(screen.queryByLabelText('Which field are you hiring in?')).toBeNull()
+  })
+})

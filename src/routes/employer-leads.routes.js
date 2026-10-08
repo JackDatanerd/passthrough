@@ -15,6 +15,8 @@ router.post('/', rl.employerLead, c.createLead)
 // `employerLeadLink` comment for why that's the same fate-sharing mistake
 // already fixed for partner click-tracking. Given their own dedicated bucket.
 router.post('/confirm', rl.employerLeadLink, c.confirmLead)
+// The confirmed page asks for the field when the lead has none (same signed confirm token).
+router.post('/field', rl.employerLeadLink, c.setLeadField)
 // BUG FIX (independent audit round 8): the two OPT-OUT endpoints left the shared 30/hour bucket
 // above. Mailbox providers send RFC 8058 one-click requests from a small pool of shared IPs, so
 // a modest number of recipients could 429 each other's unsubscribes — and failing to honour an

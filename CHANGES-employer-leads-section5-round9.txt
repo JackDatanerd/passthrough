@@ -1,0 +1,49 @@
+Employer leads (Section 5) — independent audit round 9
+=======================================================
+
+Scope: employer-leads.controller.js + employer-leads.routes.js, traced into the shared text sanitizer,
+the scan first-name helper, the webhooks routes and the public confirm page.
+
+FEATURE GAPS CLOSED
+  G1  Bounce / spam-complaint feedback loop (new: POST /api/webhooks/resend)
+      Nothing fed delivery failures back into the do-not-contact list. A person who marked the
+      acknowledgement as spam stayed mailable; a permanently bounced address was retried by every
+      resubmission and notify run. New Svix-verified endpoint:
+        email.complained                    -> performRemoval (hash, lead row, employer mail history)
+        email.bounced, type Permanent       -> same, only when the address is currently a lead
+        anything else (transient, delivered, ...) -> acknowledged, ignored
+      Audit entry 'lead.auto_suppressed' (no actor, address hash only). Needs RESEND_WEBHOOK_SECRET
+      (documented in DEPLOYMENT.md + .dev.vars.example); fails closed with 500 until it is set.
+      Files: src/lib/svix.js, src/controllers/resend-webhook.controller.js, src/routes/webhooks.routes.js,
+             performRemoval exported from employer-leads.controller.js.
+  G2  A lead can name its own field (new: POST /api/employer-leads/field)
+      The field is optional on both forms and a lead without one can never be matched, announced or
+      notified. /confirm now returns needsField; the confirmed page shows a picker and saves it with the
+      same signed confirm token (no login). Sets role_category only.
+      Files: employer-leads.controller.js (setLeadField), employer-leads.routes.js,
+             frontend/src/pages/EmployerLeadAction.jsx.
+
+BUGS FIXED
+  1   Admin confirmation emails reached ARCHIVED (dismissed) leads. Bulk requestConfirmation now excludes
+      them (counted as skipped); the single endpoint answers 409. Every public path already refused.
+  2   A resubmission with a different field/role/page was dropped silently and could leave an incoherent
+      row (field 'sales' with the title 'ML lead' grafted on). The title is now filled only when it
+      belongs to the lead's field; name, company, field, role and page differences are listed in the owner
+      notice, and a resubmission carrying differences uses a 1h notice cooldown instead of 24h.
+  3   The suppressed-address branch of the public form answered one round trip sooner than every other
+      address, so timing still revealed an opt-out. It now runs an equivalent throwaway lookup.
+  4   (traced into Auth / Scan) Account names used a weaker sanitizer than the leads controller: U+202E
+      (right-to-left override) and Hangul-filler-only names were accepted. One shared list now lives in
+      lib/text.js (cleanName, cleanStrangerText, cleanNotes, firstNameOf); the leads controller imports it
+      instead of keeping its own copy. candidateFirstNameFrom (scan.controller.js), which feeds the PUBLIC
+      verification page, now cleans the name and returns null when there is no real word.
+      Account names still keep LRM / RLM / ALM (Persian, Arabic, Hebrew); stranger-typed text drops them.
+
+NOT CHANGED (decisions left open)
+  - Multi-field leads (a requested_fields column) — only the notice + coherence fix was done.
+  - Unsalted SHA-256 for the suppression list.
+
+TESTS
+  tests/employer-leads.round9.test.js (new), tests/resend-webhook.test.js (new), tests/text.test.js,
+  tests/employer-leads.controller.test.js (fake DB learns `neq`), frontend/tests/pages/EmployerLeadAction.test.jsx.
+  Full suite: 172 files / 3060 tests passing; worker-pool suite 90 files / 2455 tests; lint clean.

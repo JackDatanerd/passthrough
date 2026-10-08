@@ -22,6 +22,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       const match = r => q.filters.every((f) => {
         const [op, col, val] = f
         if (op === 'eq') return r[col] === val
+        if (op === 'neq') return r[col] !== val
         if (op === 'in') return val.includes(r[col])
         if (op === 'is') return (r[col] ?? null) === val
         if (op === 'not') return f[2] === 'is' ? (r[col] ?? null) !== f[3] : true

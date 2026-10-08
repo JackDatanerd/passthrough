@@ -11,6 +11,7 @@ const { signLeadToken, verifyLeadToken, leadLinkSecrets } = require('../lib/lead
 const { logAdminAction } = require('../lib/adminAudit')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { clientIp } = require('../lib/clientIp')
+const { cleanStrangerText, cleanNotes, hasSubstance } = require('../lib/text')
 const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 
 // ── Vocabulary ──────────────────────────────────────────────────────────────
@@ -31,42 +32,16 @@ const ROLE_CATEGORIES = constants.ROLE_CATEGORIES
 // table an admin reads. Control characters (newlines especially) let a
 // submitter forge extra "email: ceo@bigco.com" lines in that notification, so
 // they're collapsed to a space; runs of whitespace are squeezed; ends trimmed.
-//
-// Invisible and direction-changing format characters are removed outright
-// (not turned into spaces): a name made only of zero-width spaces used to pass
-// `min(1)` and render as a blank row, and a right-to-left override lets one
-// field visually reorder the text after it in the admin table and in the
-// owner's email. ZWJ / ZWNJ (U+200D / U+200C) are deliberately kept — emoji
-// sequences and Persian/Indic scripts need them.
-// eslint-disable-next-line no-control-regex
-const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g
-// BUG FIX (fresh audit pass 2, Section 5): the list below used to miss two
-// families. (1) The Hangul fillers (U+115F, U+1160, U+3164, U+FFA0) are
-// category Lo — LETTERS — so a name made only of them passed hasSubstance()
-// below and rendered as a blank row, the exact outcome this list exists to
-// prevent. (2) U+061C ARABIC LETTER MARK is a direction-changing control like
-// the LRM/RLM already listed, and U+034F / U+17B4 / U+17B5 are default-
-// ignorable marks with no visible glyph of their own.
-//
-// BUG FIX (independent audit round 7, Section 5): the pattern had no `u` flag, so nothing
-// above U+FFFF could ever match — the Unicode TAG block (U+E0000–E007F), the best-known channel
-// for hiding text that renders as nothing (a name that reads "Dana" and carries a hidden
-// instruction for whoever, or whatever, later reads the owner's email or the CSV), passed
-// straight through into the table, the owner notice and the export. Also missed: the deprecated
-// format controls U+2065 / U+206A–206F, the Mongolian free variation selectors U+180B–180D, and
-// the interlinear annotation marks U+FFF9–FFFB. Variation selectors U+FE00–FE0F (emoji) and the
-// ideographic ones U+E0100–E01EF (real Japanese names) are deliberately kept.
-const INVISIBLE_CHARS = /[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u206f\u3164\ufeff\uffa0\ufff9-\ufffb\u{1d173}-\u{1d17a}\u{e0000}-\u{e007f}]/gu
-const cleanText = (s) => s.replace(CONTROL_CHARS, ' ').replace(INVISIBLE_CHARS, '').replace(/\s+/g, ' ').trim()
+// Invisible and direction-changing characters (zero-width, bidi override, Hangul fillers, the
+// Unicode TAG block, LRM/RLM/ALM …) are removed outright. The list lives in ONE place —
+// lib/text.js — shared with account names; this file used to carry its own, stricter copy and the
+// two drifted apart.
+const cleanText = cleanStrangerText
 const text = (max, { min = 0 } = {}) =>
   z.string().transform(cleanText).pipe(z.string().min(min).max(max))
 // A required name/company must contain at least one letter or digit — "-",
 // "..." and emoji-only values are not a name.
-const hasSubstance = (s) => /[\p{L}\p{N}]/u.test(s)
 const required = (max) => text(max, { min: 1 }).refine(hasSubstance, { message: 'Enter a real value.' })
-// Free-text notes keep their line breaks; only the dangerous characters go.
-// eslint-disable-next-line no-control-regex
-const cleanNotes = (s) => s.replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f]/g, '').replace(INVISIBLE_CHARS, '').trim()
 
 const schema = z.object({
   name:    required(100),
@@ -145,6 +120,7 @@ function resolveRole(data) {
 const NOTICE_BUDGET_PER_HOUR = 20
 const ACK_BUDGET_PER_HOUR = 30
 const RESUBMIT_NOTICE_COOLDOWN_MS = 24 * 60 * 60 * 1000
+const RESUBMIT_DIFF_NOTICE_COOLDOWN_MS = 60 * 60 * 1000
 // BUG FIX (fresh audit pass 2, Section 5): an unconfirmed lead's resubmission used to
 // re-send the acknowledgement immediately, so a double-click (or two quick tries)
 // spent BOTH of the address's monthly acknowledgement slots within seconds. A person
@@ -374,8 +350,23 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
     updated_at:        now.toISOString()
   }
   if (!existing.role_category && row.role_category) patch.role_category = row.role_category
-  if (!existing.role_title    && row.role_title)    patch.role_title    = row.role_title
+  // BUG FIX (independent audit round 9, Section 5): the three gap-fills used to be independent, so
+  // a `sales` lead resubmitting as "Data Science / ML lead" came out as field `sales` with title
+  // "ML lead" — an incoherent row — and the different field was dropped without a trace. The title
+  // is now only filled when it belongs to the field the lead ends up with; anything that was NOT
+  // taken is reported to the owner below instead of vanishing.
+  const categoryAfter = patch.role_category || existing.role_category || null
+  if (!existing.role_title && row.role_title && (!row.role_category || !categoryAfter || row.role_category === categoryAfter))
+    patch.role_title = row.role_title
   if (!existing.source_code   && row.source_code)   patch.source_code   = row.source_code
+  const stored = { ...existing, ...patch }
+  // What this submission said that the lead now does NOT say (name/company are never overwritten
+  // either). The field and the page it came from matter most: they decide whether this person is
+  // matched with candidates, and which candidate's page brought them back.
+  const DIFF_LABELS = { name: 'name', company: 'company', role_category: 'field', role_title: 'role', source_code: 'came from page' }
+  const changed = Object.keys(DIFF_LABELS)
+    .filter(k => row[k] && stored[k] !== row[k])
+    .map(k => `${DIFF_LABELS[k]}: ${k === 'role_category' ? fieldLabel(row[k]) : row[k]}`)
 
   const { data: updated, error: updErr } = await supabase
     .from('employer_leads').update(patch)
@@ -406,10 +397,12 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
 
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
-  if (existing.status !== 'ARCHIVED' && now.getTime() - lastNoticeMs > RESUBMIT_NOTICE_COOLDOWN_MS) {
-    const changed = ['name', 'company'].filter(k => existing[k] !== row[k]).map(k => `${k}: ${row[k]}`)
+  // A resubmission that carries different details gets a shorter cooldown than a plain repeat:
+  // a lead who now says they are hiring in another field must not be silenced for a day.
+  const noticeCooldown = changed.length ? RESUBMIT_DIFF_NOTICE_COOLDOWN_MS : RESUBMIT_NOTICE_COOLDOWN_MS
+  if (existing.status !== 'ARCHIVED' && now.getTime() - lastNoticeMs > noticeCooldown) {
     const message = `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
-      (changed.length ? `\n\nThis time they entered different details (not saved over the lead):\n${changed.join('\n')}` : '')
+      (changed.length ? `\n\nThis time they entered different details (not saved over the lead — edit it if this is a real change):\n${changed.join('\n')}` : '')
     // Stamped only if the notice really went out, so a skipped (budget) or failed one is retried
     // by the next resubmission rather than silenced for a day.
     sends.push((async () => {
@@ -436,7 +429,13 @@ async function createLead(c) {
   const supabase = getSupabase(c.env)
   // Asked to be removed: pretend success, store and send nothing (same
   // response as any other submission, so the form reveals nothing).
-  if (await isSuppressed(supabase, data.email)) return ok(c)
+  if (await isSuppressed(supabase, data.email)) {
+    // BUG FIX (independent audit round 9, Section 5): this branch used to answer one database round
+    // trip sooner than the insert path every other address takes, so response time still told a
+    // caller whether an address had opted out. A throwaway lookup keeps the two the same length.
+    await supabase.from('employer_leads').select('id').eq('email', data.email).limit(1).then(() => {}, () => {})
+    return ok(c)
+  }
   const row = {
     name:    data.name,
     company: data.company,
@@ -943,6 +942,10 @@ async function adminBulkUpdateLeads(c) {
 
   if (action === 'requestConfirmation') {
     const { data: leads, error } = await supabase.from('employer_leads').select('*').in('id', ids).is('confirmed_at', null)
+      // BUG FIX (independent audit round 9, Section 5): an ARCHIVED lead is one the admin dismissed —
+      // every public path already refuses to re-mail it, but this one (and the single-lead twin
+      // below) only had a client-side guard, so a bulk selection mailed dismissed addresses.
+      .neq('status', 'ARCHIVED')
     if (error) throw error
     const origin = apiOrigin(c)
     const sentIds = []
@@ -952,7 +955,7 @@ async function adminBulkUpdateLeads(c) {
       if (await sendAck(c.env, lead, { skipBudget: true, origin })) sentIds.push(lead.id)
       else failed++
     }
-    const skipped = ids.length - (leads || []).length   // already confirmed, or gone
+    const skipped = ids.length - (leads || []).length   // already confirmed, archived, or gone
     await logAdminAction(c, supabase, 'lead.bulk_request_confirmation', 'employer_lead', null, { ids: sentIds, failed, skipped })
     return c.json({ success: true, affected: sentIds.length, sent: sentIds.length, failed, skipped })
   }
@@ -1023,7 +1026,7 @@ async function confirmLead(c) {
     .from('employer_leads').select('*').eq('email', email).maybeSingle()
   if (error) throw error
   if (!lead) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
-  if (lead.confirmed_at) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
+  if (lead.confirmed_at) return c.json({ success: true, status: 'already', needsField: !lead.role_category, message: 'This address is already confirmed.' })
 
   const now = new Date().toISOString()
   // BUG FIX (fresh audit pass, Section 5): the `.is('confirmed_at', null)`
@@ -1049,7 +1052,29 @@ async function confirmLead(c) {
   // lead that's still open is worth a heads-up, one the admin has already
   // dismissed is not.
   if (lead.status !== 'ARCHIVED') await notifyOwner(c, 'Employer lead confirmed', describeLead(lead))
-  return c.json({ success: true, status: 'confirmed', message: "Thanks — your email is confirmed. We'll be in touch when there are Verified candidates in your field." })
+  return c.json({ success: true, status: 'confirmed', needsField: !lead.role_category, message: "Thanks — your email is confirmed. We'll be in touch when there are Verified candidates in your field." })
+}
+
+// POST /api/employer-leads/field { token, field }
+// FEATURE GAP CLOSED (independent audit round 9, Section 5): the field is optional on both forms,
+// and a lead without one can never be matched with candidates, announced in the owner digest or
+// notified — only an admin could fix that, by guessing. The person who CAN is the inbox owner, and
+// the confirm link already proves they are: the confirmed page now asks, and this saves the answer.
+// Same signed token as /confirm (purpose "confirm"), so it needs no login and reveals nothing the
+// token holder does not already know. It sets the field only — never name, company or status.
+const fieldBodySchema = z.object({ token: z.string().min(10).max(700), field: z.enum(ROLE_CATEGORIES) })
+async function setLeadField(c) {
+  const { token, field } = fieldBodySchema.parse(await c.req.json())
+  const email = await verifyLeadToken(leadLinkSecrets(c.env).verify, 'confirm', token)
+  if (!email) return c.json(INVALID_LINK, 400)
+
+  const supabase = getSupabase(c.env)
+  const { data: updated, error } = await supabase
+    .from('employer_leads').update({ role_category: field, updated_at: new Date().toISOString() })
+    .eq('email', email).select('id').maybeSingle()
+  if (error) throw error
+  if (!updated) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  return c.json({ success: true, status: 'saved', message: "Thanks — we'll email you when there are Verified candidates in that field." })
 }
 
 // POST /api/employer-leads/remove { token }
@@ -1228,6 +1253,7 @@ async function adminRequestConfirmation(c) {
   if (error) throw error
   if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
   if (lead.confirmed_at) return c.json({ success: false, message: 'This address is already confirmed.' }, 409)
+  if (lead.status === 'ARCHIVED') return c.json({ success: false, message: 'This lead is archived. Move it back to New before asking it to confirm.' }, 409)
 
   const sent = await sendAck(c.env, lead, { skipBudget: true, origin: apiOrigin(c) })
   await logAdminAction(c, supabase, 'lead.request_confirmation', 'employer_lead', id, { sent })
@@ -1366,9 +1392,10 @@ async function adminNotifyCandidates(c) {
 }
 
 module.exports = {
-  createLead, confirmLead, removeLead, unsubscribeLead, unsubscribeRedirect, adminMarkConfirmed,
+  createLead, confirmLead, setLeadField, removeLead, unsubscribeLead, unsubscribeRedirect, adminMarkConfirmed,
   adminListLeads, adminExportLeads, adminCreateLead,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,
+  performRemoval,
   LEAD_STATUSES, LEAD_SOURCES
 }

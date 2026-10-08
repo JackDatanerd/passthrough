@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { cleanName, hasSubstance, nameSchema } from '../src/lib/text.js'
+import { cleanName, cleanStrangerText, cleanNotes, firstNameOf, hasSubstance, nameSchema } from '../src/lib/text.js'
 
 describe('cleanName', () => {
   it('collapses whitespace, strips control and invisible filler, keeps real characters', () => {
@@ -45,5 +45,38 @@ describe('hasSubstance', () => {
     expect(hasSubstance('a')).toBe(true)
     expect(hasSubstance('7')).toBe(true)
     expect(hasSubstance('—')).toBe(false)
+  })
+})
+
+// Independent audit round 9 (Section 5): one shared list. Account names used to lack the bidi
+// override and Hangul-filler entries the employer-leads controller already had.
+describe('shared invisible / direction-changing characters', () => {
+  it('strips bidi embedding and override controls from account names', () => {
+    expect(cleanName('Dana\u202eevil')).toBe('Danaevil')
+    expect(cleanName('A\u202a\u202b\u202c\u202dB')).toBe('AB')
+  })
+  it('rejects a name made only of Hangul fillers, Khmer vowels or a grapheme joiner', () => {
+    for (const n of ['\u3164', '\u115f\u1160', '\uffa0', '\u17b4\u17b5', '\u034f']) expect(nameSchema.safeParse(n).success).toBe(false)
+  })
+  it('still keeps LRM / RLM / ALM for account names (Persian, Arabic, Hebrew)', () => {
+    expect(cleanName('\u200fמשה')).toContain('\u200f')
+    expect(cleanName('\u061cمحمد')).toContain('\u061c')
+  })
+  it('drops them for text typed by a stranger', () => {
+    expect(cleanStrangerText('Da\u200f\u061c\u200ena')).toBe('Dana')
+    expect(cleanStrangerText('  a \n b ')).toBe('a b')
+  })
+  it('cleanNotes keeps line breaks but removes dangerous characters', () => {
+    expect(cleanNotes(' line1\nline2\u202e\u0007 ')).toBe('line1\nline2')
+  })
+})
+
+describe('firstNameOf (the public verification page)', () => {
+  it('returns the cleaned first word', () => {
+    expect(firstNameOf('  Dana   Whitfield ')).toBe('Dana')
+    expect(firstNameOf('\u202eDana Whitfield')).toBe('Dana')
+  })
+  it('is null when there is no real word', () => {
+    for (const v of [null, undefined, '', '   ', '\u200b', '\u3164', '--- x', 42]) expect(firstNameOf(v)).toBeNull()
   })
 })
