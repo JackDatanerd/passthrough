@@ -1268,8 +1268,14 @@ async function initiateFix(ctx) {
   try { body = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Invalid request body.' }, 400) }
   const { fixTier, referralCode } = z.object({
     fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
-    referralCode: z.string().max(50).optional()
+    // PAYMENTS & PRICING ROUND 7 (bug): was max(50) while /api/pricing and /api/payments/initialize accept
+    // 100, so a code those two honour was a 400 here. One cap everywhere.
+    referralCode: z.string().max(100).optional()
   }).parse(body)
+
+  // Same gate /api/payments/initialize applies — a quote for a purchase that cannot be made is a trap.
+  if (!user.emailVerified)
+    return ctx.json({ success: false, code: 'EMAIL_NOT_VERIFIED', message: 'Please verify your email address before buying — your downloads and receipt are sent to it.' }, 403)
 
   const supabase = getSupabase(ctx.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
@@ -1290,7 +1296,10 @@ async function initiateFix(ctx) {
   // frontend checkout calls /api/payments/initialize directly rather than
   // this endpoint, so this quote can never show a different number than
   // what a payment would actually charge.
-  const priced = await referralService.resolvePrice(supabase, fixTier, ctx.env, referralCode, { buyerEmail: user.email })
+  // resolvePricesForTiers (not resolvePrice): it also applies the live-reservation rule, so this quote
+  // can no longer promise a discount on a limited code whose last slots are held by other checkouts.
+  const priced = (await referralService.resolvePricesForTiers(supabase, [fixTier], ctx.env, referralCode,
+    { buyerEmail: user.email, buyerUserId: user.id }))[fixTier]
   const promoActive = c.isPromoActive(ctx.env)
   // AUDIT FIX (bug): originalAmount used to branch on referralApplied and,
   // in that branch, anchor on c.priceForTier(fixTier, ctx.env) — the

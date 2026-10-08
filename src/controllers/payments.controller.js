@@ -493,6 +493,19 @@ async function cancelPayment(c2) {
 }
 
 // GET /api/payments/verify?reference=xxx
+// PAYMENTS & PRICING ROUND 7 (gap): a paid-but-mismatched payment (amount or currency differs from the
+// row) used to answer with the same generic 400 as an ordinary decline, so the buyer — whose money HAS
+// moved and whose payment the owner is already reviewing — was told "verification failed, try again".
+// initializePayment already tells a buyer about this payment "is being checked by hand"; verify now
+// says the same, as needsSupport (409), which PaymentSuccess and the in-page checkout both stop
+// polling on. Deliberately carries no amounts — only what the buyer needs.
+function mismatchHeld(c2, paymentRow) {
+  return c2.json({ success: false, needsSupport: true, outcome: 'MISMATCH', data: { scanId: paymentRow.scan_id },
+    message: 'We received your payment, but it does not match what we expected, so we are checking it by hand. ' +
+      'You do not need to pay again — nothing has been lost. If you do not hear from us soon, contact support with your payment reference.'
+  }, 409)
+}
+
 async function verifyPayment(c2) {
   const user = c2.get('user')
   const reference = c2.req.query('reference') || c2.req.query('trxref')
@@ -622,7 +635,7 @@ async function verifyPayment(c2) {
         { dedupeKey: reference }
       )
     } catch (_) {}
-    return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
+    return mismatchHeld(c2, paymentRow)
   }
 
   // Amount check — defense in depth. Paystack's hosted checkout won't let a
@@ -645,7 +658,7 @@ async function verifyPayment(c2) {
         { dedupeKey: reference }
       )
     } catch (_) {}
-    return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
+    return mismatchHeld(c2, paymentRow)
   }
 
   const authCode = pResult.data?.authorization?.authorization_code

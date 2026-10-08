@@ -110,6 +110,41 @@ describe('sweepOrphanedPayments', () => {
     expect(t.state.ledger).toHaveLength(1)
   })
 
+  it('Round 7: a lost job belongs to the payment that OWNS the scan, not a newer duplicate', async () => {
+    // Rows arrive newest-first: the duplicate (a FIX payment) is seen before the owner (a BADGE payment).
+    t = setup({
+      payments: [
+        pay({ id: 'dup', paystack_ref: 'refDup', fix_tier: 'FIX',   referral_code_id: 'rc1', amount_cents: 2900, created_at: minsAgo(30) }),
+        pay({ id: 'own', paystack_ref: 'refOwn', fix_tier: 'BADGE', created_at: minsAgo(90) }),
+      ],
+      scans: [scan({ fix_purchased: true, fix_tier: 'BADGE', fix_payment_id: 'own', status: 'FIX_PURCHASED', updated_at: minsAgo(30) })],
+    })
+    const r = await t.sweep()
+    expect(r.reenqueued).toHaveLength(1)
+    expect(r.reenqueued[0]).toMatchObject({ reference: 'refOwn', kind: 'job-lost' })
+    expect(t.state.queue).toEqual([{ type: 'generateBadge', scanId: 's1' }])   // the scan's tier, never the duplicate's
+    expect(t.state.ledger).toHaveLength(0)                                       // no commission on the duplicate
+  })
+
+  it('Round 7: a lost job re-runs the generator the scan was bought with (scans.fix_tier)', async () => {
+    t = setup({
+      payments: [pay({ id: 'own', fix_tier: 'FIX' })],
+      scans: [scan({ fix_purchased: true, fix_tier: 'BADGE', fix_payment_id: 'own', status: 'FIX_PURCHASED', updated_at: minsAgo(30) })],
+    })
+    await t.sweep()
+    expect(t.state.queue).toEqual([{ type: 'generateBadge', scanId: 's1' }])
+  })
+
+  it('Round 7: only a duplicate in the window (owner older than the look-back) is skipped, not re-run', async () => {
+    t = setup({
+      payments: [pay({ id: 'dup', fix_tier: 'FIX' })],
+      scans: [scan({ fix_purchased: true, fix_tier: 'BADGE', fix_payment_id: 'own', status: 'FIX_PURCHASED', updated_at: minsAgo(30) })],
+    })
+    const r = await t.sweep()
+    expect(r.orphans).toBe(0)
+    expect(t.state.queue).toHaveLength(0)
+  })
+
   it('is idempotent: re-recovering an already-recorded conversion is a harmless no-op', async () => {
     t = setup({ payments: [pay({ referral_code_id: 'rc1', amount_cents: 2900 })], scans: [scan({ fix_purchased: false })],
       ledgerError: { code: '23505', message: 'duplicate key' },
@@ -365,6 +400,14 @@ const pendingReal = (over = {}) => ({ id: 'p1', paystack_ref: 'ref1', scan_id: '
   status: 'PENDING', amount_cents: 2900, currency: 'USD', created_at: minsAgo(30), ...over })
 
 describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCCESS rows)', () => {
+  it('Round 7: the look-back window is wider than the hourly cron interval, so every payment is looked at', () => {
+    const { PENDING_MIN_AGE_MS, PENDING_RECENT_MS } = require('../src/services/reconcile.service')
+    const cronIntervalMs = 60 * 60 * 1000
+    // A row is eligible for (RECENT - MIN_AGE) of its life; hourly runs only see every row if that span
+    // is at least one interval (and two or more gives a second chance for a slow mobile-money approval).
+    expect(PENDING_RECENT_MS - PENDING_MIN_AGE_MS).toBeGreaterThanOrEqual(2 * cronIntervalMs)
+  })
+
   it('does nothing when there is nothing to check', async () => {
     t = setupRecheck()
     const r = await t.sweep()
@@ -379,7 +422,7 @@ describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCC
     expect(q.filters.find(f => f[0] === 'in' && f[1] === 'status')[2]).toEqual(['PENDING', 'ABANDONED', 'FAILED'])
     const gt = q.filters.find(f => f[0] === 'gt' && f[1] === 'created_at')[2]
     const lt = q.filters.find(f => f[0] === 'lt' && f[1] === 'created_at')[2]
-    expect(Date.parse(gt)).toBe(NOW - 60 * 60_000)   // 60-minute recent window
+    expect(Date.parse(gt)).toBe(NOW - 3 * 60 * 60_000)   // 3-hour recent window (must exceed the hourly cron interval)
     expect(Date.parse(lt)).toBe(NOW - 10 * 60_000)   // 10-minute grace: don't race a checkout still in progress
   })
 

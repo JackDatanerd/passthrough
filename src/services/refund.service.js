@@ -14,9 +14,15 @@
 
 const OPEN_REFUND_STATUSES = ['pending', 'processing', 'needs-attention']
 
-// How long a refund claim is held. Kept after a SUCCESSFUL queue for the rest of the TTL (Paystack's
-// refund list can lag a just-created refund) and handed back immediately on any failure.
+// How long an IN-FLIGHT refund claim is held (handed back immediately on any failure).
 const REFUND_CLAIM_TTL_MS = 60 * 1000
+// PAYMENTS & PRICING ROUND 7 (gap): after a SUCCESSFUL queue the claim used to lapse 60s later and the
+// only thing standing between a re-run (auto-refund fires on every verify / recheck / webhook
+// redelivery) and a second createRefund was Paystack's refund LIST — which can lag a just-created
+// refund by longer than that. A successful queue now holds the claim for this long, so a re-run in
+// that window gets CLAIM_LOST / IN_PROGRESS without asking Paystack to refund again. Past it, the
+// refund list is authoritative as before (and a refund Paystack later failed becomes retryable).
+const REFUND_POST_QUEUE_HOLD_MS = 15 * 60 * 1000
 
 // -> { claimed: boolean, unsupported?: boolean }. `unsupported` = the column does not exist yet
 // (migration 0048 not applied): proceed on the old, unlocked behaviour with a loud log rather than
@@ -36,6 +42,16 @@ async function claimRefund(supabase, paymentId, now = Date.now()) {
     throw error
   }
   return { claimed: !!(data && data.length > 0) }
+}
+
+// Pushes refund_claimed_at into the future so claimRefund's `< now - TTL` test stays false until
+// REFUND_POST_QUEUE_HOLD_MS after the queue. Best-effort: the 60s claim and the refund list still apply.
+async function holdRefundClaim(supabase, paymentId, now = Date.now()) {
+  try {
+    const until = new Date(now + REFUND_POST_QUEUE_HOLD_MS - REFUND_CLAIM_TTL_MS).toISOString()
+    const { error } = await supabase.from('payments').update({ refund_claimed_at: until }).eq('id', paymentId)
+    if (error) console.error('holdRefundClaim:', error.message)
+  } catch (err) { console.error('holdRefundClaim unexpected:', err.message) }
 }
 
 async function releaseRefundClaim(supabase, paymentId) {
@@ -63,7 +79,7 @@ async function queueRefund(env, supabase, payment, { amountCents: requested = nu
   const claim = await claimRefund(supabase, payment.id)
   if (!claim.claimed)
     return { ok: false, code: 'CLAIM_LOST', status: 409,
-      message: 'Another refund request for this payment was just submitted — wait a minute and check Paystack before trying again.' }
+      message: 'A refund for this payment was just submitted — check Paystack, and try again in a few minutes only if you need to refund more.' }
 
   let keepClaim = false
   try {
@@ -115,6 +131,7 @@ async function queueRefund(env, supabase, payment, { amountCents: requested = nu
       return { ok: false, code: 'PAYSTACK_ERROR', status: 502, message: `Paystack refund failed: ${err.message}. Nothing was refunded.` }
     }
     keepClaim = true
+    if (!claim.unsupported) await holdRefundClaim(supabase, payment.id)
     return { ok: true, amountCents, partial, completesRefund, queued }
   } finally {
     if (!keepClaim && !claim.unsupported) await releaseRefundClaim(supabase, payment.id)
@@ -179,5 +196,5 @@ async function autoRefundDuplicate(env, supabase, payment, { ownerPaymentId = nu
 
 module.exports = {
   OPEN_REFUND_STATUSES, REFUND_CLAIM_TTL_MS,
-  claimRefund, releaseRefundClaim, queueRefund, autoRefundDuplicate, autoRefundEnabled,
+  claimRefund, releaseRefundClaim, holdRefundClaim, REFUND_POST_QUEUE_HOLD_MS, queueRefund, autoRefundDuplicate, autoRefundEnabled,
 }

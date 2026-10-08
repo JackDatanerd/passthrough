@@ -174,10 +174,32 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts
   // checkouts in progress therefore QUOTED its discount here and then silently charged the full
   // price at checkout. The quote now applies the same rule the claim does.
   if (codeRow && isCodeUsable(codeRow) && codeRow.usage_limit != null) {
-    const live = await countLiveReservations(supabase, codeRow.id)
+    // PAYMENTS & PRICING ROUND 7 (bug): `live` includes the BUYER'S OWN checkout in progress. With the
+    // last slot of a limited code held by their own pending payment, a reload quoted the full price
+    // while resuming that very checkout still honoured the discount (initializePayment resumes it
+    // without a new claim). Their own held reservations are not competition for the slot.
+    const live = Math.max(0, (await countLiveReservations(supabase, codeRow.id))
+      - (opts.buyerUserId ? await countOwnLiveReservations(supabase, codeRow.id, opts.buyerUserId) : 0))
     if ((codeRow.uses_so_far || 0) + live >= codeRow.usage_limit) codeRow = null
   }
   return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow, opts)]))
+}
+
+// This buyer's PENDING checkouts that hold a live reservation on the code. Fails open to 0 like
+// countLiveReservations (a failed lookup just means the quote may be conservative).
+async function countOwnLiveReservations(supabase, codeId, userId) {
+  try {
+    const since = new Date(Date.now() - RESERVATION_TTL_SECONDS * 1000).toISOString()
+    const { count, error } = await supabase.from('payments')
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId).eq('status', 'PENDING').eq('referral_code_id', codeId)
+      .not('referral_reservation_id', 'is', null).gt('created_at', since)
+    if (error) { console.error('countOwnLiveReservations:', error.message); return 0 }
+    return count || 0
+  } catch (err) {
+    console.error('countOwnLiveReservations unexpected:', err.message)
+    return 0
+  }
 }
 
 // Must match reserve_referral_code_slot's default p_ttl_seconds (migration 0044).
@@ -517,5 +539,5 @@ module.exports = {
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
-  countLiveReservations,
+  countLiveReservations, countOwnLiveReservations,
 }

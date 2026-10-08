@@ -12,7 +12,7 @@ vi.mock('../../src/lib/api', () => ({
   default: { get: vi.fn(), post: vi.fn(), patch: vi.fn() },
   getErrorMessage: (err, fallback) => err?.response?.data?.message || fallback,
 }))
-vi.mock('@paystack/inline-js', () => ({ default: class { resumeTransaction() {} } }))
+vi.mock('@paystack/inline-js', () => ({ default: class { resumeTransaction(_code, handlers) { globalThis.__popupHandlers = handlers } } }))
 vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
 vi.mock('../../src/components/scan/ScoreGauge', () => ({ default: () => null }))
@@ -159,5 +159,54 @@ describe('ScanResult — price notice at checkout (round 4, B1/G1)', () => {
     fireEvent.click(await screen.findByText('pay-fix'))
     await waitFor(() => expect(api.post).toHaveBeenCalledWith('/payments/initialize', expect.anything()))
     expect(screen.queryByText(/usage limit/)).toBeNull()
+  })
+})
+
+// Payments & Pricing round 7 — G1: the popup's /payments/verify answer used to be thrown away, so a
+// duplicate charge, a payment held for review, or a decline never reached a buyer who paid in the popup.
+describe('ScanResult — what verify says after the popup succeeds (round 7, G1)', () => {
+  async function payInPopup(verify) {
+    globalThis.__popupHandlers = null
+    api.get.mockImplementation(async (url) => {
+      if (url.startsWith('/payments/pending')) return { data: { data: { pending: null } } }
+      if (url.startsWith('/payments/verify')) return verify()
+      if (url.startsWith('/scan/')) return { data: { data: SCAN } }
+      return { data: { data: {} } }
+    })
+    api.post.mockResolvedValue({ data: { data: { access_code: 'AC', reference: 'R1', amount: 4900, currency: 'USD' } } })
+    renderPage()
+    fireEvent.click(await screen.findByText('pay-fix'))
+    await waitFor(() => expect(globalThis.__popupHandlers).toBeTruthy())
+    await globalThis.__popupHandlers.onSuccess()
+  }
+
+  it('a duplicate charge is explained, with the refund state', async () => {
+    await payInPopup(async () => ({ data: { success: true, data: { scanId: 's1', duplicate: true, refund: 'QUEUED' } } }))
+    expect(await screen.findByText(/you'd already paid for this resume/i)).toBeInTheDocument()
+    expect(screen.getByText(/started refunding the extra payment/i)).toBeInTheDocument()
+    expect(screen.queryByText(/waiting for the bank to confirm/i)).toBeNull()   // nothing is coming — no 5-minute wait
+  })
+
+  it('a payment held for review shows the server message and does not wait for a delivery that is not coming', async () => {
+    await payInPopup(async () => { throw { response: { status: 409, data: { success: false, needsSupport: true, outcome: 'MISMATCH', message: 'We received your payment, but it does not match what we expected.' } } } })
+    expect(await screen.findByText(/does not match what we expected/i)).toBeInTheDocument()
+    expect(screen.queryByText(/waiting for the bank to confirm/i)).toBeNull()
+  })
+
+  it('a definite decline is shown', async () => {
+    await payInPopup(async () => { throw { response: { status: 400, data: { success: false, declined: true, message: 'This payment was not completed, so you have not been charged.' } } } })
+    expect(await screen.findByText(/you have not been charged/i)).toBeInTheDocument()
+  })
+
+  it('a still-processing answer (202) keeps the normal wait for delivery and shows no outcome banner', async () => {
+    await payInPopup(async () => ({ data: { success: false, pending: true } }))
+    expect(await screen.findByText(/waiting for the bank to confirm/i)).toBeInTheDocument()
+    expect(screen.queryByText('Dismiss')).toBeNull()
+  })
+
+  it('a network failure on verify is still swallowed (the webhook confirms independently)', async () => {
+    await payInPopup(async () => { throw new Error('Network Error') })
+    expect(await screen.findByText(/waiting for the bank to confirm/i)).toBeInTheDocument()
+    expect(screen.queryByText('Dismiss')).toBeNull()
   })
 })

@@ -38,7 +38,7 @@ async function getPricing(ctx) {
   // request instead of one. resolvePricesForTiers does the single lookup
   // and returns all three tiers' prices from it.
   const priced = referralCode
-    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode, { buyerEmail })
+    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode, { buyerEmail, buyerUserId: ctx.get('user')?.id })
     : null
 
   const tiers = TIERS.map(tier => {

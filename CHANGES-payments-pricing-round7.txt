@@ -1,0 +1,23 @@
+PAYMENTS & PRICING — ROUND 7 (base: dd8d024)
+
+GAPS
+G1  ScanResult popup discarded /payments/verify's answer. Duplicate-charge, held-for-review (409 needsSupport)
+    and declined results now show in a dismissible banner and stop the 5-minute "confirming" wait.
+G2  verifyPayment amount/currency mismatch answered the buyer with a generic 400 "verification failed".
+    Now 409 needsSupport/outcome MISMATCH ("checking it by hand, don't pay again"), no amounts leaked.
+G3  Auto-refund relied on Paystack's refund list alone after the 60s claim lapsed. A successful queue now
+    holds the claim for 15 minutes (refund.service holdRefundClaim) so re-runs cannot refund twice.
+
+BUGS
+B1  sweepPendingPayments window (10-60 min) was narrower than the hourly cron: ~1 in 6 payments never
+    looked at, the rest looked at once. Window is now 10 min - 3 h.
+B2  sweepOrphanedPayments 'job-lost' picked the newest SUCCESS payment (possibly a duplicate): wrong
+    generator tier, commission on a duplicate. Now the owner payment (scans.fix_payment_id) and scans.fix_tier.
+B4  Price quote counted the buyer's own pending checkout against a limited code's last slot. Own live
+    reservations are now netted off (referral.service countOwnLiveReservations).
+B5  initiateFix: referral cap 50 -> 100 (matches pricing/initialize), verified-email gate, quotes through
+    resolvePricesForTiers (live-reservation rule).
+(B3 usePricing refresh race — already closed upstream in 79cfd14.)
+
+TESTS  refund.hold.test.js (new), referral.quote (+3), reconcile.service (+4), scan.controller (+2),
+       payments.controller (mismatch -> 409), ScanResult.payments (+5).

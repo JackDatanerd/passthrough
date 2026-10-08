@@ -74,7 +74,7 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
 
   const scanIds = [...new Set(payments.map(p => p.scan_id).filter(Boolean))]
   const { data: scans, error: scanErr } = await supabase
-    .from('scans').select('id, status, fix_purchased, updated_at').in('id', scanIds)
+    .from('scans').select('id, status, fix_purchased, fix_tier, fix_payment_id, updated_at').in('id', scanIds)
   if (scanErr) { result.error = scanErr.message; return result }
   const scanById = new Map((scans || []).map(s => [s.id, s]))
 
@@ -86,13 +86,21 @@ async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = 
     if (!scan.fix_purchased) {
       orphans.push({ payment: p, scan, kind: 'never-fulfilled' }); seen.add(scan.id)
     } else if (scan.status === 'FIX_PURCHASED' && Date.parse(scan.updated_at) < now - STUCK_PURCHASED_MS) {
+      // PAYMENTS & PRICING ROUND 7 (bug): rows arrive newest-first, so with a duplicate charge on the
+      // scan this used to pick the DUPLICATE — re-enqueueing the generator for ITS tier (a BADGE scan
+      // with a stray FIX duplicate got generateFix) and recording a commission on a payment that is
+      // about to be refunded. A lost job belongs to the payment that OWNS the scan; skip the others
+      // (without marking the scan seen, so the owner row, further down the list, still gets its turn).
+      if (scan.fix_payment_id && scan.fix_payment_id !== p.id) continue
       orphans.push({ payment: p, scan, kind: 'job-lost' }); seen.add(scan.id)
     }
   }
   result.orphans = orphans.length
 
   for (const { payment, scan, kind } of orphans.slice(0, MAX_PER_RUN)) {
-    const fixTier = payment.fix_tier || 'FIX'
+    // A lost job re-runs the generator the scan was actually purchased with (scans.fix_tier);
+    // only a never-fulfilled claim takes its tier from the payment.
+    const fixTier = (kind === 'job-lost' ? scan.fix_tier : null) || payment.fix_tier || 'FIX'
     try {
       // SECTION 7/8 AUDIT: record WHICH payment claimed the scan (fix_payment_id,
       // migration — see fulfillment.service.js), same as every other claim in the
@@ -241,16 +249,19 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
 //     Each candidate is verified against Paystack's API before anything is
 //     settled, so this never trusts anything the client could have forged.
 //
-// Deliberately runs BEFORE sweepStalePendingPayments has a chance to time a
-// row out from under it: this checks payments still inside PENDING_RECENT_MS,
-// well short of sweepStalePendingPayments's 2-hour PENDING_ABANDON_AGE_MS, so
-// the two never race over the same row. A row already abandoned by that sweep
-// is still revivable here for a good while longer (fulfillment.service treats
-// ABANDONED as revivable) — a very late Paystack success should still be
-// honoured, it just won't be caught until the buyer returns or an admin
-// recheck is used past that point.
+// Rows the stale sweep has already ABANDONED (PENDING_ABANDON_AGE_MS, 2h) stay inside this sweep's
+// window (PENDING_RECENT_MS) and are revivable (fulfillment.service treats ABANDONED as revivable),
+// so a late Paystack success is still honoured; past the window it is caught only when the buyer
+// returns or an admin rechecks.
 const PENDING_MIN_AGE_MS     = 10 * 60 * 1000          // don't race a checkout still in progress
-const PENDING_RECENT_MS      = 60 * 60 * 1000          // stays well inside sweepStalePendingPayments's 2h window
+// PAYMENTS & PRICING ROUND 7 (bug): this window was 50 minutes wide (10-60 min) while the sweep runs
+// HOURLY, so a payment created in the last 10 minutes before a run was too young at that run and too
+// old at the next — never looked at (~1 in 6 payments), and every other payment was looked at exactly
+// once, so a buyer still approving a mobile-money prompt at that moment was never rechecked. The
+// window must be wider than the cron interval; 3 hours gives every row two to three looks. Rows the
+// stale sweep already ABANDONED (at 2h) stay revivable inside it, so a late Paystack success is still
+// honoured. A held MISMATCH re-alerts at most once per look, which is the point of an unresolved hold.
+const PENDING_RECENT_MS      = 3 * 60 * 60 * 1000
 const MAX_VERIFY_PER_RUN     = 25                      // each is one Paystack API call
 
 /**

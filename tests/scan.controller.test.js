@@ -41,7 +41,14 @@ describe('initiateFix', () => {
     const db = createFakeSupabase(q => (q.table === 'scans' ? { data: opts.scan ?? null, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'services/referral.service.js': { resolvePrice: async () => opts.priced ?? { amount: 1900, currency: 'USD', referralApplied: false } },
+      'services/referral.service.js': {
+        // initiateFix quotes through resolvePricesForTiers (shared with /api/pricing — Round 7); the spy
+        // records what it was asked so the live-reservation buyer id can be asserted.
+        resolvePricesForTiers: async (_s, tiers, _e, code, o) => {
+          opts.quoteCalls?.push({ tiers, code, o })
+          return Object.fromEntries(tiers.map(t => [t, opts.priced ?? { amount: 1900, currency: 'USD', referralApplied: false }]))
+        },
+      },
     })
     return { mod, restore, db }
   }
@@ -50,6 +57,22 @@ describe('initiateFix', () => {
     t = setup({ scan: { id: 's1', user_id: 'someone-else', status: 'COMPLETE_PASS' } })
     const res = await t.mod.initiateFix(baseCtx({ body: { fixTier: 'FIX' } }))
     expect(res.status).toBe(403)
+  })
+
+  it('Round 7: refuses a quote for an unverified account, like /payments/initialize does', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', fix_purchased: false } })
+    const res = await t.mod.initiateFix(baseCtx({ body: { fixTier: 'FIX' }, user: { id: 'u1', emailVerified: false } }))
+    expect(res.status).toBe(403)
+    expect(res.body.code).toBe('EMAIL_NOT_VERIFIED')
+  })
+
+  it('Round 7: accepts the same 100-char referral code /api/pricing and /payments/initialize accept, and quotes for the buyer', async () => {
+    const quoteCalls = []
+    t = setup({ quoteCalls, scan: { id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', fix_purchased: false, ats_score: 50 } })
+    const res = await t.mod.initiateFix(baseCtx({ body: { fixTier: 'FIX', referralCode: 'x'.repeat(100) } }))
+    expect(res.status).toBe(200)
+    expect(quoteCalls[0].code).toHaveLength(100)
+    expect(quoteCalls[0].o.buyerUserId).toBe('u1')
   })
 
   it('400s when the scan is not yet complete', async () => {

@@ -54,3 +54,36 @@ describe('resolvePricesForTiers — live reservations (B1)', () => {
     } finally { console.error = realErr }
   })
 })
+
+// Payments & Pricing round 7 (B4): the BUYER'S OWN pending checkout holds a reservation on the code. It must
+// not count against them — initializePayment resumes that checkout without a new claim, so quoting the full
+// price while the resume still honours the discount contradicted itself.
+describe('resolvePricesForTiers — own reservations (round 7)', () => {
+  function dbOwn({ live, own }) {
+    return createFakeSupabase(q => {
+      if (q.table === 'referral_codes') return { data: code({ usage_limit: 3, uses_so_far: 2 }), error: null }
+      if (q.table === 'referral_code_reservations') return { count: live, data: null, error: null }
+      if (q.table === 'payments') return { count: own, data: null, error: null }
+      return undefined
+    })
+  }
+  const q2 = (db, opts) => referral.resolvePricesForTiers(db, ['FIX'], {}, 'limited', opts)
+
+  it('quotes the discount to a buyer whose OWN pending checkout holds the last slot', async () => {
+    const r = await q2(dbOwn({ live: 1, own: 1 }), { buyerUserId: 'u1' })   // 2 uses + 1 live (their own) = 3, limit 3
+    expect(r.FIX).toMatchObject({ amount: 1500, referralApplied: true })
+  })
+
+  it('still withholds it when the held slot is someone else\'s (or the viewer is anonymous)', async () => {
+    expect((await q2(dbOwn({ live: 1, own: 0 }), { buyerUserId: 'u1' })).FIX.referralApplied).toBe(false)
+    expect((await q2(dbOwn({ live: 1, own: 1 }), {})).FIX.referralApplied).toBe(false)   // no buyer id → nothing is netted off
+  })
+
+  it('looks only at this buyer\'s PENDING payments that hold a reservation on this code', async () => {
+    const db = dbOwn({ live: 1, own: 1 })
+    await q2(db, { buyerUserId: 'u1' })
+    const c = db.calls.find(x => x.table === 'payments')
+    const f = c.filters.map(x => x.join(':'))
+    expect(f).toEqual(expect.arrayContaining(['eq:user_id:u1', 'eq:status:PENDING', 'eq:referral_code_id:rc1']))
+  })
+})

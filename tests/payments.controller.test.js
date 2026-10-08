@@ -469,7 +469,12 @@ describe('verifyPayment', () => {
   it('refuses to fulfil on an amount mismatch, and alerts', async () => {
     t = setup({ paystack: { data: { status: 'success', currency: 'USD', amount: 1 } } })
     const res = await t.mod.verifyPayment(t.c())
-    expect(res.status).toBe(400)
+    // Round 7: the buyer's money HAS moved, so this is a held-for-review answer (409 + needsSupport),
+    // not the generic 400 "verification failed" an ordinary decline gets.
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'MISMATCH' })
+    expect(res.body.message).toMatch(/do not need to pay again/i)
+    expect(Object.keys(res.body.data)).toEqual(['scanId'])   // no amounts leaked to the buyer
     expect(t.state.queue).toHaveLength(0)
     expect(t.state.scanUpdates).toHaveLength(0)
     expect(t.state.alerts.some(a => /amount mismatch/i.test(a.subject))).toBe(true)
@@ -483,7 +488,8 @@ describe('verifyPayment', () => {
   it('refuses to fulfil on a currency mismatch (status success), and alerts — distinctly from an amount mismatch', async () => {
     t = setup({ paystack: { data: { status: 'success', currency: 'NGN', amount: 2900 } } })
     const res = await t.mod.verifyPayment(t.c())
-    expect(res.status).toBe(400)
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'MISMATCH' })
     expect(t.state.queue).toHaveLength(0)
     expect(t.state.scanUpdates).toHaveLength(0)
     expect(t.state.alerts.some(a => /currency mismatch/i.test(a.subject))).toBe(true)

@@ -84,6 +84,11 @@ export default function ScanResult() {
   const [payError,    setPayError  ] = useState('')
   // G1 (round 4): a heads-up that is not an error (the price at checkout differs from the quote).
   const [payNotice,   setPayNotice  ] = useState('')
+  // PAYMENTS & PRICING ROUND 7 (gap): what /payments/verify said about the payment JUST made in the
+  // popup, when it is something the buyer has to read (a duplicate charge, a payment held for review).
+  // Kept apart from payError/payNotice, which live inside the buy panel and vanish once the scan
+  // moves past COMPLETE_*.
+  const [paymentOutcome, setPaymentOutcome] = useState(null)   // { tone: 'amber'|'red', text }
   // AUDIT FIX (feature gap): initializePayment's 409 ("...finish or cancel
   // it") had no actual cancel path anywhere behind it — see cancelPayment's
   // comment in payments.controller.js. When the 409 carries a reference,
@@ -400,7 +405,7 @@ export default function ScanResult() {
       setPayLoading(false)
       if (!ok) return
     }
-    setPayLoading(true); setPayingTier(fixTier); setPayError(''); setPayNotice(''); setStuckPayment(null)
+    setPayLoading(true); setPayingTier(fixTier); setPayError(''); setPayNotice(''); setPaymentOutcome(null); setStuckPayment(null)
     clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null)
     try {
       const res = await api.post('/payments/initialize', {
@@ -430,16 +435,36 @@ export default function ScanResult() {
         popup.resumeTransaction(access_code, {
           onSuccess: async () => {
             clearFallback()
+            let nothingComing = false   // set when verify gave a definite answer that no delivery is on its way
             try {
               // Same verify endpoint the old redirect-based flow used — just
               // called directly here instead of via a callback_url redirect.
               // The webhook (webhooks.controller.js) still fires independently
               // as a redundant confirmation path either way.
-              await api.get(`/payments/verify?reference=${encodeURIComponent(reference)}`)
-            } catch (_) {
-              // Swallow — the webhook will still confirm this independently
-              // even if this specific client-side call fails (e.g. the tab
-              // closing right after payment). Not worth blocking on.
+              const vres = await api.get(`/payments/verify?reference=${encodeURIComponent(reference)}`)
+              // A second payment for a scan that was already paid for: the resume is fine, the extra
+              // charge is being refunded — the buyer must be told (PaymentSuccess does the same on the
+              // redirect path; this popup path used to discard the answer entirely).
+              if (vres.data?.data?.duplicate) {
+                nothingComing = true
+                setPaymentOutcome({ tone: 'amber', text: "You'd already paid for this resume, so that payment bought nothing extra and your resume is unaffected. " +
+                  (vres.data.data.refund === 'QUEUED'
+                    ? "We've started refunding the extra payment to your original payment method — it can take a few business days to appear."
+                    : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email support@passthrough.dev with reference " + reference + '.') })
+              }
+            } catch (verifyErr) {
+              // Most failures are still swallowed — the webhook will confirm the payment independently
+              // even if this client-side call fails (e.g. the tab closing right after payment). Only
+              // the DEFINITE answers are shown: nothing is coming, so waiting five minutes for it
+              // would just end on the buy screen with no explanation.
+              const vd = verifyErr.response?.data
+              if (verifyErr.response?.status === 409 && vd?.needsSupport) {
+                nothingComing = true
+                setPaymentOutcome({ tone: 'amber', text: vd.message || "We've got your payment but couldn't attach it to your resume automatically. We've been alerted and will sort it out — you don't need to pay again." })
+              } else if (vd?.declined) {
+                nothingComing = true
+                setPaymentOutcome({ tone: 'red', text: vd.message || 'This payment was not completed.' })
+              }
             }
             // Status just moved past COMPLETE_PASS/COMPLETE_FAIL, which are
             // in POLLING_STOP — no page reload here (unlike the old redirect
@@ -447,7 +472,7 @@ export default function ScanResult() {
             await fetchScan()
             // Verify said "still processing" (202), or the scan simply hasn't moved
             // yet: keep polling for the webhook, for up to five minutes.
-            if (['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
+            if (!nothingComing && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
               awaitingPaymentRef.current = true
               awaitingDeadlineRef.current = Date.now() + 5 * 60 * 1000
               setConfirmingPayment(true)
@@ -817,6 +842,13 @@ export default function ScanResult() {
                   anonToken={anonToken}
                   onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))}
                 />
+            )}
+
+            {paymentOutcome && (
+              <div className={`rounded-xl border p-4 text-sm ${paymentOutcome.tone === 'red' ? 'bg-red-50 border-red-200 text-red-800' : 'bg-amber-50 border-amber-200 text-amber-900'}`} role="status">
+                <p>{paymentOutcome.text}</p>
+                <button type="button" onClick={() => setPaymentOutcome(null)} className="mt-2 underline underline-offset-2">Dismiss</button>
+              </div>
             )}
 
             {confirmingPayment && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) && (
