@@ -23,5 +23,15 @@
   X-Robots-Tag: noindex, nofollow
   Cache-Control: no-store
 
+# Round 5: /partner/apply is the program's PUBLIC page (it carries no token), so it must be
+# indexable and cacheable like any other marketing page. The block above would otherwise
+# noindex it, hiding the only place a prospective partner can find the program. `!` detaches
+# a header set by the broader rule.
+/partner/apply
+  ! X-Robots-Tag
+  ! Cache-Control
+  ! Referrer-Policy
+  Referrer-Policy: strict-origin-when-cross-origin
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

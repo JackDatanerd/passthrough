@@ -8,6 +8,7 @@ import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import EmptyState from '../components/ui/EmptyState'
 import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
+import { partnerAuth } from '../lib/partnerApi'
 
 // AUDIT FIX (bug): this local formatter put the `$` before the number's own
 // negative sign — e.g. "$-5.00" — instead of "-$5.00". Harmless while every
@@ -262,7 +263,7 @@ function PayoutDetailsAccess({ token, scope, children, className }) {
   async function request() {
     setState('sending')
     try {
-      await api.post(`/partners/request-payout-link?token=${encodeURIComponent(token)}`)
+      await api.post('/partners/request-payout-link', null, partnerAuth(token))
       setState('sent')
     } catch (_) { setState('error') }
   }
@@ -277,6 +278,37 @@ function PayoutDetailsAccess({ token, scope, children, className }) {
   )
 }
 
+// Round 5: one email per sale is the default; a busy partner can switch those off. Reversal,
+// payout and account emails are never suppressed by this.
+function NotificationPrefs({ token, initial }) {
+  const [on, setOn] = useState(initial !== false)
+  const [state, setState] = useState('idle')   // idle | saving | error
+  async function toggle() {
+    const next = !on
+    setState('saving')
+    try {
+      await api.post('/partners/notifications', { conversions: next }, partnerAuth(token))
+      setOn(next); setState('idle')
+    } catch (_) { setState('error') }
+  }
+  return (
+    <div className="mt-8 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap" data-testid="notification-prefs">
+      <div>
+        <p className="text-sm font-medium text-gray-900">Email me for each sale</p>
+        <p className="text-xs text-gray-500">
+          {on ? 'You get an email whenever a sale earns you a commission.' : 'Off — you can still see every sale here. Refund, payout and account emails still reach you.'}
+        </p>
+        {state === 'error' && <p className="text-xs text-red-600 mt-1">Couldn't save that — try again in a moment.</p>}
+      </div>
+      <button type="button" role="switch" aria-checked={on} onClick={toggle} disabled={state === 'saving'}
+        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${on ? 'bg-blue-600' : 'bg-gray-300'} disabled:opacity-60`}>
+        <span className="sr-only">Email me for each sale</span>
+        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
+      </button>
+    </div>
+  )
+}
+
 export default function PartnerDashboard() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -288,7 +320,7 @@ export default function PartnerDashboard() {
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
-    api.get(`/partners/dashboard?token=${encodeURIComponent(token)}`)
+    api.get('/partners/dashboard', partnerAuth(token))
       .then(res => setData(res.data.data))
       .catch(err => {
         // Only a genuinely bad/expired link says so; a 429/500/network drop is
@@ -455,6 +487,8 @@ export default function PartnerDashboard() {
                 ))}
               </ul>
             )}
+
+            <NotificationPrefs token={token} initial={data.notifyConversions} />
           </>
         )}
       </main>

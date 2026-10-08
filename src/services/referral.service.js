@@ -121,10 +121,26 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   return { amount, currency, referralApplied: true, discountApplied: amount < standard, referralCode: codeRow }
 }
 
+// Round 5: compared on the exact address only, so `me+x@gmail.com` or `m.e@gmail.com` sailed
+// past the guard as a "different buyer". Canonical form: lower-case, `+tag` dropped, and (Gmail
+// only, where it is guaranteed) dots in the local part ignored. Best-effort by nature — a
+// partner determined to buy through their own link with an unrelated address can't be
+// stopped here — but the cheap, common aliasing is closed.
+function canonicalEmail(email) {
+  const e = String(email || '').trim().toLowerCase()
+  const at = e.lastIndexOf('@')
+  if (at < 1) return e
+  let local = e.slice(0, at), domain = e.slice(at + 1)
+  local = local.split('+')[0]
+  if (domain === 'googlemail.com') domain = 'gmail.com'
+  if (domain === 'gmail.com') local = local.replace(/\./g, '')
+  return `${local}@${domain}`
+}
+
 function isSelfReferral(codeRow, buyerEmail) {
   const partnerEmail = codeRow?.partners?.email
   if (!partnerEmail || !buyerEmail) return false
-  return String(partnerEmail).trim().toLowerCase() === String(buyerEmail).trim().toLowerCase()
+  return canonicalEmail(partnerEmail) === canonicalEmail(buyerEmail)
 }
 
 // opts.buyerEmail (optional) enables the self-referral guard above.
@@ -310,7 +326,7 @@ async function recordConversionInner(supabase, payment, env) {
     if (!codeRow) return { ok: true, recorded: false, reason: 'code-not-found' }
 
     const partnerRes = await withOneRetry(() => supabase
-      .from('partners').select('name, email, commission_rate, dashboard_token').eq('id', codeRow.partner_id).maybeSingle())
+      .from('partners').select('name, email, commission_rate, dashboard_token, notify_conversions').eq('id', codeRow.partner_id).maybeSingle())
     if (partnerRes.error) {
       console.error('recordConversion partner lookup:', partnerRes.error.message)
       return { ok: false, recorded: false, reason: 'partner-lookup', error: partnerRes.error.message }
@@ -470,6 +486,9 @@ async function notifyConversionFailure(env, payment, result, source) {
 // successful commission record into a failure response.
 async function notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, currency) {
   if (!partner?.email || !partner?.dashboard_token) return
+  // Round 5: a partner can turn the per-sale email off (partners.notify_conversions).
+  // Reversal / payout / account emails are never affected by it.
+  if (partner.notify_conversions === false) return
   try {
     const emailService = require('./email.service')
     const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
@@ -494,6 +513,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
 }
 
 module.exports = {
+  canonicalEmail,
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,

@@ -18,6 +18,8 @@ router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
 router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
 router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
+// Round 5: the partner's own email preference (per-sale emails on/off).
+router.post('/notifications', rl.partnerWrite, c.updatePartnerNotifications)
 
 // Public — click tracking. Rate-limited with its own dedicated bucket
 // (rl.click) rather than sharing rl.employerLead's lead-spam bucket — see
@@ -25,7 +27,7 @@ router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 router.post('/track-click', rl.click, c.trackClick)
 
 // Public — "become a partner" application (rate-limited like the other public writes).
-router.post('/apply', rl.partnerWrite, c.applyAsPartner)
+router.post('/apply', rl.partnerApply, c.applyAsPartner)
 
 // Admin — application review. Registered BEFORE the '/:id' routes below so
 // 'applications' is never parsed as a partner id.
@@ -36,6 +38,11 @@ router.post('/applications/:id/reject',         admin, validateUuidParam(), c.ad
 // Admin only
 router.post( '/',                          admin, c.adminCreatePartner)
 router.get(  '/',                          admin, c.adminListPartners)
+// Round 5: cross-partner views. Registered BEFORE '/:id' so these literals are never
+// parsed as a partner id.
+router.get(  '/overview',                  admin, c.adminPartnersOverview)
+router.get(  '/codes',                     admin, c.adminListReferralCodes)
+router.get(  '/payouts',                   admin, c.adminListPayouts)
 router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.
@@ -50,6 +57,7 @@ router.post( '/:id/resend-link',           admin, validateUuidParam(), c.adminRe
 router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRegeneratePayoutLink)
 router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGetPartnerLinks)
 router.post( '/:id/payouts',               admin, validateUuidParam(), c.adminRecordPayout)
+router.post( '/:id/payouts/:payoutId/void', admin, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
 router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

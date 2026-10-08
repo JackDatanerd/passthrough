@@ -378,6 +378,7 @@ function partnerRowToCamel(row) {
     payoutDetailsSubmittedAt:  rest.payout_details_submitted_at,
     website:                   rest.website ?? null,
     audience:                  rest.audience ?? null,
+    notifyConversions:         rest.notify_conversions ?? true,
     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
     referralCodes:             rest.referral_codes ? rest.referral_codes.map(referralCodeRowToCamel) : undefined,
     commissionLedger:          rest.commission_ledger ? rest.commission_ledger.map(commissionLedgerRowToCamel) : undefined,
@@ -400,6 +401,9 @@ function payoutRowToCamel(row) {
     internalNote:          row.internal_note ?? null,
     settledCommissionCents: row.settled_commission_cents ?? null,
     status:                row.status,
+    // Migration 0058: a voided payout stays on file (audit) but no longer counts as paid.
+    voidedAt:              row.voided_at ?? null,
+    voidReason:            row.void_reason ?? null,
     // AUDIT FIX (Admin panel — twice-monthly payout cycles): added by
     // migration 0016 (payouts.period_start/period_end) so a recorded
     // payout remembers which cycle it settled, if any — null for an ad hoc

@@ -31,7 +31,7 @@ describe('PartnerDashboard payout-details access', () => {
     mount('dashboard')
     const btn = await screen.findByRole('button', { name: /email me a link to add them/i })
     fireEvent.click(btn)
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/request-payout-link?token=TOK'))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/request-payout-link', null, { headers: { 'X-Partner-Token': 'TOK' } }))
     expect(await screen.findByText(/check the inbox/i)).toBeTruthy()
   })
 

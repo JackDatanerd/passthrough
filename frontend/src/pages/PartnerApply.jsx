@@ -7,6 +7,7 @@ import Input from '../components/ui/Input'
 import Textarea from '../components/ui/Textarea'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
 
 // Public "become a partner" application. Reviewed by hand under Admin -> Partners;
@@ -21,12 +22,20 @@ export default function PartnerApply() {
   const [message, setMessage] = useState('')
   const [company, setCompany] = useState('')   // honeypot — humans never see it
   const [sent, setSent] = useState(false)
+  // Cloudflare Turnstile (opt-in: renders nothing and demands nothing unless the site key is set).
+  const [captcha, setCaptcha] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
   const { loading, error, execute } = useApi()
 
   async function handleSubmit() {
     if (!name.trim() || !email.trim()) {
       await execute(() => Promise.reject(new Error('Please enter your name and email.')),
         { fallback: 'Please enter your name and email.' }).catch(() => {})
+      return
+    }
+    if (TURNSTILE_ENABLED && !captcha) {
+      await execute(() => Promise.reject(new Error('Please complete the security check below.')),
+        { fallback: 'Please complete the security check below.' }).catch(() => {})
       return
     }
     try {
@@ -36,9 +45,13 @@ export default function PartnerApply() {
         ...(audience.trim() ? { audience: audience.trim() } : {}),
         ...(message.trim() ? { message: message.trim() } : {}),
         ...(company ? { company } : {}),
+        ...(captcha ? { turnstileToken: captcha } : {}),
       }), { fallback: 'Something went wrong — please try again.' })
       setSent(true)
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (_) {
+      // error already captured by useApi. A Turnstile token is single-use, so the next try needs a fresh one.
+      setCaptcha(''); setCaptchaReset(n => n + 1)
+    }
   }
 
   return (
@@ -76,6 +89,7 @@ export default function PartnerApply() {
                 <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', height: 0, overflow: 'hidden' }}>
                   <label>Company <input tabIndex={-1} autoComplete="off" value={company} onChange={e => setCompany(e.target.value)} /></label>
                 </div>
+                <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
                 {error && <p className="text-sm text-red-600">{error}</p>}
                 <Button type="submit" loading={loading} className="w-full">Submit application</Button>
               </Form>

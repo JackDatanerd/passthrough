@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import api from '../lib/api'
+import { partnerAuth } from '../lib/partnerApi'
 import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
@@ -46,7 +47,7 @@ export default function PartnerPayoutDetails() {
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
-    api.get(`/partners/payout-details?token=${encodeURIComponent(token)}`)
+    api.get('/partners/payout-details', partnerAuth(token))
       .then(res => {
         const p = res.data.data
         setPartnerName(p.name)
@@ -95,7 +96,7 @@ export default function PartnerPayoutDetails() {
       return fail(`The two ${method === 'BANK' ? 'account numbers' : 'phone numbers'} don't match — please re-enter to confirm.`)
 
     try {
-      await execute(() => api.post(`/partners/payout-details?token=${encodeURIComponent(token)}`, body),
+      await execute(() => api.post('/partners/payout-details', body, partnerAuth(token)),
         { fallback: 'Something went wrong — please try again.' })
       setSaved(true)
     } catch (_) { /* error already captured by useApi */ }

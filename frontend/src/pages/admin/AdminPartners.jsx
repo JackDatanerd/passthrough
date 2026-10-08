@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Link } from 'react-router-dom'
 import api from '../../lib/api'
 import { useApi } from '../../hooks/useApi'
@@ -11,6 +11,8 @@ import Spinner from '../../components/ui/Spinner'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatRate, formatDate, downloadCsv } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
+import PartnersLookupPanel, { OverviewStrip } from './AdminPartnersLookup'
+import { copyToClipboard } from '../../lib/utils'
 
 // A percentage typed by the admin ("25", "12.5") -> the fraction the API stores (0.25, 0.125),
 // or null when blank / out of range. Same conversion as the Edit partner modal.
@@ -22,6 +24,18 @@ function percentToRate(text) {
   return Math.round(n * 100) / 10000
 }
 const dollarsToCents = v => Math.round(Number(v) * 100)
+
+// The create/approve calls used to claim "payout-details link sent" unconditionally, even when
+// the send was throttled or failed and the partner never got a link. The API now reports it; on
+// failure the link is copied so the admin can pass it on by hand.
+async function announceDelivery(toast, subject, data) {
+  if (data?.emailed === false) {
+    const copied = data.payoutUrl ? await copyToClipboard(data.payoutUrl) : false
+    toast({ message: `${subject}, but the payout-details email did NOT send.${copied ? ' The link is copied to your clipboard — send it to them yourself.' : ' Use Resend on their page.'}`, type: 'warning' })
+  } else {
+    toast({ message: `${subject} — payout-details link sent.`, type: 'success' })
+  }
+}
 
 function AddPartnerModal({ onClose, onCreated }) {
   const toast = useToast()
@@ -43,8 +57,8 @@ function AddPartnerModal({ onClose, onCreated }) {
       return
     }
     try {
-      await execute(() => api.post('/partners', { name, email, ...(commissionRate !== undefined ? { commissionRate } : {}) }), { fallback: 'Failed to add partner.' })
-      toast({ message: `${name} added — payout-details link sent.`, type: 'success' })
+      const data = await execute(() => api.post('/partners', { name, email, ...(commissionRate !== undefined ? { commissionRate } : {}) }), { fallback: 'Failed to add partner.' })
+      await announceDelivery(toast, `${name} added`, data)
       onCreated()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -108,7 +122,8 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
     }
     try {
       const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
-      toast({ message: data.codeError
+      if (data.emailed === false) await announceDelivery(toast, `${app.name} approved`, data)
+      else toast({ message: data.codeError
         ? `${app.name} approved, but: ${data.codeError} Add the code from their page.`
         : `${app.name} approved — payout-details link sent${data.codeCreated ? ` and code ${data.codeCreated.code} created` : ''}.`,
       type: data.codeError ? 'warning' : 'success' })
@@ -148,7 +163,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
   )
 }
 
-function RejectApplicationModal({ app, onClose, onDone }) {
+function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
   const toast = useToast()
   const [reason, setReason] = useState('')
   const { loading: saving, error, execute } = useApi()
@@ -166,7 +181,7 @@ function RejectApplicationModal({ app, onClose, onDone }) {
     <Modal open onClose={onClose} title={`Reject ${app.name}?`}>
       <Form onSubmit={handleReject} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
-          {app.name} will be emailed the decision. They can re-apply after 30 days.
+          {app.name} will be emailed the decision. They can re-apply after {cooldownDays} days.
         </p>
         <Input label="Reason (optional — included in the email)" value={reason} onChange={e => setReason(e.target.value)} maxLength={500}
           placeholder="e.g. We're only onboarding career-coaching audiences right now." />
@@ -189,16 +204,21 @@ function ApplicationsPanel({ onApproved }) {
   const [open, setOpen] = useState(false)
   const [approving, setApproving] = useState(null)
   const [rejecting, setRejecting] = useState(null)
+  const [cooldownDays, setCooldownDays] = useState(30)
+  const latestTab = useRef(tab)
 
   async function load(which = tab) {
     try {
       const res = await api.get(`/partners/applications?status=${which}`)
-      setApps(res.data.data)
+      // Ignore an answer for a tab the admin has already left (fast tab flips used to let a
+      // slow response overwrite the list now on screen).
+      if (which === latestTab.current) setApps(res.data.data)
       if (which === 'PENDING') setPendingCount(res.data.data.length)
+      if (res.data.reapplyCooldownDays) setCooldownDays(res.data.reapplyCooldownDays)
     } catch (_) { /* the panel is optional — the partner list still works without it */ }
   }
-  useEffect(() => { load('PENDING') }, [])
-  useEffect(() => { load(tab) }, [tab])
+  // One effect: it used to fetch PENDING twice on mount (a second effect hard-coded it).
+  useEffect(() => { latestTab.current = tab; load(tab) }, [tab])
 
   const refresh = () => { load(tab); if (tab !== 'PENDING') load('PENDING') }
   const expanded = open || pendingCount > 0
@@ -246,7 +266,7 @@ function ApplicationsPanel({ onApproved }) {
         </div>
       ))}
       {approving && <ApproveApplicationModal app={approving} onClose={() => setApproving(null)} onDone={() => { refresh(); onApproved() }} />}
-      {rejecting && <RejectApplicationModal app={rejecting} onClose={() => setRejecting(null)} onDone={refresh} />}
+      {rejecting && <RejectApplicationModal app={rejecting} cooldownDays={cooldownDays} onClose={() => setRejecting(null)} onDone={refresh} />}
     </div>
   )
 }
@@ -320,6 +340,8 @@ export default function AdminPartners() {
       </div>
 
       <ApplicationsPanel onApproved={load} />
+      <OverviewStrip />
+      <PartnersLookupPanel />
 
       {!loading && partners.length > 0 && (
         <div className="grid sm:grid-cols-3 gap-4">

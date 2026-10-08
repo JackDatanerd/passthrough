@@ -31,9 +31,17 @@ const trackedThisSession = new Set()
 // localStorage can throw (blocked storage in some in-app browsers / private
 // modes). A ?ref= landing must never crash the app — attribution just won't
 // persist there.
-function storageGet()      { try { return localStorage.getItem(STORAGE_KEY) } catch (_) { return null } }
-function storageSet(value) { try { localStorage.setItem(STORAGE_KEY, value) } catch (_) {} }
-function storageRemove()   { try { localStorage.removeItem(STORAGE_KEY) } catch (_) {} }
+// SECTION 4 ROUND 5 (gap): with storage blocked the code was lost the moment the visitor left
+// the ?ref= URL (every in-app browser that blocks storage), so a partner's click never became
+// a credited sale. A copy is also kept in memory for the life of the page — attribution then
+// survives in-app navigation even where nothing persists across loads. localStorage stays the
+// source of truth whenever it works.
+let memoryRaw = null
+function storageGet() {
+  try { return localStorage.getItem(STORAGE_KEY) ?? memoryRaw } catch (_) { return memoryRaw }
+}
+function storageSet(value) { memoryRaw = value; try { localStorage.setItem(STORAGE_KEY, value) } catch (_) {} }
+function storageRemove()   { memoryRaw = null;  try { localStorage.removeItem(STORAGE_KEY) } catch (_) {} }
 
 function readStored() {
   const raw = storageGet()

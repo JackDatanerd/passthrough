@@ -1148,7 +1148,7 @@ describe('partner admin actions — audit trail', () => {
     expect(res.body.success).toBe(true)
     expect(t.audits).toEqual([{
       actor_id: 'admin-1', action: 'partner.payout_link_regenerated', target_type: 'partner', target_id: 'p1',
-      detail: { emailed: true },
+      detail: { emailed: true, scope: 'payout' },
     }])
     expect(JSON.stringify(t.audits)).not.toContain('token=')
   })

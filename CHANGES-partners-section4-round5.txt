@@ -1,0 +1,38 @@
+SECTION 4 (Partners / Referral) — round 5
+Base: bffad37.  Run migration 0058 BEFORE deploying the Worker (new columns are selected).
+
+BUGS
+ 1. adminRecordPayout rejected every payout for a partner with submitted details: the admin UI echoes
+    payout_details_submitted_at back as PostgREST returns it (`…123456+00:00`) and zod datetime()
+    refuses offsets. Now datetime({ offset: true }).
+ 2. Refund credits were stranded by cycle-scoped payouts (and could be clawed back twice). A cycle payout
+    now settles every unpaid credit from CLOSED cycles with it (same set payableCents() nets); each cycle
+    reports outsideCreditCents so the Pay button's default matches what the server settles.
+ 3. Create/approve claimed "payout-details link sent" regardless of delivery. API now returns `emailed`
+    (+ payoutUrl on failure); the admin UI warns and copies the link.
+ 4. payoutMethod override could stand in for missing details / mismatch the details snapshot. Must match.
+ 5. /apply shared the partnerWrite bucket with payout-detail saves (own `partnerApply` bucket now); the
+    partner's "email me my link" shared a 4/hour email quota with admin create/resend (own quotaKey).
+ 6. Cycle ledgerCount counted refunded sales; dashboard leaked partnerId in referralCodes; the 30-day
+    re-apply copy was hard-coded in the rejection email and admin UI (one constant now).
+ 7. adminResendPayoutLink now audit-logged; adminRecordPayout ledger read is ordered + paged (1000-row
+    PostgREST cap); reversal email's dashboard URL is a real button (own template); self-referral guard
+    folds Gmail dots / +tag / googlemail.com; ApplicationsPanel fetched PENDING twice and could show a
+    stale tab; (LIKE-escape for code search verified by test).
+
+FEATURE GAPS CLOSED
+ G1 Void a payout recorded in error: POST /partners/:id/payouts/:payoutId/void (idempotent, resumable;
+    keeps the row, releases ledger rows, audit log, optional partner email). Migration 0058.
+ G2 Turnstile on the partner apply form (inert unless TURNSTILE_SECRET_KEY / VITE_TURNSTILE_SITE_KEY set).
+ G3 Partner tokens travel in X-Partner-Token (not the query string, which Workers observability logs);
+    ?token= still accepted for links already emailed. Admin can rotate the DASHBOARD link (scope:
+    payout | dashboard | both).
+ G4 Admin: GET /partners/overview, /partners/codes (search), /partners/payouts (paged, voided toggle,
+    CSV export) + UI (totals strip, "Find a code · Payout history").
+ G5 See bug 3.
+ G6 /partner/apply is indexable/cacheable again (override of the /partner/* noindex rule in _headers).
+ G7 Attribution kept in memory when localStorage is blocked.
+ G8 Partners can switch off the per-sale email (partners.notify_conversions, POST /partners/notifications,
+    dashboard toggle). Reversal / payout / account emails are never suppressed.
+
+NOT BUILT (deliberate): manual "write off credit" action; conversion-email digest (opt-out covers it).

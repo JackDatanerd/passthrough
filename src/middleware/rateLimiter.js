@@ -591,6 +591,14 @@ const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
 })
+// Round 5: the public "become a partner" form (POST /api/partners/apply) used to share
+// partnerWrite with payout-detail edits — the same fate-sharing the partnerLinkRequest
+// comment above describes (a few applications from an office/NAT IP could block a partner
+// saving their own bank details, and vice versa). Its own bucket.
+const partnerApply = makeLimiter({
+  windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerapply',
+  message: msg('Too many attempts. Please wait a few minutes.')
+})
 
 // AUDIT FIX (Section 9): partners.routes.js's POST /track-click used to
 // share this exact `employerLead` limiter instance — same KV bucket
@@ -791,7 +799,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, webhook, click,
-  partnerRead, partnerWrite, partnerLinkRequest, verifyRead, isBypassed,
+  partnerRead, partnerWrite, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName

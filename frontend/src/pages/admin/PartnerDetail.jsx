@@ -6,7 +6,6 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Modal from '../../components/ui/Modal'
 import Form from '../../components/ui/Form'
-import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import StatCard from '../../components/ui/StatCard'
@@ -52,21 +51,68 @@ function PayoutDetailsSummary({ partner }) {
 // account a specific past payout actually reached. Collapsed by default —
 // this is only needed when actually investigating a specific payout, not
 // for routine scanning of the list.
-function PayoutRow({ payout }) {
-  const [open, setOpen] = useState(false)
-  const hasSnapshot = payout.payoutDetailsSnapshot && Object.keys(payout.payoutDetailsSnapshot).length > 0
+// Round 5: a payout recorded by mistake can be voided. The row stays (audit trail), its
+// commission rows are released back to unpaid, and the partner is told (unless unticked).
+function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
+  const toast = useToast()
+  const [reason, setReason] = useState('')
+  const [notify, setNotify] = useState(true)
+  const { loading, error, execute } = useApi()
+
+  async function handleVoid() {
+    if (reason.trim().length < 3) {
+      await execute(() => Promise.reject(new Error('Say why this payout is being voided.')),
+        { fallback: 'Say why this payout is being voided.' }).catch(() => {})
+      return
+    }
+    try {
+      const data = await execute(() => api.post(`/partners/${partner.id}/payouts/${payout.id}/void`,
+        { reason: reason.trim(), notifyPartner: notify }), { fallback: 'Failed to void payout.' })
+      toast({ message: data.message || 'Payout voided.', type: 'success' })
+      onVoided()
+      onClose()
+    } catch (_) { /* message captured by useApi */ }
+  }
+
   return (
-    <div className="p-3 text-sm">
+    <Modal open onClose={onClose} title={`Void payout — ${formatCents(payout.amountCents, payout.currency)}`}>
+      <Form onSubmit={handleVoid} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-500">
+          Use this only for a payout that was <strong>recorded by mistake</strong>. It does not move any money:
+          if the transfer really went out, recover it from {partner.name} separately. The commission this payout
+          settled becomes owed again and will appear in their next payout.
+        </p>
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={300} />
+        <Checkbox label={`Email ${partner.name} that this record was corrected`} checked={notify} onChange={e => setNotify(e.target.checked)} />
+        {error && <p className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" loading={loading}>Void payout</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
+function PayoutRow({ payout, partner, onChanged }) {
+  const [open, setOpen] = useState(false)
+  const [voiding, setVoiding] = useState(false)
+  const hasSnapshot = payout.payoutDetailsSnapshot && Object.keys(payout.payoutDetailsSnapshot).length > 0
+  const voided = !!payout.voidedAt
+  return (
+    <div className={cn('p-3 text-sm', voided && 'bg-gray-50')} data-testid={voided ? 'payout-row-voided' : 'payout-row'}>
       <div className="flex items-center justify-between gap-3">
-        <div>
-          <span className="font-medium text-gray-900">{formatCents(payout.amountCents, payout.currency)}</span>
+        <div className={cn(voided && 'text-gray-400')}>
+          <span className={cn('font-medium text-gray-900', voided && 'line-through text-gray-400')}>{formatCents(payout.amountCents, payout.currency)}</span>
+          {voided && <Badge variant="gray" className="ml-2">Voided</Badge>}
           <span className="text-gray-400 ml-2">{formatDate(payout.paidAt || payout.createdAt)}</span>
           {payout.periodStart && (
             <span className="text-gray-400 ml-2">· {formatDate(payout.periodStart)}–{formatDate(payout.periodEnd)}</span>
           )}
           {payout.note && <span className="text-gray-400 ml-2">({payout.note})</span>}
           {payout.internalNote && <span className="text-amber-600 ml-2" title="Internal — the partner never sees this">[internal: {payout.internalNote}]</span>}
-          {payout.settledCommissionCents != null && payout.settledCommissionCents !== payout.amountCents && (
+          {voided && <div className="text-xs text-gray-500 mt-0.5">Voided {formatDate(payout.voidedAt)}{payout.voidReason ? ` — ${payout.voidReason}` : ''}</div>}
+          {!voided && payout.settledCommissionCents != null && payout.settledCommissionCents !== payout.amountCents && (
             <div className="text-xs text-amber-600 mt-0.5">
               Settled {formatCents(payout.settledCommissionCents, payout.currency)} of commission —{' '}
               {payout.amountCents < payout.settledCommissionCents ? 'underpaid' : 'overpaid'} by{' '}
@@ -74,15 +120,23 @@ function PayoutRow({ payout }) {
             </div>
           )}
         </div>
-        {hasSnapshot && (
-          <button
-            type="button"
-            onClick={() => setOpen(o => !o)}
-            className="text-xs text-gray-400 underline underline-offset-2 hover:text-gray-600 whitespace-nowrap"
-          >
-            {open ? 'Hide' : 'Paid to'}
-          </button>
-        )}
+        <div className="flex items-center gap-3">
+          {hasSnapshot && (
+            <button
+              type="button"
+              onClick={() => setOpen(o => !o)}
+              className="text-xs text-gray-400 underline underline-offset-2 hover:text-gray-600 whitespace-nowrap"
+            >
+              {open ? 'Hide' : 'Paid to'}
+            </button>
+          )}
+          {!voided && partner && (
+            <button type="button" onClick={() => setVoiding(true)}
+              className="text-xs text-red-500 underline underline-offset-2 hover:text-red-700 whitespace-nowrap">
+              Void
+            </button>
+          )}
+        </div>
       </div>
       {open && hasSnapshot && (
         <div className="mt-2 pt-2 border-t border-gray-100">
@@ -92,6 +146,7 @@ function PayoutRow({ payout }) {
           <PayoutDetailsFields method={payout.payoutMethod} details={payout.payoutDetailsSnapshot} />
         </div>
       )}
+      {voiding && <VoidPayoutModal partner={partner} payout={payout} onClose={() => setVoiding(false)} onVoided={onChanged} />}
     </div>
   )
 }
@@ -231,8 +286,11 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   const toast = useToast()
   // What the server will actually settle: unpaid commission minus anything
   // still inside the refund-window hold.
+  // For a cycle this also includes unpaid refund credits from OTHER closed cycles: the server
+  // settles them together with the cycle (round 5), so the default must match or the amount
+  // would "differ" from what is settled.
   const defaultCents = cycle
-    ? cycle.unpaidCents - (cycle.heldCents || 0)
+    ? cycle.unpaidCents - (cycle.heldCents || 0) + (cycle.outsideCreditCents || 0)
     : partner.pendingCommissionCents - (partner.heldCents || 0)
   const [amount, setAmount] = useState(defaultCents > 0 ? (defaultCents / 100).toFixed(2) : '')
   const [note, setNote] = useState('')
@@ -322,7 +380,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           onChange={e => setAmount(e.target.value)} placeholder="45.00" />
         <p className="text-xs text-gray-400 -mt-2">
           {cycle
-            ? `Recording this settles every conversion in ${cycle.label}, regardless of the exact amount entered above.`
+            ? `Recording this settles every conversion in ${cycle.label}${cycle.outsideCreditCents ? ` and the ${formatCents(Math.abs(cycle.outsideCreditCents), partner.currency)} of open refund credit from earlier cycles` : ''}, regardless of the exact amount entered above.`
             : `Recording this settles ${partner.name}'s ENTIRE outstanding balance (all cycles), regardless of the exact amount entered above.`}
         </p>
         {differs && (
@@ -571,6 +629,9 @@ function ReferralCodesTab({ partner, onChanged }) {
 }
 
 function CyclesTab({ partner, onChanged }) {
+  // What a cycle's Pay button will settle: its own unpaid commission minus anything still held,
+  // plus unpaid refund credits from other closed cycles (settled with it by the server).
+  const payNet = c => c.unpaidCents - (c.heldCents || 0) + (c.outsideCreditCents || 0)
   const [payoutCycle, setPayoutCycle] = useState(null)
   const [showAdHoc, setShowAdHoc] = useState(false)
   const cycles = partner.cyclesSummary || []
@@ -604,19 +665,24 @@ function CyclesTab({ partner, onChanged }) {
                 {c.unpaidCents > 0 ? (
                   c.isCurrent ? (
                     <span className="text-sm text-gray-400">{formatCents(c.unpaidCents, partner.currency)} (not payable yet)</span>
-                  ) : c.unpaidCents - (c.heldCents || 0) > 0 ? (
+                  ) : payNet(c) > 0 ? (
                     <>
                       {c.heldCents > 0 && (
                         <span className="text-xs text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window / open dispute)</span>
                       )}
+                      {c.outsideCreditCents < 0 && (
+                        <span className="text-xs text-blue-600">incl. {formatCents(c.outsideCreditCents, partner.currency)} refund credit</span>
+                      )}
                       <Button size="sm" variant="secondary" onClick={() => exportLedgerCsv(partner, { start: c.start, end: c.end, label: c.label })}>CSV</Button>
-                      <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(c.unpaidCents - (c.heldCents || 0), partner.currency)}</Button>
+                      <Button size="sm" onClick={() => setPayoutCycle(c)}>Pay {formatCents(payNet(c), partner.currency)}</Button>
                     </>
-                  ) : (
+                  ) : c.heldCents > 0 && c.unpaidCents - c.heldCents <= 0 ? (
                     <span className="text-sm text-gray-400">{formatCents(c.heldCents, partner.currency)} held (refund window)</span>
+                  ) : (
+                    <span className="text-sm text-blue-600">Refund credits ({formatCents(c.outsideCreditCents, partner.currency)}) outweigh this cycle — nothing to pay yet</span>
                   )
                 ) : c.unpaidCents < 0 ? (
-                  <span className="text-sm text-red-600">{formatCents(c.unpaidCents, partner.currency)} refund credit — nets against future commission</span>
+                  <span className="text-sm text-red-600">{formatCents(c.unpaidCents, partner.currency)} refund credit — settled with the next cycle payout</span>
                 ) : (
                   <span className="text-sm text-gray-400 italic">{c.ledgerCount > 0 ? 'Settled' : 'Nothing owed'}</span>
                 )}
@@ -641,7 +707,7 @@ function CyclesTab({ partner, onChanged }) {
         ) : (
           <div className="border border-gray-200 rounded-lg bg-white divide-y divide-gray-100">
             {partner.payouts.map(payout => (
-              <PayoutRow key={payout.id} payout={payout} />
+              <PayoutRow key={payout.id} payout={payout} partner={partner} onChanged={onChanged} />
             ))}
           </div>
         )}
@@ -722,6 +788,7 @@ export default function PartnerDetail() {
   const [showEdit, setShowEdit] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
+  const [regenScope, setRegenScope] = useState('payout')
 
   // `silent` reloads (after an action) refresh the data WITHOUT swapping the page for a
   // spinner. The spinner used to unmount every tab — and any modal open inside one — so a
@@ -788,8 +855,10 @@ export default function PartnerDetail() {
   async function confirmRegenerateLink() {
     setRegenerating(true)
     try {
-      const res = await api.post(`/partners/${id}/regenerate-link`)
-      const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
+      const res = await api.post(`/partners/${id}/regenerate-link`, { scope: regenScope })
+      // Copy whichever fresh link(s) came back, so a failed email is never a dead end.
+      const links = [res.data.dashboardUrl, res.data.payoutUrl].filter(Boolean).join('\n')
+      const copied = links ? await copyToClipboard(links) : false
       toast({
         message: (res.data.emailed ? 'Link reset — new link emailed.' : 'Link reset, but the notification email failed.')
           + (copied ? ' Also copied to your clipboard.' : ''),
@@ -845,7 +914,7 @@ export default function PartnerDetail() {
         <Button size="sm" variant="secondary" onClick={resendLink}>Resend payout-details link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
-        <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link (revoke old one)</Button>
+        <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>
       </div>
 
       <div className="border-b border-gray-200 flex gap-4 overflow-x-auto">
@@ -879,7 +948,7 @@ export default function PartnerDetail() {
           {(partner.creditCents || 0) > 0 && (
             <div className="rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800">
               {partner.name} has a {formatCents(partner.creditCents, partner.currency)} refund credit — refunds/chargebacks on
-              commission that was already paid. It nets against their future commission.
+              commission that was already paid. It is settled together with their next cycle payout.
             </div>
           )}
           <div className="text-sm text-gray-600">
@@ -895,15 +964,28 @@ export default function PartnerDetail() {
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
 
-      <ConfirmDialog
-        open={confirmRegenerate}
-        title="Regenerate payout link"
-        message={`This invalidates ${partner.name}'s current payout link immediately and emails a new one. Continue?`}
-        confirmLabel="Regenerate"
-        loading={regenerating}
-        onConfirm={confirmRegenerateLink}
-        onCancel={() => setConfirmRegenerate(false)}
-      />
+      {confirmRegenerate && (
+        <Modal open onClose={() => setConfirmRegenerate(false)} title="Regenerate link">
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-gray-600">
+              Pick which link to revoke. The old link stops working immediately and {partner.name} is emailed the new one.
+            </p>
+            <label className="text-sm text-gray-700 flex flex-col gap-1">
+              Which link?
+              <select value={regenScope} onChange={e => setRegenScope(e.target.value)}
+                className="border border-gray-300 rounded-md px-3 py-2 text-sm bg-white" data-testid="regen-scope">
+                <option value="payout">Payout-details link (can change where money goes)</option>
+                <option value="dashboard">Dashboard link (read-only — the one conversion emails carry)</option>
+                <option value="both">Both</option>
+              </select>
+            </label>
+            <div className="flex gap-2 justify-end">
+              <Button variant="secondary" onClick={() => setConfirmRegenerate(false)}>Cancel</Button>
+              <Button loading={regenerating} onClick={confirmRegenerateLink}>Regenerate</Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

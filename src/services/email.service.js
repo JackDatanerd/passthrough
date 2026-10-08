@@ -71,6 +71,8 @@ const RECIPIENT_LIMITS = {
   // Round 4: a partner can ask for their payout-details link from the read-only dashboard.
   // Bounded per recipient so the button can't be used to mail-bomb a partner's inbox.
   partner_payout_details_request: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
+  // Separate budget for the partner's own "email me my link" button (see quotaKey in send()).
+  partner_payout_link_self: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
   password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
@@ -208,7 +210,11 @@ function globalVars(env) {
 async function send(env, supabase, to, subject, template, vars, opts = {}) {
   let status = 'sent', error = null
 
-  if (!opts.slotReserved && !(await recipientAllowed(env, to, template))) {
+  // SECTION 4 ROUND 5: `opts.quotaKey` lets two callers of the SAME template keep separate
+  // per-recipient budgets (an admin resending a link must not eat the partner's own
+  // "email me my link" allowance, and vice versa).
+  const quotaKey = opts.quotaKey || template
+  if (!opts.slotReserved && !(await recipientAllowed(env, to, quotaKey))) {
     status = 'throttled'
     error  = 'per-recipient limit reached'
     console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
@@ -228,7 +234,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
       // its link token first (`slotReserved`) and handed the send to us. A failed send reached
       // no inbox, so it gives the slot back (refundRecipientSlot is a no-op for templates
       // without `refundOnFailure`, and bounded for those that have it).
-      await refundRecipientSlot(env, to, template)
+      await refundRecipientSlot(env, to, quotaKey)
     }
   }
 
@@ -425,11 +431,11 @@ async function sendPaymentReversed(env, supabase, email, name, { amountCents, cu
 
 // ── Partner payouts (manual) ────────────────────────────────────────────────
 
-async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
+async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl, opts) {
   return send(env, supabase, email, 'Set up your Passthrough payout details', 'partner_payout_details_request', {
     NAME:       name,
     PAYOUT_URL: payoutUrl
-  })
+  }, opts)
 }
 
 // amountCents/currency formatted here (not left to the caller) so every
@@ -463,14 +469,30 @@ async function sendPartnerRateChanged(env, supabase, email, name, oldRate, newRa
   })
 }
 
-// A refund / lost dispute reversed a commission this partner had earned.
+// A refund / lost dispute reversed a commission this partner had earned. Its own template
+// (not partner_status_changed) so the dashboard URL is a real button, not plain text.
 async function sendPartnerCommissionReversed(env, supabase, email, name, commissionCents, currency, dashboardUrl) {
   const amount = `${(commissionCents / 100).toFixed(2)} ${currency}`
-  return send(env, supabase, email, 'A commission was reversed', 'partner_status_changed', {
+  return send(env, supabase, email, 'A commission was reversed', 'partner_commission_reversed', {
+    NAME: name, AMOUNT: amount, DASHBOARD_URL: dashboardUrl
+  })
+}
+
+// Sent when an admin rotates a partner's DASHBOARD link (read-only token).
+async function sendPartnerDashboardLinkRegenerated(env, supabase, email, name, dashboardUrl) {
+  return send(env, supabase, email, 'Your Passthrough dashboard link has been reset', 'partner_dashboard_link_regenerated', {
+    NAME: name, DASHBOARD_URL: dashboardUrl
+  })
+}
+
+// A recorded payout was voided by an admin (recorded in error).
+async function sendPartnerPayoutVoided(env, supabase, email, name, amountCents, currency, reason) {
+  const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
+  return send(env, supabase, email, 'A payout record was corrected', 'partner_status_changed', {
     NAME:    name,
-    HEADING: 'A commission was reversed',
-    BODY:    `a sale made through your link was refunded, so the ${amount} commission on it has been reversed. ` +
-             `If it had already been paid out, it nets against your next payout. Details: ${dashboardUrl}`
+    HEADING: 'A payout record was corrected',
+    BODY:    `the ${amount} payout we recorded for you was entered in error and has been voided.${reason ? ` ${String(reason).trim()}` : ''} ` +
+             'Nothing is lost: that commission is back on your balance and will be paid in a later payout. Your dashboard shows the current picture.'
   })
 }
 
@@ -490,9 +512,9 @@ async function sendPartnerStatusChanged(env, supabase, email, name, status) {
 // Sent when an admin rejects a partner application (see adminRejectApplication). `reason`
 // is optional free text the admin chose to share; it is passed as plain text and escaped
 // by the template engine like every other variable.
-async function sendPartnerApplicationRejected(env, supabase, email, name, reason) {
+async function sendPartnerApplicationRejected(env, supabase, email, name, reason, cooldownDays = 30) {
   const body = (reason ? `we're not able to move forward with your application right now. ${String(reason).trim()} ` : "we're not able to move forward with your application right now. ")
-    + "You're welcome to apply again after 30 days."
+    + `You're welcome to apply again after ${cooldownDays} days.`
   return send(env, supabase, email, 'Your Passthrough partner application', 'partner_application_rejected', {
     NAME: name,
     BODY: body
@@ -766,5 +788,6 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected
+  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected,
+  sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided
 }

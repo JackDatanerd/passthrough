@@ -323,7 +323,8 @@ describe('G2/G3/B7 — applications: approve with rate + first code, reject with
     const res = await t.mod.adminRejectApplication(ctxOf({ reason: 'Not a fit yet.' }, { params: { id: 'a1' } }))
     expect(res.body).toMatchObject({ success: true, emailed: true })
     expect(t.st.updates[0]).toMatchObject({ status: 'REJECTED', review_note: 'Not a fit yet.' })
-    expect(t.st.rejected[0]).toEqual(['ann@x.co', 'Ann', 'Not a fit yet.'])
+    expect(t.st.rejected[0].slice(0, 3)).toEqual(['ann@x.co', 'Ann', 'Not a fit yet.'])
+    expect(t.st.rejected[0][3]).toBe(30)   // the cooldown now comes from REAPPLY_COOLDOWN_DAYS, not email copy
   })
   it('rejection with no reason / no body still emails', async () => {
     app()
