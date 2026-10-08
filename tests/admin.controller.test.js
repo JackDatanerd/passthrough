@@ -417,3 +417,53 @@ describe('adminListAuditLog', () => {
     await expect(t.mod.adminListAuditLog(t.c())).rejects.toThrow('db down')
   })
 })
+
+// ── Webhooks round 5 ──────────────────────────────────────────────────────
+describe('round 5 — partial refunds are visible and netted out of revenue', () => {
+  const now = new Date()
+  const today = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString()
+  it('subtracts what payment_refunds holds from the bucket of the payment it belongs to', async () => {
+    t = setup(q => {
+      if (q.table === 'payments' && q.cols?.includes('amount_cents'))
+        return { data: [{ id: 'p1', amount_cents: 4900, created_at: today }, { id: 'p2', amount_cents: 2900, created_at: today }], error: null }
+      if (q.table === 'payment_refunds') return { data: [{ payment_id: 'p1', amount_cents: 1500 }, { payment_id: 'p1', amount_cents: 500 }], error: null }
+      if (q.table === 'commission_ledger' || q.table === 'alert_logs') return { data: [], error: null }
+      return { data: [], error: null, count: 0 }
+    })
+    const res = await t.mod.adminDashboardStats(t.c())
+    expect(res.body.data.revenue).toMatchObject({ todayCents: 4900 - 2000 + 2900, weekCents: 4900 - 2000 + 2900, monthCents: 4900 - 2000 + 2900, monthPartialRefundsCents: 2000 })
+    const call = t.db.calls.find(c => c.table === 'payment_refunds')
+    expect(call.cols).toMatch(/payments!inner/)
+    expect(call.filters.find(f => f[0] === 'eq' && f[1] === 'payments.status')[2]).toBe('SUCCESS')
+  })
+  it('never lets a payment go negative, and falls back to gross revenue when the table cannot be read', async () => {
+    t = setup(q => {
+      if (q.table === 'payments' && q.cols?.includes('amount_cents')) return { data: [{ id: 'p1', amount_cents: 1000, created_at: today }], error: null }
+      if (q.table === 'payment_refunds') return { data: [{ payment_id: 'p1', amount_cents: 5000 }], error: null }
+      return { data: [], error: null, count: 0 }
+    })
+    expect((await t.mod.adminDashboardStats(t.c())).body.data.revenue.todayCents).toBe(0)
+    t.restore()
+    t = setup(q => {
+      if (q.table === 'payments' && q.cols?.includes('amount_cents')) return { data: [{ id: 'p1', amount_cents: 1000, created_at: today }], error: null }
+      if (q.table === 'payment_refunds') return { data: null, error: { code: '42P01', message: 'relation does not exist' } }
+      return { data: [], error: null, count: 0 }
+    })
+    expect((await t.mod.adminDashboardStats(t.c())).body.data.revenue.todayCents).toBe(1000)
+  })
+  it('the dashboard carries the webhook health block', async () => {
+    t = setup(() => ({ data: [], error: null, count: 0 }))
+    const res = await t.mod.adminDashboardStats(t.c())
+    expect(res.body.data.webhookHealth).toMatchObject({ available: true, paidWithoutEvent: 0 })
+  })
+  it('the payments list shows what has been refunded so far and filters by reference', async () => {
+    t = setup(q => {
+      if (q.table === 'payments') return { data: [{ id: 'p1', amount_cents: 4900, currency: 'USD', status: 'SUCCESS', paystack_ref: 'r1', users: { email: 'a@b.com' }, created_at: 't' }, { id: 'p2', amount_cents: 100, currency: 'USD', status: 'SUCCESS', paystack_ref: 'r2', users: null, created_at: 't' }], error: null, count: 2 }
+      if (q.table === 'payment_refunds') return { data: [{ payment_id: 'p1', amount_cents: 1200 }], error: null }
+    })
+    const res = await t.mod.adminListPayments(t.c({ query: { reference: 'r1,(x)' } }))
+    expect(res.body.data.map(p => p.refundedCents)).toEqual([1200, 0])
+    const call = t.db.calls.find(c => c.table === 'payments')
+    expect(call.filters.find(f => f[0] === 'ilike' && f[1] === 'paystack_ref')[2]).toBe('%r1x%')
+  })
+})

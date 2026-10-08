@@ -1,5 +1,5 @@
 import { Fragment, useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
@@ -42,6 +42,20 @@ export default function AdminWebhooks() {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [pending, setPending] = useState(null)
+  // ROUND 5 (feature gap): are webhooks reaching this app at all? See webhooks.controller computeWebhookHealth.
+  const [health, setHealth] = useState(null)
+
+  const loadHealth = useCallback(async () => {
+    try { setHealth((await api.get('/admin/webhook-events/health')).data.data) }
+    catch (_) { setHealth(null) }
+  }, [])
+  useEffect(() => { loadHealth() }, [loadHealth])
+
+  // ROUND 5 (bug): the two search boxes were seeded from the URL once and never again, so browser
+  // back/forward changed the results but left the previous search text in the inputs. Keep them
+  // in step with the URL, and start from page 1 whenever the filters change.
+  useEffect(() => { setRefDraft(referenceQ); setTypeDraft(typeQ) }, [referenceQ, typeQ])
+  useEffect(() => { setPage(1) }, [status, referenceQ, typeQ])
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -86,7 +100,7 @@ export default function AdminWebhooks() {
       const res = await api.post(`/admin/webhook-events/${ev.id}/replay`)
       const d = res.data.data || {}
       toast({ message: `Replayed → ${d.status}${d.note ? ` (${d.note})` : ''}${d.hint ? `. ${d.hint}` : ''}`, type: d.status === 'HELD' ? 'error' : 'success' })
-      load()
+      load(); loadHealth()
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Replay failed.'), type: 'error' })
     } finally {
@@ -117,6 +131,22 @@ export default function AdminWebhooks() {
           <Button type="submit" size="sm" variant="secondary">Search</Button>
         </form>
       </div>
+
+      {health && health.available && (
+        <div className={health.paidWithoutEvent > 0 ? 'text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2' : 'text-xs text-gray-500'}>
+          {health.paidWithoutEvent > 0 ? (
+            <>
+              <strong>{health.paidWithoutEvent} paid sale{health.paidWithoutEvent === 1 ? '' : 's'} in the last 7 days {health.paidWithoutEvent === 1 ? 'has' : 'have'} no charge.success event on record</strong>
+              {' '}(of {health.paidChecked} checked). They were settled by the buyer's return visit or the hourly sweeps, so Paystack may not be
+              reaching this app: check the webhook URL and signing key in the Paystack dashboard.
+              {health.missingReferences?.length > 0 && <> e.g. <span className="font-mono text-xs">{health.missingReferences.join(', ')}</span></>}
+              {' '}
+            </>
+          ) : null}
+          Last event received {health.lastEventAt ? formatDate(health.lastEventAt) : 'never'}
+          {' · '}last charge.success {health.lastChargeSuccessAt ? formatDate(health.lastChargeSuccessAt) : 'never'}.
+        </div>
+      )}
 
       <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
         HELD = an amount/currency mismatch was caught (use Payments → Recheck to accept it). FAILED = processing threw
@@ -149,7 +179,11 @@ export default function AdminWebhooks() {
                 <tr>
                   <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(ev.receivedAt)}</td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-700">{ev.eventType}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">{ev.reference || '—'}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                    {ev.reference
+                      ? <Link to={`/admin/payments?reference=${encodeURIComponent(ev.reference)}`} className="text-blue-700 hover:underline" title="Open this payment">{ev.reference}</Link>
+                      : '—'}
+                  </td>
                   <td className="px-4 py-3">
                     <Badge variant={badgeVariant(ev.status)}>{ev.status}</Badge>
                     {ev.error && <div className="text-xs text-red-600 mt-0.5 max-w-xs break-words">{ev.error}</div>}

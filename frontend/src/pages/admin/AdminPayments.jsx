@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
@@ -23,6 +23,10 @@ export default function AdminPayments() {
   const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const status = searchParams.get('status') || ''
+  // ROUND 5 (feature gap): a payment could only be found by paging; the Webhooks page also links here by reference.
+  const referenceQ = searchParams.get('reference') || ''
+  const [refDraft, setRefDraft] = useState(referenceQ)
+  useEffect(() => { setRefDraft(referenceQ) }, [referenceQ])
   const [payments, setPayments] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
@@ -35,7 +39,7 @@ export default function AdminPayments() {
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const res = await api.get('/admin/payments', { params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
+      const res = await api.get('/admin/payments', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined } })
       setPayments(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
@@ -43,14 +47,18 @@ export default function AdminPayments() {
     } finally {
       setLoading(false)
     }
-  }, [page, status])
+  }, [page, status, referenceQ])
 
   useEffect(() => { load() }, [load])
 
-  function setStatus(next) {
+  function applyFilters(next = {}) {
+    const merged = { status, reference: referenceQ, ...next }
+    const params = {}
+    for (const [k, v] of Object.entries(merged)) if (v) params[k] = v
     setPage(1)
-    setSearchParams(next ? { status: next } : {})
+    setSearchParams(params)
   }
+  const setStatus = next => applyFilters({ status: next })
 
   // BUG FIX (audit, feature gap): reconcile/recheck/resolvePayment all used
   // `window.confirm()` — see components/ui/ConfirmDialog.jsx. recheck's
@@ -210,10 +218,17 @@ export default function AdminPayments() {
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Payments</h1>
 
-      <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
-        <option value="">All</option>
-        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-      </Select>
+      <div className="flex flex-wrap items-end gap-4">
+        <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">
+          <option value="">All</option>
+          {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+        </Select>
+        <form className="flex items-end gap-3" onSubmit={e => { e.preventDefault(); applyFilters({ reference: refDraft.trim() }) }}>
+          <Input id="pay-ref" label="Payment reference" value={refDraft} onChange={e => setRefDraft(e.target.value)}
+            placeholder="contains…" wrapperClassName="w-56" className="font-mono" />
+          <Button type="submit" size="sm" variant="secondary">Search</Button>
+        </form>
+      </div>
 
       {status === 'PENDING' && (
         <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
@@ -244,7 +259,12 @@ export default function AdminPayments() {
             <tbody className="divide-y divide-gray-100">
               {payments.map(p => (
                 <tr key={p.id}>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">{p.paystackRef}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
+                    {p.paystackRef}
+                    {!String(p.paystackRef).startsWith('credit:') && (
+                      <div><Link to={`/admin/webhooks?reference=${encodeURIComponent(p.paystackRef)}`} className="font-sans text-blue-700 hover:underline">Webhook events</Link></div>
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-gray-600">{p.userEmail || '—'}</td>
                   <td className="px-4 py-3 text-right font-medium">{formatCents(p.amountCents, p.currency)}</td>
                   <td className="px-4 py-3">
@@ -256,6 +276,12 @@ export default function AdminPayments() {
                     {p.status === 'REFUNDED' && p.refundedAt && (
                       <div className="text-xs text-gray-400 mt-0.5">
                         {formatDate(p.refundedAt)}{p.refundReference ? ` · ${p.refundReference}` : ''}
+                      </div>
+                    )}
+                    {/* ROUND 5: money confirmed back by Paystack on a payment that stays SUCCESS (a partial refund). */}
+                    {p.status === 'SUCCESS' && p.refundedCents > 0 && (
+                      <div className="text-xs text-amber-700 mt-0.5">
+                        Partially refunded {formatCents(p.refundedCents, p.currency)} of {formatCents(p.amountCents, p.currency)}
                       </div>
                     )}
                     {p.status === 'DISPUTED' && p.disputedAt && (

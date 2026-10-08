@@ -29,6 +29,7 @@ router.post('/scans/:id/requeue-fix', validateUuidParam(), c.adminRequeueFix)
 // Webhook inbox (Section 8): what Paystack sent, what we did with it, and a replay
 // for anything that was HELD / FAILED / IGNORED.
 router.get('/webhook-events', wh.listWebhookEvents)
+router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
 

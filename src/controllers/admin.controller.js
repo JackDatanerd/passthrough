@@ -37,6 +37,21 @@ function sanitizeSearchTerm(term) {
   return String(term || '').trim().replace(/[,()]/g, '')
 }
 
+// Partial-refund totals per payment (payment_refunds, migration 0053 — written by the refund.processed
+// webhook, one row per refund event). `windowFrom` limits it to SUCCESS payments created since then.
+// Never throws: a missing table or an unsupported embed just means "no partial refunds known".
+async function partialRefundsInWindow(supabase, windowFrom) {
+  const byPayment = new Map()
+  try {
+    const { data, error } = await supabase.from('payment_refunds')
+      .select('payment_id, amount_cents, payments!inner(status, created_at)')
+      .eq('payments.status', 'SUCCESS').gte('payments.created_at', windowFrom)
+    if (error) throw error
+    for (const r of data || []) byPayment.set(r.payment_id, (byPayment.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+  } catch (err) { console.error('partial refund totals unavailable:', err.message) }
+  return { byPayment }
+}
+
 // ── Dashboard — the roll-up numbers that didn't exist anywhere before ──────
 
 async function adminDashboardStats(ctx) {
@@ -57,7 +72,7 @@ async function adminDashboardStats(ctx) {
   const queryFrom = startOfWeek < startOfMonth ? startOfWeek : startOfMonth
 
   const { data: revenueWindowPayments, error: payErr } = await supabase
-    .from('payments').select('amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
+    .from('payments').select('id, amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
   if (payErr) throw payErr
 
   const { data: pendingLedger, error: ledgerErr } = await supabase
@@ -117,13 +132,24 @@ async function adminDashboardStats(ctx) {
     .order('created_at', { ascending: false }).limit(5)
   if (alertErr) throw alertErr
 
-  const revenueMonthCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + p.amount_cents, 0)
-  const revenueWeekCents  = (revenueWindowPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + p.amount_cents, 0)
-  const revenueTodayCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + p.amount_cents, 0)
+  // WEBHOOKS ROUND 5 (feature gap): a PARTIAL refund leaves the payment SUCCESS (the work was delivered),
+  // so revenue summed the full amount paid while part of it had gone back. payment_refunds (0053) holds
+  // what Paystack confirmed per payment; subtract it from the bucket the sale itself belongs to.
+  // Best-effort: with the table missing, revenue is gross as before.
+  const partialRefunds = await partialRefundsInWindow(supabase, queryFrom)
+  const net = p => Math.max(0, p.amount_cents - (partialRefunds.byPayment.get(p.id) || 0))
+  const revenueMonthCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + net(p), 0)
+  const revenueWeekCents  = (revenueWindowPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + net(p), 0)
+  const revenueTodayCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + net(p), 0)
+  const monthPartialRefundsCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + Math.min(p.amount_cents, partialRefunds.byPayment.get(p.id) || 0), 0)
+  let webhookHealth = null
+  try { webhookHealth = await require('./webhooks.controller').computeWebhookHealth(supabase, { now: now.getTime() }) }
+  catch (err) { console.error('dashboard webhook health:', err.message) }
   const totalPendingCommissionCents = (pendingLedger || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 
   return ctx.json({ success: true, data: {
-    revenue: { todayCents: revenueTodayCents, weekCents: revenueWeekCents, monthCents: revenueMonthCents },
+    revenue: { todayCents: revenueTodayCents, weekCents: revenueWeekCents, monthCents: revenueMonthCents, monthPartialRefundsCents },
+    webhookHealth,
     totalPendingCommissionCents,
     // Read-only status readout — constants.js/wrangler.toml stay the single
     // source of truth for pricing by design (see constants.js's own
@@ -356,6 +382,8 @@ async function adminListPayments(ctx) {
   const supabase = getSupabase(ctx.env)
   const { page, pageSize, from, to } = pageParams(ctx)
   const status = ctx.req.query('status')
+  // Letters, digits and the punctuation a payment reference uses — nothing that could break the filter grammar.
+  const reference = String(ctx.req.query('reference') || '').trim().replace(/[^A-Za-z0-9_.:\-]/g, '').slice(0, 80)
 
   // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
   // (migrations 0024/0025) were never selected here. webhooks.controller.js
@@ -382,9 +410,22 @@ async function adminListPayments(ctx) {
     .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, receipt_sent_at, receipt_delivered_at, last_reconciled_at, created_at', { count: 'exact' })
     .order('created_at', { ascending: false }).range(from, to)
   if (status) query = query.eq('status', status)
+  if (reference) query = query.ilike('paystack_ref', `%${reference}%`)
 
   const { data, error, count } = await query
   if (error) throw error
+
+  // WEBHOOKS ROUND 5 (feature gap): what Paystack has confirmed as refunded so far (payment_refunds, 0053).
+  // A partial refund leaves the payment SUCCESS, so without this nothing here showed that money had gone back.
+  const refundedBy = new Map()
+  try {
+    const ids = data.map(p => p.id)
+    if (ids.length) {
+      const { data: rf, error: rfErr } = await supabase.from('payment_refunds').select('payment_id, amount_cents').in('payment_id', ids)
+      if (rfErr) throw rfErr
+      for (const r of rf || []) refundedBy.set(r.payment_id, (refundedBy.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+    }
+  } catch (err) { console.error('payment refund totals unavailable:', err.message) }
 
   const payments = data.map(p => ({
     id: p.id, amountCents: p.amount_cents, currency: p.currency, status: p.status,
@@ -393,6 +434,7 @@ async function adminListPayments(ctx) {
     refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
     receiptSentAt: p.receipt_sent_at, receiptDeliveredAt: p.receipt_delivered_at,
     lastReconciledAt: p.last_reconciled_at,
+    refundedCents: refundedBy.get(p.id) || 0,
     createdAt: p.created_at
   }))
   return ctx.json({ success: true, data: payments, meta: { page, pageSize, total: count || 0 } })

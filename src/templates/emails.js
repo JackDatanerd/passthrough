@@ -115,6 +115,10 @@ const TEMPLATES = {
   // own dashboard they'd have to think to go check — see
   // partners.controller.js's adminUpdatePartner.
   partner_status_changed: "<h2>{{HEADING}}</h2>\n<p>Hi {{NAME}}, {{BODY}}</p>\n<p style=\"color:#9ca3af;font-size:13px\">If this wasn't expected, reply to this email or contact support@passthrough.dev.</p>\n",
+  // Webhooks round 5 (feature gap): when a refund / lost dispute reversed a sale the buyer's public
+  // verification page was revoked with no word to them at all. BODY is built by the sender so the
+  // template stays one shape (it says whether the page was taken down).
+  payment_reversed: "<h2>Your payment was reversed</h2>\n<p>Hi {{NAME}}, {{BODY}}</p>\n<table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n  <tr><td style=\"padding:8px 0;color:#374151\">Amount</td>\n      <td style=\"padding:8px 0;text-align:right;font-weight:600\">{{AMOUNT}}</td></tr>\n  <tr><td style=\"padding:8px 0;color:#374151\">Reference</td>\n      <td style=\"padding:8px 0;text-align:right;font-family:monospace;font-size:13px\">{{REFERENCE}}</td></tr>\n</table>\n<p style=\"color:#9ca3af;font-size:13px\">Questions about this? Reply to this email or contact support@passthrough.dev.</p>\n",
   // Round 4 (bug): the partner-apply form promises "we'll email you after we've reviewed
   // it", but only approval ever sent anything. BODY carries the (optional) reason as plain
   // text; the sender builds it so the template stays one shape.

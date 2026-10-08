@@ -84,3 +84,31 @@ describe('AdminPayments — refund', () => {
     expect(screen.getByRole('dialog')).toBeInTheDocument()
   })
 })
+
+// Webhooks round 5: partial refunds are visible, and the list can be searched by reference.
+describe('AdminPayments — round 5', () => {
+  it('shows how much of a still-SUCCESS payment has been refunded so far', async () => {
+    api.get.mockResolvedValue(listOf([row({ refundedCents: 1200 }), row({ id: 'p2', paystackRef: 'ref2', refundedCents: 0 })]))
+    renderPage()
+    expect(await screen.findByText(/Partially refunded \$12\.00 of \$49\.00/)).toBeTruthy()
+    expect(screen.getAllByText(/Partially refunded/)).toHaveLength(1)
+  })
+
+  it('searches by reference and links a payment to its webhook events', async () => {
+    const user = userEvent.setup()
+    api.get.mockResolvedValue(listOf([row()]))
+    renderPage()
+    const link = await screen.findByRole('link', { name: 'Webhook events' })
+    expect(link.getAttribute('href')).toBe('/admin/webhooks?reference=ref1')
+    await user.type(screen.getByLabelText('Payment reference'), ' ref1 ')
+    await user.click(screen.getByRole('button', { name: 'Search' }))
+    await vi.waitFor(() => expect(api.get).toHaveBeenLastCalledWith('/admin/payments', { params: { page: 1, pageSize: 25, status: undefined, reference: 'ref1' } }))
+  })
+
+  it('does not offer a webhook-events link for a free-credit redemption', async () => {
+    api.get.mockResolvedValue(listOf([row({ paystackRef: 'credit:s1:1', amountCents: 0 })]))
+    renderPage()
+    await screen.findByText(/credit:s1:1/)
+    expect(screen.queryByRole('link', { name: 'Webhook events' })).toBeNull()
+  })
+})

@@ -37,10 +37,11 @@ function seed(over = {}) {
 }
 
 function harness(world, opts = {}) {
-  const state = { queue: [], alerts: [], conversions: [], kv: new Map(), order: [], refunds: opts.refunds || [], refundLookups: 0 }
+  const state = { queue: [], alerts: [], conversions: [], kv: new Map(), order: [], refunds: opts.refunds || [], refundLookups: 0, buyerNotices: [] }
   const { mod, restore } = loadWithStubs('controllers/webhooks.controller.js', {
     'config/supabase.js': { getSupabase: () => world.db },
-    'services/email.service.js': { sendOwnerAlert: async (env, subject, message, opts) => { state.alerts.push({ subject, message, opts }); return true } },
+    'services/email.service.js': { sendOwnerAlert: async (env, subject, message, opts) => { state.alerts.push({ subject, message, opts }); return true },
+      sendPaymentReversed: async (env, db, to, name, p) => { state.buyerNotices.push({ to, name, ...p }); return true } },
     'services/referral.service.js': { recordConversion: async (db, payment) => { state.order.push('commission'); state.conversions.push(payment.id); return { ok: true } } },
     // Paystack's refund list (the authoritative total processRefund consults when the local one falls short).
     'services/paystack.service.js': { listRefunds: async () => { state.refundLookups++; if (opts.refundListError) throw opts.refundListError; return { data: state.refunds } } },
@@ -435,11 +436,11 @@ describe('disputes (B8-3 / G8-1)', () => {
     expect(t.state.alerts.filter(a => /dispute\.remind/.test(a.subject))).toHaveLength(2)
     expect(w.t.payments[0].status).toBe('DISPUTED')
   })
-  it('dispute.resolve alerts with the resolution and leaves the DISPUTED status for the admin action', async () => {
+  it('dispute.resolve alerts with the resolution, and (round 5) a lost dispute now reverses the sale itself', async () => {
     const w = paidWorld(); t = harness(w)
     await t.fire(dispute('charge.dispute.create'))
     await t.fire(dispute('charge.dispute.resolve', { status: 'resolved', resolution: 'merchant-accepted' }))
-    expect(w.t.payments[0].status).toBe('DISPUTED')
+    expect(w.t.payments[0].status).toBe('REFUNDED')
     expect(t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message).toMatch(/merchant-accepted/)
   })
   it('an unmatched dispute still alerts (and says it could not resolve)', async () => {
@@ -607,18 +608,43 @@ describe('round 2 — dispute.resolve tells the admin which action applies', () 
     return w
   }
   const resolve = (resolution, id) => ({ event: 'charge.dispute.resolve', data: { id, status: 'resolved', resolution, transaction: { reference: 'ref-1' } } })
-  it('merchant-accepted → Reverse', async () => {
+  // ROUND 5: the resolution is final when it arrives, so it is actioned (it used to wait for an admin click).
+  it('merchant-accepted → the sale is reversed automatically', async () => {
     const w = disputedWorld(); t = harness(w)
     await t.fire(resolve('merchant-accepted', 1))
     const m = t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message
-    expect(m).toMatch(/Reverse/); expect(m).toMatch(/ACCEPTED/)
-    expect(w.t.payments[0].status).toBe('DISPUTED')     // still a human's call
+    expect(m).toMatch(/reversed automatically/); expect(m).toMatch(/ACCEPTED/)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(w.t.scans[0].verification_status).toBe('REVOKED')
+    expect(w.t.scans[0].verification_revoked_reason).toBe('DISPUTE')
+    expect(w.t.webhook_events[0].note).toBe('dispute lost — sale reversed')
   })
-  it('declined → Clear dispute', async () => {
+  it('declined → DISPUTED goes back to SUCCESS and the credential is left alone', async () => {
     const w = disputedWorld(); t = harness(w)
     await t.fire(resolve('declined', 2))
     const m = t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message
-    expect(m).toMatch(/Clear dispute/); expect(m).toMatch(/WON/)
+    expect(m).toMatch(/WON/); expect(m).toMatch(/back from DISPUTED to SUCCESS/)
+    expect(w.t.payments[0].status).toBe('SUCCESS'); expect(w.t.payments[0].disputed_at).toBeNull()
+    expect(w.t.scans[0].verification_status).toBe('ACTIVE')
+  })
+  it('a partial chargeback (refund_amount below the price) is NOT reversed automatically', async () => {
+    const w = disputedWorld(); t = harness(w)
+    await t.fire({ event: 'charge.dispute.resolve', data: { id: 5, status: 'resolved', resolution: 'merchant-accepted', refund_amount: 1000, transaction: { reference: 'ref-1' } } })
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+    expect(t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message).toMatch(/only 1000 of the 2900/)
+  })
+  it('a resolution for a payment that is not DISPUTED / SUCCESS changes nothing', async () => {
+    const w = disputedWorld(); w.t.payments[0].status = 'REFUNDED'; t = harness(w)
+    await t.fire(resolve('declined', 6)); await t.fire(resolve('merchant-accepted', 7))
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+  it('the buyer is told once when a lost dispute reverses the sale, and the revoked page is mentioned', async () => {
+    const w = disputedWorld(); w.t.users[0] = { id: 'u1', deleted_at: null, email: 'a@b.c', name: 'Ann' }
+    w.t.payments[0].user_id = 'u1'; t = harness(w)
+    await t.fire(resolve('merchant-accepted', 8))
+    await t.fire(resolve('merchant-accepted', 9))     // a second resolve event for the same payment: no second notice
+    expect(t.state.buyerNotices).toHaveLength(1)
+    expect(t.state.buyerNotices[0]).toMatchObject({ to: 'a@b.c', reason: 'DISPUTE', verificationRevoked: true, amountCents: 2900, reference: 'ref-1' })
   })
   it('an unrecognised resolution says so and names both actions', async () => {
     const w = disputedWorld(); t = harness(w)
@@ -785,5 +811,146 @@ describe('round 4 — B6: the global alert ceiling does not silence the referenc
     // The 21st was turned away by the ceiling — its own cooldown must not have been taken.
     expect(t.state.kv.has('webhook-alert-cooldown:unknown-reference:nope-21')).toBe(false)
     expect(t.state.kv.has('webhook-alert-cooldown:unknown-reference:nope-20')).toBe(true)
+  })
+})
+
+// ── Round 5 ────────────────────────────────────────────────────────────────
+describe('round 5 — B1: a full refund for a payment that was never settled closes it', () => {
+  const full = (id = 31) => ({ event: 'refund.processed', data: { id, transaction_reference: 'ref-1', refund_reference: 'rf-1', amount: 2900, currency: 'USD' } })
+  for (const st of ['PENDING', 'ABANDONED', 'FAILED']) {
+    it(`${st} → REFUNDED, so a late charge.success can no longer fulfil the refunded sale`, async () => {
+      const w = seed(); w.t.payments[0].status = st; t = harness(w)
+      expect((await t.fire(full())).status).toBe(200)
+      expect(w.t.payments[0]).toMatchObject({ status: 'REFUNDED', refund_reference: 'rf-1' })
+      expect(w.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED' })
+      expect(w.t.webhook_events[0].note).toMatch(/refunded before settlement/)
+      expect(t.state.alerts.some(a => /closed before it was ever settled/.test(a.subject))).toBe(true)
+      // …and then the delayed charge.success arrives:
+      await t.fire(chargeSuccess())
+      expect(w.t.payments[0].status).toBe('REFUNDED')
+      expect(t.state.queue).toHaveLength(0)
+      expect(t.state.conversions).toHaveLength(0)
+      expect(w.t.scans[0].fix_purchased).toBe(false)
+    })
+  }
+  it('a PARTIAL refund on an unsettled payment leaves it alone (and says so)', async () => {
+    const w = seed(); t = harness(w, { refunds: [{ status: 'processed', amount: 1000, currency: 'USD' }] })
+    await t.fire({ event: 'refund.processed', data: { id: 32, transaction_reference: 'ref-1', refund_reference: 'rf-2', amount: 1000, currency: 'USD' } })
+    expect(w.t.payments[0].status).toBe('PENDING')
+    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
+  })
+  it('a payment that settles between the read and the close is reversed the normal way', async () => {
+    const w = seed(); t = harness(w)
+    // The row is PENDING when processRefund reads it; by the time the guarded UPDATE runs, it is SUCCESS.
+    const realRpc = w.rpcs.record_refund_and_total
+    w.rpcs.record_refund_and_total = (args, world) => {
+      Object.assign(world.t.payments[0], { status: 'SUCCESS' })
+      Object.assign(world.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+      return realRpc(args, world)
+    }
+    await t.fire(full(33))
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+    expect(w.t.scans[0].verification_status).toBe('REVOKED')
+    expect(t.state.alerts.some(a => /sale reversed/i.test(a.subject))).toBe(true)
+  })
+  it('a payment that is not a settled-or-unsettled state is still reported, not touched', async () => {
+    const w = seed(); w.t.payments[0].status = 'WEIRD'; t = harness(w)
+    await t.fire(full(34))
+    expect(w.t.payments[0].status).toBe('WEIRD')
+    expect(t.state.alerts.some(a => /never SUCCESS/.test(a.subject))).toBe(true)
+  })
+})
+
+describe('round 5 — B3: re-running an ambiguous refund is not announced as a first failure each time', () => {
+  const half = { event: 'refund.processed', data: { transaction_reference: 'ref-1', refund_reference: null, amount: '1450', currency: 'USD' } }
+  it('counts the re-run as an attempt and stays quiet when it fails', async () => {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    t = harness(w, { refunds: [{ status: 'processed', amount: 1450, currency: 'USD' }] })
+    await t.fire(half)                                                                  // partial: PROCESSED
+    t.state.refunds.push({ status: 'processed', amount: 1450, currency: 'USD' })        // the second half completes at Paystack
+    w.failNext('payments', 'update', { message: 'connection reset' })                  // the reversal blips
+    const res = await t.fire(half)
+    expect(res.status).toBe(500)
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'FAILED', attempts: 2 })
+    expect(t.state.alerts.filter(a => /Webhook processing failed/.test(a.subject))).toHaveLength(0)
+    expect((await t.fire(half)).status).toBe(200)                                      // and the next delivery finishes the job
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+})
+
+describe('round 5 — buyer notice on reversal', () => {
+  it('a full refund tells the buyer once, saying whether the public page was taken down', async () => {
+    const w = seed({ users: [{ id: 'u1', deleted_at: null, email: 'a@b.c', name: 'Ann' }] })
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', user_id: 'u1' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    t = harness(w)
+    const ev = { event: 'refund.processed', data: { id: 41, transaction_reference: 'ref-1', refund_reference: 'rf-41', amount: 2900, currency: 'USD' } }
+    await t.fire(ev); await t.fire(ev)
+    expect(t.state.buyerNotices).toEqual([expect.objectContaining({ to: 'a@b.c', reason: 'REFUND', verificationRevoked: true, reference: 'ref-1' })])
+  })
+  it('a DUPLICATE payment refunded (it does not own the scan) says the page was not touched', async () => {
+    const w = seed({ users: [{ id: 'u1', deleted_at: null, email: 'a@b.c', name: 'Ann' }] })
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', user_id: 'u1' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'other-payment', status: 'FIX_DELIVERED' })
+    t = harness(w)
+    await t.fire({ event: 'refund.processed', data: { id: 42, transaction_reference: 'ref-1', refund_reference: 'rf-42', amount: 2900, currency: 'USD' } })
+    expect(t.state.buyerNotices[0]).toMatchObject({ verificationRevoked: false })
+    expect(w.t.scans[0].verification_status).toBe('ACTIVE')
+  })
+  it('a buyer-notice failure never fails the reversal', async () => {
+    const w = seed({ users: [{ id: 'u1', deleted_at: null, email: 'a@b.c', name: 'Ann' }] })
+    Object.assign(w.t.payments[0], { status: 'SUCCESS', user_id: 'u1' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    t = harness(w)
+    w.failNext('users', 'select', { message: 'blip' })
+    const res = await t.fire({ event: 'refund.processed', data: { id: 43, transaction_reference: 'ref-1', refund_reference: 'rf-43', amount: 2900, currency: 'USD' } })
+    expect(res.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+})
+
+describe('round 5 — webhook delivery health', () => {
+  const ago = ms => new Date(Date.now() - ms).toISOString()
+  const DAY = 24 * 3600_000
+  const health = async w => { const { mod, restore } = pure(); try { return await mod.computeWebhookHealth(w.db) } finally { restore() } }
+  const pay = (ref, over = {}) => ({ id: 'id-' + ref, paystack_ref: ref, amount_cents: 2900, status: 'SUCCESS', created_at: ago(2 * DAY), ...over })
+  const evt = (ref, over = {}) => ({ id: 'e-' + ref, event_type: 'charge.success', reference: ref, status: 'PROCESSED', received_at: ago(2 * DAY), ...over })
+
+  it('counts recent paid sales that have no charge.success on record, ignoring credits, new sales and old ones', async () => {
+    const w = createWorld({
+      payments: [pay('a'), pay('b'), pay('credit:x', { amount_cents: 0 }), pay('fresh', { created_at: ago(5 * 60_000) }), pay('ancient', { created_at: ago(30 * DAY) }), pay('p', { status: 'PENDING' })],
+      webhook_events: [evt('a'), evt('b', { event_type: 'refund.processed' })],
+    })
+    const h = await health(w)
+    expect(h).toMatchObject({ available: true, paidChecked: 2, paidWithoutEvent: 1, missingReferences: ['b'] })
+    expect(h.lastChargeSuccessAt).toBeTruthy()
+  })
+  it('is all clear when every paid sale has its event, and reports nothing seen on an empty inbox', async () => {
+    expect(await health(createWorld({ payments: [pay('a')], webhook_events: [evt('a')] }))).toMatchObject({ paidChecked: 1, paidWithoutEvent: 0 })
+    expect(await health(createWorld({ payments: [], webhook_events: [] }))).toMatchObject({ available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0 })
+  })
+  it('never throws: a read error just marks it unavailable', async () => {
+    const w = createWorld({ payments: [pay('a')], webhook_events: [] })
+    w.failNext('webhook_events', 'select', { message: 'down' })
+    expect((await health(w)).available).toBe(false)
+  })
+})
+
+describe('round 5 — fulfillment.refundUnsettledPayment', () => {
+  it('only moves unsettled rows: a stale PENDING view of a SUCCESS payment comes back as not transitioned', async () => {
+    const w = createWorld({ payments: [{ id: 'pay1', paystack_ref: 'r', status: 'SUCCESS', referral_reservation_id: 'res1' }] })
+    const released = []
+    const { mod, restore } = loadWithStubs('services/fulfillment.service.js', { 'services/referral.service.js': { releaseCodeReservation: async (db, id) => { released.push(id) } } })
+    try {
+      const stale = { id: 'pay1', status: 'PENDING' }
+      const r = await mod.refundUnsettledPayment(w.db, stale)
+      expect(r.transitioned).toBe(false); expect(r.current.status).toBe('SUCCESS'); expect(released).toEqual([])
+      w.t.payments[0].status = 'PENDING'
+      const r2 = await mod.refundUnsettledPayment(w.db, stale, { refundReference: 'rf' })
+      expect(r2.transitioned).toBe(true); expect(released).toEqual(['res1'])
+      expect(w.t.payments[0]).toMatchObject({ status: 'REFUNDED', refund_reference: 'rf' })
+    } finally { restore() }
   })
 })

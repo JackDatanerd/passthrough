@@ -238,7 +238,7 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload }
       .select('id, status, attempts').eq('provider', 'paystack').eq('event_key', eventKey).maybeSingle()
     if (selErr) throw selErr
     if (!existing) return { mode: 'new', id: null, attempts: 1 }
-    if (['PROCESSED', 'IGNORED', 'HELD'].includes(existing.status)) return { mode: 'done', id: existing.id }
+    if (['PROCESSED', 'IGNORED', 'HELD'].includes(existing.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1 }
     const attempts = (existing.attempts || 1) + 1
     await supabase.from('webhook_events').update({ status: 'RECEIVED', attempts }).eq('id', existing.id)
     return { mode: 'retry', id: existing.id, attempts }
@@ -359,7 +359,7 @@ async function paystackRefundTotal(env, payment) {
 }
 
 async function processRefund(c, supabase, event, eventId) {
-  const payment = await fulfillment.findPaymentForEvent(supabase, event)
+  let payment = await fulfillment.findPaymentForEvent(supabase, event)
   const refundRef = event.data?.refund_reference || null
   const incident = payment?.paystack_ref || refundRef || fulfillment.referenceCandidates(event)[0] || null
 
@@ -395,7 +395,13 @@ async function processRefund(c, supabase, event, eventId) {
       `Could not match this refund to a payment.\npayload keys: ${Object.keys(event.data || {}).join(', ')}\n\nReview manually.`, incident)
     return { status: 'PROCESSED', note: 'payment not found' }
   }
-  if (!['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status)) {
+  // ROUND-5 (B1): a refund for a payment still PENDING / ABANDONED / FAILED used to be filed PROCESSED
+  // with a "payment is PENDING" note and never looked at again. That happens when charge.success was
+  // lost or is still failing and the money is refunded in the Paystack dashboard meanwhile — and the
+  // late charge.success (Paystack's retry, a sweep) then settled and fulfilled a refunded sale. A FULL
+  // refund on such a payment now closes it as REFUNDED (below) so that can never happen.
+  const unsettled = fulfillment.REVIVABLE_STATUSES.includes(payment.status)
+  if (!unsettled && !['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status)) {
     alert(c, 'Paystack refund.processed on a payment that was never SUCCESS',
       `reference: ${payment.paystack_ref}\nstatus: ${payment.status}\n\nNot actioned. Review manually.`, incident)
     return { status: 'PROCESSED', note: `payment is ${payment.status}` }
@@ -460,7 +466,24 @@ async function processRefund(c, supabase, event, eventId) {
     return { status: 'PROCESSED', note: `partial refund — alerted (${total} of ${payment.amount_cents})` }
   }
 
-  const done = await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', refundReference: refundRef, env: c.env })
+  if (unsettled) {
+    const v = await fulfillment.refundUnsettledPayment(supabase, payment, { refundReference: refundRef })
+    if (v.transitioned) {
+      alert(c, 'Paystack refund processed — payment closed before it was ever settled',
+        `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\nwas: ${payment.status}\n\n` +
+        `Paystack refunded this transaction in full before this app had marked it paid (the charge.success webhook was lost or failing). ` +
+        `Nothing had been delivered and no commission was recorded; the payment is now REFUNDED, so a late success event can no longer fulfil it.`, incident)
+      return { status: 'PROCESSED', note: `refunded before settlement (was ${payment.status}) — payment closed` }
+    }
+    // It settled at the same instant: reverse the settled row the normal way.
+    payment = v.current
+    if (!payment || !['SUCCESS', 'DISPUTED', 'REFUNDED'].includes(payment.status))
+      return { status: 'PROCESSED', note: `payment is ${payment?.status || 'gone'}` }
+  }
+
+  const done = await fulfillment.reversePayment(supabase, payment, {
+    reason: 'REFUND', refundReference: refundRef, env: c.env, defer: p => runInBackground(c, p),
+  })
   alert(c, 'Paystack refund processed — sale reversed',
     `reference: ${payment.paystack_ref}\nscanId: ${payment.scan_id}\n\n` +
     `payment → REFUNDED: ${done.transitioned ? 'yes' : 'already'}\n` +
@@ -496,20 +519,44 @@ async function processDispute(c, supabase, event) {
   }
 
   // ROUND-2 AUDIT (feature gap): dispute.resolve used to say only "no state
-  // change", leaving the admin to work out which of Reverse / Clear applies.
-  // Paystack's resolutions are `merchant-accepted` (money goes back to the
-  // customer — Paystack ALSO auto-accepts after 16 hours) and `declined` (you
-  // won). The irreversible steps still wait for a human, but the alert now says
-  // exactly which one.
+  // change", leaving the admin to work out which of Reverse / Clear applies. Paystack's resolutions
+  // are `merchant-accepted` (money goes back to the customer — Paystack ALSO auto-accepts after 16
+  // hours) and `declined` (you won).
+  //
+  // ROUND-5 (feature gap): the resolution is final the moment it arrives, so it is now ACTIONED, not
+  // just described. Declined → DISPUTED goes back to SUCCESS (reversible, and it was only ever a hold).
+  // Accepted → the money has already left, so the sale is reversed: REFUNDED, partner commission
+  // reversed, public credential revoked, buyer told — the steps an admin used to have to remember to
+  // click, possibly days after an auto-accept nobody saw. Only a FULL dispute is reversed: Paystack's
+  // payload carries the disputed amount (`refund_amount`), and a smaller one is a partial chargeback
+  // on a delivered product, left for a human like a partial refund.
   const resolution = String(d.resolution || '').toLowerCase()
   const current = payment ? `payment is currently ${payment.status}` : 'no payment could be resolved'
+  const disputed = Number(d.refund_amount)
+  const partialDispute = Number.isFinite(disputed) && disputed > 0 && payment && payment.amount_cents > 0 && disputed < payment.amount_cents
   let detail
+  let auto = null
   if (event.event === 'charge.dispute.resolve') {
-    if (/declin/.test(resolution))
-      detail = `Resolution: DECLINED — you WON. ${current}. Next: Admin → Payments → Clear dispute (puts it back to SUCCESS and into revenue).`
-    else if (/accept/.test(resolution))
-      detail = `Resolution: ACCEPTED — the money went back to the customer. ${current}. Next: Admin → Payments → Reverse (marks it REFUNDED, reverses any partner commission, revokes the public credential).`
-    else
+    if (/declin/.test(resolution)) {
+      if (payment && payment.status === 'DISPUTED' && await fulfillment.clearDispute(supabase, payment)) {
+        auto = 'dispute won — payment back to SUCCESS'
+        detail = `Resolution: DECLINED — you WON. The payment was moved back from DISPUTED to SUCCESS automatically (it counts as revenue again). Nothing else to do.`
+      } else
+        detail = `Resolution: DECLINED — you WON. ${current}, so nothing was changed. If it is still DISPUTED, use Admin → Payments → Clear dispute.`
+    } else if (/accept/.test(resolution)) {
+      if (payment && ['SUCCESS', 'DISPUTED'].includes(payment.status) && !partialDispute) {
+        const done = await fulfillment.reversePayment(supabase, payment, { reason: 'DISPUTE', env: c.env, defer: p => runInBackground(c, p) })
+        auto = 'dispute lost — sale reversed'
+        detail = `Resolution: ACCEPTED — the money went back to the customer, so the sale was reversed automatically.\n\n` +
+          `payment → REFUNDED: ${done.transitioned ? 'yes' : 'already'}\n` +
+          `partner commission reversed: ${done.ledger.reversed ? `yes${done.ledger.alreadyPaidOut ? ' (ALREADY PAID OUT — nets against their next payout)' : ''}` : done.ledger.reason}\n` +
+          `public verification revoked: ${done.revoked ? 'yes' : 'no (not applicable / already revoked / another payment owns the scan)'}\n` +
+          `Downloads were NOT revoked — delete the scan if you want the files gone.`
+      } else if (partialDispute)
+        detail = `Resolution: ACCEPTED, but only ${disputed} of the ${payment.amount_cents} paid was disputed, so nothing was changed automatically. ${current}. Decide in Admin → Payments (Reverse if the whole sale should come back).`
+      else
+        detail = `Resolution: ACCEPTED — the money went back to the customer. ${current}, so nothing was changed automatically. Use Admin → Payments → Reverse if it still needs reversing.`
+    } else
       detail = `Resolution "${d.resolution || 'unknown'}" is not one this app recognises. ${current}. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won).`
   } else if (event.event === 'charge.dispute.remind') {
     detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard.`
@@ -517,9 +564,8 @@ async function processDispute(c, supabase, event) {
     detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
   } else if (marked) {
     detail = `The payment is now marked DISPUTED (excluded from revenue). Nothing else was changed: ` +
-      `access and the public credential stay live and any partner commission stays put until you decide. ` +
-      `If you LOSE the dispute: Admin → Payments → Reverse (refunds the sale, reverses commission, revokes the credential). ` +
-      `If you WIN: Admin → Payments → Clear dispute.`
+      `access and the public credential stay live and any partner commission stays put until the dispute is resolved. ` +
+      `When Paystack reports the resolution this app acts on it: a lost dispute reverses the sale (refund, commission, credential), a won one puts the payment back to SUCCESS.`
   } else if (!payment) {
     detail = `Nothing was marked — no payment could be resolved for this reference. Review manually.`
   } else {
@@ -528,7 +574,7 @@ async function processDispute(c, supabase, event) {
 
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
-  return { status: 'PROCESSED', note: payment ? undefined : 'payment not found' }
+  return { status: 'PROCESSED', note: auto || (payment ? undefined : 'payment not found') }
 }
 
 async function processEvent(c, supabase, event, eventId) {
@@ -602,7 +648,13 @@ async function handlePaystack(c) {
   }
   // An ambiguous refund event (no id, no refund_reference) shares its key with an equal-amount
   // sibling, so "seen before" proves nothing — run it again; processRefund is idempotent.
-  if (inbox.mode === 'done' && !(event.event.startsWith('refund.') && refundIsAmbiguous(event))) return c.text('OK', 200)
+  if (inbox.mode === 'done') {
+    if (!(event.event.startsWith('refund.') && refundIsAmbiguous(event))) return c.text('OK', 200)
+    // ROUND-5 (B3): this is a re-run of an already-finished row. Count it as an attempt, so a failure
+    // here is not announced as a first failure on every redelivery (see the catch below).
+    inbox = { ...inbox, attempts: inbox.attempts + 1 }
+    await updateEvent(supabase, inbox.id, { attempts: inbox.attempts })
+  }
   if (inbox.mode === 'unavailable') {
     console.error('[CRITICAL] webhook_events table is missing — apply migration 0025. Processing without an inbox.')
     if (await alertAllowed(c.env, 'webhook-alert-cooldown:inbox-missing'))
@@ -859,4 +911,63 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
   return result
 }
 
-module.exports = { handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+// ── delivery health ──────────────────────────────────────────────────────────
+// ROUND-5 (feature gap): every recovery above assumes webhooks arrive. When they stop — the webhook
+// URL changed or was never saved in the Paystack dashboard, a rotated key now fails every signature —
+// payments keep getting settled by the buyer's /verify call and the hourly sweeps, so nothing looks
+// broken; the only symptom is that charge.success never shows up in the inbox. This reads exactly
+// that: when the last event / charge.success arrived, and how many recent paid sales have NO
+// charge.success on record (older than a grace period, so a webhook still on its way doesn't count).
+// Best-effort and never throws; `available: false` when the inbox table cannot be read.
+const HEALTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
+const HEALTH_GRACE_MS = 30 * 60 * 1000
+const HEALTH_MAX_PAYMENTS = 200
+
+async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
+  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [] }
+  try {
+    const latest = async type => {
+      let q = supabase.from('webhook_events').select('received_at')
+      if (type) q = q.eq('event_type', type)
+      const { data, error } = await q.order('received_at', { ascending: false }).limit(1)
+      if (error) throw error
+      return data && data[0] ? data[0].received_at : null
+    }
+    out.lastEventAt = await latest(null)
+    out.lastChargeSuccessAt = await latest('charge.success')
+
+    const { data: pays, error: payErr } = await supabase.from('payments')
+      .select('paystack_ref, amount_cents, status, created_at')
+      .in('status', ['SUCCESS', 'DISPUTED', 'REFUNDED'])
+      .gte('created_at', new Date(now - HEALTH_WINDOW_MS).toISOString())
+      .lt('created_at', new Date(now - HEALTH_GRACE_MS).toISOString())
+      .order('created_at', { ascending: false }).limit(HEALTH_MAX_PAYMENTS)
+    if (payErr) throw payErr
+    // Free-credit redemptions never touch Paystack, so they never have a webhook.
+    const refs = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:') && p.amount_cents > 0).map(p => p.paystack_ref)
+    out.paidChecked = refs.length
+    if (refs.length) {
+      const seen = new Set()
+      for (let i = 0; i < refs.length; i += 100) {
+        const { data: evs, error: evErr } = await supabase.from('webhook_events')
+          .select('reference').eq('event_type', 'charge.success').in('reference', refs.slice(i, i + 100))
+        if (evErr) throw evErr
+        for (const e of evs || []) seen.add(e.reference)
+      }
+      const missing = refs.filter(r => !seen.has(r))
+      out.paidWithoutEvent = missing.length
+      out.missingReferences = missing.slice(0, 5)
+    }
+  } catch (err) {
+    out.available = false
+    console.error('webhook health error:', err && err.message)
+  }
+  return out
+}
+
+// GET /api/admin/webhook-events/health
+async function getWebhookHealth(c) {
+  return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
+}
+
+module.exports = { computeWebhookHealth, getWebhookHealth, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

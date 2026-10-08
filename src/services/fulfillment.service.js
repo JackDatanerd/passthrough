@@ -458,7 +458,7 @@ async function reverseCommission(supabase, paymentId, reason) {
  * Every step is idempotent, so a redelivered event simply re-checks them.
  * Downloads are deliberately left alone (documented product decision).
  */
-async function reversePayment(supabase, payment, { reason, refundReference = null, now = new Date(), env = null }) {
+async function reversePayment(supabase, payment, { reason, refundReference = null, now = new Date(), env = null, defer = null }) {
   const { revokeVerification, REVOKE_REASON } = require('../lib/verification')
   const patch = { status: 'REFUNDED', refunded_at: now.toISOString() }
   if (refundReference) patch.refund_reference = refundReference
@@ -485,7 +485,71 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
     if (scan && (!scan.fix_payment_id || scan.fix_payment_id === payment.id))
       revoked = await revokeVerification(supabase, scan.id, REVOKE_REASON[reason] || REVOKE_REASON.ADMIN, now)
   }
+
+  // WEBHOOKS ROUND 5 (feature gap): tell the buyer. Only the call that actually moved the payment to
+  // REFUNDED sends it (a redelivery or a second path finds `transitioned` false), so it goes out once.
+  // Live paths pass `env`; `defer` (the webhook's waitUntil) keeps the send out of the request.
+  if (env && transitioned) {
+    const task = notifyBuyerReversal(env, supabase, payment, { reason, revoked })
+    if (typeof defer === 'function') defer(task)
+    else await task
+  }
   return { transitioned, ledger, revoked }
+}
+
+// Best-effort, never throws. A free-credit redemption ($0 / `credit:` reference) charged nothing and
+// has nothing to reverse from the buyer's side, so it never gets one.
+async function notifyBuyerReversal(env, supabase, payment, { reason, revoked }) {
+  try {
+    if (!payment.user_id || !(payment.amount_cents > 0) || String(payment.paystack_ref || '').startsWith('credit:')) return false
+    const { data: buyer } = await supabase.from('users').select('email, name').eq('id', payment.user_id).maybeSingle()
+    if (!buyer?.email) return false
+    const sent = await require('./email.service').sendPaymentReversed(env, supabase, buyer.email, buyer.name, {
+      amountCents: payment.amount_cents, currency: payment.currency, reference: payment.paystack_ref,
+      reason, verificationRevoked: !!revoked,
+    })
+    return sent !== false
+  } catch (err) {
+    console.error('reversePayment buyer notice:', err && err.message)
+    return false
+  }
+}
+
+/**
+ * A payment that was refunded IN FULL on Paystack before this app ever marked it paid (PENDING /
+ * ABANDONED / FAILED — the charge.success webhook was lost or still failing). Nothing was delivered
+ * and no commission was earned, so there is nothing to take back: the row is closed as REFUNDED so a
+ * late charge.success / sweep can never fulfil money that has already gone back to the buyer
+ * (settlePayment treats REFUNDED as final). Guarded on the unsettled statuses, so a payment that
+ * settles at the same instant simply doesn't match: { transitioned: false, current } is then the
+ * fresh row and the caller runs the normal reversal on it. Throws on a DB error (webhook → 500).
+ */
+async function refundUnsettledPayment(supabase, payment, { refundReference = null, now = new Date() } = {}) {
+  const patch = { status: 'REFUNDED', refunded_at: now.toISOString() }
+  if (refundReference) patch.refund_reference = refundReference
+  const { data: moved, error } = await supabase.from('payments')
+    .update(patch).eq('id', payment.id).in('status', REVIVABLE_STATUSES).select('id, referral_reservation_id')
+  if (error) throw error
+  if (moved && moved.length) {
+    // A checkout still PENDING holds a referral-code usage slot; give it back (a no-op if already released).
+    // Best-effort: the payment is already closed, so a failure here must never turn into a 500 + retry.
+    if (payment.status === 'PENDING') {
+      try { await require('./referral.service').releaseCodeReservation(supabase, moved[0].referral_reservation_id) }
+      catch (err) { console.error('refundUnsettledPayment: releasing the referral slot failed:', err && err.message) }
+    }
+    return { transitioned: true, current: null }
+  }
+  const { data: current, error: curErr } = await supabase.from('payments').select('*').eq('id', payment.id).maybeSingle()
+  if (curErr) throw curErr
+  return { transitioned: false, current }
+}
+
+/** DISPUTED → SUCCESS (the dispute was won). Atomic on the status; false when nothing was DISPUTED. */
+async function clearDispute(supabase, payment) {
+  const { data, error } = await supabase.from('payments')
+    .update({ status: 'SUCCESS', disputed_at: null }).eq('id', payment.id).eq('status', 'DISPUTED').select('id')
+  if (error) throw error
+  return !!(data && data.length)
 }
 
 module.exports = {
@@ -493,4 +557,5 @@ module.exports = {
   generatorFor, chargeMismatch,
   fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
+  refundUnsettledPayment, clearDispute, notifyBuyerReversal,
 }

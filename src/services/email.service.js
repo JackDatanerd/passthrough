@@ -404,6 +404,25 @@ async function sendPaymentReceipt(env, supabase, email, name, { fixTier, amountC
   })
 }
 
+// Webhooks round 5 (feature gap): a refund or lost dispute reverses the sale and revokes the public
+// verification page, and the buyer used to hear nothing from us about it (Paystack's own refund mail
+// says nothing about the page). Sent once, by the call that actually moved the payment to REFUNDED
+// (see fulfillment.reversePayment). Downloads are never revoked — the copy says so.
+async function sendPaymentReversed(env, supabase, email, name, { amountCents, currency, reference, reason, verificationRevoked }) {
+  const why = reason === 'DISPUTE'
+    ? 'the payment below was reversed following a dispute, so your purchase has been closed.'
+    : 'the payment below was refunded, so your purchase has been closed.'
+  const page = verificationRevoked
+    ? ' The public verification page for your resume is no longer active, so a badge or link you shared will show as revoked.'
+    : ''
+  return send(env, supabase, email, 'Your Passthrough payment was reversed', 'payment_reversed', {
+    NAME:      name,
+    BODY:      `${why}${page} Files you already downloaded are not affected.`,
+    AMOUNT:    fmtMoney(amountCents, currency),
+    REFERENCE: reference
+  })
+}
+
 // ── Partner payouts (manual) ────────────────────────────────────────────────
 
 async function sendPartnerPayoutDetailsRequest(env, supabase, email, name, payoutUrl) {
@@ -743,7 +762,7 @@ module.exports = {
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
-  sendPaymentReceipt,
+  sendPaymentReceipt, sendPaymentReversed,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,

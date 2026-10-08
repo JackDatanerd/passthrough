@@ -20,7 +20,7 @@ export default function AdminDashboard() {
   if (error) return <p className="text-sm text-red-600">{error}</p>
   if (!data) return <div className="flex justify-center py-16"><Spinner /></div>
 
-  const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts } = data
+  const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts, webhookHealth } = data
 
   return (
     <div className="flex flex-col gap-8">
@@ -29,7 +29,8 @@ export default function AdminDashboard() {
         <div className="grid sm:grid-cols-3 gap-4">
           <StatCard label="Revenue today" value={formatCents(revenue.todayCents)} />
           <StatCard label="Revenue this week" value={formatCents(revenue.weekCents)} />
-          <StatCard label="Revenue this month" value={formatCents(revenue.monthCents)} />
+          <StatCard label="Revenue this month" value={formatCents(revenue.monthCents)}
+            sub={revenue.monthPartialRefundsCents > 0 ? `net of ${formatCents(revenue.monthPartialRefundsCents)} partially refunded` : undefined} />
         </div>
       </div>
 
@@ -69,6 +70,12 @@ export default function AdminDashboard() {
 
       <div>
         <h2 className="font-semibold text-gray-900 mb-3">Needs attention</h2>
+        {webhookHealth?.available && webhookHealth.paidWithoutEvent > 0 && (
+          <Link to="/admin/webhooks" className="block mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 hover:border-amber-300">
+            {webhookHealth.paidWithoutEvent} paid sale{webhookHealth.paidWithoutEvent === 1 ? ' has' : 's have'} no Paystack webhook on record
+            (last 7 days) — payments are being settled without webhooks reaching this app. Check the webhook URL and signing key →
+          </Link>
+        )}
         <div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-4">
           <Link to="/admin/scans?status=ERROR" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
             <div className="text-xs text-gray-400">Errored scans (7d)</div>
