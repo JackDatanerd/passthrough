@@ -11,6 +11,7 @@ const router = new Hono()
 router.use('*', admin)
 
 router.get('/dashboard', c.adminDashboardStats)
+router.get('/health', c.adminHealth)
 
 router.get('/users',    c.adminListUsers)
 router.get('/users/:id', validateUuidParam(), c.adminGetUserDetail)
@@ -35,6 +36,9 @@ router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookE
 
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)
+// Addresses we no longer send non-security mail to (permanent bounce / spam complaint).
+router.get('/email-suppressions',    c.adminCheckEmailSuppression)
+router.delete('/email-suppressions', c.adminLiftEmailSuppression)
 
 // Section 12 audit (feature gap): read path for admin_audit_log — see
 // adminListAuditLog's own comment.

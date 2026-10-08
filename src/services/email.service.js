@@ -19,6 +19,7 @@ const { getSupabase } = require('../config/supabase')
 const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
 const { sha256 } = require('../lib/crypto')
 const { must } = require('../lib/db')
+const { isSuppressedFor } = require('../lib/emailSuppression')
 
 // ── Per-recipient throttle ──────────────────────────────────────────────────
 // The per-IP limiters can't stop one address being mailed repeatedly (from many
@@ -214,7 +215,13 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   // per-recipient budgets (an admin resending a link must not eat the partner's own
   // "email me my link" allowance, and vice versa).
   const quotaKey = opts.quotaKey || template
-  if (!opts.slotReserved && !(await recipientAllowed(env, to, quotaKey))) {
+  // An address that permanently bounces or reported us as spam (Resend webhook) gets no further
+  // non-security mail — checked BEFORE the throttle so it does not spend a slot either. Security and
+  // payment templates are exempt (lib/emailSuppression.js says why).
+  if (supabase && await isSuppressedFor(supabase, to, template)) {
+    status = 'suppressed'
+    error  = 'address suppressed (permanent bounce or spam complaint)'
+  } else if (!opts.slotReserved && !(await recipientAllowed(env, to, quotaKey))) {
     status = 'throttled'
     error  = 'per-recipient limit reached'
     console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
@@ -482,7 +489,7 @@ async function sendPartnerRateChanged(env, supabase, email, name, oldRate, newRa
 // A refund / lost dispute reversed a commission this partner had earned. Its own template
 // (not partner_status_changed) so the dashboard URL is a real button, not plain text.
 async function sendPartnerCommissionReversed(env, supabase, email, name, commissionCents, currency, dashboardUrl) {
-  const amount = `${(commissionCents / 100).toFixed(2)} ${currency}`
+  const amount = fmtMoney(commissionCents, currency)
   return send(env, supabase, email, 'A commission was reversed', 'partner_commission_reversed', {
     NAME: name, AMOUNT: amount, DASHBOARD_URL: dashboardUrl
   })
@@ -497,7 +504,7 @@ async function sendPartnerDashboardLinkRegenerated(env, supabase, email, name, d
 
 // A recorded payout was voided by an admin (recorded in error).
 async function sendPartnerPayoutVoided(env, supabase, email, name, amountCents, currency, reason) {
-  const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
+  const amount = fmtMoney(amountCents, currency)
   return send(env, supabase, email, 'A payout record was corrected', 'partner_status_changed', {
     NAME:    name,
     HEADING: 'A payout record was corrected',
@@ -523,8 +530,11 @@ async function sendPartnerStatusChanged(env, supabase, email, name, status) {
 // is optional free text the admin chose to share; it is passed as plain text and escaped
 // by the template engine like every other variable.
 async function sendPartnerApplicationRejected(env, supabase, email, name, reason, cooldownDays = 30) {
-  const body = (reason ? `we're not able to move forward with your application right now. ${String(reason).trim()} ` : "we're not able to move forward with your application right now. ")
-    + `You're welcome to apply again after ${cooldownDays} days.`
+  // The admin's free text is followed by a fixed sentence: make sure it ends in punctuation so the
+  // two never run together ("…not enough audience You're welcome to apply…").
+  const clean = reason ? String(reason).trim() : ''
+  const shared = clean ? ` ${/[.!?]$/.test(clean) ? clean : `${clean}.`}` : ''
+  const body = `we're not able to move forward with your application right now.${shared} You're welcome to apply again after ${cooldownDays} days.`
   return send(env, supabase, email, 'Your Passthrough partner application', 'partner_application_rejected', {
     NAME: name,
     BODY: body
@@ -532,7 +542,7 @@ async function sendPartnerApplicationRejected(env, supabase, email, name, reason
 }
 
 async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
-  const amount = `${(amountCents / 100).toFixed(2)} ${currency}`
+  const amount = fmtMoney(amountCents, currency)
   return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
     NAME:   name,
     AMOUNT: amount
@@ -558,7 +568,7 @@ async function sendReferralCodeCreated(env, supabase, email, name, code, dashboa
 // per-recipient throttle and awaited email_logs write from the Section
 // 9/10 hardening.
 async function sendPartnerConversionEarned(env, supabase, email, name, code, commissionAmountCents, currency, dashboardUrl) {
-  const amount = `${(commissionAmountCents / 100).toFixed(2)} ${currency}`
+  const amount = fmtMoney(commissionAmountCents, currency)
   return send(env, supabase, email, 'You just earned a commission', 'partner_conversion_earned', {
     NAME:          name,
     CODE:          code,
@@ -676,6 +686,10 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
       emailed = true
     } catch (err) {
       console.error('Owner alert failed to send:', err.message)
+      // The dedupe slot was spent BEFORE the send. A send that failed reached nobody, so it must not
+      // silence this alert for the next 10 minutes — exactly when the mail provider is the thing that
+      // is down. Bounded, so a provider that keeps failing can't turn this into unlimited retries.
+      await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)
     }
   }
   try {

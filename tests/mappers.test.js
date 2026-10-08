@@ -3,7 +3,7 @@ import {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   leadRowToCamel,
-  USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP, PARTNER_FIELD_MAP,
+  PARTNER_FIELD_MAP,
 } from '../src/lib/mappers.js'
 
 // mappers.js had zero direct test coverage despite sitting at the read/write
@@ -80,36 +80,29 @@ describe('commissionLedgerRowToCamel', () => {
 
 describe('camelToSnake', () => {
   it('only emits keys actually present on the input object (partial-update safe)', () => {
-    const out = camelToSnake({ status: 'ACTIVE' }, USER_FIELD_MAP)
-    expect(out).toEqual({ status: 'ACTIVE' })
+    expect(camelToSnake({ status: 'ACTIVE' }, PARTNER_FIELD_MAP)).toEqual({ status: 'ACTIVE' })
   })
 
-  it('maps every USER_FIELD_MAP key when all are present', () => {
-    const input = Object.fromEntries(Object.keys(USER_FIELD_MAP).map(k => [k, `v_${k}`]))
-    const out = camelToSnake(input, USER_FIELD_MAP)
-    for (const [camel, snake] of Object.entries(USER_FIELD_MAP)) {
-      expect(out[snake]).toBe(`v_${camel}`)
-    }
+  it('maps every PARTNER_FIELD_MAP key when all are present', () => {
+    const input = Object.fromEntries(Object.keys(PARTNER_FIELD_MAP).map(k => [k, `v_${k}`]))
+    const out = camelToSnake(input, PARTNER_FIELD_MAP)
+    for (const [camel, snake] of Object.entries(PARTNER_FIELD_MAP)) expect(out[snake]).toBe(`v_${camel}`)
   })
 
-  it('does not emit a key whose value is explicitly undefined but not own-present... (present with value undefined IS emitted)', () => {
-    // hasOwnProperty is true here even though the value is undefined —
-    // camelToSnake is presence-based, not truthiness-based, by design (so a
-    // caller can explicitly null out a field).
-    const out = camelToSnake({ status: undefined }, USER_FIELD_MAP)
+  it('is presence-based, not truthiness-based (a key present with value undefined IS emitted)', () => {
+    const out = camelToSnake({ status: undefined }, PARTNER_FIELD_MAP)
     expect(out).toEqual({ status: undefined })
     expect(Object.prototype.hasOwnProperty.call(out, 'status')).toBe(true)
   })
 
-  it('ignores keys not present in the field map', () => {
-    const out = camelToSnake({ status: 'ACTIVE', notAMappedField: 'x' }, USER_FIELD_MAP)
-    expect(out).toEqual({ status: 'ACTIVE' })
+  it('ignores keys not present in the field map — the whole point of an allow-list', () => {
+    expect(camelToSnake({ status: 'ACTIVE', payoutDetailsToken: 'x', email: 'e@x.y' }, PARTNER_FIELD_MAP)).toEqual({ status: 'ACTIVE' })
+    expect(PARTNER_FIELD_MAP).toEqual({ status: 'status', commissionRate: 'commission_rate' })
   })
 
-  it('SCAN_FIELD_MAP / PAYMENT_FIELD_MAP / PARTNER_FIELD_MAP round-trip a representative field each', () => {
-    expect(camelToSnake({ atsScore: 80 }, SCAN_FIELD_MAP)).toEqual({ ats_score: 80 })
-    expect(camelToSnake({ fixTier: 'FIX' }, PAYMENT_FIELD_MAP)).toEqual({ fix_tier: 'FIX' })
-    expect(camelToSnake({ commissionRate: 0.3 }, PARTNER_FIELD_MAP)).toEqual({ commission_rate: 0.3 })
+  it('no generic user/scan/payment write map exists: USER_FIELD_MAP listed role/passwordHash/tokenVersion, a mass-assignment trap with no caller', () => {
+    const mappers = require('../src/lib/mappers')
+    for (const k of ['USER_FIELD_MAP', 'SCAN_FIELD_MAP', 'PAYMENT_FIELD_MAP']) expect(mappers[k]).toBeUndefined()
   })
 })
 
@@ -156,12 +149,6 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     expect(scanRowToCamel({ id: 's1' })).toMatchObject({ fixErrorRecoveries: 0 })
   })
 
-  it('USER_FIELD_MAP and SCAN_FIELD_MAP round-trip the pending-email and fix_error_recoveries fields (Section 9/10 fix)', () => {
-    expect(camelToSnake({ pendingEmail: 'new@x.com', pendingEmailToken: 'tok', pendingEmailExpiry: 't1' }, USER_FIELD_MAP))
-      .toEqual({ pending_email: 'new@x.com', pending_email_token: 'tok', pending_email_expiry: 't1' })
-    expect(camelToSnake({ fixErrorRecoveries: 1 }, SCAN_FIELD_MAP)).toEqual({ fix_error_recoveries: 1 })
-  })
-
   // AUDIT FIX (Section 9/10 re-audit): terms_accepted_at/terms_version
   // (migration 0038) were written at registration but silently dropped by
   // userRowToCamel — the one read path getMe()/admin both go through — so
@@ -172,11 +159,6 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     expect(userRowToCamel({ id: 'u1', terms_accepted_at: 't1', terms_version: '2026-09' }))
       .toMatchObject({ termsAcceptedAt: 't1', termsVersion: '2026-09' })
     expect(userRowToCamel({ id: 'u1' })).toMatchObject({ termsAcceptedAt: null, termsVersion: null })
-  })
-
-  it('USER_FIELD_MAP round-trips termsAcceptedAt/termsVersion', () => {
-    expect(camelToSnake({ termsAcceptedAt: 't1', termsVersion: '2026-09' }, USER_FIELD_MAP))
-      .toEqual({ terms_accepted_at: 't1', terms_version: '2026-09' })
   })
 
   // FEATURE (Auth section, feature-gap-closing pass — migration 0040): same
@@ -191,16 +173,6 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     })
     expect(userRowToCamel({ id: 'u1' })).toMatchObject({
       lastLoginAt: null, lastLoginIp: null, previousLoginAt: null, previousLoginIp: null, lastLoginAlertAt: null,
-    })
-  })
-
-  it('USER_FIELD_MAP round-trips the last/previous login columns', () => {
-    expect(camelToSnake({
-      lastLoginAt: 't1', lastLoginIp: '1.2.3.4', previousLoginAt: 't0',
-      previousLoginIp: '5.6.7.8', lastLoginAlertAt: 't2',
-    }, USER_FIELD_MAP)).toEqual({
-      last_login_at: 't1', last_login_ip: '1.2.3.4', previous_login_at: 't0',
-      previous_login_ip: '5.6.7.8', last_login_alert_at: 't2',
     })
   })
 

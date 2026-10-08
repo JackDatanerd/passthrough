@@ -1,0 +1,36 @@
+CROSS-CUTTING INFRA — independent audit, round 1
+(rateLimiter, upload, errorHandler, adminOnly, ssrfGuard, mappers, config/*, email.service, wrangler.toml, DEPLOYMENT.md)
+
+FEATURE GAPS CLOSED
+G1  Fix-queue consumer capped (wrangler.toml max_concurrency = 4); Browser Rendering launch refused for being
+    over its limit is retried 3x with backoff (pdf.service.js) instead of failing the render; DEPLOYMENT.md gets
+    the "Pre-launch verification" load-test procedure pdf.service always pointed to.
+G2  DEPLOYMENT.md: queue creation (passthrough-fix-jobs, -dlq), NODE_ENV / EMAIL_FROM / OWNER_ALERT_EMAIL /
+    RESEND_WEBHOOK_SECRET / HEALTH_CHECK_KEY / ADMIN_ALLOWED_IPS in the go-live checklist.
+G3  system_state table (migration 0059): schema_version + cron_heartbeat. lib/health.js, GET /api/admin/health,
+    deep GET /healthz (X-Health-Key + HEALTH_CHECK_KEY, 503 when wrong), eighth cron job (healthSweep) that
+    writes the heartbeat and emails the owner when the schema is behind. EXPECTED_SCHEMA_VERSION = 59;
+    a test fails the build when a new migration doesn't bump it.
+G4  email_suppressions table (0059). The Resend webhook now remembers EVERY permanent bounce / complaint (hash
+    only); send() skips non-security, non-payment templates for them (lib/emailSuppression.js). Admin
+    GET/DELETE /api/admin/email-suppressions?email= to check / lift.
+G5  Optional ADMIN_ALLOWED_IPS network allowlist enforced by adminOnly (all admin-gated routes). NOT built:
+    password step-up for money endpoints — needs an admin-UI re-auth flow; say if you want it.
+G6  Anonymous free scan allowed per DEVICE (X-Device-Id minted by the SPA) with a per-IP ceiling
+    (ANON_SCANS_PER_IP_PER_HOUR = 10); no/invalid id keeps the old 1-per-IP-per-hour behaviour.
+
+BUGS FIXED
+B1  DEPLOYMENT.md claimed RATE_LIMIT_BYPASS_IPS is "ignored in production"; the code honours it. Doc corrected
+    (code behaviour kept — it is the documented QA switch; start-up warning stays).
+B2  errorHandler leaked raw error messages when NODE_ENV was unset/mistyped. Now masked unless NODE_ENV is
+    development/test; validateEnv warns when NODE_ENV is not "production".
+B3  Postgres 23505 -> 409 is now logged (it left no trace before).
+B4  resumeEdit / pdfRegen / draftDownload keyed per account (IP fallback for anonymous) — CGNAT fairness.
+B5  sendOwnerAlert gives its dedupe slot back when the send fails.
+B6  Removed unused USER/SCAN/PAYMENT field maps (USER map listed role/passwordHash/tokenVersion — latent
+    mass-assignment trap).
+B7  cleanFilename also strips U+061C, U+200B-200D, U+2060, U+2028/2029.
+B8  Rejection email punctuation; payout/commission mails format money like receipts; DEPLOYMENT.md drift fixed.
+
+MIGRATION: supabase/migrations/0059_system_state_and_email_suppressions.sql — apply BEFORE deploying.
+NEW SECRETS (all optional): HEALTH_CHECK_KEY, ADMIN_ALLOWED_IPS.   (RESEND_WEBHOOK_SECRET already existed.)

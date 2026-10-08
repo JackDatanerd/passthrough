@@ -22,6 +22,7 @@ const { verifySvixSignature } = require('../lib/svix')
 const { sha256 } = require('../lib/crypto')
 const { logAdminAction } = require('../lib/adminAudit')
 const { performRemoval } = require('./employer-leads.controller')
+const { recordSuppression } = require('../lib/emailSuppression')
 
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_RECIPIENTS = 20
@@ -73,6 +74,11 @@ async function handleResend(c) {
   const supabase = getSupabase(c.env)
   let removed = 0
   for (const email of recipients) {
+    // GAP CLOSED (cross-cutting infra round 1, G4): every address that complains or permanently
+    // bounces is remembered (hash only), whoever it belongs to — a candidate's typo'd address or a
+    // user who reported a welcome email as spam — so send() stops mailing it anything non-security.
+    // Best-effort and never throws: the employer-lead handling below must run regardless.
+    await recordSuppression(supabase, email, complaint ? 'complaint' : 'bounce')
     if (!complaint) {
       const { data: lead, error } = await supabase.from('employer_leads').select('id').eq('email', email).maybeSingle()
       if (error) throw error      // 5xx → Resend redelivers; every step below is safe to repeat

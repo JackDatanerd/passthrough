@@ -197,7 +197,10 @@ async function uploadResume(ctx, next) {
 // "evilexe.pdf".
 function cleanFilename(name) {
   const base = String(name || '').split(/[\\/]/).pop()
-  return base.replace(/[\u0000-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g, '').trim().slice(0, 255)
+  // Also the invisible and line-break characters that survive a plain control-character strip:
+  // U+061C (Arabic letter mark, a bidi control), U+200B–200D (zero-width space/joiners), U+2060
+  // (word joiner) and U+2028/2029 (line/paragraph separators). A name made only of these is empty.
+  return base.replace(/[\u0000-\u001f\u007f\u061c\u200b-\u200f\u2028\u2029\u202a-\u202e\u2060\u2066-\u2069\ufeff]/g, '').trim().slice(0, 255)
 }
 
 module.exports = uploadResume

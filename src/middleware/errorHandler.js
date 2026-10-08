@@ -16,9 +16,15 @@ function errorHandler(err, ctx) {
     return ctx.json({ success: false, message: 'Validation failed',
       errors: err.errors.map(e => ({ field: e.path.join('.'), message: e.message })) }, 400)
 
-  // Postgres unique_violation — replaces Prisma's P2002
-  if (err.code === '23505')
+  // Postgres unique_violation — replaces Prisma's P2002.
+  // Logged, not just answered: a unique violation raised by INTERNAL code (a bookkeeping insert, a
+  // dedupe index) is indistinguishable here from one a user caused, and used to leave no trace at
+  // all — a bug reported to the client as a polite 409 and never seen in the logs.
+  if (err.code === '23505') {
+    const rayId = ctx.req && typeof ctx.req.header === 'function' ? ctx.req.header('cf-ray') : undefined
+    console.error(`Unique violation answered 409${rayId ? ` [${rayId}]` : ''}:`, err.message, err.details || '')
     return ctx.json({ success: false, message: 'Already exists.' }, 409)
+  }
 
   // Hono's own HTTPException (thrown by its built-in helpers/validators) knows
   // how to render itself with the right status and headers.
@@ -45,9 +51,13 @@ function errorHandler(err, ctx) {
   console.error(`Unhandled error${ray ? ` [${ray}]` : ''}:`, err.stack || err.message)
 
   // Errors that opt in with `expose` (a deliberate, user-safe message on a 4xx
-  // — e.g. "payload too large") are shown as-is even in production; everything
-  // else is masked there so internals never leak.
-  const showMessage = ctx.env.NODE_ENV !== 'production' || (err.expose === true && status < 500)
+  // — e.g. "payload too large") are always shown as-is; everything else is masked so internals
+  // never leak. The default is MASKED: raw messages (relation names, SQL, upstream bodies) are
+  // only shown when NODE_ENV is explicitly 'development' or 'test'. It used to be the reverse
+  // (masked only when NODE_ENV === 'production'), so a second deploy target, a preview or a fork
+  // that simply lacked the variable leaked internals to every client.
+  const env = (ctx && ctx.env) || {}
+  const showMessage = env.NODE_ENV === 'development' || env.NODE_ENV === 'test' || (err.expose === true && status < 500)
   return ctx.json({ success: false, message: showMessage ? err.message : 'An error occurred.' }, status)
 }
 

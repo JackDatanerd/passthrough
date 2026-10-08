@@ -105,7 +105,7 @@ describe('securityHeaders', () => {
 })
 
 describe('validateEnv', () => {
-  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://passthrough.dev', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, NODE_ENV: 'production' }
+  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://passthrough.dev', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, NODE_ENV: 'production', RESEND_WEBHOOK_SECRET: 'whsec_x' }
   it('a complete environment has no fatal problems and no warnings', () => {
     expect(validateEnv(good)).toEqual({ fatal: [], warnings: [] })
   })

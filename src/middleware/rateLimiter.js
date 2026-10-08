@@ -160,7 +160,7 @@ async function refundQuota(env, key, windowSeconds, maxRefunds) {
 // for an hour. createScan passes the key to the job; the job gives the slot back through this.
 const ANON_SCAN_WINDOW_SECONDS = 60 * 60
 const ANON_SCAN_MAX_REFUNDS = 10
-function anonScanSlotKey(c) { return `rl:anonscan:${rateKeyIp(clientIp(c))}` }
+function anonScanSlotKey(c) { return `rl:anonscan:${anonDeviceKey(c) || rateKeyIp(clientIp(c))}` }
 async function refundAnonScanSlot(env, key) {
   if (!key || typeof key !== 'string' || !key.startsWith('rl:anonscan:')) return
   return refundQuota(env, key, ANON_SCAN_WINDOW_SECONDS, ANON_SCAN_MAX_REFUNDS)
@@ -328,9 +328,24 @@ const verifyRead = makeLimiter({
   ipBits: 48   // bucket a whole /48, not a /64 — see rateKeyIp
 })
 
-const anonScan = makeLimiter({
+// GAP CLOSED (cross-cutting infra round 1, G6): the anonymous scan allowance was keyed on the IP
+// alone, at ANON_SCANS_PER_HOUR (1). On mobile CGNAT — many unrelated visitors behind one carrier
+// address, which is most of this product's audience — that meant ONE person per carrier IP per hour
+// got the free scan and everyone else was told "Anon limit". The allowance now belongs to the
+// DEVICE when the browser sends a well-formed X-Device-Id (a random id the SPA mints and keeps in
+// localStorage), with a generous per-IP CEILING behind it so rotating ids is bounded, not free.
+// A request with no (or a malformed) id keeps the old behaviour exactly: 1 per hour per IP.
+const DEVICE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+function deviceId(c) {
+  const raw = c && c.req && typeof c.req.header === 'function' ? c.req.header('x-device-id') : undefined
+  return typeof raw === 'string' && DEVICE_ID_RE.test(raw.trim()) ? raw.trim().toLowerCase() : null
+}
+const anonDeviceKey = c => { const id = deviceId(c); return id ? `d:${id}` : null }
+
+const anonScanBucket = makeLimiter({
   windowSeconds: ANON_SCAN_WINDOW_SECONDS, max: constants.ANON_SCANS_PER_HOUR, keyPrefix: 'rl:anonscan',
   message: msg(`Anon limit: ${constants.ANON_SCANS_PER_HOUR}/hr. Create account for ${constants.FREE_SCANS_PER_DAY}/day.`),
+  keyBy: anonDeviceKey,       // falsy (no device id) -> the IP bucket, as before
   skip: c => !!c.get('user'),
   // The slot is counted before the upload is validated (so a burst can't race
   // past it), then handed back if the request fails — a wrong file type, an
@@ -339,6 +354,24 @@ const anonScan = makeLimiter({
   // can't become unlimited free invalid attempts against the upload parser.
   refund: { maxRefunds: ANON_SCAN_MAX_REFUNDS }
 })
+// Only meaningful when a device id is in play (without one, the bucket above is already per-IP).
+const anonScanIpCeiling = makeLimiter({
+  windowSeconds: ANON_SCAN_WINDOW_SECONDS, max: constants.ANON_SCANS_PER_IP_PER_HOUR, keyPrefix: 'rl:anonscanip',
+  message: msg('Too many scans from this network. Please try again later, or create an account.'),
+  skip: c => !!c.get('user') || !deviceId(c),
+  refund: { maxRefunds: ANON_SCAN_MAX_REFUNDS }
+})
+// The two limiters are chained by hand, so a 429 the INNER one returns must be installed as the
+// response here (Hono only does that for the `next` it hands out itself) — otherwise the outer
+// limiter sees no response at all and the request ends in a 500.
+const anonScan = async (c, next) => {
+  let inner
+  const outer = await anonScanIpCeiling(c, async () => {
+    inner = await anonScanBucket(c, next)
+    if (inner instanceof Response) c.res = inner
+  })
+  return outer !== undefined ? outer : inner
+}
 
 // HARDENING: previously every auth-adjacent endpoint (register, login,
 // forgot-password, reset-password, verify-email, resend-verification,
@@ -455,6 +488,7 @@ const pricingRef = makeLimiter({
 // a spend ceiling, not just abuse hygiene — 15 edits per 15 minutes is far
 // more than a person genuinely correcting their extracted data needs.
 const resumeEdit = makeLimiter({
+  keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 15, keyPrefix: 'rl:resumeedit',
   message: msg('Too many requests. Please wait a moment.')
 })
@@ -468,10 +502,12 @@ const resumeEdit = makeLimiter({
 // the most expensive of the three) could be starved by edits or vice versa.
 // Each gets its own bucket, sized to what it costs.
 const pdfRegen = makeLimiter({
+  keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:pdfregen',
   message: msg('Too many requests. Please wait a moment.')
 })
 const draftDownload = makeLimiter({
+  keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:draftdownload',
   message: msg('Too many requests. Please wait a moment.')
 })

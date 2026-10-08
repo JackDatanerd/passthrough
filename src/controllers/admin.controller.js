@@ -19,6 +19,8 @@ const c = require('../config/constants')
 const cryptoLib = require('../lib/crypto')
 const { logAdminAction } = require('../lib/adminAudit')
 const { purgeBadgeCache } = require('../lib/badgeCache')
+const { computeHealth } = require('../lib/health')
+const emailSuppression = require('../lib/emailSuppression')
 
 // Shared page-param parsing — every list endpoint here is paginated the
 // same way so the frontend can use one generic table component for all of
@@ -51,6 +53,36 @@ async function partialRefundsInWindow(supabase, windowFrom) {
     for (const r of data || []) byPayment.set(r.payment_id, (byPayment.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
   } catch (err) { console.error('partial refund totals unavailable:', err.message) }
   return { byPayment }
+}
+
+// GET /api/admin/health — the Worker's view of itself: bindings, database schema version vs what this
+// code expects, whether the hourly cron has run lately, config warnings. Same data the deep /healthz
+// returns to an uptime monitor.
+async function adminHealth(ctx) {
+  return ctx.json({ success: true, data: await computeHealth(ctx.env, getSupabase(ctx.env)) })
+}
+
+// GET    /api/admin/email-suppressions?email=…  is this address suppressed (permanent bounce / spam
+// DELETE /api/admin/email-suppressions?email=…  complaint), and lift it. Lifting is for the person
+// who fixed their mailbox and asked; the next complaint or hard bounce re-adds it. Addresses are
+// never listed or stored — only a hash — so both calls need the address.
+function suppressionEmailParam(ctx) {
+  const email = String(ctx.req.query('email') || '').trim().toLowerCase()
+  return email.length > 0 && email.length <= 254 && email.includes('@') ? email : null
+}
+async function adminCheckEmailSuppression(ctx) {
+  const email = suppressionEmailParam(ctx)
+  if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
+  const row = await emailSuppression.getSuppression(getSupabase(ctx.env), email)
+  return ctx.json({ success: true, data: { suppressed: !!row, reason: row ? row.reason : null, since: row ? row.created_at : null } })
+}
+async function adminLiftEmailSuppression(ctx) {
+  const email = suppressionEmailParam(ctx)
+  if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const lifted = await emailSuppression.liftSuppression(supabase, email)
+  if (lifted) await logAdminAction(ctx, supabase, 'email.suppression_lifted', 'email_suppression', await cryptoLib.sha256(email), {})
+  return ctx.json({ success: true, data: { lifted } })
 }
 
 // ── Dashboard — the roll-up numbers that didn't exist anywhere before ──────
@@ -627,5 +659,6 @@ module.exports = {
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,
   adminListScans, adminSetVerification, adminListPayments,
-  adminListEmailLogs, adminListAlerts, adminListAuditLog
+  adminListEmailLogs, adminListAlerts, adminListAuditLog,
+  adminHealth, adminCheckEmailSuppression, adminLiftEmailSuppression
 }

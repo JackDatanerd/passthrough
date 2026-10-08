@@ -39,7 +39,7 @@ describe('verifySvixSignature', () => {
 })
 
 function setup({ leads = [], suppressed = [], envExtra = {} } = {}) {
-  const state = { leads: leads.map(l => ({ ...l })), suppressed: new Set(suppressed), audit: [], logPurges: [] }
+  const state = { leads: leads.map(l => ({ ...l })), suppressed: new Set(suppressed), audit: [], logPurges: [], mailSuppressed: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
       const email = q.filters.find(f => f[1] === 'email')?.[2]
@@ -51,6 +51,7 @@ function setup({ leads = [], suppressed = [], envExtra = {} } = {}) {
       if (q.op === 'upsert') { [].concat(q.values).forEach(v => state.suppressed.add(v.email_hash)); return { data: null, error: null } }
       return { data: null, error: null }
     }
+    if (q.table === 'email_suppressions') { if (q.op === 'upsert') state.mailSuppressed.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') { state.logPurges.push(Object.fromEntries(q.filters.map(f => [f[1], f[2]]))); return { data: null, error: null } }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     return undefined
@@ -142,6 +143,36 @@ describe('POST /api/webhooks/resend', () => {
     expect((await t.call(null, { rawBody: 'not json' })).status).toBe(200)
     expect((await t.call({ type: 'email.complained', data: {} })).status).toBe(200)
     expect(t.state.leads).toHaveLength(1)
+  })
+})
+
+describe('general mail suppression (cross-cutting infra round 1, G4)', () => {
+  it('a permanent bounce is remembered even for an address that is NOT a lead (hash only, never the address)', async () => {
+    t = setup({ leads: [] })
+    await t.call(bounce('Permanent', ['Candidate@Gmail.com']))
+    expect(t.state.mailSuppressed).toHaveLength(1)
+    expect(t.state.mailSuppressed[0]).toMatchObject({ reason: 'bounce' })
+    expect(t.state.mailSuppressed[0].email_hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(JSON.stringify(t.state.mailSuppressed)).not.toMatch(/candidate|gmail/i)
+    expect(t.state.suppressed.size).toBe(0)           // the employer list is untouched, as before
+  })
+  it('a complaint is remembered as a complaint', async () => {
+    t = setup({ leads: [lead] })
+    await t.call(complaint())
+    expect(t.state.mailSuppressed).toHaveLength(1)
+    expect(t.state.mailSuppressed[0].reason).toBe('complaint')
+  })
+  it('transient bounces and other events record nothing', async () => {
+    t = setup({ leads: [lead] })
+    await t.call(bounce('Transient'))
+    await t.call({ type: 'email.delivered', data: { to: ['dana@acme.com'] } })
+    expect(t.state.mailSuppressed).toHaveLength(0)
+  })
+  it('a failing suppression write (migration 0059 not applied yet) never stops the lead handling', async () => {
+    t = setup({ leads: [lead] })
+    const res = await t.call(complaint())
+    expect(res.status).toBe(200)
+    expect(t.state.leads).toHaveLength(0)
   })
 })
 

@@ -7,6 +7,12 @@
 // into the ESM entry point without issue.
 
 module.exports = {
+  // The highest supabase/migrations number this code expects the database to have applied. Every
+  // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
+  // compares the two (lib/health.js). Bump it in the same commit as the migration —
+  // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
+  EXPECTED_SCHEMA_VERSION: 59,
+
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
   // the anchor during the promo.
@@ -102,6 +108,9 @@ module.exports = {
   // Scans an ACCOUNT-LESS visitor gets per hour (rateLimiter.js's anonScan). Exposed through
   // /api/pricing so the pricing page's free-tier copy can never drift from the real limit.
   ANON_SCANS_PER_HOUR: 1,
+  // Ceiling per IP when the visitor identifies a device (X-Device-Id): every device still gets
+  // ANON_SCANS_PER_HOUR, but one network (a carrier's CGNAT, an office) is capped at this many.
+  ANON_SCANS_PER_IP_PER_HOUR: 10,
   // Ceiling on scans per IP per 24h across ALL accounts (five accounts' worth) —
   // stops throwaway-account farming of the free tier. SCAN_IP_DAILY_CAP env var
   // overrides it; 0 disables the ceiling.

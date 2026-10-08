@@ -106,6 +106,16 @@ describe('request interceptor', () => {
     expect(calls[0].__hadToken).toBe(true)
   })
 
+  it('sends a stable X-Device-Id on every request, signed in or not (per-device anonymous scan allowance)', async () => {
+    setGlobals({})
+    const api = await loadApi()
+    const { adapter, calls } = fakeAdapter([{ data: {} }, { data: {} }])
+    await api.get('/scan/history', { adapter })
+    await api.get('/scan/history', { adapter })
+    expect(calls[0].headers['X-Device-Id']).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+    expect(calls[1].headers['X-Device-Id']).toBe(calls[0].headers['X-Device-Id'])
+  })
+
   it('sends no Authorization header and __hadToken:false when logged out', async () => {
     setGlobals({})
     const api = await loadApi()

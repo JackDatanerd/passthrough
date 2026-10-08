@@ -21,6 +21,7 @@ const FEATURE_SECRETS = {
   ANTHROPIC_API_KEY:   'resume scoring / rewriting',
   EMAIL_FROM:          'email sender address',
   FRONTEND_URL:        'CORS + every emailed link',
+  RESEND_WEBHOOK_SECRET: 'bounce / spam-complaint handling (Resend webhook)',
 }
 const BINDINGS = { RATE_LIMIT_KV: 'rate limiting', RESUMES_BUCKET: 'resume storage (R2)', FIX_QUEUE: 'fix generation queue' }
 
@@ -58,6 +59,9 @@ function validateEnv(env) {
     if (!/^https?:\/\//i.test(fe)) warnings.push('FRONTEND_URL must start with http:// or https://')
     else if (/\/$/.test(fe)) warnings.push('FRONTEND_URL has a trailing slash — emailed links would contain "//"')
   }
+
+  if (env.NODE_ENV !== 'production')
+    warnings.push(`NODE_ENV is ${env.NODE_ENV ? `"${env.NODE_ENV}"` : 'not set'}, not "production" — fine for local dev, but a deployed Worker without it trusts x-forwarded-for for client IPs and is treated as a non-production target`)
 
   if (env.RATE_LIMIT_BYPASS_IPS && env.NODE_ENV === 'production')
     warnings.push('RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)')

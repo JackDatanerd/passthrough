@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { storageGet, storageSet, storageRemove, getToken, setToken, getCachedUser, setCachedUser } from '../src/lib/storage'
+import { storageGet, storageSet, storageRemove, getToken, setToken, getCachedUser, setCachedUser, getDeviceId } from '../src/lib/storage'
 
 // Auth round 3 (B5): a browser with storage blocked throws SecurityError on ANY access, which used to
 // white-screen the app from AuthProvider's first render.
@@ -32,5 +32,32 @@ describe('lib/storage', () => {
     setCachedUser({ id: 'u1' }); expect(getCachedUser()).toEqual({ id: 'u1' })
     localStorage.setItem('passthrough_user', '{not json')
     expect(getCachedUser()).toBeNull()
+  })
+})
+
+// Cross-cutting infra round 1 (G6): the anonymous free scan is allowed per DEVICE, so the browser sends a stable random id.
+describe('lib/storage getDeviceId', () => {
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  beforeEach(() => localStorage.clear())
+  afterEach(() => vi.restoreAllMocks())
+
+  it('mints a UUID once and returns the same one on every later call', () => {
+    const a = getDeviceId()
+    expect(a).toMatch(UUID)
+    expect(getDeviceId()).toBe(a)
+    expect(localStorage.getItem('pt_device_id')).toBe(a)
+  })
+  it('replaces a corrupt stored value rather than sending it', () => {
+    localStorage.setItem('pt_device_id', 'not-a-uuid')
+    const id = getDeviceId()
+    expect(id).toMatch(UUID)
+    expect(id).not.toBe('not-a-uuid')
+  })
+  it('still works (stable for the page) when storage is blocked', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError') })
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'SecurityError') })
+    const a = getDeviceId()
+    expect(a).toMatch(UUID)
+    expect(getDeviceId()).toBe(a)
   })
 })

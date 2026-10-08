@@ -5,7 +5,7 @@ import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
   classifyAuthFailure, isProtectedPath, failureScope,
 } from './session'
-import { getToken, storageRemove } from './storage'
+import { getToken, getDeviceId, storageRemove } from './storage'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
 export { getErrorMessage } from './errors'
@@ -23,6 +23,8 @@ const api = axios.create({
 api.interceptors.request.use(config => {
   const token = getToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
+  // Identifies this browser so the anonymous free scan is allowed per device, not per shared IP.
+  config.headers['X-Device-Id'] = getDeviceId()
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
   config.__hadToken = !!token

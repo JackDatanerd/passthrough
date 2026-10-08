@@ -225,108 +225,14 @@ function camelToSnake(obj, fieldMap) {
   return out
 }
 
-const USER_FIELD_MAP = {
-  email: 'email', passwordHash: 'password_hash', name: 'name', role: 'role',
-  status: 'status', tokenVersion: 'token_version', emailVerified: 'email_verified',
-  emailVerifyToken: 'email_verify_token', emailVerifyExpiry: 'email_verify_expiry',
-  resetToken: 'reset_token', resetTokenExpiry: 'reset_token_expiry', deletedAt: 'deleted_at',
-  scansToday: 'scans_today', scansDayReset: 'scans_day_reset',
-  // AUDIT FIX (Section 9): freeFixCredits (users.free_fix_credits, added in
-  // migration 0005) was missing from this reverse map. Currently harmless —
-  // the only writer of this column is the increment_free_fix_credits/
-  // redeem_free_fix_credit RPCs, never a camelToSnake(USER_FIELD_MAP)
-  // update — but any future direct-update code path for it would have
-  // silently no-opped, since camelToSnake only emits keys present in the
-  // map.
-  freeFixCredits: 'free_fix_credits',
-  paystackCustomerCode: 'paystack_customer_code', paystackAuthCode: 'paystack_auth_code',
-  savedProfile: 'saved_profile', notifyScanResults: 'notify_scan_results',
-  // AUDIT FIX (Section 9/10 pass): same latent-drop trap as freeFixCredits
-  // above, for pending_email/pending_email_token/pending_email_expiry
-  // (migration 0029, auth.controller.js's updateEmail/confirmEmailChange
-  // pending-email flow). The only current writers build raw snake_case
-  // update objects, so this was harmless today — but a future caller using
-  // camelToSnake(USER_FIELD_MAP) to update any of these three would have
-  // silently no-opped exactly like the freeFixCredits case did.
-  pendingEmail: 'pending_email', pendingEmailToken: 'pending_email_token',
-  pendingEmailExpiry: 'pending_email_expiry',
-  // FIX (Section 9/10 audit): same read-side gap as userRowToCamel above —
-  // no current writer needs this (registration builds a raw snake_case
-  // insert), but the reverse map should reflect the full row like every
-  // other field here, not silently no-op a future admin-correction write.
-  termsAcceptedAt: 'terms_accepted_at', termsVersion: 'terms_version',
-  // FIX (Auth section, feature-gap-closing pass): same completeness
-  // discipline as termsAcceptedAt/pendingEmail above — no current writer
-  // needs this via camelToSnake(USER_FIELD_MAP) (auth.controller.js builds
-  // raw snake_case update objects for all five), but the reverse map should
-  // mirror the full row, not silently no-op a future caller.
-  lastLoginAt: 'last_login_at', lastLoginIp: 'last_login_ip',
-  previousLoginAt: 'previous_login_at', previousLoginIp: 'previous_login_ip',
-  lastLoginAlertAt: 'last_login_alert_at'
-}
-
-const SCAN_FIELD_MAP = {
-  status: 'status', resumePath: 'resume_path', resumeOriginalName: 'resume_original_name',
-  resumeMimeType: 'resume_mime_type', jobDescriptionText: 'job_description_text',
-  jobDescriptionUrl: 'job_description_url', atsScore: 'ats_score', fixAtsScore: 'fix_ats_score', fixRetryCount: 'fix_retry_count', passed: 'passed',
-  keywordScore: 'keyword_score', formatScore: 'format_score', sectionsScore: 'sections_score',
-  contentScore: 'content_score', fullAtsReport: 'full_ats_report', scanCompletedAt: 'scan_completed_at',
-  candidateFirstName: 'candidate_first_name', fixPurchased: 'fix_purchased', fixTier: 'fix_tier',
-  resumeAtsPath: 'resume_ats_path', resumePdfPath: 'resume_pdf_path', fixGeneratedAt: 'fix_generated_at',
-  coverLetterText: 'cover_letter_text', verificationCode: 'verification_code',
-  verificationUrl: 'verification_url', verificationViews: 'verification_views', verificationDownloads: 'verification_downloads',
-  verifyExposeDocx: 'verify_expose_docx', verifyExposePdf: 'verify_expose_pdf',
-  resumeHash: 'resume_hash', verifiedAt: 'verified_at',
-  verifyHideName: 'verify_hide_name', verificationStatus: 'verification_status',
-  verificationRevokedAt: 'verification_revoked_at', verificationRevokedReason: 'verification_revoked_reason',
-  resumePdfHash: 'resume_pdf_hash', resumeHashHistory: 'resume_hash_history', fixPaymentId: 'fix_payment_id', roleCategory: 'role_category',
-  seniorityLevel: 'seniority_level', integrityScore: 'integrity_score', userId: 'user_id',
-  anonTokenHash: 'anon_token', anonExpiresAt: 'anon_expires_at',
-  contactName: 'contact_name', contactEmail: 'contact_email',
-  inputMode: 'input_mode', rawBrainDumpText: 'raw_brain_dump_text',
-  originalResumeData: 'original_resume_data', rewrittenResumeData: 'rewritten_resume_data',
-  quantificationPrompts: 'quantification_prompts',
-  // AUDIT FIX (Section 9/10 pass): rewrite_failed (migration 0027) was
-  // missing here. Not live today — scan.controller.js's one writer builds a
-  // raw snake_case update object rather than going through
-  // camelToSnake(SCAN_FIELD_MAP) — but the same latent-drop trap as every
-  // other entry above marked AUDIT FIX: any future caller that updates a
-  // scan via this map would silently no-op a rewriteFailed write.
-  rewriteFailed: 'rewrite_failed',
-  // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026) —
-  // same reasoning, matching the scanRowToCamel fix above. The only current
-  // writer is the claim_errored_fix RPC, called directly, never through
-  // this map.
-  fixErrorRecoveries: 'fix_error_recoveries',
-  fixJobLockUntil: 'fix_job_lock_until',
-  fixCreditRound: 'fix_credit_round',
-  // AUDIT FIX (Section 9/10 pass): jobTitle (migration 0035) had no reverse-
-  // map entry either — scan.controller.js's one writer (createScan) builds
-  // a raw snake_case insert object rather than going through
-  // camelToSnake(SCAN_FIELD_MAP), so this half was latent, not live, unlike
-  // the scanRowToCamel read-side gap fixed above.
-  jobTitle: 'job_title'
-}
-
-const PAYMENT_FIELD_MAP = {
-  amountCents: 'amount_cents', currency: 'currency', status: 'status',
-  paystackRef: 'paystack_ref', paystackAccessCode: 'paystack_access_code',
-  paystackAuthCode: 'paystack_auth_code', userId: 'user_id', scanId: 'scan_id',
-  fixTier: 'fix_tier', referralCodeId: 'referral_code_id', referralCode: 'referral_code',
-  // AUDIT FIX (Section 9/10 pass): same gap as paymentRowToCamel above —
-  // refunded_at/refund_reference/disputed_at (0024/0025) had no reverse-map
-  // entry either. webhooks.controller.js and payments.controller.js write
-  // these today via raw snake_case updates, so this was latent, not live.
-  refundedAt: 'refunded_at', refundReference: 'refund_reference', disputedAt: 'disputed_at',
-  // AUDIT FIX (Section 9/10 pass): same gap as paymentRowToCamel above —
-  // receipt_sent_at/receipt_delivered_at/last_reconciled_at (0033/0036) had
-  // no reverse-map entry either. fulfillment.service.js and
-  // reconcile.service.js write these today via raw snake_case updates, so
-  // this half was latent, not live.
-  receiptSentAt: 'receipt_sent_at', receiptDeliveredAt: 'receipt_delivered_at',
-  lastReconciledAt: 'last_reconciled_at',
-  referralReservationId: 'referral_reservation_id', refundClaimedAt: 'refund_claimed_at'
-}
+// REMOVED (cross-cutting infra round 1): USER_FIELD_MAP, SCAN_FIELD_MAP and PAYMENT_FIELD_MAP.
+// Nothing ever used them — every user/scan/payment write builds its own snake_case object — and
+// the "keep them complete so a future caller doesn't silently no-op" reasoning that grew them had
+// the risk backwards: USER_FIELD_MAP listed `role`, `status`, `tokenVersion` and `passwordHash`, so
+// the first `camelToSnake(requestBody, USER_FIELD_MAP)` anyone wrote would have been a
+// mass-assignment hole (promote yourself to ADMIN with one JSON field). A map should exist only
+// where a caller needs it and its field list was chosen for that caller — see PARTNER_FIELD_MAP,
+// which is deliberately limited to the two admin-editable fields.
 
 // AUDIT FIX (Section 10 build-out): needed for the new admin
 // set-commission-rate / pause-partner endpoints in partners.controller.js —
@@ -486,5 +392,5 @@ module.exports = {
   userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   leadRowToCamel,
-  USER_FIELD_MAP, SCAN_FIELD_MAP, PAYMENT_FIELD_MAP, PARTNER_FIELD_MAP
+  PARTNER_FIELD_MAP
 }

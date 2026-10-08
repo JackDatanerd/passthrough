@@ -92,6 +92,13 @@ backend runs as a Cloudflare Worker.
    In production, create your admin by registering normally and then setting
    `role = 'ADMIN'` on that row in the SQL editor.
 
+   **Schema version.** Every migration from `0059` on ends by recording its own number in
+   `system_state.schema_version`, and the Worker knows the highest number it expects
+   (`EXPECTED_SCHEMA_VERSION` in `src/config/constants.js`). If the database is behind the deployed code,
+   `GET /api/admin/health` and the deep health check (Section 9) say so, and the hourly cron emails the
+   owner. A new migration must bump both — `tests/schemaVersion` (in `crossCutting.round1.test.js`) fails
+   the build when it does not. **Apply migrations before deploying the Worker that needs them.**
+
 ---
 
 ## 3. Cloudflare Setup
@@ -119,6 +126,22 @@ Paste the returned `id` into `wrangler.toml` under `[[kv_namespaces]]`:
 ```toml
 id = "paste-id-here"
 ```
+
+### Create the Queues (before the first deploy)
+
+The fix pipeline and the scan pipeline run through a Cloudflare Queue, with a dead-letter queue behind
+it. `wrangler deploy` does **not** create them, and a deploy whose consumer points at a queue that does
+not exist fails — so create both once, with exactly these names (they are in `wrangler.toml`):
+
+```bash
+wrangler queues create passthrough-fix-jobs
+wrangler queues create passthrough-fix-jobs-dlq
+```
+
+The main queue's consumer is capped by `max_concurrency` in `wrangler.toml` (4). Each running job holds a
+Browser Rendering session and makes Claude calls, so the cap — not the queue — is what keeps a burst of
+paid jobs inside those services' limits. Raise it only after "Pre-launch verification" (Section 8) says
+your account's limits allow it.
 
 ### Durable Object (rate limits)
 
@@ -279,7 +302,20 @@ wrangler secret put CORS_EXTRA_ORIGINS
 
 # Other optional [vars]/secrets read by the code: SCAN_IP_DAILY_CAP (free scans per IP per day;
 # 0 disables the cap), PWNED_PASSWORDS_CHECK ("off" turns off the breached-password
-# check), RATE_LIMIT_BYPASS_IPS (comma-separated; ignored in production).
+# check), RATE_LIMIT_BYPASS_IPS (comma-separated; honoured in EVERY environment, production
+# included — it switches ALL rate limits off for those IPs, and the Worker logs a warning at start-up
+# while it is set. Use it for a QA window, then delete it).
+
+# Restrict the admin panel to known networks (comma-separated IPs; IPv6 matched by /64). When set, an
+# ADMIN session is honoured only from these addresses — a stolen admin token is useless elsewhere. It
+# covers every admin-gated route (admin panel, refunds, partners, employer leads). Unset = no restriction.
+#   1.2.3.4,5.6.7.8
+wrangler secret put ADMIN_ALLOWED_IPS
+
+# Lets an uptime monitor run the DEEP health check: `GET /healthz` with header `X-Health-Key: <value>`
+# returns 503 when the database schema is behind, the hourly cron has stopped, or a binding is missing.
+# Without the header (or without this secret) /healthz is the shallow "Worker is up" answer.
+wrangler secret put HEALTH_CHECK_KEY
 ```
 
 ### Deploy
@@ -435,12 +471,20 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
       SUPABASE_SERVICE_ROLE_KEY, JWT_SECRET, ANTHROPIC_API_KEY,
       PAYSTACK_SECRET_KEY, RESEND_API_KEY)
 - [ ] `JWT_SECRET` is at least 32 random chars
+- [ ] `RESEND_WEBHOOK_SECRET` set (Section 7) — bounces and spam complaints are acted on only with it
+- [ ] `HEALTH_CHECK_KEY` set and an uptime monitor polling `/healthz` with `X-Health-Key` (alerts on 503)
+- [ ] `ADMIN_ALLOWED_IPS` set if your admins work from fixed networks
 - [ ] `PAYSTACK_SECRET_KEY` is `sk_live_...` (not `sk_test_...`)
 - [ ] `RATE_LIMIT_BYPASS_IPS` is **unset** (or deleted) — if it was set for
       testing, `wrangler secret delete RATE_LIMIT_BYPASS_IPS` before real
       users arrive
 
 ### wrangler.toml [vars]
+- [ ] `NODE_ENV="production"` — without it error messages are not the only thing that changes: the Worker
+      treats the target as non-production (trusts `x-forwarded-for`) and warns on every start-up
+- [ ] `EMAIL_FROM` is an address on your verified Resend domain
+- [ ] `OWNER_ALERT_EMAIL` is YOUR inbox — the repo ships the maintainer's, so a fork's critical alerts
+      (failed jobs, schema behind, webhook signature failures) would otherwise go to someone else
 - [ ] `FRONTEND_URL=https://passthrough.dev`
 - [ ] `PAYSTACK_CALLBACK_URL=https://passthrough.dev/payment/success`
 - [ ] KV namespace `id` is filled in (not placeholder text)
@@ -453,6 +497,9 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 
 ### Infrastructure
 - [ ] R2 bucket created: `passthrough-resumes`
+- [ ] Both queues created: `passthrough-fix-jobs` and `passthrough-fix-jobs-dlq` (Section 3)
+- [ ] Every migration applied; `GET /api/admin/health` shows the schema `ok`
+- [ ] "Pre-launch verification" below completed
 - [ ] Worker deployed: `wrangler deploy` ran without errors
 - [ ] Custom domain set: `api.passthrough.dev` resolves
 - [ ] Frontend deployed with `VITE_API_URL` env var set
@@ -467,6 +514,22 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 - [ ] A verification page for a REAL delivered scan loads
 - [ ] Password reset email → link works
 
+### Pre-launch verification (Browser Rendering and queue limits)
+
+PDF rendering is metered and capped per account (browsers running at once, browsers started per minute),
+and a paid job runs a render plus Claude calls. Before a launch or promo that could send a burst of
+purchases, prove the limits hold on YOUR plan:
+
+1. Create 10–15 test scans (free test credits are fine) and trigger "fix" on all of them within a minute.
+2. `wrangler tail` while they run. Expect jobs to wait their turn (the consumer is capped at
+   `max_concurrency`), not to fail. A line `Browser Rendering launch refused … retry n/3` is the
+   built-in retry doing its job; the PDF should still arrive.
+3. Pass criteria: every job reaches FIX_DELIVERED with its PDF, nothing lands in
+   `passthrough-fix-jobs-dlq`, and no `[CRITICAL]` alert email arrives.
+4. If jobs fail on launch limits even with retries, lower `max_concurrency`; if they all finish with
+   room to spare and you expect larger bursts, raise it one step at a time and repeat.
+5. Re-run this after changing `max_concurrency`, the Claude model, or the PDF template.
+
 ### Seed leftovers (must all be "none")
 - [ ] No `admin@passthrough.dev` / `demo@passthrough.dev` rows in `users` (earlier versions of
       `seed.js` created them with a password that was in this public repository — if either
@@ -477,6 +540,15 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 ---
 
 ## 9. Monitoring & Logs
+
+### Health checks
+
+- `GET /healthz` — shallow: the Worker is up and routing. No dependencies, safe for any ping.
+- `GET /healthz` with `X-Health-Key: <HEALTH_CHECK_KEY>` — deep: database reachable, migrations applied as
+  far as the code expects, the hourly cron ran in the last 150 minutes, required bindings present.
+  Returns **503** with a `problems` list when any of it is wrong. Point your uptime monitor here.
+- `GET /api/admin/health` (admin session) — the same data plus config warnings and binding status.
+- The hourly cron writes the heartbeat and emails the owner when the schema is behind the deployed code.
 
 ### Persisted logs
 
@@ -531,9 +603,9 @@ Database schema changes:
 Your worker has no default export...
 ```
 
-`src/index.js` must use `export default { fetch, scheduled }` — it's the
+`src/index.js` must use `export default { fetch, scheduled, queue }` — it's the
 only ESM file in the project. Check that no edit accidentally changed it
-to `module.exports`. See Section 9 of the migration patch for details.
+to `module.exports`.
 
 ### Browser Rendering not working locally
 
@@ -550,6 +622,19 @@ that every file in `supabase/migrations/` was run, in filename order (see
 Section 2 above). A relation from a later migration (partners, payouts,
 referral_codes, commission_ledger, etc.) failing specifically usually means
 migrations were stopped partway through rather than skipped entirely.
+
+### Health check says "schema" or "cron" is wrong
+
+`GET /api/admin/health` (admin) and `GET /healthz` with `X-Health-Key` (monitor) report the same thing.
+
+- **schema: expected N, found M / could not read schema_version** — the database is behind the code. Run
+  every file in `supabase/migrations/` numbered above M, in order (the first one this applies to is
+  `0059`, which also creates the `system_state` table). Apply migrations *before* deploying code that
+  needs them.
+- **cron: last ran N minutes ago** — the hourly trigger stopped, so stuck-scan recovery, payment
+  reconciliation and retention are not running. Check the Worker's Triggers tab for the
+  `0 * * * *` cron and `wrangler tail --format pretty` around the top of the hour.
+- **no heartbeat recorded yet** — normal for the first hour after a deploy.
 
 ### Rate limiter letting requests through
 

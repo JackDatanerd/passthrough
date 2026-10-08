@@ -40,6 +40,8 @@ const emailService = require('./services/email.service')
 const { runRetention } = require('./services/retention.service')
 const { runLeadMatchSweep } = require('./services/lead-match.service')
 const { handleDeadLetterBatch } = require('./services/deadletter.service')
+const { computeHealth, recordCronHeartbeat, checkSchema } = require('./lib/health')
+const cryptoLib = require('./lib/crypto')
 
 const app = new Hono()
 
@@ -72,7 +74,20 @@ app.use('/api/*', bodyLimit())  // caps non-multipart bodies before a handler re
 // this only proves the Worker itself is up and routing requests; a DB-down
 // scenario should show up as real endpoints failing, not as this failing
 // too and paging on the same incident twice.
-app.get('/healthz', c => c.json({ success: true, status: 'ok', timestamp: new Date().toISOString() }))
+// GAP CLOSED (cross-cutting infra round 1, G3): with HEALTH_CHECK_KEY set on the Worker, a request
+// carrying the same value in `X-Health-Key` gets the DEEP check instead — database reachable,
+// migrations applied as far as this code expects, hourly cron recently run, bindings present — and a
+// 503 when any of it is wrong, so an uptime monitor pages on "the Worker is up but broken". Without
+// the key (or without the header) this stays the shallow, dependency-free answer above.
+app.get('/healthz', async c => {
+  const key = c.env && c.env.HEALTH_CHECK_KEY
+  const presented = c.req.header('x-health-key')
+  if (key && presented && cryptoLib.timingSafeEqual(String(presented), String(key))) {
+    const h = await computeHealth(c.env, getSupabase(c.env))
+    return c.json({ success: h.ok, status: h.ok ? 'ok' : 'degraded', timestamp: h.checkedAt, problems: h.problems, schema: h.schema, cron: h.cron }, h.ok ? 200 : 503)
+  }
+  return c.json({ success: true, status: 'ok', timestamp: new Date().toISOString() })
+})
 
 // ── 2. General rate limit ─────────────────────────────────────────────────────
 app.use('/api/*', rateLimiter.general)
@@ -425,6 +440,30 @@ async function leadMatchSweep(event, env, ctx) {
   )
 }
 
+// Eighth job: record that the cron ran (the heartbeat the deep health check and the admin health
+// view read), and tell the owner when the database schema is behind the deployed code — the "apply
+// migration NNNN BEFORE deploying" step the deploy notes depend on a person remembering.
+async function healthSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const supabase = getSupabase(env)
+        await recordCronHeartbeat(supabase)
+        const schema = await checkSchema(supabase)
+        if (!schema.ok) {
+          console.error(`Schema check: expected ${schema.expected}, found ${schema.actual} — ${schema.detail || 'migrations are behind the deployed code'}`)
+          await emailService.sendOwnerAlert(env, 'Database schema is behind the deployed code',
+            `This Worker expects schema version ${schema.expected}; the database reports ${schema.actual === null ? 'nothing' : schema.actual}.\n\n` +
+            `${schema.detail || ''}\n\nRun every file in supabase/migrations/ above the reported number, in order (DEPLOYMENT.md, section 2). ` +
+            'Features that need the missing migrations fail until then.', { dedupeKey: `schema:${schema.expected}:${schema.actual}` })
+        }
+      } catch (err) {
+        console.error('Health sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 async function retentionSweep(event, env, ctx) {
   ctx.waitUntil(
     (async () => {
@@ -454,7 +493,7 @@ export { RateLimiterDO } from './lib/rateLimiterDO'
 
 export default {
   fetch: app.fetch,
-  // One cron trigger, seven independent jobs — each isolated by its own
+  // One cron trigger, eight independent jobs — each isolated by its own
   // waitUntil + try/catch, so a failure in any one of them can never skip or
   // crash the others.
   scheduled: (event, env, ctx) => {
@@ -464,6 +503,7 @@ export default {
     webhookMaintenanceSweep(event, env, ctx)
     leadMatchSweep(event, env, ctx)
     failedFixSweep(event, env, ctx)
+    healthSweep(event, env, ctx)
     return retentionSweep(event, env, ctx)
   },
   queue,

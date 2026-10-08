@@ -14,15 +14,38 @@
 //   - Returns the PDF as bytes (Uint8Array) instead of writing to a path —
 //     the caller .put()s those bytes into R2. No local filesystem exists.
 //
-// NOTE (flagged, unverified at scale): Browser Rendering is metered
-// per-second of browser usage. This implementation is correct but has not
-// been load-tested under concurrent traffic — see deployment guide's
-// pre-launch verification checklist before assuming this scales for free.
+// NOTE: Browser Rendering is metered per-second of browser usage and caps how many browsers may
+// run (and be started per minute) at once. Two guards keep a burst from turning into failed paid
+// jobs: the fix-queue consumer's `max_concurrency` (wrangler.toml) bounds how many renders run in
+// parallel, and launchBrowser() below retries a launch the service refused for being over its limit
+// instead of failing the render. The pre-launch load test is in DEPLOYMENT.md ("Pre-launch
+// verification") — run it before assuming this scales.
 
 const puppeteer = require('@cloudflare/puppeteer')
 
-async function generateResumePDF(env, html) {
-  const browser = await puppeteer.launch(env.BROWSER)
+// A launch refused because the account is over its concurrent-browser or launches-per-minute limit
+// is transient by nature: the limit frees as other sessions close. Retrying a few times with a
+// growing pause turns "the burst hit the cap" into a short delay rather than a failed render (the
+// caller degrades a failed PDF to DOCX-only, so an unretried refusal quietly shipped a worse product).
+// Any other launch error is NOT retried — it would fail the same way.
+const LAUNCH_RETRY_DELAYS_MS = [2000, 5000, 10000]
+const isLaunchLimitError = err => /\b429\b|rate limit|too many|limit exceeded|concurrent|capacity/i.test(String((err && err.message) || err))
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function launchBrowser(env, delays = LAUNCH_RETRY_DELAYS_MS) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await puppeteer.launch(env.BROWSER)
+    } catch (err) {
+      if (attempt >= delays.length || !isLaunchLimitError(err)) throw err
+      console.error(`Browser Rendering launch refused (${err.message}) — retry ${attempt + 1}/${delays.length}`)
+      await sleep(delays[attempt])
+    }
+  }
+}
+
+async function generateResumePDF(env, html, { launchRetryDelaysMs } = {}) {
+  const browser = await launchBrowser(env, launchRetryDelaysMs)
   try {
     const page = await browser.newPage()
     try {
@@ -74,4 +97,4 @@ async function generateResumePDF(env, html) {
   }
 }
 
-module.exports = { generateResumePDF }
+module.exports = { generateResumePDF, isLaunchLimitError }
