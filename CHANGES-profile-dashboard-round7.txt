@@ -1,0 +1,46 @@
+Profile & Dashboard (Section 6) — round 7
+=========================================
+Apply supabase/migrations/0060_profile_dashboard_round7.sql BEFORE deploying the code. It also
+records schema_version 60 (constants.EXPECTED_SCHEMA_VERSION is bumped to match).
+NOTE: the old three-argument set_saved_profile_resume() is dropped by the migration; a Worker still
+on the previous code cannot save a saved-profile edit between migrating and deploying — keep that
+window short.
+
+FEATURE GAP CLOSED
+  G1  The data export (GET /api/profile/export) left out each scan's ATS analysis report
+      (full_ats_report) and follow-up questions (quantification_prompts), and carried no partial
+      refunds. Both are in now: scans carry fullAtsReport / quantificationPrompts; part 1's payments
+      each carry refunds: [{ amountCents, createdAt }] (payment_refunds, read in chunks of 100 ids).
+      The Settings copy says so.
+
+BUGS FIXED
+  1  dashboard/Index.jsx — the search box lost a keystroke typed as the debounce committed (the
+     URL -> box sync also fired for the box's own commit and overwrote newer text). It now syncs only
+     when the URL changed from elsewhere (Back/forward, a link).
+  2  Settings.jsx — the signed-in-devices list was not re-read after a password change (which revokes
+     every session and starts a new one), so it showed dead sessions and a "This device" tag on a dead one.
+  3  Index.jsx / Settings.jsx — "Already verified." (400) on Resend left the verify banner up; the
+     cached user is re-synced now (lib/resendVerification.js).
+  4  PUT /api/profile — a draft made from an older saved profile could overwrite a newer one (another
+     tab saved a different scan or edited it), leaving old content under the new profile's source scan.
+     GET /profile/data returns a `version` (savedAt|editedAt), PUT sends it back, and
+     set_saved_profile_resume() writes only if the stored profile still has it; otherwise 409
+     PROFILE_CHANGED. The editor says so and offers "Reload the current profile". No version = the old
+     unconditional write (older clients).
+  5  Index.jsx — a background refresh that took over a cancelled page load and then failed left the
+     spinner on forever. It now finishes the job (clears the spinner / shows the error).
+  6  Index.jsx — a search box holding only spaces or filter punctuation counted as a filter: "Delete
+     these N scans" appeared and the server could only refuse it. The page now reads the search the
+     way the server does (effectiveSearch, mirrors src/lib/scanSearch.js sanitizeSearch).
+  7  Settings.jsx — finishing "Delete my scan history" (or saving an edit) reloaded the saved-profile
+     card through its Loading state, unmounting an open editor and discarding typed changes. Those
+     refreshes are quiet now; a failed quiet refresh keeps what is on screen.
+  8  Index.jsx — live polling could ask for up to 900 status checks per 15 minutes against a per-IP
+     budget of 600 shared with the scan page. Now at most 3 scans per 6 s (450).
+  +  PUT /api/profile had only the generic per-IP limiter; it has its own per-account one
+     (rl.profileEdit, 30 per 15 min).
+
+TESTS
+  tests/profile.round7.test.js, frontend/tests/pages/{DashboardIndex,Settings}.round7.test.jsx,
+  frontend/tests/components/SavedProfileEditor.round7.test.jsx (each fails on the previous code);
+  tests/profile.dashboard.test.js updated for the new `version` field.

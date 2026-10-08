@@ -7,7 +7,7 @@ const router = new Hono()
 
 router.get(   '/',      auth, c.getProfile)
 router.get(   '/data',  auth, c.getProfileData)          // the saved resume itself, for the editor
-router.put(   '/',      auth, c.updateProfile)           // correct the saved resume in place
+router.put(   '/',      auth, rl.profileEdit, c.updateProfile)           // correct the saved resume in place
 router.patch( '/preferences', auth, c.updatePreferences)
 router.post(  '/save',  auth, c.saveProfile)
 router.delete('/',      auth, c.deleteProfile)

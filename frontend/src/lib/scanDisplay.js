@@ -59,3 +59,10 @@ export function scanDetails(scan) {
   if (roleLine(scan)) return [scanSource(scan)]
   return []
 }
+
+// What the dashboard's search box actually means to the server: GET /scan/history and
+// DELETE /profile/scans strip everything with meaning inside a PostgREST filter string or an ilike
+// pattern (src/lib/scanSearch.js sanitizeSearch) and trim — keep the two in step. A box holding only
+// such characters or spaces is NOT a filter (the list shows every scan), so the page must not behave
+// as if one were active (an offer to "delete these N scans" that the server would only refuse).
+export const effectiveSearch = (raw) => String(raw || '').replace(/[,()"%\\*]/g, '').trim()

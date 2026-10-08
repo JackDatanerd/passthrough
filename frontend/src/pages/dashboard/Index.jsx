@@ -14,7 +14,8 @@ import { formatDate, statusLabel } from '../../lib/utils'
 import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD } from '../../lib/scoreThresholds'
 import { createPoller } from '../../lib/poller'
 import { describeQuota } from '../../lib/quota'
-import { isLive, canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
+import { isLive, canDeleteScan, scanHeading, scanDetails, effectiveSearch } from '../../lib/scanDisplay'
+import { isAlreadyVerified } from '../../lib/resendVerification'
 import Alert from '../../components/ui/Alert'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 
@@ -34,8 +35,11 @@ const SCANS_PER_PAGE = 20
 // How often (ms) the list checks scans that are still being processed. Status
 // requests have their own rate-limit budget (unlike the history list, which
 // shares the general one), and only a few rows are ever in flight at once.
-const LIVE_POLL_MS = 5000
-const LIVE_POLL_MAX_SCANS = 5
+// 3 scans every 6s is 450 status requests per 15 minutes — under the status endpoint's per-IP budget of
+// 600, which the scan page's own polling shares. (5 scans every 5s was 900: a few stuck scans on one
+// network were enough to get every poll refused.) More than 3 in flight are picked up as these finish.
+const LIVE_POLL_MS = 6000
+const LIVE_POLL_MAX_SCANS = 3
 
 // What deleting this particular scan takes with it, said before confirming.
 function deleteMessage(scan) {
@@ -89,6 +93,10 @@ export default function DashboardIndex() {
   // spinner replacing what the person is looking at.
   const [softTick, setSoftTick] = useState(0)
   const softRef = useRef(false)
+  // A foreground load (spinner on) that was cancelled before it finished. A background refresh that
+  // takes over from it has to finish the job — clear the spinner and report a failure — instead of
+  // behaving as the quiet refresh it was started as, or the spinner could never clear.
+  const hardPendingRef = useRef(false)
 
   // PHASE 4 — retention hook: once a profile is saved, offer a one-click
   // path back into the scan form with that profile pre-selected.
@@ -102,16 +110,25 @@ export default function DashboardIndex() {
   const [quota, setQuota] = useState(null)
 
   const search = searchParams.get('search') || ''
+  // What the server will really match on (see effectiveSearch). Drives the request, the "filters active"
+  // state and the bulk delete; the raw text only lives in the box and the URL.
+  const effSearch = effectiveSearch(search)
 
-  // Keeps the search box in sync with the URL when it changes from outside
-  // typing (back/forward navigation, "Clear filters" below) — without this
-  // the box could keep showing stale text while the actual results (driven
-  // off `search`, not `searchInput`) had already moved on.
-  useEffect(() => { setSearchInput(search) }, [search])
+  // The last search text THIS box wrote to the URL. The URL -> box sync below must only act when the URL
+  // changed from somewhere else (Back/forward, "Clear filters"): without this it also fired for the
+  // box's own debounced commit, and a keystroke typed between the commit and the router re-render was
+  // overwritten with the older committed text (typing "ab" across a pause left "a").
+  const committedSearch = useRef(search)
+  useEffect(() => {
+    if (search === committedSearch.current) return
+    committedSearch.current = search
+    setSearchInput(search)
+  }, [search])
 
   useEffect(() => {
     const handle = setTimeout(() => {
       if (searchInput === search) return
+      committedSearch.current = searchInput
       // replace: a pause in typing is not a place to come back to — every debounced commit used
       // to add a history entry, so Back stepped through half-typed searches.
       setSearchParams(prev => {
@@ -147,10 +164,10 @@ export default function DashboardIndex() {
   // the user was actually looking at.
   useEffect(() => {
     let cancelled = false
-    const soft = softRef.current
+    const soft = softRef.current && !hardPendingRef.current
     softRef.current = false
-    if (!soft) { setLoading(true); setLoadError('') }
-    api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: search || undefined, status: status || undefined } })
+    if (!soft) { hardPendingRef.current = true; setLoading(true); setLoadError('') }
+    api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: effSearch || undefined, status: status || undefined } })
       .then(res => {
         if (cancelled) return
         const data = res.data.data
@@ -160,18 +177,20 @@ export default function DashboardIndex() {
         // replace: the out-of-range page is not somewhere Back should return to — it would just
         // bounce forward again, trapping the person on this page.
         if (page > lastPage) { setPage(lastPage, { replace: true }); return }
+        hardPendingRef.current = false
         setScans(data.scans)
         setTotal(data.total ?? 0)
         setLoading(false)
       })
       .catch(err => {
         if (cancelled) return
+        hardPendingRef.current = false
         if (soft) return   // a failed background refresh keeps the list as it was
         setLoadError(getErrorMessage(err, "Couldn't load your scans."))
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [page, search, status, reloadTick, softTick])
+  }, [page, effSearch, status, reloadTick, softTick])
 
   // Scans still being processed used to sit at "Scanning" until the page was
   // reloaded by hand. Poll each live one's status (its own rate-limit bucket,
@@ -223,6 +242,8 @@ export default function DashboardIndex() {
       // Was swallowed: a rate limit or a mail outage left a button that did
       // nothing and said nothing.
       setResendError(getErrorMessage(err, 'Could not resend the verification email.'))
+      // "Already verified." means verified elsewhere meanwhile: re-sync so this banner goes away.
+      if (isAlreadyVerified(err)) refreshUser()
     }
     setResending(false)
   }
@@ -247,15 +268,15 @@ export default function DashboardIndex() {
     }
   }
 
-  const hasFilters = !!(search || status)
+  const hasFilters = !!(effSearch || status)
 
   // What the filters currently show, in words, for the confirmation ("status Failed and “pm”").
-  const filterWords = [status && `status ${statusLabel(status)}`, search && `“${search}”`].filter(Boolean).join(' and ')
+  const filterWords = [status && `status ${statusLabel(status)}`, effSearch && `“${effSearch}”`].filter(Boolean).join(' and ')
 
   async function confirmBulkDelete() {
     setBulkRunning(true); setBulkError(''); setBulkResult(null); setBulkCount(0)
     try {
-      setBulkResult(await purgeScans(api, { status, search, onProgress: setBulkCount }))
+      setBulkResult(await purgeScans(api, { status, search: effSearch, onProgress: setBulkCount }))
     } catch (err) {
       setBulkError(getErrorMessage(err, 'Could not delete those scans.') + partialDeleteNote(err.purgeDeleted))
     } finally {

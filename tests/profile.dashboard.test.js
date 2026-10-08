@@ -104,7 +104,7 @@ describe('getProfileData — the saved resume, for the editor', () => {
   it('returns the owner\'s resume, scoped to the requesting user', async () => {
     t = setup(q => q.table === 'users' ? { data: { saved_profile: { resumeData: { name: 'Jane' }, savedAt: 's' } }, error: null } : undefined)
     const res = await t.mod.getProfileData(t.c({ userId: 'u9' }))
-    expect(res.body.data).toEqual({ resumeData: { name: 'Jane' }, savedAt: 's', editedAt: null })
+    expect(res.body.data).toEqual({ resumeData: { name: 'Jane' }, savedAt: 's', editedAt: null, version: 's|' })
     expect(t.db.calls[0].filters).toContainEqual(['eq', 'id', 'u9'])
   })
   it('propagates a database error', async () => {

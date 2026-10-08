@@ -18,6 +18,7 @@ import { roleLabel } from '../../lib/roleCategories'
 import SessionsCard from '../../components/account/SessionsCard'
 import SavedProfileEditor from '../../components/account/SavedProfileEditor'
 import { USER_KEY } from '../../lib/session'
+import { isAlreadyVerified } from '../../lib/resendVerification'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -54,6 +55,8 @@ export default function Settings() {
       refreshUser()
     } catch (err) {
       setResendError(getErrorMessage(err, 'Could not resend verification email.'))
+      // "Already verified." = verified on another device meanwhile: re-sync so this page says so.
+      if (isAlreadyVerified(err)) refreshUser()
     } finally {
       setResending(false)
     }
@@ -145,6 +148,11 @@ export default function Settings() {
     }
   }
 
+  // Bumped whenever the account's sessions change under this tab (sign-out-everything, a password
+  // change — which revokes every session and starts a new one for this browser) so the devices list
+  // below re-reads instead of showing sessions that no longer exist.
+  const [sessionsReload, setSessionsReload] = useState(0)
+
   // Change password
   const [current,  setCurrent ] = useState('')
   const [newPass,  setNewPass ] = useState('')
@@ -195,8 +203,11 @@ export default function Settings() {
   // gets the same ConfirmDialog treatment as scan deletion.
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
 
-  function loadProfile() {
-    setProfileLoading(true); setProfileError('')
+  // `quiet`: a refresh while the card is already showing something (after a purge, after an edit was
+  // saved). The card must not drop to "Loading…" — that unmounts an open editor and throws away what is
+  // typed into it — and a failed quiet refresh keeps what is on screen rather than replacing it.
+  function loadProfile({ quiet = false } = {}) {
+    if (!quiet) { setProfileLoading(true); setProfileError('') }
     return api.get('/profile')
       .then(res => {
         setHasSavedProfile(!!res.data.data.hasSavedProfile)
@@ -207,8 +218,8 @@ export default function Settings() {
         const pref = res.data.data.preferences?.notifyScanResults
         setNotifyScanResults(typeof pref === 'boolean' ? pref : null)
       })
-      .catch(err => setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")))
-      .finally(() => setProfileLoading(false))
+      .catch(err => { if (!quiet) setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")) })
+      .finally(() => { if (!quiet) setProfileLoading(false) })
   }
 
   useEffect(() => {
@@ -268,7 +279,7 @@ export default function Settings() {
       setPurgeError(getErrorMessage(err, 'Could not delete your scan history.') + partialDeleteNote(err.purgeDeleted))
     } finally {
       setPurging(false); setPurgeOpen(false)
-      loadProfile()   // the saved profile's "view source scan" link may have just been cleared
+      loadProfile({ quiet: true })   // the saved profile's "view source scan" link may have just been cleared
     }
   }
 
@@ -363,6 +374,7 @@ export default function Settings() {
       // already false, surfacing an unrelated "That is already your email
       // address." error instead of a clean no-op.
       await refreshUser()
+      setSessionsReload(n => n + 1)
       setPwSuccess(true)
       setCurrent(''); setNewPass(''); setConfirm('')
     } catch (err) {
@@ -371,9 +383,6 @@ export default function Settings() {
       setPwLoading(false)
     }
   }
-
-  // Bumped after a sign-out-everything so the devices list below re-reads.
-  const [sessionsReload, setSessionsReload] = useState(0)
 
   async function handleSignOutOtherSessions() {
     setSignOutLoading(true); setSignOutError(''); setSignOutSuccess(false)
@@ -569,7 +578,7 @@ export default function Settings() {
           ) : profileError ? (
             <div role="alert" className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <p className="text-sm text-red-600">{profileError}</p>
-              <Button variant="secondary" size="sm" onClick={loadProfile}>Try again</Button>
+              <Button variant="secondary" size="sm" onClick={() => loadProfile()}>Try again</Button>
             </div>
           ) : hasSavedProfile ? (
             <>
@@ -613,7 +622,7 @@ export default function Settings() {
               </div>
             </div>
             {editingProfile && (
-              <SavedProfileEditor onSaved={loadProfile} onClose={() => setEditingProfile(false)} />
+              <SavedProfileEditor onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingProfile(false)} />
             )}
             </>
           ) : (
@@ -629,8 +638,8 @@ export default function Settings() {
           <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
           <p className="text-sm text-gray-500 mb-4">
             Download a copy of what we hold for your account — profile and settings, sign-in history and signed-in
-            devices, scans (including job descriptions and the structured data extracted from your resumes), payment
-            history, and a list of the emails we've sent you at your current address — as JSON. The uploaded resume files and generated
+            devices, scans (including job descriptions, the structured data extracted from your resumes and the analysis
+            of each one), payment history with any refunds, and a list of the emails we've sent you at your current address — as JSON. The uploaded resume files and generated
             documents themselves aren't included; the data extracted from them is. Accounts with many scans are
             split into several files.
           </p>

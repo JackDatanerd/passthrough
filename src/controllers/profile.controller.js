@@ -108,6 +108,12 @@ function scanQuota(row, now = new Date()) {
   return { limit, used: Math.min(used, limit), remaining: Math.max(0, limit - used), resetsAt: new Date(midnight + 86_400_000).toISOString() }
 }
 
+// The saved profile's version: which save and which hand edit it is at. The editor sends back the
+// one it loaded, and PUT /api/profile writes only if the stored profile still has it (see
+// set_saved_profile_resume, 0060) — a draft made from an older profile cannot overwrite a newer one.
+// Built from the stored strings verbatim so it equals what the SQL compares against.
+const profileVersion = (saved) => `${saved?.savedAt ?? ''}|${saved?.editedAt ?? ''}`
+
 // GET /api/profile/data — the saved resume itself, for the editor only. getProfile deliberately
 // withholds it (contact details, full history); this is the same owner reading their own data on
 // an explicit request, so it carries no-store like every other account response.
@@ -118,25 +124,42 @@ async function getProfileData(c) {
   if (error) throw error
   const saved = data.saved_profile
   if (!saved?.resumeData) return c.json({ success: false, message: 'No saved profile.' }, 404)
-  return c.json({ success: true, data: { resumeData: saved.resumeData, savedAt: saved.savedAt || null, editedAt: saved.editedAt || null } })
+  return c.json({ success: true, data: { resumeData: saved.resumeData, savedAt: saved.savedAt || null, editedAt: saved.editedAt || null, version: profileVersion(saved) } })
 }
 
-// PUT /api/profile  { resumeData } — correct the saved profile in place.
+// PUT /api/profile  { resumeData, version? } — correct the saved profile in place.
+// `version` is what GET /api/profile/data returned when the editor opened. When present the write
+// happens only if the stored profile is still at that version; otherwise 409 PROFILE_CHANGED (the
+// profile was replaced or edited elsewhere meanwhile — saving this draft would put old content
+// under a newer profile's source scan). Absent = unconditional, as before (older clients).
 async function updateProfile(c) {
   const user = c.get('user')
   let body
   try { body = await c.req.json() } catch (_) { body = null }
-  const checked = parseClientResumeData(body && typeof body === 'object' ? body.resumeData : undefined)
+  const obj = body && typeof body === 'object' ? body : null
+  const checked = parseClientResumeData(obj ? obj.resumeData : undefined)
   if (!checked.ok) return c.json({ success: false, message: checked.message }, 400)
   if (!hasResumeContent(checked.data))
     return c.json({ success: false, message: 'Add at least one job, school, skill or a summary — an empty profile is not worth saving.' }, 400)
+  const expected = obj ? obj.version : undefined
+  if (expected !== undefined && (typeof expected !== 'string' || expected.length > 100))
+    return c.json({ success: false, message: 'Invalid version.' }, 400)
 
   const supabase = getSupabase(c.env)
   const { data: updated, error } = await supabase.rpc('set_saved_profile_resume', {
-    p_user_id: user.id, p_resume: checked.data, p_edited_at: new Date().toISOString()
+    p_user_id: user.id, p_resume: checked.data, p_edited_at: new Date().toISOString(),
+    p_expected_version: typeof expected === 'string' ? expected : null
   })
   if (error) throw error
-  if (!updated) return c.json({ success: false, message: 'No saved profile to edit. Save one from a completed scan first.' }, 404)
+  if (!updated) {
+    // Nothing written: either there is no saved profile, or the version moved on. Read to tell which.
+    const { data: row, error: readErr } = await supabase.from('users').select('saved_profile').eq('id', user.id).single()
+    if (readErr) throw readErr
+    if (typeof expected === 'string' && row.saved_profile?.resumeData)
+      return c.json({ success: false, code: 'PROFILE_CHANGED',
+        message: 'Your saved profile changed since you opened it (saved from a scan or edited in another tab or device). Reload to see the current version, then make your edits again.' }, 409)
+    return c.json({ success: false, message: 'No saved profile to edit. Save one from a completed scan first.' }, 404)
+  }
   return c.json({ success: true, message: 'Saved profile updated.', data: { resumeData: checked.data } })
 }
 
@@ -249,11 +272,17 @@ const EXPORT_SCAN_COLUMNS =
   'job_description_text, job_description_url, raw_brain_dump_text, cover_letter_text, ' +
   'original_resume_data, rewritten_resume_data, fix_purchased, fix_tier, fix_ats_score, fix_generated_at, ' +
   'candidate_first_name, verify_hide_name, verify_expose_docx, verify_expose_pdf, ' +
-  'verification_code, verification_status, verified_at, verification_revoked_at'
+  'verification_code, verification_status, verified_at, verification_revoked_at, ' +
+  // The analysis of the person's own resume (what was found missing, section by section) and the
+  // follow-up questions asked of them — account data like the rest of the scan.
+  'full_ats_report, quantification_prompts'
 const EXPORT_MAX_SESSIONS = 200
 const EXPORT_MAX_EMAILS = 500
 const EXPORT_SESSION_COLUMNS = 'id, created_at, last_seen_at, absolute_expires_at, revoked_at, ip, user_agent'
 const EXPORT_EMAIL_COLUMNS = 'subject, template, status, sent_at'
+const EXPORT_REFUND_COLUMNS = 'payment_id, amount_cents, created_at'
+// payment ids per payment_refunds lookup: the ids travel in the request URL.
+const EXPORT_REFUND_CHUNK = 100
 const EXPORT_PAYMENT_COLUMNS =
   'id, paystack_ref, amount_cents, currency, fix_tier, status, scan_id, referral_code, created_at, refunded_at, disputed_at'
 
@@ -343,7 +372,22 @@ async function exportMyData(c) {
       .order('created_at', { ascending: false }).limit(EXPORT_MAX_PAYMENTS)
     if (payErr) throw payErr
     payload.savedProfile = account.saved_profile || null
-    payload.payments = (payments || []).map(camel)
+    // Partial refunds Paystack has confirmed (payment_refunds). A payment's own row only says
+    // "refunded" for a full one, so without these a part-refunded payment looked untouched.
+    const refundsByPayment = new Map()
+    const ids = (payments || []).map(p => p.id)
+    for (let i = 0; i < ids.length; i += EXPORT_REFUND_CHUNK) {
+      const { data: refunds, error: refErr } = await supabase.from('payment_refunds')
+        .select(EXPORT_REFUND_COLUMNS).in('payment_id', ids.slice(i, i + EXPORT_REFUND_CHUNK))
+        .order('created_at', { ascending: true })
+      if (refErr) throw refErr
+      for (const r of refunds || []) {
+        const list = refundsByPayment.get(r.payment_id) || []
+        list.push({ amountCents: r.amount_cents, createdAt: r.created_at })
+        refundsByPayment.set(r.payment_id, list)
+      }
+    }
+    payload.payments = (payments || []).map(p => ({ ...camel(p), refunds: refundsByPayment.get(p.id) || [] }))
     payload.paymentsTruncated = (payments || []).length >= EXPORT_MAX_PAYMENTS
 
     // The sign-in devices and mail history are data the account holds about its owner too.

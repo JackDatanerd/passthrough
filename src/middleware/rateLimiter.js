@@ -556,6 +556,15 @@ const dataExport = makeLimiter({
   message: msg('Too many export requests. Please try again later.')
 })
 
+// Backs PUT /api/profile (the saved-profile editor): each call validates and stores up to 100 KB
+// of JSON. PUT /scan/:id/resume-data has resumeEdit; this one had only the generic per-IP bucket.
+// Per ACCOUNT (behind `auth`), generous for someone correcting a profile by hand.
+const profileEdit = makeLimiter({
+  windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:profileedit',
+  keyBy: byAccount,
+  message: msg('Too many saves. Please wait a moment.')
+})
+
 // Backs DELETE /api/profile/scans — "delete my whole scan history" runs as a loop of small
 // batches (each one deletes up to a few dozen scans and their stored files), so the ceiling is
 // per ACCOUNT and sized for a large history being cleared in one sitting, a few times at most.
@@ -834,7 +843,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
