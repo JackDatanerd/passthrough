@@ -471,6 +471,24 @@ async function healthSweep(event, env, ctx) {
   )
 }
 
+// Employer leads whose confirmation email never went out (budget spent, provider failure, cut-off
+// isolate) are retried here, within the same hourly budget as live submissions. Own waitUntil +
+// try/catch like every job.
+async function leadAckSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const { sweepUnacknowledgedLeads } = require('./controllers/employer-leads.controller')
+        const r = await sweepUnacknowledgedLeads(env, getSupabase(env))
+        if (r.error) console.error('Lead acknowledgement sweep:', r.error)
+        else if (r.sent || r.failed || r.adopted) console.log(`Lead acknowledgement sweep: ${r.sent} sent, ${r.failed} failed, ${r.adopted} already sent${r.budgetExhausted ? ' (hourly budget reached)' : ''}`)
+      } catch (err) {
+        console.error('Lead acknowledgement sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 async function retentionSweep(event, env, ctx) {
   ctx.waitUntil(
     (async () => {
@@ -500,7 +518,7 @@ export { RateLimiterDO } from './lib/rateLimiterDO'
 
 export default {
   fetch: app.fetch,
-  // One cron trigger, eight independent jobs — each isolated by its own
+  // One cron trigger, nine independent jobs — each isolated by its own
   // waitUntil + try/catch, so a failure in any one of them can never skip or
   // crash the others.
   scheduled: (event, env, ctx) => {
@@ -509,6 +527,7 @@ export default {
     pendingSweep(event, env, ctx)
     webhookMaintenanceSweep(event, env, ctx)
     leadMatchSweep(event, env, ctx)
+    leadAckSweep(event, env, ctx)
     failedFixSweep(event, env, ctx)
     healthSweep(event, env, ctx)
     return retentionSweep(event, env, ctx)

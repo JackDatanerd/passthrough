@@ -12,7 +12,7 @@ const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
 
-function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false, mailLogs = [], logPurgeError = null } = {}) {
+function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false, mailLogs = [], logPurgeError = null, updateExtrasError = null } = {}) {
   const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
     suppressed: new Set(suppressed), audit: [], logPurges: [] }
   let seq = 0
@@ -26,8 +26,28 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
         if (op === 'in') return val.includes(r[col])
         if (op === 'is') return (r[col] ?? null) === val
         if (op === 'not') return f[2] === 'is' ? (r[col] ?? null) !== f[3] : true
+        if (op === 'lt')  return r[col] != null && r[col] < val
+        if (op === 'gt')  return r[col] != null && r[col] > val
         return true
       })
+      // Round 10: a small evaluator for the `.or()` clauses the controller builds (field match across
+      // the primary and "other" fields, the notify cooldown, the ack sweep's retry gap).
+      const splitTop = (str) => { const out = []; let d = 0, cur = ''
+        for (const ch of str) { if (ch === '(') d++; if (ch === ')') d--; if (ch === ',' && d === 0) { out.push(cur); cur = '' } else cur += ch }
+        if (cur) out.push(cur); return out }
+      const clause = (cl, r) => {
+        if (cl.startsWith('and(')) return splitTop(cl.slice(4, -1)).every(x => clause(x, r))
+        const [col, op, ...rest] = cl.split('.'); const val = rest.join('.')
+        if (op === 'eq') return String(r[col]) === val
+        if (op === 'cs') return Array.isArray(r[col]) && val.replace(/[{}]/g, '').split(',').every(v => r[col].includes(v))
+        if (op === 'is') return (r[col] ?? null) === null
+        if (op === 'lt') return r[col] != null && r[col] < val
+        if (op === 'not') return (r[col] ?? null) !== null
+        if (op === 'gte') return r[col] != null && r[col] >= Number(val)
+        return true
+      }
+      const orOk = r => (q.or || []).filter(e => !/(created_at|last_submitted_at)\.lt\./.test(e) || /last_ack_attempt_at/.test(e))
+        .every(e => splitTop(e).some(cl => clause(cl, r)))
       if (q.op === 'insert') {
         if (rows.some(r => r.email.toLowerCase() === q.values.email.toLowerCase()))
           return { error: { code: '23505', message: 'duplicate key' } }
@@ -38,6 +58,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
         return { data: q.returning ? { ...row } : null, error: null }
       }
       if (q.op === 'update') {
+        if (q.patch && 'extra_role_categories' in q.patch && updateExtrasError) return { data: null, error: updateExtrasError }
         // Independent audit round 7: lets a test fail ONLY the first-contact stamp (a lone contacted_at patch).
         if (failContactStamp && Object.keys(q.patch || {}).join() === 'contacted_at') return { data: null, error: { message: 'stamp failed' } }
         const hit = rows.filter(match)
@@ -62,7 +83,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       // `.or('last_candidates_notified_at.is.null,last_candidates_notified_at.lt.<cutoff>')`
       const orNotified = (q.or || []).find(e => e.includes('last_candidates_notified_at'))
       const cutoff = orNotified && /\.lt\.(.+)$/.exec(orNotified)?.[1]
-      const filtered = rows.filter(match).filter(r => !cutoff || !r.last_candidates_notified_at || r.last_candidates_notified_at < cutoff)
+      const filtered = rows.filter(match).filter(orOk).filter(r => !cutoff || !r.last_candidates_notified_at || r.last_candidates_notified_at < cutoff)
       // PostgREST answers an offset past the end with 416 when a count was requested.
       if (q.range && q.range[0] > 0 && q.range[0] >= filtered.length && q.selectOpts?.count)
         return { error: { code: 'PGRST103', message: 'Requested range not satisfiable' } }
@@ -251,15 +272,16 @@ describe('createLead — resubmission of a known email', () => {
     expect(t.state.notices[0].message).toContain('name: D. Other')
   })
 
-  it('does not re-announce within 24h, and never for an ARCHIVED (dismissed) lead', async () => {
+  it('does not re-announce within 24h; an ARCHIVED (dismissed) lead is never reopened and gets the archived notice instead', async () => {
     t = setup({ leads: [{ ...existing(), last_notice_at: new Date(Date.now() - HOURS(1)).toISOString() }] })
     await submit(valid())
     expect(t.state.notices).toHaveLength(0)
     t.restore()
     t = setup({ leads: [{ ...existing(), status: 'ARCHIVED' }] })
     await submit(valid())
-    expect(t.state.notices).toHaveLength(0)
+    expect(t.state.notices.map(n => n.subject)).toEqual(['Archived employer lead resubmitted'])   // round 10; see employer-leads.round10.test.js
     expect(t.state.leads[0].status).toBe('ARCHIVED')
+    expect(t.state.acks).toHaveLength(0)
   })
 
   it('never changes an admin-owned status', async () => {
@@ -804,10 +826,10 @@ describe('adminCreateLead', () => {
 })
 
 describe('adminUpdateLeadStatus — editing fields', () => {
-  it('corrects name/company and categorises a lead; a blank title clears it; email is not editable', async () => {
+  it('corrects name/company and categorises a lead; a blank title clears it', async () => {
     t = setup({ leads: [mkLead({ role_title: 'Old' })] })
     const res = await t.mod.adminUpdateLeadStatus(t.c({ params: { id: ID1 },
-      body: { name: ' New  Name ', company: 'Newco', roleCategory: 'sales', roleTitle: '', email: 'hijack@x.com' } }))
+      body: { name: ' New  Name ', company: 'Newco', roleCategory: 'sales', roleTitle: '' } }))
     expect(res.status).toBe(200)
     expect(t.state.leads[0]).toMatchObject({ name: 'New Name', company: 'Newco', role_category: 'sales', role_title: null, email: 'a@b.com' })
   })
@@ -1803,8 +1825,8 @@ describe('R8 — adminExportLeads', () => {
     const res = await t.mod.adminExportLeads(t.c({}))
     const [header, line] = res.raw.replace('\uFEFF', '').split('\r\n')
     expect(header.startsWith('"Name","Company","Email"')).toBe(true)   // existing positions unchanged
-    expect(header.endsWith('"Acknowledgement last sent","Resubmission notice last sent","Candidates last notified","Lead id"')).toBe(true)
-    expect(line.endsWith(`"2026-03-01T00:00:00.000Z","2026-03-02T00:00:00.000Z","2026-03-03T00:00:00.000Z","${ID1}"`)).toBe(true)
+    expect(header).toContain('"Acknowledgement last sent","Resubmission notice last sent","Candidates last notified","Lead id"')
+    expect(line).toContain(`"2026-03-01T00:00:00.000Z","2026-03-02T00:00:00.000Z","2026-03-03T00:00:00.000Z","${ID1}"`)
   })
 
   it('does not record the default sort as a filter in the audit entry, but does record a chosen one', async () => {

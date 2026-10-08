@@ -121,6 +121,12 @@ const NOTICE_BUDGET_PER_HOUR = 20
 const ACK_BUDGET_PER_HOUR = 30
 const RESUBMIT_NOTICE_COOLDOWN_MS = 24 * 60 * 60 * 1000
 const RESUBMIT_DIFF_NOTICE_COOLDOWN_MS = 60 * 60 * 1000
+// Round 10 (Section 5): an ARCHIVED lead that submits the form again stays archived (the admin's
+// dismissal stands, and a spammer must not be able to reopen themselves), but the admin is told
+// once a week that it came back, and the lead is flagged in the list (archived_resubmitted_at).
+const ARCHIVED_RESUBMIT_NOTICE_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000
+// How many fields besides the primary one a lead can be hiring in (matches the 0062 check).
+const MAX_EXTRA_FIELDS = 4
 // BUG FIX (fresh audit pass 2, Section 5): an unconfirmed lead's resubmission used to
 // re-send the acknowledgement immediately, so a double-click (or two quick tries)
 // spent BOTH of the address's monthly acknowledgement slots within seconds. A person
@@ -234,13 +240,17 @@ async function leadLinks(env, email, origin = null) {
 // that address is independently and correctly blocked regardless of this
 // budget, refunding it here only frees the slot back up for a genuinely new
 // lead rather than costing anyone an email they shouldn't have gotten.
-async function sendAck(env, row, { skipBudget = false, origin = null } = {}) {
+//
+// Round 10 (Section 5): split into attemptAck, which also says WHY nothing went out, so the
+// acknowledgement sweep below can tell "the hourly budget is spent, stop for now" (not the
+// lead's fault) from "this address failed" (counts against its bounded retries).
+async function attemptAck(env, row, { skipBudget = false, origin = null } = {}) {
   let refund = async () => {}
   if (!skipBudget) {
     const budget = await withinBudget(env, 'leadack', ACK_BUDGET_PER_HOUR, ACK_MAX_REFUNDS_PER_HOUR)
     if (!budget.allowed) {
       console.warn(`Employer-lead acknowledgement budget (${ACK_BUDGET_PER_HOUR}/h) exhausted — skipped`)
-      return false
+      return { sent: false, reason: 'budget' }
     }
     refund = budget.refund
   }
@@ -249,12 +259,16 @@ async function sendAck(env, row, { skipBudget = false, origin = null } = {}) {
       env, getSupabase(env), row.email, row.name, fieldLabel(row.role_category), await leadLinks(env, row.email, origin))
     if (!sent) await refund()
     else await stampLead(env, { email: row.email }, { last_ack_at: new Date().toISOString() })
-    return sent
+    return { sent: !!sent, reason: sent ? 'sent' : 'failed' }
   } catch (err) {
     console.error('Employer-lead acknowledgement failed:', err.message)
     await refund()
-    return false
+    return { sent: false, reason: 'failed' }
   }
+}
+
+async function sendAck(env, row, opts) {
+  return (await attemptAck(env, row, opts)).sent
 }
 
 async function runInBackground(c, task) {
@@ -267,7 +281,7 @@ async function notifyOwner(c, subject, message) {
 
 const describeLead = (row) =>
   `name: ${row.name}\ncompany: ${row.company}\nemail: ${row.email}\n` +
-  `field: ${row.role_category || '(none)'}\nrole: ${row.role_title || '(none)'}\n` +
+  `field: ${row.role_category || '(none)'}${(row.extra_role_categories || []).length ? ` (also: ${row.extra_role_categories.join(', ')})` : ''}\nrole: ${row.role_title || '(none)'}\n` +
   `source: ${row.source}${row.source_code ? ` (/v/${row.source_code})` : ''}`
 
 // Everything that follows a lead being stored for the first time. Runs after the response has
@@ -350,6 +364,8 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
     updated_at:        now.toISOString()
   }
   if (!existing.role_category && row.role_category) patch.role_category = row.role_category
+  const archived = existing.status === 'ARCHIVED'
+  if (archived) patch.archived_resubmitted_at = now.toISOString()
   // BUG FIX (independent audit round 9, Section 5): the three gap-fills used to be independent, so
   // a `sales` lead resubmitting as "Data Science / ML lead" came out as field `sales` with title
   // "ML lead" — an incoherent row — and the different field was dropped without a trace. The title
@@ -359,13 +375,24 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
   if (!existing.role_title && row.role_title && (!row.role_category || !categoryAfter || row.role_category === categoryAfter))
     patch.role_title = row.role_title
   if (!existing.source_code   && row.source_code)   patch.source_code   = row.source_code
+  // Round 10 (Section 5): an employer hiring in a SECOND field used to have that field reported to
+  // the owner once and then lost — they were only ever matched with candidates in the first one.
+  // A different, valid field is now kept on the lead (not for an archived lead: the owner decides
+  // whether it is worth working again first).
+  const extras = Array.isArray(existing.extra_role_categories) ? existing.extra_role_categories : []
+  let addedField = null
+  if (!archived && categoryAfter && row.role_category && row.role_category !== categoryAfter &&
+      !extras.includes(row.role_category) && extras.length < MAX_EXTRA_FIELDS) {
+    patch.extra_role_categories = [...extras, row.role_category]
+    addedField = row.role_category
+  }
   const stored = { ...existing, ...patch }
   // What this submission said that the lead now does NOT say (name/company are never overwritten
   // either). The field and the page it came from matter most: they decide whether this person is
   // matched with candidates, and which candidate's page brought them back.
   const DIFF_LABELS = { name: 'name', company: 'company', role_category: 'field', role_title: 'role', source_code: 'came from page' }
   const changed = Object.keys(DIFF_LABELS)
-    .filter(k => row[k] && stored[k] !== row[k])
+    .filter(k => row[k] && stored[k] !== row[k] && !(k === 'role_category' && addedField))
     .map(k => `${DIFF_LABELS[k]}: ${k === 'role_category' ? fieldLabel(row[k]) : row[k]}`)
 
   const { data: updated, error: updErr } = await supabase
@@ -384,7 +411,9 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
   // moment the first of each was attempted — for rows that predate the columns.
   const sinceMs = (...stamps) => { const v = stamps.find(Boolean); const t = v ? Date.parse(v) : NaN; return Number.isNaN(t) ? 0 : t }
   const lastAckMs = sinceMs(existing.last_ack_at, existing.created_at)
-  const lastNoticeMs = sinceMs(existing.last_notice_at, existing.created_at)
+  // An archived lead's first "it came back" notice must not be held back by how recently the lead
+  // was CREATED, so it has no created_at fallback.
+  const lastNoticeMs = archived ? sinceMs(existing.last_notice_at) : sinceMs(existing.last_notice_at, existing.created_at)
 
   // This only ever runs after the response has gone (settleDuplicate, via createLead), so the two
   // sends below are awaited right here rather than handed to waitUntil a second time.
@@ -392,21 +421,24 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
 
   // Never confirmed and not dismissed: they may simply not have seen the first
   // email, so send it again (capped per recipient in email.service.js).
-  if (!existing.confirmed_at && existing.status !== 'ARCHIVED' && now.getTime() - lastAckMs > ACK_RESEND_COOLDOWN_MS)
+  if (!existing.confirmed_at && !archived && now.getTime() - lastAckMs > ACK_RESEND_COOLDOWN_MS)
     sends.push(sendAck(c.env, existing, { origin }))
 
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
   // A resubmission that carries different details gets a shorter cooldown than a plain repeat:
   // a lead who now says they are hiring in another field must not be silenced for a day.
-  const noticeCooldown = changed.length ? RESUBMIT_DIFF_NOTICE_COOLDOWN_MS : RESUBMIT_NOTICE_COOLDOWN_MS
-  if (existing.status !== 'ARCHIVED' && now.getTime() - lastNoticeMs > noticeCooldown) {
+  const noticeCooldown = archived ? ARCHIVED_RESUBMIT_NOTICE_COOLDOWN_MS
+    : (changed.length || addedField) ? RESUBMIT_DIFF_NOTICE_COOLDOWN_MS : RESUBMIT_NOTICE_COOLDOWN_MS
+  if (now.getTime() - lastNoticeMs > noticeCooldown) {
     const message = `${describeLead(existing)}\nsubmissions: ${patch.submission_count}` +
+      (archived ? '\n\nThis lead is ARCHIVED, so it stays archived and nothing was sent to them. Move it back to New in the admin list if you want to work it.' : '') +
+      (addedField ? `\n\nThey are now also hiring in: ${fieldLabel(addedField)} (added to the lead).` : '') +
       (changed.length ? `\n\nThis time they entered different details (not saved over the lead — edit it if this is a real change):\n${changed.join('\n')}` : '')
     // Stamped only if the notice really went out, so a skipped (budget) or failed one is retried
     // by the next resubmission rather than silenced for a day.
     sends.push((async () => {
-      if (await sendNotice(c.env, 'Employer lead resubmitted', message))
+      if (await sendNotice(c.env, archived ? 'Archived employer lead resubmitted' : 'Employer lead resubmitted', message))
         await stampLead(c.env, { id: existing.id }, { last_notice_at: now.toISOString() })
     })())
   }
@@ -537,21 +569,26 @@ function parseFilters(c) {
     source: ALL_LEAD_SOURCES.includes(source) ? source : null,
     // yes = the address was confirmed, no = still unconfirmed.
     confirmed: ['yes', 'no'].includes(c.req.query('confirmed')) ? c.req.query('confirmed') : null,
+    // Round 10: unconfirmed leads we have never managed to email, and archived leads that came back.
+    ack: c.req.query('ack') === 'never' ? 'never' : null,
+    reengaged: c.req.query('reengaged') === 'yes' ? 'yes' : null,
     sort
   }
 }
 
-function applyFilters(query, { search, status, field, source, confirmed }) {
+function applyFilters(query, { search, status, field, source, confirmed, ack, reengaged }) {
   // Fresh audit pass 2 (G7): also matches the verification page code a lead came
   // from and the admin's own notes — both were visible in the UI but unsearchable.
   if (search) query = query.or(`name.ilike.%${search}%,company.ilike.%${search}%,email.ilike.%${search}%,role_title.ilike.%${search}%,source_code.ilike.%${search}%,notes.ilike.%${search}%`)
   if (status === 'OPEN') query = query.in('status', OPEN_STATUSES)
   else if (status) query = query.eq('status', status)
   if (field === 'none') query = query.is('role_category', null)
-  else if (field) query = query.eq('role_category', field)
+  else if (field) query = query.or(`role_category.eq.${field},extra_role_categories.cs.{${field}}`)
   if (source) query = query.eq('source', source)
   if (confirmed === 'yes') query = query.not('confirmed_at', 'is', null)
   else if (confirmed === 'no') query = query.is('confirmed_at', null)
+  if (ack === 'never') query = query.is('last_ack_at', null).is('confirmed_at', null).neq('status', 'ARCHIVED')
+  if (reengaged === 'yes') query = query.not('archived_resubmitted_at', 'is', null)
   return query
 }
 
@@ -658,6 +695,18 @@ async function adminListLeads(c) {
   // FEATURE GAP CLOSED (fresh audit pass, Section 5): total size of the
   // do-not-contact list. Same "optional garnish" posture as `unconfirmed` —
   // a deployment that hasn't run migration 0034 yet must still get its list.
+  // Round 10: the two "needs a look" tallies behind the new list filters. Best-effort — a database
+  // that has not run migration 0062 yet must still list its leads.
+  const countWhere = async (build) => {
+    const { count: n, error: e } = await build(supabase.from('employer_leads').select('id', { count: 'exact', head: true }))
+    if (e) { console.error('employer-leads: could not count a list tally:', e.message); return null }
+    return n || 0
+  }
+  const [neverEmailed, reengaged] = await Promise.all([
+    countWhere(q => q.is('last_ack_at', null).is('confirmed_at', null).neq('status', 'ARCHIVED')),
+    countWhere(q => q.not('archived_resubmitted_at', 'is', null))
+  ])
+
   let suppressed = null
   const { count: suppressedCount, error: sErr } = await supabase
     .from('employer_lead_suppressions').select('email_hash', { count: 'exact', head: true })
@@ -674,7 +723,7 @@ async function adminListLeads(c) {
   } catch (_) { supply = null }
 
   return c.json({ success: true, data: (data || []).map(leadRowToCamel),
-    meta: { page, pageSize, total: count || 0, counts, sourceCounts, unconfirmed: uErr ? null : (unconfirmed || 0), suppressed, candidateSupply: supply } })
+    meta: { page, pageSize, total: count || 0, counts, sourceCounts, unconfirmed: uErr ? null : (unconfirmed || 0), neverEmailed, reengaged, suppressed, candidateSupply: supply } })
 }
 
 // CSV cells are always quoted, and any cell that starts with a character a
@@ -698,7 +747,10 @@ const CSV_COLUMNS = [
   // were in the table and the list API but not the export, so a spreadsheet could not answer "who
   // did we last tell, and when". Appended, so existing column positions do not move.
   ['Acknowledgement last sent', r => r.last_ack_at], ['Resubmission notice last sent', r => r.last_notice_at],
-  ['Candidates last notified', r => r.last_candidates_notified_at], ['Lead id', r => r.id]
+  ['Candidates last notified', r => r.last_candidates_notified_at], ['Lead id', r => r.id],
+  ['Also hiring in', r => (r.extra_role_categories || []).join('; ')],
+  ['Acknowledgement attempts (sweep)', r => r.ack_attempts],
+  ['Resubmitted while archived at', r => r.archived_resubmitted_at]
 ]
 const EXPORT_CHUNK = 1000
 const EXPORT_MAX_ROWS = 50_000
@@ -833,7 +885,11 @@ const updateSchema = z.object({
   name:         required(100).optional(),
   company:      required(200).optional(),
   roleCategory: z.enum(ROLE_CATEGORIES).nullable().optional(),
-  roleTitle:    text(100).nullable().optional()
+  roleTitle:    text(100).nullable().optional(),
+  // Round 10 (Section 5): a typo in the address used to mean delete-and-recreate (losing the
+  // history), and the other fields an employer is hiring in could not be edited at all.
+  email:        z.string().trim().toLowerCase().max(254).email().optional(),
+  extraRoleCategories: z.array(z.enum(ROLE_CATEGORIES)).max(MAX_EXTRA_FIELDS).optional()
 }).refine(d => Object.values(d).some(v => v !== undefined), { message: 'Nothing to update.' })
 
 // PATCH /api/employer-leads/:id — admin only. Any subset of the fields.
@@ -846,12 +902,13 @@ async function adminUpdateLeadStatus(c) {
   const supabase = getSupabase(c.env)
 
   const { data: existing, error: readErr } = await supabase
-    .from('employer_leads').select('id, contacted_at').eq('id', id).maybeSingle()
+    .from('employer_leads').select('id, contacted_at, email, status, role_category, extra_role_categories').eq('id', id).maybeSingle()
   if (readErr) throw readErr
   if (!existing) return c.json({ success: false, message: 'Lead not found.' }, 404)
 
   const patch = { updated_at: new Date().toISOString() }
-  if (d.status  !== undefined) patch.status  = d.status
+  // Any decision about the status — including re-archiving — answers "it came back" for now.
+  if (d.status  !== undefined) { patch.status = d.status; patch.archived_resubmitted_at = null }
   if (d.notes   !== undefined) patch.notes   = d.notes || null
   if (d.name    !== undefined) patch.name    = d.name
   if (d.company !== undefined) patch.company = d.company
@@ -859,16 +916,51 @@ async function adminUpdateLeadStatus(c) {
   if (d.roleTitle    !== undefined) patch.role_title    = d.roleTitle || null
   if (CONTACTED_STATUSES.includes(d.status) && !existing.contacted_at) patch.contacted_at = patch.updated_at
 
+  // The other fields never include the primary one, and without a primary there is nothing for
+  // them to be "other" than.
+  const primaryAfter = d.roleCategory !== undefined ? d.roleCategory : existing.role_category
+  if (d.extraRoleCategories !== undefined || d.roleCategory !== undefined) {
+    const source = d.extraRoleCategories !== undefined ? d.extraRoleCategories : (existing.extra_role_categories || [])
+    const extras = [...new Set(source)].filter(f => f !== primaryAfter)
+    // Clearing the main field quietly clears the others with it; ASKING for others without one is the mistake.
+    if (d.extraRoleCategories !== undefined && extras.length && !primaryAfter)
+      return c.json({ success: false, message: 'Pick the main field before adding other fields.' }, 400)
+    patch.extra_role_categories = primaryAfter ? extras : []
+  }
+
+  // A new address is a new person to ask: nothing about the old one's confirmation, acknowledgement
+  // or candidate notices carries over. A do-not-contact address stays that way.
+  const emailChanged = d.email !== undefined && d.email !== existing.email
+  if (emailChanged) {
+    if (await isSuppressed(supabase, d.email))
+      return c.json({
+        success: false, code: 'REMOVAL_REQUESTED',
+        message: 'That address asked to be removed and is on the do-not-contact list. Lift the removal first if they have since asked you to.'
+      }, 409)
+    Object.assign(patch, {
+      email: d.email, confirmed_at: null, last_ack_at: null, ack_attempts: 0, last_ack_attempt_at: null,
+      last_candidates_notified_at: null
+    })
+  }
+
   const { data, error } = await supabase
     .from('employer_leads').update(patch).eq('id', id).select().maybeSingle()
-  if (error) throw error
+  if (error) {
+    if (error.code === '23505') return c.json({ success: false, message: 'A lead with that email already exists.' }, 409)
+    throw error
+  }
   if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
   // Field NAMES and the status transition only — never the values typed.
   await logAdminAction(c, supabase, 'lead.update', 'employer_lead', id, {
     fields: Object.keys(d).filter(k => d[k] !== undefined),
-    ...(d.status !== undefined ? { status: d.status } : {})
+    ...(d.status !== undefined ? { status: d.status } : {}),
+    ...(emailChanged ? { emailChanged: true } : {})
   })
-  return c.json({ success: true, data: leadRowToCamel(data) })
+  // Ask the corrected address to confirm straight away (never an archived lead — that one is not
+  // being worked). Like every first email, it goes after the response.
+  if (emailChanged && data.status !== 'ARCHIVED')
+    await runInBackground(c, sendAck(c.env, data, { origin: apiOrigin(c) }))
+  return c.json({ success: true, data: leadRowToCamel(data), ...(emailChanged ? { confirmationReset: true } : {}) })
 }
 
 // POST /api/employer-leads/bulk — admin only. Clearing a spam wave or marking
@@ -924,8 +1016,17 @@ async function adminBulkUpdateLeads(c) {
 
   if (action === 'setField') {
     const { data, error } = await supabase
-      .from('employer_leads').update({ role_category: field, updated_at: now }).in('id', ids).select('id')
+      .from('employer_leads').update({ role_category: field, updated_at: now }).in('id', ids).select('id, extra_role_categories')
     if (error) throw error
+    // The new primary field must not also sit in the "other fields" list, and a lead with no
+    // primary field has no others. Only the few rows that need it are touched again.
+    for (const r of data || []) {
+      const extras = r.extra_role_categories || []
+      const fixed = field ? extras.filter(f => f !== field) : []
+      if (fixed.length === extras.length) continue
+      const { error: extraErr } = await supabase.from('employer_leads').update({ extra_role_categories: fixed }).eq('id', r.id)
+      if (extraErr) throw extraErr
+    }
     await logAdminAction(c, supabase, 'lead.bulk_field', 'employer_lead', null, { field, ids: (data || []).map(r => r.id) })
     return c.json({ success: true, affected: (data || []).length })
   }
@@ -961,7 +1062,7 @@ async function adminBulkUpdateLeads(c) {
   }
 
   const { data, error } = await supabase
-    .from('employer_leads').update({ status, updated_at: now }).in('id', ids).select('id')
+    .from('employer_leads').update({ status, updated_at: now, archived_resubmitted_at: null }).in('id', ids).select('id')
   if (error) throw error
   // Two writes (status, then the first-contact stamp), so the second can fail after the first
   // landed. The status change is real either way and must reach the audit trail: it used to be
@@ -1346,7 +1447,8 @@ async function adminNotifyCandidates(c) {
   const cutoff = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString()
   const eligible = () => supabase.from('employer_leads')
     .select('id, name, email, status, contacted_at', { count: 'exact' })
-    .eq('role_category', field).not('confirmed_at', 'is', null).in('status', OPEN_STATUSES)
+    .or(`role_category.eq.${field},extra_role_categories.cs.{${field}}`)
+    .not('confirmed_at', 'is', null).in('status', OPEN_STATUSES)
     .or(`last_candidates_notified_at.is.null,last_candidates_notified_at.lt.${cutoff}`)
   const { data: batch, error: selErr, count } = await eligible()
     .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_EXAMINE_MAX)
@@ -1391,9 +1493,176 @@ async function adminNotifyCandidates(c) {
   return c.json({ success: true, data: { field, candidates, eligible: total, sent, failed, skipped, remaining: Math.max(0, total - sent - skipped - failed) } })
 }
 
+// ── Admin: bulk import ──────────────────────────────────────────────────────
+
+// Round 10 (Section 5): export existed, import did not — leads met at an event or kept in a
+// spreadsheet had to be added one at a time. The browser parses the file and sends rows in
+// batches; every row is judged on its own and the response says what happened to each problem
+// row. Like a single manual add, an imported lead counts as confirmed because the admin vouches
+// for it — which is why the request must say so (`attest`), and why an address on the
+// do-not-contact list is never overridden here (lift it deliberately, one address at a time).
+const IMPORT_MAX_ROWS = 500
+const IMPORT_REPORT_MAX = 50
+const importRowSchema = z.object({
+  name:    required(100),
+  company: required(200),
+  email:   z.string().trim().toLowerCase().max(254).email(),
+  field:   z.string().max(100).nullish(),
+  role:    text(100).nullish(),
+  notes:   z.string().max(2000).transform(cleanNotes).nullish()
+})
+const importSchema = z.object({
+  rows:    z.array(z.record(z.unknown())).min(1).max(IMPORT_MAX_ROWS),
+  attest:  z.literal(true, { errorMap: () => ({ message: 'Confirm that these contacts asked to hear from you.' }) }),
+  dryRun:  z.boolean().optional()
+})
+
+const fieldKey = (raw) => String(raw || '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+
+// `.in()` travels in the URL; 500 SHA-256 hashes would be ~35 KB of it, past what the REST gateway
+// accepts. Lookups go out in small groups.
+const IN_LOOKUP_CHUNK = 50
+const inChunks = (list) => { const out = []; for (let i = 0; i < list.length; i += IN_LOOKUP_CHUNK) out.push(list.slice(i, i + IN_LOOKUP_CHUNK)); return out }
+
+async function suppressedAmong(supabase, emails) {
+  if (!emails.length) return new Set()
+  const byHash = new Map(await Promise.all(emails.map(async (e) => [await sha256(e), e])))
+  const hit = new Set()
+  for (const group of inChunks([...byHash.keys()])) {
+    const { data, error } = await supabase.from('employer_lead_suppressions').select('email_hash').in('email_hash', group)
+    if (error) {
+      if (MISSING_RELATION.includes(error.code)) return new Set()
+      throw error
+    }
+    for (const r of data || []) if (byHash.has(r.email_hash)) hit.add(byHash.get(r.email_hash))
+  }
+  return hit
+}
+
+async function adminImportLeads(c) {
+  const { rows: rawRows, dryRun } = importSchema.parse(await c.req.json())
+  const supabase = getSupabase(c.env)
+  const problems = []
+  const note = (line, email, reason) => { if (problems.length < IMPORT_REPORT_MAX) problems.push({ line, email: email || null, reason }) }
+  const tally = { invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, fieldIgnored: 0 }
+
+  const seen = new Set()
+  const valid = []
+  rawRows.forEach((raw, i) => {
+    const line = i + 1
+    const r = importRowSchema.safeParse(raw)
+    if (!r.success) {
+      tally.invalid++
+      note(line, typeof raw.email === 'string' ? raw.email : null, r.error.issues[0]?.message || 'Invalid row.')
+      return
+    }
+    const d = r.data
+    if (seen.has(d.email)) { tally.duplicateInFile++; note(line, d.email, 'Repeated in this file.'); return }
+    seen.add(d.email)
+    const key = fieldKey(d.field)
+    const known = ROLE_CATEGORIES.includes(key)
+    if (d.field && d.field.trim() && !known) { tally.fieldIgnored++; note(line, d.email, `Field "${d.field.trim()}" is not one of ours; imported without a field.`) }
+    valid.push({ line, d, key: known ? key : null })
+  })
+
+  const emails = valid.map(v => v.d.email)
+  const existing = new Set()
+  for (const group of inChunks(emails)) {
+    const { data: existingRows, error: exErr } = await supabase.from('employer_leads').select('email').in('email', group)
+    if (exErr) throw exErr
+    for (const r of existingRows || []) existing.add(r.email)
+  }
+  const removed = await suppressedAmong(supabase, emails.filter(e => !existing.has(e)))
+
+  const now = new Date().toISOString()
+  const toInsert = []
+  for (const v of valid) {
+    if (existing.has(v.d.email)) { tally.exists++; note(v.line, v.d.email, 'Already a lead.'); continue }
+    if (removed.has(v.d.email)) { tally.removed++; note(v.line, v.d.email, 'Asked to be removed — not imported.'); continue }
+    toInsert.push({
+      name: v.d.name, company: v.d.company, email: v.d.email,
+      role_category: v.key, role_title: v.d.role || null, notes: v.d.notes || null,
+      status: 'NEW', source: 'manual', confirmed_at: now
+    })
+  }
+
+  let created = 0
+  if (!dryRun && toInsert.length) {
+    const { error } = await supabase.from('employer_leads').insert(toInsert)
+    if (!error) created = toInsert.length
+    else if (error.code !== '23505') throw error
+    else {
+      // Someone (a form submission, another admin) added one of these addresses a moment ago.
+      // Settle the rest one by one rather than dropping the whole batch.
+      for (const row of toInsert) {
+        const { error: oneErr } = await supabase.from('employer_leads').insert(row)
+        if (!oneErr) created++
+        else if (oneErr.code === '23505') { tally.exists++; note(null, row.email, 'Already a lead.') }
+        else throw oneErr
+      }
+    }
+  }
+  const wouldCreate = dryRun ? toInsert.length : created
+  if (!dryRun) await logAdminAction(c, supabase, 'lead.import', 'employer_leads', null, { rows: rawRows.length, created, ...tally })
+  return c.json({ success: true, data: { dryRun: !!dryRun, rows: rawRows.length, created: dryRun ? 0 : created, wouldCreate, ...tally, problems } })
+}
+
+// ── Acknowledgement retry (hourly cron) ─────────────────────────────────────
+
+// Round 10 (Section 5): a new lead's confirmation email was tried exactly once, after the
+// response. A spent hourly budget, a Resend hiccup or a cut-off isolate left the lead
+// unacknowledged for good — and the unconfirmed-lead purge later deleted it without it ever
+// having been asked to confirm. This runs from the hourly cron: the oldest never-acknowledged
+// leads get their email, within the same hourly budget as live submissions (so it can never
+// outrun it), each lead at most LEAD_ACK_MAX_ATTEMPTS times and not more often than every
+// ACK_SWEEP_RETRY_GAP_MS, so a lead whose address always fails cannot starve the ones behind it.
+const ACK_SWEEP_BATCH = 20
+const ACK_SWEEP_GRACE_MS = 15 * 60 * 1000          // the first attempt (after the response) gets this long
+const ACK_SWEEP_RETRY_GAP_MS = 6 * 60 * 60 * 1000
+const ACK_SWEEP_MAX_AGE_MS = 60 * 24 * 60 * 60 * 1000
+
+async function sweepUnacknowledgedLeads(env, supabase = getSupabase(env), now = Date.now()) {
+  const iso = (ms) => new Date(ms).toISOString()
+  const { data: leads, error } = await supabase.from('employer_leads').select('*')
+    .is('last_ack_at', null).is('confirmed_at', null).neq('status', 'ARCHIVED')
+    .lt('ack_attempts', constants.LEAD_ACK_MAX_ATTEMPTS)
+    .lt('created_at', iso(now - ACK_SWEEP_GRACE_MS)).gt('created_at', iso(now - ACK_SWEEP_MAX_AGE_MS))
+    .or(`last_ack_attempt_at.is.null,last_ack_attempt_at.lt.${iso(now - ACK_SWEEP_RETRY_GAP_MS)}`)
+    .order('last_ack_attempt_at', { ascending: true, nullsFirst: true }).order('created_at', { ascending: true })
+    .limit(ACK_SWEEP_BATCH)
+  if (error) return { error: error.message }
+
+  const origin = env && env.API_ORIGIN ? String(env.API_ORIGIN).replace(/\/+$/, '') : null
+  const out = { examined: (leads || []).length, sent: 0, failed: 0, adopted: 0, suppressed: 0, budgetExhausted: false }
+  for (const lead of leads || []) {
+    if (await isSuppressed(supabase, lead.email)) { out.suppressed++; continue }
+    // The email may have gone out and only the bookkeeping failed: take the log's word for it.
+    const earlier = await findEarlierAck(supabase, lead.email, now)
+    if (earlier) { await stampLead(env, { id: lead.id }, { last_ack_at: earlier }); out.adopted++; continue }
+    const result = await attemptAck(env, lead, { origin })
+    if (result.reason === 'budget') { out.budgetExhausted = true; break }
+    await stampLead(env, { id: lead.id }, {
+      ack_attempts: (lead.ack_attempts || 0) + 1, last_ack_attempt_at: iso(Date.now())
+    })
+    if (result.sent) out.sent++; else out.failed++
+  }
+  return out
+}
+
+async function findEarlierAck(supabase, email, now) {
+  try {
+    const { data, error } = await supabase.from('email_logs').select('sent_at')
+      .eq('to', email).eq('template', 'employer_lead_ack').eq('status', 'sent')
+      .gte('sent_at', new Date(now - NOTIFY_COOLDOWN_MS).toISOString())
+      .order('sent_at', { ascending: false }).limit(1)
+    if (error || !Array.isArray(data) || !data.length) return null
+    return data[0].sent_at
+  } catch (_) { return null }
+}
+
 module.exports = {
   createLead, confirmLead, setLeadField, removeLead, unsubscribeLead, unsubscribeRedirect, adminMarkConfirmed,
-  adminListLeads, adminExportLeads, adminCreateLead,
+  adminListLeads, adminExportLeads, adminCreateLead, adminImportLeads, sweepUnacknowledgedLeads,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,
   performRemoval,

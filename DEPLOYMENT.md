@@ -288,6 +288,8 @@ wrangler secret put TURNSTILE_SECRET_KEY
 # Unset = taken from the incoming request, which is correct for the normal
 # single-hostname setup; set it only if requests reach the Worker under a
 # different hostname than the one mail clients should call back.
+# The hourly acknowledgement retry (employer leads, migration 0062) has no incoming request to
+# read it from: set this, or those emails go out without the one-click unsubscribe header.
 #   https://api.passthrough.dev
 wrangler secret put API_ORIGIN
 

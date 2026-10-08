@@ -392,7 +392,7 @@ describe('wrangler.toml / deploy docs wiring (G1, G2, B1)', () => {
   it('the cron comment and the scheduled export agree on the number of jobs', () => {
     const idx = fs.readFileSync(path.join(root, 'src', 'index.js'), 'utf8')
     const calls = (idx.match(/^\s{4}(?:return )?\w+Sweep\(event, env, ctx\)|^\s{4}scheduled\(event, env, ctx\)/gm) || []).length
-    expect(calls).toBe(8)
-    expect(toml).toMatch(/eight scheduled jobs/)
+    expect(calls).toBe(9)
+    expect(toml).toMatch(/nine scheduled jobs/)
   })
 })

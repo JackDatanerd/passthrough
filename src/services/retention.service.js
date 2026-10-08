@@ -145,7 +145,12 @@ async function purgeStaleUnconfirmedLeads(supabase, now = Date.now()) {
     const cutoff = new Date(now - UNCONFIRMED_LEAD_RETENTION_DAYS * DAY).toISOString()
     const { data, error } = await supabase.from('employer_leads')
       .delete().eq('status', 'NEW').is('confirmed_at', null).is('notes', null)
-      .lt('last_submitted_at', cutoff).select('id')
+      .lt('last_submitted_at', cutoff)
+      // Round 10 (Section 5): only a lead that was actually asked to confirm (or that the
+      // acknowledgement sweep has given up on, or that is very old regardless) may go. One whose
+      // email never went out has not had its chance.
+      .or(`last_ack_at.not.is.null,ack_attempts.gte.${c.LEAD_ACK_MAX_ATTEMPTS},created_at.lt.${new Date(now - 2 * UNCONFIRMED_LEAD_RETENTION_DAYS * DAY).toISOString()}`)
+      .select('id')
     if (error) return { deleted: 0, error: error.message }
     return { deleted: data?.length || 0 }
   } catch (err) {

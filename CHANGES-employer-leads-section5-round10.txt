@@ -1,0 +1,49 @@
+Employer leads (Section 5) — independent audit round 10
+========================================================
+
+Scope: employer-leads.controller.js + employer-leads.routes.js, traced into the retention sweep, the
+hourly cron, the lead mapper, the admin Leads page and the schema-version guard. Migration 0062.
+
+DEPLOY ORDER: run supabase/migrations/0062_employer_leads_round10.sql BEFORE deploying the Worker (new
+columns; open_lead_counts() redefined). Set API_ORIGIN (wrangler secret) so acknowledgements sent by the
+hourly retry carry the one-click List-Unsubscribe header; without it they still go out, minus the header.
+
+FEATURE GAPS CLOSED
+  G1  Unsent confirmation emails are retried (and visible)
+      A new lead's acknowledgement was attempted once, after the response. A spent hourly budget, a Resend
+      failure or a cut-off isolate left the lead unacknowledged for good, and the unconfirmed-lead purge
+      later deleted it without it ever having been asked to confirm. Now:
+        - sweepUnacknowledgedLeads (hourly cron job 'leadAckSweep') mails the oldest never-acknowledged,
+          unconfirmed, non-archived leads (older than 15 min, younger than 60 days), within the SAME hourly
+          budget as live submissions; each lead at most LEAD_ACK_MAX_ATTEMPTS (5) times, not more often than
+          every 6 h, so a failing address cannot starve the queue; stops for the hour when the budget is spent
+          (that does not count as an attempt); first checks email_logs in case the mail went out and only the
+          bookkeeping failed.
+        - the unconfirmed-lead purge only removes a lead that was acknowledged, whose retries are exhausted,
+          or that is 180+ days old.
+        - admin list: "Never emailed (n)" view (ack=never), per-row "no confirmation email sent" note.
+  G2  An archived lead that submits again is no longer swallowed
+      Decision: it STAYS archived (the dismissal stands; a spammer cannot reopen themselves) and nothing is
+      sent to it, but it is flagged (archived_resubmitted_at), the owner gets one 'Archived employer lead
+      resubmitted' notice per week, and the list has a "Came back while archived (n)" view and a per-row
+      note. Any status decision (single or bulk, including archiving again) clears the flag.
+  G3  Lead email can be corrected (PATCH /:id { email })
+      Resets confirmation, acknowledgement, retry counter and candidate-notice clock (they belonged to the old
+      address), refuses a do-not-contact address (409 REMOVAL_REQUESTED) and a duplicate (409), asks the new
+      address to confirm straight away (not for an archived lead). Audit entry records emailChanged only.
+  G4  A lead can hire in more than one field
+      role_category stays the primary field; extra_role_categories (max 4) holds the rest. A resubmission naming
+      a different valid field adds it (not for an archived lead) and the owner notice says so; the admin edit
+      dialog manages them; field filter, candidate notification (notify-candidates) and open_lead_counts()
+      (owner digest) all match every field. Setting/clearing the primary keeps the lists consistent
+      (single and bulk). CSV gets three trailing columns (after Lead id, so existing positions do not move).
+  G5  Bulk CSV import (POST /import, admin "Import CSV")
+      Up to 500 rows per request (the page sends 200), per-row validation, dry run, rows already leads /
+      repeated / invalid / on the do-not-contact list are skipped and reported; field names map to the
+      taxonomy (unknown ones imported without a field). Imported leads are confirmed like a manual add, so
+      the request must carry attest:true; nobody is emailed; suppression is never overridden. Address lookups
+      go out in groups of 50 so the request URL stays short.
+
+TESTS  tests/employer-leads.round10.test.js (31), frontend/tests/pages/AdminLeads.round10.test.jsx (10),
+       frontend/tests/leadImport.test.js (8); retention + cross-cutting tests updated (nine cron jobs, schema 62);
+       two earlier tests intentionally changed (an archived resubmission now notifies; a different field is kept).

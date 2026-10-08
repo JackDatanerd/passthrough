@@ -162,13 +162,14 @@ describe('archived leads are never mailed a confirmation by an admin action', ()
 describe('a resubmission with different details', () => {
   const resubmit = async (existing, body) => { t = setup({ leads: [existing] }); await submit(valid(body)); return t.state.leads[0] }
 
-  it('keeps the field, does not graft a title from another field, and tells the owner', async () => {
+  it('keeps the primary field, adds the other as one the lead is also hiring in, does not graft its title, and tells the owner', async () => {
     const row = await resubmit(lead({ confirmed_at: HOURS_AGO(70) }), { roleCategory: 'data_science', roleTitle: 'ML lead', verificationCode: 'ab3xk9' })
     expect(row.role_category).toBe('sales')
+    expect(row.extra_role_categories).toEqual(['data_science'])
     expect(row.role_title).toBeNull()
     expect(row.submission_count).toBe(2)
     const msg = t.state.notices[0].message
-    expect(msg).toContain('field: Data Science')
+    expect(msg).toContain('also hiring in: Data Science')
     expect(msg).toContain('role: ML lead')
   })
   it('still fills a title that belongs to the lead\'s own field', async () => {

@@ -16,6 +16,7 @@ import { formatDate } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import { leadRowsFromCsv, chunk } from '../../lib/leadImport'
 
 const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', ARCHIVED: 'gray' }
 const STATUSES = ['NEW', 'CONTACTED', 'CONVERTED', 'ARCHIVED']
@@ -52,11 +53,18 @@ export default function AdminLeads() {
   // mail: '' = all, 'yes', 'no'.
   const confirmed = ['yes', 'no'].includes(searchParams.get('confirmed')) ? searchParams.get('confirmed') : ''
   const source = SOURCES.includes(searchParams.get('source')) ? searchParams.get('source') : ''
+  // Two "needs a look" views: unconfirmed leads we have never managed to email, and archived leads that
+  // submitted the form again (they stay archived until you decide).
+  const ack = searchParams.get('ack') === 'never' ? 'never' : ''
+  const reengaged = searchParams.get('reengaged') === 'yes' ? 'yes' : ''
 
   const [leads, setLeads] = useState([])
   const [total, setTotal] = useState(0)
   const [counts, setCounts] = useState({})
   const [unconfirmed, setUnconfirmed] = useState(0)
+  const [neverEmailed, setNeverEmailed] = useState(0)
+  const [reengagedCount, setReengagedCount] = useState(0)
+  const [importing, setImporting] = useState(false)
   const [candidateSupply, setCandidateSupply] = useState(null)
   const [sourceCounts, setSourceCounts] = useState({})
   const [suppressed, setSuppressed] = useState(null)
@@ -187,7 +195,7 @@ export default function AdminLeads() {
     if (!silent) setLoading(true)
     try {
       const res = await api.get('/employer-leads', {
-        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, sort }
+        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, ack: ack || undefined, reengaged: reengaged || undefined, sort }
       })
       if (id !== requestId.current) return
       const meta = res.data.meta
@@ -199,6 +207,8 @@ export default function AdminLeads() {
       setTotal(meta.total)
       setCounts(meta.counts || {})
       setUnconfirmed(meta.unconfirmed ?? 0)
+      setNeverEmailed(meta.neverEmailed ?? 0)
+      setReengagedCount(meta.reengaged ?? 0)
       setCandidateSupply(meta.candidateSupply)
       setSourceCounts(meta.sourceCounts || {})
       setSuppressed(meta.suppressed)
@@ -225,7 +235,7 @@ export default function AdminLeads() {
       if (id === requestId.current) setLoading(false)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, search, status, field, source, confirmed, sort])
+  }, [page, search, status, field, source, confirmed, ack, reengaged, sort])
 
   useEffect(() => { load() }, [load])
   const refresh = () => load({ silent: true })
@@ -379,7 +389,7 @@ export default function AdminLeads() {
     setExporting(true)
     try {
       const res = await api.get('/employer-leads/export.csv', {
-        params: { search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, sort },
+        params: { search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, ack: ack || undefined, reengaged: reengaged || undefined, sort },
         responseType: 'blob'
       })
       const url = URL.createObjectURL(res.data)
@@ -423,6 +433,7 @@ export default function AdminLeads() {
             </Button>
           )}
           <Button size="sm" variant="secondary" onClick={() => setAdding(true)}>Add lead</Button>
+          <Button size="sm" variant="secondary" onClick={() => setImporting(true)}>Import CSV</Button>
           <Button size="sm" variant="secondary" loading={exporting} onClick={exportCsv}>Export CSV</Button>
         </div>
       </div>
@@ -435,6 +446,18 @@ export default function AdminLeads() {
             {s} ({counts[s] ?? 0})
           </button>
         ))}
+        {(neverEmailed > 0 || ack) && (
+          <button onClick={() => setParams({ ack: ack ? '' : 'never' })} className={chip(!!ack)}
+            title="Unconfirmed leads that have not been sent a confirmation email yet (the hourly retry keeps trying; you can also send one by hand).">
+            Never emailed ({neverEmailed})
+          </button>
+        )}
+        {(reengagedCount > 0 || reengaged) && (
+          <button onClick={() => setParams({ reengaged: reengaged ? '' : 'yes' })} className={chip(!!reengaged)}
+            title="Archived leads that submitted the form again. They stay archived until you change their status.">
+            Came back while archived ({reengagedCount})
+          </button>
+        )}
       </div>
 
       <div className="flex gap-3 flex-wrap items-end">
@@ -532,6 +555,11 @@ export default function AdminLeads() {
                     {l.confirmedAt
                       ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}`}>✓ confirmed</span>
                       : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
+                    {!l.confirmedAt && l.status !== 'ARCHIVED' && (l.lastAckAt
+                      ? <span className="block text-xs text-gray-400">confirmation sent {formatDate(l.lastAckAt)}</span>
+                      : <span className="block text-xs text-amber-600" title="No confirmation email has gone out to this address yet. It is retried hourly a few times; use Send confirm link to try now.">
+                          no confirmation email sent{l.ackAttempts > 0 ? ` (${l.ackAttempts} ${l.ackAttempts === 1 ? 'retry' : 'retries'} failed)` : ''}
+                        </span>)}
                     {l.lastCandidatesNotifiedAt && (
                       <span className="block text-xs text-gray-400" title="The last time Verified candidates were announced to this lead from here.">
                         told about candidates {formatDate(l.lastCandidatesNotifiedAt)}
@@ -549,6 +577,11 @@ export default function AdminLeads() {
                         )}
                       </>
                     ) : '—'}
+                    {l.extraRoleCategories?.length > 0 && (
+                      <span className="block text-xs text-gray-400" title="Also hiring in these fields; candidate announcements reach them for each.">
+                        also: {l.extraRoleCategories.map(roleLabel).join(', ')}
+                      </span>
+                    )}
                   </td>
                   <td className="px-4 py-3 text-gray-500">{l.roleTitle || '—'}</td>
                   <td className="px-4 py-3 text-gray-500">
@@ -583,6 +616,11 @@ export default function AdminLeads() {
                     </div>
                     {l.contactedAt && (
                       <div className="text-xs text-gray-400 mt-1">Contacted {formatDate(l.contactedAt)}</div>
+                    )}
+                    {l.status === 'ARCHIVED' && l.archivedResubmittedAt && (
+                      <div className="text-xs text-amber-600 mt-1" title="They submitted the form again after you archived them. Nothing was sent to them. Change the status to work this lead again, or archive it again to dismiss this.">
+                        came back {formatDate(l.archivedResubmittedAt)}
+                      </div>
                     )}
                   </td>
                   <td className="px-4 py-3">
@@ -726,7 +764,15 @@ export default function AdminLeads() {
       />
       <LeadFormModal
         open={!!editing} mode="edit" lead={editing} onClose={() => setEditing(null)}
-        onSaved={() => { setEditing(null); toast({ message: 'Lead updated.', type: 'success' }); refresh() }}
+        onSaved={(res) => {
+          setEditing(null)
+          toast({ message: res?.confirmationReset ? 'Lead updated. The new address was sent a confirmation link.' : 'Lead updated.', type: 'success' })
+          refresh()
+        }}
+      />
+      <ImportLeadsModal
+        open={importing} onClose={() => setImporting(false)}
+        onDone={(created) => { setImporting(false); toast({ message: `${created} lead${created === 1 ? '' : 's'} imported.`, type: 'success' }); refresh() }}
       />
     </div>
   )
@@ -736,7 +782,7 @@ export default function AdminLeads() {
 // one form. The email is fixed once a lead exists: it is the identity the
 // dedupe keys on.
 function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
-  const [form, setForm] = useState({ name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '' })
+  const [form, setForm] = useState({ name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '', extras: [] })
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   // The server refuses an address that used its "remove me" link (409,
@@ -748,15 +794,15 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
     if (!open) return
     setError(''); setNeedsOverride(false)
     setForm(mode === 'edit' && lead
-      ? { name: lead.name, company: lead.company, email: lead.email, roleCategory: lead.roleCategory || '', roleTitle: lead.roleTitle || '', notes: '' }
-      : { name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '' })
+      ? { name: lead.name, company: lead.company, email: lead.email, roleCategory: lead.roleCategory || '', roleTitle: lead.roleTitle || '', notes: '', extras: lead.extraRoleCategories || [] }
+      : { name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '', extras: [] })
   }, [open, mode, lead])
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
   async function submit({ override = false } = {}) {
-    if (!form.name.trim() || !form.company.trim() || (mode === 'add' && !form.email.trim()))
-      return setError(mode === 'add' ? 'Name, company and email are required.' : 'Name and company are required.')
+    if (!form.name.trim() || !form.company.trim() || !form.email.trim())
+      return setError('Name, company and email are required.')
     setSaving(true); setError('')
     try {
       if (mode === 'add') {
@@ -766,10 +812,14 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           ...(override ? { overrideRemoval: true } : {})
         })
       } else {
-        await api.patch(`/employer-leads/${lead.id}`, {
+        const emailChanged = form.email.trim().toLowerCase() !== lead.email
+        const res = await api.patch(`/employer-leads/${lead.id}`, {
           name: form.name, company: form.company,
-          roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null
+          roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null,
+          extraRoleCategories: form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : [],
+          ...(emailChanged ? { email: form.email.trim() } : {})
         })
+        return onSaved(res.data)
       }
       onSaved()
     } catch (err) {
@@ -785,13 +835,24 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
       <Form onSubmit={() => submit()} className="flex flex-col gap-3">
         <Input label="Name" value={form.name} onChange={set('name')} />
         <Input label="Company" value={form.company} onChange={set('company')} />
-        {mode === 'add'
-          ? <Input label="Email" type="email" value={form.email} onChange={set('email')} />
-          : <p className="text-sm text-gray-500">Email: {form.email}</p>}
+        <Input label="Email" type="email" value={form.email} onChange={set('email')}
+          hint={mode === 'edit' ? 'Changing the address resets its confirmation and sends a confirmation link to the new one.' : undefined} />
         <Select id="lead-form-field" label="Field" value={form.roleCategory} onChange={set('roleCategory')}>
           <option value="">Uncategorised</option>
           {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </Select>
+        {mode === 'edit' && form.roleCategory && (
+          <fieldset className="flex flex-col gap-1">
+            <legend className="text-sm font-medium text-gray-700 mb-1">Also hiring in (up to 4)</legend>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+              {ROLE_CATEGORIES.filter(([key]) => key !== form.roleCategory).map(([key, label]) => (
+                <Checkbox key={key} label={label} checked={form.extras.includes(key)}
+                  disabled={!form.extras.includes(key) && form.extras.filter(k => k !== form.roleCategory).length >= 4}
+                  onChange={e => setForm(f => ({ ...f, extras: e.target.checked ? [...f.extras, key] : f.extras.filter(k => k !== key) }))} />
+              ))}
+            </div>
+          </fieldset>
+        )}
         <Input label="Role title (optional)" value={form.roleTitle} onChange={set('roleTitle')} />
         {mode === 'add' && (
           <Textarea id="lead-form-notes" label="Notes (optional)" value={form.notes} onChange={set('notes')} rows={3} maxLength={2000} />
@@ -807,6 +868,96 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           <Button type="submit" loading={saving}>{mode === 'add' ? 'Add lead' : 'Save'}</Button>
         </div>
       </Form>
+    </Modal>
+  )
+}
+
+// ── CSV import ──────────────────────────────────────────────────────────────
+
+// Pick a file, tick that these people asked to hear from you, check it (nothing is saved), then import.
+// Rows go up in batches of 200; each batch reports what it skipped and why.
+function ImportLeadsModal({ open, onClose, onDone }) {
+  const [rows, setRows] = useState([])
+  const [fileName, setFileName] = useState('')
+  const [parseError, setParseError] = useState('')
+  const [attest, setAttest] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const [report, setReport] = useState(null)   // result of the last check
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    if (!open) return
+    setRows([]); setFileName(''); setParseError(''); setAttest(false); setBusy(false); setReport(null); setError('')
+  }, [open])
+
+  async function onFile(e) {
+    const file = e.target.files?.[0]
+    setReport(null); setError('')
+    if (!file) return
+    setFileName(file.name)
+    const parsed = leadRowsFromCsv(await file.text())
+    setRows(parsed.rows); setParseError(parsed.error || '')
+  }
+
+  async function run(dryRun) {
+    setBusy(true); setError('')
+    const total = { created: 0, wouldCreate: 0, invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, fieldIgnored: 0, problems: [] }
+    try {
+      let offset = 0
+      for (const batch of chunk(rows)) {
+        const res = await api.post('/employer-leads/import', { rows: batch, attest: true, dryRun })
+        const d = res.data.data
+        for (const k of ['created', 'wouldCreate', 'invalid', 'duplicateInFile', 'exists', 'removed', 'fieldIgnored']) total[k] += d[k]
+        total.problems.push(...d.problems.map(p => ({ ...p, line: p.line ? p.line + offset : p.line })))
+        offset += batch.length
+      }
+      if (dryRun) setReport(total)
+      else onDone(total.created)
+    } catch (err) {
+      setError(getErrorMessage(err, 'The import failed part-way. Check the list before trying again — leads already imported are skipped.'))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const skipped = report ? report.invalid + report.duplicateInFile + report.exists + report.removed : 0
+  return (
+    <Modal open={open} onClose={onClose} title="Import leads from CSV" dismissible={!busy}>
+      <div className="flex flex-col gap-3 text-sm">
+        <p className="text-gray-500">
+          Columns: <b>name</b>, <b>company</b>, <b>email</b>; optional <b>field</b>, <b>role</b>, <b>notes</b>. Imported leads
+          count as confirmed and nobody is emailed. Addresses that asked to be removed, and addresses that are already
+          leads, are skipped.
+        </p>
+        <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={busy} aria-label="CSV file" />
+        {parseError && <p role="alert" className="text-red-600">{parseError}</p>}
+        {rows.length > 0 && !parseError && <p className="text-gray-600">{fileName}: {rows.length} row{rows.length === 1 ? '' : 's'} found.</p>}
+        <Checkbox label="These contacts asked to hear from Passthrough (or I am allowed to contact them about it)."
+          checked={attest} onChange={e => { setAttest(e.target.checked); setReport(null) }} />
+        {report && (
+          <div className="rounded-md border border-gray-200 bg-gray-50 px-3 py-2">
+            <p className="font-medium text-gray-900">{report.wouldCreate} would be imported{skipped ? `, ${skipped} skipped` : ''}.</p>
+            <p className="text-gray-500">
+              {[report.invalid && `${report.invalid} invalid`, report.duplicateInFile && `${report.duplicateInFile} repeated in the file`,
+                report.exists && `${report.exists} already leads`, report.removed && `${report.removed} asked to be removed`,
+                report.fieldIgnored && `${report.fieldIgnored} with an unknown field (imported without one)`].filter(Boolean).join(' · ') || 'No problems found.'}
+            </p>
+            {report.problems.length > 0 && (
+              <ul className="mt-2 max-h-40 overflow-y-auto text-xs text-gray-600 list-disc pl-4">
+                {report.problems.slice(0, 50).map((p, i) => <li key={i}>{p.line ? `Row ${p.line}` : 'Row'}{p.email ? ` (${p.email})` : ''}: {p.reason}</li>)}
+              </ul>
+            )}
+          </div>
+        )}
+        {error && <p role="alert" className="text-red-600">{error}</p>}
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" onClick={onClose} disabled={busy}>Cancel</Button>
+          <Button variant="secondary" loading={busy && !report} disabled={!rows.length || !!parseError || !attest || busy} onClick={() => run(true)}>Check file</Button>
+          <Button loading={busy && !!report} disabled={!report || !report.wouldCreate || busy} onClick={() => run(false)}>
+            Import{report ? ` ${report.wouldCreate}` : ''}
+          </Button>
+        </div>
+      </div>
     </Modal>
   )
 }

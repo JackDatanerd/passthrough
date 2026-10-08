@@ -153,6 +153,14 @@ describe('purgeStaleUnconfirmedLeads', () => {
     const db = createFakeSupabase(() => ({ error: { message: 'db down' } }))
     expect(await purgeStaleUnconfirmedLeads(db, NOW)).toEqual({ deleted: 0, error: 'db down' })
   })
+  it('never removes a lead that was not asked to confirm: needs an acknowledgement, exhausted sweep retries, or great age', async () => {
+    const db = createFakeSupabase(() => ({ data: [], error: null }))
+    await purgeStaleUnconfirmedLeads(db, NOW)
+    const expr = db.calls[0].or[0]
+    expect(expr).toContain('last_ack_at.not.is.null')
+    expect(expr).toContain('ack_attempts.gte.5')
+    expect(expr).toContain(`created_at.lt.${new Date(NOW - 2 * UNCONFIRMED_LEAD_RETENTION_DAYS * DAY).toISOString()}`)
+  })
 })
 
 describe('handleDeadLetterBatch', () => {

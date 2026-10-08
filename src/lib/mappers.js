@@ -385,6 +385,10 @@ function leadRowToCamel(row) {
     lastAckAt:    row.last_ack_at ?? null,
     lastNoticeAt: row.last_notice_at ?? null,
     lastCandidatesNotifiedAt: row.last_candidates_notified_at ?? null,
+    extraRoleCategories: row.extra_role_categories ?? [],
+    ackAttempts:  row.ack_attempts ?? 0,
+    lastAckAttemptAt: row.last_ack_attempt_at ?? null,
+    archivedResubmittedAt: row.archived_resubmitted_at ?? null,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }

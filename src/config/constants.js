@@ -11,7 +11,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 61,
+  EXPECTED_SCHEMA_VERSION: 62,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -81,6 +81,9 @@ module.exports = {
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,
   ATS_BADGE_THRESHOLD: 80,
+  // Employer leads: how many times the hourly sweep retries a never-acknowledged lead before it
+  // gives up (and the unconfirmed-lead purge may remove it). See employer-leads.controller.js.
+  LEAD_ACK_MAX_ATTEMPTS: 5,
   // < 75: FAIL → $49 or $39 (plain) | 75-79: PASS no badge → $49 or $39 (plain) | 80+: PASS → $39 badge, $39 plain, or $49 full
   ATS_RULE_WEIGHT: 0.70,
   ATS_AI_WEIGHT:   0.30,

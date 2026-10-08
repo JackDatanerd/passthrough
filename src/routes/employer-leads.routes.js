@@ -41,6 +41,7 @@ router.get('/export.csv', admin, c.adminExportLeads)
 // Admin-only writes that are not keyed by an :id, registered before the /:id
 // routes so 'manual' / 'bulk' can never be read as an id.
 router.post('/manual', admin, c.adminCreateLead)
+router.post('/import', admin, c.adminImportLeads)
 router.post('/bulk',   admin, c.adminBulkUpdateLeads)
 // FEATURE GAP CLOSED (independent audit round 6, G1): tell confirmed leads in a field that now has
 // Verified candidates. Not keyed by :id, so it sits with the other fixed-path writes.
