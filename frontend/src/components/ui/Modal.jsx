@@ -72,7 +72,10 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     modalStack.push(id)
 
     const initial =
-      dialog.querySelector('[data-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ||
+      // Two queries on purpose: one selector list returns the first match in DOCUMENT order, so a
+      // checkbox rendered above the buttons would beat `data-autofocus` (the safe default button).
+      dialog.querySelector('[data-autofocus]') ||
+      dialog.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ||
       dialog.querySelector(FOCUSABLE) || dialog
     initial.focus()
 

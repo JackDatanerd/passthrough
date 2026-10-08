@@ -19,7 +19,6 @@ const PasswordInput = forwardRef(function PasswordInput({ className, ...props },
         <button
           type="button"
           onClick={() => setShown(s => !s)}
-          aria-pressed={shown}
           aria-label={shown ? 'Hide password' : 'Show password'}
           className="absolute inset-y-0 right-0 px-3 text-xs font-medium text-gray-500 hover:text-gray-800 rounded-r-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >

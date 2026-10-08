@@ -22,6 +22,8 @@ export function humanizeField(field) {
 
 export function getErrorMessage(err, fallback = GENERIC) {
   if (!err) return fallback
+  // A deliberately cancelled request is not a connectivity problem.
+  if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return fallback
 
   const res = err.response
   if (res) {
@@ -68,9 +70,12 @@ export async function normalizeBlobError(err) {
 
 // Should a failed request be retried once, automatically?
 // Only idempotent GETs, and only for failures that are plausibly transient.
-export function shouldRetryRequest({ method, status, hasResponse, retryAfterSeconds, alreadyRetried }) {
+export function shouldRetryRequest({ method, status, hasResponse, retryAfterSeconds, alreadyRetried, cancelled = false }) {
   if (alreadyRetried) return { retry: false }
-  if (String(method || 'get').toLowerCase() !== 'get') return { retry: false }
+  // No method means no request config survived (not an axios request error): nothing to replay.
+  if (!method || String(method).toLowerCase() !== 'get') return { retry: false }
+  // A request the caller aborted on purpose is not a transient failure.
+  if (cancelled) return { retry: false }
   if (!hasResponse) return { retry: true, delayMs: 800 }                       // network blip / timeout
   if (status === 502 || status === 503 || status === 504) return { retry: true, delayMs: 800 }
   if (status === 429 && Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 && retryAfterSeconds <= 5)

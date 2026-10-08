@@ -7,6 +7,7 @@ import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDateTime } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 const PAGE_SIZE = 20
 
@@ -45,16 +46,21 @@ export default function AdminAuditLog() {
   const [targetType, setTargetType] = useState('')
   const [loading, setLoading] = useState(true)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/audit-log', { params: { page, pageSize: PAGE_SIZE, targetType: targetType || undefined } })
+      if (!isCurrent()) return
       setEntries(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load the audit log.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, targetType])
 

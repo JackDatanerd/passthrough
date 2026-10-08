@@ -9,6 +9,7 @@ import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatCents } from '../../lib/utils'
 import Checkbox from '../../components/ui/Checkbox'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 // FEATURE GAP CLOSED (Payments & Pricing re-audit): GET /api/payments/history
 // (payments.controller.js's getPaymentHistory) has existed, fully built and
@@ -63,21 +64,24 @@ export default function PaymentHistory() {
   // was paginated (default 20) every account with more than 20 visible payments
   // silently lost its older purchases from view — `total` was returned and
   // discarded. Now requests an explicit page and renders Pagination.
+  const begin = useLatestRequest()
   const load = useCallback(() => {
+    const isCurrent = begin()
     setLoading(true)
     setError('')
     return api.get('/payments/history', {
       params: { page, pageSize: PAGE_SIZE, includeAbandoned: showAbandoned ? 1 : undefined },
     })
       .then(res => {
+        if (!isCurrent()) return
         const data = res.data.data
         setPayments(data.payments)
         setTotal(data.total ?? data.payments.length)
         // Landed past the last page (a cancel/toggle shrank the list): step back.
         if (data.payments.length === 0 && page > 1) setPage(p => Math.max(1, p - 1))
       })
-      .catch(err => setError(getErrorMessage(err, 'Failed to load payment history.')))
-      .finally(() => setLoading(false))
+      .catch(err => { if (isCurrent()) setError(getErrorMessage(err, 'Failed to load payment history.')) })
+      .finally(() => { if (isCurrent()) setLoading(false) })
   }, [page, showAbandoned])
 
   useEffect(() => { load() }, [load])

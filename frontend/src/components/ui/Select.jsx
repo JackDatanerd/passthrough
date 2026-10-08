@@ -30,13 +30,13 @@ const sizes = {
   sm: 'px-2 py-1 text-xs',
 }
 
-const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, ...props }, ref) {
+const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const selectId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
   // reference `${selectId}-hint` even when the hint <p> wasn't rendered
   // (it only renders when `hint && !error`), a dangling ARIA reference.
-  const describedBy = [error && `${selectId}-error`, hint && !error && `${selectId}-hint`].filter(Boolean).join(' ') || undefined
+  const describedBy = [error && `${selectId}-error`, hint && !error && `${selectId}-hint`].concat(extraDescribedBy || []).filter(Boolean).join(' ') || undefined
 
   // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to
   // its own `w-full`, and Tailwind emits w-full last, so it silently wins.
@@ -53,10 +53,12 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
         className={cn(
-          'w-full rounded-md border text-gray-900 bg-white',
+          'w-full rounded-md border text-gray-900',
           'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
           sizes[size] || sizes.md,
-          error ? 'border-red-400 bg-red-50' : 'border-gray-300',
+          // bg-white lives in the ternary: both bg-* on the control at once, and the stylesheet (not the
+          // class order) picks the winner — bg-white used to beat bg-red-50, so the error tint never showed.
+          error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
           className
         )}
         {...props}

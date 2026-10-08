@@ -86,7 +86,10 @@ api.interceptors.response.use(
 
     const status = err.response?.status
     const code = err.response?.data?.code
-    const config = err.config || {}
+    // Cancelled on purpose (AbortController) or not an axios request error at all: nothing to
+    // classify, retry or redirect on.
+    if (axios.isCancel(err) || !err.config) return Promise.reject(err)
+    const config = err.config
 
     let verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
     // A failure from a request sent under a session that is no longer the current
@@ -117,7 +120,7 @@ api.interceptors.response.use(
     const retryAfter = Number(err.response?.headers?.['retry-after'])
     const decision = shouldRetryRequest({
       method: config.method, status, hasResponse: !!err.response,
-      retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried,
+      retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried, cancelled: false,
     })
     if (decision.retry && !verdict) {
       config.__retried = true

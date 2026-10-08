@@ -17,14 +17,41 @@ export function ToastProvider({ children }) {
   const nextId = useRef(0)
   const timers = useRef(new Map())
 
-  const remove = useCallback(id => {
-    clearTimeout(timers.current.get(id))
+  // Each timer entry is { handle, deadline, remaining }. Hovering or focusing the stack pauses every
+  // toast's countdown (WCAG 2.2.1: nobody should lose a message mid-read) and leaving resumes it
+  // with the time that was left.
+  const clearTimer = useCallback(id => {
+    const t = timers.current.get(id)
+    if (t) clearTimeout(t.handle)
     timers.current.delete(id)
-    setToasts(prev => prev.filter(t => t.id !== id))
   }, [])
 
+  const remove = useCallback(id => {
+    clearTimer(id)
+    setToasts(prev => prev.filter(t => t.id !== id))
+  }, [clearTimer])
+
+  const arm = useCallback((id, ms) => {
+    timers.current.set(id, { handle: setTimeout(() => remove(id), ms), deadline: Date.now() + ms, remaining: ms })
+  }, [remove])
+
+  const pause = useCallback(() => {
+    timers.current.forEach(t => {
+      if (t.handle == null) return
+      clearTimeout(t.handle)
+      t.handle = null
+      t.remaining = Math.max(1000, t.deadline - Date.now())
+    })
+  }, [])
+
+  const resume = useCallback(() => {
+    timers.current.forEach((t, id) => { if (t.handle == null) arm(id, t.remaining) })
+  }, [arm])
+
   const toast = useMemo(() => {
-    const show = ({ message, type = 'info', duration = 4000 }) => {
+    // Errors are the messages people most need to read (and often retype from), so they stay up
+    // longer by default. `duration: 0` keeps a toast until it is dismissed.
+    const show = ({ message, type = 'info', duration = type === 'error' ? 9000 : 4000 }) => {
       const id = ++nextId.current
       setToasts(prev => {
         const next = [...prev, { id, message, type }]
@@ -32,24 +59,21 @@ export function ToastProvider({ children }) {
         // its auto-dismiss timer must be cleared too — otherwise it lingers
         // in `timers` and fires a no-op remove() later for a toast nobody can see.
         const dropped = next.slice(0, Math.max(0, next.length - 5))
-        for (const t of dropped) {
-          clearTimeout(timers.current.get(t.id))
-          timers.current.delete(t.id)
-        }
+        for (const t of dropped) clearTimer(t.id)
         return next.slice(-5)
       })
-      if (duration > 0) timers.current.set(id, setTimeout(() => remove(id), duration))
+      if (duration > 0) arm(id, duration)
       return id
     }
     for (const type of ['success', 'error', 'info', 'warning'])
       show[type] = (message, opts = {}) => show({ message, type, ...opts })
     show.dismiss = remove
     return show
-  }, [remove])
+  }, [remove, arm, clearTimer])
 
   useEffect(() => {
     const active = timers.current
-    return () => { active.forEach(clearTimeout); active.clear() }
+    return () => { active.forEach(t => clearTimeout(t.handle)); active.clear() }
   }, [])
 
   const colors = {
@@ -69,6 +93,10 @@ export function ToastProvider({ children }) {
         style={{ bottom: 'calc(1rem + var(--bottom-inset, 0px))' }}
         aria-live="polite"
         aria-atomic="false"
+        onMouseEnter={pause}
+        onMouseLeave={resume}
+        onFocus={pause}
+        onBlur={resume}
       >
         {toasts.map(t => (
           <div

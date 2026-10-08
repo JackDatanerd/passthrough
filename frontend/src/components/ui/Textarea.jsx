@@ -2,13 +2,13 @@ import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
 
 // See Input.jsx for what changed and why (useId, forwardRef, aria wiring).
-const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, ...props }, ref) {
+const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
   // reference `${inputId}-hint` even when the hint <p> wasn't rendered
   // (it only renders when `hint && !error`), a dangling ARIA reference.
-  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
+  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].concat(extraDescribedBy || []).filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to

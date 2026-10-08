@@ -11,6 +11,7 @@ import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 const PAGE_SIZE = 25
 
@@ -25,18 +26,23 @@ export default function AdminUsers() {
   const [busyId, setBusyId] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/users', {
         params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined }
       })
+      if (!isCurrent()) return
       setUsers(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load users.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, search, status])
 

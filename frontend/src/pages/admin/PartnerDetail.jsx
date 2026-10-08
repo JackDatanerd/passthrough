@@ -14,6 +14,7 @@ import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv }
 import Alert from '../../components/ui/Alert'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 function PayoutDetailsFields({ method, details }) {
   const d = details || {}
@@ -794,15 +795,19 @@ export default function PartnerDetail() {
   // spinner. The spinner used to unmount every tab — and any modal open inside one — so a
   // PAYOUT_DETAILS_CHANGED conflict reloaded the partner and closed the modal before the
   // admin could read the error that explained why nothing was recorded.
+  const beginLoad = useLatestRequest()
   async function load(silent = false) {
+    const isCurrent = beginLoad()
     if (!silent) setLoading(true)
     try {
       const res = await api.get(`/partners/${id}`)
+      if (!isCurrent()) return
       setPartner(res.data.data)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load partner.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }
 

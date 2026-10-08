@@ -12,7 +12,7 @@ export default function Pagination({
   page, totalPages, onChange, className,
   compact = false, prevLabel = 'Prev', nextLabel = 'Next', countClassName
 }) {
-  if (totalPages <= 1) return null
+  if (!Number.isFinite(Number(totalPages)) || totalPages <= 1) return null
   return (
     <div className={className || 'flex items-center justify-center gap-3'}>
       <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => onChange(page - 1)}>{prevLabel}</Button>

@@ -1,4 +1,4 @@
-import { useCallback, useContext, useEffect, useState } from 'react'
+import { useCallback, useContext, useEffect, useRef, useState } from 'react'
 import api from '../lib/api'
 import { AuthContext } from '../context/AuthContext'
 import { formatMoney } from '../lib/utils'
@@ -79,21 +79,31 @@ export function usePricing(referralCode = '') {
   // Null-safe on purpose (not useAuth(), which throws): this hook must keep working in a bare render.
   const viewer = useContext(AuthContext)?.user?.id ?? 'anon'
   const key = `${viewer}|${code}`
-  const [entry, setEntry] = useState(cacheByKey[key] || null)
+  // The entry is held WITH the key it belongs to and read back through the CURRENT key, so the render
+  // right after a code/viewer change can never show the previous key's prices (a stale
+  // `referralApplied: true` for a code nobody has verified yet, or a stale `false` flashing "That
+  // code doesn't look right").
+  const [held, setHeld] = useState({ key, entry: cacheByKey[key] || null })
+  const entry = held.key === key ? held.entry : (cacheByKey[key] || null)
+  // The key as of the latest render: a refetch that finishes after the key changed belongs to
+  // someone else (another viewer / code) and must not be written into the current slot.
+  const keyRef = useRef(key)
+  keyRef.current = key
   const [failed, setFailed] = useState(false)
   // Consecutive failed fetches for this key — drives the bounded automatic retry below.
   const [failures, setFailures] = useState(0)
 
   const refresh = useCallback(() => {
     return fetchPricing(key, code, { force: true }).then(e => {
-      if (e) { setEntry(e); setFailed(false); setFailures(0) }
+      if (keyRef.current !== key) return
+      if (e) { setHeld({ key, entry: e }); setFailed(false); setFailures(0) }
       else {
         setFailed(true); setFailures(n => n + 1)
         // PAYMENTS & PRICING ROUND 6 (bug): when the refetch at the promo deadline failed, the expired
         // promo entry stayed on screen — struck-through prices and a discount nobody can get — right
         // beside a notice saying "showing standard pricing". A lapsed promo entry is dropped so byTier()
         // really does fall back to the standard price (the retry below then fetches the real answer).
-        setEntry(cur => (cur && promoLapsed(cur) ? null : cur))
+        setHeld(cur => (cur.key === key && cur.entry && promoLapsed(cur.entry) ? { key, entry: null } : cur))
       }
     })
   }, [key, code])
@@ -107,11 +117,12 @@ export function usePricing(referralCode = '') {
     // Clearing to null for an uncached key means byTier() immediately falls
     // back to the correct STANDARD price while loading, and stays there (not
     // some other code's discounted price) if the fetch never comes back.
-    if (cacheByKey[key]) setEntry(cacheByKey[key])
-    else setEntry(null)
+    setHeld({ key, entry: cacheByKey[key] || null })
+    // A failure recorded for the previous key says nothing about this one.
+    setFailed(false); setFailures(0)
     fetchPricing(key, code).then(e => {
       if (cancelled) return
-      if (e) { setEntry(e); setFailed(false); setFailures(0) } else { setFailed(true); setFailures(n => n + 1) }
+      if (e) { setHeld({ key, entry: e }); setFailed(false); setFailures(0) } else { setFailed(true); setFailures(n => n + 1) }
     })
     return () => { cancelled = true }
   }, [key, code])

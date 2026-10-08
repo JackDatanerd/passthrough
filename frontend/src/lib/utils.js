@@ -33,7 +33,7 @@ export function formatDateTime(dateStr) {
 // null / undefined / NaN used to render "$NaN" (or "$0.00" for null). A missing
 // amount is "unknown", not zero dollars.
 export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
-  if (cents === null || cents === undefined || cents === '' || !Number.isFinite(Number(cents))) return '—'
+  if (cents === null || cents === undefined || typeof cents === 'boolean' || (typeof cents === 'string' && cents.trim() === '') || !Number.isFinite(Number(cents))) return '—'
   const value = Number(cents) / 100
   // Grouped ("12,345.67"): bare "12345.67" is hard to read on admin revenue and
   // partner payout totals. Fixed 'en-US' so the separators match the rest of
@@ -41,7 +41,9 @@ export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
   const abs = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
   const symbol = currency === 'USD' ? '$' : ''
   const suffix = currency === 'USD' ? '' : ` ${currency}`
-  return `${value < 0 ? '-' : ''}${symbol}${abs}${suffix}`
+  // A negative amount that rounds to zero at this precision ("-$0.00") is just zero.
+  const negative = value < 0 && /[1-9]/.test(abs)
+  return `${negative ? '-' : ''}${symbol}${abs}${suffix}`
 }
 // Currency-aware (upstream's Admin-panel requirement): non-USD amounts render as
 // "12.00 KES" rather than being mislabelled with a dollar sign.
@@ -54,7 +56,7 @@ export const SCORE_PASS = ATS_PASS_THRESHOLD
 export const SCORE_MARGINAL = 50
 
 export function scoreTier(score) {
-  if (score === null || score === undefined || Number.isNaN(Number(score))) return 'unknown'
+  if (score === null || score === undefined || typeof score === 'boolean' || (typeof score === 'string' && score.trim() === '') || Number.isNaN(Number(score))) return 'unknown'
   const n = Number(score)
   if (n >= SCORE_PASS) return 'pass'
   if (n >= SCORE_MARGINAL) return 'marginal'
@@ -139,6 +141,7 @@ export function downloadBlob(blob, filename) {
 // Commission rates are stored as fractions (0.125 = 12.5%). Show up to 2
 // decimals, no trailing zeros — never round a fractional rate to a whole %.
 export function formatRate(rate) {
+  if (rate === null || rate === undefined || typeof rate === 'boolean' || (typeof rate === 'string' && rate.trim() === '')) return '—'
   const n = Number(rate)
   if (!Number.isFinite(n)) return '—'
   return `${+(n * 100).toFixed(2)}%`

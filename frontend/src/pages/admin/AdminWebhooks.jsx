@@ -12,6 +12,7 @@ import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 // SECTION 8 AUDIT (feature gap): webhook_events is the durable inbox every
 // verified Paystack event lands in — an audit trail and the dedupe record — but
@@ -57,16 +58,21 @@ export default function AdminWebhooks() {
   useEffect(() => { setRefDraft(referenceQ); setTypeDraft(typeQ) }, [referenceQ, typeQ])
   useEffect(() => { setPage(1) }, [status, referenceQ, typeQ])
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined } })
+      if (!isCurrent()) return
       setEvents(res.data.data)
       setTotal(res.data.meta.total)
     } catch (err) {
+      if (!isCurrent()) return
       toast({ message: getErrorMessage(err, 'Failed to load webhook events.'), type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, status, referenceQ, typeQ])
 

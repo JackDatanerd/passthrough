@@ -72,7 +72,9 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   // doesn't exist, is inactive, or has expired. `pricing` is null while
   // /api/pricing is still loading for this code — checking it explicitly
   // avoids flashing an error during that normal loading gap.
-  const invalid = referralCode && !editing && pricing && !pricing.referralApplied
+  // Only while the box still holds the code that was applied: once the person starts typing a
+  // different one, the old code's error is no longer about what is in the field.
+  const invalid = referralCode && !editing && pricing && !pricing.referralApplied && value.trim().toUpperCase() === String(referralCode).toUpperCase()
   // A partner's own code on their own account is refused on purpose (it would
   // be a discount AND a commission on the same sale). Say that, rather than
   // implying the code is mistyped.

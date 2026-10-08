@@ -10,7 +10,7 @@ import { cn } from '../../lib/utils'
 //  - `error` is wired to aria-invalid / aria-describedby and announced.
 //  - an unlabeled input falls back to aria-label = placeholder, so it still has
 //    an accessible name (several forms used placeholder-only fields).
-const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, ...props }, ref) {
+const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
@@ -19,7 +19,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
   // once (no call site does yet, but nothing stopped a future one) left
   // aria-describedby pointing at an id that didn't exist in the DOM: a
   // dangling ARIA reference, exactly what axe/screen readers flag.
-  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].filter(Boolean).join(' ') || undefined
+  const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].concat(extraDescribedBy || []).filter(Boolean).join(' ') || undefined
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   const control = (

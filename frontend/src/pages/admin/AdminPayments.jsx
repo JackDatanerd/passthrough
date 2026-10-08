@@ -13,6 +13,7 @@ import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 const PAGE_SIZE = 25
 // SECTION 8 AUDIT: REFUNDED/DISPUTED added (migration 0023) — payments in
@@ -36,16 +37,21 @@ export default function AdminPayments() {
   const [refundDialog, setRefundDialog] = useState(null)   // { payment, amount, note, error } | null
   const [refunding, setRefunding] = useState(false)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/payments', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined } })
+      if (!isCurrent()) return
       setPayments(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load payments.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, status, referenceQ])
 

@@ -1,0 +1,28 @@
+Section 11 (shared frontend) — round 3, applied on top of b12c026
+
+BUGS
+B1  Admin lists (Users, Scans, Payments, Webhooks, Audit log, System health x2), PaymentHistory and
+    PartnerDetail: a slow earlier response could overwrite a newer one. Now guarded by useLatestRequest.
+B2  usePricing.refresh() ignored key changes; a late response wrote another viewer's/code's prices.
+B3  usePricing: the render right after a code/viewer change showed the previous key's entry (stale
+    "applied" / "doesn't look right"). Entry is now held with its key and read through the current key;
+    failure state resets per key.
+B4  Select: error state's bg-red-50 lost to bg-white (stylesheet order). bg-white moved into the ternary.
+B5  Modal: data-autofocus was beaten by an earlier input in DOM order. Two queries, preferred first.
+B6  Retry/cancel: no method/config or a cancelled request was retried / reported as "can't reach server".
+B7  formatMoney: "-$0.00" for sub-cent negatives; whitespace/boolean treated as 0.
+B8  formatRate: null/blank rendered 0%.  B9 scoreTier: blank/boolean fell to 'fail'.
+B10 Pagination: non-numeric totalPages rendered "Page 1 of undefined" with Next enabled.
+Minor: caller aria-describedby no longer overrides the error/hint link (Input/Textarea/Select);
+    PasswordInput drops aria-pressed (label already flips); ConfirmDialog no longer passes the click event
+    to onConfirm/onCancel; ReferralCodeEntry hides the old code's error once a different code is typed.
+
+FEATURE GAPS
+G1  hooks/useLatestRequest.js + hooks/useFetch.js (latest-wins, abort, params compared by value).
+G2  Toast: pauses on hover/focus; error toasts default 9s; duration 0 persists.
+G3  components/ui/DataTable.jsx (caption, scoped headers, loading/empty states).
+G4  Navbar: "Skip to content" link (every Navbar page already has <main>).
+G5  Navbar: mobile "More" menu exposing Pricing / For employers.
+G6  DashboardLayout: tab stays current on nested paths.
+
+TESTS  sharedFrontend.section11.round3, usePricing.keyswitch, useFetch (new); PasswordInput updated.

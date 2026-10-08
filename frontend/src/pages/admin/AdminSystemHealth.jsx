@@ -7,6 +7,7 @@ import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 const PAGE_SIZE = 15
 
@@ -18,16 +19,21 @@ function EmailLogsSection() {
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/email-logs', { params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
+      if (!isCurrent()) return
       setLogs(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load email logs.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, status])
 
@@ -80,16 +86,21 @@ function AlertsSection() {
   const [page, setPage] = useState(1)
   const [loading, setLoading] = useState(true)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/alerts', { params: { page, pageSize: PAGE_SIZE } })
+      if (!isCurrent()) return
       setAlerts(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load alerts.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page])
 

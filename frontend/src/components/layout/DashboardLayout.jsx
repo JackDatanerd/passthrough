@@ -13,6 +13,13 @@ const nav = [
   { label: 'Settings', to: '/dashboard/settings' },
 ]
 
+// Active on the tab's own page and anything nested under it ('/dashboard' itself only matches exactly,
+// since every other tab lives beneath it).
+function isActive(pathname, to) {
+  const path = pathname.replace(/\/+$/, '') || '/'
+  return path === to || (to !== '/dashboard' && path.startsWith(`${to}/`))
+}
+
 export default function DashboardLayout({ children }) {
   const { pathname } = useLocation()
 
@@ -32,10 +39,10 @@ export default function DashboardLayout({ children }) {
               <Link
                 key={item.to}
                 to={item.to}
-                aria-current={pathname.replace(/\/+$/, '') === item.to ? 'page' : undefined}
+                aria-current={isActive(pathname, item.to) ? 'page' : undefined}
                 className={cn(
                   'px-3 py-2 rounded-md text-sm font-medium transition-colors whitespace-nowrap shrink-0',
-                  pathname.replace(/\/+$/, '') === item.to
+                  isActive(pathname, item.to)
                     ? 'bg-blue-50 text-blue-700'
                     : 'text-gray-600 hover:bg-gray-100'
                 )}

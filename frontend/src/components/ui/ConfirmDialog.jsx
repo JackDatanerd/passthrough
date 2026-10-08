@@ -44,8 +44,8 @@ export default function ConfirmDialog({
       <div className="mt-5 flex justify-end gap-2">
         {/* Initial focus: Cancel for a destructive action (a stray Enter must not
             confirm it), Confirm otherwise. Without this it landed on the header's X. */}
-        <Button variant="secondary" size="sm" onClick={onCancel} disabled={loading} data-autofocus={danger ? true : undefined}>{cancelLabel}</Button>
-        <Button variant={danger ? 'danger' : 'primary'} size="sm" onClick={onConfirm} loading={loading} data-autofocus={danger ? undefined : true}>{confirmLabel}</Button>
+        <Button variant="secondary" size="sm" onClick={() => onCancel?.()} disabled={loading} data-autofocus={danger ? true : undefined}>{cancelLabel}</Button>
+        <Button variant={danger ? 'danger' : 'primary'} size="sm" onClick={() => onConfirm?.()} loading={loading} data-autofocus={danger ? undefined : true}>{confirmLabel}</Button>
       </div>
     </Modal>
   )

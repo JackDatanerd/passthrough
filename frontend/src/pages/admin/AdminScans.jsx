@@ -9,6 +9,7 @@ import { useToast } from '../../components/ui/Toast'
 import { formatDate, statusLabel, scoreColor } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
+import useLatestRequest from '../../hooks/useLatestRequest'
 
 const PAGE_SIZE = 25
 const STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
@@ -24,16 +25,21 @@ export default function AdminScans() {
   const [busyId, setBusyId] = useState(null)
   const [backfilling, setBackfilling] = useState(false)
 
+  const begin = useLatestRequest()
+
   const load = useCallback(async () => {
+    const isCurrent = begin()
     setLoading(true)
     try {
       const res = await api.get('/admin/scans', { params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
+      if (!isCurrent()) return
       setScans(res.data.data)
       setTotal(res.data.meta.total)
     } catch (_) {
+      if (!isCurrent()) return
       toast({ message: 'Failed to load scans.', type: 'error' })
     } finally {
-      setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [page, status])
 
