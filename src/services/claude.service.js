@@ -1035,4 +1035,80 @@ function sanitizeGeneratedHtml(html) {
 // generateBeautifulResumeHTML above) so they're directly unit-testable —
 // see tests/claude.service.test.js — rather than only reachable through a
 // full Claude API round trip.
-module.exports = { generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
+// ─── PDF content-fidelity gate (Scan/ATS round 3, G4) ─────────────────────────────────────────
+// The DOCX is built deterministically from the structured resume and the rewrite is fabrication-
+// guarded, but the designed PDF - the file candidates actually send to employers, hash-stamped as
+// verified - is free-form HTML a model wrote. Nothing checked that it still contained every job and
+// bullet, or that it had not shortened, reworded or added a figure to fit its token budget. This
+// compares the VISIBLE text of the generated page with the structured data it was meant to render.
+// It never throws: a page that fails is dropped in favour of the deterministic template.
+function visibleTextOfHtml(html) {
+  let t = String(html || '')
+  const strip = (open, close) => {
+    for (;;) {
+      const lower = t.toLowerCase()
+      const i = lower.indexOf(open)
+      if (i === -1) return
+      const j = lower.indexOf(close, i)
+      t = t.slice(0, i) + ' ' + (j === -1 ? '' : t.slice(j + close.length))
+    }
+  }
+  strip('<style', '</style>'); strip('<script', '</script>'); strip('<!--', '-->')
+  t = t.replace(/<[^>]*>/g, ' ')
+  const { decodeHtmlEntities } = require('../lib/htmlEntities')
+  return decodeHtmlEntities(t).replace(/\s+/g, ' ').trim()
+}
+
+const fidelityNorm = v => String(v || '').toLowerCase().replace(/&/g, ' and ').replace(/[^\p{L}\p{N}]+/gu, ' ').replace(/\s+/g, ' ').trim()
+
+function stringLeaves(v, out = [], depth = 0) {
+  if (depth > 6) return out
+  if (typeof v === 'string') out.push(v)
+  else if (typeof v === 'number') out.push(String(v))
+  else if (Array.isArray(v)) for (const x of v) stringLeaves(x, out, depth + 1)
+  else if (v && typeof v === 'object') for (const x of Object.values(v)) stringLeaves(x, out, depth + 1)
+  return out
+}
+
+function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
+  const reasons = []
+  try {
+    const visible = visibleTextOfHtml(html)
+    if (visible.length < 80) return { ok: false, reasons: ['the page has almost no visible text'] }
+    const hay = ` ${fidelityNorm(visible)} `
+    const has = needle => { const n = fidelityNorm(needle); return !n || hay.includes(` ${n} `) || hay.includes(n) }
+    const wordCoverage = text => {
+      const words = [...new Set(fidelityNorm(text).split(' ').filter(w => w.length >= 4))]
+      if (words.length < 3) return has(text) ? 1 : 0
+      return words.filter(w => hay.includes(w)).length / words.length
+    }
+
+    for (const e of listOf(data?.experience)) {
+      if (textOf(e?.company).trim() && !has(e.company)) reasons.push(`missing employer "${textOf(e.company).slice(0, 40)}"`)
+      if (textOf(e?.title).trim() && !has(e.title)) reasons.push(`missing job title "${textOf(e.title).slice(0, 40)}"`)
+    }
+    for (const e of listOf(data?.education)) {
+      if (textOf(e?.institution).trim() && !has(e.institution)) reasons.push(`missing institution "${textOf(e.institution).slice(0, 40)}"`)
+    }
+    if (textOf(data?.name).trim() && !has(data.name)) reasons.push('the candidate name is missing')
+
+    const bullets = []
+    for (const e of listOf(data?.experience)) for (const b of listOf(e?.bullets)) if (textOf(b).trim()) bullets.push(textOf(b))
+    const lost = bullets.filter(b => wordCoverage(b) < 0.7).length
+    if (bullets.length && lost > Math.floor(bullets.length * 0.1)) reasons.push(`${lost} of ${bullets.length} bullets were dropped or reworded`)
+
+    const skills = listOf(data?.skills).map(textOf).filter(x => x.trim())
+    const lostSkills = skills.filter(k => !has(k)).length
+    if (skills.length && lostSkills > Math.floor(skills.length * 0.1)) reasons.push(`${lostSkills} of ${skills.length} skills are missing`)
+
+    // No figure that is not already somewhere in the resume (contact details and dates included).
+    const allowed = numbersIn(stringLeaves(data).join(' \n ') + ' ' + String(verificationUrl || ''))
+    const invented = [...numbersIn(visible)].filter(n => !allowed.has(n))
+    if (invented.length) reasons.push(`figures not in the resume: ${invented.slice(0, 5).join(', ')}`)
+  } catch (e) {
+    return { ok: false, reasons: [`the content check could not run (${e.message})`] }
+  }
+  return { ok: reasons.length === 0, reasons }
+}
+
+module.exports = { checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }

@@ -31,8 +31,10 @@ function Chip({ children, tone = 'amber' }) {
   )
 }
 
-export default function AtsDetailPanel({ scan }) {
-  const detail = scan?.atsDetail
+// `detail` / `title` let the same panel explain the DELIVERED file's score (scan.fixAtsDetail, round 3)
+// as well as the free scan's (scan.atsDetail, the default).
+export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why this score' }) {
+  const detail = detailProp ?? scan?.atsDetail
   if (!detail) return null
 
   const keywords = detail.keywords || {}
@@ -59,7 +61,7 @@ export default function AtsDetailPanel({ scan }) {
 
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
-      <p className="text-sm font-semibold text-gray-900 mb-1">Why this score</p>
+      <p className="text-sm font-semibold text-gray-900 mb-1">{title}</p>
 
       {!hasGaps && (
         <p className="text-sm text-gray-600 mt-2">

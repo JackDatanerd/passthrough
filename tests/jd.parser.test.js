@@ -163,10 +163,10 @@ describe('fetchJobDescriptionFromUrl', () => {
     expect(r.success).toBe(true)
     expect(r.text).toContain('Café résumé')
   })
-  it('caps returned text at 5000 chars', async () => {
+  it('caps returned text at 20000 chars (createScan fits it down to MAX_JD_CHARS)', async () => {
     mockFetch(() => html('<p>' + 'word '.repeat(4000) + '</p>'))
     const r = await fetchJobDescriptionFromUrl('https://jobs.example.com/long')
-    expect(r.text.length).toBeLessThanOrEqual(5000)
+    expect(r.text.length).toBeLessThanOrEqual(20000)
   })
   it('fails soft (no throw) when fetch itself throws', async () => {
     mockFetch(() => { throw new Error('network down') })

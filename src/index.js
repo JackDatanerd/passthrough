@@ -385,6 +385,13 @@ async function queue(batch, env, ctx) {
         // The queue has no 30s wall-clock cap, so structuring a long background gets the long budget.
         ? await runAtsScan(env, supabase, scanId, anonToken || null, { structureTimeoutMs: 90000, anonRlKey: anonRlKey || null })
         : await (type === 'generateBadge' ? generateBadge : generateFix)(env, supabase, scanId)
+      if (outcome?.inProgress) {
+        // Another worker is still scanning this one. Acking would drop the only message that could
+        // take it over if that worker died, so come back later (runAtsScan takes a stale scan over).
+        console.log(`Queue job deferred: ${type} ${scanId} is already in progress`)
+        message.retry({ delaySeconds: 60 })
+        continue
+      }
       if (outcome?.success) {
         console.log(`Queue job succeeded: ${type} ${scanId}`)
       } else {

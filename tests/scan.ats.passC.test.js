@@ -312,12 +312,32 @@ describe('updateDeliveredResume', () => {
     expect(res.body.data.credentialVerified).toBe(false)
     expect(t.state.docx).toEqual(['verified', 'unverified'])
   })
-  it('a credential-only (BADGE) delivery edits original_resume_data, never invents a rewrite', async () => {
-    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'BADGE', fix_retry_count: 0, job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: null, verification_code: 'C', verification_url: 'https://x/v/C' } })
-    await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+  it('G7: a credential-only (BADGE) edit is stored as the owner\'s edit and NEVER overwrites the scored upload (original_resume_data)', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'BADGE', fix_retry_count: 0, job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: null, resume_ats_path: 'old.docx', verification_code: 'C', verification_url: 'https://x/v/C' } })
+    const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+    expect(res.status).toBe(200)
     const patch = t.state.updates[0].patch
-    expect(patch.original_resume_data).toBeTruthy()
-    expect(patch).not.toHaveProperty('rewritten_resume_data')
+    expect(patch).not.toHaveProperty('original_resume_data')
+    expect(patch.rewritten_resume_data).toEqual(patch.user_edited_resume_data)
+    expect(patch.user_edited_resume_data.skills).toEqual(['New'])
+  })
+  it('B3: the edit is pinned to the delivery it was built on (resume_ats_path), so two concurrent saves cannot both win', async () => {
+    t = setup()
+    await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+    const q = t.state.updates[0]
+    expect(q.filters.some(f => f[0] === 'eq' && f[1] === 'resume_ats_path' && f[2] === 'old.docx')).toBe(true)
+  })
+  it('B5: the credential-less tier stores no resume_hash, matching generateFix', async () => {
+    t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'FIX_PLAIN', fix_retry_count: 0, job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: { name: 'Jane' }, resume_ats_path: 'old.docx' } })
+    await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+    expect(t.state.updates[0].patch.resume_hash).toBeNull()
+  })
+  it('G3: the breakdown of the file that was just delivered is persisted and returned', async () => {
+    t = setup()
+    const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+    expect(t.state.updates[0].patch).toHaveProperty('fix_ats_report')
+    expect(res.body.data).toHaveProperty('fixAtsDetail')
+    expect(res.body.data.userEditedResumeData.skills).toEqual(['New'])
   })
   it('losing a race to a retry is a 409 and cleans up the files it wrote', async () => {
     t = setup({ lostRace: true })

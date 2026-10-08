@@ -11,6 +11,7 @@ import ScoreGauge from '../components/scan/ScoreGauge'
 import CategoryScores from '../components/scan/CategoryScores'
 import AtsDetailPanel from '../components/scan/AtsDetailPanel'
 import FixBanner from '../components/scan/FixBanner'
+import JobDescriptionPanel from '../components/scan/JobDescriptionPanel'
 import { getStoredReferralCode, setStoredReferralCode } from '../hooks/useReferralCapture'
 import { fmtPrice } from '../hooks/usePricing'
 import DiffView from '../components/scan/DiffView'
@@ -123,6 +124,12 @@ export default function ScanResult() {
   const [badgeCopied, setBadgeCopied] = useState(false)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
+  // G1: re-run a free scan that failed on our side, in place.
+  const [retryScanLoading, setRetryScanLoading] = useState(false)
+  const [retryScanError,   setRetryScanError  ] = useState('')
+  // G2: building + scoring the ATS-formatted file before a Badge is offered.
+  const [checkingFormatted,   setCheckingFormatted  ] = useState(false)
+  const [checkFormattedError, setCheckFormattedError] = useState('')
   const [pollError,    setPollError   ] = useState('')
   // BUG FIX (Scan/ATS pass): after the inline popup reports success the payment may
   // still be "processing" (mobile money, slow banks — /payments/verify answers 202).
@@ -243,6 +250,43 @@ export default function ScanResult() {
       setDeleteError(getErrorMessage(err, 'Could not delete it — try again.'))
       setDeleting(false)
     }
+  }
+
+  // G1 (round 3): a scan that failed on our side kept its input (the file / a typed background) but the
+  // only way forward was to re-enter it. This re-runs the same scan in place (spends a free-scan slot).
+  async function handleRetryScan() {
+    setRetryScanError('')
+    setRetryScanLoading(true)
+    try {
+      await api.post(`/scan/${id}/retry-scan${anonToken ? `?token=${encodeURIComponent(anonToken)}` : ''}`)
+      await fetchScan()
+      restartPolling()
+    } catch (err) {
+      setRetryScanError(getErrorMessage(err, 'Could not retry the scan — try again in a moment.'))
+    }
+    setRetryScanLoading(false)
+  }
+
+  // G2 (round 3): for an uploaded file the Verified credential is issued on the regenerated,
+  // ATS-formatted document, not on the upload. POST /structure builds it (it is also what the editor
+  // uses) and returns its score in atsDetail.formattedScore, which FixBanner gates the Badge on.
+  async function handleCheckFormatted() {
+    setCheckFormattedError('')
+    setCheckingFormatted(true)
+    try {
+      const res = await api.post(`/scan/${id}/structure${anonToken ? `?token=${encodeURIComponent(anonToken)}` : ''}`)
+      const d = res.data?.data || {}
+      setScan(prev => prev ? ({
+        ...prev,
+        originalResumeData: d.originalResumeData ?? prev.originalResumeData,
+        atsDetail: d.atsDetail ?? prev.atsDetail
+      }) : prev)
+      if (d.formattedScore == null && !d.atsDetail?.formattedScore)
+        setCheckFormattedError("We built the file but couldn't score it just now — try again in a minute.")
+    } catch (err) {
+      setCheckFormattedError(getErrorMessage(err, "We couldn't build the formatted file just now — try again in a minute."))
+    }
+    setCheckingFormatted(false)
   }
 
   async function handleRetryFix() {
@@ -707,7 +751,14 @@ export default function ScanResult() {
             {!scan.fixPurchased && scan.inputMode === 'brain_dump' && (
               <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
             )}
-            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : '/'} className="mt-4 inline-block text-sm text-blue-600 hover:underline">Try again</Link>}
+            {!scan.fixPurchased && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (
+              <div className="mt-4">
+                <Alert className="mb-2">{retryScanError}</Alert>
+                <Button onClick={handleRetryScan} loading={retryScanLoading}>Retry this scan</Button>
+                <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. It counts as a scan, like the one that failed did.</p>
+              </div>
+            )}
+            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">Start over with different input</Link>}
           </div>
         )}
 
@@ -733,6 +784,9 @@ export default function ScanResult() {
                 the number the person just saw before offering to let them
                 act on it. */}
             <AtsDetailPanel scan={scan} />
+
+            {/* G5: the exact job description this was scored against. */}
+            <JobDescriptionPanel scan={scan} />
 
             {/* FEATURE GAP CLOSED (Scan/ATS pass): the product's real loop is one resume,
                 many job postings. Signed-in owners can rescan this same resume against
@@ -1019,11 +1073,20 @@ export default function ScanResult() {
             )}
 
             {/* Diff view — only meaningful once a fix/badge has been delivered */}
+            {/* G3 (round 3): why the DELIVERED file scored what it did. The panel above is the free scan
+                of the original upload and is stale once a fix has landed - without this, a result
+                under the bar gave no hint of what was still missing. */}
+            {scan.status === 'FIX_DELIVERED' && !scan.rewriteFailed && scan.fixAtsDetail &&
+              typeof scan.fixAtsScore === 'number' && scan.fixAtsScore < ATS_BADGE_THRESHOLD && (
+              <AtsDetailPanel detail={scan.fixAtsDetail} title="Why the new score" />
+            )}
+
             {scan.status === 'FIX_DELIVERED' && (
               <DiffView
                 originalResumeData={scan.originalResumeData}
                 rewrittenResumeData={scan.rewrittenResumeData}
                 fixTier={scan.fixTier}
+                editedByUser={!!scan.userEditedResumeData && JSON.stringify(scan.userEditedResumeData) === JSON.stringify(scan.rewrittenResumeData)}
               />
             )}
 
@@ -1139,7 +1202,7 @@ export default function ScanResult() {
                     </a>
                   </div>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} />
+                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
               </>
             )}
 

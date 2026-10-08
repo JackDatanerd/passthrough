@@ -1,0 +1,49 @@
+SCAN / ATS CORE — round 3 (independent re-audit; base: 5b42f37)
+APPLY MIGRATION 0061_scan_ats_round3.sql BEFORE DEPLOYING THE CODE (the delivered-resume edit path writes its two new columns).
+It ends with the schema_version upsert and EXPECTED_SCHEMA_VERSION is now 61 (tests/crossCutting.round1 enforces both).
+If another session also adds 0061, renumber one of them and keep EXPECTED_SCHEMA_VERSION = the highest. No wrangler change.
+
+BUGS FIXED
+ B1  (HIGH) Keyword scoring was decided by the posting's opening paragraph: ties in frequency were broken by position, so "the
+     top 18" was the title + company blurb and every skill listed lower down was cut. Probe: a well-matched senior-backend resume
+     scored keywords 36 / total 73 (fail); deleting only "About <Company>" gave 68 / 84. Postings are now split into zones
+     (company/benefits/EEO weighted down, requirements/responsibilities/title up) and skill-shaped terms (curated tool list,
+     acronyms, CamelCase) are boosted. Works on flattened URL text too. Probe now: 68 / 84 either way.
+ B2  (HIGH) "Try Again" after editing the delivered resume could never succeed: the owner's own figure/skill was judged against the
+     ORIGINAL upload and flagged as invented on every attempt, and restoreFactualFields reverted their title/date corrections.
+     New scans.user_edited_resume_data is the baseline for the retry's fabrication guard + factual restore.
+ B3  Delivered-resume edit, cover-letter write and PDF regeneration are pinned to the delivery they were built from
+     (resume_ats_path). Two concurrent saves could both win (losing the first hash from the history, orphaning its files); a
+     cover letter / PDF built from the pre-edit resume could attach to the post-edit one.
+ B5  updateDeliveredResume stored a resume_hash for FIX_PLAIN; generateFix stores null. Now consistent.
+ B6  runAtsScan: a redelivery while the first run was still working started a second run (double Claude bill / e-mail). A SCANNING
+     scan is taken over only when stale (120s); otherwise the queue consumer retries in 60s instead of acking. The catch block no
+     longer flips an already-finished scan to ERROR or refunds its slot.
+ B7  getScan no longer returns job lease / credit-round / error-recovery bookkeeping. initiateFix: bad JSON body -> 400.
+ (B4 — score basis shifting on first edit of an uploaded file — is closed by G2 making the formatted-file score visible up front.)
+
+FEATURE GAPS CLOSED
+ G1  POST /api/scan/:id/retry-scan + "Retry this scan" button: re-run a free scan that failed on our side, in place (owner or
+     anon token; spends a slot; ERROR -> PENDING only while still failed + unpurchased). Saved-profile "start over" link fixed.
+ G2  Uploaded files: POST /structure now also scores the ATS-FORMATTED document a purchase would deliver (atsDetail.formattedScore).
+     FixBanner offers Verified-Credential-only for a file only once that score is known and clears the bar (Fix is never gated).
+     Server-side payment enforcement is NOT changed (payments section) — this is UX protection.
+ G3  scans.fix_ats_report: the score breakdown of the DELIVERED file (Fix, Badge, owner edit) -> getScan.fixAtsDetail -> "Why the
+     new score" panel when under the bar. Retry feedback was already computed but never kept/shown.
+ G4  checkHtmlFidelity: the model-designed PDF page must still contain every employer/title/institution/name, >=90% of bullets and
+     skills, and no figure that is not in the resume; otherwise the deterministic template is used. Real template passes its own data.
+ G5  fitJobDescription: an over-long JD drops company/benefits/EEO first (capped share) and keeps title + requirements, instead of
+     cutting the first 5000 chars. URL fetches return up to 20000 chars for it to fit. New "job description we scored against"
+     panel on the results page. ScanForm wording updated.
+ G6  Anonymous file uploads can give an optional email; the "link back" e-mail is no longer limited to typed backgrounds.
+ G7  Owner edits no longer overwrite original_resume_data for a Verified-only delivery (they go to rewritten_resume_data +
+     user_edited_resume_data for both tiers); DiffView says "your edit" instead of blaming the AI. A re-run of a Badge rebuilds the
+     OWNER's version.
+ +   Data export (profile.controller) includes the two new columns; scrub_account_data (redefined from 0047) clears them.
+
+TESTS
+ tests/scan.ats.round3.test.js (31), frontend/tests/components/scanRound3.test.jsx (13), ScanForm.round3.test.jsx (5),
+ frontend/tests/pages/ScanResult.round3.test.jsx (12). Three older tests rewritten because they asserted the behaviour changed
+ above (claim shape, BADGE edit target, 5000 fetch cap). Backend 2699 passing, frontend 775 passing, vite build clean.
+ NOT exercised here: a real Claude call, a real Chromium render, a real Postgres (migration SQL was read, not executed),
+ concurrent writes against a real database.

@@ -208,12 +208,176 @@ function extractKeywords(text) {
 const TOP_UNIGRAMS = 18
 const TOP_BIGRAMS  = 7
 
+// ─── JD zoning (Scan/ATS round 3, B1 + G5) ───────────────────────────────────────────────────
+// BUG (verified by probe): keywords were ranked by raw frequency with ties broken by position.
+// In a real posting almost every term appears once, so "the top 18" was simply the FIRST 18
+// words — the title and the company blurb — and every skill listed further down (Node, TypeScript,
+// PostgreSQL, Docker, Kubernetes…) was cut. A strong, well-matched resume scored 36 on keywords;
+// deleting only the "About <Company>" paragraph moved it to 68 and the total across both the
+// pass (75) and badge (80) lines. The posting is now split into zones (company blurb / benefits /
+// EEO vs. requirements / responsibilities) and each occurrence is weighted by its zone and by how
+// skill-shaped the term is, so what the role actually asks for outranks what the company says
+// about itself.
+for (const w of ['what', 'who', 'how', 'why', 'own', 'fast', 'growing', 'equal', 'employer', 'employers', 'nice',
+                 'emea', 'apac', 'latam', 'usa', 'eeo', 'remote', 'hybrid', 'onsite']) STOP_WORDS.add(w)
+
+const ZONE_WEIGHT = { title: 1.5, req: 1.5, intro: 1, boiler: 0.25 }
+
+// Multi-word headings are specific enough to recognise anywhere — including inside a posting
+// fetched from a URL, which arrives flattened onto one line.
+const BOILER_PHRASES = /\b(?:about\s+us|about\s+the\s+company|about\s+our\s+company|company\s+overview|who\s+we\s+are|our\s+mission|our\s+story|our\s+values|why\s+(?:join|work)|what\s+we\s+offer|we\s+offer|equal\s+(?:employment\s+)?opportunity|how\s+to\s+apply|application\s+process|life\s+at\s+[A-Z])/i
+// Bare "Benefits" / "Perks" / "Compensation" are only a heading when written as one: capitalised, and
+// not glued into a sentence. A lowercase "benefits of CI/CD" inside the requirements must not open a
+// boilerplate zone and silently demote everything after it (flattened URL text has no line breaks).
+const BOILER_CAPS    = /(?:^|[.!?]\s+|\s{2,})(?:Benefits|Perks|Compensation|Our Culture|Our Team)(?:\s+(?:and|&)\s+(?:Perks|Benefits))?(?=\s*[:\n]|\s+[A-Z])/
+const BOILER_PROPER  = /\bAbout\s+(?!the\b|this\b|you\b|your\b)[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,3}/
+const REQ_PHRASES    = /\b(?:what\s+you(?:'|’)?ll\s+(?:do|be\s+doing|work\s+on|bring|need)|what\s+you\s+will\s+(?:do|bring|need)|what\s+you\s+bring|what\s+we(?:'|’)?re\s+looking\s+for|key\s+responsibilities|your\s+responsibilities|your\s+role|about\s+the\s+(?:role|job|position)|day[-\s]to[-\s]day|who\s+you\s+are|must[-\s]haves?|nice[-\s]to[-\s]haves?|minimum\s+qualifications|preferred\s+qualifications|basic\s+qualifications|required\s+skills|technical\s+skills|skills\s+(?:and|&)\s+experience)\b/i
+// One-word headings only count when they stand alone on their own (short) line.
+const BOILER_LINE = /^(?:benefits|perks|compensation|equal opportunity|diversity|about us|about the company|culture|our culture|our team)\b/i
+const REQ_LINE    = /^(?:requirements?|qualifications?|responsibilities|skills|the role|the job|duties|essential|desirable|preferred|experience required|you will|you(?:'|’)ll)\b/i
+
+function splitJdZones(text) {
+  const src = String(text || '')
+  const marks = []
+  const push = (index, type) => marks.push({ index, type })
+  for (const [re, type] of [[BOILER_PHRASES, 'boiler'], [BOILER_CAPS, 'boiler'], [BOILER_PROPER, 'boiler'], [REQ_PHRASES, 'req']]) {
+    const g = new RegExp(re.source, re.flags.includes('i') ? 'gi' : 'g')
+    for (const m of src.matchAll(g)) push(m.index, type)
+  }
+  let off = 0
+  for (const line of src.split('\n')) {
+    const t = line.trim()
+    if (t && t.length <= 40 && !/[.!?]$/.test(t)) {
+      const at = off + (line.length - line.trimStart().length)
+      if (BOILER_LINE.test(t)) push(at, 'boiler')
+      else if (REQ_LINE.test(t)) push(at, 'req')
+    }
+    off += line.length + 1
+  }
+  marks.sort((a, b) => a.index - b.index)
+  // A requirement heading that sits inside the span a boilerplate heading just opened (and vice
+  // versa) is fine — the LAST heading wins — but two marks at the same index collapse to one.
+  const uniq = []
+  for (const m of marks) if (!uniq.length || uniq[uniq.length - 1].index !== m.index) uniq.push(m)
+
+  const zones = []
+  const first = uniq.length ? uniq[0].index : src.length
+  if (first > 0) {
+    const head = src.slice(0, first)
+    const nl = head.indexOf('\n')
+    const titleEnd = Math.min(nl === -1 ? head.length : nl, 120)
+    if (titleEnd > 0) zones.push({ type: 'title', text: head.slice(0, titleEnd) })
+    if (head.length > titleEnd) zones.push({ type: 'intro', text: head.slice(titleEnd) })
+  }
+  uniq.forEach((m, i) => {
+    const end = i + 1 < uniq.length ? uniq[i + 1].index : src.length
+    zones.push({ type: m.type, text: src.slice(m.index, end) })
+  })
+  return zones
+}
+
+// Terms that are skill-shaped: a curated set of common tools / languages / platforms plus anything
+// the posting itself writes as an acronym (SQL, ECS, CRM) or CamelCase product (GraphQL, PostgreSQL).
+const TECH_TERMS = new Set(`python java javascript typescript golang rust ruby php swift kotlin scala csharp cplusplus clang rlang
+  matlab perl bash sql nosql html css sass node js nodejs react angular vue svelte nextjs nuxt express django flask fastapi spring rails
+  laravel dotnet graphql rest restful grpc soap docker kubernetes k8s terraform ansible puppet chef jenkins git github gitlab bitbucket
+  aws azure gcp s3 ec2 ecs eks lambda sqs sns kafka rabbitmq redis memcached mongodb postgresql postgres mysql sqlite oracle dynamodb
+  cassandra elasticsearch snowflake bigquery redshift databricks spark hadoop airflow dbt tableau powerbi looker excel pandas numpy
+  scipy pytorch tensorflow sklearn keras llm nlp devops sre cicd microservices serverless grafana datadog prometheus splunk newrelic
+  linux unix windows ios android flutter figma sketch photoshop illustrator salesforce hubspot sap netsuite workday jira confluence
+  agile scrum kanban seo sem crm erp etl api apis sdk oauth saml sso jwt ci cd qa selenium cypress jest junit pytest mocha
+  idempotency observability monitoring microservice mpesa shopify wordpress magento stripe paypal quickbooks`.split(/\s+/).filter(Boolean))
+
+function skillShapedTokens(text) {
+  const out = new Set()
+  const add = raw => { for (const t of tokenizeRaw(raw)) out.add(t) }
+  for (const m of String(text || '').matchAll(/\b[A-Z]{2,6}\b/g)) add(m[0])
+  for (const m of String(text || '').matchAll(/\b[A-Z][a-z0-9]+(?:[A-Z][a-z0-9]+)+\b/g)) add(m[0])
+  for (const m of String(text || '').matchAll(/\b[A-Za-z]+\.js\b/gi)) add(m[0])
+  return out
+}
+
+function techBonus(token, caps) {
+  if (TECH_TERMS.has(token)) return 1.5
+  if (caps.has(token)) return 0.75
+  if (/\d/.test(token) && /[a-z]/.test(token)) return 0.75
+  return 0
+}
+
+// Weighted candidate pool: word/phrase -> { weight, order }. extractKeywords() (raw counts) is kept
+// for callers that want plain frequency; scoring uses this.
+function extractWeightedKeywords(text) {
+  const zones = splitJdZones(text)
+  const caps = skillShapedTokens(text)
+  const pool = new Map()
+  let order = 0
+  const bump = (key, w) => {
+    const e = pool.get(key)
+    if (e) e.weight += w
+    else pool.set(key, { weight: w, order: order++ })
+  }
+  for (const z of zones) {
+    const zw = ZONE_WEIGHT[z.type] ?? 1
+    for (const seg of tokenizeSegments(z.text)) {
+      for (const w of seg) {
+        if (keepToken(w) && !STOP_WORDS.has(w)) bump(w, zw * (1 + techBonus(w, caps)))
+      }
+      for (let i = 0; i < seg.length - 1; i++) {
+        const a = seg[i], b = seg[i + 1]
+        if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+          bump(`${a} ${b}`, zw * (1 + Math.max(techBonus(a, caps), techBonus(b, caps)) * 0.5))
+        }
+      }
+    }
+  }
+  return pool
+}
+
+function rankPool(entries, limit) {
+  // A word that appears ONLY inside company/benefits boilerplate once carries almost no weight; drop
+  // those unless that would leave too little to score against.
+  const strong = entries.filter(([, e]) => e.weight >= 0.5)
+  const use = strong.length >= Math.min(limit, 8) ? strong : entries
+  return use.sort((x, y) => (y[1].weight - x[1].weight) || (x[1].order - y[1].order)).slice(0, limit).map(([w]) => w)
+}
+
+// Trim an over-long posting (G5). The old behaviour sliced the first N characters, which is the
+// company intro, and threw away the requirements. Boilerplate zones go first; if it still does not
+// fit, title + requirement zones are kept ahead of everything else. Short postings are untouched.
+function fitJobDescription(text, max) {
+  const src = String(text || '')
+  if (src.length <= max) return src
+  const zones = splitJdZones(src)
+  const pri = { title: 0, req: 1, intro: 2, boiler: 3 }
+  const ranked = zones.map((z, i) => ({ ...z, i })).sort((a, b) => (pri[a.type] - pri[b.type]) || (a.i - b.i))
+  const kept = []
+  let used = 0
+  // Company / benefits / EEO text is context, not signal: keep a little of it (so the posting still
+  // reads as itself) but never let it crowd out the role, however long it is.
+  const boilerCap = Math.max(300, Math.floor(max * 0.15))
+  let boilerUsed = 0
+  for (const z of ranked) {
+    const room = max - used
+    if (room <= 0) break
+    let piece = z.text.length > room ? z.text.slice(0, room) : z.text
+    if (z.type === 'boiler') {
+      const allowed = boilerCap - boilerUsed
+      if (allowed <= 0) continue
+      if (piece.length > allowed) piece = piece.slice(0, allowed)
+      boilerUsed += piece.length
+    }
+    kept.push({ ...z, text: piece })
+    used += piece.length + 1
+  }
+  if (!kept.length) return src.slice(0, max)
+  return kept.sort((a, b) => a.i - b.i).map(z => z.text.trim()).join('\n').slice(0, max)
+}
+
 function scoreKeywords(resumeText, jdText) {
-  const freq = extractKeywords(jdText)
-  const unigramEntries = Object.entries(freq).filter(([w]) => !w.includes(' '))
-  const bigramEntries  = Object.entries(freq).filter(([w]) => w.includes(' '))
-  const topUnigrams = unigramEntries.sort((a, b) => b[1] - a[1]).slice(0, TOP_UNIGRAMS).map(([w]) => w)
-  const topBigrams  = bigramEntries.sort((a, b) => b[1] - a[1]).slice(0, TOP_BIGRAMS).map(([w]) => w)
+  const pool = extractWeightedKeywords(jdText)
+  const entries = [...pool.entries()]
+  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ')), TOP_UNIGRAMS)
+  const topBigrams  = rankPool(entries.filter(([w]) => w.includes(' ')), TOP_BIGRAMS)
   const top25 = [...topUnigrams, ...topBigrams]
 
   // Match against STEMMED resume tokens, not a raw substring search — this
@@ -701,6 +865,9 @@ function describeWeakAreas(scoreResult) {
 }
 
 module.exports = {
+  splitJdZones,
+  extractWeightedKeywords,
+  fitJobDescription,
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
   extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears

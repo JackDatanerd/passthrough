@@ -89,7 +89,7 @@ function ContactRow({ field, before, after }) {
   )
 }
 
-function DiffContent({ diff }) {
+function DiffContent({ diff, editedByUser = false }) {
   const hasSkillChanges = diff.skills.added.length > 0 || diff.skills.removed.length > 0
   const hasCertChanges  = diff.certifications.added.length > 0 || diff.certifications.removed.length > 0
 
@@ -104,8 +104,9 @@ function DiffContent({ diff }) {
 
       {diff.skills.added.length > 0 && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-          Skills marked "added" below were introduced by the AI rewrite based on your experience.
-          Double-check these are accurate before applying for roles.
+          {editedByUser
+            ? 'Skills marked "added" below come from the rewrite or from your own edit — this is the version you reviewed and saved. Double-check they are accurate before applying for roles.'
+            : 'Skills marked "added" below were introduced by the AI rewrite based on your experience. Double-check these are accurate before applying for roles.'}
         </p>
       )}
 
@@ -243,7 +244,10 @@ function DiffContent({ diff }) {
   )
 }
 
-export default function DiffView({ originalResumeData, rewrittenResumeData, fixTier }) {
+// editedByUser (round 3, G7): the owner saved their own edit of the delivered resume. It is stored as the
+// delivered content, so without this the diff presented the person's own changes as "AI rewrite" changes
+// (and a Verified-only delivery, which has no rewrite, claimed "nothing was changed" over an edited file).
+export default function DiffView({ originalResumeData, rewrittenResumeData, fixTier, editedByUser = false }) {
   const [expanded, setExpanded] = useState(false)
 
   if (!originalResumeData) return null
@@ -266,7 +270,11 @@ export default function DiffView({ originalResumeData, rewrittenResumeData, fixT
           <p className="text-xs text-gray-500 mt-0.5">
             {isCredentialOnly
               ? 'Your content was formatted and verified — nothing was rewritten'
-              : 'Compare your original background against the rewritten resume'}
+              : editedByUser
+                ? (fixTier === 'BADGE'
+                    ? 'Compare the resume we scanned against the version you edited'
+                    : 'Compare your original against your edited version — our rewrite plus your own changes')
+                : 'Compare your original background against the rewritten resume'}
           </p>
         </div>
         <svg
@@ -287,7 +295,7 @@ export default function DiffView({ originalResumeData, rewrittenResumeData, fixT
               upgrade to the full fix from any scan.
             </p>
           ) : (
-            <DiffContent diff={buildResumeDiff(originalResumeData, rewrittenResumeData)} />
+            <DiffContent diff={buildResumeDiff(originalResumeData, rewrittenResumeData)} editedByUser={editedByUser} />
           )}
         </div>
       )}

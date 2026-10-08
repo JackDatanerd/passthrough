@@ -305,7 +305,11 @@ async function createScan(ctx) {
     }
   }
 
-  jdText = jdText.slice(0, c.MAX_JD_CHARS)
+  // Scan/ATS round 3 (G5): an over-long posting used to be cut at the first MAX_JD_CHARS characters -
+  // i.e. the company intro - and the requirements at the bottom were thrown away. It is now fitted:
+  // company / benefits / EEO sections go first, title + requirements are kept. Short postings are
+  // stored exactly as pasted. The fitted text is what is stored AND shown back to the person.
+  jdText = atsService.fitJobDescription(jdText, c.MAX_JD_CHARS).trim()
   if (jdText.length < 50) {
     return ctx.json({ success: false, message: 'Job description too short (min 50 chars).' }, 400)
   }
@@ -333,7 +337,7 @@ async function createScan(ctx) {
   // The contact email is emailed a magic link when the scan completes — and
   // it is typed by an ANONYMOUS visitor — so it is validated like any other
   // address we will send to.
-  if (!user && brainDumpText && contactEmail && !z.string().email().safeParse(contactEmail).success)
+  if (!user && contactEmail && !z.string().email().safeParse(contactEmail).success)
     return ctx.json({ success: false, message: 'Enter a valid email address.' }, 400)
   // BUG FIX (Scan/ATS pass): the "Name/Email" preamble was prepended BEFORE the
   // 8,000-char slice (here, and again inside structureBrainDump), so a person
@@ -386,7 +390,10 @@ async function createScan(ctx) {
         resume_path:           resumeKey,
         resume_original_name:  file.originalname,
         resume_mime_type:      file.mimetype,
-        ...(rescanData ? { original_resume_data: rescanData } : {})
+        ...(rescanData ? { original_resume_data: rescanData } : {}),
+        // G6: an anonymous file upload had no way to be emailed its link back (the contact fields
+        // only existed for typed backgrounds), so clearing the browser lost the result. Optional.
+        ...(!user && contactEmail ? { contact_email: contactEmail, contact_name: contactName.slice(0, 100) || null } : {})
       }
     }
     if (rescanData) {
@@ -631,7 +638,10 @@ function buildAtsDetail(fullAtsReport) {
       actionVerbRate:  fullAtsReport.content?.actionVerbRate ?? null,
       quantifiedCount: fullAtsReport.content?.quantifiedCount ?? null
     },
-    aiMissingKeywords: fullAtsReport.aiMissingKeywords || []
+    aiMissingKeywords: fullAtsReport.aiMissingKeywords || [],
+    // Score of the ATS-formatted file a purchase would deliver (null until it has been built for an
+    // uploaded file; equal to the scan score for typed / saved-profile scans).
+    formattedScore: fullAtsReport.formattedScore ?? null
   }
 }
 
@@ -714,7 +724,10 @@ async function getScan(ctx) {
 
   // anonTokenHash is a capability secret at rest (migration 0045) — it must
   // never ride out in the response body. (Scan/ATS pass: `...safe` leaked it.)
-  const { fullAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, anonTokenHash, ...safe } = scan
+  // Round 3 (B7): the job lease, the credit-round marker and the error-recovery counter are
+  // server bookkeeping - they rode out in `...safe`. fix_ats_report is re-shaped below (G3).
+  const { fullAtsReport, fixAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, anonTokenHash,
+          fixJobLockUntil, fixCreditRound, fixErrorRecoveries, ...safe } = scan
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   const atsDetail = buildAtsDetail(fullAtsReport)
   // AUDIT FIX (Auth/Scan round): the storage keys are (rightly) not exposed —
@@ -722,7 +735,10 @@ async function getScan(ctx) {
   // design (the DOCX still delivers), so the page kept offering "Download PDF"
   // forever, answering "File not ready yet." to every click. These two flags
   // let the UI show what is really there and offer a regeneration.
-  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail, hasDocx: !!resumeAtsPath, hasPdf: !!resumePdfPath } })
+  // fixAtsDetail (G3): why the DELIVERED file scored what it did. atsDetail above is the free scan of
+  // the original upload and goes stale the moment a fix lands.
+  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail, fixAtsDetail: buildAtsDetail(fixAtsReport),
+    hasDocx: !!resumeAtsPath, hasPdf: !!resumePdfPath } })
 }
 
 // Loosely mirrors the shape claude.service.js's parseResumeStructure /
@@ -827,7 +843,8 @@ async function updateResumeData(ctx) {
     format_score:    ruleResult.formatScore,
     sections_score:  ruleResult.sectionsScore,
     content_score:   ruleResult.contentScore,
-    full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
+    // formattedScore: this IS the formatted-document basis (see structureResume), so the two agree.
+    full_ats_report: { ...ruleResult.detail, aiMissingKeywords, formattedScore: finalScore },
     // BUG FIX (Scan/ATS pass): the dashboard's name search matches on
     // candidate_first_name, which was set once at scan time — so a person who
     // corrected their name in the editor stayed searchable under the old one.
@@ -851,7 +868,7 @@ async function updateResumeData(ctx) {
     // it already holds, and `atsDetail` wasn't in it — so after "Save changes
     // & rescore" the new score sat next to the OLD "Why this score" gaps
     // (keywords the edit had just added still listed as missing).
-    atsDetail:     buildAtsDetail({ ...ruleResult.detail, aiMissingKeywords }),
+    atsDetail:     buildAtsDetail({ ...ruleResult.detail, aiMissingKeywords, formattedScore: finalScore }),
     status
   }})
 }
@@ -960,31 +977,120 @@ async function structureResume(ctx) {
     return ctx.json({ success: false, message: 'Scan must be complete first.' }, 400)
   if (scan.fixPurchased)
     return ctx.json({ success: false, message: 'Already purchased.' }, 400)
-  if (scan.originalResumeData)
-    return ctx.json({ success: true, data: { originalResumeData: scan.originalResumeData } })
+  // Round 3 (G2): the score the person sees for an uploaded file measures THEIR file; what a Badge
+  // purchase delivers is the regenerated, ATS-formatted document - a different text, which can
+  // land under the credential bar even when the upload cleared it (the buyer then got the
+  // "Scan Report" wording and a credit, not the credential they paid for). Building the structure is
+  // exactly the moment that formatted file exists, so it is scored here, once, with the same
+  // WYSIWYG basis the editor and the paid job use, and shown BEFORE anything is bought.
+  let data = scan.originalResumeData
+  let parsedFresh = false
+  if (!data) {
+    if (!scan.resumePath) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
+    const obj = await ctx.env.RESUMES_BUCKET.get(scan.resumePath)
+    if (!obj) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
+    const bytes = new Uint8Array(await obj.arrayBuffer())
+    const parsed = await resumeParser.parse(ctx.env, bytes, scan.resumeMimeType)
+    if (parsed.parseError || !parsed.resumeData) {
+      console.error(`structureResume ${scan.id}:`, parsed.parseErrorMessage)
+      return ctx.json({ success: false, message: 'We couldn\'t read the structure of that file just now. Please try again in a minute.' }, 502)
+    }
+    data = parsed.resumeData
+    parsedFresh = true
+  }
 
-  if (!scan.resumePath) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
-  const obj = await ctx.env.RESUMES_BUCKET.get(scan.resumePath)
-  if (!obj) return ctx.json({ success: false, message: 'The uploaded file is no longer stored.' }, 410)
-  const bytes = new Uint8Array(await obj.arrayBuffer())
-  const parsed = await resumeParser.parse(ctx.env, bytes, scan.resumeMimeType)
-  if (parsed.parseError || !parsed.resumeData) {
-    console.error(`structureResume ${scan.id}:`, parsed.parseErrorMessage)
-    return ctx.json({ success: false, message: 'We couldn\'t read the structure of that file just now. Please try again in a minute.' }, 502)
+  const prior = scan.fullAtsReport && !scan.fullAtsReport.error ? scan.fullAtsReport : null
+  let formattedScore = prior?.formattedScore ?? null
+  let report = prior
+  if (formattedScore == null) {
+    try {
+      const f = await computeFormattedScore(ctx.env, data, (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS), 'structureResume')
+      formattedScore = f.finalScore
+      if (prior) report = { ...prior, formattedScore }
+    } catch (e) {
+      // Informational only: never fail the structure preview because the preview score could not be made.
+      console.error(`structureResume ${scan.id}: formatted score failed:`, e?.message || e)
+    }
+  }
+
+  if (!parsedFresh && report === prior && formattedScore === (prior?.formattedScore ?? null)) {
+    return ctx.json({ success: true, data: { originalResumeData: data, formattedScore, atsDetail: buildAtsDetail(report) } })
   }
 
   // Only attach it if nobody else did, and only while the scan is still pre-purchase.
-  const { data: updated, error: updErr } = await supabase.from('scans').update({
-    original_resume_data: parsed.resumeData,
-    candidate_first_name: candidateFirstNameFrom(parsed.resumeData) ?? scan.candidateFirstName ?? null
-  }).eq('id', scan.id).eq('fix_purchased', false).is('original_resume_data', null).select('id')
+  const patch = {}
+  if (report && formattedScore != null) patch.full_ats_report = report
+  if (parsedFresh) {
+    patch.original_resume_data = data
+    patch.candidate_first_name = candidateFirstNameFrom(data) ?? scan.candidateFirstName ?? null
+  }
+  let q = supabase.from('scans').update(patch).eq('id', scan.id).eq('fix_purchased', false)
+  if (parsedFresh) q = q.is('original_resume_data', null)
+  const { data: updated, error: updErr } = await q.select('id')
   if (updErr) throw updErr
   if (Array.isArray(updated) && updated.length === 0) {
-    const { data: fresh } = await supabase.from('scans').select('original_resume_data').eq('id', scan.id).maybeSingle()
-    if (fresh?.original_resume_data) return ctx.json({ success: true, data: { originalResumeData: fresh.original_resume_data } })
+    const { data: fresh } = await supabase.from('scans').select('original_resume_data, full_ats_report').eq('id', scan.id).maybeSingle()
+    if (fresh?.original_resume_data) {
+      const fr = fresh.full_ats_report && !fresh.full_ats_report.error ? fresh.full_ats_report : null
+      return ctx.json({ success: true, data: { originalResumeData: fresh.original_resume_data, formattedScore: fr?.formattedScore ?? null, atsDetail: buildAtsDetail(fr) } })
+    }
     return ctx.json({ success: false, message: 'This scan changed while we were reading it. Refresh the page and try again.' }, 409)
   }
-  return ctx.json({ success: true, data: { originalResumeData: parsed.resumeData } })
+  return ctx.json({ success: true, data: { originalResumeData: data, formattedScore, atsDetail: buildAtsDetail(report) } })
+}
+
+// POST /api/scan/:id/retry-scan
+// FEATURE GAP CLOSED (Scan/ATS round 3, G1): when a free scan ends in ERROR on OUR side the slot is
+// refunded, but the only way forward was a "Try again" link to the home page - the person had to
+// re-upload the file or retype the whole background, although both are still stored on the scan
+// (the file in R2, a typed background in raw_brain_dump_text until a result exists). This re-runs the
+// SAME scan in place: owner only (account, or the anonymous token), only a failed scan that was never
+// purchased, and it spends a free-scan slot like any scan (the failed run's slot was handed back).
+async function retryScan(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+
+  const user = ctx.get('user')
+  const anonToken = ctx.req.query('token') || null
+  const ownerAccount = !!(scan.userId && scan.userId === user?.id)
+  if (!ownerAccount && !(await anonTokenMatches(scan, anonToken)))
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+
+  if (scan.status !== 'ERROR' || scan.fixPurchased)
+    return ctx.json({ success: false, message: 'Only a scan that failed before purchase can be retried.' }, 400)
+  if (!(scan.resumePath || scan.originalResumeData || scan.rawBrainDumpText))
+    return ctx.json({ success: false, message: 'What this scan was run on is no longer stored. Please start a new scan.' }, 410)
+
+  // A logged-in retry spends a free-scan slot exactly like createScan (same atomic RPC); an anonymous
+  // one has already spent the visitor's hourly slot in the rl.anonScan middleware on this route.
+  let spentAccountSlot = false
+  if (ownerAccount) {
+    const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0)
+    const { data: allowed, error: quotaErr } = await supabase.rpc(
+      'increment_scan_count_if_under_limit',
+      { p_user_id: user.id, p_limit: c.FREE_SCANS_PER_DAY, p_today_midnight: todayMidnight.toISOString() }
+    )
+    if (quotaErr) throw quotaErr
+    if (!allowed && !rateLimiter.isBypassed(ctx.env, clientIp(ctx)))
+      return ctx.json({ success: false, message: `Daily scan limit reached (${c.FREE_SCANS_PER_DAY} free scans a day). Your count resets at midnight UTC.` }, 429)
+    spentAccountSlot = !!allowed
+  }
+
+  // Back to PENDING only while it is still exactly the failed, unpurchased scan that was checked.
+  const { data: flipped, error: flipErr } = await supabase.from('scans')
+    .update({ status: 'PENDING', full_ats_report: null })
+    .eq('id', scan.id).eq('status', 'ERROR').eq('fix_purchased', false).select('id')
+  if (flipErr || (Array.isArray(flipped) && flipped.length === 0)) {
+    if (spentAccountSlot) warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: user.id }), 'scan quota rollback (retry-scan)')
+    if (flipErr) throw flipErr
+    return ctx.json({ success: false, message: 'This scan changed - refresh the page and try again.' }, 409)
+  }
+
+  await dispatchAtsScan(ctx, supabase, scan.id, ownerAccount ? null : anonToken)
+  return ctx.json({ success: true, data: { id: scan.id, status: 'PENDING' } })
 }
 
 // PATCH /api/scan/:id/delivered-resume
@@ -1024,9 +1130,10 @@ async function updateDeliveredResume(ctx) {
   // as delivered, and rebuild with the honest wording if it misses the bar.
   let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
   const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
-  let fixAtsScore
-  if (text && text.trim().length >= 100) fixAtsScore = (await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume')).score
+  let fixAtsScore, scored
+  if (text && text.trim().length >= 100) { scored = await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume'); fixAtsScore = scored.score }
   else return ctx.json({ success: false, message: 'That resume is too short to score. Add more detail and try again.' }, 400)
+  const editReport = deliveredReport(scored)
   const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
   if (verificationUrl && !credentialVerified)
     docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false })
@@ -1047,16 +1154,26 @@ async function updateDeliveredResume(ctx) {
   const prompts = (Array.isArray(scan.quantificationPrompts) ? scan.quantificationPrompts : [])
     .filter(p => p && bulletsNow.has(String(p.bullet || '').trim()))
 
-  // Which column holds the delivered content: a rewrite's text lives in rewritten_resume_data;
-  // a credential-only delivery (BADGE) delivers original_resume_data verbatim.
-  const dataColumn = scan.rewrittenResumeData ? { rewritten_resume_data: resumeData } : { original_resume_data: resumeData }
+  // Round 3 (G7 + B2): the owner's edit is stored in rewritten_resume_data - the column everything
+  // downstream already reads as "the delivered content" - for BOTH tiers, and ALSO as
+  // user_edited_resume_data (the facts they vouch for: the fabrication baseline for a retry, and the
+  // marker the UI uses to say "you changed this" instead of "the AI changed this"). For a credential-only
+  // (BADGE) delivery this used to overwrite original_resume_data, destroying the scored upload the
+  // diff and the saved profile are built from; that column is now left alone.
   const retrySeen = scan.fixRetryCount ?? 0
-  const { data: updated, error: updErr } = await supabase.from('scans').update({
-    ...dataColumn,
+  // B3: every generation writes a fresh, unique docx key, so the key this edit was built on is the
+  // version stamp. The write only applies while the delivery is still exactly that one - two
+  // concurrent saves (double-click, two tabs) can no longer both win, losing the first version's
+  // hash from the history and orphaning its files.
+  let editQuery = supabase.from('scans').update({
+    rewritten_resume_data:   resumeData,
+    user_edited_resume_data: resumeData,
+    fix_ats_report:          editReport,
     resume_ats_path:     docxKey,
     resume_pdf_path:     finalPdfKey,
     resume_pdf_hash:     finalPdfHash,
-    resume_hash:         resumeHash,
+    // B5: generateFix stores null for the credential-less tier; this used to store a hash anyway.
+    resume_hash:         isPlain ? null : resumeHash,
     resume_hash_history: isPlain ? [] : nextHashHistory(scan),
     fix_ats_score:       fixAtsScore,
     fix_generated_at:    new Date().toISOString(),
@@ -1066,7 +1183,9 @@ async function updateDeliveredResume(ctx) {
     candidate_first_name: candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null,
     // The cover letter was written from the previous version.
     cover_letter_text:   null
-  }).eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retrySeen).select('id')
+  }).eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retrySeen)
+  editQuery = scan.resumeAtsPath ? editQuery.eq('resume_ats_path', scan.resumeAtsPath) : editQuery.is('resume_ats_path', null)
+  const { data: updated, error: updErr } = await editQuery.select('id')
   if (updErr) {
     await deleteSuperseded(ctx.env, [docxKey, finalPdfKey], [])
     throw updErr
@@ -1081,7 +1200,9 @@ async function updateDeliveredResume(ctx) {
   return ctx.json({ success: true, data: {
     fixAtsScore, hasPdf: !!finalPdfKey, quantificationPrompts: prompts,
     credentialVerified,
-    ...(scan.rewrittenResumeData ? { rewrittenResumeData: resumeData } : { originalResumeData: resumeData }),
+    rewrittenResumeData: resumeData,
+    userEditedResumeData: resumeData,
+    fixAtsDetail: buildAtsDetail(editReport),
     coverLetterText: null
   } })
 }
@@ -1111,9 +1232,13 @@ async function generateCoverLetter(ctx) {
     console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
     return ctx.json({ success: false, message: 'We couldn\'t write the cover letter just now. Please try again in a minute.' }, 502)
   }
-  const { data: updated, error: updErr } = await supabase.from('scans')
+  // B3: also pinned to the delivery the letter was written from - an edit that landed while the letter
+  // was being written replaces resume_ats_path, so a letter about the OLD resume is refused, not stored.
+  let letterQuery = supabase.from('scans')
     .update({ cover_letter_text: result.data })
-    .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', scan.fixRetryCount ?? 0).select('id')
+    .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', scan.fixRetryCount ?? 0)
+  letterQuery = scan.resumeAtsPath ? letterQuery.eq('resume_ats_path', scan.resumeAtsPath) : letterQuery.is('resume_ats_path', null)
+  const { data: updated, error: updErr } = await letterQuery.select('id')
   if (updErr) throw updErr
   if (Array.isArray(updated) && updated.length === 0)
     return ctx.json({ success: false, message: 'Your resume changed while the letter was being written. Please try again.' }, 409)
@@ -1138,7 +1263,9 @@ async function downloadCoverLetter(ctx) {
 // POST /api/scan/:id/initiate-fix
 async function initiateFix(ctx) {
   const user = ctx.get('user')
-  const body = await ctx.req.json()
+  // B7: an unparseable body used to escape as a 500; it is the client's mistake.
+  let body
+  try { body = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Invalid request body.' }, 400) }
   const { fixTier, referralCode } = z.object({
     fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
     referralCode: z.string().max(50).optional()
@@ -1687,6 +1814,10 @@ async function getScanWithUser(supabase, scanId) {
 // product/cost tradeoff, not something to decide unilaterally while fixing
 // a stale comment.
 
+// How long a SCANNING row may sit untouched before another worker may take the scan over. The longest
+// legitimate run is the structuring budget (90s) plus parsing and one scoring call.
+const SCAN_TAKEOVER_SECONDS = 120
+
 async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   let scanForRefund = null
   // Only the queue consumer passes structureTimeoutMs: it has no 30s wall-clock cap, so
@@ -1701,8 +1832,26 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
     // — or, for a scan that has since been paid for, drag its status back to
     // SCANNING. Only a scan still waiting (PENDING) or interrupted mid-run
     // (SCANNING) is worked on.
-    const { data: claimed, error: claimErr } = await supabase.from('scans')
-      .update({ status: 'SCANNING' }).eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id')
+    //
+    // Round 3 (B6): the claim used to accept SCANNING unconditionally, so a redelivery that arrived
+    // while the first run was still working started a SECOND run in parallel - a double Claude
+    // bill, two result writes, two e-mails. A scan is now taken over from SCANNING only when its row
+    // has not been touched for SCAN_TAKEOVER_SECONDS (the first run died); while it is merely
+    // in progress the outcome says so and the queue consumer retries later instead of acking it.
+    let { data: claimed, error: claimErr } = await supabase.from('scans')
+      .update({ status: 'SCANNING' }).eq('id', scanId).eq('status', 'PENDING').select('id')
+    if (!claimErr && Array.isArray(claimed) && claimed.length === 0) {
+      const staleBefore = new Date(Date.now() - SCAN_TAKEOVER_SECONDS * 1000).toISOString()
+      ;({ data: claimed, error: claimErr } = await supabase.from('scans')
+        .update({ status: 'SCANNING' }).eq('id', scanId).eq('status', 'SCANNING').lt('updated_at', staleBefore).select('id'))
+      if (!claimErr && Array.isArray(claimed) && claimed.length === 0) {
+        const { data: cur } = await supabase.from('scans').select('status').eq('id', scanId).maybeSingle()
+        if (cur?.status === 'SCANNING') {
+          console.log(`runAtsScan: scan ${scanId} is already being scanned — not starting a second run`)
+          return { success: false, inProgress: true, error: 'already in progress' }
+        }
+      }
+    }
     if (claimErr) console.error('runAtsScan: mark SCANNING:', claimErr.message)
     else if (Array.isArray(claimed) && claimed.length === 0) {
       console.log(`runAtsScan: scan ${scanId} is not waiting to be scanned (already handled, or deleted) — skipping`)
@@ -1838,7 +1987,9 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
       format_score:    ruleResult.formatScore,
       sections_score:  ruleResult.sectionsScore,
       content_score:   ruleResult.contentScore,
-      full_ats_report: { ...ruleResult.detail, aiMissingKeywords },
+      // A typed / saved-profile scan is scored on the rendered document itself, so its score already
+      // IS the formatted-file score; for an uploaded file it is computed on request (structureResume).
+      full_ats_report: { ...ruleResult.detail, aiMissingKeywords, ...(scan.inputMode !== 'file' ? { formattedScore: finalScore } : {}) },
       role_category:   atsService.detectRoleCategory(jdText),
       seniority_level: atsService.detectSeniority(jdText),
       scan_completed_at: new Date().toISOString(),
@@ -1873,7 +2024,7 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
           })
         } catch (e) { console.error('Scan email:', e.message) }
       }
-    } else if (scan.inputMode === 'brain_dump' && scan.contactEmail && rawAnonToken) {
+    } else if (scan.contactEmail && rawAnonToken) {
       // AUDIT FIX (feature gap — section audit "generate a resume from
       // scratch"): an anonymous brain-dump submitter has no account, so the
       // logged-in branch above never fires for them — they previously got
@@ -1899,11 +2050,21 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
     console.error('runAtsScan error:', err.message)
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
+    //
+    // Round 3 (B6): this used to be a blind write, so a throw AFTER the result was saved (or in a
+    // scan that was paid for in the meantime) flipped a finished scan to ERROR and refunded the slot
+    // for a scan the person did get. It now only fails a scan that is still waiting / running, and
+    // the slot is handed back only when that is what happened.
+    let failedIt = true
     try {
-      await supabase.from('scans').update({ status: 'ERROR' }).eq('id', scanId)
+      const { data: flipped, error: flipErr } = await supabase.from('scans').update({ status: 'ERROR' })
+        .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id')
+      if (!flipErr && Array.isArray(flipped) && flipped.length === 0) failedIt = false
     } catch (_) {}
     // An unexpected throw mid-pipeline is our fault, not the person's.
-    try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey) } catch (_) {}
+    if (failedIt) {
+      try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey) } catch (_) {}
+    }
     return { success: false, error: err.message }
   }
 }
@@ -1952,10 +2113,15 @@ async function regeneratePdf(ctx) {
   // the new DOCX, with a hash that then read as "verified". The write now only
   // applies while the scan is still the exact delivery the render was built from.
   const retryCountSeen = scan.fixRetryCount ?? 0
-  const { data: updated, error: updErr } = await supabase.from('scans')
+  // B3: an owner EDIT does not bump fix_retry_count, so an edit that landed during this render (and
+  // whose own PDF render failed, leaving resume_pdf_path null) used to let this PDF of the OLD content
+  // attach next to the NEW docx with a hash that reads as verified. Pinned to the docx it was drawn from.
+  let pdfQuery = supabase.from('scans')
     .update({ resume_pdf_path: pdfKey, resume_pdf_hash: pdfHash })
     .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', retryCountSeen)
-    .is('resume_pdf_path', null).select('id')
+    .is('resume_pdf_path', null)
+  pdfQuery = scan.resumeAtsPath ? pdfQuery.eq('resume_ats_path', scan.resumeAtsPath) : pdfQuery.is('resume_ats_path', null)
+  const { data: updated, error: updErr } = await pdfQuery.select('id')
   if (updErr) {
     await deleteSuperseded(ctx.env, [pdfKey], [])
     throw updErr
@@ -2042,6 +2208,18 @@ async function deleteSuperseded(env, oldKeys, keepKeys) {
     try { await env.RESUMES_BUCKET.delete(key) } catch (err) { console.error(`[WARN] could not delete superseded ${key}:`, err.message) }
   }
 }
+// Score of the ATS-formatted document that would be DELIVERED for this structured resume (the same
+// render-then-score basis updateResumeData and the paid jobs use), blended exactly like a free scan.
+async function computeFormattedScore(env, resumeData, jdText, label) {
+  const text = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_TEXT_CHARS)
+  const rule = atsService.scoreResume(text, jdText)
+  let ai = { success: false }
+  try { ai = await claudeService.scoreResumeWithAI(env, text, jdText) }
+  catch (e) { console.error(`${label} AI score call failed, using rule-only score:`, e.message) }
+  const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, ai, label)
+  return { finalScore, aiMissingKeywords, rule }
+}
+
 
 // Scores a candidate resume text the SAME way a fresh scan does: rule score
 // blended with the AI opinion (same weights, same clamping). AUDIT FIX
@@ -2056,8 +2234,14 @@ async function scoreLikeScan(env, text, jdText, logLabel) {
   let aiResult = { success: false }
   try { aiResult = await claudeService.scoreResumeWithAI(env, text, jdText) }
   catch (e) { console.error(`${logLabel} AI score call failed, using rule-only score:`, e.message) }
-  const { finalScore } = blendAiScore(rule.score, aiResult, logLabel)
-  return { ...rule, score: finalScore, ruleScore: rule.score }
+  const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, aiResult, logLabel)
+  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords }
+}
+
+// The breakdown persisted as scans.fix_ats_report for a DELIVERED file (same shape as
+// full_ats_report, so buildAtsDetail renders both).
+function deliveredReport(scored) {
+  return { ...(scored?.detail || {}), aiMissingKeywords: scored?.aiMissingKeywords || [] }
 }
 
 // Renders the designed PDF for a delivered resume and stores it. Shared by
@@ -2077,7 +2261,15 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   let htmlResult = null
   try { htmlResult = await claudeService.generateBeautifulResumeHTML(env, data, designTokens, verificationUrl, { verified }) }
   catch (e) { htmlResult = { success: false, error: e.message } }
-  if (htmlResult?.success && htmlResult.data) candidates.push({ html: htmlResult.data, label: 'designed layout', attempts: 2 })
+  // G4: the designed page is model-written HTML that gets hash-stamped as verified and sent to
+  // employers - it must still contain what the resume says before it is allowed to become the PDF.
+  const fidelity = htmlResult?.success && htmlResult.data
+    ? (claudeService.checkHtmlFidelity?.(data, htmlResult.data, { verificationUrl }) ?? { ok: true, reasons: [] })
+    : null
+  if (fidelity && !fidelity.ok) {
+    htmlError = `designed layout failed the content check: ${fidelity.reasons.slice(0, 3).join('; ')}`
+    console.error(`[WARN] designed PDF layout rejected for ${scanId}: ${htmlError} - using the built-in template`)
+  } else if (htmlResult?.success && htmlResult.data) candidates.push({ html: htmlResult.data, label: 'designed layout', attempts: 2 })
   else {
     htmlError = htmlResult?.error || 'HTML generation failed'
     console.error(`[WARN] HTML resume generation failed for ${scanId}: ${htmlError} — using the built-in template`)
@@ -2227,6 +2419,14 @@ async function generateFixRun(env, supabase, scanId) {
     let bestData = resumeData
     let bestDocxBytes = null
     let bestQuantificationPrompts = isRetry ? (scan.quantificationPrompts || []) : []
+    // G3: the breakdown of whichever document ends up delivered (persisted as fix_ats_report).
+    let bestReport = isRetry ? (scan.fixAtsReport || null) : null
+    // B2: the facts the fabrication guard treats as the person's own. It used to be the original
+    // upload only, so a retry after the person added a real figure (or fixed a title) in the
+    // delivered-resume editor was rejected on EVERY attempt - the guard saw their own number as
+    // invented - and restoreFactualFields reverted their corrections to the upload's values.
+    // What the owner saved in the editor is vouched for by the owner.
+    const guardBaseline = scan.userEditedResumeData || originalData
     // On a retry round, the first attempt should already know WHY the
     // previous round's best result fell short, instead of blindly
     // re-attempting from a cold start. Re-score the starting point fresh
@@ -2242,6 +2442,8 @@ async function generateFixRun(env, supabase, scanId) {
       const startingText = await resumeParser.extractText(startingDocxBytes, DOCX_MIME)
       // Rule-based only on purpose: this is just to regenerate the weak-areas text.
       const startingScore = atsService.scoreResume(startingText, jdText)
+      // Scans delivered before fix_ats_report existed: derive the breakdown the same cheap way.
+      if (!bestReport) bestReport = { ...startingScore.detail, aiMissingKeywords: [] }
       lastFeedback = {
         score: scan.fixAtsScore,
         threshold: c.ATS_BADGE_THRESHOLD,
@@ -2250,7 +2452,7 @@ async function generateFixRun(env, supabase, scanId) {
     }
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
-      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, originalData)
+      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, guardBaseline)
       if (!rewriteResult.success) {
         // AUDIT FIX: FABRICATION_DETECTED used to hit the same `break` as a
         // genuine API/parse failure — but it isn't one. It means THIS ONE
@@ -2303,6 +2505,7 @@ async function generateFixRun(env, supabase, scanId) {
         bestData = candidateData
         bestDocxBytes = candidateDocxBytes
         bestQuantificationPrompts = candidateQuantificationPrompts
+        bestReport = deliveredReport(candidateScore)
       }
 
       if (candidateScore.score >= c.ATS_BADGE_THRESHOLD) break  // good enough — stop here
@@ -2366,14 +2569,16 @@ async function generateFixRun(env, supabase, scanId) {
     // occurrence is a real failure on Passthrough's side, not a quality
     // shortfall the retry loop exists to iterate on.
     const rewriteFailed = bestScore < 0
-    const fixAtsScore = bestScore >= 0
-      ? bestScore
-      : (await scoreLikeScan(
+    const fallbackScored = rewriteFailed
+      ? await scoreLikeScan(
           env,
           await resumeParser.extractText(await docxService.generateAtsDocx(resumeData, verificationUrl), DOCX_MIME),
           jdText,
           'generateFix (original fallback)'
-        )).score
+        )
+      : null
+    const fixAtsScore = rewriteFailed ? fallbackScored.score : bestScore
+    const fixReport = rewriteFailed ? deliveredReport(fallbackScored) : bestReport
 
     if (rewriteFailed && scan.userId) {
       // A total rewrite failure, not a quality shortfall — compensate every time it happens
@@ -2440,6 +2645,7 @@ async function generateFixRun(env, supabase, scanId) {
       resume_pdf_hash:      finalPdfHash,
       resume_hash_history:  isPlain ? [] : nextHashHistory(scan),
       fix_ats_score:        fixAtsScore,
+      fix_ats_report:       fixReport,
       // Reset every generation — this reflects THIS attempt's outcome only,
       // never a stale value from an earlier round on the same scan (a
       // subsequent retry that succeeds must clear it, not just add to it).
@@ -2565,7 +2771,11 @@ async function generateBadgeRun(env, supabase, scanId) {
     // a document that is not the person's resume is worse than a failed job:
     // it is now a failure, which takes the normal path — status ERROR, the
     // failure email, the owner alert, and the payment-sweep requeue.
-    if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
+    if (scan.userEditedResumeData) {
+      // The owner already edited this delivery (G7: edits no longer overwrite original_resume_data).
+      // A re-run - the failed-fix sweep, a redelivery - must rebuild THEIR version, not the upload.
+      finalData = scan.userEditedResumeData
+    } else if (scan.inputMode === 'brain_dump' || scan.inputMode === 'saved_profile') {
       finalData = scan.originalResumeData
       if (!finalData)
         throw new Error(`${scan.inputMode} scan has no structured data — runAtsScan did not complete successfully`)
@@ -2603,10 +2813,12 @@ async function generateBadgeRun(env, supabase, scanId) {
     // does for a Fix). If scoring itself can't run, the earned scan score stands.
     const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
     let fixAtsScore = scan.atsScore
+    let badgeScored = null
     try {
       const deliveredText = await resumeParser.extractText(docxBytes, DOCX_MIME)
       if (deliveredText && deliveredText.trim().length >= 100) {
-        fixAtsScore = (await scoreLikeScan(env, deliveredText, jdText, 'generateBadge')).score
+        badgeScored = await scoreLikeScan(env, deliveredText, jdText, 'generateBadge')
+        fixAtsScore = badgeScored.score
       }
     } catch (scoreErr) {
       console.error(`[WARN] generateBadge ${scanId}: could not score the delivered document, keeping the scan score:`, scoreErr.message)
@@ -2646,6 +2858,8 @@ async function generateBadgeRun(env, supabase, scanId) {
       resume_pdf_hash:      finalPdfHash,
       resume_hash_history:  nextHashHistory(scan),
       fix_ats_score:        fixAtsScore,
+      // G3: why the delivered file scored what it did (null when scoring could not run).
+      ...(badgeScored ? { fix_ats_report: deliveredReport(badgeScored) } : {}),
       fix_generated_at:     new Date().toISOString(),
       verification_code:    code,
       verification_url:     verificationUrl,
@@ -2659,7 +2873,9 @@ async function generateBadgeRun(env, supabase, scanId) {
       // deliberately left untouched (stays null) — DiffView.jsx uses that
       // null to render "credential only, no content changes" instead of a
       // diff that would misleadingly imply a rewrite happened.
-      original_resume_data:  finalData,
+      // G7: keep the upload's own data when there is one (an owner edit lives in
+      // rewritten/user_edited_resume_data and must not replace it).
+      original_resume_data:  scan.userEditedResumeData ? (scan.originalResumeData || finalData) : finalData,
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
     if (deliverErr) throw deliverErr
@@ -2734,6 +2950,6 @@ async function generateBadge(env, supabase, scanId) {
 module.exports = {
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData, downloadDraft, downloadDraftPdf,
-  structureResume, updateDeliveredResume, generateCoverLetter, downloadCoverLetter,  // section audit: "generate a resume from scratch"
+  structureResume, retryScan, updateDeliveredResume, generateCoverLetter, downloadCoverLetter,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

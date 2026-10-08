@@ -150,6 +150,8 @@ function scanRowToCamel(row) {
     rawBrainDumpText:       row.raw_brain_dump_text,
     originalResumeData:     row.original_resume_data,
     rewrittenResumeData:    row.rewritten_resume_data,
+    userEditedResumeData:   row.user_edited_resume_data,
+    fixAtsReport:           row.fix_ats_report,
     quantificationPrompts:  row.quantification_prompts,
     createdAt:           row.created_at,
     updatedAt:           row.updated_at

@@ -45,6 +45,9 @@ router.get( '/:id/download-draft', rl.draftDownload, validateUuidParam(), c.down
 router.get( '/:id/download-draft-pdf', rl.pdfRegen, validateUuidParam(), c.downloadDraftPdf)
 // Build (and store) the structure of an uploaded file so it can be reviewed/corrected before paying.
 router.post('/:id/structure',      rl.resumeEdit, validateUuidParam(), c.structureResume)
+// G1 (round 3): re-run a free scan that failed on our side, in place. rl.anonScan spends the anonymous
+// visitor's hourly slot (and hands it back on a 4xx/5xx); logged-in users are metered by the account quota.
+router.post('/:id/retry-scan',     rl.anonScan, validateUuidParam(), c.retryScan)
 // Owner edits to the DELIVERED resume (both files rebuilt and re-scored), and its cover letter.
 router.patch('/:id/delivered-resume', auth, rl.resumeEdit, validateUuidParam(), c.updateDeliveredResume)
 router.post('/:id/cover-letter',   auth, rl.resumeEdit, validateUuidParam(), c.generateCoverLetter)

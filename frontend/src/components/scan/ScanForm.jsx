@@ -28,13 +28,9 @@ const MIN_BRAIN_DUMP_CHARS = 100
 // could lose an entire job or degree off the end with zero indication why
 // the AI "forgot" it.
 const MAX_RESUME_CHARS = 12000
-// FEATURE GAP CLOSED (Scan/ATS pass): mirrors backend MAX_JD_CHARS. The
-// backend silently cuts the job description at this length (and a URL fetch
-// cuts at the same point), but only the brain-dump box had a counter — so a
-// long posting lost its qualifications section, usually the part that carries
-// the keywords being scored, with no hint why. Paste mode gets the same
-// counter/warning; it does NOT truncate input, so the person can trim what
-// THEY judge least relevant instead of losing the tail.
+// Mirrors backend MAX_JD_CHARS. Since round 3 the backend FITS a longer posting instead of cutting
+// the first N characters: company intro, benefits and legal text go first, the role and requirements
+// are kept. The counter is a heads-up, not a hard stop, and the result page shows the text scored.
 const MAX_JD_CHARS = 5000
 
 export default function ScanForm() {
@@ -69,6 +65,8 @@ export default function ScanForm() {
   // covers the case that fallback can't reach.
   const [contactName,  setContactName ] = useState(draft0?.name || '')
   const [contactEmail, setContactEmail] = useState(draft0?.email || '')
+  // G6 (round 3): optional address for an anonymous FILE upload, so the result link can be emailed back.
+  const [uploadEmail, setUploadEmail] = useState('')
   const restored = !!(draft0 && draft0.text.trim())
 
   const [useUrl,  setUseUrl ] = useState(false)
@@ -149,6 +147,8 @@ export default function ScanForm() {
       if (filled(manualData.email) && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(manualData.email.trim()))
         return setError('Please enter a valid email address.')
     }
+    if (entryMode === 'upload' && !user && uploadEmail.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(uploadEmail.trim()))
+      return setError('Please enter a valid email address, or leave it blank.')
     if (entryMode === 'brainDump' && !user) {
       if (!contactName.trim())
         return setError('Please enter your name.')
@@ -166,6 +166,7 @@ export default function ScanForm() {
       const formData = new FormData()
       if (entryMode === 'upload') {
         formData.append('resume', file)
+        if (!user && uploadEmail.trim()) formData.append('contactEmail', uploadEmail.trim())
       } else if (entryMode === 'savedProfile') {
         formData.append('useSavedProfile', 'true')
       } else if (entryMode === 'rescan') {
@@ -274,6 +275,22 @@ export default function ScanForm() {
         </div>
 
         {entryMode === 'upload' && <FileUpload value={file} onFile={setFile} />}
+
+        {entryMode === 'upload' && !user && (
+          <div>
+            <Input
+              type="email"
+              placeholder="Email me a link to my result (optional)"
+              value={uploadEmail}
+              onChange={e => setUploadEmail(e.target.value)}
+              aria-label="Email address for a link to your result (optional)"
+            />
+            <p className="mt-1 text-xs text-gray-500">
+              Without an account, your result is only reachable from this browser. Add an address and we'll email
+              you a link back — used for that and nothing else.
+            </p>
+          </div>
+        )}
 
         {entryMode === 'brainDump' && (
           <div>
@@ -416,8 +433,9 @@ export default function ScanForm() {
             <p className="mt-1 text-xs text-gray-500">
               LinkedIn URLs cannot be read automatically — paste the text instead.
               For the most accurate score, use the employer's own posting link
-              rather than a job board aggregator or reposted listing. Only the first
-              {' '}{MAX_JD_CHARS.toLocaleString()} characters of the posting are read.
+              rather than a job board aggregator or reposted listing. A very long posting is
+              trimmed to its role and requirements (company intro and benefits go first) —
+              your result shows the text that was scored.
             </p>
           </div>
         ) : (
@@ -429,13 +447,13 @@ export default function ScanForm() {
               rows={7}
             />
             <div className="mt-1 flex items-start justify-between gap-3">
-              <p className={`text-xs ${jdText.length > MAX_JD_CHARS ? 'text-red-600' : 'text-gray-500'}`}>
+              <p className={`text-xs ${jdText.length > MAX_JD_CHARS ? 'text-amber-700' : 'text-gray-500'}`}>
                 {jdText.length > MAX_JD_CHARS
-                  ? `Only the first ${MAX_JD_CHARS.toLocaleString()} characters are scored — trim boilerplate (benefits, legal text) so the requirements fit.`
+                  ? `Longer than ${MAX_JD_CHARS.toLocaleString()} characters — we'll trim the company intro, benefits and legal text first and keep the role and requirements. Your result shows what was scored.`
                   : ''}
               </p>
               <span className={`shrink-0 text-xs tabular-nums ${
-                jdText.length > MAX_JD_CHARS ? 'text-red-600 font-medium' :
+                jdText.length > MAX_JD_CHARS ? 'text-amber-700 font-medium' :
                 jdText.length >= MAX_JD_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
               }`}>
                 {jdText.length.toLocaleString()} / {MAX_JD_CHARS.toLocaleString()}

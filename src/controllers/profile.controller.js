@@ -270,7 +270,7 @@ const EXPORT_SCAN_COLUMNS =
   'id, status, input_mode, created_at, scan_completed_at, resume_original_name, job_title, role_category, seniority_level, ' +
   'ats_score, passed, keyword_score, format_score, sections_score, content_score, ' +
   'job_description_text, job_description_url, raw_brain_dump_text, cover_letter_text, ' +
-  'original_resume_data, rewritten_resume_data, fix_purchased, fix_tier, fix_ats_score, fix_generated_at, ' +
+  'original_resume_data, rewritten_resume_data, user_edited_resume_data, fix_ats_report, fix_purchased, fix_tier, fix_ats_score, fix_generated_at, ' +
   'candidate_first_name, verify_hide_name, verify_expose_docx, verify_expose_pdf, ' +
   'verification_code, verification_status, verified_at, verification_revoked_at, ' +
   // The analysis of the person's own resume (what was found missing, section by section) and the

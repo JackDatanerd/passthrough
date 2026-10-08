@@ -311,6 +311,10 @@ function extractPageTitle(html) {
   return ok(seg) ? seg : ''
 }
 
+// Fetched pages are returned up to this size; createScan then FITS the posting to MAX_JD_CHARS
+// (atsService.fitJobDescription) so company boilerplate - not the requirements - is what gets cut.
+const MAX_FETCH_CHARS = 20000
+
 async function fetchJobDescriptionFromUrl(url) {
   let parsed
   try { parsed = new URL(url) } catch (_) {
@@ -370,7 +374,7 @@ async function fetchJobDescriptionFromUrl(url) {
     // Structured data first: when the page declares exactly one JobPosting,
     // its text IS the job description (no nav, footer or "similar jobs").
     const structured = extractJobPostingText(html)
-    if (structured) return { success: true, blocked: false, text: structured.slice(0, 5000) }
+    if (structured) return { success: true, blocked: false, text: structured.slice(0, MAX_FETCH_CHARS) }
 
     let text = htmlToText(html)
 
@@ -412,7 +416,7 @@ async function fetchJobDescriptionFromUrl(url) {
         ? `${text.slice(0, pageTitle.length)}\n${text.slice(pageTitle.length).replace(/^\s+/, '')}`
         : `${pageTitle}\n${text}`
     }
-    return { success: true, blocked: false, text: text.slice(0, 5000) }
+    return { success: true, blocked: false, text: text.slice(0, MAX_FETCH_CHARS) }
   } catch (_) {
     return { success: false, blocked: false, text: null,
       message: 'Could not read that page. Paste instead.' }

@@ -352,7 +352,7 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
 describe('runAtsScan — idempotent claim and structure', () => {
   function setup(opts = {}) {
     const state = { updates: [], scored: [], emails: 0 }
-    const scan = { id: 's1', input_mode: 'file', resume_path: 'k', resume_mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', job_description_text: 'JD', user_id: null }
+    const scan = { id: 's1', input_mode: 'file', resume_path: 'k', resume_mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', job_description_text: 'JD', user_id: null, status: opts.status }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.updates.push(q); return { data: q.patch?.status === 'SCANNING' ? (opts.claim ?? [{ id: 's1' }]) : [{ id: 's1' }], error: null } }
@@ -372,19 +372,29 @@ describe('runAtsScan — idempotent claim and structure', () => {
     })
     return { ...m, state, db, env: { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }) } } }
   }
-  it('claims only PENDING/SCANNING scans', async () => {
+  it('claims a PENDING scan; SCANNING is only taken over once the row has gone stale', async () => {
     t = setup()
     await t.mod.runAtsScan(t.env, t.db, 's1')
     const claim = t.state.updates[0]
     expect(claim.patch).toEqual({ status: 'SCANNING' })
-    expect(claim.filters.find(f => f[0] === 'in')[2]).toEqual(['PENDING', 'SCANNING'])
+    expect(claim.filters.find(f => f[0] === 'eq' && f[1] === 'status')[2]).toBe('PENDING')
   })
   it('a duplicate delivery of an already-handled scan does nothing — no AI bill, no rewrite of its result', async () => {
-    t = setup({ claim: [] })
+    t = setup({ claim: [], status: 'COMPLETE_PASS' })
     const out = await t.mod.runAtsScan(t.env, t.db, 's1')
     expect(out).toEqual({ success: true, skipped: true })
     expect(t.state.ai).toBeUndefined()
-    expect(t.state.updates).toHaveLength(1)
+    // the PENDING claim, then the stale-SCANNING takeover attempt - and nothing else
+    expect(t.state.updates).toHaveLength(2)
+  })
+  it('B6: a scan another worker is still scanning is NOT started a second time — the queue is told to retry', async () => {
+    t = setup({ claim: [], status: 'SCANNING' })
+    const out = await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(out.inProgress).toBe(true)
+    expect(out.success).toBe(false)
+    expect(t.state.ai).toBeUndefined()
+    const takeover = t.state.updates[1]
+    expect(takeover.filters.some(f => f[0] === 'lt' && f[1] === 'updated_at')).toBe(true)
   })
   it('passes the raw DOCX layout facts to the scorer for file scans', async () => {
     t = setup()

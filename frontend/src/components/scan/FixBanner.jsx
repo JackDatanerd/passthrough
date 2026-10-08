@@ -37,7 +37,9 @@ export default function FixBanner({
   // are disabled as soon as ANY pay-related action starts (payLoading),
   // and the specific tier being paid for (payingTier) gets the visual
   // spinner via Button's own `loading` prop.
-  payLoading = false, payingTier = null
+  payLoading = false, payingTier = null,
+  // G2 (round 3): builds + scores the ATS-formatted file a purchase would deliver (POST /structure).
+  onCheckFormatted = null, checkingFormatted = false, checkFormattedError = ''
 }) {
   const navigate = useNavigate()
   const { byTier, pricing, pricingFailed, refresh: refreshPricing } = usePricing(referralCode)
@@ -54,6 +56,18 @@ export default function FixBanner({
   // as a fallback for a scan object that predates this field.
   const badgeEligible = scan.badgeEligible ?? (score >= ATS_BADGE_THRESHOLD)
   const hasCredit      = freeFixCredits > 0
+
+  // G2: for an UPLOADED FILE the score above measures the upload itself, but a Badge delivers the
+  // regenerated, ATS-formatted document - a different text that can land under the credential bar even
+  // when the upload cleared it (the buyer then got the unverified wording and a credit, not the
+  // credential they paid for). So for a file the Badge is only offered once that formatted file has
+  // been scored AND clears the bar. Typed / saved-profile scans are already scored on the rendered
+  // document, so nothing changes for them.
+  const isFile        = scan.inputMode === 'file'
+  const formatted     = scan.atsDetail?.formattedScore ?? null
+  const formattedKnown = !isFile || formatted != null
+  const badgeSafe     = !isFile || (formatted != null && formatted >= ATS_BADGE_THRESHOLD)
+  const formattedLow  = isFile && formatted != null && formatted < ATS_BADGE_THRESHOLD
 
   // <75 or 75-79: full fix ($49), or just the rewrite with no credential ($39)
   // (standard prices — see /api/pricing for live/promo amounts)
@@ -111,6 +125,31 @@ export default function FixBanner({
       <p className="text-sm text-green-800 mb-1">
         Get the Passthrough Verified credential employers can check, a plain rewrite with no credential, or both.
       </p>
+      {isFile && !formattedKnown && (
+        <div className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2" data-testid="formatted-check">
+          <p className="text-sm text-amber-900">
+            The credential is issued on the ATS-formatted version we build from your file, which can score
+            differently from the file you uploaded. Check it first — it takes a few seconds.
+          </p>
+          {onCheckFormatted && (
+            <Button onClick={onCheckFormatted} variant="secondary" className="mt-2" loading={checkingFormatted} disabled={checkingFormatted || payLoading}>
+              Check the formatted file
+            </Button>
+          )}
+          {checkFormattedError && <p role="alert" className="mt-2 text-sm text-red-700">{checkFormattedError}</p>}
+        </div>
+      )}
+      {formattedLow && (
+        <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900" data-testid="formatted-low">
+          The ATS-formatted file we'd deliver scores {formatted} — under the {ATS_BADGE_THRESHOLD} the credential needs — so a
+          Credential-only purchase would not come out verified. A Fix rewrites it to clear the bar.
+        </p>
+      )}
+      {isFile && formatted != null && !formattedLow && (
+        <p className="mb-3 text-sm text-green-800" data-testid="formatted-ok">
+          The ATS-formatted file we'd deliver scores {formatted} — credential-ready.
+        </p>
+      )}
       {hasCredit && (
         <p className="text-sm text-green-700 mb-3 font-medium">
           You have {freeFixCredits} free fix credit{freeFixCredits > 1 ? 's' : ''} — use one below at no charge.
@@ -119,9 +158,11 @@ export default function FixBanner({
       {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
       <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
       <div className="flex flex-col sm:flex-row gap-3">
-        <Button onClick={() => onPay('BADGE')} variant="secondary" disabled={payLoading} loading={payingTier === 'BADGE'}>
-          Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={pricing?.currency} />
-        </Button>
+        {badgeSafe && (
+          <Button onClick={() => onPay('BADGE')} variant="secondary" disabled={payLoading} loading={payingTier === 'BADGE'}>
+            Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={pricing?.currency} />
+          </Button>
+        )}
         <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
           Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={pricing?.currency} />
         </Button>
