@@ -15,13 +15,13 @@ import Footer from '../components/layout/Footer'
 // POST with the token in the body (not a GET with it in the query string),
 // and a successful confirm returns a fresh session token + user, because the
 // account's own email — the thing THIS session's JWT is bound to — just
-// changed. postAuthActions stores both, so a tab that was already signed in
+// changed. adoptSession stores both, so a tab that was already signed in
 // as this account (the common case: the person confirming from the same
 // browser is usually the one who requested the change) picks up the new
 // identity immediately instead of showing a stale email until next login.
 export default function ConfirmEmailChange() {
   const [params] = useSearchParams()
-  const { postAuthActions, logout } = useAuth()
+  const { adoptSession, logout } = useAuth()
   const [status, setStatus] = useState('loading') // loading | success | error
   const [message, setMessage] = useState('')
   // AUDIT FIX (Auth round 2, B1): the API now only completes a change for a
@@ -53,7 +53,10 @@ export default function ConfirmEmailChange() {
         // bumped, sessions revoked). A missing or stale cached user made the old check skip the
         // adoption, leaving a dead token and a message claiming a "different account". The server
         // is the authority; always adopt what it hands back.
-        if (sessionToken && user) await postAuthActions(sessionToken, user)
+        // adoptSession, not postAuthActions: this swaps the identity of a browser that is ALREADY signed in
+        // (AUDIT FIX, Auth round 4, B4). postAuthActions also claims every stored anonymous scan into the
+        // account, which belongs to signing in / registering, not to confirming an address.
+        if (sessionToken && user) adoptSession(sessionToken, user)
         setStatus('success')
       })
       .catch(err => {

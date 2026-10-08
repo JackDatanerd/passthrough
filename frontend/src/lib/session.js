@@ -88,8 +88,20 @@ export function tokenSessionId(token) {
 // wipe the new, perfectly good one. Same session = same token, or two tokens
 // bound to the same `sid` (a sliding renewal swaps the token, not the session).
 export function failureAppliesToCurrentSession(usedToken, currentToken) {
-  if (!usedToken || !currentToken) return false     // nothing held now, or nothing was sent
-  if (usedToken === currentToken) return true
+  return failureScope(usedToken, currentToken) !== 'stale'
+}
+
+// AUDIT FIX (Auth round 4, B3): how a session-ending failure relates to the session held NOW.
+//   'current' — the very token held now was refused: it describes this session.
+//   'probe'   — an OLDER token of the same session (`sid`) was refused while a newer one is held. That is
+//               either a late straggler from before a token swap (sign-out-other-sessions bumps the
+//               account's token_version but keeps this session and hands back a fresh token, so a request
+//               still in flight under the old one answers SESSION_INVALID) or a genuinely revoked
+//               session. The response cannot tell the two apart; the CURRENT token can — ask the server.
+//   'stale'   — nothing held now, or a different session: says nothing about the current one.
+export function failureScope(usedToken, currentToken) {
+  if (!usedToken || !currentToken) return 'stale'
+  if (usedToken === currentToken) return 'current'
   const used = tokenSessionId(usedToken)
-  return used !== null && used === tokenSessionId(currentToken)
+  return used !== null && used === tokenSessionId(currentToken) ? 'probe' : 'stale'
 }

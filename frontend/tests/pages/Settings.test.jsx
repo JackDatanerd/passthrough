@@ -39,6 +39,7 @@ beforeEach(() => {
   // Like the real AuthProvider: the context's user becomes whatever setUser was given.
   setUser.mockImplementation(u => { currentUser = u })
   localStorage.clear()
+  localStorage.setItem('passthrough_token', 'tok')   // a signed-in browser, as Settings is only reachable signed in
   wire()
 })
 
@@ -56,6 +57,19 @@ describe('Settings — name', () => {
     expect(field).toHaveValue('Jane Q Doe')
     expect(setUser).toHaveBeenCalledWith(expect.objectContaining({ id: 'u1', name: 'Jane Q Doe', email: 'jane@x.com' }))
     expect(JSON.parse(localStorage.getItem('passthrough_user')).name).toBe('Jane Q Doe')
+  })
+  // Auth round 4 (B2): a save that lands after the person signed out must not write a user back with no
+  // token — Login would then redirect to the dashboard, which would redirect straight back, forever.
+  it('does not write the cached user back when the person signed out while the save was in flight', async () => {
+    const user = userEvent.setup()
+    api.patch.mockImplementation(async () => { localStorage.removeItem('passthrough_token'); return { data: { data: { user: { name: 'Jane Q Doe' } } } } })
+    renderPage()
+    const field = screen.getByLabelText('Name')
+    await user.clear(field); await user.type(field, 'Jane Q Doe')
+    await user.click(within(field.closest('form')).getByRole('button', { name: 'Save' }))
+    await screen.findByText('Name updated.')
+    expect(localStorage.getItem('passthrough_user')).toBeNull()
+    expect(setUser).not.toHaveBeenCalled()
   })
   it('a rejected save shows the reason and leaves the cached user alone', async () => {
     const user = userEvent.setup()

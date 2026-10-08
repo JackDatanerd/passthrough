@@ -342,13 +342,41 @@ describe('a late failure from a session that is no longer current', () => {
     expect(replace).not.toHaveBeenCalled()
   })
 
-  it('still ends the session when the token was only renewed (same sid)', async () => {
-    const jwt = claims => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`
+  // Auth round 4 (B3): an older token of the SAME session failing while a newer one is held is either a
+  // straggler from before a token swap (sign-out-other-sessions keeps the session, bumps token_version) or a
+  // really revoked session. The response can't say which, so the client asks the server with the current token.
+  const jwt = claims => `h.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.sig`
+  const respond = (status, data = {}) => async config => {
+    if (status >= 400) { const err = new Error('Request failed'); err.isAxiosError = true; err.config = config; err.response = { status, headers: {}, data }; throw err }
+    return { data, status, statusText: 'OK', headers: {}, config }
+  }
+
+  it('same session, older token: keeps the session while the server still accepts the current token', async () => {
     const { localStorage, dispatchEvent } = setGlobals({ pathname: '/', token: jwt({ sid: 'S', iat: 1 }) })
     const api = await loadApi()
+    const probed = []
+    api.defaults.adapter = async config => { probed.push(config.url); return respond(200)(config) }
     await expect(api.get('/x', { adapter: failWith401AfterSwitching(localStorage, jwt({ sid: 'S', iat: 2 })) })).rejects.toBeTruthy()
+    await vi.waitFor(() => expect(probed).toEqual(['/auth/me']))
+    expect(localStorage.getItem(TOKEN_KEY)).not.toBeNull()
+    expect(dispatchEvent).not.toHaveBeenCalled()
+  })
+
+  it('same session, older token: ends the session when the server refuses the current token too', async () => {
+    const { localStorage, dispatchEvent } = setGlobals({ pathname: '/', token: jwt({ sid: 'S', iat: 1 }) })
+    const api = await loadApi()
+    api.defaults.adapter = respond(401, { code: 'SESSION_INVALID' })
+    await expect(api.get('/x', { adapter: failWith401AfterSwitching(localStorage, jwt({ sid: 'S', iat: 2 })) })).rejects.toBeTruthy()
+    await vi.waitFor(() => expect(dispatchEvent).toHaveBeenCalledTimes(1))
     expect(localStorage.getItem(TOKEN_KEY)).toBeNull()
+  })
+
+  it('the identical current token being refused ends the session at once, with no probe', async () => {
+    const { localStorage, dispatchEvent } = setGlobals({ pathname: '/', token: 'tok' })
+    const api = await loadApi()
+    await expect(api.get('/x', { adapter: respond(401, { code: 'SESSION_INVALID' }) })).rejects.toBeTruthy()
     expect(dispatchEvent).toHaveBeenCalledTimes(1)
+    expect(localStorage.getItem(TOKEN_KEY)).toBeNull()
   })
 })
 

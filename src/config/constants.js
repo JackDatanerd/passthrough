@@ -115,7 +115,13 @@ module.exports = {
   // resume with contact details), so 30 bits was too small to leave unguarded.
   VERIFY_CODE_LENGTH: 10,
   SHORT_CODE_CHARS:  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
+  // Short-lived emailed links that act on the account itself (pending email-change confirmation).
   EMAIL_TOKEN_EXPIRY_HOURS: 1,
+  // AUDIT FIX (Auth round 4, G1): the signup verification link shared the 1-hour window above, so
+  // anyone who registered and read their mail later found a dead link — and replacing it needs a
+  // signed-in session. Verifying an address only ever sets email_verified (it grants no access and
+  // changes nothing else), so it can live far longer than a reset or email-change link.
+  EMAIL_VERIFY_EXPIRY_HOURS: 24,
 
   // Version of the Terms of Service / Privacy Policy a new account accepts at
   // sign-up (stored on users.terms_version). Bump when either document changes

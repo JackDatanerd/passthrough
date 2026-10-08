@@ -12,7 +12,16 @@ export const AuthContext = createContext(null)
 export function AuthProvider({ children }) {
   // All storage access goes through lib/storage.js: a browser with storage blocked used to
   // throw right here, in the first render, and white-screen the whole app.
-  const [user, setUser] = useState(() => getCachedUser())
+  // AUDIT FIX (Auth round 4, B2): a cached user is only meaningful alongside the token it was fetched
+  // with. The two live under separate keys, so a response that landed after a sign-out (or a partial
+  // storage failure) could leave a user with no token — and Login/Register, which redirect signed-in
+  // visitors to the dashboard, then bounced against ProtectedRoute (no token -> /login) forever.
+  // Without a token there is no user: drop a stranded copy on load.
+  const [user, setUser] = useState(() => {
+    if (getToken()) return getCachedUser()
+    storageRemove(USER_KEY)
+    return null
+  })
 
   // AUDIT FIX (Admin panel): exposed so route guards (see AdminRoute in
   // App.jsx) can tell "we don't know yet" apart from "there's no user".
@@ -124,10 +133,17 @@ export function AuthProvider({ children }) {
   // anonymous scans. Login used to skip the claim, so a returning user who
   // scanned anonymously and then signed in was left holding a scan they could
   // never pay for (initializePayment requires scan.userId === user.id).
-  async function postAuthActions(token, newUser) {
+  // Stores a session the server just handed back, with NO side effects. Used directly by flows that
+  // swap the identity of an already-signed-in browser (confirming an email change) — claiming
+  // anonymous scans belongs only to signing in or registering.
+  function adoptSession(token, newUser) {
     setToken(token)
     setCachedUser(newUser)
     setUser(newUser)
+  }
+
+  async function postAuthActions(token, newUser) {
+    adoptSession(token, newUser)
 
     // AUDIT FIX (feature gap): this used to read a single stored anon token
     // and claim just that one — an anonymous visitor who scanned more than
@@ -161,8 +177,12 @@ export function AuthProvider({ children }) {
   // Privacy version (see TermsUpdateBanner) and swaps in the user the server
   // answers with, whose `termsCurrent` is now true.
   async function acceptTerms() {
+    const tokenAtStart = getToken()
     const res = await api.post('/auth/accept-terms')
     const fresh = res.data.data.user
+    // Signed out (or in as someone else) while this was in flight: the answer describes a session that is
+    // gone, and writing it back would strand a user with no token (see the initial state above).
+    if (getToken() !== tokenAtStart) return fresh
     setCachedUser(fresh)
     setUser(fresh)
     return fresh
@@ -201,7 +221,7 @@ export function AuthProvider({ children }) {
   }
 
   return (
-    <AuthContext.Provider value={{ user, setUser, postAuthActions, postRegisterActions: postAuthActions, logout, refreshUser, acceptTerms, authLoading }}>
+    <AuthContext.Provider value={{ user, setUser, postAuthActions, adoptSession, postRegisterActions: postAuthActions, logout, refreshUser, acceptTerms, authLoading }}>
       {children}
     </AuthContext.Provider>
   )

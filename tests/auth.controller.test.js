@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import bcrypt from 'bcryptjs'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
@@ -39,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
+  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -94,7 +94,9 @@ async function setup(opts = {}) {
       // distinguish by that instead of trying to give them one shared shape.
       if (q.maybe) state.claimLookupToken = eqValue(q, 'anon_token')
       if (q.maybe) return { data: 'claimScanResult' in opts ? opts.claimScanResult : null, error: null }
-      return { data: opts.scans ?? [], error: null }
+      // Auth round 4 (B1): deleteAccount reads scans in pages — honour .range() so a test can serve >1000 rows.
+      if (q.range) state.scanRanges = [...(state.scanRanges || []), q.range]
+      return { data: q.range ? (opts.scans ?? []).slice(q.range[0], q.range[1] + 1) : (opts.scans ?? []), error: null }
     }
     if (q.table === 'scans' && q.op === 'update') {
       state.updates.push({ table: 'scans', patch: q.patch })
@@ -203,7 +205,16 @@ async function setup(opts = {}) {
   const env = {
     JWT_SECRET: 'test-secret-at-least-this-long',
     JWT_EXPIRES_IN_SECONDS: '604800',
-    RESUMES_BUCKET: { delete: async key => { state.bucketDeletes.push(key) } },
+    // Auth round 4 (B1): R2's delete() takes one key OR a list. bucketCalls records each CALL (so a test can
+    // tell one bulk call from many single ones); bucketDeletes stays the flat list of keys actually removed.
+    // opts.bucketBulkFails = a list call throws; opts.bucketFailKeys = those keys always throw.
+    RESUMES_BUCKET: { delete: async key => {
+      state.bucketCalls.push(key)
+      const keys = [].concat(key)
+      if (Array.isArray(key) && opts.bucketBulkFails) throw new Error('bulk exploded')
+      if (keys.some(k => (opts.bucketFailKeys || []).includes(k))) throw new Error('r2 exploded')
+      state.bucketDeletes.push(...keys)
+    } },
   }
   const c = (over = {}) => ({
     env,
@@ -1915,5 +1926,146 @@ describe('login builds the timing-equalizer hash up front (B7)', () => {
       const after = spy.mock.calls.filter(a => a[0] === 'passthrough-timing-equalizer').length
       expect(after - hashesBefore).toBe(1)
     } finally { spy.mockRestore() }
+  })
+})
+
+// ── Auth round 4 ─────────────────────────────────────────────────────────────
+
+describe('link lifetimes (G1)', () => {
+  const hoursFromNow = iso => (Date.parse(iso) - Date.now()) / 3600_000
+
+  it('the signup verification link lives 24 hours, not the 1 hour of a reset or email-change link', async () => {
+    t = await setup()
+    await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true } }))
+    const insert = t.db.calls.find(q => q.table === 'users' && q.op === 'insert')
+    expect(hoursFromNow(insert.values.email_verify_expiry)).toBeGreaterThan(23.9)
+    expect(hoursFromNow(insert.values.email_verify_expiry)).toBeLessThan(24.1)
+  })
+  it('a resent verification link is also 24 hours', async () => {
+    t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: false, email: 'user@example.com', name: 'Ada' } })
+    await t.mod.resendVerification(t.c())
+    const upd = t.db.calls.find(q => q.table === 'users' && q.op === 'update')
+    expect(hoursFromNow(upd.patch.email_verify_expiry)).toBeGreaterThan(23.9)
+  })
+  it('a pending email-change confirmation stays at 1 hour (it acts on the account itself)', async () => {
+    t = await setup()
+    await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: 'correct-password' } }))
+    const upd = t.db.calls.find(q => q.table === 'users' && q.op === 'update')
+    expect(hoursFromNow(upd.patch.pending_email_expiry)).toBeLessThan(1.1)
+  })
+})
+
+describe('password normalization (G2)', () => {
+  const DECOMPOSED = 'cafe\u0301-passw0rd'      // "café" as e + combining acute
+  const COMPOSED   = 'caf\u00e9-passw0rd'        // the same word, é as one code point
+  const hashRow = async raw => baseUserRow({ password_hash: await bcrypt.hash(raw, 10) })
+
+  it('register hashes the NFKC-normalized password, so either spelling signs in later', async () => {
+    t = await setup()
+    await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: DECOMPOSED, acceptTerms: true } }))
+    const insert = t.db.calls.find(q => q.table === 'users' && q.op === 'insert')
+    expect(await bcrypt.compare(COMPOSED, insert.values.password_hash)).toBe(true)
+  })
+  it('a full-width spelling of a denied password is denied too', async () => {
+    t = await setup()
+    await expect(t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password: '\uff50\uff41\uff53\uff53\uff57\uff4f\uff52\uff44\uff11\uff12\uff13', acceptTerms: true } }))).rejects.toBeTruthy()
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('the 72-byte limit is judged on the normalized form', async () => {
+    t = await setup()
+    // 36 x (e + combining mark) = 108 bytes raw, but 36 x "é" = 72 bytes once normalized: allowed.
+    const password = 'e\u0301'.repeat(36)
+    const res = await t.mod.register(t.c({ body: { name: 'Ada', email: 'a@b.com', password, acceptTerms: true } }))
+    expect(res.status).toBe(201)
+  })
+  it('login accepts an account hashed from the normalized form with either spelling', async () => {
+    t = await setup({ userRow: await hashRow(COMPOSED) })
+    expect((await t.mod.login(t.c({ body: { email: 'user@example.com', password: DECOMPOSED } }))).status).toBe(200)
+    expect((await t.mod.login(t.c({ body: { email: 'user@example.com', password: COMPOSED } }))).status).toBe(200)
+  })
+  it('login still accepts a LEGACY hash made from the raw bytes, and upgrades it with a compare-and-swap', async () => {
+    const row = await hashRow(DECOMPOSED)
+    t = await setup({ userRow: row })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: DECOMPOSED } }))
+    expect(res.status).toBe(200)
+    await vi.waitFor(() => expect(t.db.calls.some(q => q.table === 'users' && q.op === 'update' && q.patch.password_hash)).toBe(true))
+    const upd = t.db.calls.find(q => q.table === 'users' && q.op === 'update' && q.patch.password_hash)
+    expect(await bcrypt.compare(COMPOSED, upd.patch.password_hash)).toBe(true)
+    expect(eqValue(upd, 'password_hash')).toBe(row.password_hash)   // never overwrites a password changed meanwhile
+  })
+  it('an ordinary ASCII password triggers no upgrade write at all', async () => {
+    t = await setup()
+    await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'correct-password' } }))
+    await new Promise(r => setTimeout(r, 30))
+    expect(t.db.calls.some(q => q.table === 'users' && q.op === 'update' && q.patch.password_hash)).toBe(false)
+  })
+  it('a wrong password with unstable characters is still a plain 401 and counts as a failure', async () => {
+    t = await setup({ userRow: await hashRow(COMPOSED) })
+    const res = await t.mod.login(t.c({ body: { email: 'user@example.com', password: 'cafe\u0301-wrong99' } }))
+    expect(res.status).toBe(401)
+    expect(t.state.failures).toEqual(['user@example.com'])
+  })
+  it('an unknown email costs the same two compares for such a password (no timing tell)', async () => {
+    t = await setup({ userRow: null })
+    const spy = vi.spyOn(bcrypt, 'compare')
+    const res = await t.mod.login(t.c({ body: { email: 'nobody@example.com', password: 'cafe\u0301-wrong99' } }))
+    expect(res.status).toBe(401)
+    expect(spy).toHaveBeenCalledTimes(2)
+    spy.mockRestore()
+  })
+  it('changePassword rejects a "new" password that is only the current one spelled differently', async () => {
+    t = await setup({ userRow: await hashRow(COMPOSED) })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: DECOMPOSED, newPassword: COMPOSED } }))
+    expect(res.status).toBe(400)
+    expect(res.body.message).toMatch(/different/i)
+  })
+  it('deleteAccount and updateEmail accept either spelling of the password', async () => {
+    t = await setup({ userRow: await hashRow(COMPOSED), scans: [] })
+    expect((await t.mod.deleteAccount(t.c({ body: { password: DECOMPOSED } }))).status).toBe(200)
+    t.restore()
+    t = await setup({ userRow: await hashRow(COMPOSED) })
+    expect((await t.mod.updateEmail(t.c({ body: { newEmail: 'new@example.com', password: DECOMPOSED } }))).status).toBe(200)
+  })
+})
+
+describe('deleteAccount R2 cleanup (B1)', () => {
+  const scan = (i, over = {}) => ({ id: `s${i}`, resume_path: `r/${i}.docx`, resume_ats_path: `r/${i}-ats.docx`, resume_pdf_path: `r/${i}.pdf`, ...over })
+
+  it('removes every object in ONE bulk call, not one call per key', async () => {
+    t = await setup({ scans: [scan(1), scan(2), scan(3)] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.bucketCalls).toHaveLength(1)
+    expect(Array.isArray(t.state.bucketCalls[0])).toBe(true)
+    expect(t.state.bucketDeletes).toHaveLength(9)
+  })
+  it('a failed bulk call falls back to key-by-key and still removes everything', async () => {
+    t = await setup({ scans: [scan(1), scan(2)], bucketBulkFails: true })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.bucketDeletes.sort()).toEqual(['r/1-ats.docx', 'r/1.docx', 'r/1.pdf', 'r/2-ats.docx', 'r/2.docx', 'r/2.pdf'])
+  })
+  it('one undeletable object is logged by key and never blocks the rest or the response', async () => {
+    const logged = []
+    console.error = (...a) => logged.push(a.join(' '))
+    t = await setup({ scans: [scan(1), scan(2)], bucketBulkFails: true, bucketFailKeys: ['r/1.docx'] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.bucketDeletes).toHaveLength(5)
+    expect(logged.some(l => l.includes('r/1.docx') && l.includes('u1'))).toBe(true)
+  })
+  it('lists scans in pages so an account past the response cap loses no file', async () => {
+    const scans = Array.from({ length: 2500 }, (_, i) => scan(i, { resume_ats_path: null, resume_pdf_path: null }))
+    t = await setup({ scans })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.scanRanges).toEqual([[0, 999], [1000, 1999], [2000, 2999]])
+    expect(t.state.bucketDeletes).toHaveLength(2500)
+    expect(Math.max(...t.state.bucketCalls.map(c => [].concat(c).length))).toBeLessThanOrEqual(1000)
+  })
+  it('an account with no scans makes no R2 call', async () => {
+    t = await setup({ scans: [] })
+    await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(t.state.bucketCalls).toHaveLength(0)
   })
 })

@@ -49,8 +49,12 @@ function passwordEmailProblem(password, email) {
 // email" check — omit it where the email isn't available yet or doesn't
 // apply (e.g. the current-password field in a change-password form, which
 // checkPasswordSchema on the backend never runs these rules against either).
-export function passwordProblem(password, email) {
-  if (!password) return 'Password is required.'
+export function passwordProblem(rawPassword, email) {
+  if (!rawPassword) return 'Password is required.'
+  // Mirrors the server (auth.controller.js passwordSchema): every rule is judged on the NFKC-normalized
+  // password, which is also what the server hashes, so an accent typed as a combining mark or a
+  // full-width letter is counted — and denied — exactly as it will be there.
+  const password = rawPassword.normalize('NFKC')
   if (password.length < 8) return 'Password must be at least 8 characters'
   if (byteLength(password) > PASSWORD_MAX_BYTES) {
     return 'Password is too long (max 72 bytes — some characters, like emoji or accented letters, count as more than one byte).'

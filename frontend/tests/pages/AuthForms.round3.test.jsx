@@ -136,18 +136,29 @@ describe('ConfirmEmailChange (B4)', () => {
   it('adopts the fresh session even when the cached user is missing — the old token is already dead', async () => {
     localStorage.setItem('passthrough_token', 'old-dead-token')       // token present, cached user absent
     api.post.mockResolvedValue({ data: { data: { user: { id: 'u1', email: 'new@x.co' }, token: 'fresh-token' } } })
-    const postAuthActions = vi.fn().mockResolvedValue(null)
-    renderAt('/confirm-email-change?token=abc', <ConfirmEmailChange />, '/confirm-email-change', { postAuthActions })
+    const adoptSession = vi.fn(), postAuthActions = vi.fn().mockResolvedValue(null)
+    renderAt('/confirm-email-change?token=abc', <ConfirmEmailChange />, '/confirm-email-change', { adoptSession, postAuthActions })
     expect(await screen.findByText('Email updated')).toBeInTheDocument()
-    expect(postAuthActions).toHaveBeenCalledWith('fresh-token', { id: 'u1', email: 'new@x.co' })
+    expect(adoptSession).toHaveBeenCalledWith('fresh-token', { id: 'u1', email: 'new@x.co' })
     expect(screen.queryByText(/different account/i)).toBeNull()
+  })
+  // Auth round 4 (B4): confirming an address swaps the identity of a browser that is already signed in;
+  // postAuthActions would also claim every stored anonymous scan into the account.
+  it('never claims anonymous scans (that belongs to signing in / registering)', async () => {
+    api.post.mockResolvedValue({ data: { data: { user: { id: 'u1', email: 'new@x.co' }, token: 'fresh-token' } } })
+    const adoptSession = vi.fn(), postAuthActions = vi.fn().mockResolvedValue(null)
+    renderAt('/confirm-email-change?token=abc', <ConfirmEmailChange />, '/confirm-email-change', { adoptSession, postAuthActions })
+    await screen.findByText('Email updated')
+    expect(postAuthActions).not.toHaveBeenCalled()
+    expect(api.post).toHaveBeenCalledTimes(1)       // only the confirmation itself — no /auth/claim-scan
   })
   it('a replayed link adopts nothing', async () => {
     api.post.mockResolvedValue({ data: { data: { alreadyConfirmed: true } } })
-    const postAuthActions = vi.fn()
-    renderAt('/confirm-email-change?token=abc', <ConfirmEmailChange />, '/confirm-email-change', { postAuthActions })
+    const postAuthActions = vi.fn(), adoptSession = vi.fn()
+    renderAt('/confirm-email-change?token=abc', <ConfirmEmailChange />, '/confirm-email-change', { postAuthActions, adoptSession })
     expect(await screen.findByText('Already confirmed')).toBeInTheDocument()
     expect(postAuthActions).not.toHaveBeenCalled()
+    expect(adoptSession).not.toHaveBeenCalled()
   })
 })
 

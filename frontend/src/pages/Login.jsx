@@ -3,6 +3,7 @@ import { Link, Navigate, useNavigate, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { useApi } from '../hooks/useApi'
 import { safeNext } from '../lib/session'
+import { getToken } from '../lib/storage'
 import { useAuth } from '../hooks/useAuth'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
@@ -38,7 +39,7 @@ export default function Login() {
   // to their scan when the claims finished, with a stray history entry each time.
   // While our own submit is in flight (`loading`) the submit handler decides
   // where to go; this redirect is only for arriving here already signed in.
-  if (!authLoading && user && !loading) return <Navigate to={next || '/dashboard'} replace />
+  if (!authLoading && user && getToken() && !loading) return <Navigate to={next || '/dashboard'} replace />
 
   async function handleSubmit() {
     if (!email || !password) {

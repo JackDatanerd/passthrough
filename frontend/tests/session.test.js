@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext, tokenSessionId, failureAppliesToCurrentSession, signedOutElsewhereTarget } from '../src/lib/session.js'
+import { classifyAuthFailure, isCredentialEndpoint, isProtectedPath, safeNext, tokenSessionId, failureAppliesToCurrentSession, failureScope, signedOutElsewhereTarget } from '../src/lib/session.js'
 
 describe('classifyAuthFailure', () => {
   // REGRESSION: a wrong password (401 "Invalid credentials") used to be treated as
@@ -108,6 +108,20 @@ describe('failureAppliesToCurrentSession', () => {
   it('is false when nobody is signed in now, or no token was sent', () => {
     expect(failureAppliesToCurrentSession('tok', null)).toBe(false)
     expect(failureAppliesToCurrentSession(null, 'tok')).toBe(false)
+  })
+})
+
+// Auth round 4 (B3)
+describe('failureScope', () => {
+  it("'current' for the identical token", () => expect(failureScope('tok', 'tok')).toBe('current'))
+  it("'probe' for an older token of the same session — it must be checked, not trusted", () => {
+    expect(failureScope(jwt({ sid: 'A', iat: 1 }), jwt({ sid: 'A', iat: 2 }))).toBe('probe')
+  })
+  it("'stale' for another session, an opaque token, or nothing held", () => {
+    expect(failureScope(jwt({ sid: 'A' }), jwt({ sid: 'B' }))).toBe('stale')
+    expect(failureScope('old-opaque', 'new-opaque')).toBe('stale')
+    expect(failureScope('tok', null)).toBe('stale')
+    expect(failureScope(null, 'tok')).toBe('stale')
   })
 })
 

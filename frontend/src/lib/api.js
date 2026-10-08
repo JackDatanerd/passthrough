@@ -3,7 +3,7 @@ import { resolveApiBase } from './apiUrl'
 import { normalizeBlobError, shouldRetryRequest } from './errors'
 import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
-  classifyAuthFailure, isProtectedPath, failureAppliesToCurrentSession,
+  classifyAuthFailure, isProtectedPath, failureScope,
 } from './session'
 import { getToken, storageRemove } from './storage'
 
@@ -70,6 +70,13 @@ function endSession(reason) {
   }
 }
 
+let probing = false
+function probeCurrentSession() {
+  if (probing) return
+  probing = true
+  api.get('/auth/me').then(() => {}, () => {}).finally(() => { probing = false })
+}
+
 const sleep = ms => new Promise(r => setTimeout(r, ms))
 
 api.interceptors.response.use(
@@ -85,10 +92,18 @@ api.interceptors.response.use(
     // A failure from a request sent under a session that is no longer the current
     // one (signed out / signed in as someone else meanwhile) says nothing about
     // the current session — ending it would log the new account out.
-    if (verdict && !failureAppliesToCurrentSession(config.__token, getToken())) {
-      return Promise.reject(err)
+    if (verdict) {
+      const scope = failureScope(config.__token, getToken())
+      if (scope === 'stale') return Promise.reject(err)
+      if (scope === 'probe') {
+        // An older token of this same session failed while a newer one is held (see failureScope). Don't
+        // sign the person out on that alone — ask the server about the token held NOW; if the session
+        // really is dead, THAT request fails as 'current' and ends it through this same interceptor.
+        probeCurrentSession()
+        return Promise.reject(err)
+      }
+      endSession(verdict)
     }
-    if (verdict) endSession(verdict)
 
     // A 403 from an admin-gated endpoint (server-side role check failed — see
     // middleware/adminOnly.js): a non-admin who reached an /admin/* page is sent

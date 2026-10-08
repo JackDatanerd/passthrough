@@ -7,7 +7,7 @@ import Button from '../../components/ui/Button'
 import Form from '../../components/ui/Form'
 import Input from '../../components/ui/Input'
 import PasswordInput from '../../components/ui/PasswordInput'
-import { setToken, storageSet } from '../../lib/storage'
+import { getToken, setToken, storageSet } from '../../lib/storage'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatDateTime } from '../../lib/utils'
@@ -67,6 +67,9 @@ export default function Settings() {
   // reads on the next load) from a response we already hold, so the page is right at once and
   // does not depend on a second request succeeding.
   function applyUserPatch(patch) {
+    // No token = signed out while the request was in flight (AUDIT FIX, Auth round 4, B2): writing the
+    // user back would strand it in storage with nothing to authenticate it.
+    if (!getToken()) return
     const next = { ...(user || {}), ...patch }
     storageSet(USER_KEY, JSON.stringify(next))
     setUser(next)

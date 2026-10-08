@@ -30,6 +30,7 @@ const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
+const { deleteObjects } = require('../lib/r2')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
@@ -308,15 +309,47 @@ const checkPasswordSchema = z.string().max(1024)
 // counting characters there is fine. Only the upper bound needs to be
 // byte-aware.
 const PASSWORD_MAX_BYTES = 72
+const normalizePassword = pw => String(pw).normalize('NFKC')
+
+// Checks `password` against a stored bcrypt hash. Hashes written before NFKC normalization were made
+// from the raw bytes, so when normalizing changes the input and the normalized form does not match, the
+// raw form is tried too — otherwise anyone whose password contains such characters would be locked out
+// the day this ships. `legacy` tells a caller the match came from the raw form (login re-hashes then).
+// An input that normalization does not change costs exactly one compare, same as before; one that it does
+// change costs two whether or not the account exists (login runs the same call against a dummy hash), so
+// the extra compare can never tell a registered email from an unknown one.
+async function comparePassword(password, hash) {
+  const normalized = normalizePassword(password)
+  if (await bcrypt.compare(normalized, hash)) return { ok: true, legacy: false }
+  if (normalized !== password && await bcrypt.compare(password, hash)) return { ok: true, legacy: true }
+  return { ok: false, legacy: false }
+}
+
+// Replaces a legacy raw-bytes hash with the normalized one, off the request path. Compare-and-swap on the
+// old hash so it can never overwrite a password changed in the meantime; a failure only logs.
+function upgradeLegacyHash(c, supabase, user, password) {
+  const normalized = normalizePassword(password)
+  if (new TextEncoder().encode(normalized).length > PASSWORD_MAX_BYTES) return
+  c.executionCtx.waitUntil((async () => {
+    try {
+      must(await supabase.from('users').update({ password_hash: await bcrypt.hash(normalized, 10) })
+        .eq('id', user.id).eq('password_hash', user.passwordHash), 'upgrade password hash')
+    } catch (err) { console.error('upgrade password hash:', err.message) }
+  })())
+}
 function passwordSchema(minMessage) {
-  return z.string()
+  // AUDIT FIX (Auth round 4, G2): normalized (NFKC) before every rule and BEFORE hashing, so the same
+  // password typed on a device or keyboard that composes accents differently ("é" as one code point or
+  // as e + a combining mark, a full-width "ｐａｓｓｗｏｒｄ") is the same password everywhere. Existing
+  // hashes made from the raw bytes keep working — see comparePassword().
+  return z.string().transform(normalizePassword).pipe(z.string()
     .min(8, minMessage || 'Password must be at least 8 characters')
     .refine(pw => new TextEncoder().encode(pw).length <= PASSWORD_MAX_BYTES, {
       message: 'Password is too long (max 72 bytes — some characters, like emoji or accented letters, count as more than one byte).'
     })
     .refine(pw => !COMMON_PASSWORDS.has(pw.toLowerCase()), {
       message: 'That password is too common — choose something harder to guess.'
-    })
+    }))
 }
 
 // FEATURE GAP CLOSED (Auth/Scan round): the only password rule was "8+
@@ -381,7 +414,7 @@ async function register(c) {
   const passwordHash = await bcrypt.hash(password, 10)
   const raw    = cryptoLib.randomToken(32)
   const stored = await cryptoLib.sha256(raw)
-  const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
+  const exp    = expiry(constants.EMAIL_VERIFY_EXPIRY_HOURS)
 
   const { data: row, error } = await supabase
     .from('users')
@@ -476,7 +509,7 @@ async function login(c) {
     // below (bcrypt.compare against a throwaway hash) before responding,
     // so "no such email" and "wrong password" aren't distinguishable by
     // response latency. See getDummyPasswordHash() above.
-    await bcrypt.compare(password, await getDummyPasswordHash())
+    await comparePassword(password, await getDummyPasswordHash())
     await recordLoginFailure(c.env, email, clientIp(c))
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
   }
@@ -490,7 +523,8 @@ async function login(c) {
   // first means a wrong guess against a banned account looks identical
   // (message AND timing) to a wrong guess against an active one — status
   // is only revealed once the credential itself has been proven correct.
-  if (!await bcrypt.compare(password, user.passwordHash)) {
+  const passwordCheck = await comparePassword(password, user.passwordHash)
+  if (!passwordCheck.ok) {
     const failResult = await recordLoginFailure(c.env, email, clientIp(c))
     maybeSendLockoutAlert(c, failResult, user)
     return c.json({ success: false, message: 'Invalid credentials' }, 401)
@@ -499,6 +533,7 @@ async function login(c) {
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
 
   await recordLoginSuccess(c.env, email)
+  if (passwordCheck.legacy) upgradeLegacyHash(c, supabase, user, password)
   // Backgrounded (see recordLoginMetadata's own comment); it hands back the
   // login-metadata values it is about to store so the response below reports
   // the state AFTER this sign-in (previousLoginAt/Ip = the sign-in before this
@@ -801,7 +836,7 @@ async function resendVerification(c) {
   const supabase = getSupabase(c.env)
   const raw    = cryptoLib.randomToken(32)
   const stored = await cryptoLib.sha256(raw)
-  const exp    = expiry(constants.EMAIL_TOKEN_EXPIRY_HOURS)
+  const exp    = expiry(constants.EMAIL_VERIFY_EXPIRY_HOURS)
 
   // AUDIT FIX (Auth/Scan round): reserve the per-recipient email slot BEFORE
   // rotating the token — see forgotPassword() for the full reasoning. Here
@@ -835,6 +870,8 @@ async function resendVerification(c) {
 // row, and how long without an update before we assume the job is dead.
 const IN_FLIGHT_SCAN_STATUSES = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING']
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000
+// Rows read per page when deleteAccount lists an account's scans (PostgREST's default response cap).
+const SCAN_PAGE = 1000
 
 async function countInFlightScans(supabase, { userId }) {
   const since = new Date(Date.now() - IN_FLIGHT_WINDOW_MS).toISOString()
@@ -882,7 +919,7 @@ async function changePassword(c) {
   if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(currentPassword, user.passwordHash)) {
+  if (!(await comparePassword(currentPassword, user.passwordHash)).ok) {
     // requireDistinctIps: false — see recordLoginFailure's own comment. This
     // endpoint is authenticated (a stolen JWT, not a stranger, is the threat),
     // so the distinct-IP bar login() needs would just let a single-IP
@@ -895,7 +932,7 @@ async function changePassword(c) {
 
   const emailProblem = passwordEmailProblem(newPassword, user.email)
   if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
-  if (newPassword === currentPassword) {
+  if (newPassword === normalizePassword(currentPassword)) {
     return c.json({ success: false, message: 'Your new password must be different from your current one.' }, 400)
   }
   const breachProblem = await passwordBreachProblem(c.env, newPassword)
@@ -1148,7 +1185,7 @@ async function updateEmail(c) {
   if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(password, user.passwordHash)) {
+  if (!(await comparePassword(password, user.passwordHash)).ok) {
     // requireDistinctIps: false — see recordLoginFailure's own comment; same
     // reasoning as changePassword's identical call above.
     const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c), { requireDistinctIps: false })
@@ -1382,7 +1419,7 @@ async function deleteAccount(c) {
   if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   const user = userRowToCamel(row)
 
-  if (!await bcrypt.compare(password, user.passwordHash)) {
+  if (!(await comparePassword(password, user.passwordHash)).ok) {
     // requireDistinctIps: false — see recordLoginFailure's own comment; same
     // reasoning as changePassword/updateEmail's identical calls above.
     const failResult = await recordLoginFailure(c.env, sessionUser.email, clientIp(c), { requireDistinctIps: false })
@@ -1428,36 +1465,40 @@ async function deleteAccount(c) {
   // nulls the columns that hold them — this is a plain read and, if it
   // fails, aborts loudly (throw) rather than silently skipping R2 cleanup
   // the way the two old error-swallowing branches used to.
-  const { data: scans, error: scansErr } = await supabase
-    .from('scans')
-    .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
-    .eq('user_id', user.id)
-  if (scansErr) throw scansErr
+  // AUDIT FIX (Auth round 4, B1): read in pages. PostgREST caps one response (1000 rows by default), and
+  // the scrub below nulls the paths of EVERY scan — so an account past the cap would have had its files
+  // beyond the first page orphaned in R2 with nothing left that could name them.
+  const scans = []
+  for (let from = 0; ; from += SCAN_PAGE) {
+    const { data: page, error: scansErr } = await supabase
+      .from('scans')
+      .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
+      .eq('user_id', user.id)
+      .order('id', { ascending: true })
+      .range(from, from + SCAN_PAGE - 1)
+    if (scansErr) throw scansErr
+    scans.push(...(page || []))
+    if (!page || page.length < SCAN_PAGE) break
+  }
 
   const { error: scrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
   if (scrubErr) throw scrubErr
 
   // The scrub nulled every verification_code; leave the codes' tombstones so links already
   // in circulation read "removed by its owner" rather than "not found".
-  await recordTombstones(supabase, scans || [])
+  await recordTombstones(supabase, scans)
 
   // R2 cleanup happens only after the DB side has durably committed.
   // Object storage isn't part of that (or any) Postgres transaction, so
-  // this half necessarily stays best-effort — but failures are now logged
-  // loudly instead of swallowed in an empty catch, so an orphaned file is
-  // at least visible to us instead of vanishing with zero trace.
-  if (scans?.length > 0) {
-    for (const s of scans) {
-      for (const key of [s.resume_path, s.resume_ats_path, s.resume_pdf_path]) {
-        if (!key) continue
-        try {
-          await c.env.RESUMES_BUCKET.delete(key)
-        } catch (e) {
-          console.error(`deleteAccount: failed to delete R2 object ${key} for user ${user.id}:`, e.message)
-        }
-      }
-    }
-  }
+  // this half necessarily stays best-effort. AUDIT FIX (Auth round 4, B1): it used to delete one key
+  // at a time in a sequential loop — a round trip per object, slow enough to outlive the client's 30s
+  // timeout on a large account (the person saw "Failed to delete account" for an account that WAS
+  // deleted) and past the Free plan's subrequest ceiling, with the scrub having already erased the
+  // only record of the keys. One bulk call per 1000 keys (lib/r2.js) with a key-by-key fallback; any
+  // object that still could not be removed is logged with its key so it can be cleaned up by hand.
+  const { failed: orphaned } = await deleteObjects(c.env,
+    scans.flatMap(s => [s.resume_path, s.resume_ats_path, s.resume_pdf_path]), `deleteAccount(${user.id})`)
+  if (orphaned.length) console.error(`deleteAccount: ${orphaned.length} R2 object(s) for user ${user.id} could not be deleted:`, orphaned.join(', '))
 
   // FEATURE (Auth section round 2): sent only after the scrub has durably
   // committed (thrown errors above skip this entirely) — to the address the
