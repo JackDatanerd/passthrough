@@ -1363,7 +1363,7 @@ describe('generateFix', () => {
     it('a retry that reuses an EXISTING code purges that code\'s cached badge', async () => {
       globalThis.caches = fakeCaches()
       let deleted = null
-      globalThis.caches.default.delete = async req => { deleted = req.url }
+      globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
       t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
       await t.mod.generateFix(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
@@ -1371,7 +1371,7 @@ describe('generateFix', () => {
     it('a FIRST delivery purges its own brand-new code too — harmless, nothing was ever cached under it', async () => {
       globalThis.caches = fakeCaches()
       let deleted = null
-      globalThis.caches.default.delete = async req => { deleted = req.url }
+      globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
       t = setup()   // default scan has no verification_code — badge.service stub mints 'NEWCODE1'
       await t.mod.generateFix(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('NEWCODE1').url)
@@ -1720,7 +1720,7 @@ describe('regeneratePdf', () => {
     it('purges the code that just got its PDF hash attached', async () => {
       globalThis.caches = fakeCaches()
       let deleted = null
-      globalThis.caches.default.delete = async req => { deleted = req.url }
+      globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
       t = pdfSetup({ scan: { id: 's1', user_id: 'u1', fix_purchased: true, status: 'FIX_DELIVERED', fix_tier: 'FIX', fix_ats_score: 85, rewritten_resume_data: { name: 'Rewritten' }, verification_url: 'https://x/v/C1', resume_pdf_path: null, verification_code: 'CODE01' } })
       await t.mod.regeneratePdf(call())
       expect(deleted).toBe(badgeCacheKeyForCode('CODE01').url)
@@ -1873,7 +1873,7 @@ describe('generateBadge', () => {
     it('a redelivery that reuses an EXISTING code purges that code\'s cached badge', async () => {
       globalThis.caches = fakeCaches()
       let deleted = null
-      globalThis.caches.default.delete = async req => { deleted = req.url }
+      globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
       t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
       await t.mod.generateBadge(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
@@ -1881,7 +1881,7 @@ describe('generateBadge', () => {
     it('a FIRST delivery purges its own brand-new code too — harmless, nothing was ever cached under it', async () => {
       globalThis.caches = fakeCaches()
       let deleted = null
-      globalThis.caches.default.delete = async req => { deleted = req.url }
+      globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
       t = setup()   // default scan has no verification_code — badge.service stub mints 'NEWCODE1'
       await t.mod.generateBadge(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('NEWCODE1').url)

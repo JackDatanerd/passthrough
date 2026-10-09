@@ -11,5 +11,7 @@ router.get('/:code',           rl.verifyRead, c.getVerification)
 router.get('/:code/download',  rl.verifyRead, c.downloadVerifiedFile)
 // Embeddable live status badge — image/svg+xml, cacheable, no view count.
 router.get('/:code/badge.svg', c.getBadge)
+// The same badge as a PNG — for e-mail signatures, LinkedIn and anywhere SVG is not displayed.
+router.get('/:code/badge.png', c.getBadgePng)
 
 module.exports = router

@@ -103,13 +103,13 @@ describe('checkIntegrity / getVerification — PDF coverage (bug fix)', () => {
     expect(res.data.data.verified).toBe(false)
   })
 
-  it('reports "unknown" (not "verified") when the PDF is on file but missing from R2', async () => {
+  it('reports "missing" (never "verified") when the PDF is on file but gone from R2 — round 6: a definite answer, not an "unknown" hiccup', async () => {
     const row = await seedRow()
     t = harness(row)
     const c = t.makeCtx({ files: { [row.resume_ats_path]: DOCX_BYTES /* no pdf key */ } })
     const res = await t.mod.getVerification(c)
     await t.drain()
-    expect(res.data.data.integrityStatus).toBe('unknown')
+    expect(res.data.data.integrityStatus).toBe('missing')
     expect(res.data.data.verified).toBe(false)
   })
 

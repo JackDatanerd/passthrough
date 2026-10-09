@@ -118,15 +118,16 @@ export default function Privacy() {
         <Section title="6. Verification Links Are Public">
           <p>
             If you purchase a Fix or Credential, a public verification page is generated
-            (passthrough.dev/v/CODE) showing your ATS score, integrity status, role/seniority
-            category, the date it was verified, how many times the page has been viewed, the
+            (passthrough.dev/v/CODE) showing your ATS score, integrity status, the field and level of
+            the job description your resume was scored against, the date it was verified, how many times the page has been viewed, the
             fingerprints (SHA-256 hashes) of the files we delivered, and your first name — unless you
             choose to hide it. Anyone with that link can view this page; it's designed to be shared
             with employers. Don't purchase a credential if you don't want this summary information
             potentially viewable by anyone with the link.
           </p>
           <p>
-            The page does not show your resume content, and the files themselves are not downloadable
+            A small badge image that follows the page's live status (an SVG, and a PNG for e-mail signatures) is also
+            available at a public address for you to embed. The page does not show your resume content, and the files themselves are not downloadable
             unless you switch on “Allow public .docx download” or “Allow public PDF download” for that
             scan. If you do, anyone with the link can download that file, including any contact details
             on it. You can hide your name, turn the downloads off, or unpublish the page at any time from

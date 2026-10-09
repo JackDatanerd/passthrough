@@ -59,8 +59,14 @@ function badgeCache() {
 // found" badge over a genuine page's entry. verify.controller.js's getBadge now also
 // refuses to touch the cache for anything that is not a plausible code; this is the second
 // lock. A real code is [A-Z2-9] only, so encoding it is a no-op.
-function badgeCacheKeyForCode(code) {
-  return new Request(`https://verify-badge.passthrough.internal/${encodeURIComponent(String(code))}`)
+//
+// ROUND-6: the badge now exists in two formats (SVG, and a PNG for places that cannot show SVG —
+// e-mail signatures, LinkedIn). Each format has its own entry; the SVG key is unchanged so entries
+// already cached stay valid, and purgeBadgeCache() clears both.
+const BADGE_FORMATS = Object.freeze(['svg', 'png'])
+function badgeCacheKeyForCode(code, format = 'svg') {
+  const base = `https://verify-badge.passthrough.internal/${encodeURIComponent(String(code))}`
+  return new Request(format === 'png' ? `${base}.png` : base)
 }
 
 // Best-effort, like every other cache operation here — a purge failure must never fail (or
@@ -72,7 +78,9 @@ async function purgeBadgeCache(code) {
   if (!code) return
   const cache = badgeCache()
   if (!cache) return
-  try { await cache.delete(badgeCacheKeyForCode(code)) } catch (err) { console.error('[verify] badge cache purge failed:', err.message) }
+  for (const format of BADGE_FORMATS) {
+    try { await cache.delete(badgeCacheKeyForCode(code, format)) } catch (err) { console.error('[verify] badge cache purge failed:', err.message) }
+  }
 }
 
-module.exports = { badgeCache, badgeCacheKeyForCode, purgeBadgeCache }
+module.exports = { badgeCache, badgeCacheKeyForCode, purgeBadgeCache, BADGE_FORMATS }

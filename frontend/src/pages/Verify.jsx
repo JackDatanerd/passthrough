@@ -7,10 +7,10 @@ import Spinner from '../components/ui/Spinner'
 import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
-import { formatDate, copyToClipboard } from '../lib/utils'
+import { formatDate, copyToClipboard, downloadBlob } from '../lib/utils'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
-import { isRoleCategory } from '../lib/roleCategories'
+import { isRoleCategory, roleLabel } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 
@@ -42,13 +42,25 @@ function Fingerprint({ label, hash }) {
 // Downloads used window.location.href — on a 403/404 that just navigates the
 // whole tab to raw JSON. Fetches as a blob so a failure surfaces on the page
 // instead of blanking it, and only ever triggers a save on a real success.
+// ROUND-6: saving goes through the shared downloadBlob (lib/utils) instead of a private copy with
+// its own, shorter revoke delay.
 async function downloadFile(code, type, filename) {
   const res = await api.get(`/verify/${encodeURIComponent(code)}/download`, { params: { type }, responseType: 'blob' })
-  const url = URL.createObjectURL(res.data)
-  const a = document.createElement('a')
-  a.href = url; a.download = filename
-  document.body.appendChild(a); a.click(); a.remove()
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
+  downloadBlob(res.data, filename)
+}
+
+// ROUND-6 AUDIT FIX (bug, Section 7): the "Field" and "Seniority" tiles read as facts about the
+// CANDIDATE, but both come from the job description the resume was scored against
+// (detectRoleCategory / detectSeniority run on the pasted job text) — a mid-level candidate who scored
+// against a "Senior Staff Engineer" posting showed "Seniority: Lead" under "Passthrough Verified", and
+// the backend answers 'mid' when the posting says nothing about level, which is no claim at all. One
+// tile now says what it is — what the resume was SCORED FOR — and leaves out the 'mid' default (same
+// rule as the dashboard's roleLine in lib/scanDisplay.js).
+function scoredFor(data) {
+  const role = data?.roleCategory ? roleLabel(data.roleCategory) : ''
+  const level = data?.seniorityLevel && data.seniorityLevel !== 'mid'
+    ? String(data.seniorityLevel).replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()) : ''
+  return [level, role].filter(Boolean).join(' · ')
 }
 
 export default function Verify() {
@@ -156,6 +168,16 @@ export default function Verify() {
 
   useEffect(() => { load() }, [code])
 
+  // ROUND-6 AUDIT FIX (bug): the tab / bookmark / history title said "Verified resume" for EVERY state of
+  // this route — including not found, removed, revoked and below-threshold pages. The route table now
+  // gives a neutral title for the first paint, and this names what the page turned out to say.
+  useEffect(() => {
+    if (loading) return
+    const label = data ? (data.verified ? 'Verified resume' : 'Scan report')
+      : revoked ? 'Verification revoked' : removed ? 'Verification removed' : notFound ? 'Verification not found' : null
+    if (label) document.title = `${label} — Passthrough`
+  }, [loading, data, revoked, removed, notFound])
+
   async function handleLead(e) {
     e?.preventDefault?.()
     if (!name || !company || !email) return setLeadErr('Name, company, and email required.')
@@ -226,6 +248,11 @@ export default function Verify() {
   // when the file didn't match its own hash. `data.verified` is the one flag
   // this page is allowed to key its headline off.
   const isVerified = !!data?.verified
+  // ROUND-6 (feature gap): arrived from /check holding a file whose page is removed / revoked — say the
+  // FILE is a genuine Passthrough one, so the reader does not think they typed something wrong.
+  const checkedFileNote = lookupCheck && lookupCheck.hash && String(lookupCheck.code || '').toUpperCase() === String(code || '').toUpperCase()
+    ? 'The file you checked is one Passthrough issued for this page — the page itself can no longer vouch for it.'
+    : null
 
   // ROUND-2 AUDIT FIX (bug): "not verified" has THREE causes and this page used
   // to word all of them as "this file no longer matches" — including a transient
@@ -238,15 +265,19 @@ export default function Verify() {
   // fingerprinting existed) used to read "Unmodified". 'partial' = the Word file checks out,
   // the PDF cannot be checked — never a green tick.
   const isPartial   = !!data && data.passed && data.integrityStatus === 'partial'
+  // ROUND-6 AUDIT FIX (bug): R2 answering "no such object" is not a hiccup. 'missing' = the stored copy
+  // is gone; the page used to call that "couldn't complete just now — refresh in a moment" forever.
+  const isMissing   = !!data && data.passed && data.integrityStatus === 'missing'
 
   const integrityLabel =
     data?.integrityStatus === 'verified' ? 'Unmodified' :
     data?.integrityStatus === 'modified' ? 'Modified'   :
     data?.integrityStatus === 'partial'  ? 'Partly checked' :
+    data?.integrityStatus === 'missing'  ? 'Stored copy missing' :
     'Unavailable'
   const integrityClass =
     data?.integrityStatus === 'verified' ? 'text-green-700' :
-    data?.integrityStatus === 'modified' ? 'text-red-600'   :
+    data?.integrityStatus === 'modified' || data?.integrityStatus === 'missing' ? 'text-red-600'   :
     'text-amber-600'
 
   // FEATURE GAP CLOSED: a 'previous' match now names WHEN that version was
@@ -266,7 +297,12 @@ export default function Verify() {
         : `Matches an earlier ${kindLabel} — not the current one, but not tampered with either.`,
       cls: 'text-amber-600',
     },
-    mismatch:    { text: "Doesn't match anything on file — this file has been edited, or didn't come from Passthrough.", cls: 'text-red-600' },
+    // ROUND-6 AUDIT FIX (bug): this used to say the file "has been edited, or didn't come from
+    // Passthrough" — an accusation. A fingerprint matches only the exact bytes Passthrough issued, and
+    // saving a copy in Word, converting it to PDF, printing to PDF or an e-mail / cloud-storage system
+    // re-encoding it changes those bytes without anyone altering a word. A hiring manager could reject a
+    // genuine candidate on that red line, so it says what was actually established — and what to do.
+    mismatch:    { text: "This file isn't an exact copy of anything Passthrough issued for this page. That can mean it was edited — but re-saving, converting to PDF or printing a copy changes a file's fingerprint too. Ask the candidate for the original file, or compare it with the current one.", cls: 'text-amber-700' },
     unavailable: {
       text: checkResult.scope === 'type'
         ? "This scan has no fingerprint on file for that type of file, so it can't be checked here."
@@ -314,6 +350,7 @@ export default function Verify() {
             <p className="text-gray-500 text-sm">
               Its owner deleted it. This is not a mistyped link — the page existed, and is no longer available.
             </p>
+            {checkedFileNote && <p className="text-sm font-medium text-amber-700 mt-3" role="status">{checkedFileNote}</p>}
             <p className="text-xs text-gray-400 mt-4">
               <a href={reportHref(code, 'removed page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem</a>
             </p>
@@ -330,6 +367,7 @@ export default function Verify() {
               {revoked.revokedAt ? `Revoked on ${formatDate(revoked.revokedAt)}. ` : ''}
               It is no longer valid and cannot be restored from this page.
             </p>
+            {checkedFileNote && <p className="text-sm font-medium text-amber-700 mt-3" role="status">{checkedFileNote}</p>}
             <p className="text-xs text-gray-400 mt-4">
               <a href={reportHref(code, 'revoked page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem</a>
             </p>
@@ -389,6 +427,8 @@ export default function Verify() {
                   <p className="text-sm text-amber-700 mb-1">
                     {isModified
                       ? 'This file no longer matches what was verified — see Integrity below.'
+                      : isMissing
+                        ? "The stored copy of this resume could not be found, so it can't be confirmed — see Integrity below."
                       : isPartial
                         ? "The Word file checks out, but this page has no fingerprint for its PDF — see Integrity below."
                       : notChecked
@@ -400,9 +440,9 @@ export default function Verify() {
                 </>
               )}
               {data.candidateFirstName && (
-                <p className="text-gray-500 text-lg mb-4">{data.candidateFirstName}</p>
+                <p className="text-gray-500 text-lg mb-4 break-words">{data.candidateFirstName}</p>
               )}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 mt-6 text-sm">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-1">ATS Score</p>
                   <p className={`font-bold text-xl ${data.passed ? 'text-green-700' : 'text-red-600'}`}>
@@ -415,26 +455,22 @@ export default function Verify() {
                     {integrityLabel}
                   </p>
                 </div>
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-gray-400 text-xs mb-1">Field</p>
-                  <p className="font-semibold text-gray-700 capitalize text-sm">
-                    {data.roleCategory?.replace(/_/g, ' ') || '—'}
-                  </p>
-                </div>
-                {/* SECTION 7 AUDIT (feature gap): seniorityLevel has always been
-                    computed (atsService.detectSeniority) and returned by
-                    GET /api/verify/:code — nothing ever rendered it. */}
-                <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-gray-400 text-xs mb-1">Seniority</p>
-                  <p className="font-semibold text-gray-700 capitalize text-sm">
-                    {data.seniorityLevel || '—'}
+                {/* ROUND-6: one honest tile (see scoredFor above). */}
+                <div className="bg-gray-50 rounded-lg p-3" title="The field and level of the job description this resume was scored against — not a statement about the candidate.">
+                  <p className="text-gray-400 text-xs mb-1">Scored for</p>
+                  <p className="font-semibold text-gray-700 text-sm break-words">
+                    {scoredFor(data) || '—'}
                   </p>
                 </div>
                 <div className="bg-gray-50 rounded-lg p-3">
-                  <p className="text-gray-400 text-xs mb-1">Verified</p>
+                  {/* ROUND-6 AUDIT FIX (bug): said "Verified" even on a scan report / modified / partial page. */}
+                  <p className="text-gray-400 text-xs mb-1">{isVerified ? 'Verified' : 'Scanned'}</p>
                   <p className="font-semibold text-gray-700 text-sm">{formatDate(data.verifiedAt)}</p>
                 </div>
               </div>
+              <p className="text-xs text-gray-400 mt-3">
+                The score is against one job description, in the field shown under “Scored for”.
+              </p>
 
               {(data.exposeDocx || data.exposePdf) && (
                 <div className="flex flex-col sm:flex-row gap-3 mt-6 justify-center">
@@ -456,6 +492,8 @@ export default function Verify() {
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
                   : isModified
                     ? "This resume reached the Passthrough Verified score, but the stored file no longer matches its verified fingerprint."
+                    : isMissing
+                      ? "This resume reached the Passthrough Verified score, but the stored file is no longer in storage, so this page cannot confirm it. Ask the candidate for the file, and check it below."
                     : isPartial
                       ? "This resume reached the Passthrough Verified score and its Word file is unmodified, but its PDF predates PDF fingerprinting and cannot be checked — so this page does not show a full verification."
                     : notChecked

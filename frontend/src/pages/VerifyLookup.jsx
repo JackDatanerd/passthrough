@@ -42,7 +42,7 @@ export default function VerifyLookup() {
       navigate(`/v/${encodeURIComponent(code)}`, { state: { fileCheck: { code, hash, kind: fileKindOf(file) } } })
     } catch (err) {
       const status = err.response?.status
-      if (status === 404) setMessage({ text: "No Passthrough verification matches that file. It has been edited since it was issued, or it didn't come from Passthrough.", tone: 'error' })
+      if (status === 404) setMessage({ text: "No Passthrough verification matches that exact file. It may have been edited — but re-saving, converting to PDF or printing a copy changes a file's fingerprint too. Ask the candidate for the original, or look it up by its link or code below.", tone: 'error' })
       else if (status === 429) setMessage({ text: 'Too many lookups from your network just now. Please wait a few minutes and try again.', tone: 'muted' })
       else setMessage({ text: "Couldn't check that file — please try again.", tone: 'muted' })
     } finally {

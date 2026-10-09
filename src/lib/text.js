@@ -60,6 +60,28 @@ function firstNameOf(input) {
   return hasSubstance(first) ? first : null
 }
 
+// ROUND-6 AUDIT FIX (bug, Section 7): firstNameOf kept ANY single token, however long and whatever it
+// said, and the result is printed under "Passthrough Verified" on the public page and in the link
+// preview. A resume whose "name" is one token such as `https://pay.example/claim-your-prize-...`
+// (or 400 letters) became the page's headline name: scam text on a branded page, and a heading that
+// overflowed its card. What the PUBLIC page may show is stricter than what is stored: a plausible
+// first name is short, is not a link / address / domain, and carries no phone-number-sized digit run.
+// Applied when the page is read (so pages issued before this change are covered too) AND when the
+// name is derived. Returns null when the token fails — the page then shows no name.
+const MAX_PUBLIC_NAME_CHARS = 40
+function isPublicSafeName(first) {
+  if (typeof first !== 'string' || !first) return false
+  if ([...first].length > MAX_PUBLIC_NAME_CHARS) return false
+  if (/:\/\/|@|www\./i.test(first)) return false                       // link, e-mail address
+  if (/[\p{L}\p{N}][.][\p{L}]{2,}/u.test(first)) return false            // a domain: "pay.example", "x.co" is rejected, "J.R." is not
+  if (/\d[\d\s().+-]*\d/.test(first) && (first.match(/\d/g) || []).length >= 5) return false   // phone number
+  return true
+}
+function publicFirstName(input) {
+  const first = firstNameOf(input)
+  return first && isPublicSafeName(first) ? first : null
+}
+
 // A name has to contain at least one letter or digit in some script — "  ",
 // "\u200b", "---" and "🙂" are not names. Unicode-aware, so "李", "Åsa" and
 // "محمد" all pass.
@@ -73,4 +95,4 @@ const nameSchema = z.string()
   .pipe(z.string().min(1, 'Name is required.').max(100, 'Name must be 100 characters or fewer.')
     .refine(hasSubstance, 'Enter a valid name.'))
 
-module.exports = { cleanName, cleanStrangerText, cleanNotes, firstNameOf, hasSubstance, nameSchema }
+module.exports = { cleanName, cleanStrangerText, cleanNotes, firstNameOf, publicFirstName, isPublicSafeName, MAX_PUBLIC_NAME_CHARS, hasSubstance, nameSchema }

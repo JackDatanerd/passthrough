@@ -79,7 +79,7 @@ const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
 const { sanitizeSearch, applyScanFilters } = require('../lib/scanSearch')
-const { firstNameOf } = require('../lib/text')
+const { publicFirstName } = require('../lib/text')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -110,7 +110,7 @@ function extForMimeType(mimetype) {
 function candidateFirstNameFrom(resumeData) {
   // Shown on the PUBLIC verification page: cleaned (bidi overrides, invisible fillers) and null
   // when there is no real word, rather than rendering a blank or reordered heading.
-  return firstNameOf(resumeData?.name)
+  return publicFirstName(resumeData?.name)
 }
 
 // Hoisted to module scope — was previously declared locally inside

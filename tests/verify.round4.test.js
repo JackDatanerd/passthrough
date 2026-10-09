@@ -108,7 +108,9 @@ describe('ROUND-4 AUDIT FIX (bug): badge client caching is short, edge caching i
   it('the unsettled (integrity could not run) badge is still capped at 30s for clients and 30s at the edge', async () => {
     const { puts } = installCache()
     t = harness(await seedRow())
-    const r = await t.mod.getBadge(t.ctx({ files: {} }))        // R2 returns nothing → integrity 'unknown'
+    const ctx = t.ctx()
+    ctx.env.RESUMES_BUCKET = { get: async () => { throw new Error('R2 unavailable') } }   // the check could not run → 'unknown'
+    const r = await t.mod.getBadge(ctx)
     expect(r.headers['Cache-Control']).toBe('public, max-age=30')
     expect(puts[0].res.headers.get('cache-control')).toBe('public, max-age=30')
   })

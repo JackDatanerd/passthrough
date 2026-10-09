@@ -167,7 +167,7 @@ describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', 
   it('revokeVerification purges the badge for the scan that actually changed, not a stray code', async () => {
     globalThis.caches = fakeCaches()
     let deleted = null
-    globalThis.caches.default.delete = async req => { deleted = req.url }
+    globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
     const world = createWorld({ scans: [{ id: 's1', verification_code: 'AB3XY7', verification_status: STATUS.ACTIVE }] })
     await revokeVerification(world.db, 's1', REVOKE_REASON.ADMIN)
     expect(deleted).toBe(badgeCacheKeyForCode('AB3XY7').url)
@@ -185,7 +185,7 @@ describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', 
   it('restoreVerification purges the badge on a genuine un-revoke', async () => {
     globalThis.caches = fakeCaches()
     let deleted = null
-    globalThis.caches.default.delete = async req => { deleted = req.url }
+    globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
     const world = createWorld({ scans: [{ id: 's1', verification_code: 'ZQ8KP2', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.OWNER }] })
     await restoreVerification(world.db, 's1')
     expect(deleted).toBe(badgeCacheKeyForCode('ZQ8KP2').url)
@@ -194,7 +194,7 @@ describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', 
   it('revokeUserVerifications (ban) purges every affected code, and only those', async () => {
     globalThis.caches = fakeCaches()
     const deleted = []
-    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted.push(req.url) }   // see above
     const world = createWorld({ scans: [
       { id: 's1', user_id: 'u1', verification_code: 'CODE0001', verification_status: STATUS.ACTIVE },
       { id: 's2', user_id: 'u1', verification_code: 'CODE0002', verification_status: STATUS.ACTIVE },
@@ -207,7 +207,7 @@ describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', 
   it('restoreUserVerifications (un-ban) purges exactly what it restores', async () => {
     globalThis.caches = fakeCaches()
     const deleted = []
-    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted.push(req.url) }   // see above
     const world = createWorld({ scans: [
       { id: 's1', user_id: 'u1', verification_code: 'CODE0001', verification_status: STATUS.REVOKED, verification_revoked_reason: REVOKE_REASON.BAN },
     ] })
@@ -218,7 +218,7 @@ describe('revoke/restore purge the code\'s cached badge (Section 7 audit fix)', 
   it('recordTombstones purges the badge for a deleted page too', async () => {
     globalThis.caches = fakeCaches()
     const deleted = []
-    globalThis.caches.default.delete = async req => { deleted.push(req.url) }
+    globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted.push(req.url) }   // see above
     const world = createWorld({ verification_tombstones: [] })
     await recordTombstones(world.db, ['DELETED01', 'DELETED01', null])
     expect(deleted).toEqual([badgeCacheKeyForCode('DELETED01').url])

@@ -83,6 +83,6 @@ describe('VerifyLookup — the file lookup hands the match to the page (round 5,
     api.get.mockRejectedValue(Object.assign(new Error('x'), { response: { status: 404 } }))
     renderPage()
     fireEvent.change(screen.getByLabelText(/choose the \.docx or \.pdf you were sent/i), { target: { files: [new File(['x'], 'a.pdf', { type: 'application/pdf' })] } })
-    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no passthrough verification matches that file/i))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no passthrough verification matches that exact file/i))
   })
 })

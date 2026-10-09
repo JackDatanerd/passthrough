@@ -1,5 +1,6 @@
 import { useEffect, useState, useRef } from 'react'
 import { useParams, useSearchParams, Link, useNavigate } from 'react-router-dom'
+import { buildBadgeEmbeds } from '../lib/badgeEmbed'
 import api, { getErrorMessage } from '../lib/api'
 import { createPoller } from '../lib/poller'
 import { downloadBlob } from '../lib/utils'
@@ -127,6 +128,7 @@ export default function ScanResult() {
   // README/LinkedIn/portfolio. The whole point of an embeddable badge is
   // that most people who see it never click through to this page.
   const [badgeCopied, setBadgeCopied] = useState(false)
+  const [badgeHtmlCopied, setBadgeHtmlCopied] = useState(false)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   // G1: re-run a free scan that failed on our side, in place.
@@ -606,15 +608,20 @@ export default function ScanResult() {
     // Absolute even when the API base is relative (/api) — a pasted README needs a full URL.
     let root = String(api.defaults.baseURL || '')
     try { root = new URL(root, window.location.origin).href.replace(/\/+$/, '') } catch (_) { /* keep as is */ }
-    const base = `${root}/verify/${encodeURIComponent(scan.verificationCode)}/badge.svg`
-    // Alt text names the badge, not a state — the image itself says Verified or not.
-    return { image: base, markdown: `[![Passthrough badge](${base})](${scan.verificationUrl})` }
+    return buildBadgeEmbeds(root, scan.verificationCode, scan.verificationUrl)
   }
 
   async function handleCopyBadge() {
     if (await copyToClipboard(badgeUrls().markdown)) {
       setBadgeCopied(true)
       setTimeout(() => setBadgeCopied(false), 2000)
+    }
+  }
+
+  async function handleCopyBadgeHtml() {
+    if (await copyToClipboard(badgeUrls().html)) {
+      setBadgeHtmlCopied(true)
+      setTimeout(() => setBadgeHtmlCopied(false), 2000)
     }
   }
 
@@ -1083,9 +1090,16 @@ export default function ScanResult() {
                           >
                             {badgeCopied ? 'Copied ✓' : 'Copy Markdown'}
                           </button>
+                          <button
+                            onClick={handleCopyBadgeHtml}
+                            type="button"
+                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap"
+                          >
+                            {badgeHtmlCopied ? 'Copied ✓' : 'Copy HTML (e-mail signature)'}
+                          </button>
                         </div>
                         <p className="text-xs text-gray-500 mt-1.5">
-                          Follows the live status — a change (an unpublish, a new score) can take up to about 5 minutes to show, longer where a site caches images.
+                          Follows the live status — a change (an unpublish, a new score) shows within a minute or two, longer where a site caches images. The HTML version uses a PNG, which Gmail, Outlook and LinkedIn can show; the Markdown version uses the sharper SVG.
                         </p>
                       </div>
                     )}

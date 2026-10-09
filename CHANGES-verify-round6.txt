@@ -1,0 +1,68 @@
+Section 7 (Verify) — round 6 (fresh independent audit of verify.controller.js, verify.routes.js, pages/Verify.jsx and what they depend on)
+Base: 943f0b1 "webhooks round 6: ..."
+No migration. Nothing to apply before deploying.
+
+BUGS
+B1  (medium) The "Field" and "Seniority" tiles read as facts about the CANDIDATE but both come from the pasted JOB DESCRIPTION
+    (scan.controller.js: detectRoleCategory(jdText) / detectSeniority(jdText)). A mid-level candidate who scored against a
+    "Senior Staff Engineer" posting showed "Seniority: Lead" under "Passthrough Verified"; a "VP of Sales" posting showed
+    "Executive". The backend also answers 'mid' when the posting says nothing about level, which is no claim at all.
+    Fix: one tile, "Scored for" (e.g. "Senior · Software Engineering"), the 'mid' default omitted (same rule as the dashboard's
+    roleLine), a tooltip and a one-line caption saying the score is against one job description.
+B2  (low-medium) The public first name had no length or content limit (lib/text.js firstNameOf kept any single token). A resume whose
+    "name" was `https://pay.example/claim-your-prize-…` (or 400 letters) became the headline name on the branded page and in
+    the link preview, and overflowed its card. New publicFirstName(): <= 40 characters, not a link / address / domain, no
+    phone-number-sized digit run. Applied where the name is derived (scan.controller candidateFirstNameFrom) AND when the page
+    is read, so names stored before this change are covered. The heading also wraps (break-words).
+B3  (low) The date tile said "Verified" on scan-report / modified / partial pages (now "Scanned" unless verified), and the tab title said
+    "Verified resume" for every state of /v/:code including not found, removed, revoked and below-threshold. The route title is now
+    neutral ("Resume verification") and the page names what it actually says once loaded.
+B4  (low) HEAD requests ran the whole handler (R2 read + hash) and were counted as a view / a download. HEAD is never counted now.
+B5  (low-medium) R2 answering "no such object" and R2 failing both gave integrity 'unknown', which the page words as a hiccup ("refresh in a
+    moment — not a sign of tampering"). A permanently missing file said that forever, the badge re-read R2 every 30s, and nobody was
+    told. New integrity state 'missing' (page: "Stored copy missing", never a green tick, badge says "scan N/100"). The row is re-read
+    first so an owner edit that repointed the file between our reads stays 'unknown'. The operator gets one owner alert per page per
+    day (needs the rate-limit backend to dedupe; silent without it).
+
+GAPS
+G1  The badge was SVG-only. Gmail blocks SVG images, classic Outlook and LinkedIn do not show them: no e-mail signature, no profile field.
+    New GET /api/verify/:code/badge.png — same state, same caching (own cache entry, 60s edge / 30s client), same limits, same
+    purge-on-revoke (purgeBadgeCache clears both formats). Drawn directly by src/lib/badgePng.js (5x7 pixel font, 2-bit indexed PNG,
+    stored-deflate, ~3.8 KB, no dependencies, same output in Node and the Worker) — a wasm rasterizer + font would have added ~2 MB
+    to the Worker bundle. Text is upper-case; the SVG stays the sharper format. ScanResult now offers "Copy HTML (e-mail signature)"
+    (a link around the PNG at height 20) beside "Copy Markdown"; the helper is frontend/src/lib/badgeEmbed.js. The stale
+    "up to about 5 minutes" copy next to the embed now matches the 60s/30s TTLs.
+G2  The "mismatch" verdict accused: "this file has been edited, or didn't come from Passthrough" (also on /check). A fingerprint matches
+    only the exact bytes Passthrough issued; re-saving in Word, converting to PDF, printing to PDF or a mail/cloud system re-encoding
+    the file changes it with no edit. Now amber, and says what was established and what to do (ask for the original / compare with
+    the current one). Same wording change on /check.
+G3  Reaching a removed or revoked page with a file from /check said nothing about the FILE. It now says the file is one Passthrough
+    issued for this page and the page can no longer vouch for it.
+G4  Verify.jsx kept a private copy of the blob-save helper with its own shorter revoke delay; it uses the shared downloadBlob now.
+G5  Privacy §6 said the page shows "role/seniority category"; it now says the field and level of the job description the resume was
+    scored against, and mentions the embeddable badge image. *** POLICY COPY — please read it. ***
+
+ALSO
+ * verify.controller.js header comment had a sentence cut off mid-way ("...; and" followed by an unrelated block): finished.
+
+NOT CHANGED (decision)
+ * The link-preview Function still caches a page's preview data for 60s per data center, so a name hidden a moment ago can still be in
+   a freshly built preview for up to a minute (link cards on other platforms cache far longer regardless). A Worker cannot purge a
+   Pages cache; shortening the TTL would just move the cost back to the API.
+ * Round 5's jsonb filter (`cs.[{"docx":"…"}]`) is still only tested against a PostgREST stand-in. Worth ONE real call against
+   staging with a known superseded hash after deploy.
+
+TESTS
++ tests/verify.round6.test.js (20), frontend/tests/pages/Verify.round6.test.jsx, frontend/tests/badgeEmbed.test.js.
+  Mutation-checked: reverting the HEAD guard, the name vetting and the re-read-before-"missing" each fails a test.
+~ tests/verify.controller.test.js ("unknown" -> "missing" for a PDF gone from R2), tests/verify.round4.test.js (the "unsettled" badge test
+  now makes R2 THROW), frontend/tests/pages/VerifyLookup.round5.test.jsx (new wording).
+Baseline note: frontend/tests/components/useApi.test.js reports one unhandled rejection on an untouched checkout — pre-existing.
+
+FILES
+src/controllers/verify.controller.js, src/controllers/scan.controller.js (name derivation), src/routes/verify.routes.js
+src/lib/badgePng.js (new), src/lib/badgeCache.js, src/lib/text.js
+frontend/src/pages/Verify.jsx, VerifyLookup.jsx, ScanResult.jsx, Privacy.jsx; frontend/src/lib/badgeEmbed.js (new), pageTitles.js
+tests/verify.round6.test.js (new), tests/verify.controller.test.js, tests/verify.round4.test.js
+frontend/tests/pages/Verify.round6.test.jsx (new), frontend/tests/badgeEmbed.test.js (new), frontend/tests/pages/VerifyLookup.round5.test.jsx
+CHANGES-verify-round6.txt
