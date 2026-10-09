@@ -189,6 +189,8 @@ function paymentRowToCamel(row) {
     // to become one, and a mapper that silently omits a payment's refund/
     // dispute state is exactly the kind of gap that stays invisible until
     // someone builds the view that needed it.
+    // Migration 0064 (Payments & Pricing round 8): when the money settled; null until then.
+    paidAt:              row.paid_at ?? null,
     refundedAt:          row.refunded_at,
     refundReference:     row.refund_reference,
     disputedAt:          row.disputed_at,

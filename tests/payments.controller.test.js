@@ -644,6 +644,27 @@ describe('verifyPayment — outcomes that delivered nothing (B6)', () => {
     expect(t.state.queue).toHaveLength(0)
     expect(t.state.alerts.some(a => /no longer exists/i.test(a.subject))).toBe(true)
   })
+  it('Round 8: SCAN_MISSING refunds itself and the buyer is told the refund has started', async () => {
+    t = worldSetup({ scans: [] })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.message).toMatch(/started refunding/)
+    expect(t.state.refunds).toHaveLength(1)
+    expect(t.state.refunds[0].ref).toBe('ref1')
+  })
+  it('Round 8: with AUTO_REFUND_UNDELIVERABLE=false nothing is refunded and the old "we will sort it out" wording stays', async () => {
+    t = worldSetup({ scans: [] }, { env: { AUTO_REFUND_UNDELIVERABLE: 'false' } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.message).toMatch(/sort it out/)
+    expect(res.body.message).not.toMatch(/refunding/)
+    expect(t.state.refunds).toHaveLength(0)
+  })
+  it('Round 8: a failed auto-refund pages the owner to refund by hand, and the buyer gets the neutral wording', async () => {
+    t = worldSetup({ scans: [] }, { refundListThrows: new Error('paystack down') })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.body.message).toMatch(/sort it out/)
+    expect(t.state.alerts.some(a => /by hand|FAILED/i.test(a.subject + a.message))).toBe(true)
+  })
   it('ACCOUNT_DELETED answers 409 needsSupport', async () => {
     t = worldSetup({ users: [{ id: 'u1', deleted_at: new Date().toISOString() }] })
     const res = await t.mod.verifyPayment(t.c())
@@ -1018,7 +1039,7 @@ describe('getPaymentHistory', () => {
     const res = await t.mod.getPaymentHistory(t.c())
     expect(res.body.data.payments[0]).toEqual({
       id: 'p1', amountCents: 1900, currency: 'USD', status: 'SUCCESS',
-      paystackRef: 'r1', createdAt: 't1', scanId: 's1', fixTier: 'BADGE', receiptAvailable: true,
+      paystackRef: 'r1', createdAt: 't1', scanId: 's1', fixTier: 'BADGE', paidAt: null, receiptAvailable: true,
     })
     expect(res.body.data.total).toBe(37)
     expect(res.body.data.page).toBe(1)

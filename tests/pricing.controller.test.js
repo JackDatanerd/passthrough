@@ -184,3 +184,17 @@ describe('getPricing — round 2 additions', () => {
     expect(used.length).toBe(100)
   })
 })
+
+// Payments & Pricing round 8: promoEndsAt was the raw PROMO_ENDS_AT env string, so any parseable-but-not-ISO
+// value ("Oct 31 2026") reached the client verbatim. It is now normalised to ISO, and null when the promo is off.
+describe('promoEndsAt normalisation (round 8)', () => {
+  it('returns an ISO string even when the env value is another parseable date format', async () => {
+    t = setup({ env: { PROMO_ACTIVE: 'true', PROMO_ENDS_AT: 'Dec 31 2099 00:00:00 UTC' } })
+    const res = await t.mod.getPricing(t.c())
+    expect(res.body.data.promoEndsAt).toBe('2099-12-31T00:00:00.000Z')
+  })
+  it('is null when the promo is not active', async () => {
+    t = setup({ env: { PROMO_ACTIVE: 'false', PROMO_ENDS_AT: '2099-12-31T00:00:00Z' } })
+    expect((await t.mod.getPricing(t.c())).body.data.promoEndsAt).toBeNull()
+  })
+})

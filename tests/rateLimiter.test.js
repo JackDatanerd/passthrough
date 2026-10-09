@@ -551,3 +551,24 @@ describe('pricingRef limiter', () => {
     expect((await hit(rl.payment, ctx({ env }))).passed).toBe(true)
   })
 })
+
+// Payments & Pricing round 8: POST /api/scan/:id/initiate-fix quotes against ?referralCode — a code-existence
+// oracle with no limiter of its own (GET /api/pricing?ref= has pricingRef).
+describe('fixQuote limiter', () => {
+  const asUser = (env, id) => ({ ...ctx({ env }), get: k => (k === 'user' ? { id } : undefined) })
+
+  it('allows 30 quotes per 10 minutes per account, then answers 429', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    let last
+    for (let i = 0; i < 30; i++) last = await hit(rl.fixQuote, asUser(env, 'u1'))
+    expect(last.passed).toBe(true)
+    const over = await hit(rl.fixQuote, asUser(env, 'u1'))
+    expect(over.passed).toBe(false)
+    expect(over.res.status).toBe(429)
+  })
+  it('is per account — another user is unaffected', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 31; i++) await hit(rl.fixQuote, asUser(env, 'u1'))
+    expect((await hit(rl.fixQuote, asUser(env, 'u2'))).passed).toBe(true)
+  })
+})

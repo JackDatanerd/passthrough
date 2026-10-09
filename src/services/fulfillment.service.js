@@ -139,11 +139,20 @@ async function fulfillPayment(env, supabase, payment, { force = false, now = Dat
  */
 async function settlePayment(env, supabase, paymentRow, { authCode = null, source = 'unknown', defer = null } = {}) {
   const referralService = require('./referral.service')
-  const patch = { status: 'SUCCESS' }
+  const patch = { status: 'SUCCESS', paid_at: new Date().toISOString() }
   if (authCode) patch.paystack_auth_code = authCode
 
-  const { data: flipped, error: flipErr } = await supabase.from('payments')
-    .update(patch).eq('paystack_ref', paymentRow.paystack_ref).in('status', REVIVABLE_STATUSES).select()
+  const flip = p => supabase.from('payments')
+    .update(p).eq('paystack_ref', paymentRow.paystack_ref).in('status', REVIVABLE_STATUSES).select()
+  let { data: flipped, error: flipErr } = await flip(patch)
+  // Round 8: paid_at (migration 0064) is written in the same UPDATE as the flip, so exactly once. If the code
+  // is deployed before that migration, settlement must NOT break — money is already captured — so an
+  // unknown-column error retries once without it (receipts then fall back to created_at, as before).
+  if (flipErr && (flipErr.code === '42703' || flipErr.code === 'PGRST204')) {
+    console.error('[WARN] payments.paid_at column missing — apply migration 0064; settling without it')
+    const { paid_at: _omit, ...legacyPatch } = patch
+    ;({ data: flipped, error: flipErr } = await flip(legacyPatch))
+  }
   if (flipErr) throw flipErr
 
   let row = flipped && flipped[0]
@@ -209,7 +218,35 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
     return { ...result, won, payment: row, conversion, source, autoRefund }
   }
 
+  // PAYMENTS & PRICING ROUND 8 (feature gap): the same for money captured with nothing to deliver — the scan or
+  // the account is gone, or the payment never had a scan. Not gated on `won`, for the same reason as above: it is
+  // re-classified on every redelivery, which is exactly what retries a refund that failed the first time.
+  const refundSvc = require('./refund.service')
+  if (refundSvc.UNDELIVERABLE_OUTCOMES.includes(result.outcome)) {
+    if (typeof defer === 'function') {
+      defer(runUndeliverableAutoRefund(env, supabase, row, result.outcome, source, { alertOnFailure: true }))
+      return { ...result, won, payment: row, conversion, source,
+        autoRefund: refundSvc.autoRefundUndeliverableEnabled(env) ? { status: 'SCHEDULED' } : { status: 'SKIPPED', reason: 'DISABLED' } }
+    }
+    const autoRefund = await runUndeliverableAutoRefund(env, supabase, row, result.outcome, source, { alertOnFailure: false })
+    return { ...result, won, payment: row, conversion, source, autoRefund }
+  }
+
   return { ...result, won, payment: row, conversion, source }
+}
+
+// Wraps refund.service.autoRefundUndeliverable; same alerting contract as runDuplicateAutoRefund below.
+async function runUndeliverableAutoRefund(env, supabase, row, outcome, source, { alertOnFailure = false } = {}) {
+  const r = await require('./refund.service').autoRefundUndeliverable(env, supabase, row, { outcome })
+  if (alertOnFailure && r.status === 'FAILED') {
+    try {
+      await require('./email.service').sendOwnerAlert(env, 'Automatic refund of an undeliverable payment FAILED — refund it by hand',
+        `source: ${source}\noutcome: ${outcome}\nreference: ${row.paystack_ref}\nscanId: ${row.scan_id}\namount: ${row.amount_cents} ${row.currency}\n` +
+        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The next verify / webhook redelivery also retries it.`,
+        { dedupeKey: `${row.paystack_ref}:autorefund` })
+    } catch (_) { /* best effort */ }
+  }
+  return r
 }
 
 // Wraps refund.service.autoRefundDuplicate. When it runs deferred nobody is waiting on its result, so a
@@ -272,7 +309,7 @@ async function sendReceiptOnce(env, supabase, row, { legacyOk = false } = {}) {
       // stayed invisible). `false` is now a failure like any other.
       const sent = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
         fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
-        reference: row.paystack_ref, createdAt: row.created_at
+        reference: row.paystack_ref, createdAt: row.paid_at || row.created_at
       })
       if (sent === false) throw new Error('receipt email was not sent (send failed or was throttled)')
       await markReceiptDelivered(supabase, row.id)
@@ -299,7 +336,7 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
   const result = { checked: 0, resent: 0, failed: 0, error: null }
   try {
     const { data: rows, error } = await supabase.from('payments')
-      .select('id, user_id, fix_tier, amount_cents, currency, paystack_ref, created_at, receipt_sent_at')
+      .select('id, user_id, fix_tier, amount_cents, currency, paystack_ref, created_at, paid_at, receipt_sent_at')
       .eq('status', 'SUCCESS').is('receipt_delivered_at', null).not('receipt_sent_at', 'is', null)
       .lt('receipt_sent_at', new Date(now - 10 * 60 * 1000).toISOString())
       .gt('created_at', new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString())
@@ -318,7 +355,7 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
         // See sendReceiptOnce: send() reports failure as `false`, never a throw.
         const sent = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
           fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
-          reference: row.paystack_ref, createdAt: row.created_at
+          reference: row.paystack_ref, createdAt: row.paid_at || row.created_at
         })
         if (sent === false) throw new Error('receipt email was not sent (send failed or was throttled)')
         await markReceiptDelivered(supabase, row.id)
@@ -348,7 +385,7 @@ async function resendReceipt(env, supabase, row) {
     if (!buyer?.email) return { sent: false, reason: 'NO_EMAIL', email: null }
     const ok = await emailService.sendPaymentReceipt(env, supabase, buyer.email, buyer.name, {
       fixTier: row.fix_tier, amountCents: row.amount_cents, currency: row.currency,
-      reference: row.paystack_ref, createdAt: row.created_at
+      reference: row.paystack_ref, createdAt: row.paid_at || row.created_at
     })
     if (ok === false) return { sent: false, reason: 'SEND_FAILED', email: buyer.email }
     // A confirmed delivery also settles an automatic send that never was.
@@ -414,13 +451,14 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
   const emailService = require('./email.service')
   const auto = result.autoRefund && result.autoRefund.status
   const autoOk = auto === 'QUEUED' || auto === 'IN_PROGRESS' || auto === 'SCHEDULED'
+  const queued = autoOk ? ' — automatic refund queued (no action needed)' : ' — refund needed'
   const titles = {
     DUPLICATE:       autoOk
       ? 'Duplicate payment for an already-purchased scan — automatic refund queued (no action needed)'
       : 'Duplicate payment for an already-purchased scan — refund needed',
-    SCAN_MISSING:    'Payment received for a scan that no longer exists — refund needed',
-    NO_SCAN:         'Payment received with no scan attached — refund needed',
-    ACCOUNT_DELETED: 'Payment received for a deleted account — refund needed',
+    SCAN_MISSING:    `Payment received for a scan that no longer exists${queued}`,
+    NO_SCAN:         `Payment received with no scan attached${queued}`,
+    ACCOUNT_DELETED: `Payment received for a deleted account${queued}`,
     MISMATCH:        'Payment amount/currency mismatch — NOT fulfilled (found without the webhook)',
   }
   let detail
@@ -436,8 +474,12 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
     detail = `\nexpected: ${result.expectedAmount} ${result.expectedCurrency}\nreceived: ${result.receivedAmount} ${result.receivedCurrency}\n` +
       `Paystack says this was PAID, but it differs from what the row expected, so nothing was generated. The buyer has been told it is being checked by hand. ` +
       `If it is genuine use Admin → Payments → Recheck (accept amount) or POST /api/payments/${paymentRow.paystack_ref}/recheck — currency can never be accepted.`
+  } else if (autoOk) {
+    detail = `\nNothing was generated. The whole amount is being refunded automatically; the refund.processed webhook marks it REFUNDED. Nothing to do unless that webhook never arrives.`
+  } else if (auto === 'FAILED') {
+    detail = `\nNothing was generated. The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the next verify / webhook redelivery also retries it.`
   } else {
-    detail = `\nNothing was generated. Refund it in Paystack.`
+    detail = `\nNothing was generated.${auto === 'SKIPPED' ? ` It was not refunded automatically (${result.autoRefund.reason}).` : ''} Refund it in Paystack.`
   }
   try {
     await emailService.sendOwnerAlert(env, titles[result.outcome],

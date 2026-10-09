@@ -194,7 +194,73 @@ async function autoRefundDuplicate(env, supabase, payment, { ownerPaymentId = nu
   }
 }
 
+// ── paid, but there is nothing to deliver ─────────────────────────────────────
+// PAYMENTS & PRICING ROUND 8 (feature gap): round 6 made a DUPLICATE payment refund itself; the other outcomes
+// where money was captured and nothing can ever be delivered — the scan is gone (SCAN_MISSING), the payment has
+// no scan (NO_SCAN: payments.scan_id is ON DELETE SET NULL, so deleting a scan after its checkout was left open
+// more than an hour — deleteScan only waits for a younger one — and then paying it lands here) or the account was
+// deleted (ACCOUNT_DELETED) — still ended in an owner email saying "refund it in Paystack", and the buyer stayed
+// charged for nothing until a human got to it. Same machinery as the duplicate refund (claim, Paystack
+// refund-list guard that fails closed, open/processed refund guards), so a redelivery or a second path can never
+// refund twice.
+//
+// Conservative like autoRefundDuplicate: it refunds only what it can prove undelivered — the payment is a real,
+// settled charge, and it does NOT own the scan (a payment that claimed the scan delivered something and is never
+// auto-refunded here). Switch off with AUTO_REFUND_UNDELIVERABLE=false; ON by default, like the duplicate refund.
+const UNDELIVERABLE_OUTCOMES = ['SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED']
+
+function autoRefundUndeliverableEnabled(env) {
+  return String(env && env.AUTO_REFUND_UNDELIVERABLE).trim().toLowerCase() !== 'false'
+}
+
+const UNDELIVERABLE_NOTES = {
+  SCAN_MISSING:    'the resume it was bought for no longer exists',
+  NO_SCAN:         'it has no resume attached',
+  ACCOUNT_DELETED: 'the account that bought it was deleted',
+}
+
+/**
+ * -> { status, ... } with status one of QUEUED | IN_PROGRESS | SKIPPED (reason: DISABLED | NOT_UNDELIVERABLE |
+ * NOT_SETTLED | FREE | DELIVERED) | FAILED (reason). Never throws.
+ */
+async function autoRefundUndeliverable(env, supabase, payment, { outcome } = {}) {
+  try {
+    if (!autoRefundUndeliverableEnabled(env)) return { status: 'SKIPPED', reason: 'DISABLED' }
+    if (!UNDELIVERABLE_OUTCOMES.includes(outcome)) return { status: 'SKIPPED', reason: 'NOT_UNDELIVERABLE' }
+    if (payment.status !== 'SUCCESS') return { status: 'SKIPPED', reason: 'NOT_SETTLED' }
+    if (!(payment.amount_cents > 0) || String(payment.paystack_ref || '').startsWith('credit:'))
+      return { status: 'SKIPPED', reason: 'FREE' }
+
+    // Prove nothing was delivered by THIS payment: if the scan exists and this payment claimed it, it was.
+    if (payment.scan_id) {
+      const { data: scan, error: scanErr } = await supabase.from('scans')
+        .select('id, fix_payment_id').eq('id', payment.scan_id).maybeSingle()
+      if (scanErr) throw scanErr
+      if (scan && scan.fix_payment_id === payment.id) return { status: 'SKIPPED', reason: 'DELIVERED' }
+    }
+
+    const r = await queueRefund(env, supabase, payment, {
+      merchantNote: `Automatic refund: nothing could be delivered — ${UNDELIVERABLE_NOTES[outcome]}`,
+      customerNote: 'Your Passthrough payment could not be delivered — refunded automatically',
+    })
+    if (r.ok) {
+      try {
+        const { logAdminAction } = require('../lib/adminAudit')
+        await logAdminAction({ get: () => undefined }, supabase, 'payment.auto_refund_undeliverable', 'payment', payment.id,
+          { reference: payment.paystack_ref, outcome, amountCents: r.amountCents, refundStatus: r.queued?.data?.status || null })
+      } catch (_) { /* audit is best-effort */ }
+      return { status: 'QUEUED', amountCents: r.amountCents }
+    }
+    if (['OPEN_REFUND', 'ALREADY_REFUNDED', 'CLAIM_LOST'].includes(r.code)) return { status: 'IN_PROGRESS', code: r.code }
+    return { status: 'FAILED', reason: r.message }
+  } catch (err) {
+    console.error(`autoRefundUndeliverable(${payment && payment.paystack_ref}):`, err && err.message)
+    return { status: 'FAILED', reason: (err && err.message) || 'unknown error' }
+  }
+}
+
 module.exports = {
   OPEN_REFUND_STATUSES, REFUND_CLAIM_TTL_MS,
   claimRefund, releaseRefundClaim, holdRefundClaim, REFUND_POST_QUEUE_HOLD_MS, queueRefund, autoRefundDuplicate, autoRefundEnabled,
+  UNDELIVERABLE_OUTCOMES, autoRefundUndeliverable, autoRefundUndeliverableEnabled,
 }

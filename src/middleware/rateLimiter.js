@@ -490,6 +490,17 @@ const pricingRef = makeLimiter({
   message: msg('Too many referral code checks. Please wait a few minutes and try again.')
 })
 
+// PAYMENTS & PRICING ROUND 8 (bug): POST /api/scan/:id/initiate-fix quotes a price through the very same
+// referral_codes lookup as GET /api/pricing?ref= — and answers "is this code real" (referralApplied) just as
+// plainly — but only the pricing endpoint had the per-code-lookup limiter above, so the code-guessing oracle it
+// closes was still open here behind nothing but the app-wide 100-per-15-minutes. Same budget as pricingRef, per
+// ACCOUNT (the route is behind `auth`, and one carrier NAT address is many buyers).
+const fixQuote = makeLimiter({
+  windowSeconds: 10 * 60, max: 30, keyPrefix: 'rl:fixquote',
+  keyBy: byAccount,
+  message: msg('Too many price checks. Please wait a few minutes and try again.')
+})
+
 // Backs PATCH /scan/:id/resume-data and GET /scan/:id/download-draft
 // (scan.controller.js's updateResumeData/downloadDraft). Reachable by
 // anonymous visitors too (ownership is enforced via anon_token, not the
@@ -862,7 +873,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

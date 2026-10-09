@@ -40,6 +40,7 @@ const storage        = require('../config/storage')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib       = require('../lib/crypto')
 const { utcMidnight }   = require('../lib/utcDay')
+const { badgeBlock }     = require('../lib/badgeGate')
 
 // AUDIT FIX (Scan pass): anon_token is a bearer capability (read access to an
 // anonymous submitter's resume + the right to claim the scan), yet it was the
@@ -1289,8 +1290,12 @@ async function initiateFix(ctx) {
     return ctx.json({ success: false, message: 'Scan must be complete.' }, 400)
   if (scan.fixPurchased)
     return ctx.json({ success: false, message: 'Already purchased.' }, 400)
-  if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
-    return ctx.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
+  // Round 8: the same server-side Badge rule /api/payments/initialize enforces (lib/badgeGate.js) — a quote for a
+  // purchase that checkout would refuse is a trap.
+  if (fixTier === 'BADGE') {
+    const blocked = badgeBlock(scan)
+    if (blocked) return ctx.json({ success: false, code: blocked.code, message: blocked.message }, 400)
+  }
 
   // Same resolver /api/pricing and /api/payments/initialize use — see
   // services/referral.service.js. Kept in sync here even though the current

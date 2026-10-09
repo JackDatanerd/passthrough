@@ -370,6 +370,13 @@ the same Paystack refund guards as the admin Refund button. Set it to `"false"` 
 Migration 0048 (`payments.refund_claimed_at`) must be applied — without it refunds still work but lose the
 concurrency lock (a loud log line says so).
 
+**Undeliverable-payment auto-refund (Payments & Pricing round 8).** `AUTO_REFUND_UNDELIVERABLE` (default on) refunds
+in full a settled payment that can never be delivered — its resume was deleted (SCAN_MISSING / NO_SCAN) or the
+buyer's account was deleted (ACCOUNT_DELETED) — through the same guarded refund path. It refuses any payment that
+owns its scan. Set to `"false"` to return to alert-only.
+**Apply `supabase/migrations/0064_payments_round8.sql` (`payments.paid_at`) BEFORE deploying the Worker.** Without it
+payments still settle and history still loads (a warning is logged), but receipts/history show the checkout date.
+
 ---
 
 ## 6. Deploy the Frontend (Cloudflare Pages)

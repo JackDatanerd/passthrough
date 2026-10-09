@@ -18,7 +18,7 @@ router.get( '/history',          auth,        c.getScanHistory)
 // malformed id used to surface as a generic 500 instead of a clean 400.
 router.get( '/status/:id',  rl.scanPoll,      validateUuidParam(), c.getScanStatus)
 router.get( '/:id',         rl.scanPoll,      validateUuidParam(), c.getScan)
-router.post('/:id/initiate-fix', auth,        validateUuidParam(), c.initiateFix)
+router.post('/:id/initiate-fix', auth, rl.fixQuote, validateUuidParam(), c.initiateFix)
 // AUDIT FIX (Section 9/10 pass, bug): these two used to share `rl.payment` —
 // the same KV bucket as initializePayment, not just the same numbers — which
 // let either action starve the other for an unrelated reason. See

@@ -165,7 +165,7 @@ export default function PaymentHistory() {
                   const row = rowState[p.paystackRef] || {}
                   return (
                     <tr key={p.id}>
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(p.createdAt)}</td>
+                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(p.paidAt || p.createdAt)}</td>
                       <td className="px-4 py-3 text-gray-700">
                         {TIER_LABEL[p.fixTier] || p.fixTier || '—'}
                         {isFreeCredit(p) && <span className="text-xs text-gray-400 ml-1.5">(free credit)</span>}

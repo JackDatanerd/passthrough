@@ -295,3 +295,16 @@ describe('auth routes — session endpoints and public/authenticated split', () 
     expect((await call(a, 'DELETE', '/account')).json.handler).toBe('deleteAccount')
   })
 })
+
+// Payments & Pricing round 8: initiate-fix must sit behind the fixQuote limiter (and auth), in that order.
+describe('scan routes — POST /:id/initiate-fix limiter (round 8)', () => {
+  it('runs auth, then rl.fixQuote, then the handler', async () => {
+    const order = []
+    const rlSpy = new Proxy({}, { get: (_, name) => async (c, next) => { order.push(String(name)); return next() } })
+    const app = mount('routes/scan.routes.js', 'controllers/scan.controller.js', { 'middleware/rateLimiter.js': rlSpy })
+    current = { id: 'u1' }
+    const res = await call(app, 'POST', `/${ID}/initiate-fix`, { fixTier: 'FIX' })
+    expect(res.json).toEqual({ handler: 'initiateFix' })
+    expect(order).toContain('fixQuote')
+  })
+})

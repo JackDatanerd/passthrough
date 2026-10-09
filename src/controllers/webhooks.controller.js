@@ -364,7 +364,10 @@ async function processChargeSuccess(c, supabase, event) {
           (result.autoRefund && result.autoRefund.status === 'SCHEDULED'
             ? `An automatic refund of the whole amount has been started; the refund.processed webhook will mark it REFUNDED (you are told separately if it fails).`
             : `It was NOT refunded automatically${result.autoRefund && result.autoRefund.reason ? ` (${result.autoRefund.reason})` : ''}. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED.`)
-        : `Nothing was generated. Refund it in Paystack.`), reference)
+        // Round 8: these outcomes now refund themselves too (refund.service.autoRefundUndeliverable).
+        : (result.autoRefund && result.autoRefund.status === 'SCHEDULED'
+            ? `Nothing was generated. An automatic refund of the whole amount has been started; the refund.processed webhook will mark it REFUNDED (you are told separately if it fails).`
+            : `Nothing was generated. It was NOT refunded automatically${result.autoRefund && result.autoRefund.reason ? ` (${result.autoRefund.reason})` : ''}. Refund it in Paystack.`)), reference)
     return { status: 'PROCESSED', note: result.outcome }
   }
   if (result.outcome === 'UNKNOWN_REFERENCE') return { status: 'IGNORED', note: 'unknown reference' }

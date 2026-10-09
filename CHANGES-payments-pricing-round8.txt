@@ -1,0 +1,43 @@
+PAYMENTS & PRICING — ROUND 8 (base: 496a1de)
+
+!! Apply supabase/migrations/0064_payments_round8.sql BEFORE deploying the Worker (adds payments.paid_at).
+   The code tolerates the column being absent (logs a warning), but paid_at is not recorded until it exists.
+
+GAPS
+G1  Undeliverable payments now refund themselves. A SUCCESS payment whose scan was deleted (SCAN_MISSING /
+    NO_SCAN) or whose account was deleted (ACCOUNT_DELETED) used to sit until a human refunded it. settlePayment
+    now refunds it in full through refund.service.autoRefundUndeliverable (same guards as the admin Refund button;
+    refuses a payment that owns its scan). Webhook path defers it behind waitUntil; a failed refund pages the owner
+    ("refund it by hand"). Buyer-facing /verify wording says the refund has started. Switch: AUTO_REFUND_UNDELIVERABLE
+    ("false" = alert-only). Default ON.
+
+BUGS
+B1  BADGE formatted-score rule was UI-only. For uploaded-file scans FixBanner hides the Credential button until the
+    ATS-formatted version scores >= ATS_BADGE_THRESHOLD, but POST /payments/initialize and POST /scan/:id/initiate-fix
+    only checked the raw score, so a direct call paid for a credential the delivered file would not earn.
+    New lib/badgeGate.js is used by both endpoints (400 + code BADGE_SCORE_LOW / BADGE_FORMATTED_CHECK_REQUIRED /
+    BADGE_FORMATTED_LOW).
+B2  A limited referral code whose last slot another buyer held still resolved at checkout (resolvePrice ignores live
+    reservations), lost the reservation, and was dropped — every retry then compared the code-less row to the
+    re-resolved code and answered 409 "a referral code changed". initializePayment now resolves through
+    resolvePricesForTiers (reservation-aware, own slot netted off), like the quote does.
+B3  A payment already SUCCESS but undelivered (fulfilment threw, webhook failed too) did not block a second checkout;
+    only PENDING rows were looked at, so the buy button returned and a second payment could be made. initializePayment
+    now finishes that payment via settlePayment (idempotent) and answers 409 alreadyPaid. Free-credit rows excluded.
+B4  POST /scan/:id/initiate-fix quoted against ?referralCode with no limiter (code-existence oracle weaker-guarded
+    than GET /pricing?ref=). New rl.fixQuote (30 / 10 min per account).
+B5  payments had no paid_at: receipts and PaymentHistory showed the checkout-creation date, which can be days before
+    the money settled. Migration 0064 adds + backfills it; settlePayment stamps it; receipts, history (paidAt) and the
+    payment mapper use it; PaymentHistory.jsx shows paidAt || createdAt.
+
+HARDENING
+H1  pricing.controller promoEndsAt is normalised to an ISO string (was the raw env value) and null when no promo.
+H2  frontend/tests/standardPrices.test.js ties usePricing's STANDARD_PRICES fallback to constants.standardPriceForTier.
+
+NOT BUILT (product decisions)
+-   Upgrading FIX_PLAIN/BADGE -> FIX by paying the difference.
+-   Local currency / M-Pesa pricing (currency is a single env value today).
+
+TESTS  payments.round8.test.js (14), payments.round8.controller.test.js (20), payments.controller (+3, paidAt shape),
+       pricing.controller (+2), rateLimiter (+2), scan.controller (+2), routes.wiring (+1), PaymentHistory (+1),
+       standardPrices (new). Full suite green; lint clean.

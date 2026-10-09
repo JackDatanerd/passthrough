@@ -79,7 +79,11 @@ async function getPricing(ctx) {
     promoActive,
     // null when there's no active promo — frontend should not render a
     // countdown in that case rather than showing a stale/zero timer.
-    promoEndsAt: promoActive ? ctx.env.PROMO_ENDS_AT : null,
+    // Round 8: normalised to an unambiguous UTC instant. The raw config string used to be passed through, and
+    // isPromoActive() reads a zone-less value ("2026-12-01T23:59:59") as UTC on the Worker while every browser
+    // reads the SAME string as the visitor's local time — a countdown hours off the deadline checkout enforces.
+    // isPromoActive() has already proved it parses when promoActive is true.
+    promoEndsAt: promoActive ? new Date(Date.parse(ctx.env.PROMO_ENDS_AT)).toISOString() : null,
     referralApplied: tiers.some(t => t.referralApplied),
     // True when the code genuinely lowers at least one tier below today's price
     // (as opposed to referralApplied, which is attribution). See B8/B2.

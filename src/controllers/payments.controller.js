@@ -27,6 +27,7 @@ const refundService = require('../services/refund.service')
 const { logAdminAction } = require('../lib/adminAudit')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const { isRangeError } = require('../lib/db')
+const { badgeBlock } = require('../lib/badgeGate')
 
 // Paystack verify statuses that are final and not a success (see verifyPayment).
 const DEFINITE_FAILURE_STATUSES = ['failed', 'abandoned', 'reversed']
@@ -112,8 +113,40 @@ async function initializePayment(c2) {
     return c2.json({ success: false, message: 'Already purchased.' }, 400)
   if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
     return c2.json({ success: false, message: 'Scan must be complete.' }, 400)
-  if (fixTier === 'BADGE' && (scan.atsScore || 0) < c.ATS_BADGE_THRESHOLD)
-    return c2.json({ success: false, message: `Badge requires score >= ${c.ATS_BADGE_THRESHOLD}` }, 400)
+  // Round 8 (bug): the file-scan formatted-score rule FixBanner applies in the browser is enforced here too —
+  // see lib/badgeGate.js. Same function the quote endpoint (scan.controller's initiateFix) uses.
+  if (fixTier === 'BADGE') {
+    const blocked = badgeBlock(scan)
+    if (blocked) return c2.json({ success: false, code: blocked.code, message: blocked.message }, 400)
+  }
+
+  // PAYMENTS & PRICING ROUND 8 (bug): this function only ever looked for a PENDING checkout. A payment that is
+  // already SUCCESS but whose delivery never happened (the flip landed and fulfilment threw — a database or
+  // queue blip, an isolate killed mid-way — and the webhook failed the same way) leaves the scan unclaimed, so the
+  // buy button came straight back and a second checkout could be opened and paid before the hourly sweep
+  // recovered the first: a double charge (refunded automatically as a DUPLICATE, but the buyer still sees it).
+  // A settled paid payment for this scan is finished now instead — settlePayment is idempotent and re-runs
+  // exactly the claim + enqueue + commission + receipt steps — and the buyer is told it is on its way.
+  // Free-credit rows are skipped: they claim the scan in the same step that creates them.
+  {
+    const { data: paidRow, error: paidErr } = await supabase.from('payments').select('*')
+      .eq('scan_id', scanId).eq('status', 'SUCCESS')
+      .order('created_at', { ascending: false }).limit(1).maybeSingle()
+    if (paidErr) throw paidErr
+    if (paidRow && paidRow.status === 'SUCCESS' && paidRow.scan_id === scanId && paidRow.amount_cents > 0
+        && !String(paidRow.paystack_ref).startsWith('credit:')) {
+      let healed
+      try { healed = await fulfillmentService.settlePayment(c2.env, supabase, paidRow, { source: 'checkout-guard' }) }
+      catch (err) {
+        console.error(`initializePayment: finishing settled payment ${paidRow.paystack_ref} failed:`, err.message)
+        return c2.json({ success: false,
+          message: 'We could not confirm an earlier payment for this resume just now. Please try again in a moment.' }, 502)
+      }
+      await fulfillmentService.notifySettlementProblem(c2.env, healed, paidRow, 'checkout-guard')
+      if (!['IGNORED_STATUS', 'UNKNOWN_REFERENCE'].includes(healed.outcome))
+        return alreadyPaidResponse(c2, healed, paidRow)
+    }
+  }
 
   // BUGFIX: nothing previously stopped two initializePayment calls for the
   // same scan from both succeeding (double-click, two tabs, retrying after
@@ -171,7 +204,15 @@ async function initializePayment(c2) {
   // against the RESOLVED current code instead of the raw request body
   // field — see that function's comment for why the raw value was wrong
   // to compare against.
-  const priced = await referralService.resolvePrice(supabase, fixTier, c2.env, referralCode, { buyerEmail: user.email })
+  // PAYMENTS & PRICING ROUND 8 (bug): this used to be resolvePrice(), which only compares uses_so_far with
+  // usage_limit. A limited code whose last slot was held by ANOTHER buyer's checkout still resolved here, lost
+  // the reservation below, and was dropped — so the stored checkout carried no code while every retry resolved
+  // the code again and compared it against that code-less row: "a referral code changed since you started it",
+  // when nothing had. resolvePricesForTiers applies the live-reservation rule (minus this buyer's own held
+  // slot) — the same rule the /api/pricing quote uses — so the quote, this resume check and the charge agree,
+  // and `referralDropped` below fires only for a genuine lost race rather than a code already out of slots.
+  const priced = (await referralService.resolvePricesForTiers(supabase, [fixTier], c2.env, referralCode,
+    { buyerEmail: user.email, buyerUserId: user.id }))[fixTier]
 
   // AUDIT FIX (bug): this used to compare fix_tier alone. A PENDING row
   // already has its price (and therefore its referral code, if any) locked
@@ -709,10 +750,15 @@ async function verifyPayment(c2) {
   const NOT_DELIVERED = ['SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED', 'UNKNOWN_REFERENCE', 'IGNORED_STATUS']
   if (NOT_DELIVERED.includes(result.outcome)) {
     const reversed = result.outcome === 'IGNORED_STATUS'
+    // Round 8: these payments now refund themselves; tell the buyer when that is on its way.
+    const st = result.autoRefund && result.autoRefund.status
+    const refunding = st === 'QUEUED' || st === 'IN_PROGRESS'
     return c2.json({ success: false, needsSupport: true, outcome: result.outcome,
       message: reversed
         ? `This payment is marked ${result.status || 'refunded/disputed'}, so nothing was delivered. If that looks wrong, email support@passthrough.dev with reference ${reference}.`
-        : `We received your payment but couldn't attach it to a resume, so nothing was generated yet. We've been notified and will sort it out — you can also email support@passthrough.dev with reference ${reference}.`
+        : refunding
+          ? `We received your payment but couldn't attach it to a resume, so nothing was generated. We've started refunding it to your original payment method — it can take a few business days to appear. Questions? Email support@passthrough.dev with reference ${reference}.`
+          : `We received your payment but couldn't attach it to a resume, so nothing was generated yet. We've been notified and will sort it out — you can also email support@passthrough.dev with reference ${reference}.`
     }, 409)
   }
   // PAYMENTS & PRICING ROUND 6 (feature gap): the buyer who paid twice used to see the same "Payment
@@ -1040,11 +1086,14 @@ async function getPaymentHistory(c2) {
     if (!includeAbandoned) b = b.neq('status', 'ABANDONED')
     return b
   }
-  let { data: rows, error, count } = await base(
-    'id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier', { count: 'exact' })
+  const page_ = cols => base(cols, { count: 'exact' })
     .order('created_at', { ascending: false })
     .order('id', { ascending: false })
     .range(from, from + pageSize - 1)
+  let { data: rows, error, count } = await page_('id, amount_cents, currency, status, paystack_ref, created_at, paid_at, scan_id, fix_tier')
+  // Round 8: paid_at (migration 0064). Deployed ahead of the migration, the history page must still load.
+  if (error && (error.code === '42703' || error.code === 'PGRST204'))
+    ({ data: rows, error, count } = await page_('id, amount_cents, currency, status, paystack_ref, created_at, scan_id, fix_tier'))
   // AUDIT FIX (Payments & Pricing round 3, bug — B1): a page past the end (a toggle or a cancel
   // shrank the list, a stale ?page=) makes PostgREST answer 416 / PGRST103 when a count is asked
   // for, which `throw error` turned into a 500 — and PaymentHistory.jsx's "step back a page" logic
@@ -1064,6 +1113,8 @@ async function getPaymentHistory(c2) {
   const payments = rows.map(r => ({
     id: r.id, amountCents: r.amount_cents, currency: r.currency, status: r.status,
     paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id, fixTier: r.fix_tier,
+    // When the money settled (null until it does, and for rows from before migration 0064 it equals createdAt).
+    paidAt: r.paid_at || null,
     receiptAvailable: isReceiptable(r),
   }))
 

@@ -132,3 +132,18 @@ describe('PaymentHistory', () => {
     })
   })
 })
+
+// Payments & Pricing round 8: the date column shows when the money settled (paidAt), not when the checkout was
+// opened — a payment finished days after its checkout was created showed the earlier date.
+describe('PaymentHistory — paidAt', () => {
+  it('prefers paidAt over createdAt, and falls back to createdAt when it is null', async () => {
+    api.get.mockResolvedValue(respond([
+      pay(1, { createdAt: '2026-09-01T10:00:00Z', paidAt: '2026-09-20T10:00:00Z' }),
+      pay(2, { createdAt: '2026-08-05T10:00:00Z', paidAt: null }),
+    ]))
+    renderPage()
+    expect(await screen.findByText('Sep 20, 2026')).toBeInTheDocument()
+    expect(screen.queryByText('Sep 1, 2026')).toBeNull()
+    expect(screen.getByText('Aug 5, 2026')).toBeInTheDocument()
+  })
+})

@@ -2037,3 +2037,30 @@ describe('generateBadge', () => {
     expect(t.state.emails).toHaveLength(0)
   })
 })
+
+// Payments & Pricing round 8: the quote endpoint applies the same BADGE rule as checkout (lib/badgeGate.js).
+describe('initiateFix — BADGE gate (round 8)', () => {
+  function setupQuote(scan) {
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
+    return loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/referral.service.js': { resolvePricesForTiers: async (_s, tiers) => Object.fromEntries(tiers.map(x => [x, { amount: 1900, currency: 'USD', referralApplied: false }])) },
+    })
+  }
+  const file = over => ({ id: 's1', user_id: 'u1', status: 'COMPLETE_PASS', fix_purchased: false, ats_score: 90, input_mode: 'file', ...over })
+
+  it('refuses a BADGE quote for a file scan with no formatted score, with a code', async () => {
+    t = setupQuote(file({ full_ats_report: {} }))
+    const res = await t.mod.initiateFix(baseCtx({ body: { fixTier: 'BADGE' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('BADGE_FORMATTED_CHECK_REQUIRED')
+  })
+  it('refuses a low formatted score, allows a passing one, never gates FIX', async () => {
+    t = setupQuote(file({ full_ats_report: { formattedScore: 50 } }))
+    expect((await t.mod.initiateFix(baseCtx({ body: { fixTier: 'BADGE' } }))).body.code).toBe('BADGE_FORMATTED_LOW')
+    expect((await t.mod.initiateFix(baseCtx({ body: { fixTier: 'FIX' } }))).status).toBe(200)
+    t.restore()
+    t = setupQuote(file({ full_ats_report: { formattedScore: 88 } }))
+    expect((await t.mod.initiateFix(baseCtx({ body: { fixTier: 'BADGE' } }))).status).toBe(200)
+  })
+})
