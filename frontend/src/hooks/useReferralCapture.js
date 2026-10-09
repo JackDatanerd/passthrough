@@ -107,8 +107,16 @@ function trackClick(code) {
 // while ?ref= is still in the URL doesn't get it silently re-applied by the next read.
 let lastSyncedSearch = null
 
+// Section 4 round 7 (bug): `?ref=` is a generic parameter name, so other tools put arbitrary values in it. Anything
+// that cannot be a referral code (the server's own format: 2-50 letters, digits, `_` or `-`) is now ignored here
+// rather than stored — it used to replace a real partner's attribution, and the server's answer could not undo
+// that for an over-long value. Same pattern as CODE_FORMAT_RE in partners.controller.js.
+const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
 function codeFromSearch(search) {
-  try { return (new URLSearchParams(search).get('ref') || '').trim().toUpperCase() } catch (_) { return '' }
+  try {
+    const code = (new URLSearchParams(search).get('ref') || '').trim().toUpperCase()
+    return CODE_FORMAT_RE.test(code) ? code : ''
+  } catch (_) { return '' }
 }
 
 // SECTION 4 ROUND 4 (bug): pages seed their referral state from storage while rendering —

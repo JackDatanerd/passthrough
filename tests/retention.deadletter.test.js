@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
-import { runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS } from '../src/services/retention.service.js'
+import { runRetention, purgeRejectedPartnerApplications, REJECTED_APPLICATION_RETENTION_DAYS, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS } from '../src/services/retention.service.js'
 import { handleDeadLetterBatch } from '../src/services/deadletter.service.js'
 
 const NOW = Date.parse('2026-09-21T12:00:00Z')
@@ -67,7 +67,7 @@ describe('purgeOldLogs / clearExpiredTokens', () => {
   it('runRetention runs every step and never throws', async () => {
     const db = createFakeSupabase(() => ({ data: [], error: null }))
     const r = await runRetention({ RESUMES_BUCKET: { delete: async () => {} } }, db, NOW)
-    expect(Object.keys(r).sort()).toEqual(['anon', 'leads', 'logs', 'staleLeads', 'tokens'])
+    expect(Object.keys(r).sort()).toEqual(['anon', 'applications', 'leads', 'logs', 'staleLeads', 'tokens'])
   })
 })
 
@@ -187,5 +187,26 @@ describe('handleDeadLetterBatch', () => {
     const ms = [msg(undefined), msg({ type: 'x' }), msg({ scanId: 's3' })]
     await handleDeadLetterBatch({ messages: ms }, {}, db, { sendOwnerAlert: async () => {} })
     expect(ms.every(m => m.acked)).toBe(true)
+  })
+})
+
+describe('purgeRejectedPartnerApplications (Section 4 round 7)', () => {
+  it('deletes only REJECTED applications reviewed before the retention window, and counts them', async () => {
+    const db = createFakeSupabase(() => ({ data: [{ id: 'a1' }, { id: 'a2' }], error: null }))
+    const r = await purgeRejectedPartnerApplications(db, NOW)
+    expect(r).toEqual({ deleted: 2 })
+    const q = db.calls[0]
+    expect(q.table).toBe('partner_applications')
+    expect(q.op).toBe('delete')
+    expect(q.filters).toContainEqual(['eq', 'status', 'REJECTED'])
+    const lt = q.filters.find(f => f[0] === 'lt' && f[1] === 'reviewed_at')
+    expect(new Date(lt[2]).getTime()).toBe(NOW - REJECTED_APPLICATION_RETENTION_DAYS * 24 * 3600 * 1000)
+  })
+  it('keeps rows longer than the 30-day re-apply cooldown, so the cooldown can still be enforced', () => {
+    expect(REJECTED_APPLICATION_RETENTION_DAYS).toBeGreaterThan(30)
+  })
+  it('reports a failure instead of throwing', async () => {
+    const db = createFakeSupabase(() => ({ data: null, error: { message: 'boom' } }))
+    expect(await purgeRejectedPartnerApplications(db, NOW)).toEqual({ deleted: 0, error: 'boom' })
   })
 })

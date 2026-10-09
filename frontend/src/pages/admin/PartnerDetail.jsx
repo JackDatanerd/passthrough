@@ -804,6 +804,48 @@ const TABS = [
   { key: 'codes',     label: 'Referral Codes' },
 ]
 
+// Round 7 (feature gap): offboarding / erasure. Anonymizes rather than deletes — payment records have to stay.
+function RemoveDataModal({ partner, onClose, onRemoved }) {
+  const toast = useToast()
+  const [reason, setReason] = useState('')
+  const [typed, setTyped] = useState('')
+  const { loading, error, execute } = useApi()
+
+  async function handleRemove() {
+    if (reason.trim().length < 3) {
+      await execute(() => Promise.reject(new Error('Say why this partner\u2019s data is being removed.')),
+        { fallback: 'Say why this partner\u2019s data is being removed.' }).catch(() => {})
+      return
+    }
+    try {
+      const data = await execute(() => api.post(`/partners/${partner.id}/anonymize`, { reason: reason.trim() }),
+        { fallback: 'Failed to remove partner data.' })
+      toast({ message: data.message || 'Partner data removed.', type: 'success' })
+      onRemoved()
+      onClose()
+    } catch (_) { /* message captured by useApi (including "still owed commission") */ }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Remove personal data — ${partner.name}`}>
+      <Form onSubmit={handleRemove} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-600">
+          This <strong>cannot be undone</strong>. {partner.name}&apos;s name, email, website, audience and payout details are erased,
+          both links stop working, their codes are switched off, and their applications are deleted. Past payouts keep their amounts and
+          dates, with the account reduced to the bank or provider and last four digits. It is refused while any commission is still owed.
+        </p>
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={300} />
+        <Input label={`Type "${partner.name}" to confirm`} value={typed} onChange={e => setTyped(e.target.value)} />
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" loading={loading} disabled={typed.trim() !== partner.name}>Remove data</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
 export default function PartnerDetail() {
   const { id } = useParams()
   const toast = useToast()
@@ -811,6 +853,7 @@ export default function PartnerDetail() {
   const [loading, setLoading] = useState(true)
   const [tab, setTab] = useState('overview')
   const [showEdit, setShowEdit] = useState(false)
+  const [showRemove, setShowRemove] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [regenScope, setRegenScope] = useState('payout')
@@ -952,6 +995,9 @@ export default function PartnerDetail() {
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>
+        {!String(partner.email || '').endsWith('@removed.invalid') && (
+          <Button size="sm" variant="secondary" onClick={() => setShowRemove(true)}>Remove personal data…</Button>
+        )}
       </div>
 
       <div className="border-b border-gray-200 flex gap-4 overflow-x-auto">
@@ -1000,6 +1046,7 @@ export default function PartnerDetail() {
       {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={reload} />}
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
+      {showRemove && <RemoveDataModal partner={partner} onClose={() => setShowRemove(false)} onRemoved={reload} />}
 
       {confirmRegenerate && (
         <Modal open onClose={() => setConfirmRegenerate(false)} title="Regenerate link">

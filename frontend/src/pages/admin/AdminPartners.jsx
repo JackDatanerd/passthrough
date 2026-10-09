@@ -123,8 +123,12 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
     }
     try {
       const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
-      if (data.emailed === false) await announceDelivery(toast, `${app.name} approved`, data)
-      else toast({ message: data.codeError
+      if (data.emailed === false) {
+        await announceDelivery(toast, `${app.name} approved`, data)
+        // Round 7 (bug): this branch used to drop `codeError`, so when the email AND the first code both failed
+        // only the email problem was shown and the missing code went unnoticed.
+        if (data.codeError) toast({ message: `The referral code was not created: ${data.codeError} Add it from their page.`, type: 'warning' })
+      } else toast({ message: data.codeError
         ? `${app.name} approved, but: ${data.codeError} Add the code from their page.`
         : `${app.name} approved — payout-details link sent${data.codeCreated ? ` and code ${data.codeCreated.code} created` : ''}.`,
       type: data.codeError ? 'warning' : 'success' })
@@ -196,27 +200,42 @@ function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
   )
 }
 
+const APP_PAGE = 50
 const APP_TABS = [['PENDING', 'Waiting'], ['APPROVED', 'Approved'], ['REJECTED', 'Rejected']]
 
 function ApplicationsPanel({ onApproved }) {
   const [tab, setTab] = useState('PENDING')
   const [apps, setApps] = useState([])
   const [pendingCount, setPendingCount] = useState(0)
+  const [total, setTotal] = useState(0)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [open, setOpen] = useState(false)
   const [approving, setApproving] = useState(null)
   const [rejecting, setRejecting] = useState(null)
   const [cooldownDays, setCooldownDays] = useState(30)
   const latestTab = useRef(tab)
 
-  async function load(which = tab) {
+  // Round 7 (feature gap): the list used to stop at 200 rows with no way to reach older ones, and the "waiting"
+  // badge counted that capped list. Pages of 50 with the server's true total; "Show more" appends (de-duplicated,
+  // because an offset page can overlap when new applications arrive in between).
+  async function load(which = tab, offset = 0) {
     try {
-      const res = await api.get(`/partners/applications?status=${which}`)
+      const res = await api.get(`/partners/applications?status=${which}&limit=${APP_PAGE}&offset=${offset}`)
+      const rows = res.data.data
+      const count = res.data.total ?? rows.length
       // Ignore an answer for a tab the admin has already left (fast tab flips used to let a
       // slow response overwrite the list now on screen).
-      if (which === latestTab.current) setApps(res.data.data)
-      if (which === 'PENDING') setPendingCount(res.data.data.length)
+      if (which === latestTab.current) {
+        setApps(prev => offset ? [...prev, ...rows.filter(r => !prev.some(p => p.id === r.id))] : rows)
+        setTotal(count)
+      }
+      if (which === 'PENDING') setPendingCount(count)
       if (res.data.reapplyCooldownDays) setCooldownDays(res.data.reapplyCooldownDays)
     } catch (_) { /* the panel is optional — the partner list still works without it */ }
+  }
+  async function showMore() {
+    setLoadingMore(true)
+    try { await load(tab, apps.length) } finally { setLoadingMore(false) }
   }
   // One effect: it used to fetch PENDING twice on mount (a second effect hard-coded it).
   useEffect(() => { latestTab.current = tab; load(tab) }, [tab])
@@ -266,6 +285,12 @@ function ApplicationsPanel({ onApproved }) {
           )}
         </div>
       ))}
+      {apps.length < total && (
+        <button type="button" onClick={showMore} disabled={loadingMore}
+          className="self-start text-sm text-blue-600 hover:underline disabled:text-gray-400">
+          {loadingMore ? 'Loading…' : `Show more (${total - apps.length} older)`}
+        </button>
+      )}
       {approving && <ApproveApplicationModal app={approving} onClose={() => setApproving(null)} onDone={() => { refresh(); onApproved() }} />}
       {rejecting && <RejectApplicationModal app={rejecting} cooldownDays={cooldownDays} onClose={() => setRejecting(null)} onDone={refresh} />}
     </div>

@@ -1084,6 +1084,7 @@ describe('trackClick', () => {
     t = setupTrack()
     const res = await t.mod.trackClick(t.c({ body: { code: 'A'.repeat(51) } }))
     expect(res.body.success).toBe(true)
+    expect(res.body.valid).toBe(false)   // round 7: say it is not a code, so the browser drops it
     expect(t.state.rpcCalls).toHaveLength(0)
   })
 

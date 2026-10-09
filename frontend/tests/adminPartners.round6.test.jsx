@@ -23,7 +23,7 @@ const mk = (id, name, cents, over = {}) => ({
 let list
 const routes = () => ({
   '/partners': { data: { payoutDetailsHoldHours: 48, data: list } },
-  '/partners/applications?status=PENDING': { data: { data: [], reapplyCooldownDays: 30 } },
+  '/partners/applications?status=PENDING&limit=50&offset=0': { data: { data: [], reapplyCooldownDays: 30 } },
   '/partners/overview': { data: { data: { owedCents: 0, paidOutCents: 0, lifetimeCommissionCents: 0, pendingApplications: 0, activePartners: 1, partners: 1, currency: 'USD' } } },
   '/partners/codes': { data: { data: [], total: 0 } },
 })

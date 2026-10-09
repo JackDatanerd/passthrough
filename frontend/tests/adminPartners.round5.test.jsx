@@ -16,7 +16,7 @@ vi.mock('../src/components/ui/Toast', () => ({ useToast: () => toast }))
 
 const routes = {
   '/partners': { data: { data: [] } },
-  '/partners/applications?status=PENDING': { data: { data: [], reapplyCooldownDays: 45 } },
+  '/partners/applications?status=PENDING&limit=50&offset=0': { data: { data: [], reapplyCooldownDays: 45 } },
   '/partners/overview': { data: { data: { owedCents: 1234, paidOutCents: 500, lifetimeCommissionCents: 2000, pendingApplications: 2, activePartners: 1, partners: 3, currency: 'USD' } } },
   '/partners/codes': { data: { data: [{ id: 'rc1', partnerId: 'p1', code: 'COACH20', active: true, clicks: 7, usesSoFar: 2, usageLimit: 10, partnerName: 'Coach K', partnerEmail: 'k@x.co' }], total: 1 } },
 }
@@ -64,6 +64,6 @@ describe('AdminPartners', () => {
     mount()
     await screen.findByRole('button', { name: /add partner/i })
     await new Promise(r => setTimeout(r, 30))
-    expect(api.get.mock.calls.filter(c => c[0] === '/partners/applications?status=PENDING')).toHaveLength(1)
+    expect(api.get.mock.calls.filter(c => c[0] === '/partners/applications?status=PENDING&limit=50&offset=0')).toHaveLength(1)
   })
 })

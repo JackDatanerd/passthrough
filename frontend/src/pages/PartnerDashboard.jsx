@@ -447,7 +447,8 @@ export default function PartnerDashboard() {
           <div className="bg-white rounded-lg border border-gray-200 p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
             <p className="text-sm text-gray-600">
-              This dashboard link is invalid or has expired. Ask us to resend it.
+              This dashboard link is invalid or has expired.{' '}
+              <Link to="/partner/recover" className="text-blue-600 hover:underline">Email me a new one</Link>.
             </p>
           </div>
         ) : (

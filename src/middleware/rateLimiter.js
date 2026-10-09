@@ -654,6 +654,12 @@ const partnerLinkRequest = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerlinkreq',
   message: msg('Too many requests. Please wait a few minutes.')
 })
+// Round 7: the public "I lost my link" form (POST /api/partners/recover-links). Its own bucket for the same
+// fate-sharing reason as partnerLinkRequest/partnerApply above.
+const partnerRecover = makeLimiter({
+  windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerrecover',
+  message: msg('Too many requests. Please wait a few minutes.')
+})
 const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
@@ -874,7 +880,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
-  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
+  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName

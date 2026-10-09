@@ -20,6 +20,8 @@ router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 // Round 6: every conversion, paged (the dashboard itself only carries the latest 50).
 router.get( '/conversions',    rl.partnerRead,  c.getPartnerConversions)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
+// Round 7: "I lost my link" — mails the read-only dashboard link to the address on file (own limiter bucket).
+router.post('/recover-links', rl.partnerRecover, c.recoverPartnerLinks)
 // Round 5: the partner's own email preference (per-sale emails on/off).
 router.post('/notifications', rl.partnerPrefs, c.updatePartnerNotifications)
 
@@ -63,6 +65,7 @@ router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRe
 router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGetPartnerLinks)
 router.post( '/:id/payouts',               admin, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/payouts/:payoutId/void', admin, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
+router.post( '/:id/anonymize',            admin, validateUuidParam(), c.adminAnonymizePartner)
 router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

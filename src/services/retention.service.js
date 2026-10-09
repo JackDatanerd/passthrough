@@ -32,6 +32,10 @@ const ARCHIVED_LEAD_RETENTION_DAYS = 90
 // and a person who keeps resubmitting keeps last_submitted_at fresh.
 const UNCONFIRMED_LEAD_RETENTION_DAYS = 90
 
+// A rejected partner application keeps the applicant's name, email, audience and message. They were emailed the
+// decision, and the re-apply cooldown is 30 days, so the row has done its job well before this (Section 4 round 7).
+const REJECTED_APPLICATION_RETENTION_DAYS = 90
+
 const DAY = 24 * 60 * 60 * 1000
 
 // Anonymous scans past their TTL. `anon_expires_at` IS the deadline — this
@@ -158,18 +162,32 @@ async function purgeStaleUnconfirmedLeads(supabase, now = Date.now()) {
   }
 }
 
+// Never throws; returns a count like the other steps.
+async function purgeRejectedPartnerApplications(supabase, now = Date.now()) {
+  try {
+    const cutoff = new Date(now - REJECTED_APPLICATION_RETENTION_DAYS * DAY).toISOString()
+    const { data, error } = await supabase.from('partner_applications')
+      .delete().eq('status', 'REJECTED').lt('reviewed_at', cutoff).select('id')
+    if (error) return { deleted: 0, error: error.message }
+    return { deleted: (data || []).length }
+  } catch (err) {
+    return { deleted: 0, error: err.message }
+  }
+}
+
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads, staleLeads] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads, applications] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
     purgeArchivedLeads(supabase, now, { suppress: !!env && String(env.ARCHIVED_LEAD_PURGE_SUPPRESSES).toLowerCase() === 'true' }),
     purgeStaleUnconfirmedLeads(supabase, now),
+    purgeRejectedPartnerApplications(supabase, now),
   ])
-  return { anon, logs, tokens, leads, staleLeads }
+  return { anon, logs, tokens, leads, staleLeads, applications }
 }
 
 module.exports = {
-  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads,
-  EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
+  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
+  REJECTED_APPLICATION_RETENTION_DAYS, EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

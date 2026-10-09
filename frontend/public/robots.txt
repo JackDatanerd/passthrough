@@ -6,4 +6,5 @@ Disallow: /api/
 # deliberately indexable pages of the program (see _headers). Only the token pages are kept out.
 Disallow: /partner/dashboard
 Disallow: /partner/payout-details
+Disallow: /partner/recover
 Sitemap: https://passthrough.dev/sitemap.xml

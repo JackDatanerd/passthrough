@@ -9,6 +9,7 @@
 // is preserved here exactly, just sourced from `env.FRONTEND_URL` instead of
 // `process.env.FRONTEND_URL`.
 
+const { isRemovedEmail } = require('../lib/removedPartner')
 const { sendViaResend } = require('../config/email')
 const { render } = require('../templates/emails')
 const c = require('../config/constants')
@@ -77,6 +78,8 @@ const RECIPIENT_LIMITS = {
   partner_application_received: { max: 2, windowSeconds: 24 * 3600 },
   // Separate budget for the partner's own "email me my link" button (see quotaKey in send()).
   partner_payout_link_self: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
+  // Round 7: the public "I lost my link" form mails an address typed by anyone, so it is capped per recipient.
+  partner_links_recovery: { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
@@ -212,6 +215,8 @@ function globalVars(env) {
 // person's inbox (and, for a stranger triggering "forgot password" four
 // times, denying the real owner their reset).
 async function send(env, supabase, to, subject, template, vars, opts = {}) {
+  // Section 4 round 7: a removed partner's placeholder address is undeliverable by design (lib/removedPartner.js).
+  if (isRemovedEmail(to)) return false
   let status = 'sent', error = null
 
   // SECTION 4 ROUND 5: `opts.quotaKey` lets two callers of the SAME template keep separate
@@ -501,6 +506,13 @@ async function sendPartnerCommissionReversed(env, supabase, email, name, commiss
 // Sent when an admin rotates a partner's DASHBOARD link (read-only token).
 async function sendPartnerDashboardLinkRegenerated(env, supabase, email, name, dashboardUrl) {
   return send(env, supabase, email, 'Your Passthrough dashboard link has been reset', 'partner_dashboard_link_regenerated', {
+    NAME: name, DASHBOARD_URL: dashboardUrl
+  })
+}
+
+// Round 7: the partner asked (public form) for their dashboard link back. Read-only link only.
+async function sendPartnerLinksRecovery(env, supabase, email, name, dashboardUrl) {
+  return send(env, supabase, email, 'Your Passthrough partner dashboard link', 'partner_links_recovery', {
     NAME: name, DASHBOARD_URL: dashboardUrl
   })
 }
@@ -823,5 +835,5 @@ module.exports = {
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
   sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected,
-  sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided
+  sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided, sendPartnerLinksRecovery
 }

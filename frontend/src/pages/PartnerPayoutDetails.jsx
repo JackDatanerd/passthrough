@@ -120,7 +120,9 @@ export default function PartnerPayoutDetails() {
             <div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
               <p className="text-sm text-gray-600">
-                This payout link is invalid or has expired. Ask us to resend it.
+                This payout link is invalid or has expired.{' '}
+                <Link to="/partner/recover" className="text-blue-600 hover:underline">Email me my dashboard link</Link>, then
+                use "Email me a payout-details link" there.
               </p>
             </div>
           ) : saved ? (
