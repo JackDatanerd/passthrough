@@ -55,6 +55,23 @@ async function alertOnce(c, key, subject, message) {
   }
 }
 
+// ROUND-6 (G2): proof of life. The alerts above only fire when requests ARRIVE; an endpoint that was never
+// registered in Resend, was paused, or points at the wrong URL says nothing, and spam complaints are what is
+// lost. Any VERIFIED event stamps system_state (no migration: the table exists), at most once per 10 minutes
+// through the same atomic quota the alerts use. Admin → Webhooks shows it (computeWebhookHealth).
+// Best-effort: never allowed to affect the answer.
+async function stampResendEvent(c, supabase, type) {
+  try {
+    if (!(await hitQuota(c.env, 'resend-health-stamp', 1, 10 * 60))) return
+    const at = new Date().toISOString()
+    const { error } = await supabase.from('system_state')
+      .upsert({ key: 'resend_webhook', value: { last_event_at: at, last_event_type: type }, updated_at: at }, { onConflict: 'key' })
+    if (error) throw error
+  } catch (err) {
+    console.error('Resend health stamp failed:', err && err.message)
+  }
+}
+
 const isPermanentBounce = (data) => String(data?.bounce?.type || '').toLowerCase() === 'permanent'
 
 async function handleResend(c) {
@@ -90,6 +107,7 @@ async function handleResend(c) {
 
   let event
   try { event = JSON.parse(body) } catch (_) { return c.text('OK', 200) }   // signed but not JSON: nothing to do or retry
+  if (event && typeof event.type === 'string') await stampResendEvent(c, getSupabase(c.env), event.type)
   if (!event || !ACTIONABLE.has(event.type)) return c.text('OK', 200)
 
   const complaint = event.type === 'email.complained'

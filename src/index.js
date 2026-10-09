@@ -277,6 +277,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Receipt recovery error:', err.message)
       }
+      // Round 6 (G3): payloads stored for event types no handler acts on, before they stopped being kept.
+      try { await require('./controllers/webhooks.controller').scrubUnactionablePayloads(getSupabase(env)) } catch (_) { /* best effort */ }
       // webhook_events is an audit log, not an archive.
       try {
         const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()

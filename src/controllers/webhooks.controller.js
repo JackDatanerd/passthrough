@@ -99,6 +99,14 @@
 //       closed as "partial" — the list is the only authority for it (see processRefund).
 //     * G1 (resend-webhook.controller.js): missing secret / failed signature now page the owner.
 //
+// 11. ROUND-6 AUDIT (section 8, independent pass — no migration):
+//     * G1: admin Replay is written to admin_audit_log ('webhook.replay') like every other admin money action.
+//     * G2: Resend delivery health — see resend-webhook.controller.js; computeWebhookHealth reports lastResendEventAt.
+//     * G3: only events the handlers act on keep a payload (ACTIONABLE_EVENT); everything else stores type/key/
+//       reference only, and scrubUnactionablePayloads clears what older deliveries already stored.
+//     * G4: a request from outside PAYSTACK_WEBHOOK_IPS that carries a VALID signature pages the owner.
+//     * B1: a failed first inbox write (500 before any row exists) now alerts, throttled per event type.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -109,6 +117,7 @@ const fulfillment = require('../services/fulfillment.service')
 const paystackService = require('../services/paystack.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
+const { logAdminAction } = require('../lib/adminAudit')
 
 // Real Paystack events are a few KB. Anything near this is not one.
 const MAX_BODY_BYTES = 256 * 1024
@@ -172,6 +181,14 @@ function redactEvent(event) {
       for (const k of STRIP_KEYS) delete copy.data.transaction[k]
     return copy
   } catch (_) { return null }
+}
+
+// ROUND-6 (G3): the payload is only ever read back to re-run an event the handlers act on (Replay, the hourly
+// re-drive). Every other event type (transfer.*, subscription.*, dedicated-account events … whatever else this
+// Paystack account sends) was stored with its whole body for 90 days — including blocks such as a transfer's
+// `recipient` bank details that STRIP_KEYS does not know about. Those keep type, key and reference only.
+function isActionableEvent(type) {
+  return type === 'charge.success' || type.startsWith('refund.') || type.startsWith('charge.dispute')
 }
 
 // A refund event with no `id` and no `refund_reference` cannot be told apart from an equal-amount
@@ -645,14 +662,13 @@ async function handlePaystack(c) {
     return c.text('Webhook not configured', 500)
   }
 
+  // ROUND-6 (G4): a request from outside the allowlist is still refused (403), but it is no longer refused
+  // BLIND. Paystack changing its outbound IPs would otherwise fail every webhook with only a console line;
+  // so the signature is checked below, and a VALID one from an unlisted IP pages the owner (throttled).
   const allow = parseIpList(c.env.PAYSTACK_WEBHOOK_IPS)
-  if (allow.length) {
-    const ip = c.req.header('cf-connecting-ip') || ''
-    if (!allow.includes(ip)) {
-      console.error(`Webhook rejected: source IP ${ip || '(none)'} is not in PAYSTACK_WEBHOOK_IPS`)
-      return c.text('Forbidden', 403)
-    }
-  }
+  const sourceIp = c.req.header('cf-connecting-ip') || ''
+  const ipRejected = allow.length > 0 && !allow.includes(sourceIp)
+  if (ipRejected) console.error(`Webhook rejected: source IP ${sourceIp || '(none)'} is not in PAYSTACK_WEBHOOK_IPS`)
 
   const declared = Number.parseInt(c.req.header('content-length') || '', 10)
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return c.text('Payload too large', 413)
@@ -660,7 +676,17 @@ async function handlePaystack(c) {
   if (bodyBytes.byteLength > MAX_BODY_BYTES) return c.text('Payload too large', 413)
 
   const expectedSig = await cryptoLib.hmacSha512Hex(secret, bodyBytes)
-  if (!cryptoLib.timingSafeEqual(expectedSig, c.req.header('x-paystack-signature') || '')) {
+  const sigOk = cryptoLib.timingSafeEqual(expectedSig, c.req.header('x-paystack-signature') || '')
+  if (ipRejected) {
+    if (sigOk && await alertAllowed(c.env, 'webhook-alert-cooldown:paystack-ip-rejected'))
+      alert(c, 'Paystack webhook refused — source IP not in PAYSTACK_WEBHOOK_IPS',
+        `A correctly SIGNED Paystack webhook arrived from ${sourceIp || '(unknown)'}, which is not in PAYSTACK_WEBHOOK_IPS, and was refused with 403.\n\n` +
+        `If Paystack changed its outbound IPs, every webhook is failing until the list is updated (payments are still recovered by the buyer's return visit and the hourly sweeps, ` +
+        `but refunds and disputes are not). Update it: wrangler secret put PAYSTACK_WEBHOOK_IPS — or delete it to rely on the signature alone. ` +
+        `Further occurrences in the next 30 minutes are logged but not emailed.`)
+    return c.text('Forbidden', 403)
+  }
+  if (!sigOk) {
     // Either a misconfigured secret or a spoofing attempt — worth a (throttled) page.
     console.error('[CRITICAL] Paystack webhook signature mismatch')
     if (await alertAllowed(c.env, SIG_ALERT_KEY))
@@ -686,10 +712,21 @@ async function handlePaystack(c) {
   let inbox
   try {
     inbox = await recordEvent(supabase, {
-      eventKey: eventKeyFor(event, bodyHash), eventType: event.event, reference, payload: redactEvent(event),
+      eventKey: eventKeyFor(event, bodyHash), eventType: event.event, reference,
+      payload: isActionableEvent(event.event) ? redactEvent(event) : null,
     })
   } catch (err) {
     console.error('webhook_events insert failed:', err.message)
+    // ROUND-6 (B1): this is the one failure that answers 500 with NO inbox row and (until now) no alert — a
+    // persistent cause (schema drift, a constraint, a payload Postgres refuses) was invisible, and Paystack
+    // gives up after ~72h. charge.success and refunds have sweeps behind them; a dispute has none.
+    if (await alertAllowedFor(c.env, 'inbox-write-failed', event.event, { globalMax: 10 }))
+      alert(c, 'Webhook could not be recorded — Paystack will retry',
+        `event: ${event.event}\nreference: ${reference || '(none)'}\nerror: ${err.message}\n\n` +
+        `The webhook_events insert failed, so the event was NOT processed and was answered 500; Paystack redelivers for about 72 hours. ` +
+        `If this keeps happening the cause is in the database (migration drift, a constraint, an outage) — fix it before Paystack gives up. ` +
+        `A lost charge.success is recovered by the hourly sweep, a lost refund by the reversal sweep; a lost charge.dispute.create is not recovered by anything.`,
+        `inbox-write:${event.event}`)
     return c.text('Temporary error', 500)   // Paystack retries
   }
   // An ambiguous refund event (no id, no refund_reference) shares its key with an equal-amount
@@ -834,9 +871,33 @@ async function replayWebhookEvent(c) {
 
   const actor = c.get ? c.get('user') : null
   const r = await runStoredEvent(c, supabase, row, { by: actor?.id || null })
+  // ROUND-6 (G1): a replay can reverse a sale, close a payment, or clear a dispute — the same class of action
+  // payments.controller audits. `replayed_by` on the row is overwritten by the next replay and pruned with it.
+  await logAdminAction(c, supabase, 'webhook.replay', 'webhook_event', row.id, {
+    eventType: row.event_type, reference: row.reference || null, from: row.status,
+    result: r.ok ? r.outcome.status : 'FAILED',
+  })
   if (!r.ok) return c.json({ success: false, message: `Replay failed: ${r.error.message}` }, 500)
   return c.json({ success: true, data: { status: r.outcome.status, note: r.outcome.note || null,
     hint: r.outcome.status === 'HELD' ? 'Still held — an amount/currency mismatch needs Admin → Payments → Recheck (accept amount).' : null } })
+}
+
+// ROUND-6 (G3): payloads stored before isActionableEvent existed. Only IGNORED rows of types no handler acts on;
+// charge.success / refund.* / charge.dispute.* keep theirs (an unknown-reference charge.success is IGNORED and
+// replayable, so it must keep its payload). Best-effort, never throws, no migration.
+async function scrubUnactionablePayloads(supabase) {
+  try {
+    const { error } = await supabase.from('webhook_events').update({ payload: null })
+      .eq('status', 'IGNORED').not('payload', 'is', null)
+      .neq('event_type', 'charge.success')
+      .not('event_type', 'like', 'refund.%')
+      .not('event_type', 'like', 'charge.dispute%')
+    if (error) console.error('webhook payload scrub failed:', error.message)
+    return !error
+  } catch (err) {
+    console.error('webhook payload scrub error:', err.message)
+    return false
+  }
 }
 
 // ── dead-letter handling (hourly cron, see index.js) ─────────────────────────
@@ -970,7 +1031,7 @@ const HEALTH_GRACE_MS = 30 * 60 * 1000
 const HEALTH_MAX_PAYMENTS = 200
 
 async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
-  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [] }
+  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], lastResendEventAt: null }
   try {
     const latest = async type => {
       let q = supabase.from('webhook_events').select('received_at')
@@ -1008,6 +1069,12 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
     out.available = false
     console.error('webhook health error:', err && err.message)
   }
+  // ROUND-6 (G2): when the Resend webhook last delivered anything (stamped by resend-webhook.controller).
+  // Separate from the Paystack reads above so a missing system_state row can never mark them unavailable.
+  try {
+    const { data } = await supabase.from('system_state').select('value').eq('key', 'resend_webhook').maybeSingle()
+    out.lastResendEventAt = data?.value?.last_event_at || null
+  } catch (_) { /* optional */ }
   return out
 }
 
@@ -1016,4 +1083,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { computeWebhookHealth, getWebhookHealth, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { computeWebhookHealth, getWebhookHealth, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

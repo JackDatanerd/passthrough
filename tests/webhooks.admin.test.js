@@ -246,3 +246,21 @@ describe('round 4 — G1: a HELD event is closed out once its payment is settled
     expect(await t.mod.closeResolvedHeldEvents(t.world.db)).toEqual([])
   })
 })
+
+describe('round 6 — G1: replay is written to the admin audit log', () => {
+  it('records who replayed what and the result; a failed replay is recorded too', async () => {
+    t = setup([ev(1, { status: 'IGNORED', event_type: 'refund.pending', payload: { event: 'refund.pending', data: { transaction_reference: 'r1' } } })])
+    t.world.t.admin_audit_log = []
+    const c = Object.assign(t.c({ id: 1 }), { get: k => (k === 'user' ? { id: 'admin-1' } : undefined) })
+    const res = await t.mod.replayWebhookEvent(c)
+    expect(res.status).toBe(200)
+    expect(t.world.t.admin_audit_log).toHaveLength(1)
+    expect(t.world.t.admin_audit_log[0]).toMatchObject({ actor_id: 'admin-1', action: 'webhook.replay', target_type: 'webhook_event', target_id: '1' })
+    expect(t.world.t.admin_audit_log[0].detail).toMatchObject({ eventType: 'refund.pending', from: 'IGNORED', result: 'IGNORED' })
+  })
+  it('a replay that is refused (already PROCESSED) is not audited — nothing ran', async () => {
+    t = setup([ev(1)]); t.world.t.admin_audit_log = []
+    expect((await t.mod.replayWebhookEvent(t.c({ id: 1 }))).status).toBe(409)
+    expect(t.world.t.admin_audit_log).toHaveLength(0)
+  })
+})

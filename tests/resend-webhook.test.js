@@ -39,7 +39,7 @@ describe('verifySvixSignature', () => {
 })
 
 function setup({ leads = [], suppressed = [], envExtra = {} } = {}) {
-  const state = { leads: leads.map(l => ({ ...l })), suppressed: new Set(suppressed), audit: [], logPurges: [], mailSuppressed: [] }
+  const state = { leads: leads.map(l => ({ ...l })), suppressed: new Set(suppressed), audit: [], logPurges: [], mailSuppressed: [], stamps: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
       const email = q.filters.find(f => f[1] === 'email')?.[2]
@@ -54,6 +54,7 @@ function setup({ leads = [], suppressed = [], envExtra = {} } = {}) {
     if (q.table === 'email_suppressions') { if (q.op === 'upsert') state.mailSuppressed.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') { state.logPurges.push(Object.fromEntries(q.filters.map(f => [f[1], f[2]]))); return { data: null, error: null } }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
+    if (q.table === 'system_state') { if (q.op === 'upsert') state.stamps.push(q.values); return { data: null, error: null } }
     return undefined
   })
   // The real performRemoval is used (it lives in the leads controller); only Supabase is faked.
@@ -216,5 +217,27 @@ describe('normalizeRecipient', () => {
     expect(normalizeRecipient('Dana <Dana@Acme.com>')).toBe('dana@acme.com')
     expect(normalizeRecipient(' a@b.co ')).toBe('a@b.co')
     for (const v of ['', 'nope', 'a@b', 'a b@c.com', null, 5]) expect(normalizeRecipient(v)).toBeNull()
+  })
+})
+
+describe('round 6 — G2: any verified event stamps "last Resend event"', () => {
+  it('an ignored event type (email.delivered) still stamps system_state, once per window', async () => {
+    t = setup()
+    const env = { RESEND_WEBHOOK_SECRET: SECRET, RATE_LIMIT_KV: kv() }
+    await t.call({ type: 'email.delivered', data: { to: ['a@b.co'] } }, { envOver: env })
+    await t.call({ type: 'email.delivered', data: { to: ['a@b.co'] } }, { envOver: env })
+    expect(t.state.stamps).toHaveLength(1)
+    expect(t.state.stamps[0]).toMatchObject({ key: 'resend_webhook', value: { last_event_type: 'email.delivered' } })
+    expect(Date.parse(t.state.stamps[0].value.last_event_at)).toBeGreaterThan(Date.now() - 5000)
+  })
+  it('a bad signature never stamps', async () => {
+    t = setup()
+    await t.call(complaint(), { headers: { 'svix-signature': 'v1,AAAA' } })
+    expect(t.state.stamps).toHaveLength(0)
+  })
+  it('a failing stamp never changes the answer', async () => {
+    t = setup({ leads: [lead] })
+    const res = await t.call(complaint())
+    expect(res.status).toBe(200)
   })
 })

@@ -151,6 +151,12 @@ export default function AdminWebhooks() {
           ) : null}
           Last event received {health.lastEventAt ? formatDate(health.lastEventAt) : 'never'}
           {' · '}last charge.success {health.lastChargeSuccessAt ? formatDate(health.lastChargeSuccessAt) : 'never'}.
+          {/* ROUND 6 (feature gap): is the Resend endpoint reaching this app at all? Bounces and spam complaints are
+              what is lost when it is not, and nothing else would say so. */}
+          {' · '}last Resend event {health.lastResendEventAt ? formatDate(health.lastResendEventAt) : 'never'}
+          {(!health.lastResendEventAt || Date.now() - Date.parse(health.lastResendEventAt) > 7 * 24 * 3600 * 1000) && (
+            <span className="text-amber-700"> (with delivery events subscribed this means Resend is not reaching this app — check the endpoint URL and signing secret in Resend)</span>
+          )}.
         </div>
       )}
 

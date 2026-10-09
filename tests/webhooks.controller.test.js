@@ -1054,3 +1054,90 @@ describe('round 5 — B3: a refund-list outage on an ambiguous refund is retried
     expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
   })
 })
+
+// ── ROUND 6 (section 8, independent pass) ───────────────────────────────────
+describe('round 6 — G3: only events the handlers act on keep a payload', () => {
+  it('an event no handler acts on is recorded with type/key/reference but NO payload (no bank/recipient details kept)', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire({ event: 'transfer.success', data: { id: 9, reference: 'tr-1', recipient: { details: { account_number: '0123456789' } } } })
+    expect(w.t.webhook_events[0]).toMatchObject({ event_type: 'transfer.success', status: 'IGNORED', payload: null })
+    expect(JSON.stringify(w.t.webhook_events)).not.toContain('0123456789')
+  })
+  it('charge.success, refund.* and charge.dispute.* still store their (redacted) payload', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(chargeSuccess())
+    expect(w.t.webhook_events[0].payload.data.reference).toBe('ref-1')
+    const m = pure()
+    try { for (const ty of ['charge.success', 'refund.pending', 'refund.processed', 'charge.dispute.create', 'charge.dispute.resolve']) expect(m.mod.isActionableEvent(ty)).toBe(true)
+          for (const ty of ['transfer.success', 'subscription.create', 'customeridentification.success', 'charge.failed']) expect(m.mod.isActionableEvent(ty)).toBe(false) }
+    finally { m.restore() }
+  })
+  it('an unknown-reference charge.success (IGNORED, replayable) keeps its payload', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(chargeSuccess({ reference: 'nope' }, 5))
+    expect(w.t.webhook_events[0]).toMatchObject({ status: 'IGNORED' })
+    expect(w.t.webhook_events[0].payload.data.reference).toBe('nope')
+  })
+  it('scrubUnactionablePayloads only touches IGNORED rows of types no handler acts on', async () => {
+    const { createFakeSupabase } = await import('./helpers/fakeSupabase.cjs')
+    const db = createFakeSupabase(); const m = pure()
+    try { expect(await m.mod.scrubUnactionablePayloads(db)).toBe(true) } finally { m.restore() }
+    const q = db.calls[0]
+    expect(q).toMatchObject({ table: 'webhook_events', op: 'update', patch: { payload: null } })
+    expect(q.filters).toEqual(expect.arrayContaining([
+      ['eq', 'status', 'IGNORED'], ['neq', 'event_type', 'charge.success'],
+      ['not', 'event_type', 'like', 'refund.%'], ['not', 'event_type', 'like', 'charge.dispute%'], ['not', 'payload', 'is', null]]))
+  })
+})
+
+describe('round 6 — G4: a signed request from a non-allowlisted IP pages the owner', () => {
+  const env = { PAYSTACK_WEBHOOK_IPS: '52.31.139.75' }
+  it('valid signature + unlisted IP → 403, nothing processed, owner alerted once per cooldown', async () => {
+    const w = seed(); t = harness(w, { env })
+    const hdr = { 'cf-connecting-ip': '6.6.6.6' }
+    expect((await t.fire(chargeSuccess(), { headers: hdr })).status).toBe(403)
+    expect((await t.fire(chargeSuccess(), { headers: hdr })).status).toBe(403)
+    expect(w.t.payments[0].status).toBe('PENDING')
+    expect(w.t.webhook_events).toHaveLength(0)
+    const a = t.state.alerts.filter(x => /source IP not in PAYSTACK_WEBHOOK_IPS/.test(x.subject))
+    expect(a).toHaveLength(1)
+    expect(a[0].message).toMatch(/6\.6\.6\.6/)
+  })
+  it('a BAD signature from an unlisted IP is a plain 403 with no alert (a scanner cannot make us email)', async () => {
+    const w = seed(); t = harness(w, { env })
+    expect((await t.fire(chargeSuccess(), { headers: { 'cf-connecting-ip': '6.6.6.6' }, signature: 'bad' })).status).toBe(403)
+    expect(t.state.alerts).toHaveLength(0)
+  })
+  it('a listed IP is unaffected', async () => {
+    const w = seed(); t = harness(w, { env })
+    expect((await t.fire(chargeSuccess(), { headers: { 'cf-connecting-ip': '52.31.139.75' } })).status).toBe(200)
+    expect(t.state.alerts.filter(x => /source IP/.test(x.subject))).toHaveLength(0)
+  })
+})
+
+describe('round 6 — B1: a failed first inbox write alerts (it used to be silent)', () => {
+  it('answers 500, pages the owner once per event type, and processes nothing', async () => {
+    const w = seed(); t = harness(w)
+    w.failNext('webhook_events', 'insert', { message: 'disk full' })
+    expect((await t.fire({ event: 'charge.dispute.create', data: { id: 7, transaction: { reference: 'ref-1' } } })).status).toBe(500)
+    const a = t.state.alerts.filter(x => /could not be recorded/.test(x.subject))
+    expect(a).toHaveLength(1)
+    expect(a[0].message).toMatch(/charge\.dispute\.create/)
+    expect(a[0].message).toMatch(/disk full/)
+    w.failNext('webhook_events', 'insert', { message: 'disk full' })
+    await t.fire({ event: 'charge.dispute.create', data: { id: 8, transaction: { reference: 'ref-1' } } })
+    expect(t.state.alerts.filter(x => /could not be recorded/.test(x.subject))).toHaveLength(1)   // cooldown
+  })
+})
+
+describe('round 6 — G2: health reports when the Resend webhook last delivered', () => {
+  it('reads it from system_state, and a missing/failed read never marks the Paystack side unavailable', async () => {
+    const m = pure()
+    try {
+      const at = new Date().toISOString()
+      const h = await m.mod.computeWebhookHealth(createWorld({ payments: [], webhook_events: [], system_state: [{ key: 'resend_webhook', value: { last_event_at: at } }] }).db)
+      expect(h).toMatchObject({ available: true, lastResendEventAt: at })
+      expect(await m.mod.computeWebhookHealth(createWorld({ payments: [], webhook_events: [] }).db)).toMatchObject({ available: true, lastResendEventAt: null })
+    } finally { m.restore() }
+  })
+})

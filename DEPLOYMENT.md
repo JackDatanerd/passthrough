@@ -226,6 +226,8 @@ launch:
 # Restricts /api/webhooks/paystack to Paystack's published outbound IP
 # ranges. Optional defense-in-depth on top of the HMAC signature check
 # webhooks.controller.js already does; unset means IP is not checked.
+# A correctly SIGNED request from an unlisted IP is refused (403) AND emails the owner
+# (once per 30 min), so a change in Paystack's IPs cannot silently break every webhook.
 #
 # Comma-separated. Paystack's documented webhook source IPs (verify against
 # https://paystack.com/docs/payments/webhooks/ before pinning — they can change):
@@ -468,7 +470,10 @@ mail to that address — the endpoint below does that automatically (hash record
 mail history cleared; same result as the person clicking Remove).
 
 1. In Resend: **Webhooks → Add endpoint**, URL `https://<your-api-domain>/api/webhooks/resend`,
-   events **`email.bounced`** and **`email.complained`** (other events are ignored).
+   events **`email.bounced`** and **`email.complained`** (other events are acknowledged and ignored).
+   Also tick **`email.delivered`**: any verified event stamps "last Resend event" on Admin → Webhooks, which is the
+   only way to notice an endpoint that was never registered, was paused, or points at the wrong URL (bounces and
+   complaints are rare, so on their own silence proves nothing).
 2. Copy the endpoint's signing secret (`whsec_…`) and set it on the Worker:
    ```bash
    wrangler secret put RESEND_WEBHOOK_SECRET
