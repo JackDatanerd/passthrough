@@ -85,7 +85,7 @@ app.get('/healthz', async c => {
   const presented = c.req.header('x-health-key')
   if (key && presented && cryptoLib.timingSafeEqual(String(presented), String(key))) {
     const h = await computeHealth(c.env, getSupabase(c.env))
-    return c.json({ success: h.ok, status: h.ok ? 'ok' : 'degraded', timestamp: h.checkedAt, problems: h.problems, schema: h.schema, cron: h.cron }, h.ok ? 200 : 503)
+    return c.json({ success: h.ok, status: h.ok ? 'ok' : 'degraded', timestamp: h.checkedAt, problems: h.problems, notes: h.notes, schema: h.schema, cron: h.cron }, h.ok ? 200 : 503)
   }
   return c.json({ success: true, status: 'ok', timestamp: new Date().toISOString() })
 })
@@ -465,7 +465,7 @@ async function healthSweep(event, env, ctx) {
         await recordCronHeartbeat(supabase)
         const schema = await checkSchema(supabase)
         if (!schema.ok) {
-          console.error(`Schema check: expected ${schema.expected}, found ${schema.actual} — ${schema.detail || 'migrations are behind the deployed code'}`)
+          console.error(`Schema check: expected ${schema.expected}, found ${schema.actual} — ${schema.detail}`)
           await emailService.sendOwnerAlert(env, 'Database schema is behind the deployed code',
             `This Worker expects schema version ${schema.expected}; the database reports ${schema.actual === null ? 'nothing' : schema.actual}.\n\n` +
             `${schema.detail || ''}\n\nRun every file in supabase/migrations/ above the reported number, in order (DEPLOYMENT.md, section 2). ` +

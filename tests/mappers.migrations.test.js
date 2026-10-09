@@ -48,7 +48,8 @@ function mapperBody(fn) {
   const start = MAPPERS.indexOf(`function ${fn}`)
   expect(start, `${fn} exists in mappers.js`).toBeGreaterThanOrEqual(0)
   const end = MAPPERS.indexOf('\nfunction ', start + 10)
-  return MAPPERS.slice(start, end < 0 ? undefined : end)
+  // Comments are stripped: a column merely MENTIONED in one ("row.paid_at …") is not a column that is read.
+  return MAPPERS.slice(start, end < 0 ? undefined : end).replace(/\/\/.*$/gm, '')
 }
 
 describe('row mappers cover every migrated column', () => {

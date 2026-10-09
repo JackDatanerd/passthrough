@@ -97,7 +97,10 @@ backend runs as a Cloudflare Worker.
    (`EXPECTED_SCHEMA_VERSION` in `src/config/constants.js`). If the database is behind the deployed code,
    `GET /api/admin/health` and the deep health check (Section 9) say so, and the hourly cron emails the
    owner. A new migration must bump both — `tests/schemaVersion` (in `crossCutting.round1.test.js`) fails
-   the build when it does not. **Apply migrations before deploying the Worker that needs them.**
+   the build when it does not. **Apply migrations before deploying the Worker that needs them.** A database
+   that is *ahead* of the Worker (the window between applying a migration and deploying, or after a
+   rollback) is normal: the health check reports it as a note, never as a failure, and the owner is not
+   emailed. Only a database *behind* the code — or one whose version cannot be read — is a problem.
 
 ---
 
@@ -288,7 +291,7 @@ wrangler secret put PAYOUT_DETAILS_HOLD_HOURS
 wrangler secret put RATE_LIMIT_BYPASS_IPS
 
 # Cloudflare Turnstile bot challenge on the public forms that email an address a
-# stranger typed: the employer-lead form, sign-up and forgot-password (login is
+# stranger typed: the employer-lead form, the partner application form, sign-up and forgot-password (login is
 # not challenged — it emails no one, and the per-account lockout covers it). Off by
 # default. To turn it on set BOTH halves: this secret on the Worker, and
 # VITE_TURNSTILE_SITE_KEY on Pages (see section 6) followed by a frontend
@@ -314,6 +317,11 @@ wrangler secret put API_ORIGIN
 #   https://www.passthrough.dev,https://staging.passthrough.dev
 wrangler secret put CORS_EXTRA_ORIGINS
 
+# How long one rate-limit Durable Object call may take before the limiter gives up on it and fails
+# open (default 3000 ms). A stuck object otherwise holds every request that touches it.
+#   (a plain [vars] entry in wrangler.toml is fine for this one)
+# RATE_LIMIT_DO_TIMEOUT_MS = "3000"
+
 # Raise/lower the per-request Supabase timeout (default 25000 ms).
 #   (a plain [vars] entry in wrangler.toml is fine for this one)
 # SUPABASE_TIMEOUT_MS = "25000"
@@ -324,7 +332,11 @@ wrangler secret put CORS_EXTRA_ORIGINS
 # included — it switches ALL rate limits off for those IPs, and the Worker logs a warning at start-up
 # while it is set. Use it for a QA window, then delete it).
 
-# Restrict the admin panel to known networks (comma-separated IPs; IPv6 matched by /64). When set, an
+# Restrict the admin panel to known networks (comma-separated SINGLE IP addresses; IPv6 matched by /64).
+# CIDR ranges ("203.0.113.0/24") are NOT supported: such an entry never matches, and with the list set a
+# request that matches nothing is refused — a list with no usable address locks every admin out. The
+# Worker logs a [CONFIG] warning at start-up naming any entry that is not an IP address. To get back in:
+# `wrangler secret delete ADMIN_ALLOWED_IPS`. When set, an
 # ADMIN session is honoured only from these addresses — a stolen admin token is useless elsewhere. It
 # covers every admin-gated route (admin panel, refunds, partners, employer leads). Unset = no restriction.
 #   1.2.3.4,5.6.7.8
@@ -335,6 +347,26 @@ wrangler secret put ADMIN_ALLOWED_IPS
 # Without the header (or without this secret) /healthz is the shallow "Worker is up" answer.
 wrangler secret put HEALTH_CHECK_KEY
 ```
+
+### `wrangler.toml` reference: `[vars]` and bindings
+
+Plain (non-secret) `[vars]` the code reads, beyond the ones used elsewhere in this guide:
+
+| Variable | Default | What it does |
+|----------|---------|--------------|
+| `PAYSTACK_CURRENCY` | `USD` | The currency label sent to Paystack and shown on quotes, receipts and payouts. **There is no conversion:** the price constants in `src/config/constants.js` are minor units (cents) and are charged as that many minor units of whatever currency is set here. Change it only if your Paystack account is enabled for that currency *and* you have revised the constants to match. |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | The model used for resume scoring and rewriting. Changing it changes cost, latency and rewrite quality — re-run the pre-launch verification (Section 8) afterwards. |
+| `JWT_EXPIRES_IN_SECONDS` | `604800` (7 days) | Lifetime of one session token. A token is also capped by its session's absolute lifetime (30 days, `SESSION_ABSOLUTE_LIFETIME_DAYS`). Shortening it signs people out sooner; it never extends a session past that cap. |
+
+Bindings (declared in `wrangler.toml`, never set as plain values):
+
+| Binding | Kind | Used for |
+|---------|------|----------|
+| `RESUMES_BUCKET` | R2 | Uploaded resumes and generated DOCX/PDF files |
+| `FIX_QUEUE` | Queue producer | Fix, badge and scan jobs (`passthrough-fix-jobs`) |
+| `RATE_LIMIT_DO` | Durable Object | Atomic rate limits and the login lockout |
+| `RATE_LIMIT_KV` | KV | Dedupe flags, and the rate-limit fallback when the Durable Object binding is absent |
+| `BROWSER` | Browser Rendering | PDF rendering |
 
 ### Deploy
 
@@ -582,6 +614,8 @@ purchases, prove the limits hold on YOUR plan:
 - `GET /healthz` with `X-Health-Key: <HEALTH_CHECK_KEY>` — deep: database reachable, migrations applied as
   far as the code expects, the hourly cron ran in the last 150 minutes, required bindings present.
   Returns **503** with a `problems` list when any of it is wrong. Point your uptime monitor here.
+  A cron that has **never** run is caught too: the first deep check records a starting point, and if no
+  heartbeat exists 150 minutes later the check fails (the hourly trigger is not registered or not firing).
 - `GET /api/admin/health` (admin session) — the same data plus config warnings and binding status.
 - The hourly cron writes the heartbeat and emails the owner when the schema is behind the deployed code.
 
@@ -614,14 +648,17 @@ Supabase Dashboard → Logs → API (PostgREST errors), Auth, Edge Functions.
 ## 10. Updating
 
 ```bash
-# Pull latest
+# Pull latest, then run the checks a deploy depends on
 git pull origin main
-
-# Deploy Worker
-npm run deploy
-
-# Frontend re-deploys automatically on git push
+npm run predeploy        # lint + backend tests; must be green
 ```
+
+Then deploy the Worker **from CI / Linux** (`npx wrangler deploy` in your pipeline — Section 5). Do not run
+`wrangler deploy` (or `npm run deploy`) from a Windows machine: it mangles secrets and can crash. The
+frontend re-deploys automatically on every push to `main`.
+
+CI (`.github/workflows/ci.yml`) runs the Worker lint + tests + bundle check, a frontend production build,
+and the frontend component/logic tests (`npm run test:frontend`). Make all of it a required status check.
 
 Database schema changes:
 - Write a new migration file: `supabase/migrations/000N_description.sql`
@@ -670,6 +707,14 @@ migrations were stopped partway through rather than skipped entirely.
   reconciliation and retention are not running. Check the Worker's Triggers tab for the
   `0 * * * *` cron and `wrangler tail --format pretty` around the top of the hour.
 - **no heartbeat recorded yet** — normal for the first hour after a deploy.
+
+### Users see "Temporarily unavailable" (503)
+
+An error that is over in moments — the database did not answer within `SUPABASE_TIMEOUT_MS`, dropped the
+connection, lost a deadlock race, or PostgREST/its pool was briefly unavailable — is answered **503** with
+`Retry-After: 5` instead of a generic 500, and the SPA retries idempotent reads once on its own. The full
+error is still in the logs (`Transient failure answered 503 [cf-ray]`). A steady stream of these means the
+database is struggling, not the Worker.
 
 ### Rate limiter letting requests through
 

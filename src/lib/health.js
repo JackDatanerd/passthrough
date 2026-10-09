@@ -12,6 +12,9 @@ const { validateEnv } = require('./env')
 
 const SCHEMA_KEY = 'schema_version'
 const HEARTBEAT_KEY = 'cron_heartbeat'
+// First time anything asked after the cron. A heartbeat that has NEVER been written is only "normal for the
+// first hour" — without a starting point, a trigger that was never registered looked healthy forever.
+const BASELINE_KEY = 'cron_baseline'
 // The cron runs hourly; two missed runs plus slack is "stopped", one slow run is not.
 const CRON_STALE_MINUTES = 150
 
@@ -36,23 +39,57 @@ async function recordCronHeartbeat(supabase, now = new Date()) {
   }
 }
 
+// "Migrated as far as this code expects" means AT LEAST the expected version. A database that is AHEAD of
+// the code is the normal state for the whole window between applying a migration and deploying the Worker
+// that needs it (DEPLOYMENT.md says to migrate FIRST), and again after a rollback — it used to read as a
+// failure: a 503 from the deep health check, and an owner email claiming the schema was "behind the
+// deployed code" when it was the other way round. Only a database BEHIND the code (or unreadable) is a
+// problem; ahead is reported as a note.
 async function checkSchema(supabase) {
   const expected = c.EXPECTED_SCHEMA_VERSION
   try {
     const row = await readState(supabase, SCHEMA_KEY)
     const actual = row && row.value && Number.isFinite(Number(row.value.version)) ? Number(row.value.version) : null
-    return { expected, actual, ok: actual === expected, detail: actual === null ? 'schema_version not recorded — apply migration 0059 and every one after it' : null }
+    if (actual === null)
+      return { expected, actual, ok: false, ahead: false, detail: 'schema_version not recorded — apply migration 0059 and every one after it' }
+    if (actual < expected)
+      return { expected, actual, ok: false, ahead: false, detail: `the database is at migration ${actual} but this code expects ${expected} — apply every migration above ${actual}, in order` }
+    if (actual > expected)
+      return { expected, actual, ok: true, ahead: true, detail: `the database is at migration ${actual}, ahead of this code (${expected}) — expected between applying a migration and deploying, or after a rollback` }
+    return { expected, actual, ok: true, ahead: false, detail: null }
   } catch (err) {
     // A missing table is exactly "migration 0059 has not been applied".
-    return { expected, actual: null, ok: false, detail: `could not read schema_version (${err.message}) — apply migration 0059 and every one after it` }
+    return { expected, actual: null, ok: false, ahead: false, detail: `could not read schema_version (${err.message}) — apply migration 0059 and every one after it` }
   }
+}
+
+// Remembers when the cron was first looked for (once; later calls leave it alone). Best-effort, never throws.
+async function ensureCronBaseline(supabase, nowMs) {
+  try {
+    const row = await readState(supabase, BASELINE_KEY)
+    const at = row && row.value && row.value.at ? Date.parse(row.value.at) : NaN
+    if (Number.isFinite(at)) return at
+    const iso = new Date(nowMs).toISOString()
+    const { error } = await supabase.from('system_state')
+      .upsert({ key: BASELINE_KEY, value: { at: iso }, updated_at: iso }, { onConflict: 'key', ignoreDuplicates: true })
+    if (error) throw error
+    return nowMs
+  } catch (_) { return null }
 }
 
 async function checkCron(supabase, nowMs = Date.now()) {
   try {
     const row = await readState(supabase, HEARTBEAT_KEY)
     const at = row && row.value && row.value.at ? Date.parse(row.value.at) : NaN
-    if (!Number.isFinite(at)) return { known: false, lastRunAt: null, ageMinutes: null, stale: false, ok: true, detail: 'no heartbeat recorded yet (the first hourly run writes one)' }
+    if (!Number.isFinite(at)) {
+      // No heartbeat yet. Normal right after the first deploy — but only for so long.
+      const baseline = await ensureCronBaseline(supabase, nowMs)
+      const waited = baseline === null ? null : Math.max(0, Math.round((nowMs - baseline) / 60000))
+      if (waited !== null && waited > CRON_STALE_MINUTES)
+        return { known: false, lastRunAt: null, ageMinutes: null, stale: true, ok: false, waitedMinutes: waited,
+          detail: `no cron heartbeat has ever been recorded, ${waited} minutes after this deployment was first checked — the hourly trigger is not running (see [triggers] in wrangler.toml and the Worker's Triggers tab)` }
+      return { known: false, lastRunAt: null, ageMinutes: null, stale: false, ok: true, waitedMinutes: waited, detail: 'no heartbeat recorded yet (the first hourly run writes one)' }
+    }
     const ageMinutes = Math.round((nowMs - at) / 60000)
     const stale = ageMinutes > CRON_STALE_MINUTES
     return { known: true, lastRunAt: new Date(at).toISOString(), ageMinutes, stale, ok: !stale, detail: stale ? `the hourly cron last ran ${ageMinutes} minutes ago — scheduled sweeps are not running` : null }
@@ -76,14 +113,17 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
 
   const [schema, cron] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs)])
   const problems = []
+  const notes = []
   if (config.fatal.length) problems.push(...config.fatal.map(f => `config: ${f}`))
   if (!bindingsOk) problems.push('a required binding is missing')
   if (!db.ok) problems.push(`database: ${db.detail}`)
   if (!schema.ok) problems.push(`schema: ${schema.detail || `expected ${schema.expected}, found ${schema.actual}`}`)
+  else if (schema.ahead) notes.push(`schema: ${schema.detail}`)
   if (!cron.ok) problems.push(`cron: ${cron.detail}`)
   return {
     ok: problems.length === 0,
     problems,
+    notes,
     schema, cron, db,
     bindings,
     config: { fatal: config.fatal, warnings: config.warnings },
@@ -91,4 +131,4 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   }
 }
 
-module.exports = { computeHealth, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY }
+module.exports = { computeHealth, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

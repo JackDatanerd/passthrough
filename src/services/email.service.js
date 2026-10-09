@@ -17,7 +17,8 @@ const c = require('../config/constants')
 // function here already receives `supabase` from its caller, but
 // sendOwnerAlert historically didn't take one (see its own comment below).
 const { getSupabase } = require('../config/supabase')
-const { hitQuota, refundQuota } = require('../middleware/rateLimiter')
+const rateLimiter = require('../middleware/rateLimiter')
+const { hitQuota, refundQuota } = rateLimiter
 const { sha256 } = require('../lib/crypto')
 const { must } = require('../lib/db')
 const { isSuppressedFor } = require('../lib/emailSuppression')
@@ -691,12 +692,45 @@ const ALERT_EMAIL_DEDUPE_SECONDS = 600
 // needed" note existed only as an alert_logs row. `opts.dedupeKey` (e.g. the
 // payment reference) scopes the throttle to the specific incident; callers that
 // don't pass one keep the old subject-only behaviour.
+// The throttle above lives in the rate-limit backend — and an alert is most likely to fire when that backend
+// (or the database behind it) is the thing that is down. hitQuota FAILS OPEN, so in that moment every
+// occurrence of a repeating failure used to email: the flood this throttle exists to prevent. Two backstops
+// that do not depend on it:
+//   * per isolate, plain memory: the same alert is never emailed twice inside the window by one isolate;
+//   * across isolates, when the backend cannot answer: the alert_logs table (written by every alert) is
+//     asked whether this exact subject + message was already emailed inside the window.
+const recentAlertEmails = new Map()   // digest -> ms of the last email this isolate sent
+const RECENT_ALERTS_MAX = 500
+
+async function emailedRecently(env, subject, message) {
+  try {
+    const since = new Date(Date.now() - ALERT_EMAIL_DEDUPE_SECONDS * 1000).toISOString()
+    const { data, error } = await getSupabase(env).from('alert_logs').select('created_at')
+      .eq('subject', subject).eq('message', message).eq('emailed', true).gte('created_at', since).limit(1)
+    if (error) throw error
+    return !!(data && data.length)
+  } catch (err) {
+    console.error('alert dedupe lookup failed (not suppressing):', err.message)
+    return false
+  }
+}
+
+async function alertEmailAllowed(env, digest, subject, message) {
+  const last = recentAlertEmails.get(digest)
+  if (last && Date.now() - last < ALERT_EMAIL_DEDUPE_SECONDS * 1000) return false
+  const tryHit = typeof rateLimiter.tryHitQuota === 'function' ? rateLimiter.tryHitQuota : hitQuota
+  const slot = await tryHit(env, `rl:alert:${digest}`, 1, ALERT_EMAIL_DEDUPE_SECONDS)
+  if (slot === false) return false
+  if (slot === null && await emailedRecently(env, subject, message)) return false
+  return true
+}
+
 async function sendOwnerAlert(env, subject, message, opts = {}) {
   const to = env.OWNER_ALERT_EMAIL
   let emailed = false
   const dedupeKey = opts && opts.dedupeKey ? `|${String(opts.dedupeKey)}` : ''
   const subjectDigest = (await sha256(`${String(subject)}${dedupeKey}`)).slice(0, 32)
-  const shouldEmail = !!to && await hitQuota(env, `rl:alert:${subjectDigest}`, 1, ALERT_EMAIL_DEDUPE_SECONDS)
+  const shouldEmail = !!to && await alertEmailAllowed(env, subjectDigest, String(subject), String(message))
   if (shouldEmail) {
     try {
       await sendViaResend(env, {
@@ -706,6 +740,8 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
         html: `<pre style="font-family: monospace; white-space: pre-wrap; font-size: 13px;">${escapeHtml(message)}</pre>`
       })
       emailed = true
+      if (recentAlertEmails.size >= RECENT_ALERTS_MAX) recentAlertEmails.delete(recentAlertEmails.keys().next().value)
+      recentAlertEmails.set(subjectDigest, Date.now())
     } catch (err) {
       console.error('Owner alert failed to send:', err.message)
       // The dedupe slot was spent BEFORE the send. A send that failed reached nobody, so it must not

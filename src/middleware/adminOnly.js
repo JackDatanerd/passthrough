@@ -7,7 +7,7 @@
 // table directly (role_enum already has 'ADMIN' — see supabase/migrations/
 // 0001_init.sql) — there's no self-serve promotion endpoint, intentionally.
 
-const { clientIp, rateKeyIp } = require('../lib/clientIp')
+const { clientIp, rateKeyIp, parseIpList } = require('../lib/clientIp')
 
 // OPTIONAL network allowlist (GAP CLOSED, cross-cutting infra round 1, G5). `ADMIN_ALLOWED_IPS` is a
 // comma-separated list of IPs; when it is set, an ADMIN session is honoured only from those
@@ -19,8 +19,12 @@ const { clientIp, rateKeyIp } = require('../lib/clientIp')
 function adminIpAllowed(env, ip) {
   const raw = env && env.ADMIN_ALLOWED_IPS
   if (!raw || !String(raw).trim()) return true
-  const list = String(raw).split(',').map(x => x.trim()).filter(Boolean).map(x => rateKeyIp(x))
-  return list.length === 0 || list.includes(rateKeyIp(ip))
+  // Only real addresses can match: a CIDR range or typo in the list is ignored (env.js warns about it at
+  // start-up) rather than compared as a string.
+  const entries = String(raw).split(',').map(x => x.trim()).filter(Boolean)
+  if (entries.length === 0) return true
+  const list = parseIpList(raw).valid.map(x => rateKeyIp(x.replace(/^\[|\]$/g, '')))
+  return list.includes(rateKeyIp(ip))
 }
 
 async function adminOnly(c, next) {

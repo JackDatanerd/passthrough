@@ -9,6 +9,7 @@
     "cf-typegen": "wrangler types",
     "test":       "vitest run",
     "test:worker": "vitest run --config vitest.worker.config.mjs",
+    "test:frontend": "vitest run frontend/tests",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "lint":       "node scripts/lint-undefined.cjs",

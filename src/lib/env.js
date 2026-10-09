@@ -12,6 +12,8 @@
 // unusable are fatal. Anything merely suspicious is a warning, so a deployment
 // that works today is never taken down by a stricter check.
 
+const { parseIpList } = require('./clientIp')
+
 const CRITICAL = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET']
 
 // Needed for a feature, not for the app to answer requests at all.
@@ -22,6 +24,11 @@ const FEATURE_SECRETS = {
   EMAIL_FROM:          'email sender address',
   FRONTEND_URL:        'CORS + every emailed link',
   RESEND_WEBHOOK_SECRET: 'bounce / spam-complaint handling (Resend webhook)',
+  // Without these two nothing stops the Worker, but the failure is silent: alerts (failed jobs, payment
+  // mismatches, schema behind, webhook signature failures) are written to alert_logs and emailed to nobody,
+  // and Paystack redirects buyers to whatever callback the dashboard has instead of this app's success page.
+  OWNER_ALERT_EMAIL:   'owner alert emails (alerts are only stored in alert_logs)',
+  PAYSTACK_CALLBACK_URL: 'the post-payment redirect (Paystack falls back to its dashboard setting)',
 }
 const BINDINGS = { RATE_LIMIT_KV: 'rate limiting', RESUMES_BUCKET: 'resume storage (R2)', FIX_QUEUE: 'fix generation queue' }
 
@@ -65,6 +72,19 @@ function validateEnv(env) {
 
   if (env.RATE_LIMIT_BYPASS_IPS && env.NODE_ENV === 'production')
     warnings.push('RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)')
+
+  // ADMIN_ALLOWED_IPS takes single IP addresses (IPv6 is matched by /64). A CIDR range ("203.0.113.0/24") or a
+  // typo matches no request at all — and with the list set, a request that matches nothing is REFUSED, so
+  // one bad entry beside good ones is harmless but a list with no usable entry locks every admin out.
+  if (env.ADMIN_ALLOWED_IPS && String(env.ADMIN_ALLOWED_IPS).trim()) {
+    const { valid, invalid } = parseIpList(env.ADMIN_ALLOWED_IPS)
+    if (invalid.length) {
+      const cidr = invalid.some(x => x.includes('/')) ? ' CIDR ranges are not supported — list each address.' : ''
+      warnings.push(`ADMIN_ALLOWED_IPS has ${invalid.length} entr${invalid.length === 1 ? 'y' : 'ies'} that ${invalid.length === 1 ? 'is' : 'are'} not an IP address (${invalid.join(', ')}) and will never match.${cidr}`)
+    }
+    if (!valid.length)
+      warnings.push('ADMIN_ALLOWED_IPS has no valid IP address, so EVERY admin request is refused — fix it or `wrangler secret delete ADMIN_ALLOWED_IPS`')
+  }
 
   if (env.PROMO_ACTIVE === 'true') {
     const ends = Date.parse(env.PROMO_ENDS_AT || '')

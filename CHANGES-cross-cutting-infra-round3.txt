@@ -1,0 +1,59 @@
+Cross-cutting infra, round 3 (section 9)
+
+BUG (anonymous scan limiter): the per-IP ceiling (rl:anonscanip) was consumed BEFORE the per-device bucket,
+so every request the device bucket was about to refuse (a device re-submitting after its scan) still took a
+ceiling slot. Once the bounded refunds were spent, one noisy device burned the whole network's ceiling and every
+other visitor behind that carrier address was refused for the hour — undoing round 1's CGNAT fix.
+ - middleware/rateLimiter.js: anonScan now runs the device bucket first and the ceiling second. The ceiling is
+   only spent on a request the device admitted; a device the ceiling refuses gets its own slot back.
+   Device-id rotation is still bounded (10 devices per IP per hour).
+
+BUG (health): checkSchema used `actual === expected`, so a database AHEAD of the code (the window between applying
+a migration and deploying, which DEPLOYMENT.md prescribes, and every rollback) failed the deep /healthz with a 503 and
+made the hourly cron email "Database schema is behind the deployed code" when it was the other way round.
+ - lib/health.js: ok when actual >= expected; "ahead" is reported as a note (computeHealth().notes, /healthz
+   `notes`), never a problem and never an alert. Behind/unreadable still fail, with an explanatory detail.
+
+BUG (rate-limit key): lib/clientIp.js rateKeyIp put every hex-spelled IPv4-mapped address (::ffff:a00:1) — and ::1 —
+into one shared /64 bucket. Now canonicalised to the IPv4 client; dotted-tail IPv6 collapses to its /64 like any
+other; malformed input keeps its own bucket. (Not reachable on Cloudflare, which sends dotted IPv4; reachable via
+x-forwarded-for outside production and via ADMIN_ALLOWED_IPS comparisons.)
+
+GAP: a cron that never ran was invisible. checkCron treated "no heartbeat" as OK forever. The first deep check now
+records a baseline (system_state key cron_baseline, no migration needed); with no heartbeat 150 minutes later the
+check fails and says the hourly trigger is not running.
+
+GAP: transient infrastructure failures (database timeout/abort, dropped connection, deadlock/serialization,
+statement timeout, PostgREST schema-cache/pool errors, a timed-out rate-limit DO) answered a bare 500 the SPA never
+retries. middleware/errorHandler.js now answers 503 + Retry-After: 5 ("Temporarily unavailable…"); the SPA's one
+automatic retry for idempotent GETs keys off it. Ordinary bugs, 22P02, upstream statuses and `expose` errors are
+unchanged; the full error is still logged.
+
+GAP: lib/env.js validateEnv now warns about a missing OWNER_ALERT_EMAIL and PAYSTACK_CALLBACK_URL (both failed
+silently), and about ADMIN_ALLOWED_IPS entries that are not IP addresses (a CIDR range never matches; a list with no
+usable entry refuses every admin). lib/clientIp.js gained isIpLiteral/parseIpList; adminOnly only compares real
+addresses.
+
+GAP: a rate-limit Durable Object that HUNG (rather than threw) held every request that touched it. runOp now times
+out (RATE_LIMIT_DO_TIMEOUT_MS, default 3000) and the limiter fails open as for any backend error.
+GAP: sendOwnerAlert's de-dupe was itself a rate-limit call that fails open, so during a backend outage a repeating
+failure emailed on every occurrence. It now also keeps per-isolate memory of what it emailed and, when the backend
+cannot answer (new rateLimiter.tryHitQuota -> null), asks alert_logs whether the same subject+message was already
+emailed inside the window.
+
+GAP (CI): the 120+ frontend test files were never run (the job only built the SPA). New `frontend-tests` job and
+`npm run test:frontend`. Running them exposed two problems, both fixed: a second copy of React in
+frontend/node_modules broke every component rendered under react-router (the job removes the SPA's copy so Node
+resolves the root one), and useApi.test.js left an unhandled rejection that made vitest exit non-zero.
+
+DOCS: DEPLOYMENT.md — §10 no longer tells a Windows operator to run `npm run deploy` locally (contradicting §5);
+new [vars]/bindings reference (PAYSTACK_CURRENCY, ANTHROPIC_MODEL, JWT_EXPIRES_IN_SECONDS, binding names);
+ADMIN_ALLOWED_IPS is single addresses only; Turnstile also covers the partner application form; schema-ahead and
+never-ran-cron semantics; the 503 behaviour; RATE_LIMIT_DO_TIMEOUT_MS. .dev.vars.example lists the new optionals.
+
+HARDENING: resume.parser MAX_DOCX_XML_BYTES 20MB -> 8MB (it is also a memory budget inside a 128MB Worker);
+ssrfGuard blocks 2001::/23, 100::/64 and 3fff::/20; the mapper drift test strips comments so a column that is only
+MENTIONED in one no longer counts as read.
+
+Tests: tests/crossCutting.round3.test.js (69). tests/infra.middleware.test.js fixture gains the two now-expected vars.
+No migration; EXPECTED_SCHEMA_VERSION unchanged.

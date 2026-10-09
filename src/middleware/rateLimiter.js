@@ -51,13 +51,36 @@ const DO_URL = 'https://rate-limiter.internal/op'
 function backendName(env) { return env && env.RATE_LIMIT_DO ? 'RATE_LIMIT_DO' : 'RATE_LIMIT_KV' }
 function hasBackend(env) { return !!(env && (env.RATE_LIMIT_DO || env.RATE_LIMIT_KV)) }
 
+// A hung Durable Object (an overloaded or stuck colo, a stalled input gate) does not THROW — it just never
+// answers, and every limiter awaits it, so the whole API would hang with it instead of failing open like it
+// does for an error. Bounded: past this the call is treated as a backend failure (logged, owner alerted,
+// request let through). RATE_LIMIT_DO_TIMEOUT_MS overrides it.
+const DEFAULT_DO_TIMEOUT_MS = 3000
+function doTimeoutMs(env) {
+  const n = parseInt(env && env.RATE_LIMIT_DO_TIMEOUT_MS, 10)
+  return n > 0 ? n : DEFAULT_DO_TIMEOUT_MS
+}
+
 async function runOp(env, op, args) {
   if (env.RATE_LIMIT_DO) {
     const ns = env.RATE_LIMIT_DO
-    const stub = ns.get(ns.idFromName(args.key))
-    const res = await stub.fetch(DO_URL, { method: 'POST', body: JSON.stringify({ op, args }) })
-    if (!res.ok) throw new Error(`rate limiter DO ${res.status}`)
-    return res.json()
+    const ms = doTimeoutMs(env)
+    let timer
+    const timeout = new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`rate limiter DO timed out after ${ms}ms`)), ms)
+    })
+    try {
+      const call = (async () => {
+        const stub = ns.get(ns.idFromName(args.key))
+        const res = await stub.fetch(DO_URL, { method: 'POST', body: JSON.stringify({ op, args }) })
+        if (!res.ok) throw new Error(`rate limiter DO ${res.status}`)
+        return res.json()
+      })()
+      call.catch(() => {})   // if the timeout wins, a late failure of the call must not become an unhandled rejection
+      return await Promise.race([call, timeout])
+    } finally {
+      clearTimeout(timer)
+    }
   }
   return core.OPS[op](env.RATE_LIMIT_KV, args)
 }
@@ -144,6 +167,19 @@ async function hitQuota(env, key, max, windowSeconds) {
   } catch (err) {
     console.error(`quota (${key.split(':').slice(0, 2).join(':')}) backend error — failing open:`, err.message)
     return true
+  }
+}
+
+// Like hitQuota, but says when the backend could not answer (null) instead of quietly letting the request
+// through. For callers that need a SECOND line of defence in exactly that situation — sendOwnerAlert's
+// de-dupe must not turn a backend outage into one email per failed request.
+async function tryHitQuota(env, key, max, windowSeconds) {
+  try {
+    const r = await runOp(env, 'consume', { key, windowSeconds, max })
+    return !!r.allowed
+  } catch (err) {
+    console.error(`quota (${key.split(':').slice(0, 2).join(':')}) backend error:`, err.message)
+    return null
   }
 }
 
@@ -374,10 +410,18 @@ const anonScanIpCeiling = makeLimiter({
 // The two limiters are chained by hand, so a 429 the INNER one returns must be installed as the
 // response here (Hono only does that for the `next` it hands out itself) — otherwise the outer
 // limiter sees no response at all and the request ends in a 500.
+//
+// ORDER MATTERS (bug): the per-device bucket goes FIRST and the per-IP ceiling second. The ceiling used to
+// run first, so every request the device bucket was about to refuse (a device re-submitting after its scan)
+// still took a ceiling slot; once the bounded refunds were spent, one noisy device burned the whole
+// network's ceiling and every OTHER visitor behind that carrier address was refused for the hour. Now the
+// ceiling is only spent on a request the device bucket admitted — i.e. a distinct device's scan — and when
+// the ceiling refuses an admitted request the device's own slot is handed back (the outer limiter refunds
+// any 4xx, bounded).
 const anonScan = async (c, next) => {
   let inner
-  const outer = await anonScanIpCeiling(c, async () => {
-    inner = await anonScanBucket(c, next)
+  const outer = await anonScanBucket(c, async () => {
+    inner = await anonScanIpCeiling(c, next)
     if (inner instanceof Response) c.res = inner
   })
   return outer !== undefined ? outer : inner
@@ -883,5 +927,5 @@ module.exports = {
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
-  clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName
+  clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
 }

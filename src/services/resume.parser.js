@@ -23,9 +23,11 @@ const c        = require('../config/constants')
 // moment the running byte count crosses the cap, so memory stays bounded by
 // the cap plus at most one inflate step regardless of what the archive claims
 // about itself (the sizes in a zip header are attacker-controlled and cannot
-// be trusted). A legitimate resume's document.xml is reliably well under 1MB;
-// 20MB is generous headroom for an unusually long real resume.
-const MAX_DOCX_XML_BYTES = 20 * 1024 * 1024
+// be trusted). A legitimate resume's document.xml is reliably well under 1MB (a 10-page table-heavy one
+// is ~2MB). The cap is also a MEMORY budget: the inflated chunks, the joined copy, the decoded string and
+// the regex passes over it all coexist, a multiple of this number, inside a 128MB Worker — 8MB leaves real
+// headroom for a long resume where the old 20MB did not leave room for the bomb it was written to stop.
+const MAX_DOCX_XML_BYTES = 8 * 1024 * 1024
 
 function readEntryCapped(entry, maxBytes) {
   return new Promise((resolve, reject) => {

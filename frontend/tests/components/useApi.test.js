@@ -36,8 +36,12 @@ describe('useApi', () => {
     const d = deferred()
     let out
     act(() => { out = result.current.execute(() => d.promise) })
+    // The rejection fires inside act(), before `.rejects` below attaches its handler — Node reports that as an
+    // unhandled rejection, which makes vitest exit non-zero even though every test passed. Observe it first.
+    const settled = out.catch(e => e)
     const err = { response: { data: { message: 'Nope' } } }
     await act(async () => { d.reject(err) })
+    expect(await settled).toBe(err)
     await expect(out).rejects.toBe(err)
     expect(result.current.loading).toBe(false)
     expect(result.current.error).toBe('Nope')

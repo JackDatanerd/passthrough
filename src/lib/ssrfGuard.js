@@ -92,6 +92,17 @@ function decodeEmbeddedIPv4Hex(hi, lo) {
   return [(hiN >> 8) & 0xff, hiN & 0xff, (loN >> 8) & 0xff, loN & 0xff].join('.')
 }
 
+// Eight numeric groups of an IPv6 literal, or null. (A tiny expander — the guard is dependency-free.)
+function ipv6Groups(h) {
+  const halves = h.split('::')
+  if (halves.length > 2) return null
+  const head = halves[0] ? halves[0].split(':') : []
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : []
+  const groups = halves.length === 2 ? [...head, ...Array(Math.max(8 - head.length - tail.length, 0)).fill('0'), ...tail] : head
+  if (groups.length !== 8 || groups.some(g => !/^[0-9a-f]{1,4}$/.test(g))) return null
+  return groups.map(g => parseInt(g, 16))
+}
+
 function isPrivateIPv6(hostname) {
   const h = hostname.toLowerCase().replace(/^\[|\]$/g, '')
   if (h === '::1') return true                          // loopback
@@ -109,6 +120,15 @@ function isPrivateIPv6(hostname) {
     if (first === 0x2002) return true                     // 6to4 2002::/16 — embeds an IPv4, deprecated, never a job board
   }
   if (h.startsWith('2001:0:') || h.startsWith('2001::')) return true  // Teredo 2001::/32 (deprecated tunnel)
+  // Special-purpose blocks that are never a public job board: 2001::/23 (IETF protocol assignments —
+  // benchmarking 2001:2::/48, ORCHID 2001:10::/28 and 2001:20::/28, PCP anycast 2001:1::1/128, …),
+  // 100::/64 (discard-only) and 3fff::/20 (documentation, RFC 9637).
+  const g = ipv6Groups(h)
+  if (g) {
+    if (g[0] === 0x2001 && g[1] <= 0x01ff) return true
+    if (g[0] === 0x0100 && g[1] === 0 && g[2] === 0 && g[3] === 0) return true
+    if (g[0] === 0x3fff && (g[1] & 0xf000) === 0) return true
+  }
   if (h.startsWith('2001:db8:')) return true                           // documentation range
 
   // IPv6 TRANSITION FORMS: multiple standardized encodings embed an IPv4

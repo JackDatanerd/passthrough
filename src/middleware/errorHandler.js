@@ -8,6 +8,29 @@
 
 const validStatus = s => Number.isInteger(s) && s >= 400 && s <= 599 ? s : 500
 
+// A failure of OUR OWN infrastructure that is over in moments — the database did not answer in time or
+// dropped the connection, a transaction lost a deadlock/serialization race, PostgREST or its pool was
+// momentarily unavailable, the rate-limiter Durable Object timed out. These used to surface as a bare 500
+// "An error occurred.", which the SPA never retries; a 503 with Retry-After is what its one automatic
+// retry for idempotent GETs (frontend/src/lib/errors.js shouldRetryRequest) and its "try again" copy key
+// off. Matched on Postgres/PostgREST codes (kept by lib/db.js toError) and on the runtime's own wording for
+// an aborted or dropped fetch (supabase-js folds `${err.name}: ${err.message}` into the message).
+const TRANSIENT_DB_CODES = new Set([
+  '40001', '40P01',                       // serialization failure, deadlock detected
+  '55P03', '57014', '57P01', '57P03',     // lock not available, statement timeout/cancelled, admin shutdown, starting up
+  '53300', '53400',                       // too many connections, configuration limit exceeded
+  '08000', '08001', '08003', '08004', '08006',   // connection exceptions
+  'PGRST000', 'PGRST001', 'PGRST002', 'PGRST003', // PostgREST: cannot connect, schema cache loading, pool timeout
+])
+const TRANSIENT_MESSAGE = /\b(?:TimeoutError|AbortError)\b|aborted due to timeout|operation was aborted|fetch failed|network connection lost|connection (?:reset|closed|refused)|ECONNRESET|ETIMEDOUT|rate limiter DO/i
+const TRANSIENT_RETRY_AFTER_SECONDS = 5
+
+function isTransientFailure(err) {
+  if (err.expose === true) return false   // a deliberate, caller-chosen answer
+  if (typeof err.code === 'string' && TRANSIENT_DB_CODES.has(err.code)) return true
+  return TRANSIENT_MESSAGE.test(String(err.message || ''))
+}
+
 function errorHandler(err, ctx) {
   // Anything can be thrown (a string, null) — never let the handler itself crash on it.
   if (!err || typeof err !== 'object') err = new Error(String(err ?? 'Unknown error'))
@@ -38,6 +61,14 @@ function errorHandler(err, ctx) {
   if (err instanceof SyntaxError && err.clientBody === true)
     return ctx.json({ success: false, message: 'Invalid request body.' }, 400)
 
+  // Transient infrastructure failure -> 503 + Retry-After (see isTransientFailure). Still logged in full.
+  if (isTransientFailure(err)) {
+    const rayId = ctx.req && typeof ctx.req.header === 'function' ? ctx.req.header('cf-ray') : undefined
+    console.error(`Transient failure answered 503${rayId ? ` [${rayId}]` : ''}:`, err.stack || err.message)
+    return ctx.json({ success: false, message: 'Temporarily unavailable. Please try again in a moment.' }, 503,
+      { 'Retry-After': String(TRANSIENT_RETRY_AFTER_SECONDS) })
+  }
+
   // Only an error that opts in with `expose` chooses its own status. Any other `err.status` is
   // somebody else's: an upstream HTTP status copied onto a thrown error (Resend answered 401,
   // Anthropic 429) must never become OUR response status — a 401 here reads to the SPA as an
@@ -62,3 +93,4 @@ function errorHandler(err, ctx) {
 }
 
 module.exports = errorHandler
+module.exports.isTransientFailure = isTransientFailure

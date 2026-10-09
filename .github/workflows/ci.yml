@@ -59,3 +59,28 @@ jobs:
       - run: npm ci
       # A real Vite build is the only thing that compiles every JSX file.
       - run: npm run build
+
+  frontend-tests:
+    name: Frontend — component + logic tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
+      # The runner (vitest, jsdom, Testing Library) lives in the ROOT package; the SPA's own packages
+      # (axios, react-router-dom, ...) live in frontend/. Both are needed.
+      - run: npm ci
+      - run: npm ci
+        working-directory: frontend
+      # Two copies of React in one process — the root one the tests render with, and the SPA's own that
+      # react-router loads for itself — fail every component rendered under a router with "Cannot read
+      # properties of null (reading 'useRef')". Dropping the SPA's copies makes Node resolve the root one.
+      - name: Use a single copy of React
+        run: rm -rf frontend/node_modules/react frontend/node_modules/react-dom
+      - name: Frontend tests
+        run: npm run test:frontend
