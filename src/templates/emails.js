@@ -124,6 +124,9 @@ const TEMPLATES = {
   // Round 4 (bug): the partner-apply form promises "we'll email you after we've reviewed
   // it", but only approval ever sent anything. BODY carries the (optional) reason as plain
   // text; the sender builds it so the template stays one shape.
+  // Round 6: acknowledgment sent when a partner application is stored — the form said "we'll email you after we've
+  // reviewed it" but nothing arrived until then.
+  partner_application_received: "<h2>We received your application</h2>\n<p>Hi {{NAME}}, thanks for applying to the Passthrough partner program. Your application is in the queue and we'll email you once it has been reviewed.</p>\n<p style=\"color:#9ca3af;font-size:13px\">If you didn't apply, you can ignore this email \u2014 nothing happens without a review. Questions? Reply to this email or contact support@passthrough.dev.</p>\n",
   partner_application_rejected: "<h2>About your partner application</h2>\n<p>Hi {{NAME}}, thanks for applying to the Passthrough partner program and for the time you put into your application.</p>\n<p>{{BODY}}</p>\n<p style=\"color:#9ca3af;font-size:13px\">Questions? Reply to this email or contact support@passthrough.dev.</p>\n",
 }
 

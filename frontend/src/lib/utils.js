@@ -152,8 +152,29 @@ export function formatRate(rate) {
 // Excel/Sheets, and partner names/codes are not trusted text — so text cells get a
 // leading apostrophe. Real numbers (amounts, which may legitimately be negative)
 // are written as-is.
+// Round 6 (bug): that apostrophe is right for free text but wrong for the ACCOUNT / PHONE column of the payout run.
+// A mobile-money number is always entered with its `+` country code, so `+254 712 345 678` was written as
+// `'+254 712 345 678` (a literal apostrophe in a file whose whole purpose is paying people), and a bank account with
+// a leading zero still lost the zero in Excel. csvText() marks a value that must reach the spreadsheet as TEXT: when it
+// is made only of letters, digits and `+ ( ) - space` (so it can hold no quote, comma or operator that could form a
+// formula) and starts like a number, it is written as ="value", which Excel and Sheets show verbatim. Anything else
+// falls back to the normal rules.
+// True when `iso` is a valid timestamp less than `hours` ago (used for the post-payout-details-change hold).
+export function withinHours(iso, hours) {
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) && Date.now() - ms < hours * 3600000
+}
+
+export function csvText(v) { return { __csvText: v == null ? '' : String(v) } }
+
 export function csvCell(v) {
   if (v === null || v === undefined) return ''
+  if (typeof v === 'object' && typeof v.__csvText === 'string') {
+    const raw = v.__csvText
+    if (raw === '') return ''
+    if (/^[0-9A-Za-z+() -]+$/.test(raw) && /^[0-9+()-]/.test(raw)) return '"=""' + raw + '"""'
+    return csvCell(raw)
+  }
   let s = String(v)
   if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s

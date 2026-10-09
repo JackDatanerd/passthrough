@@ -637,6 +637,14 @@ const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
 })
+// Round 6 (bug): POST /api/partners/notifications (the "email me about each sale" switch) shared partnerWrite
+// with payout-detail edits, so five toggles locked the partner out of saving their bank details for 15 minutes —
+// the same fate-sharing the buckets above were split to avoid. A preference flip has no money attached; its own,
+// roomier bucket.
+const partnerPrefs = makeLimiter({
+  windowSeconds: 15 * 60, max: 20, keyPrefix: 'rl:partnerprefs',
+  message: msg('Too many attempts. Please wait a few minutes.')
+})
 // Round 5: the public "become a partner" form (POST /api/partners/apply) used to share
 // partnerWrite with payout-detail edits — the same fate-sharing the partnerLinkRequest
 // comment above describes (a few applications from an office/NAT IP could block a partner
@@ -845,7 +853,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
-  partnerRead, partnerWrite, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
+  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName

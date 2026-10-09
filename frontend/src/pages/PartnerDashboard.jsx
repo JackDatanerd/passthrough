@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { copyToClipboard, formatCents, formatRate } from '../lib/utils'
+import { copyToClipboard, formatCents, formatRate, downloadCsv } from '../lib/utils'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
@@ -251,6 +251,103 @@ function CycleRow({ cycle, currency }) {
 // (data.scope === 'payout') still gets the direct link; everyone else asks for the real
 // payout-details link to be emailed to the address on file — a forwarded or leaked
 // notification email can read earnings but can't redirect where payouts go.
+// Section 4 round 6 (feature gap): the dashboard carried only the 50 most recent conversions and said "showing 50 of
+// N" with no way to see the rest or keep a record. "Load more" pages through GET /partners/conversions (newest first);
+// "Download CSV" walks every page and writes one row per conversion or refund reversal.
+const CSV_PAGE = 200
+const CSV_MAX_PAGES = 25   // 5,000 rows; the endpoint is rate limited (30 reads per 5 minutes)
+
+function ConversionsSection({ token, initial, total, currency }) {
+  const [extra, setExtra] = useState([])
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [exporting, setExporting] = useState(false)
+  const [error, setError] = useState('')
+
+  const seen = new Set(initial.map(c => c.id))
+  const loaded = [...initial, ...extra.filter(c => !seen.has(c.id))]
+  const known = typeof total === 'number' ? total : loaded.length
+  const more = known > loaded.length
+
+  async function fetchPage(offset, limit) {
+    const res = await api.get(`/partners/conversions?limit=${limit}&offset=${offset}`, partnerAuth(token))
+    return res.data
+  }
+
+  async function loadMore() {
+    setLoadingMore(true); setError('')
+    try {
+      const page = await fetchPage(loaded.length, 50)
+      setExtra(prev => [...prev, ...(page.data || [])])
+    } catch (_) {
+      setError('Could not load more — please try again.')
+    } finally { setLoadingMore(false) }
+  }
+
+  async function exportCsv() {
+    setExporting(true); setError('')
+    try {
+      const rows = []
+      for (let page = 0; page < CSV_MAX_PAGES; page++) {
+        const out = await fetchPage(page * CSV_PAGE, CSV_PAGE)
+        rows.push(...(out.data || []))
+        if ((out.data || []).length < CSV_PAGE) break
+      }
+      const unique = [...new Map(rows.map(r => [r.id, r])).values()]
+      downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
+        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Currency'],
+        ...unique.map(r => [
+          String(r.createdAt || '').slice(0, 10), r.code || '',
+          r.isReversal ? 'Refund reversal' : 'Sale',
+          (r.grossAmountCents || 0) / 100,
+          r.commissionRate == null ? '' : `${+(r.commissionRate * 100).toFixed(2)}%`,
+          (r.commissionAmountCents || 0) / 100,
+          r.isReversal ? 'Reversal' : r.paid ? 'Paid' : 'Pending',
+          currency || '',
+        ]),
+      ])
+    } catch (_) {
+      setError('Could not build the CSV — please try again in a moment.')
+    } finally { setExporting(false) }
+  }
+
+  return (
+    <>
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-lg font-semibold text-gray-900">Conversions</h2>
+        {loaded.length > 0 && (
+          <button type="button" onClick={exportCsv} disabled={exporting}
+            className="text-sm text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline">
+            {exporting ? 'Preparing…' : 'Download CSV'}
+          </button>
+        )}
+      </div>
+      {loaded.length === 0 ? (
+        <p className="text-sm text-gray-500 mb-8">
+          No conversions yet — once someone buys through your link, it'll show up here.
+        </p>
+      ) : (
+        <div className="mb-8">
+          <ul className="flex flex-col gap-2 mb-2">
+            {loaded.map(cv => <ConversionRow key={cv.id} conversion={cv} currency={currency} />)}
+          </ul>
+          <div className="flex items-center gap-3">
+            {typeof total === 'number' && total > loaded.length && (
+              <p className="text-xs text-gray-400">Showing {loaded.length} of {total} conversions.</p>
+            )}
+            {more && (
+              <button type="button" onClick={loadMore} disabled={loadingMore}
+                className="text-sm text-blue-600 hover:underline disabled:opacity-50 disabled:no-underline">
+                {loadingMore ? 'Loading…' : 'Load more'}
+              </button>
+            )}
+          </div>
+          {error && <p className="text-xs text-red-600 mt-1">{error}</p>}
+        </div>
+      )}
+    </>
+  )
+}
+
 function PayoutDetailsAccess({ token, scope, children, className }) {
   const [state, setState] = useState('idle')   // idle | sending | sent | error
   if (scope === 'payout') {
@@ -409,6 +506,19 @@ export default function PartnerDashboard() {
               </div>
             )}
 
+            {/* Round 6: the figures the admin side has always had. What the next payout run will actually pay, and any
+                refund credit that will net against it, instead of making the partner add up the cycle rows below. */}
+            {data.readyToPayCents > 0 && (
+              <div className="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900" data-testid="ready-to-pay">
+                <span className="font-semibold">{fmtCents(data.readyToPayCents, data.currency)}</span> is ready to be paid in the next payout run.
+              </div>
+            )}
+            {data.creditCents > 0 && (
+              <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600" data-testid="refund-credit">
+                A refund credit of {fmtCents(data.creditCents, data.currency)} will be taken off your next payout.
+              </div>
+            )}
+
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
               <StatCard label="Clicks" value={data.stats.totalClicks} />
               <StatCard label="Conversions" value={data.stats.totalConversions} />
@@ -448,31 +558,7 @@ export default function PartnerDashboard() {
               </div>
             )}
 
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Recent conversions</h2>
-            {(data.conversions || []).length === 0 ? (
-              <p className="text-sm text-gray-500 mb-8">
-                No conversions yet — once someone buys through your link, it'll show up here.
-              </p>
-            ) : (
-              <div className="mb-8">
-                <ul className="flex flex-col gap-2 mb-2">
-                  {data.conversions.map(cv => (
-                    <ConversionRow key={cv.id} conversion={cv} currency={data.currency} />
-                  ))}
-                </ul>
-                {/* AUDIT FIX (Section 3/4 re-audit, feature gap): this list used
-                    to receive (and render) the partner's ENTIRE conversion
-                    history with no bound — an unbounded payload and DOM for a
-                    heading that's always said "Recent," not "All." The backend
-                    now caps what it sends; this just says so honestly instead
-                    of silently looking complete when it's a partial view. */}
-                {typeof data.conversionsTotal === 'number' && data.conversionsTotal > data.conversions.length && (
-                  <p className="text-xs text-gray-400">
-                    Showing the {data.conversions.length} most recent of {data.conversionsTotal} conversions.
-                  </p>
-                )}
-              </div>
-            )}
+            <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} />
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
             {data.payouts.length === 0 ? (

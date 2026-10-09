@@ -15,6 +15,7 @@ function setup({
   // matching a 23505 ledgerError that isn't paired with an override.
   referralCode = { id: 'rc1', partner_id: 'p1' }, partner = { commission_rate: 0.2 }, ledgerError = null,
   existingLedgerRow = { id: 'led1', usage_counted: true }, existingLedgerError = null,
+  reversalRow = null,
 } = {}) {
   const state = { queue: [], alerts: [], claims: [], ledger: [] }
   const db = createFakeSupabase(q => {
@@ -26,7 +27,11 @@ function setup({
     if (q.table === 'commission_ledger' && q.op === 'insert') { state.ledger.push(q.values); return { error: ledgerError } }
     // recordConversion's post-23505 duplicate check: a SELECT for the row
     // that already exists, keyed on payment_id (distinct from the insert above).
-    if (q.table === 'commission_ledger' && q.op === 'select') return { data: existingLedgerRow, error: existingLedgerError }
+    if (q.table === 'commission_ledger' && q.op === 'select') {
+      // Round 6: recordConversion also asks whether a duplicate's row was already reversed (reverses_ledger_id = row).
+      if (q.filters.some(f => f[0] === 'eq' && f[1] === 'reverses_ledger_id')) return { data: reversalRow, error: null }
+      return { data: existingLedgerRow, error: existingLedgerError }
+    }
     return undefined
   })
   const env = { FIX_QUEUE: { send: async m => { if (queueError) throw queueError; state.queue.push(m) } } }

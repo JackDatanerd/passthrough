@@ -17,9 +17,10 @@ vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
 
 const renderIt = () => render(<MemoryRouter><PartnerApply /></MemoryRouter>)
-const fill = async () => {
+const fill = async ({ accept = true } = {}) => {
   await userEvent.type(screen.getByLabelText('Your name'), '  Ann Coach ')
   await userEvent.type(screen.getByLabelText('Email'), 'ann@x.co')
+  if (accept) await userEvent.click(screen.getByRole('checkbox', { name: /partner program terms/i }))
 }
 const submit = () => userEvent.click(screen.getByRole('button', { name: /submit application/i }))
 beforeEach(() => { h.calls.length = 0; h.impl = () => Promise.resolve({ data: { success: true } }) })
@@ -37,7 +38,7 @@ describe('PartnerApply', () => {
     await fill()
     await submit()
     expect(await screen.findByText(/application received/i)).toBeInTheDocument()
-    expect(h.calls).toEqual([['/partners/apply', { name: 'Ann Coach', email: 'ann@x.co' }]])
+    expect(h.calls).toEqual([['/partners/apply', { name: 'Ann Coach', email: 'ann@x.co', acceptTerms: true }]])
   })
 
   it('shows the server error and stays on the form', async () => {
@@ -47,6 +48,28 @@ describe('PartnerApply', () => {
     await submit()
     expect(await screen.findByText(/too many attempts/i)).toBeInTheDocument()
     expect(screen.queryByText(/application received/i)).toBeNull()
+  })
+})
+
+describe('PartnerApply — program terms (round 6)', () => {
+  it('will not submit until the terms are accepted, and says why', async () => {
+    renderIt()
+    await fill({ accept: false })
+    await submit()
+    expect(await screen.findByText(/accept the partner program terms/i)).toBeInTheDocument()
+    expect(h.calls).toHaveLength(0)
+  })
+  it('the terms link opens the public terms page in a new tab', () => {
+    renderIt()
+    const link = screen.getByRole('link', { name: /partner program terms/i })
+    expect(link).toHaveAttribute('href', '/partner/terms')
+    expect(link).toHaveAttribute('target', '_blank')
+  })
+  it('the thank-you state tells the applicant a confirmation email was sent', async () => {
+    renderIt()
+    await fill()
+    await submit()
+    expect(await screen.findByText(/emailed a confirmation to ann@x\.co/i)).toBeInTheDocument()
   })
 })
 

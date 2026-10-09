@@ -326,15 +326,17 @@ async function withOneRetry(fn) {
   return fn()
 }
 
-async function recordConversion(supabase, payment, env) {
-  const result = await recordConversionInner(supabase, payment, env)
-  // Pass `env` from the fulfilment paths so a failure pages the owner; the admin
-  // reconcile endpoint omits it and just returns the result to the admin.
-  if (env && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
+async function recordConversion(supabase, payment, env, opts = {}) {
+  const result = await recordConversionInner(supabase, payment, env, opts)
+  // Pass `env` from the fulfilment paths so a failure pages the owner. The admin reconcile endpoint passes
+  // { adminRetry: true }: the admin is looking at the result, so no owner alert / over-limit warning — but (round
+  // 6) the PARTNER notification still goes out when this retry is the one that finally records the commission,
+  // which previously left the partner never told about a sale they had earned.
+  if (env && !opts.adminRetry && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
   return result
 }
 
-async function recordConversionInner(supabase, payment, env) {
+async function recordConversionInner(supabase, payment, env, opts = {}) {
   if (!payment?.referral_code_id) return { ok: true, recorded: false, reason: 'no-referral' }
 
   try {
@@ -397,6 +399,26 @@ async function recordConversionInner(supabase, payment, env) {
       if (!existing.data || existing.data.usage_counted !== false) return { ok: true, recorded: false, reason: 'duplicate' }
       ledgerId = existing.data.id
       repairOnly = true
+      // Round 6 (bug): a row still flagged usage_counted=false that has ALREADY been reversed (a refund landed
+      // between the write and the counter bump — reverseCommission skips the decrement for an uncounted row)
+      // must not be repaired by bumping the counter: nothing would ever give that slot back, so a limited code
+      // would permanently lose a use to a refunded sale. Mark it settled without counting and free the reservation.
+      const rev = await withOneRetry(() => supabase.from('commission_ledger')
+        .select('id').eq('reverses_ledger_id', ledgerId).maybeSingle())
+      if (rev.error) {
+        console.error('recordConversion reversal lookup:', rev.error.message)
+        return { ok: false, recorded: false, reason: 'duplicate-lookup', error: rev.error.message }
+      }
+      if (rev.data) {
+        const settle = await withOneRetry(() => supabase.from('commission_ledger')
+          .update({ usage_counted: true }).eq('id', ledgerId).eq('usage_counted', false))
+        if (settle.error) {
+          console.error('recordConversion reversed-row settle:', settle.error.message)
+          return { ok: false, recorded: false, reason: 'usage-increment', error: settle.error.message }
+        }
+        await releaseCodeReservation(supabase, payment.referral_reservation_id)
+        return { ok: true, recorded: false, reason: 'duplicate', alreadyReversed: true }
+      }
     }
 
     const rpcArgs = { p_code_id: codeRow.id, p_ledger_id: ledgerId }
@@ -433,7 +455,7 @@ async function recordConversionInner(supabase, payment, env) {
     // the admin reconcile endpoint's deliberate omission of env (see
     // recordConversion's comment) means it stays quiet on a retry, same as
     // notifyConversionFailure just above.
-    if (env) await warnIfOverLimit(supabase, env, codeRow.id)
+    if (env && !opts.adminRetry) await warnIfOverLimit(supabase, env, codeRow.id)
     // AUDIT FIX (Section 3/4 pass, feature gap): a partner gets emailed for
     // every OTHER account-adjacent event this file/partners.controller.js
     // handles — a payout sent, payout details changed, a new code created,
@@ -537,7 +559,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
 module.exports = {
   canonicalEmail,
   notifyPartnerReversal,
-  resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable,
+  resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable, lookupCode,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
   countLiveReservations, countOwnLiveReservations,
 }

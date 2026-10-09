@@ -72,6 +72,9 @@ const RECIPIENT_LIMITS = {
   // Round 4: a partner can ask for their payout-details link from the read-only dashboard.
   // Bounded per recipient so the button can't be used to mail-bomb a partner's inbox.
   partner_payout_details_request: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
+  // Round 6: the applicant acknowledgment goes to an address typed into a public form, so it is capped per
+  // recipient — a third party's address can't be mailbombed through repeated applications.
+  partner_application_received: { max: 2, windowSeconds: 24 * 3600 },
   // Separate budget for the partner's own "email me my link" button (see quotaKey in send()).
   partner_payout_link_self: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
   password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
@@ -541,6 +544,13 @@ async function sendPartnerApplicationRejected(env, supabase, email, name, reason
   })
 }
 
+// Round 6: acknowledgment for a stored partner application (see applyAsPartner).
+async function sendPartnerApplicationReceived(env, supabase, email, name) {
+  return send(env, supabase, email, 'We received your Passthrough partner application', 'partner_application_received', {
+    NAME: name
+  })
+}
+
 async function sendPayoutSent(env, supabase, email, name, amountCents, currency) {
   const amount = fmtMoney(amountCents, currency)
   return send(env, supabase, email, 'Your Passthrough payout is on its way', 'payout_sent', {
@@ -810,7 +820,7 @@ module.exports = {
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
   sendPaymentReceipt, sendPaymentReversed,
   sendOwnerAlert, sendOwnerNotice,
-  sendPartnerPayoutDetailsRequest, sendPayoutSent, sendReferralCodeCreated,
+  sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
   sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected,
   sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided

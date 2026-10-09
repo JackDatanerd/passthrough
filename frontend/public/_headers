@@ -33,5 +33,12 @@
   ! Referrer-Policy
   Referrer-Policy: strict-origin-when-cross-origin
 
+# Round 6: the program terms page is public and tokenless too — same treatment as /partner/apply.
+/partner/terms
+  ! X-Robots-Tag
+  ! Cache-Control
+  ! Referrer-Policy
+  Referrer-Policy: strict-origin-when-cross-origin
+
 /assets/*
   Cache-Control: public, max-age=31536000, immutable

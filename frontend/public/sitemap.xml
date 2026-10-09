@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- robots.txt has always pointed here, but the file did not exist, so /sitemap.xml fell through the SPA rewrite and
+     returned index.html. Public, indexable pages only: nothing behind a login, nothing carrying a token. -->
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://passthrough.dev/</loc></url>
+  <url><loc>https://passthrough.dev/pricing</loc></url>
+  <url><loc>https://passthrough.dev/check</loc></url>
+  <url><loc>https://passthrough.dev/partner/apply</loc></url>
+  <url><loc>https://passthrough.dev/partner/terms</loc></url>
+  <url><loc>https://passthrough.dev/terms</loc></url>
+  <url><loc>https://passthrough.dev/privacy</loc></url>
+</urlset>

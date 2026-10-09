@@ -758,7 +758,7 @@ async function reconcilePayment(ctx) {
   // no-op), and a failed ledger write at fulfillment time is otherwise
   // unrecoverable. Skipped for a duplicate: it must never earn commission.
   const skipCommission = ['DUPLICATE', 'SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED'].includes(result.outcome)
-  const conversion = skipCommission ? null : await referralService.recordConversion(supabase, payment)
+  const conversion = skipCommission ? null : await referralService.recordConversion(supabase, payment, ctx.env, { adminRetry: true })
 
   const messages = {
     FULFILLED:         'Fulfilled.',

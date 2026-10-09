@@ -2,5 +2,8 @@ User-agent: *
 Allow: /
 Disallow: /dashboard/
 Disallow: /api/
-Disallow: /partner/
+# Round 6 (bug): this was `Disallow: /partner/`, which also blocked /partner/apply and /partner/terms — the public,
+# deliberately indexable pages of the program (see _headers). Only the token pages are kept out.
+Disallow: /partner/dashboard
+Disallow: /partner/payout-details
 Sitemap: https://passthrough.dev/sitemap.xml

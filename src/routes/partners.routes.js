@@ -17,9 +17,11 @@ const router = new Hono()
 router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
 router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
 router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
+// Round 6: every conversion, paged (the dashboard itself only carries the latest 50).
+router.get( '/conversions',    rl.partnerRead,  c.getPartnerConversions)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 // Round 5: the partner's own email preference (per-sale emails on/off).
-router.post('/notifications', rl.partnerWrite, c.updatePartnerNotifications)
+router.post('/notifications', rl.partnerPrefs, c.updatePartnerNotifications)
 
 // Public — click tracking. Rate-limited with its own dedicated bucket
 // (rl.click) rather than sharing rl.employerLead's lead-spam bucket — see
@@ -27,6 +29,7 @@ router.post('/notifications', rl.partnerWrite, c.updatePartnerNotifications)
 router.post('/track-click', rl.click, c.trackClick)
 
 // Public — "become a partner" application (rate-limited like the other public writes).
+router.get( '/program', rl.partnerRead, c.getProgramTerms)
 router.post('/apply', rl.partnerApply, c.applyAsPartner)
 
 // Admin — application review. Registered BEFORE the '/:id' routes below so
@@ -43,6 +46,8 @@ router.get(  '/',                          admin, c.adminListPartners)
 router.get(  '/overview',                  admin, c.adminPartnersOverview)
 router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
+// Round 6: record a whole payout run in one call (each item runs the single-payout checks).
+router.post( '/payouts/batch',             admin, c.adminRecordPayoutBatch)
 router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.

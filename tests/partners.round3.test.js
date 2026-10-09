@@ -211,17 +211,22 @@ describe('partner applications', () => {
       'services/email.service.js': {
         sendOwnerAlert: async (e, s) => { st.alerts.push(s) },
         sendPartnerPayoutDetailsRequest: async () => true,
+        sendPartnerApplicationReceived: async (...a) => { st.received = (st.received || []).concat([a.slice(3)]); return true },
         sendPartnerApplicationRejected: async (...a) => { st.rejectedEmails = (st.rejectedEmails || []).concat([a.slice(3)]); return true },
       },
     }) }
   }
-  const body = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter' }
+  const body = { name: 'Ann', email: 'ann@x.co', audience: 'newsletter', acceptTerms: true }
   it('stores a valid application and alerts the owner', async () => {
     t = setupApp()
     const r = await t.mod.applyAsPartner(ctxOf({}, { body }))
     expect(r.body.success).toBe(true)
     expect(t.st.inserts[0]).toMatchObject({ name: 'Ann', email: 'ann@x.co', audience: 'newsletter' })
     expect(t.st.alerts).toContain('New partner application')
+    // Round 6: acceptance is recorded with the version, and the applicant is acknowledged.
+    expect(t.st.inserts[0].terms_accepted_at).toEqual(expect.any(String))
+    expect(t.st.inserts[0].terms_version).toBe('2026-10')
+    expect(t.st.received).toEqual([['Ann']])   // (name) — slice(3) of (env, db, email, name)
   })
   it('honeypot: pretends success, stores nothing', async () => {
     t = setupApp()

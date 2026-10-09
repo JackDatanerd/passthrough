@@ -10,7 +10,7 @@ import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv } from '../../lib/utils'
+import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv, withinHours } from '../../lib/utils'
 import Alert from '../../components/ui/Alert'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
@@ -297,7 +297,12 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   const [note, setNote] = useState('')
   const [internalNote, setInternalNote] = useState('')
   const [ack, setAck] = useState(false)
+  // Round 6: within the server's hold window after a payout-details change (partner.payoutDetailsHoldHours, 48 by
+  // default) the payout is REFUSED unless the admin states they confirmed the change with the partner directly.
+  const [confirmedWithPartner, setConfirmedWithPartner] = useState(false)
   const { loading: saving, error, execute } = useApi()
+  const holdHours = partner.payoutDetailsHoldHours ?? 48
+  const inHold = holdHours > 0 && withinHours(partner.payoutDetailsSubmittedAt, holdHours)
   const amountCentsNow = Math.round(Number(amount || 0) * 100)
   const differs = amountCentsNow > 0 && amountCentsNow !== defaultCents
 
@@ -315,9 +320,16 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
       return
     }
 
+    if (inHold && !confirmedWithPartner) {
+      const why = `Payout details changed in the last ${holdHours} hours — confirm the change with ${partner.name} and tick the box.`
+      await execute(() => Promise.reject(new Error(why)), { fallback: why }).catch(() => {})
+      return
+    }
+
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/payouts`, {
         amountCents: Math.round(parsed * 100),
+        ...(inHold ? { confirmedWithPartner: true } : {}),
         ...(differs ? { acknowledgeDifference: true } : {}),
         // The payout details the admin was looking at; the server refuses (409) if
         // they changed since, so money is never recorded against a stale account.
@@ -364,7 +376,18 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           Only use this <strong>after</strong> you've actually sent the money via your bank
           or mobile money app. This just logs it and notifies {partner.name}.
         </p>
-        {recentChange && (
+        {inHold && (
+          <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800" data-testid="details-hold">
+            <p>
+              {partner.name} changed these payout details on {formatDate(partner.payoutDetailsSubmittedAt)} — within the last {holdHours} hours.
+              Payouts are held after a change so a stolen link can't redirect money; the server will not record this one until you
+              have confirmed with {partner.name} directly (not by replying to an email) that the change was theirs.
+            </p>
+            <Checkbox wrapperClassName="mt-2" label={`I confirmed the change with ${partner.name}`}
+              checked={confirmedWithPartner} onChange={e => setConfirmedWithPartner(e.target.checked)} />
+          </div>
+        )}
+        {!inHold && recentChange && (
           <Alert className="text-xs">
             These payout details were changed on {formatDate(partner.payoutDetailsSubmittedAt)} — within the last {RECENT_DETAILS_CHANGE_DAYS} days.
             Confirm with {partner.name} that the change was theirs before you send money to this account.
@@ -827,8 +850,8 @@ export default function PartnerDetail() {
       const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
       toast({
         message: res.data.success
-          ? `Payout link re-sent to ${partner.name}.${copied ? ' Also copied to your clipboard.' : ''}`
-          : `Email failed to send.${copied ? ' Link copied to your clipboard instead.' : ''}`,
+          ? `Payout link re-sent to ${partner.name}.`
+          : `${res.data.message || 'Email not sent.'}${copied ? ' Link copied to your clipboard instead.' : ''}`,
         type: res.data.success ? 'success' : 'warning'
       })
     } catch (_) {
@@ -896,6 +919,14 @@ export default function PartnerDetail() {
           </div>
         </div>
       </div>
+
+      {partner.mixedCurrency && (
+        <Alert variant="warning" className="mb-4 text-sm" data-testid="mixed-currency">
+          Unpaid commission for this partner is in more than one currency ({(partner.unpaidCurrencies || []).join(', ')}). A payout can
+          only settle one currency, so recording one will be refused until the currency matches — the totals below add the
+          amounts together without converting them.
+        </Alert>
+      )}
 
       <div className="grid sm:grid-cols-3 gap-4">
         <StatCard label="Total pending" size="md" valueClassName="text-amber-600"

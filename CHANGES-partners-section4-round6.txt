@@ -1,0 +1,53 @@
+SECTION 4 (Partners / Referral) — ROUND 6
+Independent audit of partners.controller.js, partners.routes.js, referral.service.js, the partner pages, the admin
+partner pages and useReferralCapture. Deploy order: apply migration 0063 FIRST, then deploy the Worker and the
+frontend TOGETHER (the Worker now requires `acceptTerms` on applications; only the new form sends it).
+
+BUGS FIXED
+ B1  Any `?ref=` value overwrote a real partner attribution (`?ref=producthunt` wiped COACH20 and showed the buyer
+     "that code doesn't look right"). POST /partners/track-click now answers `valid`; useReferralCapture restores
+     what it replaced, exactly (same captured-at), when the answer is false, and never re-stores a rejected code in
+     the same page session. (hooks/useReferralCapture.js, partners.controller.js trackClick)
+ B2  robots.txt `Disallow: /partner/` blocked /partner/apply, the one public page of the program; /sitemap.xml was
+     referenced but did not exist (it fell through the SPA rewrite and returned index.html). Only the two token pages
+     are disallowed now; sitemap.xml added; _headers treats /partner/terms like /partner/apply.
+ B3  Payout-run CSV wrote `+254 712 345 678` as `'+254 712 345 678` and lost leading zeros of bank accounts in Excel.
+     The account/phone column is now written as text (csvText) — still formula-safe for anything that is not plainly
+     a number-like value.
+ B4  POST /partners/notifications shared partnerWrite (5 per 15 min) with payout-detail edits: five toggles locked the
+     partner out of saving bank details. Own limiter (partnerPrefs, 20 per 15 min).
+ B5  Admin reconcile recorded a late commission but never told the partner. recordConversion(..., {adminRetry:true}):
+     partner notification still sent; owner alerts / over-limit warning stay quiet (the admin sees the result).
+ B6  A refunded sale could permanently use up a slot of a usage-limited code (repair path bumped uses_so_far for a row
+     that had already been reversed, whose decrement had been skipped). The repair path now settles such a row
+     without counting it and frees its reservation.
+ B7  Payout `currency` accepted any 3 chars ('usd' stored as-is) and was never compared with the ledger rows being
+     settled. Normalised to upper case; a mismatch (or rows spanning two currencies) is refused with CURRENCY_MISMATCH.
+     adminGetPartner flags mixedCurrency; the partner page warns.
+ B8  Approving an application whose email already belonged to a partner flipped it APPROVED then back — a window in
+     which a re-application made the flip-back hit the unique pending index, stranding it APPROVED with no partner.
+     Checked BEFORE claiming; a failed restore closes the old application as superseded.
+ +   Owner alert for a payout-details change was deduped per token for 10 minutes, so a second change (the one a
+     hijacker makes after the real partner edits) sent nothing. Every distinct change alerts, and the alert now says
+     method + last 4, before -> after. Resend-link no longer returns / copies the write-token URL on a successful send.
+
+FEATURE GAPS CLOSED
+ G1  trackClick reports whether a code is real (see B1).
+ G2  "Record payout run": POST /partners/payouts/batch (<= 25 items, each through the same checks as the single
+     endpoint, scoped to what is payable NOW) + an admin modal with per-partner results. A stale amount, changed
+     details, a hold or a currency mismatch fails THAT partner only.
+ G3  Server-side hold after a payout-details change: PAYOUT_DETAILS_HOLD_HOURS (default 48, 0 = off). Payouts to that
+     partner are refused (PAYOUT_DETAILS_RECENT) unless the admin states they confirmed the change with the partner
+     (`confirmedWithPartner`); both admin payout screens have the tick-box; the run starts those partners unselected.
+ G4  Partner dashboard: ready-to-pay and refund-credit lines (readyToPayCents / creditCents), "Load more" through
+     GET /partners/conversions (paged, newest first) and "Download CSV" of every conversion.
+ G5  Partner program terms: public /partner/terms page (live hold / minimum / hold-hours from GET /partners/program);
+     applying requires accepting them (`acceptTerms`), recorded with a version on the application and the partner;
+     a stored application sends the applicant an acknowledgment email.
+
+DATABASE      0063_partners_round6.sql  (terms_accepted_at, terms_version on partner_applications and partners)
+NEW ENV       PAYOUT_DETAILS_HOLD_HOURS (optional, default 48)
+SCHEMA GUARD  EXPECTED_SCHEMA_VERSION 62 -> 63
+TESTS         tests/partners.round6.test.js, frontend/tests/{useReferralCapture.validity,csvText,publicPartnerPages,
+              partnerDashboard.round6,partnerDetail.round6,adminPartners.round6}, pages/PartnerTerms; updated the
+              suites whose fixtures predate acceptTerms / the trackClick lookup / the payout currency guard.

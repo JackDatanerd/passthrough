@@ -8,8 +8,9 @@ import Modal from '../../components/ui/Modal'
 import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import Checkbox from '../../components/ui/Checkbox'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatRate, formatDate, downloadCsv } from '../../lib/utils'
+import { formatCents, formatRate, formatDate, downloadCsv, csvText, withinHours } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
 import PartnersLookupPanel, { OverviewStrip } from './AdminPartnersLookup'
 import { copyToClipboard } from '../../lib/utils'
@@ -281,7 +282,7 @@ function exportPayoutRun(partners) {
     const d = p.payoutDetails || {}
     rows.push([
       p.name, p.email, p.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
-      d.accountNumber || d.phoneNumber || '', ((p.readyToPayCents || 0) / 100).toFixed(2), p.currency || '',
+      csvText(d.accountNumber || d.phoneNumber || ''), ((p.readyToPayCents || 0) / 100).toFixed(2), p.currency || '',
       p.payoutDetailsSubmittedAt || ''
     ])
   }
@@ -289,11 +290,128 @@ function exportPayoutRun(partners) {
   return payable.length
 }
 
+// Section 4 round 6 (feature gap): "Export payout run" produced a CSV to pay from, but each payout then had to be
+// recorded one partner at a time. This records the whole run once the money has been sent. It sends exactly the
+// amounts the list showed as ready to pay; the server re-checks each one (amount still right, payout details
+// unchanged since this list loaded, not inside the post-change hold, currency) and reports per partner, so one
+// stale row never blocks the rest and a partner is never recorded as paid for an amount that moved.
+const RUN_CHUNK = 25   // the server's per-request cap
+
+function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
+  const toast = useToast()
+  const rows = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod)
+  const held = p => holdHours > 0 && withinHours(p.payoutDetailsSubmittedAt, holdHours)
+  // A partner whose details changed inside the hold window starts unselected; ticking them requires the confirmation.
+  const [selected, setSelected] = useState(() => new Set(rows.filter(p => !held(p)).map(p => p.id)))
+  const [confirmed, setConfirmed] = useState(() => new Set())
+  const [sentAll, setSentAll] = useState(false)
+  const [note, setNote] = useState('')
+  const [running, setRunning] = useState(false)
+  const [results, setResults] = useState(null)
+
+  const chosen = rows.filter(p => selected.has(p.id))
+  const unconfirmedHeld = chosen.filter(p => held(p) && !confirmed.has(p.id))
+  const totalCents = chosen.reduce((sum, p) => sum + p.readyToPayCents, 0)
+  const currency = rows[0]?.currency
+  const toggle = (set, setter, id) => setter(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const nameOf = id => rows.find(p => p.id === id)?.name || id
+
+  async function run() {
+    setRunning(true)
+    const all = []
+    const items = chosen.map(p => ({
+      partnerId: p.id, amountCents: p.readyToPayCents, expectedDetailsSubmittedAt: p.payoutDetailsSubmittedAt ?? null,
+      ...(held(p) ? { confirmedWithPartner: true } : {}),
+      ...(note.trim() ? { note: note.trim() } : {}),
+    }))
+    for (let i = 0; i < items.length; i += RUN_CHUNK) {
+      const chunk = items.slice(i, i + RUN_CHUNK)
+      try {
+        const res = await api.post('/partners/payouts/batch', { items: chunk })
+        all.push(...res.data.data.results)
+      } catch (_) {
+        // The request itself failed — we cannot know whether any of this chunk was recorded.
+        all.push(...chunk.map(c => ({ partnerId: c.partnerId, ok: false, unknown: true,
+          message: 'Request failed — check this partner\'s payout history before recording again.' })))
+      }
+    }
+    setResults(all)
+    setRunning(false)
+    const ok = all.filter(r => r.ok).length
+    toast({ message: `${ok} of ${all.length} payout(s) recorded.`, type: ok === all.length ? 'success' : 'warning' })
+  }
+
+  if (results) {
+    return (
+      <Modal open onClose={() => { onDone(); onClose() }} title="Payout run recorded">
+        <div className="flex flex-col gap-3" data-testid="run-results">
+          <ul className="flex flex-col gap-1 text-sm">
+            {results.map(r => (
+              <li key={r.partnerId} className={r.ok ? 'text-green-700' : 'text-red-700'}>
+                {r.ok ? '✓' : '✗'} {nameOf(r.partnerId)}
+                {!r.ok && r.message ? ` — ${r.message}` : ''}
+                {r.ok && r.ledgerSettlementFailed ? ' — recorded, but marking commissions paid failed; check the ledger.' : ''}
+                {r.ok && r.emailed === false ? ' — recorded, but the confirmation email failed.' : ''}
+              </li>
+            ))}
+          </ul>
+          <div className="flex justify-end"><Button onClick={() => { onDone(); onClose() }}>Done</Button></div>
+        </div>
+      </Modal>
+    )
+  }
+
+  return (
+    <Modal open onClose={onClose} title="Record payout run">
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-gray-500">
+          Only use this <strong>after</strong> you've sent the money. Each selected partner is marked paid for the amount shown
+          (the completed cycles' commission, net of refund credits) and emailed.
+        </p>
+        <div className="border border-gray-200 rounded-md divide-y divide-gray-100 max-h-72 overflow-y-auto">
+          {rows.map(p => (
+            <div key={p.id} className="px-3 py-2 flex flex-col gap-1">
+              <div className="flex items-center justify-between gap-3">
+                <Checkbox label={p.name} checked={selected.has(p.id)} onChange={() => toggle(selected, setSelected, p.id)} />
+                <span className="text-sm font-medium">{formatCents(p.readyToPayCents, p.currency)}</span>
+              </div>
+              {held(p) && selected.has(p.id) && (
+                <div className="ml-6 text-xs text-red-700" data-testid={`held-${p.id}`}>
+                  Payout details changed {formatDate(p.payoutDetailsSubmittedAt)} (inside the {holdHours}-hour hold).
+                  <Checkbox wrapperClassName="mt-1 text-xs" label={`I confirmed the change with ${p.name} directly`}
+                    checked={confirmed.has(p.id)} onChange={() => toggle(confirmed, setConfirmed, p.id)} />
+                </div>
+              )}
+              {held(p) && !selected.has(p.id) && (
+                <div className="ml-6 text-xs text-gray-400">Held — details changed {formatDate(p.payoutDetailsSubmittedAt)}.</div>
+              )}
+            </div>
+          ))}
+        </div>
+        <Input label="Note to partners (optional — shown on their dashboard)" value={note} onChange={e => setNote(e.target.value)} placeholder="e.g. September referrals" />
+        <div className="text-sm text-gray-700" data-testid="run-total">
+          {chosen.length} partner{chosen.length === 1 ? '' : 's'} · <span className="font-semibold">{formatCents(totalCents, currency)}</span>
+        </div>
+        <Checkbox label="I have sent every selected payment" checked={sentAll} onChange={e => setSentAll(e.target.checked)} />
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="button" loading={running} onClick={run}
+            disabled={chosen.length === 0 || !sentAll || unconfirmedHeld.length > 0}>
+            Mark {chosen.length} paid & notify
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  )
+}
+
 export default function AdminPartners() {
   const toast = useToast()
   const [partners, setPartners] = useState([])
   const [loading, setLoading] = useState(true)
   const [showAdd, setShowAdd] = useState(false)
+  const [showRun, setShowRun] = useState(false)
+  const [holdHours, setHoldHours] = useState(48)
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState('newest')
   const [page, setPage] = useState(0)
@@ -303,6 +421,7 @@ export default function AdminPartners() {
     try {
       const res = await api.get('/partners')
       setPartners(res.data.data)
+      if (typeof res.data.payoutDetailsHoldHours === 'number') setHoldHours(res.data.payoutDetailsHoldHours)
     } catch (_) {
       toast({ message: 'Failed to load partners.', type: 'error' })
     } finally {
@@ -335,10 +454,14 @@ export default function AdminPartners() {
             onClick={() => toast({ message: `Exported ${exportPayoutRun(partners)} payable partner(s).`, type: 'success' })}>
             Export payout run
           </Button>
+          <Button variant="secondary" disabled={payableCount === 0} onClick={() => setShowRun(true)}>
+            Record payout run
+          </Button>
           <Button onClick={() => setShowAdd(true)}>Add partner</Button>
         </div>
       </div>
 
+      {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} onClose={() => setShowRun(false)} onDone={load} />}
       <ApplicationsPanel onApproved={load} />
       <OverviewStrip />
       <PartnersLookupPanel />

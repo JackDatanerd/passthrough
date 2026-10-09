@@ -22,6 +22,7 @@ const { logAdminAction } = require('../lib/adminAudit')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { clientIp } = require('../lib/clientIp')
 const { UUID_RE } = require('../middleware/validateUuidParam')
+const { lookupCode, isCodeUsable } = require('../services/referral.service')
 const {
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   camelToSnake, PARTNER_FIELD_MAP
@@ -85,6 +86,13 @@ function voidedPairIds(ledgerRows) {
 
 // Optional minimum payout (env COMMISSION_MIN_PAYOUT_CENTS, default 0 = off).
 // Payable commission below it is "carried forward" rather than shown as ready.
+function payoutDetailsHoldHoursFor(env) {
+  const raw = env?.PAYOUT_DETAILS_HOLD_HOURS
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 48
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) && n >= 0 ? n : 48
+}
+
 function minPayoutFor(env) {
   const n = parseInt(env?.COMMISSION_MIN_PAYOUT_CENTS, 10)
   return Number.isFinite(n) && n > 0 ? n : 0
@@ -249,7 +257,7 @@ async function emailUsedByAnotherPartner(supabase, email, excludePartnerId) {
 
 // Shared by adminCreatePartner and application approval so both create a partner
 // the same way. Returns { error: message } for a duplicate email, else { data }.
-async function createPartnerRecord(ctx, supabase, { name, email, commissionRate, website, audience }, auditAction = 'partner.create', auditExtra = {}) {
+async function createPartnerRecord(ctx, supabase, { name, email, commissionRate, website, audience, termsAcceptedAt, termsVersion }, auditAction = 'partner.create', auditExtra = {}) {
   if (await emailUsedByAnotherPartner(supabase, email))
     return { error: 'A partner with that email address already exists.' }
 
@@ -261,7 +269,8 @@ async function createPartnerRecord(ctx, supabase, { name, email, commissionRate,
   const { data, error } = await supabase.from('partners').insert({
     name, email, payout_details_token: token, dashboard_token: cryptoLib.randomToken(32),
     ...(commissionRate != null ? { commission_rate: commissionRate } : {}),
-    ...(website ? { website } : {}), ...(audience ? { audience } : {})
+    ...(website ? { website } : {}), ...(audience ? { audience } : {}),
+    ...(termsAcceptedAt ? { terms_accepted_at: termsAcceptedAt, terms_version: termsVersion || null } : {})
   }).select('*').single()
   if (error) throw error
 
@@ -512,7 +521,8 @@ async function adminListPartners(ctx) {
     camel.currency                 = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
     return camel
   })
-  return ctx.json({ success: true, data: partners })
+  // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
+  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), data: partners })
 }
 
 // ── Admin: single partner detail — full ledger, full payout history, and a
@@ -566,6 +576,11 @@ async function adminGetPartner(ctx) {
   // AUDIT FIX (Section 3/4 pass, bug): see the matching fix in
   // adminListPartners above — same currency-drift gap, same fix.
   camel.currency = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
+  // Round 6: surfaced for the admin screen — the hold window the server enforces on payouts after a payout-details
+  // change, and whether unpaid commission spans more than one currency (a payout can only settle one).
+  camel.payoutDetailsHoldHours = payoutDetailsHoldHoursFor(ctx.env)
+  camel.unpaidCurrencies = [...new Set(ledger.filter(l => !l.payout_id).map(l => String(l.currency || camel.currency).toUpperCase()))]
+  camel.mixedCurrency = camel.unpaidCurrencies.length > 1
 
   return ctx.json({ success: true, data: camel })
 }
@@ -599,7 +614,12 @@ async function adminResendPayoutLink(ctx) {
   // Round 5: the response carries a bearer link, so it leaves the same trace
   // adminGetPartnerLinks does.
   await logAdminAction(ctx, supabase, 'partner.payout_link_resent', 'partner', partnerId, { emailed: sent })
-  return ctx.json({ success: sent, message: sent ? 'Link re-sent.' : 'Email send failed — check logs.', payoutUrl })
+  // Round 6: the write-token URL is only handed back when the email did NOT go (so the admin can pass it on by
+  // hand) — it used to be returned, and copied to the admin's clipboard, on every successful resend too. And a
+  // false from the sender includes the per-partner cap of 4 emails an hour, which "send failed" didn't say.
+  return ctx.json({ success: sent,
+    message: sent ? 'Link re-sent.' : 'Email not sent — it failed or hit this partner\'s 4-per-hour limit. Check logs, or copy the link instead.',
+    ...(sent ? {} : { payoutUrl }) })
 }
 
 // ── Admin: ROTATE a partner's payout-details link ───────────────────────────
@@ -827,7 +847,7 @@ async function adminUpdateReferralCode(ctx) {
 // real default in adminRecordPayout, the same way the rest of this file does.
 const recordPayoutSchema = z.object({
   amountCents:  z.number().int().positive().optional(),
-  currency:     z.string().length(3).optional(),
+  currency:     z.string().trim().regex(/^[A-Za-z]{3}$/, 'Currency must be a 3-letter code.').transform(v => v.toUpperCase()).optional(),
   payoutMethod: z.enum(['BANK', 'MOBILE_MONEY']).optional(),
   // Shown to the partner on their dashboard. Anything internal belongs in internalNote.
   note:         z.string().trim().max(500).optional(),
@@ -835,6 +855,9 @@ const recordPayoutSchema = z.object({
   // Required (with a note) when amountCents differs from the commission the
   // payout settles — see the check in adminRecordPayout.
   acknowledgeDifference: z.boolean().optional(),
+  // Round 6: the admin states they confirmed a recent payout-details change with the partner directly
+  // (required inside the PAYOUT_DETAILS_HOLD_HOURS window — see recordPayoutCore).
+  confirmedWithPartner: z.boolean().optional(),
   // The payout_details_submitted_at the admin was LOOKING AT when they sent the
   // money. If the partner (or anyone holding their link) changed the details
   // since, the payout is refused so money isn't recorded against an account the
@@ -854,11 +877,20 @@ async function adminRecordPayout(ctx) {
   const partnerId = ctx.req.param('id')
   const body = recordPayoutSchema.parse(await ctx.req.json())
   const supabase = getSupabase(ctx.env)
+  return recordPayoutCore(ctx, supabase, partnerId, body, (json, status) => (status ? ctx.json(json, status) : ctx.json(json)))
+}
+
+// Section 4 round 6: the whole payout-recording flow, parameterised on how it answers so the
+// single-partner endpoint and the batch endpoint run exactly the same checks. `reply(json, status)`
+// is ctx.json for the former and a collector for the latter. opts.scope === 'ready' settles only what
+// is payable NOW (closed cycles, past the hold, plus refund credits) — the figure the admin list shows
+// as "Ready to pay" — instead of the partner's entire balance.
+async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}) {
 
   const { data: partner, error: pErr } = await supabase
     .from('partners').select('*').eq('id', partnerId).maybeSingle()
   if (pErr) throw pErr
-  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  if (!partner) return reply({ success: false, message: 'Partner not found.' }, 404)
 
   // SECTION 4 ROUND 5 (bug): `body.payoutMethod || partner.payout_method` let an API caller
   // record a payout "by BANK" for a partner with no details at all (the guard below was
@@ -866,20 +898,33 @@ async function adminRecordPayout(ctx) {
   // method is whatever the partner's stored details say; an override may only confirm it.
   const payoutMethod = partner.payout_method
   if (!payoutMethod)
-    return ctx.json({ success: false,
+    return reply({ success: false,
       message: 'This partner has not submitted payout details yet — nothing to pay to.' }, 400)
   if (body.payoutMethod && body.payoutMethod !== payoutMethod)
-    return ctx.json({ success: false,
+    return reply({ success: false,
       message: `This partner's payout details are for ${payoutMethod === 'BANK' ? 'a bank transfer' : 'mobile money'}, not ${body.payoutMethod === 'BANK' ? 'a bank transfer' : 'mobile money'}.` }, 400)
 
   if (body.expectedDetailsSubmittedAt !== undefined &&
       !sameInstant(body.expectedDetailsSubmittedAt, partner.payout_details_submitted_at))
-    return ctx.json({ success: false, code: 'PAYOUT_DETAILS_CHANGED',
+    return reply({ success: false, code: 'PAYOUT_DETAILS_CHANGED',
       message: "This partner's payout details changed since you opened this screen. Reload, check where the money should go, and re-confirm before recording." }, 409)
 
-  let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents, reverses_ledger_id, payments(status)')
+  // Round 6 (feature gap): a payout-details change is the one thing a leaked link can do that moves money,
+  // and the 7-day banner in the admin screen was advice only. Within PAYOUT_DETAILS_HOLD_HOURS (default 48,
+  // 0 = off) of the last change the server refuses to record a payout unless the admin states they confirmed
+  // the change with the partner directly.
+  const holdHours = payoutDetailsHoldHoursFor(ctx.env)
+  if (holdHours > 0 && partner.payout_details_submitted_at && !body.confirmedWithPartner) {
+    const changedMs = Date.parse(partner.payout_details_submitted_at)
+    if (Number.isFinite(changedMs) && Date.now() - changedMs < holdHours * 3600000)
+      return reply({ success: false, code: 'PAYOUT_DETAILS_RECENT',
+        message: `This partner's payout details were changed in the last ${holdHours} hours. Confirm with them directly that the change was theirs, then record the payout with the confirmation ticked.` }, 409)
+  }
+
+  let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
     .eq('partner_id', partnerId).is('payout_id', null)
   if (body.periodStart) ledgerQuery = ledgerQuery.gte('created_at', body.periodStart).lte('created_at', body.periodEnd)
+  else if (opts.scope === 'ready') ledgerQuery = ledgerQuery.lt('created_at', recentCycles(1)[0].start)
   // Refund-window hold (COMMISSION_HOLD_DAYS): young commission rows stay
   // unpaid; reversal rows always settle.
   const holdDays = holdDaysFor(ctx.env)
@@ -912,7 +957,7 @@ async function adminRecordPayout(ctx) {
   if (body.periodStart) {
     const runningStart = recentCycles(1)[0].start
     const { data: credits, error: creditErr } = await supabase.from('commission_ledger')
-      .select('id, commission_amount_cents, reverses_ledger_id, payments(status)')
+      .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
       .eq('partner_id', partnerId).is('payout_id', null).not('reverses_ledger_id', 'is', null).lt('created_at', runningStart)
     if (creditErr) throw creditErr
     const haveIds = new Set(unpaidLedger.map(l => l.id))
@@ -933,7 +978,7 @@ async function adminRecordPayout(ctx) {
     const extra = []
     if (originalIds.length) {
       const { data: revs, error: rErr } = await supabase.from('commission_ledger')
-        .select('id, commission_amount_cents, reverses_ledger_id, payments(status)')
+        .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
         .eq('partner_id', partnerId).is('payout_id', null).in('reverses_ledger_id', originalIds)
       if (rErr) throw rErr
       // Re-verified here rather than trusting the query alone: only a row that really is the
@@ -943,7 +988,7 @@ async function adminRecordPayout(ctx) {
     }
     if (missingOriginalIds.length) {
       const { data: origs, error: oErr } = await supabase.from('commission_ledger')
-        .select('id, commission_amount_cents, reverses_ledger_id, payments(status)')
+        .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
         .eq('partner_id', partnerId).is('payout_id', null).in('id', missingOriginalIds)
       if (oErr) throw oErr
       const wanted = new Set(missingOriginalIds)
@@ -951,6 +996,16 @@ async function adminRecordPayout(ctx) {
     }
     for (const row of extra) if (!have.has(row.id)) { have.add(row.id); unpaidLedger.push(row) }
   }
+
+  // Round 6 (bug): `currency` was any 3 characters ('usd' stored as-is) and was never compared with the
+  // ledger rows being settled, so a payout could silently total commission earned in one currency and label
+  // it another (the ledger has carried its own currency since 0051). Normalised, and refused on a mismatch.
+  const envCurrency = String(ctx.env.PAYSTACK_CURRENCY || c.CURRENCY).toUpperCase()
+  const currency = body.currency || envCurrency
+  const ledgerCurrencies = new Set(unpaidLedger.map(l => String(l.currency || envCurrency).toUpperCase()))
+  if ([...ledgerCurrencies].some(cur => cur !== currency))
+    return reply({ success: false, code: 'CURRENCY_MISMATCH',
+      message: `The commission this payout settles is in ${[...ledgerCurrencies].join('/')}, not ${currency}. Record it in that currency (one payout per currency).` }, 400)
 
   // "Auto" = the payout is for exactly what the ledger says is owed. The admin UI always
   // sends amountCents (it is the amount actually transferred, and sending it is what makes
@@ -978,7 +1033,7 @@ async function adminRecordPayout(ctx) {
   // exactly the kind of false confidence that survives a refactor of the
   // Zod schema and quietly stops meaning anything. Both layers are real now.
   if (body.amountCents === undefined && owedCents <= 0)
-    return ctx.json({ success: false, message: owedCents < 0
+    return reply({ success: false, message: owedCents < 0
       ? `Net owed is negative (${owedCents} cents) because of refund/chargeback reversals — nothing to pay. It will net against this partner's future commission.`
       : 'Nothing owed for this scope.' }, 400)
   const amountCents = body.amountCents ?? owedCents
@@ -986,8 +1041,8 @@ async function adminRecordPayout(ctx) {
   // Optional minimum payout: a CYCLE-scoped payout below it is refused (the
   // commission carries forward). Ad hoc payouts are the deliberate override.
   const minPayout = minPayoutFor(ctx.env)
-  if (body.periodStart && minPayout > 0 && owedCents > 0 && owedCents < minPayout && autoAmount)
-    return ctx.json({ success: false, code: 'BELOW_MINIMUM',
+  if ((body.periodStart || opts.scope === 'ready') && minPayout > 0 && owedCents > 0 && owedCents < minPayout && autoAmount)
+    return reply({ success: false, code: 'BELOW_MINIMUM',
       message: `This cycle's commission (${owedCents} cents) is below the minimum payout (${minPayout} cents), so it carries forward. Use an ad hoc payout to override.` }, 400)
 
   // Paying a different amount than the commission being settled used to be
@@ -995,11 +1050,10 @@ async function adminRecordPayout(ctx) {
   // underpayment vanished from the books and an overpayment left no trace.
   // Now the admin must acknowledge it and say why (the note is kept).
   if (amountCents !== owedCents && !(body.acknowledgeDifference && (body.note || body.internalNote))) {
-    return ctx.json({ success: false, code: 'AMOUNT_DIFFERS',
+    return reply({ success: false, code: 'AMOUNT_DIFFERS',
       message: `Amount (${amountCents}) differs from the commission this payout settles (${owedCents}). ` +
         `Confirm the difference and add a note (internal note is fine) explaining it.` }, 400)
   }
-  const currency = body.currency || ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
 
   const { data: payout, error } = await supabase.from('payouts').insert({
     partner_id:              partnerId,
@@ -1081,7 +1135,7 @@ async function adminRecordPayout(ctx) {
             `Two payout recordings overlapped for this partner and the other one settled every commission. ` +
             `Check the payout history before sending any more money.`, { dedupeKey: partnerId })
         } catch (_) {}
-        return ctx.json({ success: false, code: 'PAYOUT_RACED',
+        return reply({ success: false, code: 'PAYOUT_RACED',
           message: 'Another payout was recorded for this partner at the same moment and already settled everything. Nothing was recorded here — check the payout history before sending any more money.' }, 409)
       }
       // One update carries both the true settled figure and (when the amount
@@ -1147,7 +1201,60 @@ async function adminRecordPayout(ctx) {
     amountDiffers: payoutRow.amount_cents !== (payoutRow.settled_commission_cents ?? owedCents)
   })
 
-  return ctx.json({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout, ledgerSettlementFailed })
+  return reply({ success: true, data: payoutRowToCamel(payoutRow), emailed, racedWithConcurrentPayout, ledgerSettlementFailed })
+}
+
+// ── Round 6 (feature gap): record a whole payout run at once ─────────────────
+// "Export payout run" produced a CSV, but every payout then had to be recorded one partner at a time.
+// Each item goes through recordPayoutCore — the same checks as the single endpoint — scoped to what is
+// payable NOW ('ready'), so the amount on the admin's screen is exactly what gets settled. A stale amount,
+// changed payout details, a recent-change hold or a currency mismatch fails THAT item only; the rest go
+// through. Sequential on purpose (a payout is ~10 queries; parallel runs would trip the Worker's limits).
+const BATCH_PAYOUT_MAX = 25
+const batchPayoutSchema = z.object({
+  items: z.array(z.object({
+    partnerId:    z.string().regex(UUID_RE, 'Invalid partner id.'),
+    amountCents:  z.number().int().positive(),
+    expectedDetailsSubmittedAt: z.string().datetime({ offset: true }).nullable(),
+    confirmedWithPartner: z.boolean().optional(),
+    note:         z.string().trim().max(500).optional(),
+    internalNote: z.string().trim().max(500).optional()
+  })).min(1).max(BATCH_PAYOUT_MAX)
+})
+
+async function adminRecordPayoutBatch(ctx) {
+  const body = batchPayoutSchema.parse(await ctx.req.json())
+  const ids = body.items.map(i => i.partnerId)
+  if (new Set(ids).size !== ids.length)
+    return ctx.json({ success: false, message: 'Each partner may appear only once in a run.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const results = []
+  for (const item of body.items) {
+    try {
+      const out = await recordPayoutCore(ctx, supabase, item.partnerId, {
+        amountCents: item.amountCents,
+        expectedDetailsSubmittedAt: item.expectedDetailsSubmittedAt,
+        confirmedWithPartner: item.confirmedWithPartner,
+        note: item.note, internalNote: item.internalNote
+      }, (json, status) => ({ status: status || 200, json }), { scope: 'ready' })
+      results.push({
+        partnerId: item.partnerId, ok: out.status < 400 && out.json.success === true, status: out.status,
+        ...(out.json.code ? { code: out.json.code } : {}),
+        message: out.json.message || null,
+        ...(out.json.data ? { payout: out.json.data } : {}),
+        ...(out.json.emailed !== undefined ? { emailed: out.json.emailed } : {}),
+        ...(out.json.ledgerSettlementFailed ? { ledgerSettlementFailed: true } : {})
+      })
+    } catch (err) {
+      console.error('adminRecordPayoutBatch item failed:', err.message)
+      results.push({ partnerId: item.partnerId, ok: false, status: 500, message: 'Unexpected error — check the payout history before retrying.' })
+    }
+  }
+  const recorded = results.filter(r => r.ok).length
+  await logAdminAction(ctx, supabase, 'partner.payout_batch', 'payout_batch', null, {
+    requested: results.length, recorded, failed: results.length - recorded
+  })
+  return ctx.json({ success: true, data: { results, recorded, failed: results.length - recorded } })
 }
 
 // ── Public (token-gated): partner views their own current payout details ───
@@ -1225,6 +1332,13 @@ const payoutDetailsSchema = z.discriminatedUnion('payoutMethod', [
   bankDetailsSchema, mobileMoneyDetailsSchema
 ])
 
+// "BANK ...4821" / "MOBILE_MONEY ...5678" / "none" — enough to compare with the partner, never the full number.
+function describePayoutTarget(method, details) {
+  if (!method) return 'none'
+  const raw = String(details?.accountNumber || details?.phoneNumber || '').replace(/\s+/g, '')
+  return `${method} ${raw ? `...${raw.slice(-4)}` : '(no number)'}`
+}
+
 async function submitPayoutDetails(ctx) {
   noStore(ctx)
   const token = partnerTokenOf(ctx)
@@ -1234,12 +1348,20 @@ async function submitPayoutDetails(ctx) {
   const { payoutMethod, ...details } = body
   const supabase = getSupabase(ctx.env)
 
+  // Round 6: read what is being replaced so the owner alert can say WHAT changed (method + last 4 of the
+  // account / phone, old -> new) — "details changed" alone gave nothing to check against the partner.
+  const { data: previous, error: prevErr } = await supabase.from('partners')
+    .select('payout_method, payout_details').eq('payout_details_token', token).maybeSingle()
+  if (prevErr) throw prevErr
+  if (!previous) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+
+  const changedAt = new Date().toISOString()
   const { data, error } = await supabase.from('partners')
     .update({
       payout_method:                payoutMethod,
       payout_details:                details,
-      payout_details_submitted_at:  new Date().toISOString(),
-      updated_at:                    new Date().toISOString()
+      payout_details_submitted_at:  changedAt,
+      updated_at:                    changedAt
     })
     .eq('payout_details_token', token)
     .select('name, email')
@@ -1264,8 +1386,14 @@ async function submitPayoutDetails(ctx) {
     // already in scope and unique per partner, so no extra query is needed.
     emailService.sendOwnerAlert(ctx.env,
       'Partner payout details changed',
-      `partner: ${data.name} <${data.email}>\nmethod: ${payoutMethod}\ntime: ${new Date().toISOString()}\n\nIf this wasn't expected, verify with the partner directly before their next payout.`,
-      { dedupeKey: token }
+      `partner: ${data.name} <${data.email}>\nbefore: ${describePayoutTarget(previous.payout_method, previous.payout_details)}\n` +
+      `after:  ${describePayoutTarget(payoutMethod, details)}\ntime: ${changedAt}\n\n` +
+      `If this wasn't expected, verify with the partner directly before their next payout. ` +
+      `Payouts are blocked for ${payoutDetailsHoldHoursFor(ctx.env)} hours after a change unless an admin confirms it with the partner.`,
+      // Round 6 (bug): keyed on the token alone, a SECOND change within the 10-minute alert dedupe window —
+      // exactly what a hijacker re-pointing the account after the real partner edited it would produce —
+      // sent no email at all. Every distinct change now alerts (the 5-per-15-minute write limit bounds volume).
+      { dedupeKey: `${token}|${changedAt}` }
     ).catch(() => {})
   ])
 
@@ -1275,6 +1403,21 @@ async function submitPayoutDetails(ctx) {
 // ── Public (token-gated): partner's own stats dashboard ─────────────────────
 // Same token as the payout-details form — one link, two pages. Read-only:
 // a partner can see their codes/earnings but never edit pricing or rates.
+
+// The partner-facing shape of one ledger row (no internal ids beyond the row's own, no payment refs).
+function conversionRowOf(row, codeTextById) {
+  return {
+    id:                    row.id,
+    code:                  codeTextById.get(row.referral_code_id) || null,
+    grossAmountCents:      row.gross_amount_cents,
+    commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
+    commissionAmountCents: row.commission_amount_cents,
+    paid:                  !!row.payout_id,
+    isReversal:            !!row.reverses_ledger_id,
+    reversalReason:        row.reversal_reason ?? null,
+    createdAt:             row.created_at
+  }
+}
 
 async function getPartnerDashboard(ctx) {
   noStore(ctx)
@@ -1350,19 +1493,7 @@ async function getPartnerDashboard(ctx) {
   // already ordered newest-first (see the query's own .order() above), so
   // this is exactly the most recent CONVERSIONS_LIST_LIMIT.
   const CONVERSIONS_LIST_LIMIT = 50
-  const conversions = ledger.slice(0, CONVERSIONS_LIST_LIMIT).map(row => ({
-    id:                    row.id,
-    code:                  codeTextById.get(row.referral_code_id) || null,
-    grossAmountCents:      row.gross_amount_cents,
-    commissionRate:        row.commission_rate == null ? null : Number(row.commission_rate),
-    commissionAmountCents: row.commission_amount_cents,
-    paid:                  !!row.payout_id,
-    // A reversal is a NEGATIVE row undoing an earlier conversion (refund /
-    // lost dispute) — see referral.service.js's reverseCommission.
-    isReversal:            !!row.reverses_ledger_id,
-    reversalReason:        row.reversal_reason ?? null,
-    createdAt:             row.created_at
-  }))
+  const conversions = ledger.slice(0, CONVERSIONS_LIST_LIMIT).map(row => conversionRowOf(row, codeTextById))
 
   return ctx.json({ success: true, data: {
     name:           partner.name,
@@ -1396,6 +1527,10 @@ async function getPartnerDashboard(ctx) {
     minPayoutCents:      readiness.minPayoutCents,
     belowMinimum:        readiness.belowMinimum,
     carriedForwardCents: readiness.carriedForwardCents,
+    // Round 6: the figures the admin side has always had — what the next payout run will actually pay, and any
+    // refund credit that will net against it. Previously the partner had to add up the cycle rows themselves.
+    readyToPayCents:     readiness.readyToPayCents,
+    creditCents:         readiness.creditCents,
     conversions,
     // So the frontend can say "showing the most recent 50 of 214" instead of
     // silently looking complete when it isn't.
@@ -1450,6 +1585,34 @@ async function getPartnerDashboard(ctx) {
 // gets it is to have it emailed to the address on file — so a forwarded or leaked
 // notification email can read earnings but cannot redirect a payout. Always answers
 // the same way for a valid link (never reveals whether the email send succeeded).
+// Round 6 (feature gap): the dashboard lists the 50 most recent conversions and said "showing 50 of N" with no
+// way to see the rest, or to keep a record. Paged (newest first) and read by either token, like the dashboard.
+// The page's own CSV export walks it.
+async function getPartnerConversions(ctx) {
+  noStore(ctx)
+  const token = partnerTokenOf(ctx)
+  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const { partner } = await findPartnerByAnyToken(supabase, token, 'id')
+  if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  const { limit, offset } = pageParams(ctx)
+
+  const [codesRes, ledgerRes] = await Promise.all([
+    supabase.from('referral_codes').select('id, code').eq('partner_id', partner.id),
+    supabase.from('commission_ledger')
+      .select('id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at', { count: 'exact' })
+      .eq('partner_id', partner.id)
+      .order('created_at', { ascending: false }).order('id', { ascending: true })
+      .range(offset, offset + limit - 1)
+  ])
+  if (codesRes.error) throw codesRes.error
+  if (ledgerRes.error) throw ledgerRes.error
+  const codeTextById = new Map((codesRes.data || []).map(r => [r.id, r.code]))
+  return ctx.json({ success: true, total: ledgerRes.count ?? null,
+    currency: ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    data: (ledgerRes.data || []).map(row => conversionRowOf(row, codeTextById)) })
+}
+
 async function requestPayoutLink(ctx) {
   noStore(ctx)
   const token = partnerTokenOf(ctx)
@@ -1500,9 +1663,22 @@ async function trackClick(ctx) {
   if (!ua || BOT_UA.test(ua)) return ctx.json({ success: true })
 
   const supabase = getSupabase(ctx.env)
+  // Round 6 (feature gap / bug): `?ref=` is a generic query parameter (`?ref=producthunt`, `?ref=twitter`), and
+  // this always answered success — so the browser stored whatever it was given, overwrote a REAL partner's
+  // attribution with junk and showed the buyer "that code doesn't look right". The answer now says whether the
+  // code is one that could actually apply (exists, active, unexpired, under its limit, partner active) so the
+  // client keeps only those. `valid` is omitted when it can't be determined (lookup failed) — the client then
+  // keeps the code, as before.
+  let valid
+  try {
+    valid = isCodeUsable(await lookupCode(supabase, code))
+  } catch (err) {
+    console.error('trackClick lookup:', err.message)
+  }
+  if (valid === false) return ctx.json({ success: true, valid: false })
   const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
   if (error) console.error('trackClick:', error.message)
-  return ctx.json({ success: true })
+  return ctx.json(valid === true ? { success: true, valid: true } : { success: true })
 }
 
 // ── Public: "become a partner" application ──────────────────────────────────
@@ -1514,6 +1690,9 @@ async function trackClick(ctx) {
 // Always answers the same success message for a duplicate or already-a-partner
 // email so the form can't be used to probe which addresses are partners.
 
+// Bump when the program terms change in a way applicants must re-accept. Stored with each acceptance.
+const PARTNER_TERMS_VERSION = '2026-10'
+
 const applicationSchema = z.object({
   name:     z.string().trim().min(1).max(200),
   email:    z.string().trim().email().max(320),
@@ -1522,6 +1701,9 @@ const applicationSchema = z.object({
   message:  z.string().trim().max(2000).optional(),
   // Honeypot: real people never see/fill this field.
   company:  z.string().max(200).optional(),
+  // Round 6 (feature gap): applying now records acceptance of the program terms (/partner/terms). Required —
+  // `true` or the request is refused — so no application exists without one.
+  acceptTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the partner program terms to apply.' }) }),
   // Cloudflare Turnstile token (lib/turnstile.js). Only required when the deployment has
   // TURNSTILE_SECRET_KEY set — same opt-in as the employer-lead and auth forms.
   turnstileToken: z.string().max(2048).nullish()
@@ -1534,6 +1716,7 @@ function applicationRowToCamel(row) {
     id: row.id, name: row.name, email: row.email, audience: row.audience, website: row.website,
     message: row.message, status: row.status, partnerId: row.partner_id,
     reviewNote: row.review_note ?? null,
+    termsAcceptedAt: row.terms_accepted_at ?? null, termsVersion: row.terms_version ?? null,
     createdAt: row.created_at, reviewedAt: row.reviewed_at
   }
 }
@@ -1567,7 +1750,8 @@ async function applyAsPartner(ctx) {
 
   const { error } = await supabase.from('partner_applications').insert({
     name: body.name, email: body.email,
-    audience: body.audience || null, website: body.website || null, message: body.message || null
+    audience: body.audience || null, website: body.website || null, message: body.message || null,
+    terms_accepted_at: new Date().toISOString(), terms_version: PARTNER_TERMS_VERSION
   })
   if (error) {
     if (error.code === '23505') return ctx.json(APPLY_OK)   // already has a pending application
@@ -1577,7 +1761,25 @@ async function applyAsPartner(ctx) {
   await emailService.sendOwnerAlert(ctx.env, 'New partner application',
     `name: ${body.name}\nemail: ${body.email}\nwebsite: ${body.website || '-'}\n\nReview it under Admin -> Partners -> Applications.`,
     { dedupeKey: body.email.toLowerCase() }).catch(() => {})
+  // Round 6: the form promised an email "after review" but the applicant heard nothing until then — and had no
+  // way to know the application arrived. Only sent for an application that was actually stored (every silent
+  // path above — existing partner, cooldown, duplicate pending — returns before here, so this can't be used to
+  // probe which addresses are partners).
+  await emailService.sendPartnerApplicationReceived(ctx.env, supabase, body.email, body.name).catch(() => {})
   return ctx.json(APPLY_OK)
+}
+
+// Public: the live numbers behind the terms page, so it never states a hold period or minimum that differs from
+// what the payout run actually enforces.
+async function getProgramTerms(ctx) {
+  return ctx.json({ success: true, data: {
+    termsVersion:          PARTNER_TERMS_VERSION,
+    currency:              ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    holdDays:              holdDaysFor(ctx.env),
+    minPayoutCents:        minPayoutFor(ctx.env),
+    payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env),
+    reapplyCooldownDays:   REAPPLY_COOLDOWN_DAYS
+  } })
 }
 
 async function adminListApplications(ctx) {
@@ -1601,6 +1803,20 @@ const approveApplicationSchema = z.object({
   referralCode:   createReferralCodeSchema.optional()
 })
 
+// Puts a claimed application back to PENDING after a failed approval. If the applicant already filed a NEW pending
+// application in the meantime the unique pending-per-email index refuses the restore; this one is then closed as
+// superseded rather than left APPROVED with no partner behind it.
+async function restoreApplicationToPending(supabase, appId) {
+  const { error } = await supabase.from('partner_applications').update({ status: 'PENDING', reviewed_at: null }).eq('id', appId)
+  if (error) {
+    if (error.code === '23505')
+      await supabase.from('partner_applications')
+        .update({ status: 'REJECTED', reviewed_at: new Date().toISOString(), review_note: 'Superseded by a newer application from the same email.' })
+        .eq('id', appId)
+    else console.error('restoreApplicationToPending:', error.message)
+  }
+}
+
 async function adminApproveApplication(ctx) {
   const appId = ctx.req.param('id')
   const body = approveApplicationSchema.parse(await ctx.req.json().catch(() => ({})))
@@ -1616,6 +1832,18 @@ async function adminApproveApplication(ctx) {
       return ctx.json({ success: false, message: `The code ${firstCode} already exists — pick another.` }, 400)
   }
 
+  // Round 6 (bug): the "email already belongs to a partner" refusal used to happen AFTER the application was
+  // flipped to APPROVED, then flipped back — a window in which the applicant could re-apply (the pending-per-email
+  // index no longer applied) and the flip back would hit that index, stranding this application APPROVED with no
+  // partner. Look first; only claim an application that can actually become a partner.
+  {
+    const { data: pending, error: pendingErr } = await supabase.from('partner_applications')
+      .select('email').eq('id', appId).eq('status', 'PENDING').maybeSingle()
+    if (pendingErr) throw pendingErr
+    if (pending && await emailUsedByAnotherPartner(supabase, pending.email))
+      return ctx.json({ success: false, message: 'A partner with that email address already exists.' }, 400)
+  }
+
   const { data: claimed, error } = await supabase.from('partner_applications')
     .update({ status: 'APPROVED', reviewed_at: new Date().toISOString() })
     .eq('id', appId).eq('status', 'PENDING').select('*').maybeSingle()
@@ -1625,14 +1853,15 @@ async function adminApproveApplication(ctx) {
   let made
   try {
     made = await createPartnerRecord(ctx, supabase,
-      { name: claimed.name, email: claimed.email, commissionRate: body.commissionRate, website: claimed.website, audience: claimed.audience },
+      { name: claimed.name, email: claimed.email, commissionRate: body.commissionRate, website: claimed.website, audience: claimed.audience,
+        termsAcceptedAt: claimed.terms_accepted_at, termsVersion: claimed.terms_version },
       'partner.create', { fromApplication: appId })
   } catch (err) {
-    await supabase.from('partner_applications').update({ status: 'PENDING', reviewed_at: null }).eq('id', appId)
+    await restoreApplicationToPending(supabase, appId)
     throw err
   }
   if (made.error) {
-    await supabase.from('partner_applications').update({ status: 'PENDING', reviewed_at: null }).eq('id', appId)
+    await restoreApplicationToPending(supabase, appId)
     return ctx.json({ success: false, message: made.error }, 400)
   }
   await supabase.from('partner_applications').update({ partner_id: made.data.id }).eq('id', appId)
@@ -1817,8 +2046,8 @@ module.exports = {
   buildCyclesSummary,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
-  adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout,
+  adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,
   adminListReferralCodes, adminListPayouts, adminPartnersOverview,
-  getPartnerByToken, submitPayoutDetails, getPartnerDashboard, requestPayoutLink, updatePartnerNotifications, trackClick,
+  getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication
 }

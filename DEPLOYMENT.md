@@ -252,6 +252,20 @@ wrangler secret put COMMISSION_MIN_PAYOUT_CENTS
 # on a DISPUTED payment is held regardless of age). Also settable as a plain [vars] entry.
 wrangler secret put COMMISSION_HOLD_DAYS
 
+# Payout-details hold, in HOURS (default 48; 0 = off). After a partner changes their payout details
+# (via their emailed link) the server refuses to record a payout to them until this many hours have
+# passed — unless the admin states they confirmed the change with the partner directly (the tick-box
+# in the admin payout screens, `confirmedWithPartner` in the API). It exists because that link is a
+# bearer token: anyone holding it can re-point a partner's payouts. The public terms page
+# (/partner/terms) quotes this number, read live from GET /api/partners/program.
+wrangler secret put PAYOUT_DETAILS_HOLD_HOURS
+
+# PARTNERS ROUND 6 (migration 0063): applications now record acceptance of the program terms
+# (partner_applications / partners .terms_accepted_at, .terms_version). Apply
+# supabase/migrations/0063_partners_round6.sql BEFORE deploying the Worker — without the columns,
+# POST /api/partners/apply fails — and deploy the Worker and the frontend TOGETHER: the Worker now
+# requires `acceptTerms: true` on an application, which only the new apply form sends.
+
 # PARTNER LINKS (migration 0055): every partner has TWO bearer tokens. The READ-ONLY
 # dashboard token is what conversion / reversal / code emails carry; the payout-details
 # token (which can change where payouts go) is only ever mailed on its own, on request

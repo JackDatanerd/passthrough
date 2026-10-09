@@ -148,11 +148,16 @@ describe('recordConversion', () => {
   const payment = { id: 'pay1', referral_code_id: 'rc1', amount_cents: 1900 }
 
   function db({ ledgerError, rpcError, partner = { commission_rate: 0.2 }, code = { id: 'rc1', partner_id: 'p1' },
-                existing = { id: 'led1', usage_counted: true } } = {}) {
+                existing = { id: 'led1', usage_counted: true }, reversal = null } = {}) {
     return createFakeSupabase(q => {
       if (q.table === 'referral_codes') return { data: code, error: null }
       if (q.table === 'partners') return { data: partner, error: null }
-      if (q.table === 'commission_ledger' && q.op === 'select') return { data: existing, error: null }
+      if (q.table === 'commission_ledger' && q.op === 'select') {
+        // Round 6: the duplicate path also asks whether the row was already reversed.
+        if (q.filters.some(f => f[0] === 'eq' && f[1] === 'reverses_ledger_id')) return { data: reversal, error: null }
+        return { data: existing, error: null }
+      }
+      if (q.table === 'commission_ledger' && q.op === 'update') return { data: null, error: null }
       if (q.table === 'commission_ledger') return { data: ledgerError ? null : { id: 'led1' }, error: ledgerError || null }
       if (q.op === 'rpc') return { error: rpcError || null }
       return undefined
@@ -202,6 +207,52 @@ describe('recordConversion', () => {
     const lookup = d.calls.find(q => q.table === 'commission_ledger' && q.op === 'select')
     expect(lookup.filters).toEqual(expect.arrayContaining([['eq', 'payment_id', 'pay1'], ['is', 'reverses_ledger_id', null]]))
     expect(d.calls.find(q => q.op === 'rpc').args).toEqual({ p_code_id: 'rc1', p_ledger_id: 'led9', p_reservation_id: 'res-1' })
+  })
+  // Round 6 (bug): a refund between the ledger write and the counter bump reverses a row whose usage was never
+  // counted (reverseCommission skips the decrement for it). Repairing THAT row by bumping would burn a slot of a
+  // limited code forever on a refunded sale.
+  it('a duplicate that was ALREADY REVERSED is settled without bumping usage, and frees its reservation', async () => {
+    const d = db({ ledgerError: { code: '23505', message: 'dup' }, existing: { id: 'led9', usage_counted: false }, reversal: { id: 'rev1' } })
+    const r = await recordConversion(d, { ...payment, referral_reservation_id: 'res-1' })
+    expect(r).toEqual({ ok: true, recorded: false, reason: 'duplicate', alreadyReversed: true })
+    expect(d.calls.find(q => q.op === 'rpc' && q.name === 'increment_referral_code_usage')).toBeUndefined()
+    const settle = d.calls.find(q => q.table === 'commission_ledger' && q.op === 'update')
+    expect(settle.patch).toEqual({ usage_counted: true })
+    expect(d.calls.find(q => q.op === 'rpc' && q.name === 'release_referral_code_slot').args).toEqual({ p_reservation_id: 'res-1' })
+  })
+  it('a failed reversal lookup on a duplicate is reported, not treated as "not reversed"', async () => {
+    const d = createFakeSupabase(q => {
+      if (q.table === 'referral_codes') return { data: { id: 'rc1', partner_id: 'p1' }, error: null }
+      if (q.table === 'partners') return { data: { commission_rate: 0.2 }, error: null }
+      if (q.table === 'commission_ledger' && q.op === 'select')
+        return q.filters.some(f => f[1] === 'reverses_ledger_id' && f[0] === 'eq') ? { data: null, error: { message: 'blip' } } : { data: { id: 'led9', usage_counted: false }, error: null }
+      if (q.table === 'commission_ledger') return { data: null, error: { code: '23505', message: 'dup' } }
+      return { error: null }
+    })
+    const r = await recordConversion(d, payment)
+    expect(r).toMatchObject({ ok: false, reason: 'duplicate-lookup' })
+    expect(d.calls.find(q => q.op === 'rpc')).toBeUndefined()
+  })
+  it('adminRetry: the PARTNER is still told about a commission this retry finally records, but no owner alerts fire', async () => {
+    const mails = [], alerts = []
+    const emailSvc = require('../src/services/email.service.js')
+    const origC = emailSvc.sendPartnerConversionEarned, origA = emailSvc.sendOwnerAlert
+    emailSvc.sendPartnerConversionEarned = async (...a) => { mails.push(a); return true }
+    emailSvc.sendOwnerAlert = async (...a) => { alerts.push(a); return true }
+    try {
+      const d = createFakeSupabase(q => {
+        if (q.table === 'referral_codes') return { data: { id: 'rc1', partner_id: 'p1', code: 'COACH', usage_limit: 1, uses_so_far: 5 }, error: null }
+        if (q.table === 'partners') return { data: { commission_rate: 0.2, name: 'K', email: 'k@x.co', dashboard_token: 'dt', notify_conversions: true }, error: null }
+        if (q.table === 'commission_ledger') return { data: { id: 'led1' }, error: null }
+        if (q.table === 'payments') return { data: { status: 'SUCCESS' }, error: null }
+        return { error: null }
+      })
+      const env = { FRONTEND_URL: 'https://x', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
+      const r = await recordConversion(d, payment, env, { adminRetry: true })
+      expect(r).toEqual({ ok: true, recorded: true })
+      expect(mails).toHaveLength(1)
+      expect(alerts).toHaveLength(0)   // the over-limit warning stays quiet on an admin retry
+    } finally { emailSvc.sendPartnerConversionEarned = origC; emailSvc.sendOwnerAlert = origA }
   })
   it('a failed repair on a duplicate reports ok:false, recorded:false so reconcile can be retried again', async () => {
     const d = db({ ledgerError: { code: '23505', message: 'dup' }, existing: { id: 'led9', usage_counted: false }, rpcError: { message: 'still down' } })

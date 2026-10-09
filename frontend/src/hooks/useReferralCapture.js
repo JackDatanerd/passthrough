@@ -68,6 +68,40 @@ function writeStored(code) {
 // Codes captured synchronously (see getStoredReferralCode) whose click has not been logged
 // yet — the effect below still owes the server that click.
 const pendingClicks = new Set()
+
+// Section 4 round 6 (bug): `?ref=` is a generic query parameter (`?ref=producthunt`, `?ref=twitter`), and every
+// value used to be stored as an attribution — wiping out a REAL partner's code the visitor arrived with earlier,
+// refreshing its window with junk, and showing the buyer "that code doesn't look right" at checkout. The code is
+// still stored the instant it is seen (so the first render and an immediate checkout can use it), but the click
+// call now says whether the code is real; if the server says it is not, what was stored BEFORE is put back
+// exactly as it was (same captured-at, so the real partner's window is not extended or shortened).
+//   previousRawFor: code -> the raw storage value that was replaced when that code was captured.
+//   rejectedThisSession: codes the server called invalid — never stored again this page session.
+const previousRawFor = new Map()
+const rejectedThisSession = new Set()
+
+function currentStoredCode() {
+  const raw = storageGet()
+  if (!raw) return null
+  try { return JSON.parse(raw)?.code || null } catch (_) { return null }
+}
+
+function rejectCode(code) {
+  rejectedThisSession.add(code)
+  const previousRaw = previousRawFor.get(code)
+  previousRawFor.delete(code)
+  if (currentStoredCode() !== code) return        // something else (a manual entry) already replaced it
+  if (previousRaw) storageSet(previousRaw)
+  else storageRemove()
+}
+
+function trackClick(code) {
+  // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
+  // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
+  api.post('/partners/track-click', { code })
+    .then(res => { if (res?.data?.valid === false) rejectCode(code) })
+    .catch(() => {})
+}
 // The last location.search the synchronous capture looked at. It runs ONCE per distinct
 // query string so a visitor who deliberately clears the code (setStoredReferralCode(''))
 // while ?ref= is still in the URL doesn't get it silently re-applied by the next read.
@@ -91,8 +125,9 @@ function captureFromLocationNow() {
   if (search === lastSyncedSearch) return
   lastSyncedSearch = search
   const code = codeFromSearch(search)
-  if (!code) return
+  if (!code || rejectedThisSession.has(code)) return
   if (readStored() !== code) {
+    previousRawFor.set(code, storageGet())
     writeStored(code)
     pendingClicks.add(code)
   }
@@ -110,17 +145,18 @@ export function useReferralCapture() {
     // A blank/whitespace-only ref is treated exactly like no ref param at all, so it can
     // never clobber a real, already-stored attribution.
     const code = codeFromSearch(location.search)
-    if (!code) return
+    if (!code || rejectedThisSession.has(code)) return
 
     const previous = readStored()
+    // Remember what this visit replaces (unless the synchronous capture already did) so a code the server calls
+    // invalid can be undone. A repeat visit with the SAME code replaces nothing worth restoring.
+    if (previous !== code && !previousRawFor.has(code)) previousRawFor.set(code, storageGet())
     writeStored(code)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
     lastSyncedSearch = location.search
 
     if ((previous !== code || pendingClicks.has(code)) && !trackedThisSession.has(code)) {
       trackedThisSession.add(code)
-      // Fire-and-forget — a failed click log should never block navigation
-      // or surface an error to the visitor.
-      api.post('/partners/track-click', { code }).catch(() => {})
+      trackClick(code)
     }
     pendingClicks.delete(code)
   }, [location.search])

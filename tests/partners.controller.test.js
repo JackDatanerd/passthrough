@@ -36,11 +36,12 @@ let t
 afterEach(() => t?.restore())
 
 describe('adminResendPayoutLink', () => {
-  it('returns payoutUrl built from the existing token, alongside success', async () => {
+  it('does NOT return the write-token URL when the email was sent', async () => {
     t = setup({ partner: { name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok123' } })
     const res = await t.mod.adminResendPayoutLink(t.c())
     expect(res.body.success).toBe(true)
-    expect(res.body.payoutUrl).toBe('https://passthrough.dev/partner/payout-details?token=tok123')
+    // Round 6: the write-token URL is only handed back when the email did not go.
+    expect(res.body.payoutUrl).toBeUndefined()
   })
 
   it('still returns payoutUrl even when the email send itself fails', async () => {
@@ -233,7 +234,8 @@ describe('adminRecordPayout', () => {
   })
 
   it('still respects an explicitly-supplied currency over the platform default', async () => {
-    t = setupPayout()
+    // Round 6: an explicit currency must now MATCH the commission being settled, so the rows are NGN too.
+    t = setupPayout({ unpaidLedger: [{ id: 'l1', commission_amount_cents: 500, currency: 'NGN' }, { id: 'l2', commission_amount_cents: 700, currency: 'NGN' }] })
     const call = t.c({ body: { currency: 'NGN' } })
     call.env.PAYSTACK_CURRENCY = 'KES'
     const res = await t.mod.adminRecordPayout(call)
@@ -949,14 +951,20 @@ describe('getPartnerByToken', () => {
 
 describe('submitPayoutDetails', () => {
   function setupSubmit(opts = {}) {
-    const state = { patch: null, notified: [] }
-    const db = createFakeSupabase(q => (q.table === 'partners' && q.op === 'update'
-      ? (state.patch = q.patch, { data: opts.updated ?? null, error: null }) : undefined))
+    const state = { patch: null, notified: [], alerts: [], updates: 0 }
+    const db = createFakeSupabase(q => {
+      // Round 6: the handler reads what it is replacing (for the owner alert) before it writes.
+      if (q.table === 'partners' && q.op === 'select')
+        return { data: opts.previous === undefined ? { payout_method: null, payout_details: null } : opts.previous, error: null }
+      if (q.table === 'partners' && q.op === 'update')
+        return (state.updates++, state.patch = q.patch, { data: opts.updated ?? null, error: null })
+      return undefined
+    })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': {
         sendPayoutDetailsChanged: async () => state.notified.push('partner'),
-        sendOwnerAlert:           async () => state.notified.push('owner'),
+        sendOwnerAlert:           async (...args) => { state.alerts.push(args); state.notified.push('owner') },
       },
     })
     // BUG FIX (traced from Section 9/10 pass — out of scope but found via the
@@ -1018,6 +1026,38 @@ describe('submitPayoutDetails', () => {
     await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '12345678' } }))
     expect(t.state.notified.sort()).toEqual(['owner', 'partner'])
   })
+  // Round 6
+  it('404s for an unknown token WITHOUT attempting the update', async () => {
+    t = setupSubmit({ previous: null })
+    const res = await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '12345678' } }))
+    expect(res.status).toBe(404)
+    expect(t.state.updates).toBe(0)
+  })
+
+  it('the owner alert says what changed (method + last 4, old -> new) and never carries a full number', async () => {
+    t = setupSubmit({
+      previous: { payout_method: 'BANK', payout_details: { bankName: 'Old', accountName: 'K', accountNumber: '1111222233334444' } },
+      updated: { name: 'Coach K', email: 'k@x.co' }
+    })
+    await t.mod.submitPayoutDetails(t.c({ body: { payoutMethod: 'MOBILE_MONEY', provider: 'M-Pesa', accountName: 'K', phoneNumber: '+254 700 123 456' } }))
+    const [, subject, body] = t.state.alerts[0]
+    expect(subject).toBe('Partner payout details changed')
+    expect(body).toContain('before: BANK ...4444')
+    expect(body).toContain('after:  MOBILE_MONEY ...3456')
+    expect(body).not.toContain('1111222233334444')
+    expect(body).not.toContain('700 123')
+  })
+
+  it('two changes with the same token each raise their own alert (distinct dedupe keys)', async () => {
+    t = setupSubmit({ updated: { name: 'Coach K', email: 'k@x.co' } })
+    const body = { payoutMethod: 'BANK', bankName: 'X', accountName: 'Y', accountNumber: '12345678' }
+    await t.mod.submitPayoutDetails(t.c({ body }))
+    await new Promise(r => setTimeout(r, 5))
+    await t.mod.submitPayoutDetails(t.c({ body: { ...body, accountNumber: '87654321' } }))
+    const keys = t.state.alerts.map(a => a[3].dedupeKey)
+    expect(keys).toHaveLength(2)
+    expect(keys[0]).not.toBe(keys[1])
+  })
 })
 
 describe('trackClick', () => {
@@ -1025,6 +1065,8 @@ describe('trackClick', () => {
     const state = { rpcCalls: [] }
     const db = createFakeSupabase(q => {
       if (q.op === 'rpc') { state.rpcCalls.push(q); return { data: null, error: null } }
+      // Round 6: trackClick now looks the code up first (to report `valid`); this fixture's code is a real, usable one.
+      if (q.table === 'referral_codes') return { data: { id: 'c1', code: 'COACH20', active: true, expires_at: null, usage_limit: null, uses_so_far: 0, partners: { status: 'ACTIVE' } }, error: null }
     })
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     const c = (over = {}) => ({ env: {}, req: { json: async () => over.body ?? {}, header: () => 'Mozilla/5.0 (Windows NT 10.0) Chrome/120' }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
