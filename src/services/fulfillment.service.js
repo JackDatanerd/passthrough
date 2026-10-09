@@ -140,16 +140,19 @@ async function fulfillPayment(env, supabase, payment, { force = false, now = Dat
 async function settlePayment(env, supabase, paymentRow, { authCode = null, source = 'unknown', defer = null } = {}) {
   const referralService = require('./referral.service')
   const patch = { status: 'SUCCESS', paid_at: new Date().toISOString() }
-  if (authCode) patch.paystack_auth_code = authCode
+  // WEBHOOKS ROUND 7 (G3): `authCode` is accepted for the callers that still pass it but is NOT stored. The
+  // reusable card token (payments.paystack_auth_code) was never read back by anything; round 6 stripped it
+  // from the stored webhook payloads, and this was the one place it was still kept. Migration 0065 clears
+  // the ones already saved.
 
   const flip = p => supabase.from('payments')
     .update(p).eq('paystack_ref', paymentRow.paystack_ref).in('status', REVIVABLE_STATUSES).select()
   let { data: flipped, error: flipErr } = await flip(patch)
-  // Round 8: paid_at (migration 0064) is written in the same UPDATE as the flip, so exactly once. If the code
+  // Round 8: paid_at (migration 0065) is written in the same UPDATE as the flip, so exactly once. If the code
   // is deployed before that migration, settlement must NOT break — money is already captured — so an
   // unknown-column error retries once without it (receipts then fall back to created_at, as before).
   if (flipErr && (flipErr.code === '42703' || flipErr.code === 'PGRST204')) {
-    console.error('[WARN] payments.paid_at column missing — apply migration 0064; settling without it')
+    console.error('[WARN] payments.paid_at column missing — apply migration 0065; settling without it')
     const { paid_at: _omit, ...legacyPatch } = patch
     ;({ data: flipped, error: flipErr } = await flip(legacyPatch))
   }

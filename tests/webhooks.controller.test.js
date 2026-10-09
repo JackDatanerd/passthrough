@@ -148,7 +148,8 @@ describe('charge.success — fulfilment', () => {
     const w = seed(); t = harness(w)
     const res = await t.fire(chargeSuccess())
     expect(res.status).toBe(200)
-    expect(w.t.payments[0]).toMatchObject({ status: 'SUCCESS', paystack_auth_code: 'AUTH_x' })
+    expect(w.t.payments[0]).toMatchObject({ status: 'SUCCESS' })
+    expect(w.t.payments[0].paystack_auth_code).toBeUndefined()   // ROUND 7 (G3): the card token is not stored
     expect(w.t.scans[0]).toMatchObject({ fix_purchased: true, fix_tier: 'FIX', status: 'FIX_PURCHASED', fix_payment_id: 'pay1' })
     expect(t.state.queue).toEqual([{ type: 'generateFix', scanId: 'scan1' }])
   })
@@ -918,7 +919,7 @@ describe('round 5 — webhook delivery health', () => {
   const DAY = 24 * 3600_000
   const health = async w => { const { mod, restore } = pure(); try { return await mod.computeWebhookHealth(w.db) } finally { restore() } }
   const pay = (ref, over = {}) => ({ id: 'id-' + ref, paystack_ref: ref, amount_cents: 2900, status: 'SUCCESS', created_at: ago(2 * DAY), ...over })
-  const evt = (ref, over = {}) => ({ id: 'e-' + ref, event_type: 'charge.success', reference: ref, status: 'PROCESSED', received_at: ago(2 * DAY), ...over })
+  const evt = (ref, over = {}) => ({ id: 'e-' + ref, provider: 'paystack', event_type: 'charge.success', reference: ref, status: 'PROCESSED', received_at: ago(2 * DAY), ...over })
 
   it('counts recent paid sales that have no charge.success on record, ignoring credits, new sales and old ones', async () => {
     const w = createWorld({
@@ -1139,5 +1140,47 @@ describe('round 6 — G2: health reports when the Resend webhook last delivered'
       expect(h).toMatchObject({ available: true, lastResendEventAt: at })
       expect(await m.mod.computeWebhookHealth(createWorld({ payments: [], webhook_events: [] }).db)).toMatchObject({ available: true, lastResendEventAt: null })
     } finally { m.restore() }
+  })
+})
+
+// ── Round 7 (section 8, independent pass) ─────────────────────────────────────
+describe('round 7 — B4: a refund that states no amount is decided by Paystack\'s own refund list', () => {
+  function paidWorld() {
+    const w = seed()
+    Object.assign(w.t.payments[0], { status: 'SUCCESS' })
+    Object.assign(w.t.scans[0], { fix_purchased: true, fix_payment_id: 'pay1', status: 'FIX_DELIVERED' })
+    return w
+  }
+  const noAmount = { event: 'refund.processed', data: { id: 31, transaction_reference: 'ref-1', refund_reference: 'rf-31', currency: 'USD' } }
+
+  it('reverses the sale when the list proves it fully refunded (it used to be alerted as "partial/unknown")', async () => {
+    const w = paidWorld(); t = harness(w, { refunds: [{ status: 'processed', amount: 2900, currency: 'USD' }] })
+    expect((await t.fire(noAmount)).status).toBe(200)
+    expect(w.t.payments[0].status).toBe('REFUNDED')
+  })
+  it('answers 500 (so Paystack and the re-drive retry) when the list cannot be read — never closes it as partial', async () => {
+    const w = paidWorld(); t = harness(w, { refundListError: new Error('paystack down') })
+    expect((await t.fire(noAmount)).status).toBe(500)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(w.t.webhook_events[0].status).toBe('FAILED')
+  })
+  it('stays a partial alert when the list shows less than the whole', async () => {
+    const w = paidWorld(); t = harness(w, { refunds: [{ status: 'processed', amount: 1000, currency: 'USD' }] })
+    expect((await t.fire(noAmount)).status).toBe(200)
+    expect(w.t.payments[0].status).toBe('SUCCESS')
+    expect(t.state.alerts.some(a => /partial/i.test(a.subject))).toBe(true)
+  })
+})
+
+describe('round 7 — G4: the inbox stores a minimal dispute payload', () => {
+  it('a charge.dispute.create lands in webhook_events without messages, customer or history', async () => {
+    const w = seed(); Object.assign(w.t.payments[0], { status: 'SUCCESS' }); t = harness(w)
+    await t.fire({ event: 'charge.dispute.create', data: { id: 5, status: 'awaiting-merchant-feedback', refund_amount: 2900,
+      messages: [{ body: 'private words' }], history: [{ x: 1 }], customer: { email: 'a@b.c' }, transaction: { reference: 'ref-1', authorization: { authorization_code: 'A' } } } })
+    const stored = w.t.webhook_events[0].payload
+    expect(stored.data.messages).toBeUndefined()
+    expect(stored.data.customer).toBeUndefined()
+    expect(stored.data.transaction).toEqual({ reference: 'ref-1' })
+    expect(w.t.payments[0].status).toBe('DISPUTED')
   })
 })

@@ -23,7 +23,9 @@ function bytesToBase64(bytes) {
 }
 
 async function verifySvixSignature({ secret, id, timestamp, signature, body, toleranceSeconds = DEFAULT_TOLERANCE_SECONDS, nowMs = Date.now() }) {
-  if (!secret || !id || !timestamp || !signature || typeof body !== 'string') return false
+  // WEBHOOKS ROUND 7 (B6): `body` may be the raw request bytes (what the handler now passes) or a string.
+  const bodyIsBytes = body instanceof Uint8Array
+  if (!secret || !id || !timestamp || !signature || (typeof body !== 'string' && !bodyIsBytes)) return false
   const ts = Number.parseInt(timestamp, 10)
   if (!Number.isFinite(ts) || String(ts) !== String(timestamp).trim()) return false
   if (Math.abs(nowMs / 1000 - ts) > toleranceSeconds) return false
@@ -33,7 +35,11 @@ async function verifySvixSignature({ secret, id, timestamp, signature, body, tol
   if (!keyBytes.length) return false
 
   const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
-  const expected = bytesToBase64(await crypto.subtle.sign('HMAC', key, enc.encode(`${id}.${timestamp}.${body}`)))
+  const prefix = enc.encode(`${id}.${timestamp}.`)
+  const bodyBytes = bodyIsBytes ? body : enc.encode(body)
+  const signed = new Uint8Array(prefix.length + bodyBytes.length)
+  signed.set(prefix, 0); signed.set(bodyBytes, prefix.length)
+  const expected = bytesToBase64(await crypto.subtle.sign('HMAC', key, signed))
 
   let ok = false
   for (const part of String(signature).split(' ')) {

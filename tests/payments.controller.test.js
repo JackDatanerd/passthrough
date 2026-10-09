@@ -575,7 +575,8 @@ describe('verifyPayment — settlement and fulfilment (fulfillment.service)', ()
     t = worldSetup(); t.world.t.payments[0].fix_tier = 'BADGE'
     const res = await t.mod.verifyPayment(t.c())
     expect(res.body).toEqual({ success: true, data: { scanId: 's1' } })
-    expect(t.world.t.payments[0]).toMatchObject({ status: 'SUCCESS', paystack_auth_code: 'AUTH_1' })
+    expect(t.world.t.payments[0]).toMatchObject({ status: 'SUCCESS' })
+    expect(t.world.t.payments[0].paystack_auth_code).toBeUndefined()   // WEBHOOKS ROUND 7 (G3): the card token is not stored
     expect(t.world.t.scans[0]).toMatchObject({ fix_purchased: true, fix_tier: 'BADGE', status: 'FIX_PURCHASED', fix_payment_id: 'pay1' })
     expect(t.state.queue).toEqual([{ type: 'generateBadge', scanId: 's1' }])
   })

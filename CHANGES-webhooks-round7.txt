@@ -1,0 +1,41 @@
+WEBHOOKS — ROUND 7 (section 8, independent pass; base: e3c2dbb)
+
+!! Apply supabase/migrations/0065_webhooks_round7.sql BEFORE deploying the Worker. It adds webhook_events.redrives, clears the
+   stored reusable card tokens (payments.paystack_auth_code) and reduces stored dispute payloads to an allowlist. The code
+   tolerates the column being absent (the re-drive falls back to its old `attempts` budget).
+!! One thing to eyeball after deploy: Admin -> Webhooks must still list events. The list now selects two JSON-path aliases
+   (has_event:payload->>event, has_type:payload->>type) so it can tell whether a row has a payload without shipping it.
+
+GAPS
+G1  The Resend webhook has a durable inbox. Bounce / complaint / failed / suppressed events are recorded in webhook_events
+    (provider 'resend', keyed on the Svix message id): deduped, FAILED ones are retried by Svix AND re-driven hourly AND
+    replayable from Admin -> Webhooks (new Source filter + label). A failed inbox write answers 500 and pages the owner.
+    Recipient addresses are kept only while an event is unfinished; they are cleared when it completes (hashes only is the
+    convention here). No schema change needed.
+G2  Delivery failures are visible. email.failed and email.suppressed are recorded and page the owner (throttled); a complaint
+    or hard bounce on a REGISTERED ACCOUNT's address pages the owner too (security and payment mail is exempt from
+    suppression and would otherwise keep failing silently). Alerts carry no addresses.
+G3  The reusable card token is no longer stored (settlePayment ignores authCode); migration 0065 clears the saved ones.
+G4  Dispute events are stored with an allowlist (id, status, resolution, refund_amount, currency, category, references,
+    dates, and transaction id/reference/amount/currency). Messages, history, attachments and customer are never kept;
+    migration 0065 reduces the rows already stored.
+
+BUGS
+B1  Resend: a failed email_suppressions write (table missing, DB blip) was ignored and the event acknowledged, so a bad
+    address kept being mailed with nothing to retry it. It now fails the delivery (after the lead handling has run).
+B2  Admin offered Replay on rows with no stored payload (always 422), and a payload-less RECEIVED row of a non-actionable
+    type stayed in "needs attention" forever. Replay is offered only with a payload; the hourly re-drive closes such rows.
+B3  Re-drive attempts shared a counter with Paystack's own redeliveries, so a failing event used the budget up in hours and
+    the "retries exhausted" email said Paystack had stopped when it had not. New webhook_events.redrives counts re-drives.
+B4  A refund event that states no amount could never reverse a sale even when Paystack's refund list proved it fully
+    refunded (and a failed lookup closed it as PROCESSED). The list now decides, and a failed lookup answers 500.
+B5  Every Resend complaint ran the employer do-not-contact removal, so an ordinary account holder who reported a welcome
+    mail was also blocked from the employer-lead form and logged as a lead. It now runs only for a lead, or for a complaint
+    from an address we sent employer mail to.
+B6  The Resend handler measured the size cap in characters and verified the signature over text() (which strips a BOM).
+    It now uses the raw bytes, like the Paystack handler. verifySvixSignature accepts bytes or a string.
+
+FILES
+src/controllers/webhooks.controller.js, resend-webhook.controller.js, employer-leads.controller.js (export only),
+src/services/fulfillment.service.js, src/lib/svix.js, src/index.js, src/config/constants.js (EXPECTED_SCHEMA_VERSION 65),
+supabase/migrations/0065_webhooks_round7.sql, frontend/src/pages/admin/AdminWebhooks.jsx, and tests.

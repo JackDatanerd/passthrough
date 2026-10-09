@@ -101,7 +101,7 @@ describe('replayWebhookEvent', () => {
 const kvMap = () => { const m = new Map(); return { get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, m } }
 const ago = ms => new Date(Date.now() - ms).toISOString()
 const attentionEvent = (id, over = {}) => ev(id, {
-  event_type: 'refund.needs-attention', status: 'FAILED', error: 'db down', attempts: 1, received_at: ago(2 * 3600_000),
+  event_type: 'refund.needs-attention', status: 'FAILED', error: 'db down', attempts: 1, redrives: 0, received_at: ago(2 * 3600_000),
   payload: { event: 'refund.needs-attention', data: { transaction_reference: 'r' + id, amount: '100' } }, ...over })
 
 describe('round 3 — inbox visibility', () => {
@@ -147,7 +147,7 @@ describe('round 3 — redriveStaleEvents (dead-letter handling)', () => {
     t = setup([attentionEvent(1)])
     const r = await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
     expect(r.recovered).toHaveLength(1)
-    expect(t.world.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED', attempts: 2 })
+    expect(t.world.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED', attempts: 2, redrives: 1 })
     expect(t.alerts.some(a => /re-drive recovered 1/.test(a.subject))).toBe(true)
   })
   it('leaves a fresh FAILED event alone — Paystack is still retrying it', async () => {
@@ -155,7 +155,7 @@ describe('round 3 — redriveStaleEvents (dead-letter handling)', () => {
     expect((await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)).redriven).toHaveLength(0)
   })
   it('stops after the attempt cap and says so exactly ONCE', async () => {
-    t = setup([attentionEvent(1, { attempts: 8 })])
+    t = setup([attentionEvent(1, { redrives: 8 })])
     const kv = kvMap()
     const a = await t.mod.redriveStaleEvents(envWith(kv), ctx)
     const b = await t.mod.redriveStaleEvents(envWith(kv), ctx)
@@ -180,16 +180,16 @@ describe('round 3 — redriveStaleEvents (dead-letter handling)', () => {
 describe('round 4 — B2: exhausted rows cannot starve the re-drive window', () => {
   const envWith = kv => ({ RATE_LIMIT_KV: kv })
   const ctx = { waitUntil: () => {} }
-  it('the re-drive query only selects rows that can actually run (attempts under the cap, payload present)', async () => {
+  it('the re-drive query only selects rows that can actually run (re-drives under the cap, payload present)', async () => {
     t = setup([attentionEvent(1)])
     await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
     const main = t.world.calls.find(q => q.table === 'webhook_events' && q.op === 'select' && q.limit === 30)
-    expect(main.filters).toContainEqual(['lt', 'attempts', 8])
+    expect(main.filters).toContainEqual(['lt', 'redrives', 8])
     expect(main.filters).toContainEqual(['not', 'payload', 'is', null])
   })
   it('a fresh failure is recovered even with exhausted rows sitting in the table, and each exhausted row is reported once', async () => {
-    const stuck = n => attentionEvent(n, { attempts: 8, received_at: ago(5 * 24 * 3600_000) })
-    t = setup([stuck(1), stuck(2), stuck(3), attentionEvent(4, { attempts: 2 })])
+    const stuck = n => attentionEvent(n, { redrives: 8, attempts: 8, received_at: ago(5 * 24 * 3600_000) })
+    t = setup([stuck(1), stuck(2), stuck(3), attentionEvent(4, { redrives: 2, attempts: 2 })])
     const kv = kvMap()
     const a = await t.mod.redriveStaleEvents(envWith(kv), ctx)
     const b = await t.mod.redriveStaleEvents(envWith(kv), ctx)
@@ -262,5 +262,99 @@ describe('round 6 — G1: replay is written to the admin audit log', () => {
     t = setup([ev(1)]); t.world.t.admin_audit_log = []
     expect((await t.mod.replayWebhookEvent(t.c({ id: 1 }))).status).toBe(409)
     expect(t.world.t.admin_audit_log).toHaveLength(0)
+  })
+})
+
+// ── Round 7 (section 8, independent pass) ─────────────────────────────────────
+describe('round 7 — B3: re-drives are counted apart from Paystack redeliveries', () => {
+  const envWith = kv => ({ RATE_LIMIT_KV: kv })
+  const ctx = { waitUntil: () => {} }
+  it('an event Paystack redelivered many times is still re-driven (its own budget is untouched)', async () => {
+    t = setup([attentionEvent(1, { attempts: 14, redrives: 0 })])
+    const r = await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
+    expect(r.redriven).toEqual([1])
+    expect(t.world.t.webhook_events[0]).toMatchObject({ status: 'PROCESSED', attempts: 15, redrives: 1 })
+    expect(t.alerts.filter(x => /stuck/i.test(x.subject))).toHaveLength(0)
+  })
+  it('the "stuck" alert says the RE-DRIVE gave up, and does not claim Paystack stopped', async () => {
+    t = setup([attentionEvent(1, { redrives: 8, attempts: 20 })])
+    await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
+    const a = t.alerts.find(x => /stuck/i.test(x.subject))
+    expect(a.message).toMatch(/re-drive has run this event 8 times/)
+    expect(a.message).not.toMatch(/Paystack has stopped retrying/)
+  })
+  it('before migration 0064 (no redrives column) it falls back to the attempts budget instead of dying', async () => {
+    t = setup([attentionEvent(1, { attempts: 2 })])
+    t.world.failNext('webhook_events', 'select', { code: '42703', message: 'column webhook_events.redrives does not exist' })
+    const r = await t.mod.redriveStaleEvents(envWith(kvMap()), ctx)
+    expect(r.error).toBeNull()
+    expect(r.redriven).toEqual([1])
+  })
+})
+
+describe('round 7 — B2: Replay is only offered where there is something to replay', () => {
+  const envWith = kv => ({ RATE_LIMIT_KV: kv })
+  it('a payload-less IGNORED row (a non-actionable type) is not replayable; one with a payload is', async () => {
+    t = setup([ev(1, { status: 'IGNORED', event_type: 'transfer.success', payload: null }), ev(2, { status: 'IGNORED' })])
+    const res = await t.mod.listWebhookEvents(t.c())
+    const by = id => res.body.data.find(e => e.id === id)
+    expect([by(1).replayable, by(2).replayable]).toEqual([false, true])
+  })
+  it('a Resend row is replayable through its own top-level key (type), and the list names the provider', async () => {
+    t = setup([ev(1, { provider: 'resend', status: 'FAILED', event_type: 'email.bounced', reference: null, payload: { type: 'email.bounced', data: { to: ['a@b.co'], bounce: { type: 'Transient' } } } })])
+    const row = (await t.mod.listWebhookEvents(t.c())).body.data[0]
+    expect(row).toMatchObject({ provider: 'resend', replayable: true })
+  })
+  it('the list asks the database for the payload keys, never the payload itself, and can filter by provider', async () => {
+    t = setup([ev(1)])
+    await t.mod.listWebhookEvents(t.c({ query: { provider: 'resend' } }))
+    const q = t.world.calls.find(x => x.table === 'webhook_events' && x.op === 'select')
+    expect(q.cols).toMatch(/has_event:payload->>event/)
+    expect(q.cols).not.toMatch(/(^|, )payload(,|$)/)
+    expect(q.filters).toContainEqual(['eq', 'provider', 'resend'])
+  })
+  it('the hourly re-drive closes a stuck payload-less RECEIVED row of a non-actionable type — and leaves an actionable one', async () => {
+    t = setup([
+      ev(1, { status: 'RECEIVED', event_type: 'transfer.success', payload: null, received_at: ago(3600_000) }),
+      ev(2, { status: 'RECEIVED', event_type: 'charge.success', payload: null, received_at: ago(3600_000) }),
+      ev(3, { status: 'RECEIVED', event_type: 'transfer.success', payload: null, received_at: ago(60_000) }),
+    ])
+    const r = await t.mod.redriveStaleEvents(envWith(kvMap()), { waitUntil: () => {} })
+    expect(r.unrunnableClosed).toEqual([1])
+    const st = id => t.world.t.webhook_events.find(e => e.id === id).status
+    expect([st(1), st(2), st(3)]).toEqual(['IGNORED', 'RECEIVED', 'RECEIVED'])
+  })
+})
+
+describe('round 7 — G1: a stored Resend event is re-run by the same Replay / re-drive', () => {
+  it('replays a FAILED Resend event through the Resend handler (not the Paystack one)', async () => {
+    t = setup([ev(1, { provider: 'resend', status: 'FAILED', event_type: 'email.bounced', reference: null, event_key: 'msg_1',
+      payload: { type: 'email.bounced', data: { to: ['dana@acme.com'], bounce: { type: 'Transient' } } } })])
+    const res = await t.mod.replayWebhookEvent(t.c({ id: 1 }))
+    expect(res.status).toBe(200)
+    expect(res.body.data).toMatchObject({ status: 'IGNORED', note: 'transient bounce' })
+    expect(t.world.t.webhook_events[0]).toMatchObject({ status: 'IGNORED', attempts: 2, payload: null })   // addresses cleared once finished
+  })
+  it('422s a Resend row whose payload has no `type`', async () => {
+    t = setup([ev(1, { provider: 'resend', status: 'FAILED', payload: { event: 'charge.success' } })])
+    expect((await t.mod.replayWebhookEvent(t.c({ id: 1 }))).status).toBe(422)
+  })
+})
+
+describe('round 7 — G4: a dispute event keeps only what the handler uses', () => {
+  it('drops the conversation, history, attachments and customer; keeps id, status, resolution, amount and the transaction reference', () => {
+    t = setup([])
+    const out = t.mod.redactEvent({ event: 'charge.dispute.create', data: {
+      id: 77, status: 'awaiting-merchant-feedback', resolution: null, refund_amount: 2900, currency: 'USD', category: 'chargeback',
+      messages: [{ body: 'I never got it, my card is ****1234' }], history: [{ by: 'x' }], attachments: [{ url: 'u' }],
+      customer: { email: 'a@b.c' }, transaction: { id: 5, reference: 'ref-1', amount: 2900, currency: 'USD', authorization: { authorization_code: 'AUTH' }, customer: { email: 'a@b.c' } } } })
+    expect(out).toEqual({ event: 'charge.dispute.create', data: { id: 77, status: 'awaiting-merchant-feedback', refund_amount: 2900, currency: 'USD', category: 'chargeback',
+      transaction: { id: 5, reference: 'ref-1', amount: 2900, currency: 'USD' } } })
+  })
+  it('a redacted dispute still resolves its payment for a replay (reference under transaction)', () => {
+    t = setup([])
+    const out = t.mod.redactEvent({ event: 'charge.dispute.resolve', data: { id: 1, resolution: 'declined', transaction: { reference: 'ref-9' }, messages: ['x'] } })
+    expect(out.data.transaction.reference).toBe('ref-9')
+    expect(out.data.messages).toBeUndefined()
   })
 })

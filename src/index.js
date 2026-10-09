@@ -252,8 +252,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       try {
         const r = await require('./controllers/webhooks.controller').redriveStaleEvents(env, ctx)
         if (r.error) console.error('Webhook re-drive query:', r.error)
-        else if (r.redriven.length || r.exhausted.length || r.heldEscalated.length || (r.heldClosed || []).length)
-          console.log(`Webhook re-drive: ${r.redriven.length} re-run, ${r.recovered.length} recovered, ${r.exhausted.length} exhausted, ${(r.heldClosed || []).length} held closed, ${r.heldEscalated.length} held escalated`)
+        else if (r.redriven.length || r.exhausted.length || r.heldEscalated.length || (r.heldClosed || []).length || (r.unrunnableClosed || []).length)
+          console.log(`Webhook re-drive: ${r.redriven.length} re-run, ${r.recovered.length} recovered, ${r.exhausted.length} exhausted, ${(r.heldClosed || []).length} held closed, ${r.heldEscalated.length} held escalated, ${(r.unrunnableClosed || []).length} unrunnable closed`)
       } catch (err) {
         console.error('Webhook re-drive error:', err.message)
       }

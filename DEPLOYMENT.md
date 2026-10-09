@@ -377,6 +377,11 @@ owns its scan. Set to `"false"` to return to alert-only.
 **Apply `supabase/migrations/0064_payments_round8.sql` (`payments.paid_at`) BEFORE deploying the Worker.** Without it
 payments still settle and history still loads (a warning is logged), but receipts/history show the checkout date.
 
+**Webhooks round 7.** The Resend webhook now records bounce / complaint / failure events in the same `webhook_events` inbox
+as Paystack's (Admin → Webhooks → Source). **Apply `supabase/migrations/0065_webhooks_round7.sql` BEFORE deploying the
+Worker** (re-drive counter, clears stored card tokens, trims stored dispute payloads). Without it the Worker still runs; the
+hourly re-drive falls back to its old budget.
+
 ---
 
 ## 6. Deploy the Frontend (Cloudflare Pages)

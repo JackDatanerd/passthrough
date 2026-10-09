@@ -1661,6 +1661,7 @@ async function findEarlierAck(supabase, email, now) {
 }
 
 module.exports = {
+  EMPLOYER_MAIL_TEMPLATES,
   createLead, confirmLead, setLeadField, removeLead, unsubscribeLead, unsubscribeRedirect, adminMarkConfirmed,
   adminListLeads, adminExportLeads, adminCreateLead, adminImportLeads, sweepUnacknowledgedLeads,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,

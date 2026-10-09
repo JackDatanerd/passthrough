@@ -21,7 +21,10 @@ import useLatestRequest from '../../hooks/useLatestRequest'
 // (the inbox treats those as finished, so neither Paystack's own "Resend" nor a
 // redelivery could ever re-run them).
 
+// ROUND 7 (feature gap): Resend bounce / complaint / failure events are in the same inbox now (provider 'resend'),
+// deduped, re-driven and replayable like Paystack's.
 const PAGE_SIZE = 25
+const PROVIDERS = [['paystack', 'Paystack'], ['resend', 'Resend']]
 const STATUSES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'HELD', 'FAILED']
 // ATTENTION = FAILED + HELD + RECEIVED for over 15 minutes (the Worker died mid-event): what needs a person.
 const badgeVariant = s => ({ PROCESSED: 'green', RECEIVED: 'amber', IGNORED: 'gray', HELD: 'amber', FAILED: 'red' }[s] || 'gray')
@@ -32,6 +35,7 @@ export default function AdminWebhooks() {
   const status = searchParams.get('status') || ''
   const referenceQ = searchParams.get('reference') || ''
   const typeQ = searchParams.get('type') || ''
+  const providerQ = PROVIDERS.some(([v]) => v === searchParams.get('provider')) ? searchParams.get('provider') : ''
   const [refDraft, setRefDraft] = useState(referenceQ)
   const [typeDraft, setTypeDraft] = useState(typeQ)
   // ROUND-3 AUDIT (feature gap): "what exactly did Paystack send?" used to mean SQL.
@@ -56,7 +60,7 @@ export default function AdminWebhooks() {
   // back/forward changed the results but left the previous search text in the inputs. Keep them
   // in step with the URL, and start from page 1 whenever the filters change.
   useEffect(() => { setRefDraft(referenceQ); setTypeDraft(typeQ) }, [referenceQ, typeQ])
-  useEffect(() => { setPage(1) }, [status, referenceQ, typeQ])
+  useEffect(() => { setPage(1) }, [status, referenceQ, typeQ, providerQ])
 
   const begin = useLatestRequest()
 
@@ -64,7 +68,7 @@ export default function AdminWebhooks() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined } })
+      const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined, provider: providerQ || undefined } })
       if (!isCurrent()) return
       setEvents(res.data.data)
       setTotal(res.data.meta.total)
@@ -74,12 +78,12 @@ export default function AdminWebhooks() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [page, status, referenceQ, typeQ])
+  }, [page, status, referenceQ, typeQ, providerQ])
 
   useEffect(() => { load() }, [load])
 
   function applyFilters(next = {}) {
-    const merged = { status, reference: referenceQ, type: typeQ, ...next }
+    const merged = { status, reference: referenceQ, type: typeQ, provider: providerQ, ...next }
     const params = {}
     for (const [k, v] of Object.entries(merged)) if (v) params[k] = v
     setPage(1)
@@ -129,6 +133,10 @@ export default function AdminWebhooks() {
           <option value="ATTENTION">Needs attention</option>
           {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
         </Select>
+        <Select id="wh-provider" label="Source" value={providerQ} onChange={e => applyFilters({ provider: e.target.value })} wrapperClassName="w-40">
+          <option value="">All</option>
+          {PROVIDERS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+        </Select>
         <form className="flex flex-wrap items-end gap-3" onSubmit={e => { e.preventDefault(); applyFilters({ reference: refDraft.trim(), type: typeDraft.trim() }) }}>
           <Input id="wh-ref" label="Payment reference" value={refDraft} onChange={e => setRefDraft(e.target.value)}
             placeholder="contains…" wrapperClassName="w-56" className="font-mono" />
@@ -162,9 +170,10 @@ export default function AdminWebhooks() {
 
       <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
         HELD = an amount/currency mismatch was caught (use Payments → Recheck to accept it). FAILED = processing threw
-        and Paystack was told to retry. IGNORED = an event this app doesn't act on, or a reference with no payment row.
+        and Paystack was told to retry. IGNORED = an event this app doesn't act on, or a reference with no payment row. Resend rows are bounce / complaint /
+        delivery-failure events (a failed one means the address was NOT suppressed yet).
         A stuck RECEIVED means the Worker died mid-event. FAILED and stuck events are re-driven automatically every hour
-        (up to 8 tries, then you're emailed once); HELD ones wait for you. Replay re-runs the stored event through the same handlers a
+        (8 automatic re-runs, then you're emailed once; Paystack's own redeliveries are counted separately); HELD ones wait for you. Replay re-runs the stored event through the same handlers a
         live delivery uses; it is safe to repeat.
       </p>
 
@@ -175,7 +184,7 @@ export default function AdminWebhooks() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
-            <caption className="sr-only">Payment webhook events</caption>
+            <caption className="sr-only">Webhook events</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
                 <th scope="col" className="px-4 py-3">Received</th>
@@ -191,7 +200,10 @@ export default function AdminWebhooks() {
                 <Fragment key={ev.id}>
                 <tr>
                   <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(ev.receivedAt)}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-700">{ev.eventType}</td>
+                  <td className="px-4 py-3 font-mono text-xs text-gray-700">
+                    {ev.eventType}
+                    {ev.provider && ev.provider !== 'paystack' && <div className="text-gray-400 mt-0.5">{ev.provider}</div>}
+                  </td>
                   <td className="px-4 py-3 font-mono text-xs text-gray-500">
                     {ev.reference
                       ? <Link to={`/admin/payments?reference=${encodeURIComponent(ev.reference)}`} className="text-blue-700 hover:underline" title="Open this payment">{ev.reference}</Link>
@@ -222,7 +234,7 @@ export default function AdminWebhooks() {
                       {payloads[ev.id] === 'loading' ? <Spinner /> :
                        payloads[ev.id] === 'error' ? <p className="text-xs text-red-600 py-2">Couldn't load the payload.</p> :
                        <pre className="text-xs text-gray-700 overflow-x-auto py-2">{JSON.stringify(payloads[ev.id], null, 2)}</pre>}
-                      <p className="text-xs text-gray-400">Stored with card, customer and IP details removed.</p>
+                      <p className="text-xs text-gray-400">Stored minimised: card, customer and IP details removed (Resend events keep only the recipient, bounce type and id).</p>
                     </td>
                   </tr>
                 )}
