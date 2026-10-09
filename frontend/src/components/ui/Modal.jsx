@@ -1,7 +1,17 @@
 import { useEffect, useId, useRef } from 'react'
 
 const FOCUSABLE =
-  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
+  'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
+
+// Elements the trap should treat as tabbable. In a real browser, anything that takes no space
+// (display:none, inside a [hidden] subtree, collapsed) can't hold focus — counting it as the first/last
+// stop made Tab escape the dialog when the last "item" was invisible. jsdom does no layout (every
+// element reports no boxes), so the visibility test only applies where layout exists.
+function tabbables(dialog) {
+  const all = [...dialog.querySelectorAll(FOCUSABLE)]
+  if (dialog.getClientRects().length === 0) return all
+  return all.filter(el => el.getClientRects().length > 0)
+}
 
 // BUG FIX (audit): background-scroll locking used to save/restore
 // document.body.style.overflow per Modal instance — `previousOverflow` was
@@ -15,13 +25,25 @@ const FOCUSABLE =
 // open and restored only when the last one closes, so nesting (now or in
 // the future) is safe by construction rather than by convention.
 let lockCount = 0
+let savedPaddingRight = ''
 function lockScroll() {
-  if (lockCount === 0) document.body.style.overflow = 'hidden'
+  if (lockCount === 0) {
+    // Hiding the page scrollbar widens the page and shifts everything sideways behind the overlay;
+    // pad the body by the scrollbar's width so the layout stays put.
+    const cw = document.documentElement.clientWidth
+    const gap = cw > 0 ? Math.max(0, window.innerWidth - cw) : 0   // no layout (jsdom): nothing to compensate
+    savedPaddingRight = document.body.style.paddingRight
+    if (gap > 0) document.body.style.paddingRight = `${gap + (parseFloat(getComputedStyle(document.body).paddingRight) || 0)}px`
+    document.body.style.overflow = 'hidden'
+  }
   lockCount++
 }
 function unlockScroll() {
   lockCount = Math.max(0, lockCount - 1)
-  if (lockCount === 0) document.body.style.overflow = ''
+  if (lockCount === 0) {
+    document.body.style.overflow = ''
+    document.body.style.paddingRight = savedPaddingRight
+  }
 }
 
 // BUG FIX (audit): the scroll-lock counter above made nesting SAFE for
@@ -54,7 +76,9 @@ let nextModalId = 0
 //  - A close button is always present (a title-less modal had none).
 //  - `dismissible={false}` blocks Esc / backdrop / X while work is in flight, so a
 //    request can't be orphaned by closing mid-way.
-export default function Modal({ open, onClose, title, children, dismissible = true }) {
+//  - `ariaLabel` names a title-less dialog and `describedBy` (an element id inside it) gives assistive
+//    tech the body text to read on open — ConfirmDialog uses both.
+export default function Modal({ open, onClose, title, children, dismissible = true, ariaLabel, describedBy }) {
   const titleId = useId()
   const dialogRef = useRef(null)
   const onCloseRef = useRef(onClose)
@@ -75,7 +99,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       // Two queries on purpose: one selector list returns the first match in DOCUMENT order, so a
       // checkbox rendered above the buttons would beat `data-autofocus` (the safe default button).
       dialog.querySelector('[data-autofocus]') ||
-      dialog.querySelector('input:not([disabled]), textarea:not([disabled]), select:not([disabled])') ||
+      dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])') ||
       dialog.querySelector(FOCUSABLE) || dialog
     initial.focus()
 
@@ -88,7 +112,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
         return
       }
       if (e.key !== 'Tab') return
-      const items = [...dialog.querySelectorAll(FOCUSABLE)]
+      const items = tabbables(dialog)
       if (items.length === 0) { e.preventDefault(); dialog.focus(); return }
       const first = items[0], last = items[items.length - 1]
       const active = document.activeElement
@@ -140,7 +164,12 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
         role="dialog"
         aria-modal="true"
         aria-labelledby={title ? titleId : undefined}
+        aria-label={!title ? ariaLabel : undefined}
+        aria-describedby={describedBy}
         tabIndex={-1}
+        // 90dvh tracks the VISIBLE viewport on phones (the URL bar / keyboard shrink it, 90vh doesn't);
+        // a browser without dvh drops the inline value and keeps the 90vh class.
+        style={{ maxHeight: '90dvh' }}
         className="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6 z-10 max-h-[90vh] overflow-y-auto focus:outline-none"
       >
         {title ? (

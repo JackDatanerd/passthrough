@@ -38,10 +38,10 @@ async function adminOnly(c, next) {
     return c.json({ success: false, message: 'Authentication required' }, 401)
   }
   if (user.role !== 'ADMIN')
-    return c.json({ success: false, message: 'Admin access required' }, 403)
+    return c.json({ success: false, message: 'Admin access required', code: 'ADMIN_REQUIRED' }, 403)
   if (!adminIpAllowed(c.env, clientIp(c))) {
     console.error(`adminOnly: admin ${user.id} refused from a network outside ADMIN_ALLOWED_IPS`)
-    return c.json({ success: false, message: 'Admin access is not allowed from this network.' }, 403)
+    return c.json({ success: false, message: 'Admin access is not allowed from this network.', code: 'ADMIN_NETWORK_DENIED' }, 403)
   }
   await next()
 }

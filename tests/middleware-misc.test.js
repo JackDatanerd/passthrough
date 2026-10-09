@@ -27,6 +27,7 @@ describe('adminOnly', () => {
     let nextCalled = false
     const res = await adminOnly(c, async () => { nextCalled = true })
     expect(res.status).toBe(403)
+    expect(res.body.code).toBe('ADMIN_REQUIRED')   // the SPA bounces to /dashboard only on this code
     expect(nextCalled).toBe(false)
   })
 

@@ -20,10 +20,16 @@ export function humanizeField(field) {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1)
 }
 
+// True for a request that was aborted on purpose (AbortController / axios cancel).
+export function isCancelError(err) {
+  return !!err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError')
+}
+
 export function getErrorMessage(err, fallback = GENERIC) {
+  if (fallback === null || fallback === undefined || fallback === '') fallback = GENERIC
   if (!err) return fallback
   // A deliberately cancelled request is not a connectivity problem.
-  if (err.code === 'ERR_CANCELED' || err.name === 'CanceledError') return fallback
+  if (isCancelError(err)) return fallback
 
   const res = err.response
   if (res) {
@@ -31,8 +37,11 @@ export function getErrorMessage(err, fallback = GENERIC) {
     if (data && typeof data === 'object') {
       if (Array.isArray(data.errors) && data.errors.length > 0) {
         const parts = data.errors.slice(0, 3).map(e => {
+          // An entry with a field but no message used to render "Email: undefined".
+          const msg = typeof e?.message === 'string' ? e.message.trim() : ''
+          if (!msg) return ''
           const label = humanizeField(e.field)
-          return label ? `${label}: ${e.message}` : e.message
+          return label ? `${label}: ${msg}` : msg
         }).filter(Boolean)
         if (parts.length) return parts.join(' · ')
       }

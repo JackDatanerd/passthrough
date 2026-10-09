@@ -6,6 +6,7 @@ import {
   classifyAuthFailure, isProtectedPath, failureScope,
 } from './session'
 import { getToken, getDeviceId, storageRemove } from './storage'
+import { setFlash, FLASH_ADMIN_DENIED } from './flash'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
 export { getErrorMessage } from './errors'
@@ -110,11 +111,16 @@ api.interceptors.response.use(
       endSession(verdict)
     }
 
-    // A 403 from an admin-gated endpoint (server-side role check failed — see
-    // middleware/adminOnly.js): a non-admin who reached an /admin/* page is sent
-    // somewhere useful instead of being parked on a page with nothing to load.
-    // Scoped to /admin paths only — a 403 elsewhere means something different.
-    if (status === 403 && !verdict && window.location.pathname.startsWith('/admin')) {
+    // A 403 from the admin gate saying the ACCOUNT is not an admin (middleware/adminOnly.js,
+    // code ADMIN_REQUIRED): a non-admin who reached an /admin/* page is sent somewhere useful and
+    // told why (a one-shot notice the dashboard shows). Deliberately narrow: the other admin 403
+    // (ADMIN_NETWORK_DENIED — a real admin on a network outside the allow-list) stays on the page so
+    // its own message is displayed instead of silently bouncing the admin away, and a 403 that is
+    // about anything else never moves the person. The message match covers a server not yet
+    // sending codes.
+    if (status === 403 && !verdict && window.location.pathname.startsWith('/admin')
+        && (code === 'ADMIN_REQUIRED' || (!code && err.response?.data?.message === 'Admin access required'))) {
+      setFlash(FLASH_ADMIN_DENIED)
       window.location.replace('/dashboard')
     }
 

@@ -15,8 +15,15 @@ import { TOKEN_KEY, USER_KEY } from './session'
 const memory = new Map()
 
 export function storageGet(key) {
+  // Memory first: a value lands there only when localStorage.setItem threw (quota exceeded, some
+  // private modes) — and in those browsers getItem often still WORKS, answering null/stale. Reading
+  // storage first made a token that had just been "saved" read back as absent, so sign-in looked
+  // successful and the person was effectively signed out (and every request minted a new device id).
+  // storageSet clears the memory copy whenever a real write succeeds and storageRemove always
+  // clears it, so a memory entry is never older than storage.
+  if (memory.has(key)) return memory.get(key)
   try { return localStorage.getItem(key) }
-  catch (_) { return memory.has(key) ? memory.get(key) : null }
+  catch (_) { return null }
 }
 
 export function storageSet(key, value) {

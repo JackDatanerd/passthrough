@@ -1,7 +1,10 @@
+import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
 import Navbar from './Navbar'
 import Footer from './Footer'
 import { cn } from '../../lib/utils'
+import Alert from '../ui/Alert'
+import { consumeFlash, flashMessage } from '../../lib/flash'
 
 const nav = [
   { label: 'Scans',    to: '/dashboard' },
@@ -22,6 +25,8 @@ function isActive(pathname, to) {
 
 export default function DashboardLayout({ children }) {
   const { pathname } = useLocation()
+  // A one-shot notice left by a redirect (a non-admin bounced off /admin): read once, on first render.
+  const [notice] = useState(() => flashMessage(consumeFlash()))
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -52,7 +57,10 @@ export default function DashboardLayout({ children }) {
             ))}
           </nav>
         </aside>
-        <main className="flex-1 min-w-0">{children}</main>
+        <main className="flex-1 min-w-0">
+          {notice && <Alert variant="warning" className="mb-4">{notice}</Alert>}
+          {children}
+        </main>
       </div>
       <Footer />
     </div>

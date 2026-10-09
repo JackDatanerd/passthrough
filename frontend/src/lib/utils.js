@@ -24,6 +24,8 @@ export function formatDate(dateStr) {
 // handling is needed here.
 export function formatDateTime(dateStr) {
   if (!dateStr) return '—'
+  // A date-only value carries no time of day; showing it as "12:00 AM" would invent one.
+  if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return formatDate(dateStr.trim())
   const d = new Date(dateStr)
   if (Number.isNaN(d.getTime())) return '—'
   return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })

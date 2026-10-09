@@ -255,18 +255,45 @@ describe('endSession via the response interceptor', () => {
 })
 
 describe('admin 403 redirect', () => {
-  it('a 403 on an /admin page with no session-expiry verdict bounces to /dashboard', async () => {
+  it('a non-admin (code ADMIN_REQUIRED) on an /admin page is bounced to /dashboard with a one-shot notice', async () => {
+    const { replace } = setGlobals({ pathname: '/admin/partners', token: 'tok' })
+    const api = await loadApi()
+    const flash = await import('../src/lib/flash.js')
+    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { code: 'ADMIN_REQUIRED', message: 'Admin access required' } } } }])
+    await expect(api.get('/admin/partners', { adapter })).rejects.toBeTruthy()
+    expect(replace).toHaveBeenCalledWith('/dashboard')
+    expect(flash.consumeFlash()).toBe(flash.FLASH_ADMIN_DENIED)
+    expect(flash.consumeFlash()).toBeNull()          // one-shot
+  })
+
+  it('a server not yet sending codes is still recognised by its message', async () => {
+    const { replace } = setGlobals({ pathname: '/admin/users', token: 'tok' })
+    const api = await loadApi()
+    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { message: 'Admin access required' } } } }])
+    await expect(api.get('/admin/users', { adapter })).rejects.toBeTruthy()
+    expect(replace).toHaveBeenCalledWith('/dashboard')
+  })
+
+  it('an admin refused by the network allow-list stays on the page (its message is shown, not a silent bounce)', async () => {
+    const { replace } = setGlobals({ pathname: '/admin/dashboard', token: 'tok' })
+    const api = await loadApi()
+    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { code: 'ADMIN_NETWORK_DENIED', message: 'Admin access is not allowed from this network.' } } } }])
+    await expect(api.get('/admin/dashboard', { adapter })).rejects.toBeTruthy()
+    expect(replace).not.toHaveBeenCalled()
+  })
+
+  it('any other 403 on an /admin page does not move the person', async () => {
     const { replace } = setGlobals({ pathname: '/admin/partners', token: 'tok' })
     const api = await loadApi()
     const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { message: 'Forbidden' } } } }])
     await expect(api.get('/admin/partners', { adapter })).rejects.toBeTruthy()
-    expect(replace).toHaveBeenCalledWith('/dashboard')
+    expect(replace).not.toHaveBeenCalled()
   })
 
   it('does not fire outside /admin', async () => {
     const { replace } = setGlobals({ pathname: '/dashboard', token: 'tok' })
     const api = await loadApi()
-    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: {} } } }])
+    const { adapter } = fakeAdapter([{ error: { response: { status: 403, data: { code: 'ADMIN_REQUIRED' } } } }])
     await expect(api.get('/scan/1', { adapter })).rejects.toBeTruthy()
     expect(replace).not.toHaveBeenCalled()
   })

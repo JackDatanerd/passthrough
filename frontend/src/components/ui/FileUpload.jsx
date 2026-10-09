@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { validateUpload, normalizeUpload } from '../../lib/upload'
 
@@ -16,12 +16,21 @@ import { validateUpload, normalizeUpload } from '../../lib/upload'
 // are rejected; the drag highlight no longer flickers over child elements; and
 // the file's MIME type is normalised to match its extension so the API's
 // `file.type` check agrees with this component's extension check.
-export default function FileUpload({ onFile, value, accept = '.pdf,.docx', maxMB = 5, disabled = false }) {
+// `prompt` / `typesText` / `ariaLabel` are the visible and spoken copy; the defaults are the resume wording.
+// (What is actually accepted is decided by lib/upload.js — PDF and DOCX — and `accept` only filters the picker.)
+export default function FileUpload({
+  onFile, value, accept = '.pdf,.docx', maxMB = 5, disabled = false,
+  prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel = 'Upload your resume (PDF or DOCX)',
+}) {
   const inputRef = useRef(null)
   const dragDepth = useRef(0)
   const [drag, setDrag] = useState(false)
   const [error, setError] = useState('')
   const [internalFile, setInternalFile] = useState(null)
+
+  // A rejection message describes the last file the person tried; once the parent swaps or clears the
+  // file (a form reset, switching modes) it would otherwise linger under a different state.
+  useEffect(() => { setError('') }, [value])
 
   const controlled = value !== undefined
   const file = controlled ? value : internalFile
@@ -51,7 +60,7 @@ export default function FileUpload({ onFile, value, accept = '.pdf,.docx', maxMB
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled || undefined}
-        aria-label={file ? `Selected file ${file.name}. Press to replace.` : 'Upload your resume (PDF or DOCX)'}
+        aria-label={file ? `Selected file ${file.name}. Press to replace.` : ariaLabel}
         // input.click() bubbles back up to this div; ignore it rather than lean on the
         // browser's re-entrancy guard to stop a second picker request.
         onClick={e => { if (e.target === inputRef.current) return; openPicker() }}
@@ -95,9 +104,9 @@ export default function FileUpload({ onFile, value, accept = '.pdf,.docx', maxMB
         ) : (
           <div>
             <p className="text-sm font-medium text-gray-700">
-              Drop your resume here or <span className="text-blue-600">browse</span>
+              {prompt} or <span className="text-blue-600">browse</span>
             </p>
-            <p className="text-xs text-gray-500 mt-1">PDF or DOCX, max {maxMB}MB</p>
+            <p className="text-xs text-gray-500 mt-1">{typesText}, max {maxMB}MB</p>
           </div>
         )}
         <input

@@ -1,4 +1,4 @@
-import { forwardRef, useId } from 'react'
+import { forwardRef, useEffect, useId } from 'react'
 import { cn } from '../../lib/utils'
 
 // FEATURE GAP CLOSED (Section 11 audit): every filter/admin <select> re-typed
@@ -33,6 +33,13 @@ const sizes = {
 const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const selectId = id || autoId
+  // Unlike Input there is no placeholder to fall back on: a select with no <label>, aria-label or
+  // aria-labelledby has NO accessible name. Say so while developing instead of shipping it silently.
+  const unnamed = !label && !props['aria-label'] && !props['aria-labelledby']
+  useEffect(() => {
+    if (unnamed && import.meta.env?.DEV && import.meta.env?.MODE !== 'test')
+      console.warn('<Select> has no accessible name: pass `label`, `aria-label` or `aria-labelledby`.')
+  }, [unnamed])
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
   // reference `${selectId}-hint` even when the hint <p> wasn't rendered
   // (it only renders when `hint && !error`), a dangling ARIA reference.

@@ -66,7 +66,9 @@ describe('adminOnly ADMIN_ALLOWED_IPS (G5)', () => {
     expect((await get(env, '5.6.7.8')).status).toBe(200)
     const res = await get(env, '9.9.9.9')
     expect(res.status).toBe(403)
-    expect((await res.json()).message).toMatch(/not allowed from this network/)
+    const body = await res.json()
+    expect(body.message).toMatch(/not allowed from this network/)
+    expect(body.code).toBe('ADMIN_NETWORK_DENIED')   // the SPA keys off this: it must NOT bounce this admin away
   })
   it('compares IPv6 by /64, like every other per-IP bucket', async () => {
     const env = { ADMIN_ALLOWED_IPS: '2001:db8:1:2::1' }

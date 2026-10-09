@@ -106,6 +106,12 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
         disabled={!value.trim() || disabled} className="mt-0.5">
         Apply
       </Button>
+      {/* "change" had no way back: leaving the field untouched now returns to the applied code. */}
+      {referralCode && pricing?.referralApplied && editing && (
+        <Button type="button" size="sm" variant="ghost" onClick={() => { setValue(referralCode); setEditing(false) }} disabled={disabled} className="mt-0.5">
+          Cancel
+        </Button>
+      )}
       {referralCode && (
         <Button type="button" size="sm" variant="ghost" onClick={handleRemove} disabled={disabled} className="mt-0.5">
           Remove
