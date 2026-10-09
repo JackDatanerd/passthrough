@@ -53,9 +53,12 @@ export default function TermsUpdateBanner() {
       await acceptTerms()
     } catch (err) {
       setError(getErrorMessage(err, "Couldn't record your acceptance. Please try again."))
-      setLoading(false)
     }
-    // On success the user object flips to termsCurrent: true and this unmounts.
+    // Always released. On the normal success path the user object flips to termsCurrent: true and this
+    // unmounts (a state set after that is a harmless no-op), but acceptTerms can resolve WITHOUT flipping
+    // the user — it deliberately skips the update when the session token changed mid-request (a sliding
+    // renewal, a sign-in elsewhere) — and the banner then stayed up with a permanently spinning button.
+    setLoading(false)
   }
 
   return (

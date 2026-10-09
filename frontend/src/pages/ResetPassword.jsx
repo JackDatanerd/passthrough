@@ -116,7 +116,7 @@ export default function ResetPassword() {
                 autoComplete="new-password" placeholder="Min. 8 characters" />
               <PasswordInput label="Confirm password" value={confirm}
                 onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
               <Button type="submit" loading={loading} className="w-full">
                 Reset password
               </Button>

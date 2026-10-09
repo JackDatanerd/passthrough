@@ -9,10 +9,13 @@ import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import PasswordInput from '../components/ui/PasswordInput'
+import Checkbox from '../components/ui/Checkbox'
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { passwordProblem } from '../lib/passwordRules'
+
+const TERMS_REQUIRED = 'Please accept the Terms of Service and Privacy Policy to continue.'
 
 export default function Register() {
   const navigate = useNavigate()
@@ -29,6 +32,9 @@ export default function Register() {
   const [captcha, setCaptcha] = useState('')
   const [captchaReset, setCaptchaReset] = useState(0)
   const { loading, error, execute } = useApi()
+  // The terms message belongs to the checkbox (announced there, tied to it with aria-describedby) and
+  // goes away once it is ticked; every other message stays in the form-level slot above the button.
+  const termsMissing = error === TERMS_REQUIRED && !acceptTerms
 
   // AUDIT FIX (Auth section round 1, feature gap G5): same "next" handoff
   // Login.jsx already had — this page never read it at all, so a visitor
@@ -56,7 +62,7 @@ export default function Register() {
     const pwProblem = passwordProblem(password, email)
     if (pwProblem) return fail(pwProblem)
     if (password !== confirm) return fail('Passwords do not match.')
-    if (!acceptTerms) return fail('Please accept the Terms of Service and Privacy Policy to continue.')
+    if (!acceptTerms) return fail(TERMS_REQUIRED)
     if (TURNSTILE_ENABLED && !captcha) return fail('Please complete the security check below.')
     try {
       await execute(async () => {
@@ -94,20 +100,25 @@ export default function Register() {
             <PasswordInput label="Confirm password" value={confirm}
               onChange={e => setConfirm(e.target.value)} autoComplete="new-password" />
 
-            <label className="flex items-start gap-2 text-sm text-gray-600">
-              <input type="checkbox" checked={acceptTerms} onChange={e => setAcceptTerms(e.target.checked)}
-                className="mt-0.5 h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
-              <span>
-                I agree to the{' '}
-                <Link to="/terms" target="_blank" className="text-blue-600 hover:underline">Terms of Service</Link>
-                {' '}and{' '}
-                <Link to="/privacy" target="_blank" className="text-blue-600 hover:underline">Privacy Policy</Link>.
-              </span>
-            </label>
+            <Checkbox
+              checked={acceptTerms}
+              onChange={e => setAcceptTerms(e.target.checked)}
+              error={termsMissing ? error : undefined}
+              alignTop
+              wrapperClassName="text-gray-600"
+              label={(
+                <span>
+                  I agree to the{' '}
+                  <Link to="/terms" target="_blank" className="text-blue-600 hover:underline">Terms of Service</Link>
+                  {' '}and{' '}
+                  <Link to="/privacy" target="_blank" className="text-blue-600 hover:underline">Privacy Policy</Link>.
+                </span>
+              )}
+            />
 
             <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
 
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && error !== TERMS_REQUIRED && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
             <Button type="submit" loading={loading} className="w-full">
               Create account

@@ -139,7 +139,7 @@ function EmployerLeadForm() {
         <RoleFields category={field} onCategory={setField} title={title} onTitle={setTitle} />
         <LeadConsentNote />
         <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
-        {err && <p className="text-xs text-red-600">{err}</p>}
+        {err && <p role="alert" className="text-xs text-red-600">{err}</p>}
         {/* Honeypot: invisible to a real person, tempting to a bot filling every
             field it finds. Off-screen rather than display:none/hidden — some
             bots skip fields a screen reader would also skip. */}

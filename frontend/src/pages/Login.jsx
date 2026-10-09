@@ -82,7 +82,7 @@ export default function Login() {
             <PasswordInput label="Password" value={password}
               onChange={e => setPassword(e.target.value)} autoComplete="current-password" />
 
-            {error && <p className="text-sm text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
             <Button type="submit" loading={loading} className="w-full">
               Sign in

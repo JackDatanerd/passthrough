@@ -14,6 +14,16 @@ export function setFlash(code) {
   try { sessionStorage.setItem(FLASH_KEY, code) } catch (_) { /* storage unavailable */ }
 }
 
+// Reads the flash WITHOUT clearing it. A component that shows the notice reads it with this during
+// render and clears it from an effect: consuming inside a render-phase initializer is a side effect,
+// and StrictMode (on in main.jsx) runs initializers twice in development, so the second run found it
+// already gone and the notice never appeared under `npm run dev`.
+export function peekFlash() {
+  let code = null
+  try { code = sessionStorage.getItem(FLASH_KEY) } catch (_) { /* storage unavailable */ }
+  return code || memoryFlash || null
+}
+
 export function consumeFlash() {
   let code = null
   try {

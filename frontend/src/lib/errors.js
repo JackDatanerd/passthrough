@@ -12,12 +12,21 @@
 
 const GENERIC = 'Something went wrong. Please try again.'
 
-// "newPassword" -> "New password", "email" -> "Email"
+// "newPassword" -> "New password", "email" -> "Email", "experience.1.title" -> "Title".
+// A path that ENDS in an array index ("extraRoleCategories.1", "ids.0") used to be labelled by the index
+// alone — "1: Invalid enum value…", "0: Invalid lead id." — so it is named after the list it belongs to
+// and says which item (1-based): "Extra role categories (item 2)". A path that is only an index has no
+// name to give, and the message is shown on its own.
 export function humanizeField(field) {
   if (!field) return ''
-  const last = String(field).split('.').pop()
+  const parts = String(field).split('.').filter(p => p !== '')
+  let index = null
+  while (parts.length && /^\d+$/.test(parts[parts.length - 1])) index = Number(parts.pop())
+  const last = parts.pop()
+  if (!last) return ''
   const spaced = last.replace(/([a-z0-9])([A-Z])/g, '$1 $2').replace(/[_-]+/g, ' ').trim().toLowerCase()
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+  const label = spaced.charAt(0).toUpperCase() + spaced.slice(1)
+  return index === null ? label : `${label} (item ${index + 1})`
 }
 
 // True for a request that was aborted on purpose (AbortController / axios cancel).

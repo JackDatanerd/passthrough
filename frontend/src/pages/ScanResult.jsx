@@ -28,6 +28,7 @@ import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
 import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
+import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Checkbox from '../components/ui/Checkbox'
 
 // These used to be a single `TERMINAL` array serving two different jobs at
@@ -245,17 +246,18 @@ export default function ScanResult() {
   }
 
   const [deleting, setDeleting] = useState(false)
-  const [deleteError, setDeleteError] = useState('')
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  // Runs from the ConfirmDialog (the native window.confirm this replaced was the one destructive action
+  // left outside it). A failure rejects, so the dialog stays open and shows the error beside the buttons.
   async function handleDeleteAnon() {
-    if (!window.confirm('Delete this result? Your resume text and score are removed and this link stops working.')) return
-    setDeleting(true); setDeleteError('')
+    setDeleting(true)
     try {
       await api.delete(`/scan/${id}?token=${encodeURIComponent(anonToken)}`)
       removeAnonScanToken(id)
       navigate('/')
     } catch (err) {
-      setDeleteError(getErrorMessage(err, 'Could not delete it — try again.'))
       setDeleting(false)
+      throw err                       // the dialog turns it into the message (server text, or a connection note)
     }
   }
 
@@ -1037,7 +1039,7 @@ export default function ScanResult() {
                       Let anyone with your verification link also download the file itself
                     </p>
                     {visibilityError && (
-                      <p className="text-xs text-red-600 mb-2">{visibilityError}</p>
+                      <p role="alert" className="text-xs text-red-600 mb-2">{visibilityError}</p>
                     )}
                     <div className="flex flex-col gap-2">
                       <Checkbox label="Allow public .docx download" checked={!!scan.verifyExposeDocx} onChange={e => handleToggleExposure('verifyExposeDocx', 'exposeDocx', e.target.checked)} />
@@ -1182,12 +1184,19 @@ export default function ScanResult() {
                 its link can remove it now instead of waiting for the 24-hour expiry. */}
             {!scan.userId && anonToken && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'ERROR'].includes(scan.status) && (
               <div className="text-xs text-gray-500 -mt-2">
-                <Alert className="mb-1">{deleteError}</Alert>
-                <button type="button" onClick={handleDeleteAnon} disabled={deleting}
+                <button type="button" onClick={() => setConfirmDelete(true)} disabled={deleting}
                   className="underline underline-offset-2 hover:text-gray-700 disabled:opacity-50">
                   {deleting ? 'Deleting…' : 'Delete this result now'}
                 </button>
                 {' '}— removes your resume text and score from our servers.
+                <ConfirmDialog
+                  open={confirmDelete}
+                  title="Delete this result?"
+                  message="Your resume text and score are removed and this link stops working."
+                  confirmLabel="Delete"
+                  onConfirm={async () => { await handleDeleteAnon(); setConfirmDelete(false) }}
+                  onCancel={() => setConfirmDelete(false)}
+                />
               </div>
             )}
 

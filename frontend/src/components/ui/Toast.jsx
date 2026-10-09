@@ -43,7 +43,13 @@ export function ToastProvider({ children }) {
 
   const remove = useCallback(id => {
     clearTimer(id)
-    commit(list.current.filter(t => t.id !== id))
+    const next = list.current.filter(t => t.id !== id)
+    commit(next)
+    // The pause flag is only ever cleared by a mouseleave / blur on the stack — events a browser does not
+    // reliably deliver when the element under the pointer (or the focused Dismiss button) is the very
+    // thing that just got removed. With the stack empty there is nothing left to pause, so reset it here;
+    // otherwise every later toast was armed "paused" and stayed on screen until reload.
+    if (next.length === 0) paused.current = false
   }, [clearTimer, commit])
 
   const arm = useCallback((id, ms) => {
@@ -121,7 +127,8 @@ export function ToastProvider({ children }) {
         onMouseEnter={pause}
         onMouseLeave={resume}
         onFocus={pause}
-        onBlur={resume}
+        // Focus moving between two buttons inside the stack is not "leaving" it.
+        onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) resume() }}
       >
         {toasts.map(t => (
           <div

@@ -72,7 +72,7 @@ function AddPartnerModal({ onClose, onCreated }) {
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
         <Input label="Commission rate % (optional — blank uses the default)" type="number" step="0.01" value={rate}
           onChange={e => setRate(e.target.value)} placeholder="25" />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Add & send link</Button>
@@ -154,7 +154,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
             <p className="text-xs text-gray-400">Prices in the platform currency; leave a tier blank to keep its normal price.</p>
           </div>
         )}
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Approve</Button>
@@ -186,7 +186,7 @@ function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
         </p>
         <Input label="Reason (optional — included in the email)" value={reason} onChange={e => setReason(e.target.value)} maxLength={500}
           placeholder="e.g. We're only onboarding career-coaching audiences right now." />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" variant="danger" loading={saving}>Reject & notify</Button>
@@ -511,14 +511,15 @@ export default function AdminPartners() {
         {filtered.length === 0 && <EmptyState>No partners match “{query}”.</EmptyState>}
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Partners</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">Partner</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Rate</th>
-                <th className="px-4 py-3 text-right">Ready to pay</th>
-                <th className="px-4 py-3 text-right">Accruing ({partners[0]?.currentCycleLabel})</th>
-                <th className="px-4 py-3"></th>
+                <th scope="col" className="px-4 py-3">Partner</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3">Rate</th>
+                <th scope="col" className="px-4 py-3 text-right">Ready to pay</th>
+                <th scope="col" className="px-4 py-3 text-right">Accruing ({partners[0]?.currentCycleLabel})</th>
+                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">

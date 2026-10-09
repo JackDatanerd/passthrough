@@ -117,7 +117,7 @@ export default function EmployerLeadAction({ mode }) {
                     <option value="">Choose a field…</option>
                     {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                   </select>
-                  {fieldState === 'error' && <p className="text-xs text-red-600 mb-2">{fieldError}</p>}
+                  {fieldState === 'error' && <p role="alert" className="text-xs text-red-600 mb-2">{fieldError}</p>}
                   <Button onClick={saveField} disabled={!field || fieldState === 'saving'} className="w-full">
                     {fieldState === 'saving' ? 'Saving…' : 'Save'}
                   </Button>

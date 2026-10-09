@@ -86,18 +86,18 @@ describe('ScanResult — anonymous result deletion', () => {
   const anon = { id: 's1', status: 'COMPLETE_PASS', fixPurchased: false, atsScore: 70, inputMode: 'brain_dump', userId: null, originalResumeData: { name: 'J' } }
   it('the holder of the link can delete the result now, then lands on the home page', async () => {
     auth.user = null
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
     api.delete.mockResolvedValue({ data: { success: true } })
     setup(anon, { path: '/scan/s1?token=tok' })
     fireEvent.click(await screen.findByRole('button', { name: 'Delete this result now' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }))
     await waitFor(() => expect(api.delete).toHaveBeenCalledWith('/scan/s1?token=tok'))
     expect(await screen.findByText('home')).toBeInTheDocument()
   })
   it('declining the confirmation deletes nothing; signed-in owners do not get this control', async () => {
     auth.user = null
-    vi.spyOn(window, 'confirm').mockReturnValue(false)
     setup(anon, { path: '/scan/s1?token=tok' })
     fireEvent.click(await screen.findByRole('button', { name: 'Delete this result now' }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Cancel' }))
     expect(api.delete).not.toHaveBeenCalled()
   })
 })

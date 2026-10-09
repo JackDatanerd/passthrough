@@ -250,16 +250,17 @@ export default function AdminPayments() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Payments</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">Reference</th>
-                <th className="px-4 py-3">User</th>
-                <th className="px-4 py-3 text-right">Amount</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Tier</th>
-                <th className="px-4 py-3">Referral</th>
-                <th className="px-4 py-3">Created</th>
-                <th className="px-4 py-3"></th>
+                <th scope="col" className="px-4 py-3">Reference</th>
+                <th scope="col" className="px-4 py-3">User</th>
+                <th scope="col" className="px-4 py-3 text-right">Amount</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3">Tier</th>
+                <th scope="col" className="px-4 py-3">Referral</th>
+                <th scope="col" className="px-4 py-3">Created</th>
+                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">

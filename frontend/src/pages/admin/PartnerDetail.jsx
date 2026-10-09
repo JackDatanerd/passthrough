@@ -85,7 +85,7 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
         </p>
         <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={300} />
         <Checkbox label={`Email ${partner.name} that this record was corrected`} checked={notify} onChange={e => setNotify(e.target.checked)} />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" variant="danger" loading={loading}>Void payout</Button>
@@ -269,7 +269,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
             ))}
           </div>
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Save</Button>
@@ -421,7 +421,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
           onChange={e => setNote(e.target.value)} placeholder="e.g. September referrals" />
         <Input label={differs ? 'Internal note (required — explain the difference; admin only)' : 'Internal note (optional, admin only)'} value={internalNote}
           onChange={e => setInternalNote(e.target.value)} placeholder="e.g. short-paid: owes us for a chargeback" />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving} disabled={!partner.payoutMethod}>
@@ -489,7 +489,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
           <Input label="Expires on (optional)" type="date" value={expiresAt}
             onChange={e => setExpiresAt(e.target.value)} />
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Create & notify</Button>
@@ -565,7 +565,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
           <Input label="Expires on (blank = never)" type="date" value={expiresAt}
             onChange={e => setExpiresAt(e.target.value)} />
         </div>
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Save</Button>
@@ -758,15 +758,16 @@ function ConversionsTab({ partner }) {
       </div>
     <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
       <table className="w-full text-sm">
+        <caption className="sr-only">Partner commission ledger</caption>
         <thead>
           <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-            <th className="px-4 py-3">Date</th>
-            <th className="px-4 py-3">Code</th>
-            <th className="px-4 py-3">Payment ref</th>
-            <th className="px-4 py-3 text-right">Gross sale</th>
-            <th className="px-4 py-3 text-right">Rate</th>
-            <th className="px-4 py-3 text-right">Commission</th>
-            <th className="px-4 py-3">Status</th>
+            <th scope="col" className="px-4 py-3">Date</th>
+            <th scope="col" className="px-4 py-3">Code</th>
+            <th scope="col" className="px-4 py-3">Payment ref</th>
+            <th scope="col" className="px-4 py-3 text-right">Gross sale</th>
+            <th scope="col" className="px-4 py-3 text-right">Rate</th>
+            <th scope="col" className="px-4 py-3 text-right">Commission</th>
+            <th scope="col" className="px-4 py-3">Status</th>
           </tr>
         </thead>
         <tbody className="divide-y divide-gray-100">

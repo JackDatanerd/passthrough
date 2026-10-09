@@ -19,6 +19,7 @@ import SessionsCard from '../../components/account/SessionsCard'
 import SavedProfileEditor from '../../components/account/SavedProfileEditor'
 import { USER_KEY } from '../../lib/session'
 import { isAlreadyVerified } from '../../lib/resendVerification'
+import Checkbox from '../../components/ui/Checkbox'
 
 export default function Settings() {
   const navigate      = useNavigate()
@@ -552,16 +553,13 @@ export default function Settings() {
         {notifyScanResults !== null && (
           <div className="bg-white rounded-lg border border-gray-200 p-6">
             <h2 className="font-semibold text-gray-900 mb-1">Email</h2>
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input type="checkbox" className="mt-1 h-4 w-4 rounded border-gray-300"
-                checked={notifyScanResults} disabled={prefSaving} onChange={handleToggleNotify} />
-              <span>
-                <span className="block text-sm font-medium text-gray-900">Email me when a scan finishes</span>
-                <span className="block text-sm text-gray-500">
-                  The score summary after each scan. Security notices, receipts and your delivered fix are always sent.
-                </span>
-              </span>
-            </label>
+            <Checkbox
+              checked={notifyScanResults}
+              disabled={prefSaving}
+              onChange={handleToggleNotify}
+              label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
+              description="The score summary after each scan. Security notices, receipts and your delivered fix are always sent."
+            />
             {prefError && <p role="alert" className="text-sm text-red-600 mt-2">{prefError}</p>}
           </div>
         )}

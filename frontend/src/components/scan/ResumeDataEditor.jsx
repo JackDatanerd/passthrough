@@ -1,9 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import api, { getErrorMessage } from '../../lib/api'
 import { downloadBlob } from '../../lib/utils'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning'
 import { missingHints } from '../../lib/resumeForm'
 
 // AUDIT FIX (feature gap — section audit "generate a resume from scratch"):
@@ -38,6 +40,11 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   const [pdfLoading, setPdfLoading] = useState(false)
   const [structuring, setStructuring] = useState(false)
   const [structError, setStructError] = useState('')
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  // The draft as it was when editing started, to tell whether anything was changed.
+  const baseline = useRef(null)
+  const dirty = editing && draft !== null && baseline.current !== null && JSON.stringify(draft) !== baseline.current
+  useUnsavedChangesWarning(dirty)
 
   const data = scan.originalResumeData
   const isFile = scan.inputMode === 'file'
@@ -75,7 +82,9 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
   }
 
   function startEditing() {
-    setDraft(JSON.parse(JSON.stringify(data)))
+    const copy = JSON.parse(JSON.stringify(data))
+    baseline.current = JSON.stringify(copy)
+    setDraft(copy)
     setSaveError('')
     setEditing(true)
   }
@@ -133,7 +142,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
           </Button>
         </div>
       </div>
-      {dlError && <p className="text-xs text-red-600 mt-2">{dlError}</p>}
+      {dlError && <p role="alert" className="text-xs text-red-600 mt-2">{dlError}</p>}
 
       {!editing ? (
         <ResumeDataSummary data={data} />
@@ -144,10 +153,20 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
           <Alert>{saveError}</Alert>
           <div className="flex gap-3">
             <Button onClick={handleSave} loading={saving}>Save changes & rescore</Button>
-            <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>
+            <Button variant="ghost" onClick={() => (dirty ? setConfirmCancel(true) : setEditing(false))} disabled={saving}>Cancel</Button>
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmCancel}
+        title="Discard your changes?"
+        message="You have edits to your resume data that are not saved."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        onConfirm={() => { setConfirmCancel(false); setEditing(false) }}
+        onCancel={() => setConfirmCancel(false)}
+      />
     </div>
   )
 }

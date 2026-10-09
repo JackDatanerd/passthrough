@@ -87,7 +87,7 @@ export default function SaveProfilePrompt({ scanId }) {
               ? `Reuse your background against a new job description in one step. This replaces the profile you saved on ${formatDate(existing.savedAt)}.`
               : 'Reuse your background against a new job description in one step — no re-uploading.'}
         </p>
-        {status === 'error' && <p className="text-xs text-red-600 mt-1">{error}</p>}
+        {status === 'error' && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
       </div>
       <Button onClick={onSaveClick} loading={status === 'saving'} variant="secondary" size="sm" className="shrink-0">
         {alreadyThis ? 'Save again' : existing ? 'Replace saved profile' : 'Save profile'}

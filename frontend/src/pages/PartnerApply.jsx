@@ -104,7 +104,7 @@ export default function PartnerApply() {
                   label={<span>I have read and accept the <Link to="/partner/terms" target="_blank" rel="noopener" className="text-blue-700 hover:underline">partner program terms</Link>.</span>}
                 />
                 <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
-                {error && <p className="text-sm text-red-600">{error}</p>}
+                {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
                 <Button type="submit" loading={loading} className="w-full">Submit application</Button>
               </Form>
             </>

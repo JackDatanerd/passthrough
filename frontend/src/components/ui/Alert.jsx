@@ -12,12 +12,17 @@ const variants = {
   info:    'bg-blue-50 border-blue-200 text-blue-800',
 }
 
+// cn() only concatenates, and when two Tailwind text sizes are present the one defined LATER in the
+// stylesheet wins (text-sm beats text-xs), not the one passed last — so `<Alert className="text-xs">`
+// was silently ignored. The default size is dropped when the caller supplies their own.
+const TEXT_SIZE = /(?:^|\s)text-(?:xs|sm|base|lg|xl|2xl)(?:\s|$)/
+
 export default function Alert({ variant = 'error', className, children, ...props }) {
   if (children === null || children === undefined || children === false || children === '') return null
   return (
     <div
       role={variant === 'error' ? 'alert' : 'status'}
-      className={cn('rounded-md border px-3 py-2 text-sm', variants[variant] || variants.error, className)}
+      className={cn('rounded-md border px-3 py-2', !TEXT_SIZE.test(className || '') && 'text-sm', variants[variant] || variants.error, className)}
       {...props}
     >
       {children}

@@ -23,6 +23,7 @@ export default function FileUpload({
   prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel = 'Upload your resume (PDF or DOCX)',
 }) {
   const inputRef = useRef(null)
+  const zoneRef = useRef(null)
   const dragDepth = useRef(0)
   const [drag, setDrag] = useState(false)
   const [error, setError] = useState('')
@@ -31,6 +32,24 @@ export default function FileUpload({
   // A rejection message describes the last file the person tried; once the parent swaps or clears the
   // file (a form reset, switching modes) it would otherwise linger under a different state.
   useEffect(() => { setError('') }, [value])
+
+  // A file dropped a little OUTSIDE the dropzone makes the browser open it in this tab, replacing the
+  // app — and with it everything typed into the scan form (pasted job description, the other fields).
+  // While this is mounted, a file drag anywhere else is cancelled (the cursor shows "not allowed") so a
+  // near-miss does nothing instead of destroying the page. Drags that are not files (text, links) and
+  // anything over the dropzone itself are left to their own handlers.
+  useEffect(() => {
+    const guard = e => {
+      const types = Array.from(e.dataTransfer?.types || [])
+      if (!types.includes('Files')) return
+      if (zoneRef.current && zoneRef.current.contains(e.target)) return
+      e.preventDefault()
+      if (e.type === 'dragover' && e.dataTransfer) e.dataTransfer.dropEffect = 'none'
+    }
+    window.addEventListener('dragover', guard)
+    window.addEventListener('drop', guard)
+    return () => { window.removeEventListener('dragover', guard); window.removeEventListener('drop', guard) }
+  }, [])
 
   const controlled = value !== undefined
   const file = controlled ? value : internalFile
@@ -57,6 +76,7 @@ export default function FileUpload({
   return (
     <div>
       <div
+        ref={zoneRef}
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled || undefined}

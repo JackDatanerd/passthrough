@@ -87,7 +87,7 @@ export default function ForgotPassword() {
                 <Input label="Email" type="email" value={email}
                   onChange={e => setEmail(e.target.value)} autoComplete="email" />
                 <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
-                {error && <p className="text-sm text-red-600">{error}</p>}
+                {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
                 <Button type="submit" loading={loading} className="w-full">
                   Send reset link
                 </Button>

@@ -21,6 +21,13 @@ const api = axios.create({
   timeout: 30_000,
 })
 
+// POST endpoints that run an AI call (or a PDF render) INSIDE the request. The Worker gives a single
+// Claude call up to 90s (claude.service LONG_CALL_TIMEOUT_MS) and /structure runs two of them back to
+// back (parse, then score), so the generic 30s cut the client off while the server was still working
+// and finished anyway — the person saw "timed out / check your connection", and a retry repeated the work.
+export const LONG_REQUEST_TIMEOUT_MS = 150_000
+const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-pdf)(?:[?#]|$)/
+
 api.interceptors.request.use(config => {
   const token = getToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
@@ -37,6 +44,9 @@ api.interceptors.request.use(config => {
   // (an explicit `timeout` other than 30s, or `__customTimeout: true` for exactly 30s).
   if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.__customTimeout !== true && config.timeout === 30_000)
     config.timeout = 180_000
+  if (String(config.method || 'get').toLowerCase() === 'post' && config.__customTimeout !== true
+      && config.timeout === 30_000 && LONG_RUNNING_POST.test(String(config.url || '')))
+    config.timeout = LONG_REQUEST_TIMEOUT_MS
   return config
 })
 

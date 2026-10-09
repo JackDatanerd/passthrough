@@ -5,6 +5,7 @@ import Spinner from '../ui/Spinner'
 import ResumeFieldsForm from '../scan/ResumeFieldsForm'
 import Alert from '../ui/Alert'
 import ConfirmDialog from '../ui/ConfirmDialog'
+import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning'
 
 // Lets the person correct their saved profile in place: loads the saved resume (GET /profile/data)
 // into the same field form the scan-result editor uses and writes it back (PUT /profile). The server
@@ -33,12 +34,7 @@ export default function SavedProfileEditor({ onSaved, onClose }) {
   const baseline = useRef(null)
   const dirty = draft !== null && baseline.current !== null && JSON.stringify(draft) !== baseline.current
 
-  useEffect(() => {
-    if (!dirty) return
-    const warn = (e) => { e.preventDefault(); e.returnValue = '' }
-    window.addEventListener('beforeunload', warn)
-    return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty])
+  useUnsavedChangesWarning(dirty)
 
   useEffect(() => {
     let cancelled = false

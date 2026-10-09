@@ -141,7 +141,7 @@ export default function PaymentHistory() {
         {loading && payments.length === 0 ? (
           <div className="flex justify-center py-16"><Spinner /></div>
         ) : error ? (
-          <p className="text-sm text-red-600">{error}</p>
+          <p role="alert" className="text-sm text-red-600">{error}</p>
         ) : payments.length === 0 ? (
           <div className="bg-white rounded-lg border border-gray-200 p-8 text-center">
             <p className="text-sm text-gray-500">
@@ -151,13 +151,14 @@ export default function PaymentHistory() {
         ) : (
           <div className={`border border-gray-200 rounded-lg bg-white overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
             <table className="w-full text-sm">
+              <caption className="sr-only">Your payments</caption>
               <thead>
                 <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                  <th className="px-4 py-3">Date</th>
-                  <th className="px-4 py-3">Item</th>
-                  <th className="px-4 py-3 text-right">Amount</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3"></th>
+                  <th scope="col" className="px-4 py-3">Date</th>
+                  <th scope="col" className="px-4 py-3">Item</th>
+                  <th scope="col" className="px-4 py-3 text-right">Amount</th>
+                  <th scope="col" className="px-4 py-3">Status</th>
+                  <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">

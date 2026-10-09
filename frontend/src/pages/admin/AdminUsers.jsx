@@ -101,20 +101,21 @@ export default function AdminUsers() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Users</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">User</th>
-                <th className="px-4 py-3">Role</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Scans today</th>
-                <th className="px-4 py-3">Joined</th>
+                <th scope="col" className="px-4 py-3">User</th>
+                <th scope="col" className="px-4 py-3">Role</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3 text-right">Scans today</th>
+                <th scope="col" className="px-4 py-3">Joined</th>
                 {/* FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
                     (migration 0038) were captured at signup but never shown anywhere —
                     not here, not on the user's own account. This is the compliance-
                     facing read path: which version, and when. Pre-migration accounts
                     show "—" (they signed up before the checkbox existed, not an error). */}
-                <th className="px-4 py-3">Terms</th>
-                <th className="px-4 py-3"></th>
+                <th scope="col" className="px-4 py-3">Terms</th>
+                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">

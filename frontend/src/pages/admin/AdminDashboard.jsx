@@ -17,7 +17,7 @@ export default function AdminDashboard() {
       .catch(() => {})
   }, [])
 
-  if (error) return <p className="text-sm text-red-600">{error}</p>
+  if (error) return <p role="alert" className="text-sm text-red-600">{error}</p>
   if (!data) return <div className="flex justify-center py-16"><Spinner /></div>
 
   const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts, webhookHealth } = data

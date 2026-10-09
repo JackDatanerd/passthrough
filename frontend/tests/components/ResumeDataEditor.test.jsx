@@ -38,6 +38,9 @@ describe('ResumeDataEditor (after the field form was extracted)', () => {
     await user.click(screen.getByRole('button', { name: 'Review & edit' }))
     await user.type(screen.getByLabelText('Name'), 'XYZ')
     await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    // Edited text is not thrown away on a stray click: the form stays until the discard is confirmed.
+    expect(screen.getByLabelText('Name')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Discard' }))
     expect(screen.queryByLabelText('Name')).toBeNull()
     expect(api.patch).not.toHaveBeenCalled()
   })

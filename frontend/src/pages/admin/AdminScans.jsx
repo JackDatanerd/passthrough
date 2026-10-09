@@ -121,16 +121,17 @@ export default function AdminScans() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Scans</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">User</th>
-                <th className="px-4 py-3">Resume</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">ATS score</th>
-                <th className="px-4 py-3">Fix tier</th>
-                <th className="px-4 py-3">Created</th>
-                <th className="px-4 py-3">Updated</th>
-                <th className="px-4 py-3">Verification</th>
+                <th scope="col" className="px-4 py-3">User</th>
+                <th scope="col" className="px-4 py-3">Resume</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3 text-right">ATS score</th>
+                <th scope="col" className="px-4 py-3">Fix tier</th>
+                <th scope="col" className="px-4 py-3">Created</th>
+                <th scope="col" className="px-4 py-3">Updated</th>
+                <th scope="col" className="px-4 py-3">Verification</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">

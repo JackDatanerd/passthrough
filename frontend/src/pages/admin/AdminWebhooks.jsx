@@ -175,14 +175,15 @@ export default function AdminWebhooks() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Payment webhook events</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">Received</th>
-                <th className="px-4 py-3">Event</th>
-                <th className="px-4 py-3">Reference</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Tries</th>
-                <th className="px-4 py-3"></th>
+                <th scope="col" className="px-4 py-3">Received</th>
+                <th scope="col" className="px-4 py-3">Event</th>
+                <th scope="col" className="px-4 py-3">Reference</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3 text-right">Tries</th>
+                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">
@@ -198,7 +199,7 @@ export default function AdminWebhooks() {
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={badgeVariant(ev.status)}>{ev.status}</Badge>
-                    {ev.error && <div className="text-xs text-red-600 mt-0.5 max-w-xs break-words">{ev.error}</div>}
+                    {ev.error && <div role="alert" className="text-xs text-red-600 mt-0.5 max-w-xs break-words">{ev.error}</div>}
                     {ev.note && <div className="text-xs text-gray-500 mt-0.5 max-w-xs break-words">{ev.note}</div>}
                     {ev.replayedAt && <div className="text-xs text-gray-400 mt-0.5">replayed {formatDate(ev.replayedAt)}</div>}
                   </td>

@@ -524,22 +524,23 @@ export default function AdminLeads() {
       ) : (
         <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
           <table className="w-full text-sm">
+            <caption className="sr-only">Employer leads</caption>
             <thead>
               <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th className="px-4 py-3">
+                <th scope="col" className="px-4 py-3">
                   <Checkbox aria-label="Select all leads on this page" checked={allSelected} onChange={toggleAll} />
                 </th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Company</th>
-                <th className="px-4 py-3">Email</th>
-                <th className="px-4 py-3">Field</th>
-                <th className="px-4 py-3">Role title</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">Received</th>
-                <th className="px-4 py-3">Last active</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Notes</th>
-                <th className="px-4 py-3"></th>
+                <th scope="col" className="px-4 py-3">Name</th>
+                <th scope="col" className="px-4 py-3">Company</th>
+                <th scope="col" className="px-4 py-3">Email</th>
+                <th scope="col" className="px-4 py-3">Field</th>
+                <th scope="col" className="px-4 py-3">Role title</th>
+                <th scope="col" className="px-4 py-3">Source</th>
+                <th scope="col" className="px-4 py-3">Received</th>
+                <th scope="col" className="px-4 py-3">Last active</th>
+                <th scope="col" className="px-4 py-3">Status</th>
+                <th scope="col" className="px-4 py-3">Notes</th>
+                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-100">

@@ -80,9 +80,10 @@ function CodeLookup() {
       {rows.length > 0 && (
         <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
           <table className="w-full text-sm">
+            <caption className="sr-only">Referral codes</caption>
             <thead><tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-              <th className="px-3 py-2">Code</th><th className="px-3 py-2">Partner</th><th className="px-3 py-2">State</th>
-              <th className="px-3 py-2 text-right">Clicks</th><th className="px-3 py-2 text-right">Uses</th>
+              <th scope="col" className="px-3 py-2">Code</th><th scope="col" className="px-3 py-2">Partner</th><th scope="col" className="px-3 py-2">State</th>
+              <th scope="col" className="px-3 py-2 text-right">Clicks</th><th scope="col" className="px-3 py-2 text-right">Uses</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map(r => (
@@ -147,8 +148,9 @@ function PayoutsLog() {
       {rows.length > 0 && (
         <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
           <table className="w-full text-sm">
+            <caption className="sr-only">Partner payouts</caption>
             <thead><tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-              <th className="px-3 py-2">Paid</th><th className="px-3 py-2">Partner</th><th className="px-3 py-2 text-right">Amount</th><th className="px-3 py-2">Method</th>
+              <th scope="col" className="px-3 py-2">Paid</th><th scope="col" className="px-3 py-2">Partner</th><th scope="col" className="px-3 py-2 text-right">Amount</th><th scope="col" className="px-3 py-2">Method</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-100">
               {rows.map(p => (

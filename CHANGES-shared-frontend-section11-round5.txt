@@ -1,0 +1,49 @@
+SECTION 11 — SHARED FRONTEND — ROUND 5
+(components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js + traced consumers)
+Independent pass, written as if no earlier round existed. Base: e3c2dbb.
+
+BUGS FIXED
+ B1  lib/api.js — The generic 30s timeout cut off POST /scan/:id/structure, /cover-letter and
+     /regenerate-pdf, which run Claude (up to 90s per call; structure runs two) or a PDF render INSIDE the
+     request. The server finished anyway; the person saw "timed out / check your connection" and a retry
+     repeated the work. Those POSTs now get LONG_REQUEST_TIMEOUT_MS (150s); an explicit caller timeout
+     still wins; GET downloads and every other call are unchanged (30s, uploads 180s).
+ B2  ui/Toast.jsx — The pause flag was only cleared by mouseleave/blur on the stack, which browsers do not
+     reliably deliver when the element under the pointer / the focused Dismiss button is the one removed.
+     After that, every later toast was armed "paused" and never auto-dismissed. The flag is now reset when
+     the stack empties; blur only resumes when focus actually leaves the stack.
+ B3  layout/TermsUpdateBanner.jsx — "I agree" stayed disabled/spinning forever when acceptTerms resolved
+     without flipping the user (AuthContext skips the update if the token changed mid-request).
+     loading is now always released.
+ B4  lib/errors.js — humanizeField labelled array-item paths by the index alone ("3: Expected string",
+     "0: Invalid lead id."). Now "Extra role categories (item 2)"; an index-only path shows the message alone.
+ B5  layout/DashboardLayout.jsx + lib/flash.js — the admin-denied notice was consumed inside a useState
+     initializer; StrictMode (main.jsx) runs initializers twice in development, so the notice never showed
+     under `npm run dev`. New peekFlash() reads in render; consumeFlash() clears from an effect.
+ B6  ui/Alert.jsx — <Alert className="text-xs"> was ignored (text-sm is later in the stylesheet). The
+     default size is dropped when the caller supplies one (PartnerDetail.jsx:391 now renders as intended).
+
+FEATURE GAPS CLOSED
+ G1  28 hand-rolled error messages across 22 files (Login, Register, ForgotPassword, ResetPassword,
+     PartnerApply, PartnerPayoutDetails, admin pages, ...) were plain <p> with no live region, so screen
+     readers never heard them. Each now has role="alert". Three that already sat inside a role="alert"
+     container (SavedProfileEditor, dashboard/Index, Settings) were left alone to avoid double announcement.
+ G2  NEW hooks/useUnsavedChangesWarning.js (beforeunload while dirty). SavedProfileEditor now uses it;
+     DeliveredResumeEditor (a PAID deliverable) and ResumeDataEditor gained dirty tracking, the page-unload
+     warning, and a "Discard your changes?" ConfirmDialog on Cancel (no prompt when nothing changed).
+     Scope note: BrowserRouter has no navigation blocker, so in-app link clicks are not intercepted.
+ G3  ui/FileUpload.jsx — a file dropped outside the zone made the browser open it in the tab, destroying
+     the scan form. File drags elsewhere on the page are now cancelled while the dropzone is mounted.
+ G4  ui/Checkbox.jsx — new `description`, `error` (aria-invalid + aria-describedby + role="alert"),
+     `alignTop`; disabled labelled boxes no longer show a pointer cursor. Adopted by Register (terms
+     consent: the error now attaches to the box) and Settings (email opt-in).
+ G5  ScanResult's anonymous "Delete this result now" used window.confirm — now a ConfirmDialog (errors show
+     in the dialog). The 9 hand-written admin/dashboard <table>s got <caption> and scope="col" (and a
+     screen-reader name for empty action columns) in place; they were NOT migrated to DataTable (their row
+     expansion / bulk selection do not fit it) — only the accessibility it provides was applied.
+
+TESTS
+ + frontend/tests/sharedFrontend.section11.round5.test.jsx      (component + source-guard regressions)
+ + frontend/tests/sharedFrontend.section11.round5.api.test.js   (timeouts, humanizeField)
+ ~ ScanResult.passC.test.jsx, ResumeDataEditor.test.jsx updated for the new confirm dialogs.
+ frontend suite: 116 files / 948 tests pass; production build and `npm run lint` clean.

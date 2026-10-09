@@ -486,7 +486,7 @@ export default function Verify() {
                   )}
                 </div>
               )}
-              {downloadErr && <p className="text-xs text-red-600 mt-3">{downloadErr}</p>}
+              {downloadErr && <p role="alert" className="text-xs text-red-600 mt-3">{downloadErr}</p>}
               <p className="text-xs text-gray-400 mt-6">
                 {isVerified
                   ? "This resume was scanned by Passthrough's ATS engine and has not been modified since verification."
@@ -643,7 +643,7 @@ export default function Verify() {
                   />
                   <LeadConsentNote />
                   <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
-                  {leadErr && <p className="text-xs text-red-600">{leadErr}</p>}
+                  {leadErr && <p role="alert" className="text-xs text-red-600">{leadErr}</p>}
                   {/* Honeypot: invisible to a real person, tempting to a bot filling
                       every field it finds. Off-screen rather than display:none/hidden —
                       some bots skip fields a screen reader would also skip. */}

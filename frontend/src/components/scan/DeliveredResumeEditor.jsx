@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
+import ConfirmDialog from '../ui/ConfirmDialog'
+import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning'
 import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 
 // FEATURE GAP CLOSED (Scan/ATS pass): a delivered resume could not be changed — not a typo, not
@@ -16,13 +18,20 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  // The draft as it was when editing started, to tell whether anything was changed.
+  const baseline = useRef(null)
+  const dirty = editing && draft !== null && baseline.current !== null && JSON.stringify(draft) !== baseline.current
+  useUnsavedChangesWarning(dirty)
 
   const data = scan.rewrittenResumeData || scan.originalResumeData
   if (!data) return null
   const plain = scan.fixTier === 'FIX_PLAIN'
 
   function start() {
-    setDraft(JSON.parse(JSON.stringify(data)))
+    const copy = JSON.parse(JSON.stringify(data))
+    baseline.current = JSON.stringify(copy)
+    setDraft(copy)
     setError(''); setResult(null); setEditing(true)
   }
 
@@ -66,10 +75,20 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
           <Alert>{error}</Alert>
           <div className="flex gap-3">
             <Button onClick={save} loading={saving}>Save &amp; rebuild files</Button>
-            <Button variant="ghost" onClick={() => setEditing(false)} disabled={saving}>Cancel</Button>
+            <Button variant="ghost" onClick={() => (dirty ? setConfirmCancel(true) : setEditing(false))} disabled={saving}>Cancel</Button>
           </div>
         </div>
       )}
+
+      <ConfirmDialog
+        open={confirmCancel}
+        title="Discard your changes?"
+        message="You have edits to your resume that are not saved."
+        confirmLabel="Discard"
+        cancelLabel="Keep editing"
+        onConfirm={() => { setConfirmCancel(false); setEditing(false) }}
+        onCancel={() => setConfirmCancel(false)}
+      />
     </div>
   )
 }
