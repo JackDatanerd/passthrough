@@ -32,7 +32,7 @@ async function handleDeadLetterBatch(batch, env, supabase, emailService) {
             // An anonymous scan has no daily counter — it spent the visitor's one-an-hour slot.
             if (!row.user_id && anonRlKey && row.created_at && Date.now() - Date.parse(row.created_at) < 55 * 60 * 1000)
               await require('../middleware/rateLimiter').refundAnonScanSlot(env, anonRlKey)
-            const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+            const startOfToday = require('../lib/utcDay').utcMidnight()
             if (row.user_id && row.created_at && new Date(row.created_at) >= startOfToday) {
               const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })
               if (refundErr) console.error(`Dead-letter: quota refund failed for scan ${scanId}:`, refundErr.message)

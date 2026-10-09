@@ -26,6 +26,7 @@ const { isRangeError, warnOnError } = require('../lib/db')
 const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { recordTombstones } = require('../lib/verification')
 const constants = require('../config/constants')
+const { utcMidnight } = require('../lib/utcDay')
 const { SCAN_STATUSES, sanitizeSearch, applyScanFilters } = require('../lib/scanSearch')
 
 // GET /api/profile
@@ -102,7 +103,7 @@ async function getProfile(c) {
 // the client can show in the person's own time zone.
 function scanQuota(row, now = new Date()) {
   const limit = constants.FREE_SCANS_PER_DAY
-  const midnight = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())
+  const midnight = utcMidnight(now).getTime()
   const lastReset = row?.scans_day_reset ? Date.parse(row.scans_day_reset) : NaN
   const used = Number.isFinite(lastReset) && lastReset >= midnight ? Math.max(0, row.scans_today || 0) : 0
   return { limit, used: Math.min(used, limit), remaining: Math.max(0, limit - used), resetsAt: new Date(midnight + 86_400_000).toISOString() }
@@ -157,7 +158,7 @@ async function updateProfile(c) {
     if (readErr) throw readErr
     if (typeof expected === 'string' && row.saved_profile?.resumeData)
       return c.json({ success: false, code: 'PROFILE_CHANGED',
-        message: 'Your saved profile changed since you opened it (saved from a scan or edited in another tab or device). Reload to see the current version, then make your edits again.' }, 409)
+        message: 'Your saved profile changed since you opened it (saved from a scan or edited in another tab or device). Load the current version, or save yours over it.' }, 409)
     return c.json({ success: false, message: 'No saved profile to edit. Save one from a completed scan first.' }, 404)
   }
   return c.json({ success: true, message: 'Saved profile updated.', data: { resumeData: checked.data } })

@@ -548,10 +548,11 @@ const redeemCredit = makeLimiter({
 // account has (JD text, structured resumes and all), so it is capped tightly;
 // a person downloading their own data needs it a handful of times, not more.
 // Per ACCOUNT, not per IP (see makeLimiter's keyBy). Parts of one multi-part
-// export are separate requests, so the ceiling leaves room for a large
-// account to fetch all of its parts more than once.
+// export are separate requests (250 scans each), so the ceiling must cover a whole large export in
+// one sitting: at 12 an account of more than ~3,000 scans (13+ parts) could not finish within the hour.
+// 60 parts = 15,000 scans in a sitting.
 const dataExport = makeLimiter({
-  windowSeconds: 60 * 60, max: 12, keyPrefix: 'rl:export',
+  windowSeconds: 60 * 60, max: 60, keyPrefix: 'rl:export',
   keyBy: byAccount,
   message: msg('Too many export requests. Please try again later.')
 })

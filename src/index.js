@@ -177,7 +177,7 @@ async function scheduled(event, env, ctx) {
           .select('id, user_id, created_at, fix_purchased')
         if (stuckErr) { console.error('Stuck scan recovery:', stuckErr.message); return }
         if (stuck?.length > 0) console.log(`Recovered ${stuck.length} stuck scan(s) → ERROR`)
-        const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+        const startOfToday = require('./lib/utcDay').utcMidnight()
         for (const row of stuck || []) {
           // Free-scan quota only: a paid fix (fix_purchased) never consumed a
           // scan slot at that stage and is handled by the failed-fix sweep.

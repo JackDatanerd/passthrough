@@ -640,7 +640,7 @@ export default function Settings() {
             Download a copy of what we hold for your account — profile and settings, sign-in history and signed-in
             devices, scans (including job descriptions, the structured data extracted from your resumes and the analysis
             of each one), payment history with any refunds, and a list of the emails we've sent you at your current address — as JSON. The uploaded resume files and generated
-            documents themselves aren't included; the data extracted from them is. Accounts with many scans are
+            documents themselves aren't included (the data extracted from them is); documents you purchased stay downloadable from each scan's page. Accounts with many scans are
             split into several files.
           </p>
           <Button variant="secondary" size="sm" onClick={handleExport} loading={exporting} disabled={exportingPart !== 0}>

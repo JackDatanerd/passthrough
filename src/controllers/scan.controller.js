@@ -39,6 +39,7 @@ const c             = require('../config/constants')
 const storage        = require('../config/storage')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib       = require('../lib/crypto')
+const { utcMidnight }   = require('../lib/utcDay')
 
 // AUDIT FIX (Scan pass): anon_token is a bearer capability (read access to an
 // anonymous submitter's resume + the right to claim the scan), yet it was the
@@ -446,7 +447,7 @@ async function createScan(ctx) {
   }
 
   if (user) {
-    const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0)
+    const todayMidnight = utcMidnight()
 
     // Atomic conditional increment (see 0008_atomic_scan_quota.sql) — avoids
     // a race between two concurrent createScan requests both seeing a
@@ -663,7 +664,7 @@ function buildAtsDetail(fullAtsReport) {
 // money (see the call sites).
 async function refundScanQuota(supabase, scan, label) {
   if (!scan || !scan.userId || !scan.createdAt) return
-  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  const startOfToday = utcMidnight()
   if (new Date(scan.createdAt) < startOfToday) return
   warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: scan.userId }), label)
 }
@@ -1068,7 +1069,7 @@ async function retryScan(ctx) {
   // one has already spent the visitor's hourly slot in the rl.anonScan middleware on this route.
   let spentAccountSlot = false
   if (ownerAccount) {
-    const todayMidnight = new Date(); todayMidnight.setHours(0, 0, 0, 0)
+    const todayMidnight = utcMidnight()
     const { data: allowed, error: quotaErr } = await supabase.rpc(
       'increment_scan_count_if_under_limit',
       { p_user_id: user.id, p_limit: c.FREE_SCANS_PER_DAY, p_today_midnight: todayMidnight.toISOString() }
