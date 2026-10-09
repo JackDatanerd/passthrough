@@ -38,11 +38,21 @@ export default function VerifyEmail() {
         // attempts), a 5xx or no response at all says nothing about the link — telling the
         // person it is "invalid or expired" sent them off to request a new one (and, since the
         // old token stays valid, burned a resend) for what a retry would have fixed.
-        if (err.response?.status === 400) { setStatus('error'); return }
+        if (err.response?.status === 400) {
+          // AUDIT FIX (Auth round 5): a 400 is also what an OLDER link answers once a newer one (a resend) has
+          // verified the address — "Verification failed" and a button that can only reply "Already verified."
+          // for an account that IS verified. If this browser is signed in, ask the server before concluding
+          // the link is the problem; refreshUser() never throws and resolves to the fresh user (or null).
+          if (user) {
+            Promise.resolve(refreshUser()).then(fresh => setStatus(fresh && fresh.emailVerified ? 'already' : 'error'),
+              () => setStatus('error'))
+          } else setStatus('error')
+          return
+        }
         setDetail(getErrorMessage(err, "We couldn't reach the server."))
         setStatus('retry')
       })
-  }, [token])
+  }, [token, user])
 
   useEffect(() => {
     // AUDIT FIX (Auth/Scan round): ConfirmEmailChange already guards against the
@@ -86,6 +96,18 @@ export default function VerifyEmail() {
               <h1 className="text-xl font-bold text-gray-900 mb-2">Email verified</h1>
               <p className="text-sm text-gray-500 mb-6">
                 You can now download your fixed resumes.
+              </p>
+              <Link to="/dashboard" className={btn}>
+                Go to dashboard →
+              </Link>
+            </>
+          )}
+          {status === 'already' && (
+            <>
+              <div className="text-green-500 text-4xl mb-3">✓</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Email already verified</h1>
+              <p className="text-sm text-gray-500 mb-6">
+                This link has been replaced by a newer one, and your email is already verified.
               </p>
               <Link to="/dashboard" className={btn}>
                 Go to dashboard →

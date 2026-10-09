@@ -51,6 +51,21 @@ describe('VerifyEmail', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: /send me a new link/i }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/too many attempts/i)
   })
+  it('an older link answering 400 while the account is already verified says so, instead of "Verification failed"', async () => {
+    api.get.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
+    refreshUser.mockResolvedValue({ id: 'u1', emailVerified: true })
+    renderPage({ id: 'u1' })
+    await screen.findByText('Email already verified')
+    expect(screen.queryByText('Verification failed')).toBeNull()
+    expect(screen.queryByRole('button', { name: /new link/i })).toBeNull()
+  })
+  it('a 400 for a signed-in account that is NOT verified still offers a new link', async () => {
+    api.get.mockRejectedValue(httpErr(400, 'x'))
+    refreshUser.mockResolvedValue({ id: 'u1', emailVerified: false })
+    renderPage({ id: 'u1' })
+    await screen.findByText('Verification failed')
+    expect(screen.getByRole('button', { name: /send me a new link/i })).toBeInTheDocument()
+  })
   it.each([[429, 'Too many attempts.'], [503, 'Down.'], [undefined, undefined]])(
     'status %s is NOT reported as an invalid link — it offers a retry that works', async (status, message) => {
       api.get.mockRejectedValueOnce(status ? httpErr(status, message) : new Error('Network Error'))

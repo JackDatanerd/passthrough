@@ -2069,3 +2069,43 @@ describe('deleteAccount R2 cleanup (B1)', () => {
     expect(t.state.bucketCalls).toHaveLength(0)
   })
 })
+
+
+// ── Auth round 5 ─────────────────────────────────────────────────────────────
+describe('writes that race deleteAccount\'s scrub', () => {
+  const guarded = (t, table = 'users') =>
+    t.db.calls.some(q => q.table === table && q.op === 'update' && q.filters.some(f => f[0] === 'is' && f[1] === 'deleted_at' && f[2] === null))
+  it('updateName only matches a live row, and a row that is gone answers 401 USER_NOT_FOUND', async () => {
+    t = await setup()
+    await t.mod.updateName(t.c({ body: { name: 'Ada Lovelace' } }))
+    expect(guarded(t)).toBe(true)
+    t.restore()
+    t = await setup({ casLost: true })
+    const res = await t.mod.updateName(t.c({ body: { name: 'Ada Lovelace' } }))
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+  it('acceptTerms only matches a live row, and a row that is gone answers 401 USER_NOT_FOUND', async () => {
+    t = await setup()
+    await t.mod.acceptTerms(t.c())
+    expect(guarded(t)).toBe(true)
+    t.restore()
+    t = await setup({ casLost: true })
+    const res = await t.mod.acceptTerms(t.c())
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+  })
+  it('claimScan on a live account does not re-run the scrub', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS' } })
+    const res = await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.rpcCalls.some(r => r.name === 'scrub_account_data')).toBe(false)
+  })
+  it('claimScan that lands after the account was scrubbed scrubs again (covering the scan just attached) and answers 401', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS' }, userRow: null })
+    const res = await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+    expect(t.state.rpcCalls.filter(r => r.name === 'scrub_account_data')).toEqual([{ name: 'scrub_account_data', args: { p_user_id: 'u1' } }])
+  })
+})

@@ -1111,7 +1111,9 @@ async function acceptTerms(c) {
   const { data: row, error } = await supabase.from('users').update({
     terms_accepted_at: new Date().toISOString(),
     terms_version:     constants.TERMS_VERSION
-  }).eq('id', sessionUser.id).select().maybeSingle()
+  // AUDIT FIX (Auth round 5): `deleted_at IS NULL` — a request that passed the auth middleware just before
+  // deleteAccount's scrub committed must not write onto the scrubbed row (no match falls into the 401 below).
+  }).eq('id', sessionUser.id).is('deleted_at', null).select().maybeSingle()
   if (error) throw error
   if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
 
@@ -1129,7 +1131,9 @@ async function updateName(c) {
 
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase
-    .from('users').update({ name }).eq('id', sessionUser.id).select().maybeSingle()
+    // AUDIT FIX (Auth round 5): `deleted_at IS NULL` — a rename racing deleteAccount's scrub used to put a
+    // real name back onto the row the scrub had just replaced with 'Deleted User'.
+    .from('users').update({ name }).eq('id', sessionUser.id).is('deleted_at', null).select().maybeSingle()
   if (error) throw error
   if (!row) return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
 
@@ -1586,6 +1590,20 @@ async function claimScan(c) {
   }).eq('id', scan.id).is('user_id', null).select('id').maybeSingle()
   if (claimErr) throw claimErr
   if (!claimed) return c.json({ success: false, message: 'Scan not found or expired.' }, 404)
+
+  // AUDIT FIX (Auth round 5): a claim that lands after deleteAccount's scrub committed would attach the
+  // anonymous scan (resume data, job description) to a deleted account, where nothing would ever scrub it —
+  // the scrub already ran. The write above can't carry the check (it targets `scans`, not `users`), so look
+  // again now; if the account is gone, run the (idempotent) scrub once more, which covers the scan just
+  // attached, and answer as the auth middleware would.
+  const { data: alive, error: aliveErr } = await supabase
+    .from('users').select('id').eq('id', user.id).is('deleted_at', null).maybeSingle()
+  if (aliveErr) throw aliveErr
+  if (!alive) {
+    const { error: rescrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
+    if (rescrubErr) throw rescrubErr
+    return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
+  }
 
   return c.json({ success: true, data: { scanId: claimed.id } })
 }

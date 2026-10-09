@@ -217,7 +217,19 @@ export function AuthProvider({ children }) {
     // Best-effort, and it never rejects. Returned so a caller that is about to leave the page
     // with a hard navigation can wait for the request to go out first (an unload can cancel an
     // in-flight XHR, leaving the session alive on the server). Everyone else ignores it.
-    return api.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } }).then(() => {}, () => {})
+    //
+    // AUDIT FIX (Auth round 5): the server answers a failed session revoke honestly (a 5xx) rather than
+    // claiming success, but this used to swallow that answer — so a database blip or a dropped connection
+    // left the session alive on the server while the UI said "signed out", and a copied token kept working.
+    // One retry for a transient failure (no response, or a 5xx); a 4xx (already dead, banned, deleted) means
+    // there is nothing left to revoke, so it is not retried.
+    const send = () => api.post('/auth/logout', null, { headers: { Authorization: `Bearer ${token}` } })
+    return send().then(() => {}, err => {
+      const status = err?.response?.status
+      const transient = !err?.response || status >= 500
+      if (!transient) return
+      return new Promise(r => setTimeout(r, 1000)).then(send).then(() => {}, () => {})
+    })
   }
 
   return (
