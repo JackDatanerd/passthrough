@@ -2,6 +2,10 @@
 # In production, each of these is set via: wrangler secret put VAR_NAME
 # Workers do not load .env files — this is the only mechanism for secrets.
 
+# Local dev: wrangler.toml [vars] says NODE_ENV="production", which masks error messages and puts
+# every local request in one 'unknown' client-IP bucket. This overrides it for `wrangler dev` only.
+NODE_ENV=development
+
 # Supabase
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_SERVICE_ROLE_KEY=eyJ...           # service_role key — server only, never the anon key

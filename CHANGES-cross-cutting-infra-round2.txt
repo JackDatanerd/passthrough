@@ -1,0 +1,19 @@
+Cross-cutting infra, round 2 (section 9)
+
+BUG (critical, cross-section): supabase-js returns `error` as a plain object, and ~270 controller sites
+`throw error` / must() it. Hono only sends `instanceof Error` throws to app.onError, so every database
+error escaped errorHandler: Cloudflare's own 500 page instead of JSON, no CORS/security headers, the
+23505 -> 409 mapping and the "Unhandled error [cf-ray]" log never ran.
+ - lib/db.js: new toError(); must() now throws a real Error (keeps code/details/hint, label prefixed).
+ - middleware/normalizeThrown.js (new), mounted innermost in index.js: converts any non-Error throw
+   into a real Error so onError handles it and CORS/security headers still unwind.
+
+GAP: a background anonymous-scan failure refunded the device slot but not the per-IP ceiling slot
+(rl:anonscanip). anonScanSlotKey now names both ('|'-joined when a device id is present);
+refundAnonScanSlot refunds both and still accepts the old single key (queued messages).
+
+GAP: .dev.vars.example now sets NODE_ENV=development (wrangler.toml's "production" masked errors and
+shared one 'unknown' IP bucket in local dev).
+
+Tests: tests/crossCutting.round2.test.js (real supabase-js error through the app); one expectation in
+tests/crossCutting.round1.test.js updated for the two-bucket slot key.

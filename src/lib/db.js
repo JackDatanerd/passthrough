@@ -12,16 +12,34 @@
 //
 //     const { data } = must(await supabase.from('scans').select('*').eq('id', id).single(), 'load scan')
 //
-// The thrown value is the original PostgrestError (an Error subclass), with the
-// label prefixed onto its message, so errorHandler.js / 23505 handling / stack
-// traces keep working exactly as they do for the existing `if (error) throw error`.
+// The thrown value is a real Error carrying the PostgREST fields (code, details,
+// hint), with the label prefixed onto its message. supabase-js hands back `error`
+// as a PLAIN OBJECT, not an Error — and Hono only routes `instanceof Error` throws
+// to app.onError, so throwing the raw object skipped errorHandler.js entirely (no
+// JSON body, no CORS/security headers, no 23505 -> 409 mapping, no log line).
+
+// Turns anything thrown into a real Error, keeping the fields errorHandler reads.
+// An Error passes through untouched. Never copies `status`/`expose`: those opt an
+// error in to choosing our response status, which a database error must not do.
+function toError(thrown) {
+  if (thrown instanceof Error) return thrown
+  if (thrown && typeof thrown === 'object') {
+    const e = new Error(typeof thrown.message === 'string' && thrown.message ? thrown.message : 'Unknown error')
+    for (const k of ['code', 'details', 'hint']) if (thrown[k] !== undefined) e[k] = thrown[k]
+    if (thrown.name === 'ZodError' && Array.isArray(thrown.errors)) { e.name = 'ZodError'; e.errors = thrown.errors }
+    e.cause = thrown
+    return e
+  }
+  return new Error(String(thrown ?? 'Unknown error'))
+}
 
 function must(result, label) {
   const error = result && result.error
   if (!error) return result
-  if (label && typeof error.message === 'string' && !error.message.startsWith(label))
-    error.message = `${label}: ${error.message}`
-  throw error
+  const err = toError(error)
+  if (label && typeof err.message === 'string' && !err.message.startsWith(label))
+    err.message = `${label}: ${err.message}`
+  throw err
 }
 
 // For best-effort writes where failure must be visible in logs but must not
@@ -47,4 +65,4 @@ function isRangeError(error) {
   return error.code === 'PGRST103' || /range not satisfiable/i.test(String(error.message || ''))
 }
 
-module.exports = { must, warnOnError, isRangeError }
+module.exports = { must, toError, warnOnError, isRangeError }

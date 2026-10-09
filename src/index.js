@@ -20,6 +20,7 @@ const rateLimiter      = require('./middleware/rateLimiter')
 const bodyLimit         = require('./middleware/bodyLimit')
 const envCheck          = require('./middleware/envCheck')
 const securityHeaders   = require('./middleware/securityHeaders')
+const normalizeThrown   = require('./middleware/normalizeThrown')
 const corsMiddleware    = require('./middleware/cors')
 const { normalizeEnv }  = envCheck
 
@@ -94,6 +95,10 @@ app.use('/api/*', rateLimiter.general)
 
 // ── 3. optionalAuth app-wide — c.get('user') available on every route ─────────
 app.use('*', optionalAuth)
+
+// Innermost, so a thrown non-Error (supabase-js error objects) becomes a real Error that
+// app.onError handles here — see middleware/normalizeThrown.js.
+app.use('*', normalizeThrown)
 
 // ── 4. Mount routes ───────────────────────────────────────────────────────────
 app.route('/api/auth',           authRoutes)

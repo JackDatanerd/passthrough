@@ -160,10 +160,20 @@ async function refundQuota(env, key, windowSeconds, maxRefunds) {
 // for an hour. createScan passes the key to the job; the job gives the slot back through this.
 const ANON_SCAN_WINDOW_SECONDS = 60 * 60
 const ANON_SCAN_MAX_REFUNDS = 10
-function anonScanSlotKey(c) { return `rl:anonscan:${anonDeviceKey(c) || rateKeyIp(clientIp(c))}` }
+// With a device id two buckets were spent (the device's, and the per-IP ceiling behind it), so
+// the key names both, '|'-joined; without one it is the single IP bucket, as before.
+function anonScanSlotKey(c) {
+  const dev = anonDeviceKey(c)
+  const ip = rateKeyIp(clientIp(c))
+  return dev ? `rl:anonscan:${dev}|rl:anonscanip:${ip}` : `rl:anonscan:${ip}`
+}
 async function refundAnonScanSlot(env, key) {
-  if (!key || typeof key !== 'string' || !key.startsWith('rl:anonscan:')) return
-  return refundQuota(env, key, ANON_SCAN_WINDOW_SECONDS, ANON_SCAN_MAX_REFUNDS)
+  if (!key || typeof key !== 'string') return
+  const [first, second] = key.split('|')
+  if (!first.startsWith('rl:anonscan:')) return
+  await refundQuota(env, first, ANON_SCAN_WINDOW_SECONDS, ANON_SCAN_MAX_REFUNDS)
+  if (second && second.startsWith('rl:anonscanip:'))
+    await refundQuota(env, second, ANON_SCAN_WINDOW_SECONDS, ANON_SCAN_MAX_REFUNDS)
 }
 
 // `refund: { maxRefunds }` — the request is counted up front (so concurrent

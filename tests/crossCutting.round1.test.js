@@ -130,7 +130,7 @@ describe('anonScan device allowance (G6)', () => {
   })
   it('anonScanSlotKey names the bucket that was actually spent, and refundAnonScanSlot accepts it', () => {
     const c = (device, ip = '1.1.1.1') => ({ env: {}, req: { header: n => ({ 'cf-connecting-ip': ip, 'x-device-id': device })[n.toLowerCase()] } })
-    expect(rl.anonScanSlotKey(c(dev(5)))).toBe(`rl:anonscan:d:${dev(5)}`)
+    expect(rl.anonScanSlotKey(c(dev(5)))).toBe(`rl:anonscan:d:${dev(5)}|rl:anonscanip:1.1.1.1`)
     expect(rl.anonScanSlotKey(c(undefined))).toBe('rl:anonscan:1.1.1.1')
     expect(rl.anonScanSlotKey(c('junk'))).toBe('rl:anonscan:1.1.1.1')
   })
