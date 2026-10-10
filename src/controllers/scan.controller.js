@@ -79,7 +79,7 @@ const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
-const { sanitizeSearch, applyScanFilters } = require('../lib/scanSearch')
+const { sanitizeSearch, applyScanFilters, applyScanSort } = require('../lib/scanSearch')
 const { publicFirstName } = require('../lib/text')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
@@ -191,6 +191,10 @@ async function createScan(ctx) {
   // profile to), enforced explicitly below rather than left to fail
   // confusingly further down.
   const useSavedProfile = fields.useSavedProfile === 'true'
+  // Which saved profile: absent = the primary one; a UUID = one of the additional profiles.
+  const savedProfileId = typeof fields.savedProfileId === 'string' && fields.savedProfileId ? fields.savedProfileId : null
+  if (savedProfileId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(savedProfileId))
+    return ctx.json({ success: false, message: 'Invalid saved profile.' }, 400)
   // FEATURE GAP CLOSED (Scan/ATS pass): rescan a scan you already ran against a
   // NEW job description without uploading the file again. Saved-profile users
   // always had this ("Rescan with new JD"); anyone who uploaded a file or typed
@@ -357,10 +361,17 @@ async function createScan(ctx) {
   // from the user's own previously-saved (server-validated) record.
   let savedProfileData = null
   if (useSavedProfile) {
-    const { data: userRow, error: profErr } = await supabase
-      .from('users').select('saved_profile').eq('id', user.id).single()
-    if (profErr) throw profErr
-    savedProfileData = userRow.saved_profile?.resumeData || null
+    if (savedProfileId) {
+      const { data: extra, error: extraErr } = await supabase
+        .from('saved_profiles').select('resume_data').eq('id', savedProfileId).eq('user_id', user.id).maybeSingle()
+      if (extraErr) throw extraErr
+      savedProfileData = extra?.resume_data || null
+    } else {
+      const { data: userRow, error: profErr } = await supabase
+        .from('users').select('saved_profile').eq('id', user.id).single()
+      if (profErr) throw profErr
+      savedProfileData = userRow.saved_profile?.resumeData || null
+    }
     if (!savedProfileData)
       return ctx.json({ success: false,
         message: 'No saved profile found. Upload a resume or paste your background instead.' }, 400)
@@ -1684,9 +1695,7 @@ async function getScanHistory(ctx) {
   // to search on instead.
   query = applyScanFilters(query, { search, status })
 
-  let { data: rows, error, count } = await query
-    .order('created_at', { ascending: false })
-    .order('id', { ascending: false })   // total order: created_at ties must not shuffle rows between pages
+  let { data: rows, error, count } = await applyScanSort(query, ctx.req.query('sort'))   // total order: ties must not shuffle rows between pages
     .range(from, to)
   if (isRangeError(error)) {
     // A page past the end (scans since removed, a stale bookmark, a hand-edited

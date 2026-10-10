@@ -204,6 +204,60 @@ export default function Settings() {
   // gets the same ConfirmDialog treatment as scan deletion.
   const [removeConfirmOpen, setRemoveConfirmOpen] = useState(false)
 
+  // Additional named profiles (up to maxExtras), kept next to the main saved profile.
+  const [extraProfiles, setExtraProfiles] = useState([])
+  const [maxExtras, setMaxExtras] = useState(4)
+  const [editingExtraId, setEditingExtraId] = useState(null)
+  const [renameId, setRenameId] = useState(null)
+  const [renameValue, setRenameValue] = useState('')
+  const [extraBusy, setExtraBusy] = useState(false)
+  const [extraError, setExtraError] = useState('')
+  const [removeExtraTarget, setRemoveExtraTarget] = useState(null)
+  const [downloadingFile, setDownloadingFile] = useState('')   // e.g. 'primary:pdf' while a render runs
+
+  // Save the profile as a resume document. profileId absent = the main profile.
+  async function downloadProfileFile(kind, profileId, name) {
+    const key = `${profileId || 'primary'}:${kind}`
+    setDownloadingFile(key); setExtraError('')
+    try {
+      const res = await api.get(`/profile/download-${kind}`, { params: profileId ? { profileId } : {}, responseType: 'blob' })
+      const url = URL.createObjectURL(res.data)
+      const a = document.createElement('a')
+      const stem = String(name || 'resume').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'resume'
+      a.href = url; a.download = `${stem}-resume.${kind}`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (err) {
+      setExtraError(getErrorMessage(err, 'Could not download the profile.'))
+    } finally {
+      setDownloadingFile('')
+    }
+  }
+
+  async function handleRenameExtra(id) {
+    setExtraBusy(true); setExtraError('')
+    try {
+      await api.put(`/profile/extras/${id}`, { label: renameValue })
+      setRenameId(null)
+      await loadProfile({ quiet: true })
+    } catch (err) {
+      setExtraError(getErrorMessage(err, 'Could not rename the profile.'))
+    } finally { setExtraBusy(false) }
+  }
+
+  async function handleRemoveExtra() {
+    const target = removeExtraTarget
+    if (!target) return
+    setExtraBusy(true); setExtraError('')
+    try {
+      await api.delete(`/profile/extras/${target.id}`)
+      if (editingExtraId === target.id) setEditingExtraId(null)
+      await loadProfile({ quiet: true })
+    } catch (err) {
+      setExtraError(getErrorMessage(err, 'Failed to remove the profile.'))
+    } finally { setExtraBusy(false); setRemoveExtraTarget(null) }
+  }
+
   // `quiet`: a refresh while the card is already showing something (after a purge, after an edit was
   // saved). The card must not drop to "Loading…" — that unmounts an open editor and throws away what is
   // typed into it — and a failed quiet refresh keeps what is on screen rather than replacing it.
@@ -212,6 +266,8 @@ export default function Settings() {
     return api.get('/profile')
       .then(res => {
         setHasSavedProfile(!!res.data.data.hasSavedProfile)
+        setExtraProfiles(res.data.data.extraProfiles || [])
+        if (res.data.data.maxExtraProfiles) setMaxExtras(res.data.data.maxExtraProfiles)
         setSavedAt(res.data.data.savedAt)
         setSourceScanId(res.data.data.sourceScanId)
         setEditedAt(res.data.data.editedAt || null)
@@ -614,6 +670,10 @@ export default function Settings() {
                 {!editingProfile && (
                   <Button variant="secondary" size="sm" onClick={() => setEditingProfile(true)}>Edit</Button>
                 )}
+                <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', null, profileSummary?.name)}
+                  loading={downloadingFile === 'primary:docx'} disabled={!!downloadingFile}>Download .docx</Button>
+                <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', null, profileSummary?.name)}
+                  loading={downloadingFile === 'primary:pdf'} disabled={!!downloadingFile}>Download PDF</Button>
                 <Button variant="secondary" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
                   Remove saved profile
                 </Button>
@@ -623,11 +683,64 @@ export default function Settings() {
               <SavedProfileEditor onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingProfile(false)} />
             )}
             </>
-          ) : (
+          ) : extraProfiles.length === 0 ? (
             <p className="text-sm text-gray-400">
               No saved profile yet — you can save one from any completed scan.
             </p>
+          ) : null}
+
+          {extraProfiles.length > 0 && (
+            <div className="mt-5 border-t border-gray-100 pt-4">
+              <h3 className="text-sm font-semibold text-gray-900">Other profiles</h3>
+              <p className="text-xs text-gray-500 mb-3">
+                Pick any of them when you scan against a new job. {extraProfiles.length} of {maxExtras} used — save more from a completed scan with “Keep as another profile”.
+              </p>
+              <ul className="flex flex-col gap-3">
+                {extraProfiles.map(p => (
+                  <li key={p.id} className="rounded-md border border-gray-200 px-4 py-3">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        {renameId === p.id ? (
+                          <form className="flex items-center gap-2" onSubmit={e => { e.preventDefault(); handleRenameExtra(p.id) }}>
+                            <input type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)} maxLength={40}
+                              aria-label="Profile name" className="rounded-md border border-gray-300 px-2 py-1 text-sm" />
+                            <Button type="submit" size="sm" loading={extraBusy}>Save</Button>
+                            <Button type="button" size="sm" variant="secondary" onClick={() => setRenameId(null)}>Cancel</Button>
+                          </form>
+                        ) : (
+                          <p className="text-sm font-medium text-gray-900 truncate">{p.label}</p>
+                        )}
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {[
+                            p.summary?.name,
+                            p.summary?.latestTitle && `Latest role: ${p.summary.latestTitle}`,
+                            p.summary?.jobCount > 0 && `${p.summary.jobCount} job${p.summary.jobCount === 1 ? '' : 's'}`,
+                            `saved ${formatDate(p.savedAt)}${p.editedAt ? `, edited ${formatDate(p.editedAt)}` : ''}`,
+                          ].filter(Boolean).join(' · ')}
+                        </p>
+                        {p.sourceScanId && (
+                          <Link to={`/scan/${p.sourceScanId}`} className="text-xs text-blue-600 hover:underline">View source scan</Link>
+                        )}
+                      </div>
+                      <div className="flex flex-wrap gap-2 shrink-0">
+                        {editingExtraId !== p.id && <Button variant="secondary" size="sm" onClick={() => setEditingExtraId(p.id)}>Edit</Button>}
+                        <Button variant="secondary" size="sm" onClick={() => { setRenameId(p.id); setRenameValue(p.label) }}>Rename</Button>
+                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', p.id, p.label)}
+                          loading={downloadingFile === `${p.id}:docx`} disabled={!!downloadingFile}>.docx</Button>
+                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', p.id, p.label)}
+                          loading={downloadingFile === `${p.id}:pdf`} disabled={!!downloadingFile}>PDF</Button>
+                        <Button variant="secondary" size="sm" onClick={() => { setExtraError(''); setRemoveExtraTarget(p) }}>Remove</Button>
+                      </div>
+                    </div>
+                    {editingExtraId === p.id && (
+                      <SavedProfileEditor profileId={p.id} onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingExtraId(null)} />
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
+          {extraError && <p role="alert" className="text-sm text-red-600 mt-2">{extraError}</p>}
           {removeError && <p role="alert" className="text-sm text-red-600 mt-2">{removeError}</p>}
         </div>
 
@@ -706,6 +819,16 @@ export default function Settings() {
         loading={purging}
         onConfirm={handlePurgeHistory}
         onCancel={() => setPurgeOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={!!removeExtraTarget}
+        title="Remove profile"
+        message={removeExtraTarget ? `Remove “${removeExtraTarget.label}”? You can save it again from a completed scan.` : ''}
+        confirmLabel="Remove"
+        loading={extraBusy}
+        onConfirm={handleRemoveExtra}
+        onCancel={() => setRemoveExtraTarget(null)}
       />
 
       <ConfirmDialog

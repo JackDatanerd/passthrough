@@ -21,7 +21,10 @@ import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning'
 //
 // Rendered only while the person is editing; `onSaved` lets Settings refresh its summary and
 // `onClose` returns it to the read-only view.
-export default function SavedProfileEditor({ onSaved, onClose }) {
+export default function SavedProfileEditor({ onSaved, onClose, profileId = null }) {
+  // profileId = one of the additional profiles; absent = the primary saved profile.
+  const dataUrl = profileId ? `/profile/extras/${profileId}/data` : '/profile/data'
+  const saveUrl = profileId ? `/profile/extras/${profileId}` : '/profile'
   const [draft, setDraft] = useState(null)          // null = loading
   const [version, setVersion] = useState(null)      // what the draft was made from
   const [loadError, setLoadError] = useState('')
@@ -38,7 +41,7 @@ export default function SavedProfileEditor({ onSaved, onClose }) {
 
   useEffect(() => {
     let cancelled = false
-    api.get('/profile/data')
+    api.get(dataUrl)
       .then(res => {
         if (cancelled) return
         const loaded = JSON.parse(JSON.stringify(res.data.data.resumeData || {}))
@@ -59,7 +62,7 @@ export default function SavedProfileEditor({ onSaved, onClose }) {
     setSaving(true); setSaveError('')
     const sendVersion = typeof overrideVersion === 'string' ? overrideVersion : version
     try {
-      await api.put('/profile', sendVersion ? { resumeData: draft, version: sendVersion } : { resumeData: draft })
+      await api.put(saveUrl, sendVersion ? { resumeData: draft, version: sendVersion } : { resumeData: draft })
       baseline.current = JSON.stringify(draft)
       onSaved?.()
       onClose?.()
@@ -75,7 +78,7 @@ export default function SavedProfileEditor({ onSaved, onClose }) {
   async function saveOverCurrent() {
     setSaving(true); setSaveError('')
     try {
-      const res = await api.get('/profile/data')
+      const res = await api.get(dataUrl)
       const latest = res.data?.data?.version
       if (typeof latest !== 'string') throw new Error('no version')
       setVersion(latest); setConflict(false)

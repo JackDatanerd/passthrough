@@ -27,12 +27,18 @@ export default function SaveProfilePrompt({ scanId }) {
   // Saving REPLACES the saved profile — including corrections typed into the Settings editor.
   // Replacing those takes an explicit yes (the server refuses with 409 PROFILE_EDITED otherwise).
   const [confirmOpen, setConfirmOpen] = useState(false)
+  // "Keep as another profile": saved under a name next to the main one instead of replacing it.
+  const [extraOpen, setExtraOpen] = useState(false)
+  const [extraLabel, setExtraLabel] = useState('')
+  const [extraCount, setExtraCount] = useState(0)
+  const [extraMax, setExtraMax] = useState(4)
 
   useEffect(() => {
     let cancelled = false
     api.get('/profile')
       .then(res => {
         const d = res.data.data
+        if (!cancelled) { setExtraCount((d.extraProfiles || []).length); if (d.maxExtraProfiles) setExtraMax(d.maxExtraProfiles) }
         if (!cancelled && d.hasSavedProfile) setExisting({ savedAt: d.savedAt, editedAt: d.editedAt || null, sourceScanId: d.sourceScanId })
       })
       .catch(() => {})
@@ -61,10 +67,28 @@ export default function SaveProfilePrompt({ scanId }) {
     }
   }
 
+  async function handleSaveExtra() {
+    setStatus('saving'); setError('')
+    try {
+      await api.post('/profile/save', { scanId, asExtra: true, label: extraLabel })
+      setExtraOpen(false); setStatus('savedExtra')
+    } catch (err) {
+      setError(getErrorMessage(err, 'Could not save profile.')); setStatus('error')
+    }
+  }
+
   // A profile with hand corrections is replaced only after the person has agreed.
   const onSaveClick = () => (existing?.editedAt ? setConfirmOpen(true) : handleSave(false))
 
   const alreadyThis = !!existing && existing.sourceScanId === scanId
+
+  if (status === 'savedExtra') {
+    return (
+      <div className="bg-green-50 border border-green-200 rounded-lg px-4 py-3 text-sm text-green-800">
+        Saved as another profile — choose it from the scan form or manage it in Settings.
+      </div>
+    )
+  }
 
   if (status === 'saved') {
     return (
@@ -89,9 +113,23 @@ export default function SaveProfilePrompt({ scanId }) {
         </p>
         {status === 'error' && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
       </div>
-      <Button onClick={onSaveClick} loading={status === 'saving'} variant="secondary" size="sm" className="shrink-0">
-        {alreadyThis ? 'Save again' : existing ? 'Replace saved profile' : 'Save profile'}
-      </Button>
+      <div className="flex flex-wrap gap-2 shrink-0 items-center">
+        <Button onClick={onSaveClick} loading={status === 'saving'} variant="secondary" size="sm">
+          {alreadyThis ? 'Save again' : existing ? 'Replace saved profile' : 'Save profile'}
+        </Button>
+        {existing && !alreadyThis && extraCount < extraMax && !extraOpen && (
+          <Button onClick={() => setExtraOpen(true)} variant="secondary" size="sm">Keep as another profile</Button>
+        )}
+      </div>
+      {extraOpen && (
+        <form className="w-full flex flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); handleSaveExtra() }}>
+          <input type="text" value={extraLabel} onChange={e => setExtraLabel(e.target.value)} maxLength={40}
+            placeholder="Name this profile (e.g. Product roles)" aria-label="Profile name"
+            className="flex-1 min-w-[12rem] rounded-md border border-gray-300 px-3 py-1.5 text-sm" />
+          <Button type="submit" size="sm" loading={status === 'saving'}>Save</Button>
+          <Button type="button" variant="secondary" size="sm" onClick={() => setExtraOpen(false)}>Cancel</Button>
+        </form>
+      )}
       <ConfirmDialog
         open={confirmOpen}
         title="Replace your edited profile?"

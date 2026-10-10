@@ -134,6 +134,7 @@ async function uploadResume(ctx, next) {
     // applies (and rejects if both or neither are present).
     brainDumpText:      textField('brainDumpText',      TEXT_FIELD_CAP),
     useSavedProfile:    textField('useSavedProfile',    10),
+    savedProfileId:     textField('savedProfileId',     64),   // which additional saved profile (UUID, validated in createScan)
     // Rescan: the id of the person's earlier scan whose resume is reused (a UUID — createScan
     // validates it). This field used to be missing here, so the form's "same resume" submit
     // reached createScan with nothing in it and was rejected as "no input".

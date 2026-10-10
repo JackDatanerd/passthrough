@@ -26,8 +26,11 @@ const { isRangeError, warnOnError } = require('../lib/db')
 const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { recordTombstones } = require('../lib/verification')
 const constants = require('../config/constants')
+const docxService = require('../services/docx.service')
+const pdfService = require('../services/pdf.service')
+const pdfTemplate = require('../services/pdfTemplate.service')
 const { utcMidnight } = require('../lib/utcDay')
-const { SCAN_STATUSES, sanitizeSearch, applyScanFilters } = require('../lib/scanSearch')
+const { SCAN_STATUSES, sanitizeSearch, applyScanFilters, parseIdList } = require('../lib/scanSearch')
 
 // GET /api/profile
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used to
@@ -64,6 +67,25 @@ function pickLatestTitle(experience) {
   return experience[0]?.title || null
 }
 
+const MAX_EXTRA_PROFILES = 4
+const MAX_LABEL_CHARS = 40
+function normalizeLabel(raw) {
+  if (typeof raw !== 'string') return ''
+  return raw.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL_CHARS)
+}
+function summarizeResume(rd, roleCategory) {
+  const count = (v) => Array.isArray(v) ? v.length : 0
+  return rd ? {
+    name: rd.name || null, roleCategory: roleCategory || null, latestTitle: pickLatestTitle(rd.experience),
+    jobCount: count(rd.experience), educationCount: count(rd.education), skillCount: count(rd.skills)
+  } : null
+}
+const extraToApi = (r) => ({
+  id: r.id, label: r.label, savedAt: r.saved_at, editedAt: r.edited_at || null,
+  version: r.edited_at || r.saved_at, sourceScanId: r.source_scan_id || null,
+  summary: summarizeResume(r.resume_data, r.role_category)
+})
+
 async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
@@ -86,7 +108,14 @@ async function getProfile(c) {
     skillCount:   count(rd.skills)
   } : null
 
+  const { data: extraRows, error: extraErr } = await supabase.from('saved_profiles')
+    .select('id, label, resume_data, role_category, source_scan_id, saved_at, edited_at')
+    .eq('user_id', user.id).order('saved_at', { ascending: true })
+  if (extraErr) throw extraErr
+
   return c.json({ success: true, data: {
+    extraProfiles:   (extraRows || []).map(extraToApi),
+    maxExtraProfiles: MAX_EXTRA_PROFILES,
     hasSavedProfile: !!saved?.resumeData,
     savedAt:         saved?.savedAt || null,
     editedAt:        saved?.editedAt || null,
@@ -223,6 +252,20 @@ async function saveProfile(c) {
   // Wrapped with savedAt (and now sourceScanId/roleCategory — see
   // getProfile's comment above) inside the single jsonb column — avoids a
   // schema change for what's otherwise a handful of small extra fields.
+  // "Save as another profile": goes to the saved_profiles table under a label and never touches
+  // the primary profile (so no PROFILE_EDITED prompt either).
+  if (body.asExtra === true) {
+    const label = normalizeLabel(body.label) || normalizeLabel(scan.roleCategory) || 'Additional profile'
+    const { data: newId, error: addErr } = await supabase.rpc('add_saved_profile', {
+      p_user_id: user.id, p_label: label, p_resume: scan.originalResumeData,
+      p_role_category: scan.roleCategory || null, p_source_scan_id: scan.id, p_max: MAX_EXTRA_PROFILES
+    })
+    if (addErr) throw addErr
+    if (!newId) return c.json({ success: false, code: 'PROFILE_LIMIT',
+      message: `You can keep up to ${MAX_EXTRA_PROFILES} additional profiles. Remove one in Settings first.` }, 409)
+    return c.json({ success: true, message: 'Additional profile saved.', data: { id: newId, label } })
+  }
+
   const savedProfile = {
     resumeData:   scan.originalResumeData,
     savedAt:      new Date().toISOString(),
@@ -373,6 +416,10 @@ async function exportMyData(c) {
       .order('created_at', { ascending: false }).limit(EXPORT_MAX_PAYMENTS)
     if (payErr) throw payErr
     payload.savedProfile = account.saved_profile || null
+    const { data: extras, error: extrasErr } = await supabase.from('saved_profiles')
+      .select('id, label, resume_data, role_category, source_scan_id, saved_at, edited_at').eq('user_id', user.id).order('saved_at', { ascending: true })
+    if (extrasErr) throw extrasErr
+    payload.additionalProfiles = extras || []
     // Partial refunds Paystack has confirmed (payment_refunds). A payment's own row only says
     // "refunded" for a full one, so without these a part-refunded payment looked untouched.
     const refundsByPayment = new Map()
@@ -445,6 +492,11 @@ function purgeFilters(c) {
   const rawStatus = q('status'), rawSearch = q('search')
   const status = rawStatus ? String(rawStatus) : ''
   if (status && !SCAN_STATUSES.includes(status)) return { error: 'Unknown status filter.' }
+  // `ids` = delete exactly the scans the person ticked on the dashboard. It never combines with
+  // the search/status filters, so a stale filter can't widen a hand-picked delete.
+  const picked = parseIdList(q('ids'))
+  if (picked.error) return { error: picked.error }
+  if (picked.ids.length) return { status: '', search: '', ids: picked.ids }
   const search = sanitizeSearch(rawSearch)
   if (rawSearch && !search && !status) return { error: 'That search matches everything. To delete every scan, use Settings → Scan history.' }
   return { status, search }
@@ -514,4 +566,125 @@ async function deleteScanHistory(c) {
   return c.json({ success: true, data: { deleted, remaining: count ?? 0 } })
 }
 
-module.exports = { getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }
+// ── Download the saved profile as a document ────────────────────────────────
+// The saved profile used to be viewable/editable and appear in the JSON export, but never come
+// out as the thing it IS — a resume. Same deterministic renderers the free scan draft uses
+// (no Claude call, no credential line), fed from users.saved_profile.resumeData.
+const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+function profileFileStem(rd) {
+  const stem = String(rd?.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  return stem ? `${stem}-resume` : 'resume'
+}
+async function loadProfileResume(c) {
+  const user = c.get('user')
+  const profileId = c.req.query('profileId')
+  let rd
+  if (profileId) {
+    if (!UUID_RE.test(profileId)) return { res: c.json({ success: false, message: 'Invalid profile.' }, 400) }
+    const { data, error } = await getSupabase(c.env).from('saved_profiles').select('resume_data').eq('id', profileId).eq('user_id', user.id).maybeSingle()
+    if (error) throw error
+    rd = data?.resume_data
+  } else {
+    const { data, error } = await getSupabase(c.env).from('users').select('saved_profile').eq('id', user.id).single()
+    if (error) throw error
+    rd = data?.saved_profile?.resumeData
+  }
+  
+  if (!rd || !hasResumeContent(rd)) return { res: c.json({ success: false, message: 'No saved profile to download.' }, 404) }
+  return { rd }
+}
+async function downloadProfileDocx(c) {
+  const { rd, res } = await loadProfileResume(c)
+  if (res) return res
+  const bytes = await docxService.generateAtsDocx(rd, null)
+  c.header('Content-Disposition', `attachment; filename="${profileFileStem(rd)}.docx"`)
+  c.header('Content-Type', DOCX_MIME)
+  return c.body(bytes)
+}
+async function downloadProfilePdf(c) {
+  const { rd, res } = await loadProfileResume(c)
+  if (res) return res
+  let bytes
+  try {
+    bytes = await pdfService.generateResumePDF(c.env, pdfTemplate.buildResumeHTML(rd, undefined, null, { verified: false }))
+  } catch (err) {
+    console.error('downloadProfilePdf:', err.message)
+    return c.json({ success: false, message: "We couldn't generate the PDF just now. Please try again in a minute — the .docx is still available." }, 502)
+  }
+  c.header('Content-Disposition', `attachment; filename="${profileFileStem(rd)}.pdf"`)
+  c.header('Content-Type', 'application/pdf')
+  return c.body(bytes)
+}
+
+// ── Additional profiles ─────────────────────────────────────────────────────
+async function loadExtra(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return { res: c.json({ success: false, message: 'Invalid profile.' }, 400) }
+  const { data, error } = await getSupabase(c.env).from('saved_profiles')
+    .select('id, label, resume_data, role_category, source_scan_id, saved_at, edited_at')
+    .eq('id', id).eq('user_id', c.get('user').id).maybeSingle()
+  if (error) throw error
+  if (!data) return { res: c.json({ success: false, message: 'Profile not found.' }, 404) }
+  return { row: data }
+}
+
+// GET /api/profile/extras/:id/data
+async function getExtraData(c) {
+  const { row, res } = await loadExtra(c)
+  if (res) return res
+  return c.json({ success: true, data: { resumeData: row.resume_data, label: row.label, version: row.edited_at || row.saved_at } })
+}
+
+// PUT /api/profile/extras/:id  { resumeData?, label?, expectedVersion? }
+async function updateExtra(c) {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid profile.' }, 400)
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return c.json({ success: false, message: 'Invalid request.' }, 400)
+  const supabase = getSupabase(c.env)
+
+  let resume = null
+  if (body.resumeData !== undefined) {
+    const checked = parseClientResumeData(body.resumeData)
+    if (!checked.ok) return c.json({ success: false, message: checked.message }, 400)
+    if (!hasResumeContent(checked.data)) return c.json({ success: false, message: 'A saved profile needs at least some work history, education or skills.' }, 400)
+    resume = checked.data
+  }
+  let label = null
+  if (body.label !== undefined) {
+    label = normalizeLabel(body.label)
+    if (!label) return c.json({ success: false, message: 'Give the profile a name.' }, 400)
+  }
+  if (resume === null && label === null) return c.json({ success: false, message: 'Nothing to update.' }, 400)
+  const rawVersion = body.version ?? body.expectedVersion
+  const expected = typeof rawVersion === 'string' && rawVersion ? rawVersion : null
+  if (expected && Number.isNaN(Date.parse(expected))) return c.json({ success: false, message: 'Invalid version.' }, 400)
+
+  if (resume === null) {
+    // Rename only — keep the stored resume as is.
+    const { data: cur, error: curErr } = await supabase.from('saved_profiles').select('resume_data').eq('id', id).eq('user_id', user.id).maybeSingle()
+    if (curErr) throw curErr
+    if (!cur) return c.json({ success: false, message: 'Profile not found.' }, 404)
+    resume = cur.resume_data
+  }
+  const { data: result, error } = await supabase.rpc('update_saved_profile', {
+    p_user_id: user.id, p_id: id, p_resume: resume, p_label: label, p_expected_version: expected, p_edited_at: new Date().toISOString()
+  })
+  if (error) throw error
+  if (result === 'missing') return c.json({ success: false, message: 'Profile not found.' }, 404)
+  if (result === 'conflict') return c.json({ success: false, code: 'PROFILE_CHANGED', message: 'This profile was changed somewhere else. Reload it and try again.' }, 409)
+  return c.json({ success: true, message: 'Profile updated.' })
+}
+
+// DELETE /api/profile/extras/:id
+async function deleteExtra(c) {
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid profile.' }, 400)
+  const { error } = await getSupabase(c.env).from('saved_profiles').delete().eq('id', id).eq('user_id', c.get('user').id)
+  if (error) throw error
+  return c.json({ success: true, message: 'Profile removed.' })
+}
+
+module.exports = { getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }

@@ -56,6 +56,10 @@ export default function ScanForm() {
   const [draft0] = useState(() => loadBrainDumpDraft())
   const [brainDumpText, setBrainDumpText] = useState(() => (draft0?.text || '').slice(0, MAX_RESUME_CHARS))
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
+  // Additional named profiles (Settings) — '' means the primary profile.
+  const [extraProfiles, setExtraProfiles] = useState([])
+  const [profileChoice, setProfileChoice] = useState('')
+  const [primaryAvailable, setPrimaryAvailable] = useState(true)
   // Today's free-scan allowance, shown next to the submit button (signed-in only).
   const [quota, setQuota] = useState(null)
   // Anonymous users describing their background in free text rarely think
@@ -81,7 +85,7 @@ export default function ScanForm() {
   useEffect(() => {
     if (!user) return
     api.get('/profile')
-      .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile); setQuota(res.data.data.quota || null) })
+      .then(res => { const extras = res.data.data.extraProfiles || []; setExtraProfiles(extras); setPrimaryAvailable(!!res.data.data.hasSavedProfile); setHasSavedProfile(!!res.data.data.hasSavedProfile || extras.length > 0); if (!res.data.data.hasSavedProfile && extras.length) setProfileChoice(extras[0].id); setQuota(res.data.data.quota || null) })
       .catch(() => {}) // fail silently — worst case the toggle just doesn't show
   }, [user])
 
@@ -169,6 +173,7 @@ export default function ScanForm() {
         if (!user && uploadEmail.trim()) formData.append('contactEmail', uploadEmail.trim())
       } else if (entryMode === 'savedProfile') {
         formData.append('useSavedProfile', 'true')
+        if (profileChoice) formData.append('savedProfileId', profileChoice)
       } else if (entryMode === 'rescan') {
         formData.append('sourceScanId', rescanSource.id)
       } else if (entryMode === 'manual') {
@@ -400,6 +405,16 @@ export default function ScanForm() {
             <p className="text-sm text-gray-700">
               We'll use your saved profile — just add a job description below and we'll translate it fresh.
             </p>
+            {extraProfiles.length > 0 && (
+              <label className="block mt-2 text-sm text-gray-700">
+                Profile to use
+                <select value={profileChoice} onChange={e => setProfileChoice(e.target.value)}
+                  className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm">
+                  {primaryAvailable && <option value="">Main profile</option>}
+                  {extraProfiles.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+                </select>
+              </label>
+            )}
           </div>
         )}
       </div>

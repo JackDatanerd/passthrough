@@ -32,6 +32,12 @@ function scanBadgeVariant(status) {
 }
 
 const SCANS_PER_PAGE = 20
+const SORT_OPTIONS = [
+  { value: 'newest', label: 'Newest first' },
+  { value: 'oldest', label: 'Oldest first' },
+  { value: 'score_desc', label: 'Highest score' },
+  { value: 'score_asc', label: 'Lowest score' },
+]
 // How often (ms) the list checks scans that are still being processed. Status
 // requests have their own rate-limit budget (unlike the history list, which
 // shares the general one), and only a few rows are ever in flight at once.
@@ -77,6 +83,13 @@ export default function DashboardIndex() {
   // claimed a filter was active. Anything that is not a real status is no filter at all.
   const rawStatus = searchParams.get('status') || ''
   const status = SCAN_STATUSES.includes(rawStatus) ? rawStatus : ''
+  // Order of the list. 'newest' is the default and is kept out of the URL.
+  const rawSort = searchParams.get('sort') || ''
+  const sort = SORT_OPTIONS.some(o => o.value === rawSort) ? rawSort : 'newest'
+  // Hand-picked scans (checkboxes) on the CURRENT page only; cleared whenever the list changes.
+  const [selected, setSelected] = useState(() => new Set())
+  const [selectOpen, setSelectOpen] = useState(false)
+  const [selectRunning, setSelectRunning] = useState(false)
   // Search box needs its own local state so typing doesn't refetch on every
   // keystroke — committed to the URL (and therefore the API call) debounced,
   // same reasoning as AdminUsers.jsx / AdminLeads.jsx's search boxes, which
@@ -151,6 +164,15 @@ export default function DashboardIndex() {
     })
   }
 
+  function setSort(newSort) {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (newSort && newSort !== 'newest') next.set('sort', newSort); else next.delete('sort')
+      next.delete('page')
+      return next
+    })
+  }
+
   function setPage(newPage, options) {
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
@@ -167,7 +189,7 @@ export default function DashboardIndex() {
     const soft = softRef.current && !hardPendingRef.current
     softRef.current = false
     if (!soft) { hardPendingRef.current = true; setLoading(true); setLoadError('') }
-    api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: effSearch || undefined, status: status || undefined } })
+    api.get('/scan/history', { params: { page, limit: SCANS_PER_PAGE, search: effSearch || undefined, status: status || undefined, sort: sort !== 'newest' ? sort : undefined } })
       .then(res => {
         if (cancelled) return
         const data = res.data.data
@@ -190,7 +212,7 @@ export default function DashboardIndex() {
         setLoading(false)
       })
     return () => { cancelled = true }
-  }, [page, effSearch, status, reloadTick, softTick])
+  }, [page, effSearch, status, sort, reloadTick, softTick])
 
   // Scans still being processed used to sit at "Scanning" until the page was
   // reloaded by hand. Poll each live one's status (its own rate-limit bucket,
@@ -215,7 +237,7 @@ export default function DashboardIndex() {
 
   useEffect(() => {
     api.get('/profile')
-      .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile); setQuota(res.data.data.quota || null) })
+      .then(res => { setHasSavedProfile(!!res.data.data.hasSavedProfile || (res.data.data.extraProfiles || []).length > 0); setQuota(res.data.data.quota || null) })
       .catch(() => setHasSavedProfile(null))
 
     // Re-sync cached user state (emailVerified in particular) every time the
@@ -265,6 +287,37 @@ export default function DashboardIndex() {
       }
     } finally {
       setDeleting(false)
+    }
+  }
+
+  // A selection belongs to the page it was made on: any new page, filter, sort or reload drops it.
+  useEffect(() => { setSelected(new Set()) }, [page, effSearch, status, sort, reloadTick])
+  // Rows still on screen (a background refresh may have removed some).
+  useEffect(() => {
+    setSelected(prev => {
+      if (!prev.size) return prev
+      const live = new Set(scans.filter(canDeleteScan).map(x => x.id))
+      const next = new Set([...prev].filter(id => live.has(id)))
+      return next.size === prev.size ? prev : next
+    })
+  }, [scans])
+  const selectableIds = scans.filter(canDeleteScan).map(x => x.id)
+  const allSelected = selectableIds.length > 0 && selectableIds.every(id => selected.has(id))
+  function toggleOne(id) {
+    setSelected(prev => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next })
+  }
+  function toggleAll() { setSelected(allSelected ? new Set() : new Set(selectableIds)) }
+
+  async function confirmSelectedDelete() {
+    setSelectRunning(true); setBulkError(''); setBulkResult(null)
+    try {
+      const res = await api.delete('/profile/scans', { params: { ids: [...selected].join(',') } })
+      setBulkResult(res.data.data)
+    } catch (err) {
+      setBulkError(getErrorMessage(err, 'Could not delete those scans.'))
+    } finally {
+      setSelectRunning(false); setSelectOpen(false)
+      setReloadTick(t => t + 1)
     }
   }
 
@@ -364,6 +417,20 @@ export default function DashboardIndex() {
               <option value="">All</option>
               {SCAN_STATUSES.map(s => <option key={s} value={s}>{statusLabel(s)}</option>)}
             </Select>
+            <Select id="scan-sort" label="Sort" value={sort} onChange={e => setSort(e.target.value)}>
+              {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </Select>
+            {selectableIds.length > 0 && !loading && !loadError && (
+              <label className="flex items-center gap-2 text-sm text-gray-700 pb-2">
+                <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-4 w-4" />
+                Select page
+              </label>
+            )}
+            {selected.size > 0 && (
+              <Button size="sm" variant="secondary" onClick={() => { setBulkError(''); setBulkResult(null); setSelectOpen(true) }}>
+                Delete {selected.size} selected
+              </Button>
+            )}
             {/* Clearing out e.g. every failed scan used to mean deleting them one at a time. */}
             {hasFilters && total > 0 && !loading && !loadError && (
               <Button size="sm" variant="secondary" onClick={() => { setBulkError(''); setBulkResult(null); setBulkOpen(true) }}>
@@ -430,6 +497,12 @@ export default function DashboardIndex() {
             {scans.map(scan => (
               <div key={scan.id}
                 className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-colors flex items-stretch">
+              <label className="pl-4 pr-1 flex items-center">
+                <input type="checkbox" className="h-4 w-4 disabled:opacity-40"
+                  checked={selected.has(scan.id)} disabled={!canDeleteScan(scan)}
+                  onChange={() => toggleOne(scan.id)}
+                  aria-label={`Select ${scanHeading(scan)}`} />
+              </label>
               <Link
                 to={`/scan/${scan.id}`}
                 className="flex-1 min-w-0 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3"
@@ -515,6 +588,16 @@ export default function DashboardIndex() {
         loading={bulkRunning}
         onConfirm={confirmBulkDelete}
         onCancel={() => setBulkOpen(false)}
+      />
+
+      <ConfirmDialog
+        open={selectOpen}
+        title="Delete selected scans"
+        message={`Permanently delete the ${selected.size} scan${selected.size === 1 ? '' : 's'} you selected? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. Payment records and your saved profile are kept.`}
+        confirmLabel={`Delete ${selected.size} scan${selected.size === 1 ? '' : 's'}`}
+        loading={selectRunning}
+        onConfirm={confirmSelectedDelete}
+        onCancel={() => setSelectOpen(false)}
       />
 
       <ConfirmDialog

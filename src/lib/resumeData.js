@@ -99,12 +99,27 @@ function hasResumeContent(rd) {
 }
 
 // -> { ok: true, data } | { ok: false, message }
-function parseClientResumeData(input) {
-  if (JSON.stringify(input ?? null).length > MAX_RESUME_DATA_JSON_CHARS)
+// Postgres cannot store U+0000 in jsonb ("unsupported Unicode escape sequence"), so a NUL
+// anywhere in the payload used to pass validation and then fail inside the RPC as a 500.
+// Removed from every string value and key instead: it is never meaningful resume text.
+function stripNul(v) {
+  if (typeof v === 'string') return v.includes('\u0000') ? v.replace(/\u0000/g, '') : v
+  if (Array.isArray(v)) return v.map(stripNul)
+  if (v && typeof v === 'object') {
+    const out = {}
+    for (const [k, val] of Object.entries(v)) out[stripNul(k)] = stripNul(val)
+    return out
+  }
+  return v
+}
+
+function parseClientResumeData(rawInput) {
+  if (JSON.stringify(rawInput ?? null).length > MAX_RESUME_DATA_JSON_CHARS)
     return { ok: false, message: 'Resume data is too large.' }
+  const input = stripNul(rawInput)
   const parsed = resumeDataSchema.safeParse(input)
   if (!parsed.success) return { ok: false, message: 'Resume data is not in the expected shape.' }
   return { ok: true, data: dropBlankEntries(parsed.data) }
 }
 
-module.exports = { MAX_RESUME_DATA_JSON_CHARS, resumeDataSchema, dropBlankEntries, hasResumeContent, parseClientResumeData }
+module.exports = { stripNul, MAX_RESUME_DATA_JSON_CHARS, resumeDataSchema, dropBlankEntries, hasResumeContent, parseClientResumeData }
