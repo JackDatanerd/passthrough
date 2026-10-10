@@ -1,0 +1,22 @@
+SCAN RESULT — redesigned offer box (FixBanner)
+
+Changed
+- frontend/src/components/scan/FixBanner.jsx: tier cards (Full fix raised, "Only $X more" from live prices),
+  score-gap line, guarantee copy matching the product (MAX_FIX_RETRIES free retries, then a free fix credit,
+  not a refund), resume-writer reference strip ($150+, shown only when the charge currency is USD),
+  optional hardship link, 80+ branch leads with the credential. Props, button labels and test ids are unchanged.
+  Keeps the upstream usePricing(referralCode, { scanId }) call from Payments round 9.
+- New tests: frontend/tests/components/fixBanner.offer.test.jsx, fixBanner.hardship.test.jsx
+
+Hardship link — needs configuration, otherwise it does not render
+1. Set VITE_HARDSHIP_CODE=<CODE> in the frontend environment.
+2. Create an internal partner with commission_rate 0 (the DB check allows 0..1) and an ACTIVE status, then a
+   referral code <CODE> for it with tier_prices at half of the CURRENT price, in cents.
+     during the launch promo ($29/$19/$9):  {"FIX":1450,"FIX_PLAIN":950,"BADGE":450}
+     at standard prices ($49/$39/$39):      {"FIX":2450,"FIX_PLAIN":1950,"BADGE":1950}
+3. tier_prices are static. When the promo ends, update them, or the discount silently becomes larger than 50%.
+   The "% off" shown on the page is measured from the live quote, so the copy stays truthful either way.
+- Not offered when another referral code is already applied (that partner's attribution is kept).
+- Honor system: no proof is asked for. Leave usage_limit empty or set a ceiling you are comfortable with.
+
+Not built (design needed first): free rewritten sample line before purchase.
