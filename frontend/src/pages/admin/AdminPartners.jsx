@@ -584,6 +584,11 @@ export default function AdminPartners() {
                   <td className="px-4 py-3">
                     <div className="font-medium text-gray-900">{p.name}</div>
                     <div className="text-gray-400 text-xs">{p.email}</div>
+                    {p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && (
+                      <div className="text-xs text-red-500 mt-0.5" title={`Latest payout-link email: ${p.payoutLinkEmail.status}`}>
+                        Setup email {p.payoutLinkEmail.status === 'throttled' ? 'was throttled' : p.payoutLinkEmail.status === 'suppressed' ? 'was suppressed' : 'failed'} — resend or copy the link
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-3">
                     <Badge variant={p.status === 'ACTIVE' ? 'green' : 'gray'}>{p.status}</Badge>

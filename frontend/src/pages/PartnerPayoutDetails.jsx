@@ -41,6 +41,9 @@ export default function PartnerPayoutDetails() {
   const [provider, setProvider] = useState('')
   const [phoneNumber, setPhoneNumber] = useState('')
   const [confirmNumber, setConfirmNumber] = useState('')
+  // Round 9: the server returns the saved account / phone as its last four digits only (the link is a bearer
+  // credential), so what is on file is shown as a reference and the number has to be typed again to save.
+  const [onFile, setOnFile] = useState('')
 
   const [saved,  setSaved ] = useState(false)
   const [holdUntil, setHoldUntil] = useState(null)
@@ -59,11 +62,14 @@ export default function PartnerPayoutDetails() {
           const d = p.payoutDetails || {}
           setBankName(d.bankName || '')
           setAccountName(d.accountName || '')
-          setAccountNumber(d.accountNumber || '')
           setProvider(d.provider || '')
-          setPhoneNumber(d.phoneNumber || '')
-          // Prefilled so editing only the bank name doesn't force a re-type; changing the number does.
-          setConfirmNumber(d.accountNumber || d.phoneNumber || '')
+          if (p.payoutDetailsMasked) {
+            setOnFile(`${p.payoutMethod === 'BANK' ? 'Bank account' : 'Mobile money'} ${d.accountNumber || d.phoneNumber || ''}`.trim())
+          } else {
+            setAccountNumber(d.accountNumber || '')
+            setPhoneNumber(d.phoneNumber || '')
+            setConfirmNumber(d.accountNumber || d.phoneNumber || '')
+          }
         }
       })
       .catch(err => {
@@ -156,6 +162,13 @@ export default function PartnerPayoutDetails() {
                   ? "You've already submitted these — update them below anytime."
                   : "Tell us where to send your payouts. We'll email you every time one goes out."}
               </p>
+
+              {onFile && (
+                <p className="text-sm text-gray-600 mb-4 rounded-md bg-gray-50 border border-gray-200 px-3 py-2" data-testid="payout-on-file">
+                  On file: <span className="font-medium">{onFile}</span>. For your security the full number isn't shown —
+                  re-enter it below to save any change.
+                </p>
+              )}
 
               <div className="flex gap-2 mb-6">
                 <button type="button"

@@ -467,6 +467,8 @@ describe('migration 0070', () => {
   })
   it('ends by recording its own number, matching the code', () => {
     expect(sql.trim().split('\n').slice(-3).join('\n')).toMatch(/'version', 70/)
-    expect(constants.EXPECTED_SCHEMA_VERSION).toBe(70)
+    // `>=`, not `toBe(70)`: every later migration bumps the expected version, and the "newest migration and the
+    // constant agree" guard already lives in crossCutting.round1.test.js. Pinning 70 here broke on migration 0071.
+    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(70)
   })
 })

@@ -541,10 +541,14 @@ async function reverseCommission(supabase, paymentId, reason) {
   }
   // The sale no longer counts: free the usage slot it consumed on a limited code.
   // Exactly once — only the call that actually inserted the reversal reaches here.
-  // Best-effort: a failed decrement must never undo or fail the reversal.
-  if (original.usage_counted !== false && original.referral_code_id && typeof supabase.rpc === 'function') {
+  // Section 4 round 9 (bug): this used to decide from the `original` row read BEFORE the insert, so a reversal
+  // that raced recordConversion's counter bump (usage_counted still false here, flipped a moment later)
+  // skipped the decrement and the slot leaked for good. The decision is now taken in SQL under the original
+  // row's lock, AFTER the reversal is in — increment_referral_code_usage refuses to count a reversed sale, so
+  // the two always net to zero. Best-effort: a failed release must never undo or fail the reversal.
+  if (original.referral_code_id && typeof supabase.rpc === 'function') {
     try {
-      const { error: decErr } = await supabase.rpc('decrement_referral_code_usage', { p_code_id: original.referral_code_id })
+      const { error: decErr } = await supabase.rpc('release_referral_code_usage_for_ledger', { p_ledger_id: original.id })
       if (decErr) console.error('reverseCommission usage release:', decErr.message)
     } catch (err) { console.error('reverseCommission usage release:', err.message) }
   }

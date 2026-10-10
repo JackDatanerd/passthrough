@@ -269,6 +269,13 @@ async function emailUsedByAnotherPartner(supabase, email, excludePartnerId) {
   return (data || []).length > 0
 }
 
+// Section 4 round 9 (bug): only adminUpdatePartner (and the ledger adjustment) refused an anonymized partner. Resend /
+// regenerate / view-links / create-code / re-activate-code all still worked on one, which mints a live bearer link (or
+// an active discount code) for a record whose owner asked to be erased — and hands the admin a working write-link to a
+// row with no identity.
+const partnerRemovedResponse = ctx => ctx.json({ success: false, code: 'PARTNER_REMOVED',
+  message: "This partner's personal data was removed, so no links or codes can be issued for the record." }, 409)
+
 // Shared by adminCreatePartner and application approval so both create a partner
 // the same way. Returns { error: message } for a duplicate email, else { data }.
 async function createPartnerRecord(ctx, supabase, { name, email, commissionRate, website, audience, termsAcceptedAt, termsVersion }, auditAction = 'partner.create', auditExtra = {}) {
@@ -503,6 +510,29 @@ async function adminUpdatePartner(ctx) {
 // Conversions tab) lives behind adminGetPartner, fetched only when someone
 // opens that partner's detail page.
 
+// Section 4 round 9 (feature gap): the only sign that a partner's setup email bounced or was throttled was a
+// console line and an email_logs row nobody reads, so a partner could sit with no payout details for weeks while
+// the admin assumed the link had arrived. For partners who have not set details up yet, report how the LATEST
+// payout-link email went. Best-effort — a failed lookup just omits the field.
+async function latestPayoutLinkEmailStatus(supabase, emails) {
+  const out = new Map()
+  const CHUNK = 40
+  try {
+    for (let i = 0; i < emails.length; i += CHUNK) {
+      const slice = emails.slice(i, i + CHUNK)
+      const { data, error } = await supabase.from('email_logs')
+        .select('to, status, sent_at').eq('template', 'partner_payout_details_request').in('to', slice)
+        .order('sent_at', { ascending: false }).limit(CHUNK * 10)
+      if (error) { console.error('latestPayoutLinkEmailStatus:', error.message); continue }
+      for (const r of data || []) {
+        const key = String(r.to || '').toLowerCase()
+        if (!out.has(key)) out.set(key, { status: r.status, sentAt: r.sent_at })
+      }
+    }
+  } catch (err) { console.error('latestPayoutLinkEmailStatus:', err.message) }
+  return out
+}
+
 async function adminListPartners(ctx) {
   const supabase = getSupabase(ctx.env)
   // SECTION 4 ROUND 4 (scale): this used to embed EVERY partner's full payout history,
@@ -537,9 +567,14 @@ async function adminListPartners(ctx) {
   }
 
   const holdDays = holdDaysFor(ctx.env)
+  const awaitingSetup = data.filter(r => !r.payout_method && r.email && !isRemovedEmail(r.email)).map(r => r.email)
+  const linkMail = awaitingSetup.length ? await latestPayoutLinkEmailStatus(supabase, awaitingSetup) : new Map()
   const partners = data.map(row => {
     const camel = partnerRowToCamel(row)
     const ledger = ledgerByPartner.get(row.id) || []
+    // 'sent' | 'failed' | 'throttled' | 'suppressed' | null (never mailed / lookup failed). Only for partners
+    // who still have no payout details on file.
+    camel.payoutLinkEmail = !row.payout_method ? (linkMail.get(String(row.email || '').toLowerCase()) || null) : null
     const cycles = buildCyclesSummary(ledger, 2, holdDays)  // [current, previous]
     const currentCycle = cycles.find(cyc => cyc.isCurrent)
 
@@ -639,6 +674,7 @@ async function adminResendPayoutLink(ctx) {
     .from('partners').select('name, email, payout_details_token').eq('id', partnerId).maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
 
   const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
   const sent = await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl)
@@ -691,6 +727,10 @@ async function adminRegeneratePayoutLink(ctx) {
   const newPayoutToken = rotatePayout ? cryptoLib.randomToken(32) : null
   const newDashToken   = rotateDash ? cryptoLib.randomToken(32) : null
 
+  const { data: current, error: curErr } = await supabase.from('partners').select('email').eq('id', partnerId).maybeSingle()
+  if (curErr) throw curErr
+  if (current && isRemovedEmail(current.email)) return partnerRemovedResponse(ctx)
+
   const { data: partner, error } = await supabase
     .from('partners')
     .update({ ...(rotatePayout ? { payout_details_token: newPayoutToken } : {}), ...(rotateDash ? { dashboard_token: newDashToken } : {}) })
@@ -731,9 +771,10 @@ async function adminGetPartnerLinks(ctx) {
   const partnerId = ctx.req.param('id')
   const supabase = getSupabase(ctx.env)
   const { data: partner, error } = await supabase
-    .from('partners').select('dashboard_token, payout_details_token').eq('id', partnerId).maybeSingle()
+    .from('partners').select('email, dashboard_token, payout_details_token').eq('id', partnerId).maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
   ctx.header('Cache-Control', 'no-store')
   await logAdminAction(ctx, supabase, 'partner.links_viewed', 'partner', partnerId, {})
   return ctx.json({ success: true, data: {
@@ -766,6 +807,7 @@ async function adminCreateReferralCode(ctx) {
     .from('partners').select('name, email, dashboard_token, status').eq('id', partnerId).maybeSingle()
   if (pErr) throw pErr
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
 
   const { data: codeRow, error } = await supabase.from('referral_codes').insert({
     partner_id:  partnerId,
@@ -824,6 +866,15 @@ async function adminUpdateReferralCode(ctx) {
   if (body.tierPrices !== undefined)  patch.tier_prices = body.tierPrices
   if (body.usageLimit !== undefined)  patch.usage_limit = body.usageLimit
   if (body.expiresAt !== undefined)   patch.expires_at = body.expiresAt
+
+  // Re-activating (or re-pricing) a code that belongs to an anonymized partner would put discounts and commission
+  // back on a record that was erased; switching one OFF stays allowed.
+  if (body.active !== false) {
+    const { data: owner, error: ownerErr } = await supabase.from('referral_codes')
+      .select('partner_id, partners(email)').eq('id', codeId).maybeSingle()
+    if (ownerErr) throw ownerErr
+    if (owner && isRemovedEmail(owner.partners?.email)) return partnerRemovedResponse(ctx)
+  }
 
   const { data, error } = await supabase.from('referral_codes')
     .update(patch).eq('id', codeId).select('*').maybeSingle()
@@ -1337,6 +1388,17 @@ async function findPartnerByAnyToken(supabase, token, columns) {
   return { partner: null, scope: null }
 }
 
+// What the payout page shows back to the link holder: names stay (so they recognise the destination), the
+// number is cut to its last four digits.
+function maskedPayoutDetailsForOwner(method, details) {
+  if (!method || !details) return null
+  const d = details
+  const last4 = v => { const raw = String(v || '').replace(/\s+/g, ''); return raw ? `\u2026${raw.slice(-4)}` : '' }
+  if (method === 'BANK') return { bankName: d.bankName || '', accountName: d.accountName || '', accountNumber: last4(d.accountNumber) }
+  if (method === 'MOBILE_MONEY') return { provider: d.provider || '', accountName: d.accountName || '', phoneNumber: last4(d.phoneNumber) }
+  return null
+}
+
 async function getPartnerByToken(ctx) {
   noStore(ctx)
   const token = partnerTokenOf(ctx)
@@ -1353,7 +1415,16 @@ async function getPartnerByToken(ctx) {
 
   // The payout page links on to the dashboard using the READ-ONLY token, so the
   // write-capable token never rides in a dashboard URL.
-  return ctx.json({ success: true, data: { ...partnerRowToCamel(partner), dashboardToken: partner.dashboard_token } })
+  // Section 4 round 9 (hardening): the link is a bearer credential that sits in an inbox, a browser history and
+  // (via the legacy ?token= form) request logs, and this response used to hand back the FULL account / phone
+  // number to whoever held it. The partner only needs to recognise what is on file, so the number comes back as
+  // its last four digits; changing it means typing the new one (the page already makes them confirm it).
+  return ctx.json({ success: true, data: {
+    ...partnerRowToCamel(partner),
+    payoutDetails: maskedPayoutDetailsForOwner(partner.payout_method, partner.payout_details),
+    payoutDetailsMasked: !!partner.payout_method,
+    dashboardToken: partner.dashboard_token
+  } })
 }
 
 // ── Public (token-gated): partner submits/updates their payout details ─────
@@ -1756,7 +1827,9 @@ const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
 const BOT_UA = /bot\b|crawl|spider|slurp|preview|headless|facebookexternalhit|curl\/|wget|python-requests|httpclient|monitor|lighthouse/i
 
 async function trackClick(ctx) {
-  const body = await ctx.req.json().catch(() => ({}))
+  // `null`, a number or an array are valid JSON that parse fine and then blow up on `.code` — treat as empty.
+  const parsedBody = await ctx.req.json().catch(() => null)
+  const body = parsedBody && typeof parsedBody === 'object' && !Array.isArray(parsedBody) ? parsedBody : {}
   const code = String(body.code || '').trim().toUpperCase()
   if (!code) return ctx.json({ success: true })
   // Section 4 round 7 (bug): an over-long or malformed value (`?ref=` is a generic parameter) got a bare success,
@@ -2277,13 +2350,24 @@ async function adminAnonymizePartner(ctx) {
   const { error: codeErr } = await supabase.from('referral_codes').update({ active: false }).eq('partner_id', partnerId)
   if (codeErr) throw codeErr
 
-  // 3. Past payouts keep amount/date/method; the account they went to is reduced to a masked reference.
+  // Section 4 round 9 (bug): the owed-check above and the code switch-off in step 2 are two separate moments; a
+  // checkout that had already resolved the code could convert in between and leave fresh commission on a partner
+  // we are about to wipe. Codes are off now, so look once more before anything irreversible happens.
+  const owedAfter = await sumPaged(() => supabase.from('commission_ledger')
+    .select('id, commission_amount_cents').eq('partner_id', partnerId).is('payout_id', null), 'commission_amount_cents')
+  if (owedAfter !== 0)
+    return ctx.json({ success: false, code: 'COMMISSION_OWED',
+      message: 'A sale converted while this was running, so commission is owed again. The partner\u2019s codes are now switched off \u2014 record the payout (or write the balance off), then run the removal again.' }, 409)
+
+  // 3. Past payouts keep amount/date/method; the account they went to is reduced to a masked reference. The
+  // free-text notes an admin typed against a payout (names, phone numbers, transfer references) are cleared too —
+  // `void_reason` is left, it is the accounting trail for a voided payout.
   const { data: payouts, error: poErr } = await supabase.from('payouts')
     .select('id, payout_method, payout_details_snapshot').eq('partner_id', partnerId)
   if (poErr) throw poErr
   for (const po of payouts || []) {
     const { error: upErr } = await supabase.from('payouts')
-      .update({ payout_details_snapshot: maskedPayoutSnapshot(po.payout_method, po.payout_details_snapshot) }).eq('id', po.id)
+      .update({ payout_details_snapshot: maskedPayoutSnapshot(po.payout_method, po.payout_details_snapshot), note: null, internal_note: null }).eq('id', po.id)
     if (upErr) throw upErr
   }
 

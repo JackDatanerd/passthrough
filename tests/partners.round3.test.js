@@ -309,11 +309,18 @@ describe('reverseCommission — usage slot', () => {
   it('frees the code usage slot exactly once and carries currency + partner on the reversal', async () => {
     const { r, rpcs } = await run(original())
     expect(r).toMatchObject({ reversed: true, partnerId: 'p1', currency: 'USD' })
-    expect(rpcs.map(x => x.name)).toEqual(['decrement_referral_code_usage'])
-    expect(rpcs[0].args).toEqual({ p_code_id: 'rc1' })
+    expect(rpcs.map(x => x.name)).toEqual(['release_referral_code_usage_for_ledger'])
+    expect(rpcs[0].args).toEqual({ p_ledger_id: 'led1' })
   })
-  it('does NOT free a slot that was never counted', async () => {
+  // Section 4 round 9: whether a slot was really consumed is decided in SQL under the ledger row's lock, AFTER the
+  // reversal exists (a stale usage_counted read here is exactly what leaked slots). So an uncounted-looking row
+  // still asks — and the migration's function refuses when nothing was counted.
+  it('asks the database to release even when the row read says usage was not counted yet (race-safe)', async () => {
     const { rpcs } = await run(original({ usage_counted: false }))
+    expect(rpcs.map(x => x.name)).toEqual(['release_referral_code_usage_for_ledger'])
+  })
+  it('a sale with no referral code releases nothing', async () => {
+    const { rpcs } = await run(original({ referral_code_id: null }))
     expect(rpcs).toHaveLength(0)
   })
   it('an already-reversed sale (23505) frees nothing a second time', async () => {

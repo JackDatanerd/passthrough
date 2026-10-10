@@ -1,0 +1,36 @@
+SECTION 4 (PARTNERS / REFERRAL) — ROUND 9 (independent pass on top of upstream round 8, base f72e3d8)
+
+APPLY MIGRATION 0071 BEFORE DEPLOYING THE WORKER. Until it is applied, reverseCommission's new release call fails
+(logged, never thrown) and a refunded sale will not give its usage slot back. EXPECTED_SCHEMA_VERSION is now 71.
+
+BUGS
+B1  A refund racing a fresh conversion permanently leaked a usage slot on a limited code. reverseCommission decided
+    from a stale usage_counted read and skipped the decrement while recordConversion's RPC then counted the sale.
+    Now: increment_referral_code_usage locks the original ledger row and refuses to count a reversed sale;
+    release_referral_code_usage_for_ledger (new) decides under the same lock after the reversal exists.
+    (0071_partners_round9_usage_race.sql, fulfillment.service.js reverseCommission)
+B2  adminAnonymizePartner checked "nothing owed" before switching the codes off; a checkout already in flight could
+    leave fresh commission on a partner about to be wiped. It now re-checks after the codes are off and stops (409,
+    COMMISSION_OWED) before anything irreversible.
+B3  trackClick threw (500) on a JSON body of null / number / array.
+B4  An anonymized partner could still be issued links (resend, regenerate, view) and codes (create, re-activate,
+    re-price). All refuse with 409 PARTNER_REMOVED; switching a code OFF stays allowed.
+B5  GET /partners/payout-details returned the full account / phone number to any holder of the link. It now returns
+    the last four digits (payoutDetailsMasked: true); the page shows "On file: ...6789" and the number is retyped to
+    save a change.
+
+FEATURE GAPS
+G3  Admin partner list shows when the latest payout-link email to a partner who has not set details up failed,
+    was throttled or suppressed (payoutLinkEmail).
+G4  Anonymize clears payouts.note and payouts.internal_note.
+
+(Terms acceptance and the erasure log purge were found independently and are covered by upstream round 8; not repeated.)
+
+NOT CHANGED ON PURPOSE
+- The legacy ?token= query form is still accepted (links already in inboxes). Remove once the header is the only path.
+- decrement_referral_code_usage (0051) is now unused by the Worker; left in place.
+
+TESTS: tests/homepage.outcomes.test.js — one assertion pinned EXPECTED_SCHEMA_VERSION to exactly 70 and failed on any later
+migration; it is now >= 70 (the newest-migration guard lives in crossCutting.round1.test.js).
+       tests/partners.round9.test.js, frontend/tests/partnersRound9.test.jsx; fixtures updated in partners.round3 /
+round7 for the new release RPC and the note scrub.

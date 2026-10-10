@@ -267,8 +267,8 @@ describe('adminAnonymizePartner', () => {
     ] })
     await t.mod.adminAnonymizePartner(ctxOf({ body }))
     expect(t.st.payoutPatches).toEqual([
-      { payout_details_snapshot: { bankName: 'Equity', accountName: 'Removed', accountNumber: '…6789' } },
-      { payout_details_snapshot: { provider: 'M-Pesa', accountName: 'Removed', phoneNumber: '…5678' } },
+      { payout_details_snapshot: { bankName: 'Equity', accountName: 'Removed', accountNumber: '…6789' }, note: null, internal_note: null },
+      { payout_details_snapshot: { provider: 'M-Pesa', accountName: 'Removed', phoneNumber: '…5678' }, note: null, internal_note: null },
     ])
   })
   it('is idempotent: an already-removed partner is checked and finished, not failed', async () => {
