@@ -70,6 +70,15 @@ describe('structure', () => {
     expect(screen.getByTestId('scan-form-stub')).toBeInTheDocument()
     expect(document.getElementById('scan-form')).toContainElement(screen.getByTestId('scan-form-stub'))
   })
+  it('keeps the proof row under the hero copy: five avatars, the stars, and the ATS names from the prototype', async () => {
+    renderHome()
+    await ready()
+    const row = screen.getByText(/Built for Workday, Greenhouse, iCIMS, Taleo, Lever & SuccessFactors/).parentElement
+    const faces = [...row.parentElement.querySelectorAll('span.rounded-full')].map(n => n.textContent)
+    expect(faces).toEqual(['A', 'D', 'P', 'J', 'M'])
+    expect(row.querySelector('span[aria-hidden="true"]').textContent).toBe('★★★★★')
+    expect(row.parentElement.querySelector('div[aria-hidden="true"]')).toBeTruthy()   // decorative: hidden from screen readers
+  })
   it('has exactly one h1', async () => {
     renderHome()
     await ready()

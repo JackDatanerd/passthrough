@@ -2,6 +2,9 @@ import { useContext } from 'react'
 import ScanForm from '../scan/ScanForm'
 import { AuthContext } from '../../context/AuthContext'
 import { formatScanCount } from '../../lib/homeFormat'
+import { ATS_NAMES } from '../../lib/homeContent'
+
+const FACES = [['A', 'bg-blue-600'], ['D', 'bg-teal-600'], ['P', 'bg-purple-600'], ['J', 'bg-rose-600'], ['M', 'bg-amber-600']]
 
 // The hero carries the page's single job: get the visitor to scan. The proof sits right beside the
 // scan card (not three screens below it) because that is where doubt about uploading a resume lives.
@@ -35,9 +38,19 @@ export default function HomeHero({ data }) {
               <> <strong className="text-gray-900">{rate}% of applicants</strong> report an interview<sup><a href="#faq-66" aria-label="Where this figure comes from" className="text-blue-700">*</a></sup>.</>
             )}
           </p>
-          <p className="text-sm text-gray-500">
-            Built for how employers actually hire — Workday, Greenhouse, iCIMS, Taleo, Lever and SuccessFactors.
-          </p>
+          <div className="flex items-center gap-3.5 flex-wrap text-sm text-gray-600">
+            {/* Decorative: neither the initials nor the stars are data, so they are hidden from screen readers
+                (a row of stars read aloud would sound like a rating). */}
+            <div className="flex" aria-hidden="true">
+              {FACES.map(([letter, colour]) => (
+                <span key={letter} className={`w-[30px] h-[30px] -ml-2 first:ml-0 rounded-full border-2 border-white flex items-center justify-center text-[11px] font-bold text-white ${colour}`}>{letter}</span>
+              ))}
+            </div>
+            <div>
+              <span className="text-amber-500 tracking-wide" aria-hidden="true">★★★★★</span>{' '}
+              Built for {ATS_NAMES.slice(0, -1).join(', ')} &amp; {ATS_NAMES[ATS_NAMES.length - 1]}
+            </div>
+          </div>
         </div>
 
         <div id="scan-form" className="scroll-mt-4 bg-white rounded-xl border border-gray-200 shadow-lg p-5 sm:p-6">
