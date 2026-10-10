@@ -1211,3 +1211,75 @@ describe('round 8 — G1: a lost dispute on a payment this app never settled clo
     expect(w.t.payments[0].status).toBe('PENDING')
   })
 })
+
+describe('round 9 — G2: the dispute deadline reaches the owner', () => {
+  const paid = () => { const w = seed(); w.t.payments[0].status = 'SUCCESS'; return w }
+  const dsp = (type, due) => ({ event: type, data: { id: 900, status: 'awaiting-merchant-feedback', due_at: due, transaction: { reference: 'ref-1', amount: 2900 } } })
+  it('create and remind alerts say when the dispute is due and how long is left', async () => {
+    const w = paid(); t = harness(w)
+    const due = new Date(Date.now() + 5 * 3600_000).toISOString()
+    await t.fire(dsp('charge.dispute.create', due)); await t.fire(dsp('charge.dispute.remind', due))
+    const msgs = t.state.alerts.filter(a => /dispute/.test(a.subject)).map(a => a.message)
+    expect(msgs).toHaveLength(2)
+    for (const m of msgs) { expect(m).toContain(due); expect(m).toMatch(/about [45] hour/) }
+  })
+  it('a deadline already past is flagged, and a payload without due_at adds nothing', () => {
+    const { mod, restore } = pure()
+    try {
+      expect(mod.disputeDeadlineLine({ due_at: new Date(Date.now() - 3600_000).toISOString() })).toMatch(/ALREADY PASSED/)
+      expect(mod.disputeDeadlineLine({})).toBe('')
+      expect(mod.disputeDeadlineLine({ due_at: 'garbage' })).toBe('')
+      expect(mod.disputeDeadlineLine({ due_at: new Date(Date.now() + 20 * 60_000).toISOString() })).toMatch(/minute/)
+    } finally { restore() }
+  })
+  it('dispute.resolve does not get a deadline line', async () => {
+    const w = paid(); w.t.payments[0].status = 'DISPUTED'; t = harness(w)
+    await t.fire(dsp('charge.dispute.resolve', new Date(Date.now() + 3600_000).toISOString()))
+    expect(t.state.alerts.at(-1).message).not.toMatch(/Respond in the Paystack dashboard by/)
+  })
+})
+
+describe('round 9 — G1: a silent Paystack webhook pages the owner', () => {
+  const ago = ms => new Date(Date.now() - ms).toISOString()
+  const pay = ref => ({ id: 'id-' + ref, paystack_ref: ref, amount_cents: 2900, status: 'SUCCESS', created_at: ago(2 * 24 * 3600_000) })
+  function run(world, kv = new Map()) {
+    const alerts = []
+    const { mod, restore } = loadWithStubs('controllers/webhooks.controller.js', {
+      'config/supabase.js': { getSupabase: () => world.db },
+      'services/email.service.js': { sendOwnerAlert: async (e, s, m, o) => { alerts.push({ s, m, o }); return true } },
+    })
+    const env = { RATE_LIMIT_KV: { get: async k => kv.get(k) ?? null, put: async (k, v) => { kv.set(k, v) } } }
+    const ctx = { waitUntil: p => p }
+    return { mod, restore, alerts, go: () => mod.checkWebhookDelivery(env, ctx, world.db) }
+  }
+  it('alerts once a day when paid sales have no charge.success on record', async () => {
+    const w = createWorld({ payments: [pay('a'), pay('b')], webhook_events: [] })
+    const kv = new Map(); const r = run(w, kv)
+    try {
+      expect((await r.go()).alerted).toBe(true)
+      expect(r.alerts).toHaveLength(1)
+      expect(r.alerts[0].m).toMatch(/2 paid sale/)
+      expect((await r.go()).alerted).toBe(false)   // cooldown
+      expect(r.alerts).toHaveLength(1)
+    } finally { r.restore() }
+  })
+  it('stays quiet when every paid sale has its event, or the inbox cannot be read', async () => {
+    const ok = createWorld({ payments: [pay('a')], webhook_events: [{ id: 'e1', provider: 'paystack', event_type: 'charge.success', reference: 'a', status: 'PROCESSED', received_at: ago(3600_000) }] })
+    const r1 = run(ok)
+    const bad = createWorld({ payments: [pay('a')], webhook_events: [] }); bad.failNext('webhook_events', 'select', { message: 'down' })
+    const r2 = run(bad)
+    try {
+      expect((await r1.go()).alerted).toBe(false)
+      expect((await r2.go()).alerted).toBe(false)
+      expect(r1.alerts.length + r2.alerts.length).toBe(0)
+    } finally { r1.restore(); r2.restore() }
+  })
+  it('deliveryProblem is null when unavailable and names the references otherwise', () => {
+    const { mod, restore } = pure()
+    try {
+      expect(mod.deliveryProblem({ available: false, paidWithoutEvent: 5 })).toBeNull()
+      expect(mod.deliveryProblem({ available: true, paidWithoutEvent: 0 })).toBeNull()
+      expect(mod.deliveryProblem({ available: true, paidWithoutEvent: 1, paidChecked: 3, missingReferences: ['r9'] })).toMatch(/r9/)
+    } finally { restore() }
+  })
+})

@@ -590,6 +590,18 @@ async function disputeResolutionSeen(supabase, event) {
   return !!(data && data.length)
 }
 
+// ROUND-9 (G2): Paystack auto-accepts (and refunds the customer) when a dispute is not answered in time; the payload's
+// `due_at` says exactly when, and was kept in DISPUTE_KEEP but never shown. Returns a line for the owner alert, or ''.
+function disputeDeadlineLine(d, now = Date.now()) {
+  const due = Date.parse(d && d.due_at)
+  if (!Number.isFinite(due)) return ''
+  const hours = (due - now) / 3_600_000
+  const when = new Date(due).toISOString()
+  if (hours <= 0) return `\nResponse deadline: ${when} — ALREADY PASSED; Paystack may have auto-accepted this dispute.`
+  const left = hours < 1 ? `${Math.max(1, Math.round(hours * 60))} minute(s)` : `about ${Math.round(hours)} hour(s)`
+  return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer.`
+}
+
 async function processDispute(c, supabase, event) {
   const payment = await fulfillment.findPaymentForEvent(supabase, event)
   const d = event.data || {}
@@ -676,7 +688,7 @@ async function processDispute(c, supabase, event) {
     } else
       detail = `Resolution "${d.resolution || 'unknown'}" is not one this app recognises. ${current}. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won).`
   } else if (event.event === 'charge.dispute.remind') {
-    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard.`
+    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard.${disputeDeadlineLine(d)}`
   } else if (event.event !== 'charge.dispute.create') {
     detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
   } else if (marked) {
@@ -691,6 +703,7 @@ async function processDispute(c, supabase, event) {
     detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
   }
 
+  if (event.event === 'charge.dispute.create') detail += disputeDeadlineLine(d)
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
   return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (payment ? undefined : 'payment not found')) }
@@ -860,7 +873,7 @@ async function listWebhookEvents(c) {
     if (status === 'ATTENTION')
       q = q.or(`status.in.(FAILED,HELD),and(status.eq.RECEIVED,received_at.lt.${new Date(Date.now() - STUCK_RECEIVED_MS).toISOString()})`)
     else if (status && EVENT_STATUSES.includes(status)) q = q.eq('status', status)
-    if (reference) q = q.ilike('reference', `%${reference}%`)
+    if (reference) q = q.ilike('reference', `%${reference.replace(/_/g, '\\_')}%`)
     if (type) q = q.eq('event_type', type)
     if (providerQ === 'paystack' || providerQ === 'resend') q = q.eq('provider', providerQ)
     return q
@@ -1187,9 +1200,40 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
   return out
 }
 
+// ── delivery-health alerting ──────────────────────────────────────────────────
+// ROUND-9 (G1): computeWebhookHealth was only ever DISPLAYED (admin dashboard / Webhooks page). A webhook URL that was
+// never saved, or points elsewhere, produces no requests at all — so not even the signature alert fires — while payments
+// keep settling through the buyer's return visit and the sweeps. Refunds and disputes (16-hour auto-accept clock) have
+// no such fallback. Returns a description of the problem, or null when delivery looks healthy / cannot be judged.
+function deliveryProblem(health) {
+  if (!health || health.available === false) return null
+  if (!(health.paidWithoutEvent > 0)) return null
+  const refs = (health.missingReferences || []).join(', ')
+  return `${health.paidWithoutEvent} paid sale(s) in the last 7 days (of ${health.paidChecked} checked) have no charge.success webhook on record${refs ? ` — e.g. ${refs}` : ''}`
+}
+
+// Hourly (index.js) — emails the owner once per day while the condition holds. Never throws.
+async function checkWebhookDelivery(env, ctx, supabase = getSupabase(env), { now = Date.now() } = {}) {
+  try {
+    const health = await computeWebhookHealth(supabase, { now })
+    const problem = deliveryProblem(health)
+    if (!problem) return { alerted: false, problem: null }
+    console.error(`[CRITICAL] webhook delivery: ${problem}`)
+    if (!(await alertAllowed(env, 'webhook-alert-cooldown:delivery-health', 24 * 3600))) return { alerted: false, problem }
+    alert({ env, executionCtx: ctx }, 'Paystack webhooks may not be reaching this app',
+      `${problem}.\n\nThey were settled by the buyer's return visit or the hourly sweeps, so payments still work — but refunds and disputes arrive ONLY by webhook ` +
+      `(a dispute is auto-accepted by Paystack after 16 hours), so they are being missed too.\n\nCheck the webhook URL (…/api/webhooks/paystack) and the ` +
+      `signing key in the Paystack dashboard, and PAYSTACK_WEBHOOK_IPS if set. Admin → Webhooks shows the same figures. Emailed at most once a day.`, 'webhook-delivery')
+    return { alerted: true, problem }
+  } catch (err) {
+    console.error('webhook delivery check error:', err && err.message)
+    return { alerted: false, problem: null }
+  }
+}
+
 // GET /api/admin/webhook-events/health
 async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

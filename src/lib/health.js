@@ -129,6 +129,17 @@ async function checkStorage(env) {
   } catch (err) { return { ok: false, detail: `resume storage (R2) is not answering: ${err.message}` } }
 }
 
+// Round 9 (webhooks G1): Paystack webhooks not reaching the app is invisible everywhere else (payments still settle
+// through the buyer's return visit), so an uptime monitor reading /healthz is told. Lazy require: the controller pulls in
+// most of the app. Anything unreadable counts as fine — it must never turn health red on its own.
+async function checkWebhookDeliveryHealth(supabase, nowMs = Date.now()) {
+  try {
+    const wh = require('../controllers/webhooks.controller')
+    const problem = wh.deliveryProblem(await wh.computeWebhookHealth(supabase, { now: nowMs }))
+    return { ok: !problem, detail: problem }
+  } catch (_) { return { ok: true, detail: null } }
+}
+
 async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   const config = validateEnv(env)
   const bindings = Object.fromEntries(BINDINGS.map(b => [b, !!(env && env[b])]))
@@ -142,7 +153,7 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
     if (error && !/system_state|relation|does not exist|schema cache/i.test(error.message || '')) throw error
   } catch (err) { db = { ok: false, detail: err.message } }
 
-  const [schema, cron, email, storage] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env)])
+  const [schema, cron, email, storage, webhooks] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env), checkWebhookDeliveryHealth(supabase, nowMs)])
   const problems = []
   const notes = []
   if (config.fatal.length) problems.push(...config.fatal.map(f => `config: ${f}`))
@@ -153,16 +164,17 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   if (!cron.ok) problems.push(`cron: ${cron.detail}`)
   if (!email.ok) problems.push(`email: ${email.detail}`)
   if (!storage.ok) problems.push(`storage: ${storage.detail}`)
+  if (!webhooks.ok) problems.push(`webhooks: ${webhooks.detail} — check the webhook URL and signing key in the Paystack dashboard`)
   if (!(env && env.ALERT_WEBHOOK_URL)) notes.push('alerts: ALERT_WEBHOOK_URL is not set — owner alerts travel only by email, the same provider whose outage they would report')
   return {
     ok: problems.length === 0,
     problems,
     notes,
-    schema, cron, db, email, storage,
+    schema, cron, db, email, storage, webhooks,
     bindings,
     config: { fatal: config.fatal, warnings: config.warnings },
     checkedAt: new Date(nowMs).toISOString(),
   }
 }
 
-module.exports = { computeHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }
+module.exports = { computeHealth, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

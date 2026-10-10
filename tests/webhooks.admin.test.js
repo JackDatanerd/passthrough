@@ -116,6 +116,12 @@ describe('round 3 — inbox visibility', () => {
     t = setup([ev(1, { status: 'FAILED', error: 'boom', note: null })])
     expect((await t.mod.listWebhookEvents(t.c())).body.data[0]).toMatchObject({ error: 'boom', note: null })
   })
+  it('round 9: an underscore in the reference filter is escaped (ILIKE would read it as a wildcard)', async () => {
+    t = setup([ev(1)])
+    await t.mod.listWebhookEvents(t.c({ query: { reference: 'ref_1' } }))
+    const call = t.world.calls.find(x => x.table === 'webhook_events')
+    expect(call.filters.find(f => f[0] === 'ilike')[2]).toBe('%ref\\_1%')
+  })
   it('accepts reference / type / ATTENTION filters (values are sanitised, never trusted)', async () => {
     t = setup([ev(1)])
     const q = { status: 'ATTENTION', reference: 'ref,1);drop', type: 'refund.processed' }

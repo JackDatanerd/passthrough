@@ -282,6 +282,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Webhook re-drive error:', err.message)
       }
+      // Round 9 (G1): page the owner when paid sales exist but Paystack's webhooks are not arriving.
+      try { await require('./controllers/webhooks.controller').checkWebhookDelivery(env, ctx) } catch (err) { console.error('Webhook delivery check error:', err.message) }
       try {
         const { sweepReversedPayments } = require('./services/reconcile.service')
         const r = await sweepReversedPayments(env, getSupabase(env))
