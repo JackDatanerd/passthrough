@@ -1305,7 +1305,7 @@ async function initiateFix(ctx) {
   // resolvePricesForTiers (not resolvePrice): it also applies the live-reservation rule, so this quote
   // can no longer promise a discount on a limited code whose last slots are held by other checkouts.
   const priced = (await referralService.resolvePricesForTiers(supabase, [fixTier], ctx.env, referralCode,
-    { buyerEmail: user.email, buyerUserId: user.id }))[fixTier]
+    { buyerEmail: user.email, buyerUserId: user.id, buyerScanId: scan.id }))[fixTier]
   const promoActive = c.isPromoActive(ctx.env)
   // AUDIT FIX (bug): originalAmount used to branch on referralApplied and,
   // in that branch, anchor on c.priceForTier(fixTier, ctx.env) — the

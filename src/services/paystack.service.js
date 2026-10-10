@@ -81,7 +81,16 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
   // json.status; mirrored here via `err.paystackRejected` so
   // initializePayment's catch can tell the two apart instead of paging the
   // owner for both alike.
-  if (!res.ok) throw new Error(json?.message || `Paystack initialize returned HTTP ${res.status}`)
+  // PAYMENTS & PRICING ROUND 9 (bug): Paystack rejects a bad request (duplicate reference, invalid amount)
+  // with a 4xx, not a 200 — so `paystackRejected` below was effectively unreachable and every routine
+  // rejection paged the owner as "every payment attempt fails". A 4xx other than auth (401/403) or
+  // throttling (429) says something about THIS request only; same rule createRefund applies.
+  if (!res.ok) {
+    const err = new Error(json?.message || `Paystack initialize returned HTTP ${res.status}`)
+    err.httpStatus = res.status
+    err.paystackRejected = res.status >= 400 && res.status < 500 && ![401, 403, 429].includes(res.status)
+    throw err
+  }
   if (!json) throw unreadable('Paystack initialize')
   if (!json.status) {
     const err = new Error(json.message || 'Paystack init failed')

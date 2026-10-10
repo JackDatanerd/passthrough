@@ -179,7 +179,7 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts
     // while resuming that very checkout still honoured the discount (initializePayment resumes it
     // without a new claim). Their own held reservations are not competition for the slot.
     const live = Math.max(0, (await countLiveReservations(supabase, codeRow.id))
-      - (opts.buyerUserId ? await countOwnLiveReservations(supabase, codeRow.id, opts.buyerUserId) : 0))
+      - (opts.buyerUserId && opts.buyerScanId ? await countOwnLiveReservations(supabase, codeRow.id, opts.buyerUserId, opts.buyerScanId) : 0))
     if ((codeRow.uses_so_far || 0) + live >= codeRow.usage_limit) codeRow = null
   }
   return Object.fromEntries(tiers.map(t => [t, priceForResolvedCode(t, env, codeRow, opts)]))
@@ -187,12 +187,15 @@ async function resolvePricesForTiers(supabase, tiers, env, rawReferralCode, opts
 
 // This buyer's PENDING checkouts that hold a live reservation on the code. Fails open to 0 like
 // countLiveReservations (a failed lookup just means the quote may be conservative).
-async function countOwnLiveReservations(supabase, codeId, userId) {
+// PAYMENTS & PRICING ROUND 9 (bug): scoped to ONE scan. It used to count the buyer's held slots on every scan,
+// but only a checkout on the SAME scan is resumed without a new claim; a buyer holding the last slot with a
+// pending checkout on scan A was quoted the discount for scan B, then lost the claim and was charged full price.
+async function countOwnLiveReservations(supabase, codeId, userId, scanId) {
   try {
     const since = new Date(Date.now() - RESERVATION_TTL_SECONDS * 1000).toISOString()
     const { count, error } = await supabase.from('payments')
       .select('id', { count: 'exact', head: true })
-      .eq('user_id', userId).eq('status', 'PENDING').eq('referral_code_id', codeId)
+      .eq('user_id', userId).eq('scan_id', scanId).eq('status', 'PENDING').eq('referral_code_id', codeId)
       .not('referral_reservation_id', 'is', null).gt('created_at', since)
     if (error) { console.error('countOwnLiveReservations:', error.message); return 0 }
     return count || 0

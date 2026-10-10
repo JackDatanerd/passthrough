@@ -198,3 +198,36 @@ describe('promoEndsAt normalisation (round 8)', () => {
     expect((await t.mod.getPricing(t.c())).body.data.promoEndsAt).toBeNull()
   })
 })
+
+// Payments & Pricing round 9
+describe('getPricing — scanId + refund terms (round 9)', () => {
+  it('passes a valid ?scanId to the resolver as buyerScanId, and drops a malformed one', async () => {
+    const seen = []
+    const { mod, restore } = loadWithStubs('controllers/pricing.controller.js', {
+      'config/supabase.js': { getSupabase: () => createFakeSupabase(() => undefined) },
+      'services/referral.service.js': {
+        resolvePricesForTiers: async (_db, tiers, _env, _code, opts) => { seen.push(opts); return Object.fromEntries(tiers.map(x => [x, { amount: 100, referralApplied: false }])) },
+      },
+    })
+    t = { restore }
+    const c = query => ({ env: {}, get: () => undefined, req: { query: k => query[k] }, json: (body, status = 200) => ({ body, status }) })
+    const good = '123e4567-e89b-42d3-a456-426614174000'
+    await mod.getPricing(c({ ref: 'X', scanId: good }))
+    await mod.getPricing(c({ ref: 'X', scanId: 'not-a-uuid' }))
+    expect(seen[0].buyerScanId).toBe(good)
+    expect(seen[1].buyerScanId).toBeUndefined()
+  })
+
+  it('advertises automatic refunds only while the operator switches are on', async () => {
+    t = setup({ env: {} })
+    const on = (await t.mod.getPricing(t.c())).body.data
+    expect(on.autoRefundDuplicates).toBe(true)
+    expect(on.autoRefundUndeliverable).toBe(true)
+    t.restore()
+    t = setup({ env: { AUTO_REFUND_DUPLICATES: 'false', AUTO_REFUND_UNDELIVERABLE: 'false' } })
+    const off = (await t.mod.getPricing(t.c())).body.data
+    expect(off.autoRefundDuplicates).toBe(false)
+    expect(off.autoRefundUndeliverable).toBe(false)
+  })
+})
+

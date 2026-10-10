@@ -212,7 +212,7 @@ async function initializePayment(c2) {
   // slot) — the same rule the /api/pricing quote uses — so the quote, this resume check and the charge agree,
   // and `referralDropped` below fires only for a genuine lost race rather than a code already out of slots.
   const priced = (await referralService.resolvePricesForTiers(supabase, [fixTier], c2.env, referralCode,
-    { buyerEmail: user.email, buyerUserId: user.id }))[fixTier]
+    { buyerEmail: user.email, buyerUserId: user.id, buyerScanId: scanId }))[fixTier]
 
   // AUDIT FIX (bug): this used to compare fix_tier alone. A PENDING row
   // already has its price (and therefore its referral code, if any) locked

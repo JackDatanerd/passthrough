@@ -134,7 +134,7 @@ export default function Pricing() {
           {/* Free */}
           <div className="rounded-xl border border-gray-200 p-6 flex flex-col">
             <div className="text-sm text-gray-500 mb-1">Free forever</div>
-            <div className="text-4xl font-bold text-gray-900 mb-1">$0</div>
+            <div className="text-4xl font-bold text-gray-900 mb-1">{fmtPrice(0, pricing?.currency)}</div>
             <p className="text-sm text-gray-500 mb-6">{anonScansPerHour} scan{anonScansPerHour === 1 ? '' : 's'}/hour with no account, or {freeScansPerDay}/day with a free account</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
               {['ATS score out of 100','Keyword gap analysis','Format & section check','Content quality score','No account required to start'].map(f => (
@@ -217,6 +217,22 @@ export default function Pricing() {
             get you past the verification threshold, a free credit for your next resume.
           </p>
         </div>
+
+        {/* Round 9 (G3): refund terms, read live from /api/pricing so they only appear while they are true. */}
+        {(pricing?.autoRefundDuplicates || pricing?.autoRefundUndeliverable) && (
+          <div className="mt-6 max-w-xl mx-auto text-center">
+            <p className="text-sm font-medium text-gray-700 mb-1">If something goes wrong with a payment</p>
+            <ul className="text-sm text-gray-500 leading-relaxed space-y-1">
+              {pricing.autoRefundDuplicates && (
+                <li>Charged twice for the same resume? The extra payment is refunded automatically.</li>
+              )}
+              {pricing.autoRefundUndeliverable && (
+                <li>Paid but we couldn't deliver (the resume or account no longer exists)? That payment is refunded automatically too.</li>
+              )}
+              <li>Anything else, email <a href="mailto:support@passthrough.dev" className="text-blue-700 hover:underline">support@passthrough.dev</a> with your payment reference.</li>
+            </ul>
+          </div>
+        )}
 
         <p className="text-center text-sm text-gray-400 mt-8">
           Payments processed by Paystack. One-time charge — no subscriptions, no surprise fees.

@@ -70,20 +70,40 @@ describe('resolvePricesForTiers — own reservations (round 7)', () => {
   const q2 = (db, opts) => referral.resolvePricesForTiers(db, ['FIX'], {}, 'limited', opts)
 
   it('quotes the discount to a buyer whose OWN pending checkout holds the last slot', async () => {
-    const r = await q2(dbOwn({ live: 1, own: 1 }), { buyerUserId: 'u1' })   // 2 uses + 1 live (their own) = 3, limit 3
+    const r = await q2(dbOwn({ live: 1, own: 1 }), { buyerUserId: 'u1', buyerScanId: 's1' })   // 2 uses + 1 live (their own) = 3, limit 3
     expect(r.FIX).toMatchObject({ amount: 1500, referralApplied: true })
   })
 
   it('still withholds it when the held slot is someone else\'s (or the viewer is anonymous)', async () => {
-    expect((await q2(dbOwn({ live: 1, own: 0 }), { buyerUserId: 'u1' })).FIX.referralApplied).toBe(false)
+    expect((await q2(dbOwn({ live: 1, own: 0 }), { buyerUserId: 'u1', buyerScanId: 's1' })).FIX.referralApplied).toBe(false)
     expect((await q2(dbOwn({ live: 1, own: 1 }), {})).FIX.referralApplied).toBe(false)   // no buyer id → nothing is netted off
   })
 
   it('looks only at this buyer\'s PENDING payments that hold a reservation on this code', async () => {
     const db = dbOwn({ live: 1, own: 1 })
-    await q2(db, { buyerUserId: 'u1' })
+    await q2(db, { buyerUserId: 'u1', buyerScanId: 's1' })
     const c = db.calls.find(x => x.table === 'payments')
     const f = c.filters.map(x => x.join(':'))
-    expect(f).toEqual(expect.arrayContaining(['eq:user_id:u1', 'eq:status:PENDING', 'eq:referral_code_id:rc1']))
+    expect(f).toEqual(expect.arrayContaining(['eq:user_id:u1', 'eq:scan_id:s1', 'eq:status:PENDING', 'eq:referral_code_id:rc1']))
+  })
+})
+
+// Payments & Pricing round 9 (B2): a held slot only counts as the buyer's own for the SAME scan.
+describe('resolvePricesForTiers — own reservations are scan-scoped (round 9)', () => {
+  const db = () => createFakeSupabase(q => {
+    if (q.table === 'referral_codes') return { data: code({ usage_limit: 3, uses_so_far: 2 }), error: null }
+    if (q.table === 'referral_code_reservations') return { count: 1, data: null, error: null }
+    if (q.table === 'payments') return { count: 0, data: null, error: null }   // none on the scan being bought
+    return undefined
+  })
+  it('no scan given: nothing is netted off (a quote with no checkout in view is conservative)', async () => {
+    const d = db()
+    const r = await referral.resolvePricesForTiers(d, ['FIX'], {}, 'limited', { buyerUserId: 'u1' })
+    expect(r.FIX.referralApplied).toBe(false)
+    expect(d.calls.some(x => x.table === 'payments')).toBe(false)
+  })
+  it('a held slot on a DIFFERENT scan is not the buyer\'s own for this one', async () => {
+    const r = await referral.resolvePricesForTiers(db(), ['FIX'], {}, 'limited', { buyerUserId: 'u1', buyerScanId: 's2' })
+    expect(r.FIX.referralApplied).toBe(false)
   })
 })

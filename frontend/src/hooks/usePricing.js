@@ -34,7 +34,7 @@ const RETRY_BASE_MS = 10_000
 // partner who opened their own link logged out, then logged in without a reload, kept seeing the
 // discounted price on the checkout button for up to the 5-minute TTL while checkout charged the
 // standard one. Logging in or out (or switching accounts) now lands on a different slot.
-const cacheByKey = {}     // `${viewer}|${code}` -> { data, fetchedAt, clockOffsetMs }
+const cacheByKey = {}     // `${viewer}|${code}|${scanScope}` -> { data, fetchedAt, clockOffsetMs }
 const inflightByKey = {}
 
 function promoLapsed(entry) {
@@ -48,10 +48,15 @@ function isFresh(entry) {
   return !!entry && Date.now() - entry.fetchedAt < CACHE_TTL_MS && !promoLapsed(entry)
 }
 
-function fetchPricing(key, code, { force = false } = {}) {
+function fetchPricing(key, code, { force = false, scanId = '' } = {}) {
   if (!force && isFresh(cacheByKey[key])) return Promise.resolve(cacheByKey[key])
   if (!inflightByKey[key]) {
-    const qs = code ? `?ref=${encodeURIComponent(code)}` : ''
+    // Round 9: scanId (checkout screens only) lets the server net off THIS buyer's own held slot for the
+    // checkout that would be resumed — and no other scan's. Only meaningful with a code.
+    const params = []
+    if (code) params.push(`ref=${encodeURIComponent(code)}`)
+    if (code && scanId) params.push(`scanId=${encodeURIComponent(scanId)}`)
+    const qs = params.length ? `?${params.join('&')}` : ''
     const startedAt = Date.now()
     inflightByKey[key] = api.get(`/pricing${qs}`).then(res => {
       const data = res.data.data
@@ -74,11 +79,13 @@ function fetchPricing(key, code, { force = false } = {}) {
 // to be invalid (that's the backend's job, not this hook's).
 //
 // Also returns `refresh()` and `clockOffsetMs` (see PromoCountdown).
-export function usePricing(referralCode = '') {
+export function usePricing(referralCode = '', { scanId = '' } = {}) {
   const code = referralCode ? referralCode.trim().toUpperCase() : ''
+  // The scan only changes the answer when a code is present, so it only splits the cache then.
+  const scope = code && scanId ? scanId : ''
   // Null-safe on purpose (not useAuth(), which throws): this hook must keep working in a bare render.
   const viewer = useContext(AuthContext)?.user?.id ?? 'anon'
-  const key = `${viewer}|${code}`
+  const key = `${viewer}|${code}|${scope}`
   // The entry is held WITH the key it belongs to and read back through the CURRENT key, so the render
   // right after a code/viewer change can never show the previous key's prices (a stale
   // `referralApplied: true` for a code nobody has verified yet, or a stale `false` flashing "That
@@ -94,7 +101,7 @@ export function usePricing(referralCode = '') {
   const [failures, setFailures] = useState(0)
 
   const refresh = useCallback(() => {
-    return fetchPricing(key, code, { force: true }).then(e => {
+    return fetchPricing(key, code, { force: true, scanId: scope }).then(e => {
       if (keyRef.current !== key) return
       if (e) { setHeld({ key, entry: e }); setFailed(false); setFailures(0) }
       else {
@@ -106,7 +113,7 @@ export function usePricing(referralCode = '') {
         setHeld(cur => (cur.key === key && cur.entry && promoLapsed(cur.entry) ? { key, entry: null } : cur))
       }
     })
-  }, [key, code])
+  }, [key, code, scope])
 
   useEffect(() => {
     let cancelled = false
@@ -120,12 +127,12 @@ export function usePricing(referralCode = '') {
     setHeld({ key, entry: cacheByKey[key] || null })
     // A failure recorded for the previous key says nothing about this one.
     setFailed(false); setFailures(0)
-    fetchPricing(key, code).then(e => {
+    fetchPricing(key, code, { scanId: scope }).then(e => {
       if (cancelled) return
       if (e) { setHeld({ key, entry: e }); setFailed(false); setFailures(0) } else { setFailed(true); setFailures(n => n + 1) }
     })
     return () => { cancelled = true }
-  }, [key, code])
+  }, [key, code, scope])
 
   // Round 6: a failed fetch used to be final until the next mount or tab-visibility change, so a brief
   // network blip at the promo deadline (or on first load) left the page on fallback prices for good.

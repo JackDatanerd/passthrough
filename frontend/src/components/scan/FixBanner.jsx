@@ -42,7 +42,7 @@ export default function FixBanner({
   onCheckFormatted = null, checkingFormatted = false, checkFormattedError = ''
 }) {
   const navigate = useNavigate()
-  const { byTier, pricing, pricingFailed, refresh: refreshPricing } = usePricing(referralCode)
+  const { byTier, pricing, pricingFailed, refresh: refreshPricing } = usePricing(referralCode, { scanId: scan?.id })
   if (!scan || !['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status)) return null
   if (scan.fixPurchased) return null
 

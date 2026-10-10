@@ -228,7 +228,7 @@ export default function PaymentSuccess() {
               </p>
               {status === 'pending' && (
                 <p className="text-xs text-gray-400 mt-2">
-                  This can take a minute or two for mobile money — hang tight.
+                  Some payment methods need an extra approval step — this can take a minute or two.
                 </p>
               )}
             </>
@@ -264,7 +264,7 @@ export default function PaymentSuccess() {
               <div className="text-amber-500 text-5xl mb-4">⏳</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Still processing</h1>
               <p className="text-sm text-gray-500 mb-4">
-                Your payment hasn't failed — it's just taking longer than usual to confirm (common for mobile money).
+                Your payment hasn't failed — it's just taking longer than usual to confirm (some payment methods need an extra approval step).
                 We'll finish this automatically the moment it clears. Check again in a bit, or check your dashboard.
               </p>
               <div className="flex items-center justify-center gap-4">

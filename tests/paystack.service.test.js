@@ -63,6 +63,20 @@ describe('initializeTransaction', () => {
       email: 'a@b.com', amount: 2900, userId: 'u1', scanId: 's1', fixTier: 'FIX', reference: 'ref-1'
     })).rejects.toThrow('Paystack init failed')
   })
+
+  // Round 9: Paystack rejects a bad request with a 4xx. That is a per-request rejection (no owner page),
+  // unlike auth failures / throttling / 5xx, which say nothing about THIS request.
+  it.each([400, 404, 422])('a %i rejection is paystackRejected with its message', async (status) => {
+    mockFetch(status, { status: false, message: 'Duplicate Transaction Reference' })
+    const err = await initializeTransaction(env, { email: 'a@b.com', amount: 2900, userId: 'u1', scanId: 's1', fixTier: 'FIX', reference: 'r' }).catch(e => e)
+    expect(err.message).toBe('Duplicate Transaction Reference')
+    expect(err.paystackRejected).toBe(true)
+  })
+  it.each([401, 403, 429, 500, 503])('a %i is NOT a rejection (outage / auth / throttle)', async (status) => {
+    mockFetch(status, { status: false, message: 'x' })
+    const err = await initializeTransaction(env, { email: 'a@b.com', amount: 2900, userId: 'u1', scanId: 's1', fixTier: 'FIX', reference: 'r' }).catch(e => e)
+    expect(err.paystackRejected).toBe(false)
+  })
 })
 
 describe('verifyTransaction', () => {

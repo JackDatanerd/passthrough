@@ -1,6 +1,8 @@
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const referralService = require('../services/referral.service')
+const refundService = require('../services/refund.service')
+const { UUID_RE } = require('../middleware/validateUuidParam')
 
 // GET /api/pricing — public, unauthenticated. Marketing/landing pages and
 // the post-scan checkout screen both call this instead of hardcoding prices,
@@ -37,8 +39,12 @@ async function getPricing(ctx) {
   // referral_codes lookup for the same code — three DB round trips per
   // request instead of one. resolvePricesForTiers does the single lookup
   // and returns all three tiers' prices from it.
+  // PAYMENTS & PRICING ROUND 9: optional ?scanId= (the checkout screen sends it) scopes "my own held slot"
+  // to the checkout that would actually be resumed — see countOwnLiveReservations.
+  const scanIdParam = ctx.req.query('scanId')
+  const buyerScanId = scanIdParam && UUID_RE.test(scanIdParam) ? scanIdParam : undefined
   const priced = referralCode
-    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode, { buyerEmail, buyerUserId: ctx.get('user')?.id })
+    ? await referralService.resolvePricesForTiers(supabase, TIERS, ctx.env, referralCode, { buyerEmail, buyerUserId: ctx.get('user')?.id, buyerScanId })
     : null
 
   const tiers = TIERS.map(tier => {
@@ -98,6 +104,11 @@ async function getPricing(ctx) {
     // G2 (round 3): the free-tier copy on the Pricing page, read live like the two above.
     freeScansPerDay:   c.FREE_SCANS_PER_DAY,
     anonScansPerHour:  c.ANON_SCANS_PER_HOUR,
+    // Round 9 (G3): what the Pricing page may promise about refunds is read from the same switches that
+    // actually run them (AUTO_REFUND_DUPLICATES / AUTO_REFUND_UNDELIVERABLE), so the copy can never
+    // promise an automatic refund the operator has turned off.
+    autoRefundDuplicates:    refundService.autoRefundEnabled(ctx.env),
+    autoRefundUndeliverable: refundService.autoRefundUndeliverableEnabled(ctx.env),
     tiers
   } })
 }
