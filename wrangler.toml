@@ -73,11 +73,11 @@ queue              = "passthrough-fix-jobs-dlq"
 max_batch_size     = 10
 max_batch_timeout  = 30
 
-# ── Cron: hourly — drives all nine scheduled jobs in index.js's `scheduled`
+# ── Cron: hourly — drives all ten scheduled jobs in index.js's `scheduled`
 #    export (stuck-scan recovery, orphaned-payment sweep, stale-pending sweep,
 #    pending-payment/webhook_events maintenance, failed-fix re-queue, lead-match
 #    digest, the employer-lead acknowledgement retry, data retention incl. the anonymous-scan purge, and the health heartbeat
-#    that records the run and checks the database schema version). One trigger, nine jobs. ──
+#    that records the run and checks the database schema version). One trigger, ten jobs. ──
 [triggers]
 crons = ["0 * * * *"]
 

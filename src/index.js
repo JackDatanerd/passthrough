@@ -31,6 +31,8 @@ const webhooksRoutes     = require('./routes/webhooks.routes')
 const verifyRoutes       = require('./routes/verify.routes')
 const employerLeadRoutes = require('./routes/employer-leads.routes')
 const pricingRoutes = require('./routes/pricing.routes')
+const statsRoutes       = require('./routes/stats.routes')
+const outcomesRoutes    = require('./routes/outcomes.routes')
 const profileRoutes      = require('./routes/profile.routes')
 const partnersRoutes     = require('./routes/partners.routes')
 const adminRoutes        = require('./routes/admin.routes')
@@ -108,6 +110,8 @@ app.route('/api/verify',         verifyRoutes)
 app.route('/api/employer-leads', employerLeadRoutes)
 app.route('/api/profile',        profileRoutes)
 app.route('/api/pricing',        pricingRoutes)
+app.route('/api/stats',          statsRoutes)
+app.route('/api/outcomes',       outcomesRoutes)
 app.route('/api/partners',       partnersRoutes)
 app.route('/api/admin',          adminRoutes)
 
@@ -498,6 +502,24 @@ async function leadAckSweep(event, env, ctx) {
   )
 }
 
+// Outcome follow-up (migration 0070): a month after a fix was delivered, ask once whether it led to an
+// interview. Feeds the homepage's interview rate; see controllers/outcomes.controller.js. Own waitUntil +
+// try/catch like every job.
+async function outcomePromptSweep(event, env, ctx) {
+  ctx.waitUntil(
+    (async () => {
+      try {
+        const { sweepOutcomePrompts } = require('./controllers/outcomes.controller')
+        const r = await sweepOutcomePrompts(env, getSupabase(env))
+        if (r.error) console.error('Outcome prompt sweep:', r.error)
+        else if (r.sent || r.failed) console.log(`Outcome prompt sweep: ${r.candidates} candidate(s), ${r.sent} sent, ${r.failed} not sent, ${r.skipped} skipped`)
+      } catch (err) {
+        console.error('Outcome prompt sweep error:', err.message)
+      }
+    })()
+  )
+}
+
 async function retentionSweep(event, env, ctx) {
   ctx.waitUntil(
     (async () => {
@@ -527,7 +549,7 @@ export { RateLimiterDO } from './lib/rateLimiterDO'
 
 export default {
   fetch: app.fetch,
-  // One cron trigger, nine independent jobs — each isolated by its own
+  // One cron trigger, ten independent jobs — each isolated by its own
   // waitUntil + try/catch, so a failure in any one of them can never skip or
   // crash the others.
   scheduled: (event, env, ctx) => {
@@ -539,6 +561,7 @@ export default {
     leadAckSweep(event, env, ctx)
     failedFixSweep(event, env, ctx)
     healthSweep(event, env, ctx)
+    outcomePromptSweep(event, env, ctx)
     return retentionSweep(event, env, ctx)
   },
   queue,

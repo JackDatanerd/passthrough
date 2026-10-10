@@ -55,6 +55,7 @@ const AdminWebhooks      = lazyWithRetry(() => import('./pages/admin/AdminWebhoo
 const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'))
 const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
 const AdminAuditLog      = lazyWithRetry(() => import('./pages/admin/AdminAuditLog'))
+const AdminStories       = lazyWithRetry(() => import('./pages/admin/AdminStories'))
 
 // Sends a signed-out visitor to /login, remembering where they were headed so
 // login can return them there (Login validates ?next= via safeNext).
@@ -153,6 +154,7 @@ function RoutedApp() {
             <Route path="webhooks"     element={<AdminWebhooks />} />
             <Route path="leads"        element={<AdminLeads />} />
             <Route path="health"       element={<AdminSystemHealth />} />
+            <Route path="stories"      element={<AdminStories />} />
             <Route path="audit-log"    element={<AdminAuditLog />} />
           </Route>
 

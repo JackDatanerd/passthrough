@@ -676,6 +676,22 @@ const historyPurge = makeLimiter({
   message: msg('Too many delete requests. Please try again later.')
 })
 
+// Homepage evidence (migration 0070). GET /api/stats is public and runs four small queries, but the answer
+// is edge-cached for five minutes, so a real visitor rarely reaches the Worker at all; this only bounds a
+// client that bypasses the cache. Per IP.
+const statsRead = makeLimiter({
+  windowSeconds: 10 * 60, max: 60, keyPrefix: 'rl:stats',
+  message: msg('Too many requests. Please wait a few minutes and try again.')
+})
+
+// Answering "did it lead to an interview?" or editing a story. Per ACCOUNT (the routes are behind `auth`):
+// generous for a person correcting an answer, hopeless for scripted stuffing of the published numbers.
+const outcomeWrite = makeLimiter({
+  windowSeconds: 60 * 60, max: 30, keyPrefix: 'rl:outcome',
+  keyBy: byAccount,
+  message: msg('Too many updates. Please try again later.')
+})
+
 const employerLead = makeLimiter({
   windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:lead',
   message: msg('Slow down.')
@@ -959,7 +975,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, statsRead, outcomeWrite, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

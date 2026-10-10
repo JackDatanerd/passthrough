@@ -449,6 +449,26 @@ email-change token columns) — the Worker runs without it, but those unauthenti
 is applied. The SPA now sends the reset and verification tokens in a POST body instead of the URL (so they stay out of
 Workers Logs). Deploy the Worker first: the old GET routes stay for cached frontends and can be removed once they age out.
 
+**Homepage evidence.** **Apply `supabase/migrations/0070_homepage_outcomes.sql` BEFORE deploying the Worker.** It adds
+`scan_outcomes` (what people report about a delivered fix, plus optional consented stories), the follow-up bookkeeping
+columns on `scans`, a trigger that keeps a running count of completed scans, and the two aggregation functions behind the
+public `GET /api/stats`. It also redefines `scrub_account_data` (so account deletion clears story text). Without it the
+Worker still starts, but `/api/stats` degrades to the page's built-in fallback numbers, `/api/outcomes` answers 500, and the
+health check reports the schema as behind.
+
+- **Resumes-scanned count.** The counter starts from the number of scans completed *in the database today*. Anonymous scans
+  are purged after 24 hours and people delete their history, so that undercounts the true lifetime total. To publish a
+  historical figure, add the missing amount once (it is added on top of the live counter):
+  `insert into system_state (key, value) values ('public_stats_adjust', '{"offset": 20000}') on conflict (key) do update set value = excluded.value;`
+  Only do this with a number you can defend; the homepage prints it as "at least".
+- **Interview rate.** Shown only after 50 people (`OUTCOME_MIN_RESPONSES`) have answered "did it lead to an interview?" on the
+  dashboard (asked 14 days after delivery) or via the follow-up email (30 days). Until then the homepage uses the editable
+  figure in `frontend/src/lib/homeContent.js` (`STATS_FALLBACK`) - set it to `null` to hide the claim instead.
+- **Hot categories** appear only for fields with 10+ reports in the window; **stories** appear only after an admin approves
+  them (Admin → Stories). While there are none, the homepage shows the sample content in `homeContent.js`, each block tagged
+  "Sample" - replace or empty those arrays before launch.
+- The hourly cron now runs ten jobs (the new one sends the follow-up email; it respects the "scan result emails" setting).
+
 ---
 
 ## 6. Deploy the Frontend (Cloudflare Pages)

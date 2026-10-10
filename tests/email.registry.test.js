@@ -31,7 +31,7 @@ const CALLS = {
   sendNewSignInAlert: ['u@x.y', 'Ann', { ip: '1.2.3.4', when: Date.UTC(2026, 9, 5, 23, 30) }],
   sendScanFail: ['u@x.y', 'Ann', 60, { keywordScore: 1, formatScore: 2, sectionsScore: 3, contentScore: 4 }], sendScanPass: ['u@x.y', 'Ann', 85],
   sendAnonScanResult: ['u@x.y', 'Ann', 'sid', 'tok', 85, true], sendFixDelivered: ['u@x.y', 'Ann', 'ABC', 'https://v', true],
-  sendFixDeliveredPlain: ['u@x.y', 'Ann'], sendFixFailed: ['u@x.y', 'Ann'],
+  sendFixDeliveredPlain: ['u@x.y', 'Ann'], sendFixFailed: ['u@x.y', 'Ann'], sendOutcomeFollowUp: ['u@x.y', 'Ann'],
   sendPaymentReceipt: ['u@x.y', 'Ann', { fixTier: 'FIX', amountCents: 4900, currency: 'USD', reference: 'ref1', createdAt: '2026-10-05T23:30:00Z' }],
   sendPaymentReversed: ['u@x.y', 'Ann', { amountCents: 4900, currency: 'USD', reference: 'ref1', reason: 'REFUND', verificationRevoked: true }],
   sendPartnerPayoutDetailsRequest: ['p@x.y', 'P', 'https://u'], sendPayoutSent: ['p@x.y', 'P', 1000, 'USD'], sendReferralCodeCreated: ['p@x.y', 'P', 'CODE', 'https://d'],

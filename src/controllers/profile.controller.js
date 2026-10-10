@@ -452,6 +452,12 @@ async function exportMyData(c) {
     payload.emailsTruncated = (emails || []).length >= EXPORT_MAX_EMAILS
     // Mail is logged by recipient address only, so this list is what was sent to the address the
     // account has NOW. Say so rather than let it read as the complete mail history.
+    // What the person told us about their fixes (migration 0070), including any story text we hold.
+    const { data: outcomes, error: outErr } = await supabase.from('scan_outcomes')
+      .select('scan_id, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, story_text, story_show_credential, answered_at, updated_at')
+      .eq('user_id', user.id).order('answered_at', { ascending: false }).limit(EXPORT_MAX_PAYMENTS)
+    if (outErr) throw outErr
+    payload.outcomes = (outcomes || []).map(camel)
     payload.emailsNote = `Messages sent to ${account.email}. Mail sent to an address this account used earlier is not linked to it and is not listed here.`
   }
 

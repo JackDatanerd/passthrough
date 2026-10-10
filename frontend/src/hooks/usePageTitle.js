@@ -24,5 +24,19 @@ export default function usePageTitle(override) {
     } else if (meta) {
       meta.remove()
     }
+    // One canonical per route: index.html is shared by every page, so a static canonical there would claim
+    // that /pricing IS the homepage. Query strings (?ref=, ?mode=, tracking) never belong in it, and
+    // private or missing pages get none at all.
+    let canon = document.querySelector('link[rel="canonical"]')
+    if (isPrivatePath(pathname) || override === 'Page not found') {
+      canon?.remove()
+    } else {
+      if (!canon) {
+        canon = document.createElement('link')
+        canon.setAttribute('rel', 'canonical')
+        document.head.appendChild(canon)
+      }
+      canon.setAttribute('href', `${window.location.origin}${pathname === '/' ? '/' : pathname.replace(/\/+$/, '')}`)
+    }
   }, [pathname, override])
 }

@@ -11,7 +11,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 69,
+  EXPECTED_SCHEMA_VERSION: 70,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -97,6 +97,27 @@ module.exports = {
   // 3-attempt process, building on the latest rewrite rather than starting
   // over. If retries are exhausted and still below threshold, the user gets
   // 1 free fix credit (see generateFix / retryFix in scan.controller.js).
+  // ── Homepage evidence (migration 0070) ────────────────────────────────────────────────────────
+  // The dashboard asks "did this lead to an interview?" this many days after a fix was delivered; the
+  // follow-up email goes out later, if the question is still unanswered.
+  OUTCOME_DASHBOARD_AFTER_DAYS: 14,
+  OUTCOME_EMAIL_AFTER_DAYS: 30,
+  // Past this age the email is not sent any more (the answer would be about something long gone).
+  OUTCOME_EMAIL_MAX_AGE_DAYS: 120,
+  // Follow-up emails per sweep run, and attempts per scan before we stop trying.
+  OUTCOME_EMAIL_BATCH: 40,
+  OUTCOME_EMAIL_MAX_ATTEMPTS: 3,
+  // The interview rate is only published once this many people have answered: a rate over a handful
+  // of replies is noise, and every public number here has to survive being asked "based on what?".
+  OUTCOME_MIN_RESPONSES: 50,
+  // A field appears in "hot categories" only with at least this many interviews reported in the window.
+  HOT_CATEGORY_MIN_REPORTS: 10,
+  HOT_CATEGORY_WINDOWS: [7, 30],
+  // Stories shown on the homepage.
+  HOMEPAGE_STORIES: 3,
+  STORY_MAX_NAME: 40,
+  STORY_MAX_QUOTE: 160,
+  STORY_MAX_TEXT: 1200,
   MAX_FIX_RETRIES: 2,
   MAX_JD_CHARS:     5000,
   // Brain-dump input box (the frontend mirrors this value).

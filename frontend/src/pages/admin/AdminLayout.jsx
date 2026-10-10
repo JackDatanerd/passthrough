@@ -11,6 +11,7 @@ const NAV = [
   { to: '/admin/payments',  label: 'Payments' },
   { to: '/admin/webhooks',  label: 'Webhooks' },
   { to: '/admin/leads',     label: 'Leads' },
+  { to: '/admin/stories',   label: 'Stories' },
   { to: '/admin/health',    label: 'System Health' },
   { to: '/admin/audit-log', label: 'Audit Log' },
 ]

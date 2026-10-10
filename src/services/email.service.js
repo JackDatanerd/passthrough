@@ -142,6 +142,8 @@ const RECIPIENT_LIMITS = {
   // Round 11: "add this address back?" — sent only to an address that removed ITSELF and later typed
   // itself into the public form again. One per address per month, however many times it is retyped.
   employer_lead_rejoin: { max: 1, windowSeconds: 30 * 24 * 3600, refundOnFailure: 2 },
+  // One "did it lead to an interview?" email per address per 30 days, however many fixes they bought.
+  outcome_followup: { max: 1, windowSeconds: 30 * 24 * 3600, refundOnFailure: 2 },
 }
 
 // Round 11 (G1): these templates go to an address a stranger typed, so their per-recipient caps count
@@ -694,6 +696,15 @@ async function sendFixFailed(env, supabase, email, name) {
   return send(env, supabase, email, "We hit a snag — we're on it", 'fix_failed', { NAME: name })
 }
 
+// Homepage evidence (migration 0070): the single follow-up question, sent by sweepOutcomePrompts.
+async function sendOutcomeFollowUp(env, supabase, email, name) {
+  return send(env, supabase, email, 'Did your resume lead to an interview?', 'outcome_followup', {
+    NAME:         name,
+    ANSWER_URL:   `${env.FRONTEND_URL}/dashboard#outcome`,
+    SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
+  })
+}
+
 function escapeHtml(str) {
   return String(str)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -938,7 +949,7 @@ module.exports = {
   sendWelcome, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
-  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed,
+  sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
   sendPaymentReceipt, sendPaymentReversed,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,

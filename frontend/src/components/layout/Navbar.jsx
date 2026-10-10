@@ -67,6 +67,11 @@ export default function Navbar() {
           <Link to="/#employers" className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
             For employers
           </Link>
+          {/* Employers' first need is to check a resume they were sent — the homepage's verification section
+              leads with it, so it is one click from every page. */}
+          <Link to="/check" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
+            Check a resume
+          </Link>
           {user ? (
             <>
               <Link to="/dashboard" className="text-gray-600 hover:text-gray-900 transition-colors">
@@ -105,6 +110,7 @@ export default function Navbar() {
         <div id="navbar-more" className="sm:hidden border-t border-gray-100 px-4 py-2 flex flex-col text-sm">
           <Link to="/pricing" className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
           <Link to="/#employers" className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
+          <Link to="/check" className="py-2 text-gray-700 hover:text-gray-900">Check a resume</Link>
         </div>
       )}
     </nav>

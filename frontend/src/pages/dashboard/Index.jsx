@@ -17,6 +17,7 @@ import { describeQuota } from '../../lib/quota'
 import { isLive, canDeleteScan, scanHeading, scanDetails, effectiveSearch } from '../../lib/scanDisplay'
 import { isAlreadyVerified } from '../../lib/resendVerification'
 import Alert from '../../components/ui/Alert'
+import OutcomeCard from '../../components/account/OutcomeCard'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): mirrors scan.controller
@@ -341,6 +342,8 @@ export default function DashboardIndex() {
   return (
     <DashboardLayout>
       <div className="flex flex-col gap-6">
+        {/* Homepage evidence (migration 0070): asks, 14 days after a fix landed, whether it led to an interview. */}
+        <OutcomeCard />
         <div className="flex items-center justify-between flex-wrap gap-3">
           <h1 className="text-xl font-bold text-gray-900">Your scans</h1>
           <div className="flex items-center gap-3">

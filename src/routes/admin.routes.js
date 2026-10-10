@@ -4,6 +4,7 @@ const validateUuidParam = require('../middleware/validateUuidParam')
 const c     = require('../controllers/admin.controller')
 const rl    = require('../middleware/rateLimiter')
 const wh    = require('../controllers/webhooks.controller')
+const stories = require('../controllers/admin-stories.controller')
 
 const router = new Hono()
 
@@ -37,6 +38,10 @@ router.get('/webhook-events', wh.listWebhookEvents)
 router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
+
+// Customer stories: nothing reaches the public homepage until approved here.
+router.get('/stories', stories.adminListStories)
+router.post('/stories/:id/moderate', validateUuidParam(), stories.adminModerateStory)
 
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)

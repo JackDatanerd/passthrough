@@ -1,395 +1,74 @@
-import { useState } from 'react'
-import { Link } from 'react-router-dom'
+import { useMemo, useState } from 'react'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
-import ScanForm from '../components/scan/ScanForm'
-import PromoCountdown from '../components/ui/PromoCountdown'
-import Button from '../components/ui/Button'
-import Input from '../components/ui/Input'
-import Form from '../components/ui/Form'
-import api, { getErrorMessage } from '../lib/api'
-import { usePricing, fmtPrice } from '../hooks/usePricing'
-import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
-import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
+import HomeHero from '../components/home/HomeHero'
+import StatsBand from '../components/home/StatsBand'
+import BeforeAfter from '../components/home/BeforeAfter'
+import Stories from '../components/home/Stories'
+import HotCategories from '../components/home/HotCategories'
+import VerifySection from '../components/home/VerifySection'
+import HowItWorks from '../components/home/HowItWorks'
+import PricingSection from '../components/home/PricingSection'
+import EmployerSection from '../components/home/EmployerSection'
+import HomeFaq from '../components/home/HomeFaq'
+import FinalCta from '../components/home/FinalCta'
+import StickyScanCta from '../components/home/StickyScanCta'
+import { usePricing } from '../hooks/usePricing'
+import useHomeData from '../hooks/useHomeData'
+import { getStoredReferralCode } from '../hooks/useReferralCapture'
+import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES, FREE_SCANS_PER_DAY, ANON_SCANS_PER_HOUR } from '../lib/scoreThresholds'
+import { ATS_NAMES, buildFaq } from '../lib/homeContent'
 
-// tier is always a usable object — byTier() falls back internally to the
-// correct standard price if /api/pricing hasn't loaded or failed.
-// AUDIT FIX (bug): currency now threaded through, same fix as Pricing.jsx's
-// PriceBlock — see usePricing.js's fmtPrice comment.
-function TeaserPrice({ tier, currency }) {
-  const onPromo = tier.amount !== tier.originalAmount
-  return (
-    <div className="mb-1 flex items-baseline gap-2">
-      {onPromo && (
-        <span className="text-lg text-gray-400 line-through">{fmtPrice(tier.originalAmount, currency)}</span>
-      )}
-      <span className="text-3xl font-bold text-gray-900">{fmtPrice(tier.amount, currency)}</span>
-    </div>
-  )
-}
-
-// ── Demo score mockup ─────────────────────────────────────────────────────────
-// Static illustration for the "How it works" section — matches the real
-// CategoryScores component's exact keys/labels so this never misrepresents
-// what the product actually measures.
-function DemoScoreCard() {
-  const rows = [
-    { label: 'Keyword Match', value: 42, color: 'bg-red-500',   text: 'text-red-700'   },
-    { label: 'Formatting',    value: 58, color: 'bg-amber-400', text: 'text-amber-700' },
-    { label: 'Sections',      value: 71, color: 'bg-amber-400', text: 'text-amber-700' },
-    { label: 'Content',       value: 39, color: 'bg-red-500',   text: 'text-red-700'   },
-  ]
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
-      <div className="flex items-center gap-6 mb-6">
-        <div className="relative w-24 h-24 shrink-0">
-          <svg width="96" height="96" viewBox="0 0 96 96">
-            <circle cx="48" cy="48" r="40" fill="none" stroke="#fee2e2" strokeWidth="10" />
-            <circle cx="48" cy="48" r="40" fill="none" stroke="#dc2626" strokeWidth="10"
-              strokeLinecap="round" strokeDasharray={`${2 * Math.PI * 40 * 0.52} ${2 * Math.PI * 40}`}
-              transform="rotate(-90 48 48)" />
-          </svg>
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-xl font-bold text-red-700">52</span>
-            <span className="text-[10px] text-gray-400">/ 100</span>
-          </div>
-        </div>
-        <div>
-          <p className="font-semibold text-gray-900">This resume is failing ATS filters</p>
-          <p className="text-sm text-gray-500 mt-0.5">Rejected before a recruiter ever opens it</p>
-        </div>
-      </div>
-      <div className="flex flex-col gap-3">
-        {rows.map(({ label, value, color, text }) => (
-          <div key={label}>
-            <div className="flex justify-between items-center mb-1">
-              <span className="text-sm text-gray-600">{label}</span>
-              <span className={`text-sm font-semibold ${text}`}>{value}</span>
-            </div>
-            <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-              <div className={`h-full rounded-full ${color}`} style={{ width: `${value}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="text-xs text-gray-400 mt-5 pt-5 border-t border-gray-100">
-        Illustrative example — your actual score and breakdown appear after a real scan.
-      </p>
-    </div>
-  )
-}
-
-// FEATURE GAP CLOSED (Section 5 — Employer leads): the only place a hiring
-// manager could ever actually submit a lead was buried at the bottom of an
-// individual candidate's Verify.jsx page — reachable only if they already
-// had a specific verification link. This homepage section is the actual
-// top-of-funnel pitch ("For employers & hiring managers", linked from the
-// Navbar and Footer as "For employers"), and until now it was pure copy
-// with no way to act on it at all. Mirrors Verify.jsx's lead form (same
-// fields, same endpoint) — source is 'homepage' so admin can tell the two
-// entry points apart in the leads list.
-function EmployerLeadForm() {
-  const [name,    setName   ] = useState('')
-  const [company, setCompany] = useState('')
-  const [email,   setEmail  ] = useState('')
-  const [field,   setField  ] = useState('')
-  const [title,   setTitle  ] = useState('')
-  const [trap, setTrap] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
-  const [sent,    setSent   ] = useState(false)
-  const [err,     setErr    ] = useState('')
-  const [loading, setLoading] = useState(false)
-  const [captcha, setCaptcha] = useState('')
-  const [captchaReset, setCaptchaReset] = useState(0)
-
-  async function handleSubmit(e) {
-    e?.preventDefault?.()
-    if (!name || !company || !email) return setErr('Name, company, and email required.')
-    if (TURNSTILE_ENABLED && !captcha) return setErr('Please complete the verification check below.')
-    setLoading(true); setErr('')
-    try {
-      await api.post('/employer-leads', {
-        name, company, email, roleCategory: field || undefined, roleTitle: title || undefined,
-        source: 'homepage', trap, turnstileToken: captcha || undefined
-      })
-      setSent(true)
-    } catch (e) {
-      setErr(getErrorMessage(e, 'Something went wrong.'))
-      setCaptcha(''); setCaptchaReset(n => n + 1)   // a token is single-use
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  if (sent) {
-    return (
-      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8 text-center">
-        <p className="text-sm text-green-700 font-medium">{LEAD_SENT_MESSAGE}</p>
-      </div>
-    )
-  }
-
-  return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
-      <h3 className="font-semibold text-gray-900 mb-1">Get early access to Verified candidates</h3>
-      <p className="text-sm text-gray-500 mb-4">We'll reach out when we have candidates matching your needs.</p>
-      <Form onSubmit={handleSubmit} className="flex flex-col gap-3">
-        <Input placeholder="Your name" value={name} onChange={e => setName(e.target.value)} />
-        <Input placeholder="Company" value={company} onChange={e => setCompany(e.target.value)} />
-        <Input type="email" placeholder="Work email" value={email} onChange={e => setEmail(e.target.value)} />
-        <RoleFields category={field} onCategory={setField} title={title} onTitle={setTitle} />
-        <LeadConsentNote />
-        <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
-        {err && <p role="alert" className="text-xs text-red-600">{err}</p>}
-        {/* Honeypot: invisible to a real person, tempting to a bot filling every
-            field it finds. Off-screen rather than display:none/hidden — some
-            bots skip fields a screen reader would also skip. */}
-        <input type="text" name="lead_ref_code" value={trap} onChange={e => setTrap(e.target.value)}
-          tabIndex={-1} autoComplete="off" aria-hidden="true" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
-          style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
-        <Button type="submit" loading={loading}>Get early access</Button>
-      </Form>
-    </div>
-  )
-}
-
+// The homepage is a conversion page: scan first, prove it second, price it third. Every section is its
+// own component under components/home/, and every copy block / sample lives in lib/homeContent.js.
+//
+// Numbers the page quotes about the PRODUCT (free-scan limits, the Verified threshold, the retry count)
+// come from /api/pricing, which reads them from the backend's own constants — the page used to hardcode
+// all four, so it silently went stale the day any of them changed (Pricing.jsx already read them live).
+// The constants in lib/scoreThresholds.js are only the fallback for the moment before that answer lands.
 export default function Home() {
-  const { pricing, byTier, refresh: refreshPricing, clockOffsetMs } = usePricing()
+  // Seeded from storage while rendering (getStoredReferralCode also captures a ?ref= in the URL right
+  // now), so a visitor from a partner's link sees the discounted prices on the very first paint — the
+  // teaser used to ask for the public price and showed everyone the same numbers.
+  const [referralCode] = useState(getStoredReferralCode())
+  const { pricing, byTier, refresh, clockOffsetMs } = usePricing(referralCode)
+  const data = useHomeData()
+
+  const badgeThreshold   = pricing?.badgeThreshold   ?? ATS_BADGE_THRESHOLD
+  const maxFixRetries    = pricing?.maxFixRetries    ?? MAX_FIX_RETRIES
+  const freeScansPerDay  = pricing?.freeScansPerDay  ?? FREE_SCANS_PER_DAY
+  const anonScansPerHour = pricing?.anonScansPerHour ?? ANON_SCANS_PER_HOUR
+  const limits = { badgeThreshold, maxFixRetries, freeScansPerDay, anonScansPerHour }
+  const faq = useMemo(() => buildFaq({ badgeThreshold, maxFixRetries, freeScansPerDay, anonScansPerHour }),
+    [badgeThreshold, maxFixRetries, freeScansPerDay, anonScansPerHour])
+
   return (
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
       <main className="flex-1">
+        <HomeHero data={data} />
 
-        {/* ── HERO ──────────────────────────────────────────────────────── */}
-        <section className="bg-gradient-to-b from-blue-50 to-white border-b border-gray-100">
-          <div className="max-w-5xl mx-auto px-4 py-16 text-center">
-            <div className="inline-block bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full mb-4">
-              Free ATS scan — no account needed
-            </div>
-            <h1 className="text-4xl sm:text-5xl font-bold text-gray-900 leading-tight mb-4">
-              Your resume is losing to<br />a robot. Before a human sees it.
-            </h1>
-            <p className="text-lg text-gray-500 mb-2 max-w-2xl mx-auto">
-              Applicant Tracking Systems reject the majority of resumes before a recruiter
-              opens the file — including from qualified candidates. Find out if yours is
-              one, in 30 seconds.
-            </p>
-            <p className="text-sm text-gray-400 mb-10">
-              Built for how employers actually hire in the US and Europe — Workday,
-              Greenhouse, iCIMS, Taleo, Lever, and SuccessFactors.
-            </p>
+        <div className="border-b border-gray-100 bg-gray-50 py-4">
+          <div className="max-w-5xl mx-auto px-4 flex flex-wrap items-center justify-center gap-x-6 gap-y-1.5 text-sm text-gray-500">
+            <span className="font-semibold text-gray-700">Scored the way employers actually filter:</span>
+            {ATS_NAMES.map(n => <span key={n} className="font-bold text-gray-600">{n}</span>)}
           </div>
-        </section>
+        </div>
 
-        {/* ── SCAN FORM ─────────────────────────────────────────────────── */}
-        <section id="scan-form" className="max-w-2xl mx-auto px-4 -mt-6 pb-8 scroll-mt-4">
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8">
-            <h2 className="text-lg font-semibold text-gray-900 mb-5">
-              Upload your resume + paste a job description
-            </h2>
-            <ScanForm />
-          </div>
-        </section>
-
-        {/* ── FREE TIER LINE ───────────────────────────────────────────── */}
-        <section className="max-w-2xl mx-auto px-4 pb-16">
-          <div className="flex flex-wrap justify-center gap-x-8 gap-y-2 text-center">
-            {[
-              'Free scan, no account needed',
-              'Create a free account for 3 scans/day',
-              'Results in about 30 seconds',
-            ].map((item) => (
-              <div key={item} className="flex items-center gap-1.5 text-sm text-gray-500">
-                <span className="text-green-500">✓</span>{item}
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* ── HOW IT WORKS ─────────────────────────────────────────────── */}
-        <section className="bg-gray-50 border-t border-gray-100 py-16">
-          <div className="max-w-5xl mx-auto px-4">
-            <div className="grid lg:grid-cols-2 gap-12 items-center">
-              <div>
-                <h2 className="text-2xl font-bold text-gray-900 mb-6">
-                  See exactly why you're being rejected
-                </h2>
-                <div className="flex flex-col gap-6">
-                  {[
-                    { step: '1', title: 'Upload & scan', body: 'Upload your resume and paste the job description. Our ATS engine scores it in ~30 seconds.' },
-                    { step: '2', title: 'Get your score', body: 'A full breakdown — keyword gaps, formatting issues, missing sections, weak content — not just a single number.' },
-                    { step: '3', title: 'Fix & verify', body: 'Pay once to get an AI-rewritten resume, an ATS-ready .docx, and a Passthrough Verified credential employers can check.' },
-                  ].map(({ step, title, body }) => (
-                    <div key={step} className="flex gap-4">
-                      <div className="w-8 h-8 rounded-full bg-blue-700 text-white font-bold text-sm flex items-center justify-center shrink-0">
-                        {step}
-                      </div>
-                      <div>
-                        <h3 className="font-semibold text-gray-900 mb-1">{title}</h3>
-                        <p className="text-sm text-gray-500">{body}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              <DemoScoreCard />
-            </div>
-          </div>
-        </section>
-
-        {/* ── THREE WAYS TO START ──────────────────────────────────────── */}
-        <section className="py-16">
-          <div className="max-w-5xl mx-auto px-4">
-            <div className="text-center mb-10">
-              <h2 className="text-2xl font-bold text-gray-900 mb-2">
-                Don't have a polished resume? Start anywhere.
-              </h2>
-              <p className="text-gray-500 max-w-xl mx-auto">
-                Most ATS tools assume you already have a good resume to fix.
-                Passthrough works even if you don't.
-              </p>
-            </div>
-            <div className="grid sm:grid-cols-3 gap-5">
-              {[
-                {
-                  title: 'Upload your resume',
-                  body: 'Already have one? Upload it as a PDF or .docx and we\'ll score it against the job.',
-                  to: '/#scan-form',
-                },
-                {
-                  title: 'Start from scratch',
-                  body: 'No resume yet? Paste a brain dump, an old resume, or just describe your background in your own words — or fill the details in yourself. We\'ll structure it for you.',
-                  to: '/?mode=brainDump#scan-form',
-                },
-                {
-                  title: 'Reuse a saved profile',
-                  body: 'Applying to multiple roles? Save your profile once and re-score it against every new job description in seconds.',
-                  to: '/?mode=savedProfile#scan-form',
-                },
-              ].map(({ title, body, to }) => (
-                <a key={title} href={to} className="block rounded-xl border border-gray-200 p-6 hover:border-blue-300 hover:shadow-sm transition">
-                  <h3 className="font-semibold text-gray-900 mb-2">{title}</h3>
-                  <p className="text-sm text-gray-500">{body}</p>
-                </a>
-              ))}
-            </div>
-          </div>
-        </section>
-
-        {/* ── RETRY GUARANTEE ──────────────────────────────────────────── */}
-        <section className="bg-blue-700 py-16">
-          <div className="max-w-4xl mx-auto px-4 text-center text-white">
-            <h2 className="text-2xl sm:text-3xl font-bold mb-4">
-              We don't stop until you pass — or your next resume is free.
-            </h2>
-            <p className="text-blue-100 max-w-2xl mx-auto mb-8 leading-relaxed">
-              When you pay for a fix, our AI doesn't just take one pass at your resume.
-              It rewrites, re-scores, and rewrites again — multiple attempts internally,
-              plus two free retries on your end if the first result isn't strong enough.
-              If we still can't get you past the verification threshold, we bank a free
-              fix credit on your account for next time. No charge.
-            </p>
-            <div className="flex flex-wrap justify-center gap-x-10 gap-y-3 text-sm text-blue-100">
-              <span>✓ Multiple AI rewrite attempts per fix</span>
-              <span>✓ 2 free manual retries included</span>
-              <span>✓ Free credit if we still fall short</span>
-            </div>
-          </div>
-        </section>
-
-        {/* ── EMPLOYER VERIFICATION ────────────────────────────────────── */}
-        <section id="employers" className="py-16">
-          <div className="max-w-5xl mx-auto px-4">
-            <div className="grid lg:grid-cols-2 gap-12 items-center">
-              <div>
-                <div className="inline-block bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full mb-4">
-                  For employers & hiring managers
-                </div>
-                <h2 className="text-2xl font-bold text-gray-900 mb-4">
-                  Verified once. Trusted everywhere.
-                </h2>
-                <p className="text-gray-500 mb-4 leading-relaxed">
-                  Every Passthrough Verified resume comes with a shareable link that
-                  proves the ATS score is real — and that the file hasn't been altered
-                  since it was verified. We cryptographically hash the exact document
-                  at verification time and re-check it on every view.
-                </p>
-                <p className="text-gray-500 mb-6 leading-relaxed">
-                  No phone calls. No guesswork. Open the link, see the score, the
-                  category breakdown, and an integrity check that reads
-                  "Unmodified" or "Modified" — instantly.
-                </p>
-                <p className="text-sm text-gray-400">
-                  Every Verified credential includes a link like this one, unique
-                  to that candidate's resume.
-                </p>
-              </div>
-              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6 sm:p-8 text-center">
-                <div className="w-14 h-14 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-4">
-                  <span className="text-green-600 text-2xl">✓</span>
-                </div>
-                <p className="font-semibold text-gray-900 mb-1">Passthrough Verified</p>
-                <div className="grid grid-cols-2 gap-3 mt-6 text-sm">
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs mb-1">ATS Score</p>
-                    <p className="font-bold text-lg text-green-700">87</p>
-                  </div>
-                  <div className="bg-gray-50 rounded-lg p-3">
-                    <p className="text-gray-400 text-xs mb-1">Integrity</p>
-                    <p className="font-bold text-sm text-green-700">Unmodified</p>
-                  </div>
-                </div>
-                <p className="text-xs text-gray-400 mt-5">
-                  Illustrative example of what employers see when they open a
-                  candidate's verification link.
-                </p>
-              </div>
-            </div>
-            <div className="mt-10 max-w-md mx-auto lg:mx-0 lg:ml-auto">
-              <EmployerLeadForm />
-            </div>
-          </div>
-        </section>
-
-        {/* ── PRICING TEASER ───────────────────────────────────────────── */}
-        <section className="max-w-5xl mx-auto px-4 py-16 border-t border-gray-100">
-          <div className="text-center">
-            <h2 className="text-2xl font-bold text-gray-900 mb-3">Simple pricing</h2>
-            <p className="text-gray-500 mb-4">Scan free, always. Pay once if you want the fix.</p>
-            {pricing?.promoActive && pricing.promoEndsAt && (
-              <PromoCountdown endsAt={pricing.promoEndsAt} clockOffsetMs={clockOffsetMs} onExpire={refreshPricing} className="mb-8" />
-            )}
-            <div className="inline-grid sm:grid-cols-2 lg:grid-cols-4 gap-4 text-left">
-              <div className="rounded-lg border border-gray-200 p-6">
-                <div className="text-sm text-gray-500 mb-1">Free forever</div>
-                <div className="text-3xl font-bold text-gray-900 mb-1">$0</div>
-                <p className="text-sm text-gray-500">1 scan/hour with no account, or 3/day with a free account. Full score breakdown.</p>
-              </div>
-              <div className="rounded-lg border border-gray-200 p-6">
-                <div className="text-sm text-gray-500 mb-1">Credential only</div>
-                <TeaserPrice tier={byTier('BADGE')} currency={pricing?.currency} />
-                <p className="text-sm text-gray-500">Verified credential for resumes already scoring 80+.</p>
-              </div>
-              <div className="rounded-lg border border-gray-200 p-6">
-                <div className="text-sm text-gray-500 mb-1">Fix only</div>
-                <TeaserPrice tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
-                <p className="text-sm text-gray-500">AI rewrite + ATS .docx + PDF. No verification link, any score.</p>
-              </div>
-              <div className="rounded-lg border border-blue-200 bg-blue-50 p-6">
-                <div className="text-sm text-blue-600 font-medium mb-1">Full fix</div>
-                <TeaserPrice tier={byTier('FIX')} currency={pricing?.currency} />
-                <p className="text-sm text-gray-600">AI rewrite + ATS .docx + PDF + Verified credential. Any score.</p>
-              </div>
-            </div>
-            <Link
-              to="/pricing"
-              className="inline-block mt-8 text-sm font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2"
-            >
-              See full pricing details →
-            </Link>
-          </div>
-        </section>
+        <StatsBand data={data} badgeThreshold={badgeThreshold} />
+        <BeforeAfter />
+        <Stories stories={data.stories} badgeThreshold={badgeThreshold} />
+        <HotCategories hot={data.hot} minReports={data.minReports} />
+        <VerifySection badgeThreshold={badgeThreshold} />
+        <HowItWorks />
+        <PricingSection pricing={pricing} byTier={byTier} refresh={refresh} clockOffsetMs={clockOffsetMs}
+          referralCode={referralCode} limits={limits} />
+        <EmployerSection />
+        <HomeFaq items={faq} />
+        <FinalCta />
       </main>
       <Footer />
+      <StickyScanCta />
     </div>
   )
 }

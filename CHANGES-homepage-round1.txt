@@ -1,0 +1,46 @@
+Homepage — round 1 (independent audit of the homepage section: Home.jsx, its pricing teaser and employer lead form,
+index.html / page metadata) + build of the conversion homepage from the approved prototype.
+Base: fc2563f "Verify round 7 ..."
+
+MIGRATION: APPLY supabase/migrations/0070_homepage_outcomes.sql BEFORE deploying the Worker (see DEPLOYMENT.md,
+"Homepage evidence"). Schema version is now 70.
+
+FEATURE GAPS CLOSED
+G1  No outcome data existed, so "X% of applicants report an interview" could not be backed. New scan_outcomes table;
+    PUT /api/outcomes (answer, optional consented story), GET /api/outcomes/pending, DELETE /api/outcomes/:scanId/story.
+    Only a DELIVERED fix can be answered about. Dashboard question card (OutcomeCard) 14 days after delivery; an hourly
+    follow-up email at 30 days (claimed before sending, released on failure, 3 attempts, one email per person per run,
+    skips opted-out / banned / deleted / unverified users and anyone who already answered).
+G2  No public stats. GET /api/stats (public, edge-cached 5 min, never caches a degraded answer): resumes scanned (running
+    counter - counting rows undercounts because anonymous scans are purged), interview rate (withheld below 50 answers),
+    hot categories (7 / 30 days, fields with <10 reports hidden, % change only against a base of 5+), approved stories.
+G3  Stories had no consent flow or review. Explicit consent box, no links / contact details, name vetted like the public
+    verification pages, admin approval (Admin -> Stories, audit-logged, guarded on the exact text reviewed), any author
+    edit sends an approved story back to review, author can take it down, account deletion clears story text, data export
+    includes it.
+G4  Hot categories had no source - now a weekly-refreshing aggregate (public_hot_categories).
+G5  The verification badge was never shown on the homepage. New section: sample employer view, the same embed snippets a
+    customer gets (built by the same function), the three places to use it, and a "check a candidate" box.
+G6  No FAQ, no structured data, no per-route canonical. FAQPage JSON-LD generated from the visible questions; canonical set
+    per route (never carries ?ref= / ?mode=; none on private pages); Organization JSON-LD; <noscript> text.
+
+BUGS FIXED
+B1  Home.jsx hardcoded the free-scan limits, the Verified threshold and the retry count that /api/pricing already serves
+    (Pricing.jsx reads them live) - they went stale silently. Now live, constants only as the pre-fetch fallback.
+B2  The homepage pricing teaser ignored a partner's referral code: /?ref=CODE visitors saw full price on the homepage and
+    the discount only on /pricing. The code is now read on first render (same mechanism Pricing uses).
+B3  The "three ways to start" cards were <a href> and reloaded the whole app, dropping a half-filled scan form. Removed
+    (the modes live inside the scan card); no deep links to /?mode= remain on the page.
+B4  index.html / og:description carried an unsourced "75% of resumes are rejected" claim. Removed.
+B5  The homepage told signed-in users "no account needed" / "create a free account". It now adapts.
+B6  The employer lead form's inputs had placeholders only; they now carry names and autocomplete hints.
+
+THE HOMEPAGE (new, from the approved prototype)
+Hero with the real ScanForm inside + proof, ATS strip, stats band, before/after, stories (expand into "my story"),
+hot categories, verification section, how it works, pricing (Full fix as the anchored centre card, "only $X more than
+Fix only", live promo + countdown, retry guarantee), employer form, FAQ, final CTA, sticky mobile CTA.
+All copy and sample data live in frontend/src/lib/homeContent.js. Anything not backed by live data is flagged: samples
+show a "Sample" tag, the fallback scan count reads "at least". The page never promises an interview.
+
+TESTS: tests/homepage.outcomes.test.js (+ wiring, mapper, email-registry, cron-count guards updated),
+frontend/tests/{home.page,homeData,outcomeCard,adminStories,pageMeta}.test.jsx. Backend 3240 / frontend 1109 passing.

@@ -82,6 +82,7 @@ describe('the list spinner always clears', () => {
     let historyN = 0
     api.get.mockImplementation(async (url, cfg) => {
       if (url === '/profile') return { data: { data: { hasSavedProfile: false } } }
+      if (url === '/outcomes/pending') return { data: { data: { pending: [], stories: [] } } }      // the outcome card's own request — not a history page
       if (url.startsWith('/scan/status/')) return { data: { data: { status: 'COMPLETE_PASS' } } }   // the live scan finished
       historyN++
       if (historyN === 1) return { data: { data: { scans: [live], total: 45 } } }

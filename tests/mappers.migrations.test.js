@@ -19,6 +19,8 @@ const TABLE_TO_MAPPER = {
 // Columns a mapper must NOT surface: single-use secrets/tokens. Anything else missing is a bug.
 const DELIBERATELY_UNMAPPED = {
   users: ['email_change_done_token'],
+  // Homepage outcomes (0070): follow-up email bookkeeping only the hourly sweep reads — never part of a scan the API returns.
+  scans: ['outcome_prompted_at', 'outcome_prompt_attempts'],
   // Both partner bearer tokens are secrets: payout_details_token (write) and dashboard_token (read-only, migration 0055).
   partners: ['payout_details_token', 'dashboard_token'],
 }
