@@ -1,0 +1,67 @@
+SCAN / ATS CORE — round 4 (independent audit of section 2; every item below was found by reading the code and, where marked, reproduced)
+
+APPLY
+1. Run supabase/migrations/0072_scan_ats_round4.sql (creates claude_usage, adds scans.scan_slot_spent_at, records schema 72).
+   Deploy order does not matter: every write to either is best-effort, and the stuck-scan sweep selects '*', so the code runs
+   on a database that has not been migrated yet. It just won't ledger usage or refund a failed retry until it is.
+2. Nothing else: no new env vars, no new dependencies. Scanned-PDF reading uses the existing ANTHROPIC_API_KEY.
+
+BUGS FIXED
+- PDF uploads lost every line break (reproduced). unpdf's mergePages collapses all whitespace, so a PDF reached the scorer as ONE
+  line: Content scored ~0 (same resume: 65 as a PDF, 81 with its lines), sections used the weak substring fallback, and the structurer
+  saw one blob. New src/services/pdf.inspect.js reads the PDF itself and keeps one line per visual line.
+- Refunded / charged-back purchases kept every paid capability that costs us a call: retry (Claude x2), regenerate PDF, cover letter,
+  edit-delivered-resume — and failed/exhausted retries granted a free credit on top of the refund. purchaseIsLive() now gates all of
+  them and the credit grant (fails open if the payment row can't be read). Downloads of delivered files are unchanged on purpose.
+- retry-scan refunds used created_at as the clock, so a retry that failed on our side after midnight UTC (or an hour after creation)
+  was never given back. scan_slot_spent_at is stamped on retry; refundScanQuota / refundScanSlot / the hourly sweep key on it.
+- Fabrication guard (reproduced): dropping one of two roles at the same employer, a "Google Cloud" role beside "Google", the MSc beside
+  a BSc, or one of two overlapping project names all returned "no fabrication". Entries are now paired one-to-one, and a rewritten
+  entry can only stand for an original that already explains it (same role kind, no new seniority word, no new year).
+- HTML sanitizer (reproduced): u\72l(...), \u\r\l(...), @\69mport and entity-encoded &#117;rl( in style="" all slipped past the
+  url()/@import filters and reached Browser Rendering. CSS escapes that resolve to token characters are decoded before filtering.
+- Client timeouts: PATCH /delivered-resume (score + Claude HTML + PDF render in one request) and PATCH /resume-data were still on 30s.
+- deleteScan left an OLDER pending checkout payable; it is now abandoned (payments round 8 refunds a payment for a deleted scan, this
+  stops the charge happening at all). Orphaned R2 docx when the delivered-resume edit threw between upload and DB write is cleaned up.
+- Stuck-scan sweep set ERROR on a redelivery that died after files were already delivered (retry count 0); it now goes back to
+  FIX_DELIVERED. Failed-retry refunds in the sweep use scan_slot_spent_at.
+- No page cap on PDFs (only the 5MB compressed size was bounded): > 12 pages is refused (TOO_MANY_PAGES) before any text work.
+- restoreFactualFields dropped a job's location / a degree's details when the rewrite tidied the title; now re-attached by employer.
+- Greenhouse/Lever boilerplate trim cut at the FIRST equal-opportunity line anywhere, so a posting that opens with one lost all its
+  requirements. Anchors only count after the first 30% of the text.
+- Accented names produced "Jos-e" style file stems; accents are stripped now (José -> Jose).
+
+FEATURE GAPS CLOSED
+- Hyperlink targets (LinkedIn / portfolio / project links) were lost on every upload and so from every regenerated resume, including
+  Badge ("nothing rewritten"). DOCX: word/_rels targets + field-code links appended as "(url)"; PDF: link annotations, appended as a
+  [hyperlinks in this document] block the structurer is told how to use. The scorer ignores that block.
+- Keyword stuffing / hidden text (reproduced: one extra skills line took a 62 to an 88, past the 80 credential line).
+  Skills-only matches are discounted when MOST matches are skills-only; text copied from the posting is detected (5-word runs) and
+  halves the keyword score; hidden text (DOCX vanish / near-white / <=3pt, PDF tiny / white) is dropped where it can be mapped,
+  counted always, penalised in Format and Keywords, and explained to the user. White text on a dark band/shape is left alone.
+- Content score was English-only while section detection is multilingual (same resume: 80 in English, 9 in Spanish). The verb check is
+  skipped for non-English resumes and the user is told.
+- Failure reasons were thrown away. full_ats_report now carries errorCode; getScan returns failure {code, message, retryable};
+  the page shows the real reason and drops the useless Retry for NO_TEXT / ENCRYPTED_PDF / TOO_MANY_PAGES / TOO_SHORT / UNREADABLE_FILE /
+  NEEDS_MORE_DETAIL (retry-scan returns 409 for them). Scanned (image-only) PDFs are read by the model instead of failing, scored as
+  the blank page an ATS sees, and can still be rebuilt by the paid fix.
+- PDF layout was never inspected: columns (from text positions), images (operator list), page count are now.
+- Delivered files are named for the candidate (Jane-Doe-Resume.docx / .pdf) instead of resume-ats.docx / resume-verified.pdf.
+- Quantification: the "Strengthen these lines" prompts have an inline "Add my number" field (saves through the delivered-resume
+  endpoint); the FREE scan now lists the bullets with no number, so it is fixable before paying.
+- Diff view: bullets are paired by shared words (a reorder/merge no longer reads as a rewrite), changed bullets highlight the words that
+  changed, moved bullets are tagged; location, education details, languages, awards, publications and volunteer work are now diffed.
+- Claude cost ledger: every call logs [claude-usage] and, per job / HTTP handler, is written to claude_usage (label, model, tokens).
+  Example: SELECT label, sum(input_tokens) in_tok, sum(output_tokens) out_tok, count(*) FROM claude_usage GROUP BY label;
+
+NOT DONE (deliberately)
+- Letter vs A4 page size for the generated DOCX/PDF (needs a per-user choice, not just a code change).
+- Prompt caching for repeated job descriptions (needs the usage data above first to know it is worth it).
+- Scanned-PDF reading is capped at 4 pages / 5MB and uses one model call per scan; watch it in claude_usage under label 'ocr'.
+
+TESTS
+New: scan.ingest.round4, scan.ats.round4, scan.controller.round4, scan.sweep.round4 (drives the real scheduled handler),
+frontend scan.round4 + pages/ScanResult.round4, helper tests/helpers/pdfBuilder.js (real PDFs, no binary fixtures).
+Changed existing tests (all because behaviour intentionally changed): scan.controller.test (runAtsScan reads files via analyzeUpload,
+failure codes, atsDetail shape, delete test now allows the PENDING-only abandon), scan.ats.closeout (same interface),
+jdBoilerplate (one synthetic input modelled a posting that was mostly boilerplate; content now comes first).

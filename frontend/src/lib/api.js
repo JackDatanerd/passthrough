@@ -27,6 +27,11 @@ const api = axios.create({
 // and finished anyway — the person saw "timed out / check your connection", and a retry repeated the work.
 export const LONG_REQUEST_TIMEOUT_MS = 150_000
 const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-pdf)(?:[?#]|$)/
+// SCAN/ATS ROUND 4: the same applies to two PATCHes the POST-only rule above missed. Saving an edit to a DELIVERED resume
+// re-scores it (a Claude call), re-generates the designed-PDF HTML (a second Claude call, up to 90s) and renders the PDF in
+// a browser, all inside the one request — the heaviest call in the product, and the one most likely to be cut off at 30s
+// while the server finished anyway. Editing the free scan's data re-scores it (one Claude call).
+const LONG_RUNNING_PATCH = /^\/scan\/[^/?#]+\/(delivered-resume|resume-data)(?:[?#]|$)/
 
 api.interceptors.request.use(config => {
   const token = getToken()
@@ -45,8 +50,10 @@ api.interceptors.request.use(config => {
   // (an explicit `timeout` other than 30s, or `__customTimeout: true` for exactly 30s).
   if (typeof FormData !== 'undefined' && config.data instanceof FormData && config.__customTimeout !== true && config.timeout === 30_000)
     config.timeout = 180_000
-  if (String(config.method || 'get').toLowerCase() === 'post' && config.__customTimeout !== true
-      && config.timeout === 30_000 && LONG_RUNNING_POST.test(String(config.url || '')))
+  const method = String(config.method || 'get').toLowerCase()
+  if (config.__customTimeout !== true && config.timeout === 30_000
+      && ((method === 'post' && LONG_RUNNING_POST.test(String(config.url || '')))
+          || (method === 'patch' && LONG_RUNNING_PATCH.test(String(config.url || '')))))
     config.timeout = LONG_REQUEST_TIMEOUT_MS
   return config
 })

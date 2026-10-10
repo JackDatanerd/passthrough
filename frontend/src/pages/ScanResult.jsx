@@ -631,7 +631,8 @@ export default function ScanResult() {
     setDlError('')
     try {
       const res = await api.get(`/scan/${id}/download?type=${type}`, { responseType: 'blob' })
-      downloadBlob(res.data, type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf')
+      // The candidate's own name ("Jane-Doe-Resume.docx"), not a name every candidate's attachment shares.
+      downloadBlob(res.data, `${scan.downloadStem || 'Resume'}.${type === 'ats' ? 'docx' : 'pdf'}`)
     } catch (err) {
       // With responseType: 'blob', axios would normally hand back error bodies
       // as an unparsed Blob (see normalizeBlobError in lib/errors.js) instead
@@ -773,8 +774,10 @@ export default function ScanResult() {
             ) : (
               <>
                 <p className="font-medium text-red-800 mb-1">Scan failed</p>
-                <p className="text-sm text-red-600">
-                  {scan.inputMode === 'brain_dump'
+                {/* Round 4: the server now says WHY (scan.failure). A scanned or password-protected PDF, a file with no
+                    text, an over-long PDF: each gets its own instruction, and no "try again" that could never work. */}
+                <p className="text-sm text-red-600" data-testid="scan-failure-message">
+                  {scan.failure && scan.failure.code !== 'SYSTEM' ? scan.failure.message : scan.inputMode === 'brain_dump'
                     ? "We couldn't structure your background. Try adding more detail — company names, roles, and what you did. If you wrote plenty already, this may have been a temporary problem on our side — trying again is safe."
                     : scan.inputMode === 'saved_profile'
                       ? "We couldn't score your saved profile. This is usually a temporary problem on our side — try again in a minute."
@@ -785,14 +788,18 @@ export default function ScanResult() {
             {!scan.fixPurchased && scan.inputMode === 'brain_dump' && (
               <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
             )}
-            {!scan.fixPurchased && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (
+            {!scan.fixPurchased && scan.failure?.retryable !== false && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (
               <div className="mt-4">
                 <Alert className="mb-2">{retryScanError}</Alert>
                 <Button onClick={handleRetryScan} loading={retryScanLoading}>Retry this scan</Button>
                 <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. It counts as a scan, like the one that failed did.</p>
               </div>
             )}
-            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">Start over with different input</Link>}
+            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">
+              {scan.failure?.retryable === false
+                ? (scan.inputMode === 'file' ? 'Upload a different file' : 'Add more detail and try again')
+                : 'Start over with different input'}
+            </Link>}
           </div>
         )}
 
@@ -1141,7 +1148,15 @@ export default function ScanResult() {
             {/* Quantification prompts — renders nothing if the array is empty/null,
                 which is always true for badge-only purchases (no AI rewrite ran) */}
             {scan.status === 'FIX_DELIVERED' && (
-              <QuantificationPrompts prompts={scan.quantificationPrompts} />
+              <QuantificationPrompts
+                prompts={scan.quantificationPrompts}
+                scan={scan}
+                // Round 4: the signed-in owner can add the number right on the prompt (same endpoint as the editor below).
+                onSaved={user && scan.userId && user.id === scan.userId
+                  && !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER')
+                  ? async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }
+                  : null}
+              />
             )}
 
             {/* Owner tools on a delivered resume: edit it (both files rebuilt and re-scored), and a

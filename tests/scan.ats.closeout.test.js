@@ -361,7 +361,9 @@ describe('runAtsScan — idempotent claim and structure', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': {
         extractText: async () => 'x'.repeat(200),
-        inspectStructure: async () => opts.structure ?? { tables: 0, textBoxes: 2, images: 0, columns: 1 },
+        // Round 4: one pass over the file yields text + layout facts. `structure: null` = the inspection failed ("unknown").
+        analyzeUpload: async () => ({ text: 'x'.repeat(200), failure: null,
+          structure: 'structure' in opts ? opts.structure : { tables: 0, textBoxes: 2, images: 0, columns: 1 } }),
       },
       'services/ats.service.js': {
         scoreResume: (text, jd, o) => { state.scored.push(o); return { score: 70, keywordScore: 70, formatScore: 70, sectionsScore: 70, contentScore: 70, detail: {} } },
@@ -402,9 +404,10 @@ describe('runAtsScan — idempotent claim and structure', () => {
     expect(t.state.scored[0]).toEqual({ structure: { tables: 0, textBoxes: 2, images: 0, columns: 1 } })
   })
   it('an inspection failure degrades to "unknown", never to a failed scan', async () => {
-    t = setup()
+    t = setup({ structure: null })
     const out = await t.mod.runAtsScan(t.env, t.db, 's1')
     expect(out.success).toBe(true)
+    expect(t.state.scored[0]).toEqual({ structure: null })
   })
 })
 

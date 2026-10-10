@@ -176,6 +176,21 @@ async function scheduled(event, env, ctx) {
         }
         if (stuckRetries?.length > 0) console.log(`Recovered ${stuckRetries.length} stuck retry round(s) → FIX_DELIVERED`)
 
+        // SCAN/ATS ROUND 4: the revert above only covers a stuck RETRY round (fix_retry_count > 0). A first-delivery
+        // generation that re-ran for an already-delivered scan (retry count 0, files present) was caught by the blanket
+        // ERROR flip below, which hid files the person had paid for and received until a whole regeneration (a second
+        // Claude bill) ran. A FIX_GENERATING scan that already has delivered files simply goes back to FIX_DELIVERED.
+        const { data: stuckRedelivery, error: redeliveryErr } = await supabase
+          .from('scans')
+          .update({ status: 'FIX_DELIVERED' })
+          .eq('status', 'FIX_GENERATING')
+          .lt('updated_at', stuckCutoff)
+          .not('resume_ats_path', 'is', null)
+          .eq('fix_retry_count', 0)
+          .select('id')
+        if (redeliveryErr) console.error('Stuck redelivery recovery:', redeliveryErr.message)
+        else if (stuckRedelivery?.length > 0) console.log(`Recovered ${stuckRedelivery.length} stuck redelivery(ies) → FIX_DELIVERED`)
+
         const { data: stuck, error: stuckErr } = await supabase
           .from('scans')
           .update({ status: 'ERROR' })
@@ -185,14 +200,18 @@ async function scheduled(event, env, ctx) {
           // never offer to delete it.
           .in('status', ['PENDING', 'SCANNING', 'FIX_GENERATING'])
           .lt('updated_at', stuckCutoff)
-          .select('id, user_id, created_at, fix_purchased')
+          // '*' rather than a column list: scan_slot_spent_at (migration 0072) may not exist yet, and a select naming a
+          // missing column would fail the whole sweep.
+          .select('*')
         if (stuckErr) { console.error('Stuck scan recovery:', stuckErr.message); return }
         if (stuck?.length > 0) console.log(`Recovered ${stuck.length} stuck scan(s) → ERROR`)
         const startOfToday = require('./lib/utcDay').utcMidnight()
         for (const row of stuck || []) {
           // Free-scan quota only: a paid fix (fix_purchased) never consumed a
           // scan slot at that stage and is handled by the failed-fix sweep.
-          if (!row.user_id || row.fix_purchased || !row.created_at || new Date(row.created_at) < startOfToday) continue
+          // The slot was spent when the scan was created OR when it was last retried — whichever is later.
+          const spentAt = row.scan_slot_spent_at || row.created_at
+          if (!row.user_id || row.fix_purchased || !spentAt || new Date(spentAt) < startOfToday) continue
           const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })
           if (refundErr) console.error(`Stuck scan quota refund failed for ${row.id}:`, refundErr.message)
         }

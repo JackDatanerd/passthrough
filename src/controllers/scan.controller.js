@@ -81,6 +81,8 @@ const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
 const { sanitizeSearch, applyScanFilters, applyScanSort } = require('../lib/scanSearch')
 const { publicFirstName } = require('../lib/text')
+const { failureMessage, isRetryable } = require('../lib/scanFailure')
+const claudeUsage = require('../lib/claudeUsage')
 
 // Maps the magic-byte-validated mimetype (middleware/upload.js only ever
 // sets file.mimetype to one of these two, having already checked the bytes
@@ -627,12 +629,26 @@ async function getScanStatus(ctx) {
 // ats.service.js) and this is the public contract built on top of it.
 // aiMissingKeywords is the other half of this same gap — see blendAiScore
 // below.
+// SCAN/ATS ROUND 4: WHY a scan failed, for the UI. `full_ats_report.error` used to be thrown away, so every failed scan
+// looked the same and always offered a retry. `retryable: false` means trying again with the same input cannot work.
+function buildFailure(fullAtsReport, status) {
+  if (status !== 'ERROR') return null
+  const code = fullAtsReport?.errorCode || 'SYSTEM'
+  return {
+    code,
+    message: code === 'NEEDS_MORE_DETAIL' && fullAtsReport?.error ? fullAtsReport.error : failureMessage(code),
+    retryable: isRetryable(code)
+  }
+}
+
 function buildAtsDetail(fullAtsReport) {
   if (!fullAtsReport || fullAtsReport.error) return null
   return {
     keywords: {
       matched: fullAtsReport.keywords?.matched || [],
-      missing: fullAtsReport.keywords?.missing || []
+      missing: fullAtsReport.keywords?.missing || [],
+      // SCAN/ATS ROUND 4: why a keyword score was discounted (skills-only matches, copied posting text, hidden text).
+      warnings: fullAtsReport.keywords?.warnings || []
     },
     sections: {
       found:   fullAtsReport.sections?.found   || [],
@@ -649,7 +665,10 @@ function buildAtsDetail(fullAtsReport) {
     },
     content: {
       actionVerbRate:  fullAtsReport.content?.actionVerbRate ?? null,
-      quantifiedCount: fullAtsReport.content?.quantifiedCount ?? null
+      quantifiedCount: fullAtsReport.content?.quantifiedCount ?? null,
+      // SCAN/ATS ROUND 4: the bullets that say what was done but not how much (G7), and the language the content check read.
+      language:        fullAtsReport.content?.language ?? null,
+      unquantified:    fullAtsReport.content?.unquantified ?? null
     },
     aiMissingKeywords: fullAtsReport.aiMissingKeywords || [],
     // Score of the ATS-formatted file a purchase would deliver (null until it has been built for an
@@ -674,10 +693,14 @@ function buildAtsDetail(fullAtsReport) {
 // (after the daily reset the counter already belongs to a different day) and
 // never for a failure that is the person's own doing while still costing us
 // money (see the call sites).
+// SCAN/ATS ROUND 4: the refund rules asked "was this scan created today / within the hour?", but a retry-scan spends a NEW
+// slot on an old scan, so a retry that failed on our side after midnight UTC (or an hour after creation) was never given
+// back. The slot belongs to whenever it was last spent — scan_slot_spent_at, stamped by retryScan; created_at until then.
+const slotSpentAt = scan => scan.scanSlotSpentAt || scan.createdAt
 async function refundScanQuota(supabase, scan, label) {
-  if (!scan || !scan.userId || !scan.createdAt) return
+  if (!scan || !scan.userId || !slotSpentAt(scan)) return
   const startOfToday = utcMidnight()
-  if (new Date(scan.createdAt) < startOfToday) return
+  if (new Date(slotSpentAt(scan)) < startOfToday) return
   warnOnError(await supabase.rpc('decrement_scan_count', { p_user_id: scan.userId }), label)
 }
 
@@ -686,8 +709,8 @@ async function refundScanQuota(supabase, scan, label) {
 // refund only applies inside the limiter's own window — after that the slot has already reset.
 async function refundScanSlot(env, supabase, scan, label, anonRlKey) {
   if (scan && scan.userId) return refundScanQuota(supabase, scan, label)
-  if (!scan || !anonRlKey || !scan.createdAt) return
-  if (Date.now() - Date.parse(scan.createdAt) > 55 * 60 * 1000) return
+  if (!scan || !anonRlKey || !slotSpentAt(scan)) return
+  if (Date.now() - Date.parse(slotSpentAt(scan)) > 55 * 60 * 1000) return
   await rateLimiter.refundAnonScanSlot(env, anonRlKey)
 }
 
@@ -750,7 +773,8 @@ async function getScan(ctx) {
   // let the UI show what is really there and offer a regeneration.
   // fixAtsDetail (G3): why the DELIVERED file scored what it did. atsDetail above is the free scan of
   // the original upload and goes stale the moment a fix lands.
-  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail, fixAtsDetail: buildAtsDetail(fixAtsReport),
+  return ctx.json({ success: true, data: { ...safe, badgeEligible, atsDetail, failure: buildFailure(fullAtsReport, scan.status), fixAtsDetail: buildAtsDetail(fixAtsReport),
+    downloadStem: deliveredFileStem(scan.rewrittenResumeData || scan.originalResumeData),
     hasDocx: !!resumeAtsPath, hasPdf: !!resumePdfPath } })
 }
 
@@ -929,9 +953,17 @@ async function loadDraftScan(ctx) {
   return { scan }
 }
 
+// SCAN/ATS ROUND 4: every delivered file was named resume-ats.docx / resume-verified.pdf — the name a recruiter sees in the
+// attachment, identical for every candidate. "Jane Doe" -> "Jane-Doe-Resume"; nothing usable -> "Resume".
+function deliveredFileStem(resumeData) {
+  // Accents are stripped (José -> Jose), not turned into separators (Jos-e).
+  const stem = String(resumeData?.name || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '')
+  return stem ? `${stem}-Resume` : 'Resume'
+}
+
 // "Jane Doe" -> "jane-doe"; nothing usable -> ''. Used only for the downloaded file's name.
 function draftFileStem(resumeData) {
-  const stem = String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  const stem = String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
   return stem ? `${stem}-resume-draft` : 'resume-draft'
 }
 
@@ -1077,6 +1109,12 @@ async function retryScan(ctx) {
   if (!(scan.resumePath || scan.originalResumeData || scan.rawBrainDumpText))
     return ctx.json({ success: false, message: 'What this scan was run on is no longer stored. Please start a new scan.' }, 410)
 
+  // SCAN/ATS ROUND 4: a failure that happens again with the same input (a scanned PDF, a password-protected file, a file with no
+  // text) cannot be fixed by retrying — it only spends a slot and shows the same error. The person has to change the file.
+  const failedWith = scan.fullAtsReport?.errorCode || 'SYSTEM'
+  if (!isRetryable(failedWith))
+    return ctx.json({ success: false, message: failureMessage(failedWith), failure: { code: failedWith, message: failureMessage(failedWith), retryable: false } }, 409)
+
   // A logged-in retry spends a free-scan slot exactly like createScan (same atomic RPC); an anonymous
   // one has already spent the visitor's hourly slot in the rl.anonScan middleware on this route.
   let spentAccountSlot = false
@@ -1102,6 +1140,9 @@ async function retryScan(ctx) {
     return ctx.json({ success: false, message: 'This scan changed - refresh the page and try again.' }, 409)
   }
 
+  // Best-effort (see migration 0072): the refund rules key on when the slot was spent, not when the scan was created.
+  warnOnError(await supabase.from('scans').update({ scan_slot_spent_at: new Date().toISOString() }).eq('id', scan.id), 'retry-scan: stamp slot spent')
+
   await dispatchAtsScan(ctx, supabase, scan.id, ownerAccount ? null : anonToken)
   return ctx.json({ success: true, data: { id: scan.id, status: 'PENDING' } })
 }
@@ -1125,6 +1166,7 @@ async function updateDeliveredResume(ctx) {
     return ctx.json({ success: false, message: 'Your resume must be delivered before it can be edited.' }, 400)
   if (scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== REVOKE_REASON.OWNER)
     return ctx.json({ success: false, message: 'This resume was taken down by Passthrough and can\'t be edited here.' }, 403)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
 
   let body
   try { body = await ctx.req.json() } catch (_) { return ctx.json({ success: false, message: 'Invalid request body.' }, 400) }
@@ -1154,9 +1196,17 @@ async function updateDeliveredResume(ctx) {
   const version = cryptoLib.randomToken(6)
   const docxKey = storage.atsDocxKey(scan.id, version)
   await ctx.env.RESUMES_BUCKET.put(docxKey, docxBytes, { httpMetadata: { contentType: DOCX_MIME } })
-  const resumeHash = await badgeService.hashBytes(docxBytes)
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
-  const { pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
+  // The docx is in storage but no row points at it yet. Anything that throws before the row is repointed used to leave it
+  // there for good — nothing ever swept an unreferenced key.
+  let resumeHash, pdfKey, pdfHash
+  try {
+    resumeHash = await badgeService.hashBytes(docxBytes)
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
+    ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
+  } catch (renderErr) {
+    await deleteSuperseded(ctx.env, [docxKey], [])
+    throw renderErr
+  }
   const finalPdfKey  = pdfKey || null
   const finalPdfHash = pdfKey ? pdfHash : null
 
@@ -1235,6 +1285,7 @@ async function generateCoverLetter(ctx) {
   if (!scan || scan.userId !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
   if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
     return ctx.json({ success: false, message: 'Your resume must be delivered before a cover letter can be written.' }, 400)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
   const data = scan.rewrittenResumeData || scan.originalResumeData
   if (!data) return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
   const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
@@ -1499,6 +1550,7 @@ async function retryFix(ctx) {
     return ctx.json({ success: false, message: 'This fix already reached the target score — nothing to retry.' }, 400)
   if (scan.fixRetryCount >= c.MAX_FIX_RETRIES)
     return ctx.json({ success: false, message: 'No retries remaining for this fix.' }, 400)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
 
   // Atomic gate (see 0009_atomic_fix_retry.sql) — the checks above give a
   // fast, specific error for the common case, but a plain read-then-write
@@ -1622,7 +1674,7 @@ async function downloadFile(ctx) {
   if (type !== 'ats' && type !== 'pdf')
     return ctx.json({ success: false, message: 'type must be "ats" or "pdf".' }, 400)
   const fileKey  = type === 'ats' ? scan.resumeAtsPath : scan.resumePdfPath
-  const filename = type === 'ats' ? 'resume-ats.docx' : 'resume-verified.pdf'
+  const filename = `${deliveredFileStem(scan.rewrittenResumeData || scan.originalResumeData)}.${type === 'ats' ? 'docx' : 'pdf'}`
   if (!fileKey) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
 
   const obj = await ctx.env.RESUMES_BUCKET.get(fileKey)
@@ -1776,6 +1828,11 @@ async function deleteScan(ctx) {
   if (pendingPayments > 0)
     return ctx.json({ success: false, message: 'A payment for this scan is still in progress. Try again in a few minutes.' }, 409)
 
+  // SCAN/ATS ROUND 4: only a checkout opened in the last hour blocks the delete above; an OLDER pending one (a Paystack page
+  // left open in another tab) stayed payable, and paying it after the scan was gone charged the person for nothing. Payments
+  // round 8 now refunds such a payment automatically; closing the checkout here means they are never charged at all.
+  await fulfillmentService.abandonPendingForScan(supabase, id)
+
   let delQuery = supabase.from('scans').delete().eq('id', id)
   delQuery = accountOwner ? delQuery.eq('user_id', user.id) : delQuery.is('user_id', null)
   const { data: removed, error: delErr } = await delQuery.select('id').maybeSingle()
@@ -1842,7 +1899,13 @@ async function getScanWithUser(supabase, scanId) {
 // legitimate run is the structuring budget (90s) plus parsing and one scoring call.
 const SCAN_TAKEOVER_SECONDS = 120
 
+// The queue / waitUntil entry point. Wraps the real work so every Claude call the scan makes (the structuring pass, the
+// scoring pass, a scanned-PDF transcription) is written to the cost ledger when it finishes.
 async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {}) {
+  return claudeUsage.withUsage(supabase, env, scanId, tracked => runAtsScanInner(tracked, supabase, scanId, rawAnonToken, opts))
+}
+
+async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   let scanForRefund = null
   // Only the queue consumer passes structureTimeoutMs: it has no 30s wall-clock cap, so
   // structuring a long background may use the long budget. The waitUntil fallback keeps the
@@ -1889,6 +1952,7 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
     let rawResumeText
     // Layout facts only the raw DOCX shows (tables, text boxes, columns, images).
     let layoutStructure = null
+    let uploadFailure = null
 
     if (scan.inputMode === 'brain_dump') {
       // PHASE 1: no file to extract from — structure the raw pasted text
@@ -1907,7 +1971,10 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
         if (parseError || !resumeData) {
           await supabase.from('scans').update({
             status: 'ERROR',
-            full_ats_report: { error: parseErrorMessage || 'Could not structure background.' }
+            full_ats_report: {
+              error: parseErrorMessage || 'Could not structure background.',
+              errorCode: /could not structure/i.test(parseErrorMessage || '') ? 'STRUCTURE_FAILED' : 'NEEDS_MORE_DETAIL'
+            }
           }).eq('id', scanId)
           // Only a failure of OUR structuring call is refunded — "tell us more"
           // (too little text) is the person's to fix, and refunding those would
@@ -1973,19 +2040,25 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
       const obj = await env.RESUMES_BUCKET.get(scan.resumePath)
       if (!obj) throw new Error('Resume file missing from storage')
       const bytes = new Uint8Array(await obj.arrayBuffer())
-      rawResumeText = await resumeParser.extractText(bytes, scan.resumeMimeType)
-      try { layoutStructure = await resumeParser.inspectStructure?.(bytes, scan.resumeMimeType) ?? null }
-      catch (_) { layoutStructure = null }
+      // SCAN/ATS ROUND 4: one pass over the file gives the text, the layout facts (columns, images, hidden text, a
+      // picture-only PDF) and — when it cannot be read — a failure CODE the person is shown. A scanned PDF is read by
+      // the model rather than failing; a PDF is no longer flattened into one line (unpdf's mergePages collapsed every
+      // newline, which zeroed the Content score of every PDF upload).
+      const up = await resumeParser.analyzeUpload(bytes, scan.resumeMimeType, { env })
+      rawResumeText = up.text
+      layoutStructure = up.structure || null
+      uploadFailure = up.failure
     }
 
-    if (!rawResumeText || rawResumeText.trim().length < 100) {
+    if (uploadFailure || !rawResumeText || rawResumeText.trim().length < 100) {
+      const code = uploadFailure?.code || 'TOO_SHORT'
       await supabase.from('scans').update({
-        status: 'ERROR', full_ats_report: { error: 'Resume could not be parsed.' }
+        status: 'ERROR', full_ats_report: { error: failureMessage(code), errorCode: code }
       }).eq('id', scanId)
-      // No Claude call was made and no result was produced — give the slot back
+      // No Claude scoring call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.
       await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey)
-      return { success: false, error: 'Resume could not be parsed.' }
+      return { success: false, error: failureMessage(code), errorCode: code }
     }
 
     // AUDIT FIX (Auth/Scan round): was MAX_RESUME_CHARS (8000 — the brain-dump
@@ -2114,6 +2187,7 @@ async function regeneratePdf(ctx) {
     return ctx.json({ success: false, message: 'Your resume must be delivered before a PDF can be generated.' }, 400)
   if (scan.resumePdfPath)
     return ctx.json({ success: true, data: { alreadyAvailable: true } })
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
   const data = scan.rewrittenResumeData || scan.originalResumeData
   if (!data)
     return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
@@ -2197,8 +2271,25 @@ async function releaseFixJob(supabase, scanId) {
 // The compensating free credit, at most once per (scan, round) — a job that crashes after granting
 // and is re-run must not grant again. Never throws: a credit that cannot be written is reported to
 // the owner with the exact restore instruction. Returns true when this call granted one.
+// SCAN/ATS ROUND 4: a refund or a chargeback revoked the verification page and nothing else. The scan stayed FIX_DELIVERED, so
+// the person who got their money back could keep spending OUR money on it — "try again" (a Claude rewrite, twice), regenerate the
+// PDF (Claude + a browser), write cover letters — and when those retries ran out (or a rewrite failed) the compensating FREE
+// CREDIT, worth a full fix, was granted for a purchase that no longer exists: refund AND credit. Downloads of files already
+// delivered are deliberately left alone (the owner alert for a reversal says so); what stops is anything that costs us a call.
+// Fails open: if the payment row cannot be read, nobody is punished for our own outage.
+async function purchaseIsLive(supabase, scan) {
+  if (!scan || !scan.fixPaymentId) return true
+  try {
+    const { data, error } = await supabase.from('payments').select('status').eq('id', scan.fixPaymentId).maybeSingle()
+    if (error || !data) return true
+    return !['REFUNDED', 'DISPUTED'].includes(data.status)
+  } catch (_) { return true }
+}
+const PURCHASE_REVERSED = { success: false, code: 'PURCHASE_REVERSED', message: 'This purchase was refunded or is under dispute, so it can no longer be changed or regenerated.' }
+
 async function grantFixCreditOnce(env, supabase, scan, round, why) {
   if (!scan?.userId) return false
+  if (!(await purchaseIsLive(supabase, scan))) { console.log(`grantFixCreditOnce: not granting (${why}) — purchase for scan ${scan.id} was reversed`); return false }
   try {
     const { data, error } = await supabase.rpc('grant_fix_credit_once', { p_scan_id: scan.id, p_user_id: scan.userId, p_round: round })
     if (error) throw error
@@ -2959,7 +3050,7 @@ async function generateFix(env, supabase, scanId) {
     console.log(`generateFix: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
-  try { return await generateFixRun(env, supabase, scanId) }
+  try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId)) }
   finally { await releaseFixJob(supabase, scanId) }
 }
 async function generateBadge(env, supabase, scanId) {
@@ -2967,13 +3058,32 @@ async function generateBadge(env, supabase, scanId) {
     console.log(`generateBadge: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
-  try { return await generateBadgeRun(env, supabase, scanId) }
+  try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateBadgeRun(tracked, supabase, scanId)) }
   finally { await releaseFixJob(supabase, scanId) }
 }
 
+// SCAN/ATS ROUND 4 (cost ledger): HTTP handlers that make Claude calls inside the request. Each runs against a copy of env that
+// collects its calls' token usage, and writes them to claude_usage when the request ends (see lib/claudeUsage.js).
+function ledgered(handler) {
+  return async function ledgeredHandler(ctx) {
+    const original = ctx.env
+    const tracked = claudeUsage.track(original)
+    ctx.env = tracked
+    try { return await handler(ctx) }
+    finally {
+      ctx.env = original
+      await claudeUsage.record(getSupabase(original), tracked, { scanId: ctx.req.param('id') })
+    }
+  }
+}
+
+// Internals exported for tests only.
+const __test = { purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
+
 module.exports = {
-  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf, updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
-  updateResumeData, downloadDraft, downloadDraftPdf,
-  structureResume, retryScan, updateDeliveredResume, generateCoverLetter, downloadCoverLetter,  // section audit: "generate a resume from scratch"
+  __test,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
+  updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
+  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

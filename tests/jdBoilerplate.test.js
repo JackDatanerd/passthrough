@@ -50,9 +50,11 @@ describe('stripPlatformBoilerplate — Greenhouse/Lever get anchor truncation + 
   })
 
   it('cuts at the EARLIEST matching anchor when more than one appears', () => {
-    const text = 'Job content. Equal Employment Opportunity statement. Section 503 of the Rehabilitation Act details.'
+    // Round 4: boilerplate is the TAIL of a posting, so the content comes first here (an anchor in the first 30% of the text is left alone).
+    const content = 'Job content that goes on for a good while, describing the role and what is needed. '.repeat(3).trim()
+    const text = `${content} Equal Employment Opportunity statement. Section 503 of the Rehabilitation Act details.`
     const out = stripPlatformBoilerplate('jobs.lever.co', text)
-    expect(out).toBe('Job content.')
+    expect(out).toBe(content)
   })
 
   it('strips form-field labels (First Name, Resume/CV, Powered by Greenhouse, etc.)', () => {
@@ -86,5 +88,24 @@ describe('stripPlatformBoilerplate — Workday host', () => {
     // generic-only branch — the EEO anchor phrase should NOT be truncated
     // away here, only the pure-noise phrases generic stripping targets.
     expect(out).toContain('Voluntary Self-Identification form.')
+  })
+})
+
+// Scan/ATS round 4 — an equal-opportunity statement at the TOP of a posting no longer cuts the posting off.
+describe('boilerplate anchors only cut the tail (Greenhouse / Lever)', () => {
+  const requirements = 'You will build and operate Node.js services on AWS with PostgreSQL. ' + 'Requirements include five years of backend experience and strong API design skills. '.repeat(6)
+  it('keeps the requirements after an opening equal-opportunity line', () => {
+    const out = stripPlatformBoilerplate('boards.greenhouse.io', `We are an equal opportunity employer and welcome everyone. ${requirements}`)
+    expect(out).toMatch(/Node\.js services on AWS/)
+    expect(out).toMatch(/strong API design skills/)
+  })
+  it('still cuts the same statement when it closes the posting', () => {
+    const out = stripPlatformBoilerplate('jobs.lever.co', `${requirements} We are an equal opportunity employer and welcome everyone from every background.`)
+    expect(out).toMatch(/strong API design skills/)
+    expect(out).not.toMatch(/welcome everyone from every background/)
+  })
+  it('a statement near the top of a SHORT posting that is mostly boilerplate is still left alone rather than emptying it', () => {
+    const out = stripPlatformBoilerplate('boards.greenhouse.io', `We are an equal opportunity employer. Backend engineer wanted for Node.js and AWS work on payments systems.`)
+    expect(out).toMatch(/Backend engineer wanted/)
   })
 })

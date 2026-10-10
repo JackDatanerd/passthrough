@@ -18,9 +18,23 @@ import { buildResumeDiff } from '../../lib/resumeDiff'
 // regenerate loop, which is a larger feature deferred past this phase.
 // This ships the transparency half, not the interactivity half.
 
+// Round 4: a bullet that kept its words but changed position says so (it is not "rewritten"), and a changed bullet
+// highlights the words that actually differ instead of showing two whole lines to compare by eye.
+function MovedTag() {
+  return <span className="inline-block text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded px-1.5 py-0.5 ml-2 align-middle">moved</span>
+}
+function Segments({ segments, side }) {
+  return segments.map((seg, i) => {
+    if (seg.type === 'same') return <span key={i}>{seg.text}</span>
+    return side === 'before'
+      ? <span key={i} className="bg-red-50 text-red-700 line-through decoration-red-300">{seg.text}</span>
+      : <span key={i} className="bg-green-50 text-green-800 font-medium">{seg.text}</span>
+  })
+}
+
 function BulletRow({ bullet }) {
   if (bullet.status === 'unchanged') {
-    return <li className="text-sm text-gray-700 py-1">{bullet.before}</li>
+    return <li className="text-sm text-gray-700 py-1">{bullet.before}{bullet.moved && <MovedTag />}</li>
   }
   if (bullet.status === 'added') {
     return (
@@ -43,8 +57,16 @@ function BulletRow({ bullet }) {
     )
   }
   // changed
+  if (bullet.beforeSegments && bullet.afterSegments) {
+    return (
+      <li className="text-sm py-1.5" data-testid="bullet-changed">
+        <div className="text-gray-500 mb-0.5"><Segments segments={bullet.beforeSegments} side="before" /></div>
+        <div className="text-gray-800"><Segments segments={bullet.afterSegments} side="after" />{bullet.moved && <MovedTag />}</div>
+      </li>
+    )
+  }
   return (
-    <li className="text-sm py-1.5">
+    <li className="text-sm py-1.5" data-testid="bullet-changed">
       <div className="text-gray-400 line-through mb-0.5">{bullet.before}</div>
       <div className="text-gray-800">{bullet.after}</div>
     </li>
@@ -76,6 +98,51 @@ function EntryHeader({ label, status }) {
   if (status === 'added') return <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded px-1.5 py-0.5">new entry</span>
   if (status === 'removed') return <span className="text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">removed entry</span>
   return null
+}
+
+// One employment-style entry (a job, or a volunteer role — same shape).
+function JobBlock({ job }) {
+  return (
+    <div className="border-l-2 border-gray-100 pl-4">
+            <div className="flex flex-wrap items-baseline gap-x-2 mb-1">
+              <span className="text-sm font-medium text-gray-900">{job.company}</span>
+              {job.jobStatus === 'added' && (
+                <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded px-1.5 py-0.5">new entry</span>
+              )}
+              {job.jobStatus === 'removed' && (
+                <span className="text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">removed entry</span>
+              )}
+            </div>
+            {job.titleChanged ? (
+              <div className="text-xs mb-1">
+                <span className="text-gray-400 line-through mr-2">{job.beforeTitle}</span>
+                <span className="text-gray-600">{job.afterTitle}</span>
+              </div>
+            ) : (
+              <div className="text-xs text-gray-500 mb-1">{job.afterTitle}</div>
+            )}
+            {/* BUG FIX (Scan/ATS pass): resumeDiff computes datesChanged for
+                every job, but only the Education block rendered it — a
+                rewrite that altered an employment date range showed nothing
+                here, on the one screen that exists to show what changed. */}
+            {job.datesChanged && (
+              <div className="text-xs mb-1">
+                <span className="text-gray-400 line-through mr-2">{job.beforeDates}</span>
+                <span className="text-gray-600">{job.afterDates}</span>
+              </div>
+            )}
+            {job.locationChanged && (
+              <div className="text-xs mb-1" data-testid="location-changed">
+                <span className="text-gray-500 mr-2">Location:</span>
+                <span className="text-gray-400 line-through mr-2">{job.beforeLocation || '(none)'}</span>
+                <span className="text-gray-600">{job.afterLocation || '(none)'}</span>
+              </div>
+            )}
+            <ul>
+              {job.bullets.map((b, bi) => <BulletRow key={bi} bullet={b} />)}
+            </ul>
+    </div>
+  )
 }
 
 function ContactRow({ field, before, after }) {
@@ -122,40 +189,7 @@ function DiffContent({ diff, editedByUser = false }) {
         <div>
           <h4 className="text-sm font-semibold text-gray-800 mb-3">Experience</h4>
           <div className="flex flex-col gap-4">
-            {diff.experience.map((job, i) => (
-              <div key={i} className="border-l-2 border-gray-100 pl-4">
-                <div className="flex flex-wrap items-baseline gap-x-2 mb-1">
-                  <span className="text-sm font-medium text-gray-900">{job.company}</span>
-                  {job.jobStatus === 'added' && (
-                    <span className="text-xs font-medium text-green-700 bg-green-50 border border-green-200 rounded px-1.5 py-0.5">new entry</span>
-                  )}
-                  {job.jobStatus === 'removed' && (
-                    <span className="text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded px-1.5 py-0.5">removed entry</span>
-                  )}
-                </div>
-                {job.titleChanged ? (
-                  <div className="text-xs mb-1">
-                    <span className="text-gray-400 line-through mr-2">{job.beforeTitle}</span>
-                    <span className="text-gray-600">{job.afterTitle}</span>
-                  </div>
-                ) : (
-                  <div className="text-xs text-gray-500 mb-1">{job.afterTitle}</div>
-                )}
-                {/* BUG FIX (Scan/ATS pass): resumeDiff computes datesChanged for
-                    every job, but only the Education block rendered it — a
-                    rewrite that altered an employment date range showed nothing
-                    here, on the one screen that exists to show what changed. */}
-                {job.datesChanged && (
-                  <div className="text-xs mb-1">
-                    <span className="text-gray-400 line-through mr-2">{job.beforeDates}</span>
-                    <span className="text-gray-600">{job.afterDates}</span>
-                  </div>
-                )}
-                <ul>
-                  {job.bullets.map((b, bi) => <BulletRow key={bi} bullet={b} />)}
-                </ul>
-              </div>
-            ))}
+            {diff.experience.map((job, i) => <JobBlock key={i} job={job} />)}
           </div>
         </div>
       )}
@@ -206,6 +240,13 @@ function DiffContent({ diff, editedByUser = false }) {
                     <span className="text-gray-600">{e.afterDates}</span>
                   </div>
                 )}
+                {e.detailsChanged && (
+                  <div className="text-xs mt-1" data-testid="education-details-changed">
+                    <span className="text-gray-500 mr-2">Details:</span>
+                    <span className="text-gray-400 line-through mr-2">{e.beforeDetails || '(none)'}</span>
+                    <span className="text-gray-600">{e.afterDetails || '(none)'}</span>
+                  </div>
+                )}
               </div>
             ))}
           </div>
@@ -237,6 +278,32 @@ function DiffContent({ diff, editedByUser = false }) {
                 )}
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* Round 4: sections the owner can edit in the delivered-resume editor that this screen never showed. */}
+      {[['languages', 'Languages'], ['awards', 'Awards'], ['publications', 'Publications']].map(([key, title]) => {
+        const d = diff[key]
+        if (!d || (d.unchanged.length + d.added.length + d.removed.length === 0)) return null
+        if (d.added.length === 0 && d.removed.length === 0) return null      // unchanged lists carry no news
+        return (
+          <div key={key} data-testid={`diff-${key}`}>
+            <h4 className="text-sm font-semibold text-gray-800 mb-2">{title}</h4>
+            <div className="flex flex-col gap-2">
+              <TagList items={d.unchanged} variant="unchanged" />
+              <TagList items={d.added} variant="added" />
+              <TagList items={d.removed} variant="removed" />
+            </div>
+          </div>
+        )
+      })}
+
+      {diff.volunteer?.length > 0 && diff.volunteer.some(v => v.jobStatus !== 'matched' || v.titleChanged || v.datesChanged || v.bullets.some(b => b.status !== 'unchanged')) && (
+        <div data-testid="diff-volunteer">
+          <h4 className="text-sm font-semibold text-gray-800 mb-3">Volunteer experience</h4>
+          <div className="flex flex-col gap-4">
+            {diff.volunteer.map((v, i) => <JobBlock key={i} job={v} />)}
           </div>
         </div>
       )}

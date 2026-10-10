@@ -41,6 +41,72 @@ function diffText(before, after) {
   return { before: b, after: a, changed: b !== a }
 }
 
+// ── SCAN/ATS ROUND 4 ────────────────────────────────────────────────────────────────────────────────────────
+// Bullets used to be matched by POSITION. A rewrite that reorders, merges or splits bullets (routine) shifted every later
+// bullet against the wrong partner, so a handful of intact lines showed as "changed" and the last as "removed" — which
+// reads as the AI having rewritten, or dropped, work it never touched. They are now paired by how many words they share
+// (a bullet and its reworded self share most of theirs), so what you see is what actually changed; a bullet that kept its
+// words but moved is marked as moved, and a changed one carries word-level segments so the edit itself is highlighted.
+// Still dependency-free: a small LCS over words, capped so a pathological bullet cannot stall the page.
+const words = t => str(t).toLowerCase().replace(/[^\p{L}\p{N}%$+#.\s]/gu, ' ').split(/\s+/).filter(Boolean)
+
+function similarity(a, b) {
+  const x = new Set(words(a)), y = new Set(words(b))
+  if (!x.size || !y.size) return 0
+  let shared = 0
+  for (const w of x) if (y.has(w)) shared++
+  return (2 * shared) / (x.size + y.size)               // Dice coefficient: 1 = same words, 0 = nothing in common
+}
+const MIN_SIMILARITY = 0.34
+
+// [{ text, type: 'same' | 'del' | 'add' }] — word-level, whitespace preserved on the tokens.
+const SEGMENT_TOKEN_CAP = 140
+export function wordSegments(before, after) {
+  const a = str(before).trim().split(/(\s+)/).filter(t => t !== ''), b = str(after).trim().split(/(\s+)/).filter(t => t !== '')
+  if (a.length > SEGMENT_TOKEN_CAP || b.length > SEGMENT_TOKEN_CAP) return null
+  const n = a.length, m = b.length
+  const dp = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--)
+    dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+  const beforeSegments = [], afterSegments = []
+  const push = (list, type, text) => { const last = list[list.length - 1]; if (last && last.type === type) last.text += text; else list.push({ type, text }) }
+  let i = 0, j = 0
+  while (i < n && j < m) {
+    if (a[i] === b[j]) { push(beforeSegments, 'same', a[i]); push(afterSegments, 'same', b[j]); i++; j++ }
+    else if (dp[i + 1][j] >= dp[i][j + 1]) { push(beforeSegments, 'del', a[i]); i++ }
+    else { push(afterSegments, 'add', b[j]); j++ }
+  }
+  while (i < n) push(beforeSegments, 'del', a[i++])
+  while (j < m) push(afterSegments, 'add', b[j++])
+  return { beforeSegments, afterSegments }
+}
+
+export function alignBullets(beforeList, afterList) {
+  const before = beforeList.map(str), after = afterList.map(str)
+  const pairOf = new Array(after.length).fill(-1)        // after index -> before index
+  const usedBefore = new Set()
+  // 1. identical text first (so duplicates and reorders never steal each other's partner)…
+  after.forEach((a, j) => {
+    const i = before.findIndex((b, bi) => !usedBefore.has(bi) && b.trim() === a.trim())
+    if (i !== -1) { pairOf[j] = i; usedBefore.add(i) }
+  })
+  // 2. …then the best remaining pairs by shared words, best first.
+  const cands = []
+  after.forEach((a, j) => { if (pairOf[j] === -1) before.forEach((b, i) => { if (!usedBefore.has(i)) { const sim = similarity(b, a); if (sim >= MIN_SIMILARITY) cands.push({ i, j, sim }) } }) })
+  cands.sort((x, y) => y.sim - x.sim || Math.abs(x.i - x.j) - Math.abs(y.i - y.j))
+  for (const { i, j } of cands) if (pairOf[j] === -1 && !usedBefore.has(i)) { pairOf[j] = i; usedBefore.add(i) }
+
+  const out = []
+  after.forEach((a, j) => {
+    const i = pairOf[j]
+    if (i === -1) { out.push({ before: null, after: a, status: 'added' }); return }
+    if (before[i].trim() === a.trim()) { out.push({ before: before[i], after: a, status: 'unchanged', moved: i !== j }); return }
+    out.push({ before: before[i], after: a, status: 'changed', moved: i !== j, ...(wordSegments(before[i], a) || {}) })
+  })
+  before.forEach((b, i) => { if (!usedBefore.has(i)) out.push({ before: b, after: null, status: 'removed' }) })
+  return out
+}
+
 function diffJob(original, rewritten) {
   const company     = str(original?.company) || str(rewritten?.company)
   const beforeTitle = str(original?.title)
@@ -50,24 +116,16 @@ function diffJob(original, rewritten) {
 
   const beforeBullets = Array.isArray(original?.bullets) ? original.bullets : []
   const afterBullets  = Array.isArray(rewritten?.bullets) ? rewritten.bullets : []
-  const maxLen = Math.max(beforeBullets.length, afterBullets.length)
-  const bullets = []
-  for (let i = 0; i < maxLen; i++) {
-    const before = beforeBullets[i]
-    const after  = afterBullets[i]
-    if (before !== undefined && after !== undefined) {
-      bullets.push({ before: str(before), after: str(after), status: str(before).trim() === str(after).trim() ? 'unchanged' : 'changed' })
-    } else if (before !== undefined) {
-      bullets.push({ before: str(before), after: null, status: 'removed' })
-    } else {
-      bullets.push({ before: null, after: str(after), status: 'added' })
-    }
-  }
+  const bullets = alignBullets(beforeBullets, afterBullets)
+
+  const beforeLocation = str(original?.location)
+  const afterLocation  = rewritten?.location !== undefined ? str(rewritten.location) : beforeLocation
 
   return {
     company,
     beforeTitle, afterTitle, titleChanged: beforeTitle.trim() !== afterTitle.trim(),
     beforeDates, afterDates, datesChanged: beforeDates.trim() !== afterDates.trim(),
+    beforeLocation, afterLocation, locationChanged: beforeLocation.trim() !== afterLocation.trim(),
     jobStatus: !original ? 'added' : !rewritten ? 'removed' : 'matched',
     bullets
   }
@@ -163,10 +221,13 @@ function diffEducation(original, rewritten) {
   const afterTitle  = rewritten?.degree !== undefined ? str(rewritten.degree) : beforeTitle
   const beforeDates = str(original?.dates)
   const afterDates  = rewritten?.dates !== undefined ? str(rewritten.dates) : beforeDates
+  const beforeDetails = str(original?.details)
+  const afterDetails  = rewritten?.details !== undefined ? str(rewritten.details) : beforeDetails
   return {
     company,
     beforeTitle, afterTitle, titleChanged: beforeTitle.trim() !== afterTitle.trim(),
     beforeDates, afterDates, datesChanged: beforeDates.trim() !== afterDates.trim(),
+    beforeDetails, afterDetails, detailsChanged: beforeDetails.trim() !== afterDetails.trim(),
     entryStatus: !original ? 'added' : !rewritten ? 'removed' : 'matched',
   }
 }
@@ -208,6 +269,9 @@ function diffContact(original, rewritten) {
   return { changed }
 }
 
+// Volunteer work has the same shape as a job (organization / role / dates / bullets), so it is diffed as one.
+const volunteerAsJob = v => (v && typeof v === 'object' ? { company: v.organization, title: v.role, dates: v.dates, bullets: v.bullets } : v)
+
 /**
  * buildResumeDiff(original, rewritten) -> diff object | null
  * Returns null if there's no original data to diff against at all (should
@@ -222,6 +286,11 @@ export function buildResumeDiff(original, rewritten) {
     education:      diffEntryList(arr(original?.education), arr(rewritten?.education), diffEducation, e => e?.institution),
     projects:       diffEntryList(arr(original?.projects), arr(rewritten?.projects), diffProject, p => p?.name),
     skills:         diffList(arr(original?.skills), arr(rewritten?.skills)),
-    certifications: diffList(arr(original?.certifications), arr(rewritten?.certifications))
+    certifications: diffList(arr(original?.certifications), arr(rewritten?.certifications)),
+    // Round 4: sections the owner can now edit in the delivered-resume editor were invisible here.
+    languages:      diffList(arr(original?.languages), arr(rewritten?.languages)),
+    awards:         diffList(arr(original?.awards), arr(rewritten?.awards)),
+    publications:   diffList(arr(original?.publications), arr(rewritten?.publications)),
+    volunteer:      diffEntryList(arr(original?.volunteer).map(volunteerAsJob), arr(rewritten?.volunteer).map(volunteerAsJob), diffJob, j => j?.company)
   }
 }

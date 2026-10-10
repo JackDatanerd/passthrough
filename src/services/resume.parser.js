@@ -11,6 +11,8 @@
 
 const JSZip   = require('jszip')
 const c        = require('../config/constants')
+const { analyzePdf } = require('./pdf.inspect')
+const { failureMessage } = require('../lib/scanFailure')
 
 // ZIP-BOMB DEFENCE. The 5MB upload cap (middleware/upload.js) only bounds the
 // COMPRESSED size on the wire; DEFLATE can expand ~1000:1, so a 5MB .docx can
@@ -90,7 +92,66 @@ function readEntryCapped(entry, maxBytes) {
 // headers/footers, text boxes) — it targets standard resume body text,
 // which is what actually needs to reach the ATS scorer and Claude.
 // Turns one WordprocessingML part (document/header/footer XML) into text lines.
-function docxXmlToLines(xml) {
+// ── SCAN/ATS ROUND 4: what a .docx hides from <w:t> ─────────────────────────────────────────────────
+// Hidden text. Word's "Hidden" font effect, near-white text and sub-3pt text are all invisible on the page and all
+// readable by the extractor, so pasting the job description in white used to lift the keyword score for free.
+// Those runs are now dropped from the text and COUNTED (stats.hiddenChars) so the scorer can say so.
+// White text is only treated as hidden when the document has no dark shading or filled shape for it to sit on —
+// a name in white across a dark header band is ordinary design, not stuffing.
+function lumOf(hex) {
+  const n = parseInt(hex, 16)
+  return (0.2126 * ((n >> 16) & 255) + 0.7152 * ((n >> 8) & 255) + 0.0722 * (n & 255)) / 255
+}
+function docHasDarkBackground(xml) {
+  for (const m of xml.matchAll(/<w:shd\b[^>]*\bw:fill="([0-9A-Fa-f]{6})"/g)) if (lumOf(m[1]) < 0.6) return true
+  const bg = xml.match(/<w:background\b[^>]*\bw:color="([0-9A-Fa-f]{6})"/)
+  if (bg && lumOf(bg[1]) < 0.6) return true
+  return /<wps:wsp\b|<v:rect\b|<v:roundrect\b|<v:shape\b|<w:pict\b/.test(xml)
+}
+function runIsHidden(runXml, darkBg) {
+  const rPr = (runXml.match(/<w:rPr>[\s\S]*?<\/w:rPr>/) || [''])[0]
+  if (!rPr) return false
+  const flagOn = tag => {
+    const m = rPr.match(new RegExp(`<w:${tag}\\b([^>]*)/?>`))
+    if (!m) return false
+    const v = (m[1].match(/w:val="([^"]*)"/) || [])[1]
+    return !(v !== undefined && /^(0|false|off)$/i.test(v))
+  }
+  if (flagOn('vanish') || flagOn('specVanish')) return true
+  const sz = rPr.match(/<w:sz\b[^>]*\bw:val="(\d+)"/)
+  if (sz && parseInt(sz[1], 10) <= 6) return true          // half-points: <= 3pt
+  if (!darkBg) {
+    const col = rPr.match(/<w:color\b[^>]*\bw:val="([0-9A-Fa-f]{6})"/)
+    if (col && lumOf(col[1]) >= 0.94) return true
+  }
+  return false
+}
+
+// Hyperlink targets live in word/_rels/*.rels, not in the text: "LinkedIn" is a link whose URL the extractor never
+// saw, so a regenerated resume lost it. Returns Map(rId -> url) for external http(s)/mailto relationships.
+async function readRels(zip, partPath) {
+  const out = new Map()
+  const entry = zip.file(partPath.replace(/([^/]+)$/, '_rels/$1.rels'))
+  if (!entry) return out
+  try {
+    const xml = new TextDecoder('utf-8').decode(await readEntryCapped(entry, 2 * 1024 * 1024))
+    for (const m of xml.matchAll(/<Relationship\b[^>]*>/g)) {
+      const tag = m[0]
+      const id = (tag.match(/\bId="([^"]+)"/) || [])[1]
+      const type = (tag.match(/\bType="([^"]+)"/) || [])[1] || ''
+      const target = (tag.match(/\bTarget="([^"]+)"/) || [])[1]
+      if (!id || !target || !/\/hyperlink$/.test(type)) continue
+      const url = target.replace(/&amp;/g, '&').trim()
+      if (/^(https?:|mailto:)/i.test(url) && url.length <= 300) out.set(id, url)
+    }
+  } catch (_) { /* a broken rels part must never fail the extraction */ }
+  return out
+}
+const normUrl = u => String(u).toLowerCase().replace(/^mailto:/, '').replace(/^https?:\/\//, '').replace(/^www\./, '').replace(/\/+$/, '')
+const xmlEscape = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+
+function docxXmlToLines(xml, ctx = {}) {
+  const darkBg = ctx.darkBg ?? docHasDarkBackground(xml)
   // AUDIT FIX (Auth/Scan round): text boxes are stored TWICE — a DrawingML
   // copy (mc:Choice) and a VML copy (mc:Fallback) — and both contain <w:p>
   // text, so every text-box resume duplicated its content. Keep one copy.
@@ -99,6 +160,31 @@ function docxXmlToLines(xml) {
   // swallows the NEXT paragraph's closing tag.
   const paragraphs = xml.match(/<w:p\b[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g) || []
   return paragraphs.map(p => {
+    // Hidden runs first (see above): drop them from the text and count what was dropped.
+    {
+      p = p.replace(/<w:r(?:\s[^>]*)?(?<!\/)>[\s\S]*?<\/w:r>/g, run => {
+        if (!runIsHidden(run, darkBg)) return run
+        if (ctx.stats) for (const t of run.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)) ctx.stats.hiddenChars += t[1].replace(/\s/g, '').length
+        return ''
+      })
+    }
+    // Link targets: append "(url)" after link text that doesn't already show it.
+    const shownNow = () => [...p.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1]).join('').toLowerCase()
+    const addUrl = url => {
+      if (shownNow().includes(normUrl(url))) return ''
+      return `<w:r><w:t xml:space="preserve"> (${xmlEscape(url.replace(/^mailto:/i, ''))})</w:t></w:r>`
+    }
+    if (ctx.links && ctx.links.size) {
+      p = p.replace(/<w:hyperlink\b[^>]*\br:id="([^"]+)"[^>]*>[\s\S]*?<\/w:hyperlink>/g, (m, id) => {
+        const url = ctx.links.get(id)
+        return url ? m + addUrl(url) : m
+      })
+    }
+    // Field-code links: HYPERLINK "url" in <w:instrText>.
+    for (const f of p.matchAll(/<w:instrText\b[^>]*>\s*HYPERLINK\s+"([^"]+)"/g)) {
+      const url = f[1].replace(/&amp;/g, '&').trim()
+      if (/^(https?:|mailto:)/i.test(url) && url.length <= 300) p += addUrl(url)
+    }
     // Convert tabs/line-breaks within a paragraph before stripping tags, so
     // cell/line structure isn't just silently collapsed into one run. These
     // get matched alongside <w:t> content below (not separately extracted
@@ -142,33 +228,38 @@ function docxXmlToLines(xml) {
 // contact information, so page-number boilerplate doesn't add noise.
 const CONTACT_LINE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{7,}/i
 
-async function extractDocxText(bytes) {
+async function extractDocxParts(bytes) {
   const zip = await JSZip.loadAsync(bytes)
   const docXml = zip.file('word/document.xml')
   if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
   // Capped streaming inflate — see the ZIP-BOMB DEFENCE comment above.
   const xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
-  const body = docxXmlToLines(xml).filter(Boolean)
+  const stats = { hiddenChars: 0 }
+  const darkBg = docHasDarkBackground(xml)
+  const body = docxXmlToLines(xml, { links: await readRels(zip, 'word/document.xml'), stats, darkBg }).filter(Boolean)
 
   const readParts = async re => {
     const out = []
     for (const entry of (zip.file(re) || []).slice(0, 6)) {
-      try { out.push(...docxXmlToLines(new TextDecoder('utf-8').decode(await readEntryCapped(entry, MAX_DOCX_XML_BYTES))).filter(Boolean)) }
-      catch (_) { /* a broken header part must never fail the whole extraction */ }
+      try {
+        const partXml = new TextDecoder('utf-8').decode(await readEntryCapped(entry, MAX_DOCX_XML_BYTES))
+        out.push(...docxXmlToLines(partXml, { links: await readRels(zip, entry.name), stats, darkBg }).filter(Boolean))
+      } catch (_) { /* a broken header part must never fail the whole extraction */ }
     }
     return out
   }
   const seen = new Set(body)
   const header = (await readParts(/^word\/header\d*\.xml$/)).filter(l => !seen.has(l) && seen.add(l))
   const footer = (await readParts(/^word\/footer\d*\.xml$/)).filter(l => CONTACT_LINE.test(l) && !seen.has(l) && seen.add(l))
-  return [...header, ...body, ...footer].join('\n')
+  return { text: [...header, ...body, ...footer].join('\n'), hiddenChars: stats.hiddenChars }
 }
+async function extractDocxText(bytes) { return (await extractDocxParts(bytes)).text }
 
 // Layout facts the extracted text can't show. Text extraction flattens tables
 // into plain lines and text boxes into plain paragraphs, so a resume built on a
 // two-column table or floating text boxes reads as "clean" text while being
 // exactly the kind of file employer ATS parsers mangle. The raw XML is the only
-// place that is visible. DOCX only: a PDF has no equivalent structure to read.
+// place that is visible. (A PDF's equivalent facts come from pdf.inspect.js.)
 // Never throws — a failed inspection means "unknown", not "bad".
 async function inspectDocxStructure(bytes) {
   try {
@@ -190,38 +281,69 @@ async function inspectDocxStructure(bytes) {
   } catch (_) { return null }
 }
 
+// How many pages of a scanned PDF we are willing to read with the model, and how short "no text" is.
+const OCR_MAX_PAGES = 4
+const MIN_TEXT = 100
+
+// One entry point for an uploaded resume: its text, its layout facts, or a failure CODE (see lib/scanFailure.js).
+// `env` is optional — with it, a PDF that is only a picture of a page is read by the model instead of failing.
+async function analyzeUpload(bytes, mimeType, { env } = {}) {
+  try {
+    if (mimeType === 'application/pdf') {
+      const r = await analyzePdf(bytes)
+      if (r.failure) return { text: '', structure: null, failure: r.failure }
+      let text = r.text
+      const structure = { ...r.structure, imageOnly: false }
+      if (text.trim().length < MIN_TEXT) {
+        // A scan: pdf.js finds no text layer. The model can read the page images, which lets the paid fix rebuild a
+        // real text resume from it — and the score says plainly that the ORIGINAL is unreadable to an ATS.
+        if (env?.ANTHROPIC_API_KEY && r.structure.pages <= OCR_MAX_PAGES && bytes.byteLength <= 5 * 1024 * 1024) {
+          const ocr = await require('./claude.service').extractTextFromPdf(env, bytes)
+          if (ocr.success && ocr.text.trim().length >= MIN_TEXT) { text = ocr.text; structure.imageOnly = true }
+        }
+        if (text.trim().length < MIN_TEXT)
+          return { text, structure, failure: { code: r.structure.images > 0 || text.trim().length === 0 ? 'NO_TEXT' : 'TOO_SHORT' } }
+      }
+      if (!structure.imageOnly && r.links.length) text += '\n\n[hyperlinks in this document]\n' + r.links.join('\n')
+      return { text, structure, failure: null }
+    }
+    const d = await extractDocxParts(bytes)
+    const structure = { ...((await inspectDocxStructure(bytes)) || {}), hiddenTextChars: d.hiddenChars }
+    if (d.text.trim().length < MIN_TEXT) return { text: d.text, structure, failure: { code: 'TOO_SHORT' } }
+    return { text: d.text, structure, failure: null }
+  } catch (err) {
+    console.error('analyzeUpload:', err.message)
+    return { text: '', structure: null, failure: { code: 'UNREADABLE_FILE' } }
+  }
+}
+
+// Kept for callers that only want layout facts (and for the generated-document re-scoring paths).
 async function inspectStructure(bytes, mimeType) {
-  if (mimeType === 'application/pdf') return null
+  if (mimeType === 'application/pdf') return (await analyzePdf(bytes)).structure || null
   return inspectDocxStructure(bytes)
 }
 
+// Text only. No model fallback — callers that want one use analyzeUpload with an env.
 async function extractText(bytes, mimeType) {
-  try {
-    if (mimeType === 'application/pdf') {
-      const { extractText: pdfExtract } = await import('unpdf')
-      // mergePages: true is required — without it, unpdf returns `text` as an
-      // array of per-page strings (string[]) instead of one merged string,
-      // which crashes every caller that does rawResumeText.trim() downstream.
-      const { text } = await pdfExtract(bytes, { mergePages: true })
-      return text || ''
-    }
-    return await extractDocxText(bytes)
-  } catch (err) {
-    console.error('extractText:', err.message)
-    return ''
+  if (mimeType !== 'application/pdf') {
+    try { return await extractDocxText(bytes) } catch (err) { console.error('extractText:', err.message); return '' }
   }
+  return (await analyzeUpload(bytes, mimeType)).text || ''
 }
 
 // Used by generateFix/generateBadge only — calls Claude
 async function parse(env, bytes, mimeType) {
-  const text = await extractText(bytes, mimeType)
-  if (!text || text.trim().length < 100)
+  // analyzeUpload with env: a scanned PDF is read by the model here too, so the paid fix can rebuild from it.
+  const up = await analyzeUpload(bytes, mimeType, { env })
+  if (up.failure)
     return {
       text: '',
       resumeData: null,
       parseError: true,
-      parseErrorMessage: 'Resume could not be parsed. Upload a text-based PDF or .docx.'
+      parseErrorCode: up.failure.code,
+      parseErrorMessage: failureMessage(up.failure.code)
     }
+  const text = up.text
   // AUDIT FIX (Auth/Scan round): was c.MAX_RESUME_CHARS (8000 — sized for the
   // brain-dump box). A 3-page resume is 8-10k characters, so everything past
   // char 8000 (Education, Skills, older roles) was silently cut BEFORE the
@@ -236,13 +358,14 @@ async function parse(env, bytes, mimeType) {
       text: truncated,
       resumeData: null,
       parseError: true,
+      parseErrorCode: 'STRUCTURE_FAILED',
       // Preserve the real reason (RESPONSE_TRUNCATED / PARSE_FAIL / an
       // Anthropic API error message) instead of masking it with a generic
       // string — this is what showed up as "Could not extract resume
       // structure" with no further detail in production logs.
       parseErrorMessage: `Could not extract resume structure (${result.error || 'unknown'}).`
     }
-  return { text: truncated, resumeData: result.data, parseError: false }
+  return { text: truncated, resumeData: result.data, parseError: false, structure: up.structure }
 }
 
 // Brain-dump entry path (Phase 1) equivalent of parse() above. There's no
@@ -375,4 +498,4 @@ function serializeResumeData(resumeData) {
   return lines.join('\n')
 }
 
-module.exports = { extractText, inspectStructure, parse, structureBrainDump, serializeResumeData }
+module.exports = { extractText, extractDocxParts, analyzeUpload, inspectStructure, parse, structureBrainDump, serializeResumeData }

@@ -562,7 +562,9 @@ describe('deleteScan', () => {
   it('a paid scan can be deleted — the receipt survives via payments.scan_id on delete set null', async () => {
     t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, verification_code: 'ABC', updated_at: '2020-01-01', resume_path: 'r/1.pdf' } })
     expect((await t.mod.deleteScan(t.ctx())).status).toBe(200)
-    expect(t.db.calls.some(c => c.table === 'payments' && c.op !== 'select')).toBe(false)
+    // The receipt (a SUCCESS payment) is never touched. The only payments write is closing an unpaid, still-PENDING checkout
+    // (Round 4) — never a delete, and never a row that is not PENDING.
+    expect(t.db.calls.some(c => c.table === 'payments' && c.op === 'delete')).toBe(false)
   })
   it('a failing R2 delete never fails the request or skips the other objects', async () => {
     t = setup({ r2Fail: 'r/1-ats.docx' })
@@ -680,13 +682,17 @@ describe('getScan', () => {
   it('reshapes fullAtsReport into atsDetail, or null when the report itself is an error placeholder', async () => {
     t = setup({ id: 's1', user_id: 'u1', full_ats_report: { keywords: { matched: ['x'], missing: ['y'] }, aiMissingKeywords: ['z'] } })
     const res = await t.mod.getScan(baseCtx())
-    expect(res.body.data.atsDetail.keywords).toEqual({ matched: ['x'], missing: ['y'] })
+    expect(res.body.data.atsDetail.keywords).toEqual({ matched: ['x'], missing: ['y'], warnings: [] })
+    expect(res.body.data.failure).toBe(null)
     expect(res.body.data.atsDetail.aiMissingKeywords).toEqual(['z'])
     t.restore()
 
-    t = setup({ id: 's1', user_id: 'u1', full_ats_report: { error: 'scoring failed' } })
+    t = setup({ id: 's1', user_id: 'u1', status: 'ERROR', full_ats_report: { error: 'scoring failed', errorCode: 'NO_TEXT' } })
     const res2 = await t.mod.getScan(baseCtx())
     expect(res2.body.data.atsDetail).toBe(null)
+    // Round 4: the reason is no longer thrown away — the UI gets a code, the copy, and whether retrying can help.
+    expect(res2.body.data.failure).toMatchObject({ code: 'NO_TEXT', retryable: false })
+    expect(res2.body.data.failure.message).toMatch(/no selectable text/i)
   })
 })
 
@@ -1029,6 +1035,11 @@ describe('runAtsScan', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': {
         extractText: async () => opts.extractedText ?? 'x'.repeat(150),
+        // Round 4: runAtsScan reads an uploaded file through analyzeUpload (text + layout facts + a failure code).
+        analyzeUpload: async () => {
+          const text = opts.extractedText ?? 'x'.repeat(150)
+          return { text, structure: opts.layout ?? null, failure: opts.uploadFailure ?? (text.trim().length < 100 ? { code: 'TOO_SHORT' } : null) }
+        },
         structureBrainDump: async () => opts.brainDumpResult ?? { resumeData: { name: 'Jane', email: 'jane@x.com' }, parseError: false },
         serializeResumeData: () => 'synthetic',
       },
@@ -1138,7 +1149,20 @@ describe('runAtsScan', () => {
     t = setup({ extractedText: 'too short' })
     await t.mod.runAtsScan(t.env, t.db, 's1')
     const errUpdate = t.state.scanUpdates.find(u => u.status === 'ERROR')
-    expect(errUpdate.full_ats_report.error).toMatch(/could not be parsed/i)
+    // Round 4: a failure now carries a CODE the UI acts on (and a message that says what to do), not a generic string.
+    expect(errUpdate.full_ats_report.errorCode).toBe('TOO_SHORT')
+    expect(errUpdate.full_ats_report.error).toMatch(/almost no text/i)
+  })
+
+  it('a scanned / password-protected / over-long file fails with its own code, and the slot is handed back', async () => {
+    for (const code of ['NO_TEXT', 'ENCRYPTED_PDF', 'TOO_MANY_PAGES', 'UNREADABLE_FILE']) {
+      t = setup({ extractedText: '', uploadFailure: { code } })
+      await t.mod.runAtsScan(t.env, t.db, 's1')
+      const errUpdate = t.state.scanUpdates.find(u => u.status === 'ERROR')
+      expect(errUpdate.full_ats_report.errorCode).toBe(code)
+      expect(errUpdate.full_ats_report.error.length).toBeGreaterThan(20)
+      t.restore?.()
+    }
   })
 
   it('blends the AI score in when the AI call succeeds', async () => {

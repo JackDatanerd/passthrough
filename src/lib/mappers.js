@@ -88,6 +88,8 @@ function scanRowToCamel(row) {
     // through this mapper) but any future read path expecting it back from
     // scanRowToCamel would have silently gotten undefined.
     fixErrorRecoveries: row.fix_error_recoveries ?? 0,
+    // Round 4: when the free-scan slot behind this scan was spent (a retry spends a new one long after created_at).
+    scanSlotSpentAt:   row.scan_slot_spent_at ?? null,
     // Migration 0057: the job lease (claim_fix_job) and the once-per-round compensation marker
     // (grant_fix_credit_once). Both are written only by those RPCs.
     fixJobLockUntil:   row.fix_job_lock_until ?? null,
@@ -170,6 +172,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'resumeHashHistory', 'fixPaymentId',
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
   'fixJobLockUntil', 'fixCreditRound', 'fixErrorRecoveries',   // job bookkeeping (migrations 0026 / 0057)
+  'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
 ]
 const CLIENT_SCAN_FIELDS = [
   'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',

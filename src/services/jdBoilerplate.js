@@ -54,11 +54,17 @@ const ANCHOR_PHRASES = [
   'pursuant to the san francisco fair chance ordinance',
 ]
 
+// SCAN/ATS ROUND 4: the EEO / benefits boilerplate these anchors mark is always the TAIL of a posting, but the cut was made at the
+// FIRST occurrence anywhere. A posting that opens with "Acme is an equal opportunity employer…" (common) was cut at that opening
+// line and lost every requirement after it — the keywords were then scored against a few lines of company intro. An anchor now only
+// counts once the text is well under way; an early one is left alone.
+const ANCHOR_MIN_POSITION = 0.3
 function truncateAtFirstAnchor(text) {
   const lower = text.toLowerCase()
+  const from = Math.floor(text.length * ANCHOR_MIN_POSITION)
   let cutAt = text.length
   for (const phrase of ANCHOR_PHRASES) {
-    const idx = lower.indexOf(phrase)
+    const idx = lower.indexOf(phrase, from)
     if (idx !== -1 && idx < cutAt) cutAt = idx
   }
   return text.slice(0, cutAt).trim()

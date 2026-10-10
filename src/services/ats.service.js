@@ -373,7 +373,60 @@ function fitJobDescription(text, max) {
   return kept.sort((a, b) => a.i - b.i).map(z => z.text.trim()).join('\n').slice(0, max)
 }
 
-function scoreKeywords(resumeText, jdText) {
+// ── SCAN/ATS ROUND 4: keyword integrity ───────────────────────────────────────────────────────────────────
+// A keyword used to count if the word appeared ANYWHERE in the resume. That made the free score — and through it the
+// "Passthrough Verified" credential — cheap to inflate: one extra line of skills (measured: a 62 became an 88 on the
+// rule layer, past the 80 credential line) or the job description pasted in white. Three deterministic guards, each
+// of which leaves an honest resume exactly as it scored before:
+//   1. SKILLS-ONLY. A JD term found only in the Skills list, with none of it evidenced in a role, a project or the
+//      summary, earns less — but only when MOST of the matches are like that (a stuffed list, not a normal one).
+//   2. COPIED TEXT. Five-word runs that appear in both the resume and the posting. Honest resumes share a few by chance;
+//      a pasted posting shares dozens.
+//   3. HIDDEN TEXT. The ingest layer dropped white/tiny/off-page/"hidden" text and counted it; trying it is penalised.
+const SKILLS_HEADING_RE  = /(?:^| )(?:skills|technical skills|core competencies|competencies|expertise|technologies|tools|tech stack|competences|competencias|habilidades|aptitudes|kenntnisse|fahigkeiten|fertigkeiten)(?: |$)/
+const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
+const foldHeading = l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim()
+const LINK_BLOCK_MARK = '[hyperlinks in this document]'
+function stripLinkBlock(text) {
+  const i = String(text || '').indexOf(LINK_BLOCK_MARK)
+  return i === -1 ? text : text.slice(0, i)
+}
+// Splits a resume into the lines that SAY what the person did (roles, projects, summary…) and the lines of its skills
+// list. With no recognisable Skills heading everything is evidence — the old behaviour.
+function resumeEvidenceZones(text) {
+  const evidence = [], skills = []
+  let zone = 'header'
+  for (const line of String(text || '').split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    const inline = t.match(/^(?:technical\s+)?skills?\s*[:\u2013-]\s*(.+)$/i)
+    if (inline) { skills.push(inline[1]); continue }
+    if (t.length <= 50 && !/[.!?]$/.test(t) && t.split(/\s+/).length <= 6) {
+      const f = foldHeading(t)
+      if (SKILLS_HEADING_RE.test(f)) { zone = 'skills'; continue }
+      if (OTHER_HEADING_RE.test(f))  { zone = 'body'; continue }
+    }
+    if (zone === 'skills' && !(t.split(/\s+/).length >= 10 && /[.]$/.test(t))) skills.push(t)
+    else if (zone !== 'header' || t.length >= 60) evidence.push(t)
+  }
+  return { evidence: evidence.join('\n'), skills: skills.join('\n'), hasSkillsZone: skills.length > 0 }
+}
+const shingles = (text, n = 5) => {
+  const w = String(text || '').toLowerCase().replace(/[^a-z0-9+#.\s]/g, ' ').split(/\s+/).filter(Boolean)
+  const out = new Set()
+  for (let i = 0; i + n <= w.length; i++) out.add(w.slice(i, i + n).join(' '))
+  return out
+}
+const stemSets = text => {
+  const tokens = tokenizeRaw(text)
+  const stems = new Set(tokens.map(stem))
+  const bigrams = new Set()
+  for (let i = 0; i < tokens.length - 1; i++) bigrams.add(`${stem(tokens[i])} ${stem(tokens[i + 1])}`)
+  return { stems, bigrams }
+}
+const HIDDEN_TEXT_MIN = 20
+
+function scoreKeywords(resumeText, jdText, { hiddenTextChars = 0 } = {}) {
   const pool = extractWeightedKeywords(jdText)
   const entries = [...pool.entries()]
   const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ')), TOP_UNIGRAMS)
@@ -381,35 +434,60 @@ function scoreKeywords(resumeText, jdText) {
   const top25 = [...topUnigrams, ...topBigrams]
 
   // Match against STEMMED resume tokens, not a raw substring search — this
-  // is what actually lets "managed"/"managing"/"manager" in the resume
-  // credit a JD's "management" (well, "manage" — see stemmer limitations
-  // above), instead of requiring an exact literal string match.
-  const resumeTokens = tokenizeRaw(resumeText)
-  const resumeStems  = new Set(resumeTokens.map(stem))
-  const resumeBigramStems = new Set()
-  for (let i = 0; i < resumeTokens.length - 1; i++) {
-    resumeBigramStems.add(`${stem(resumeTokens[i])} ${stem(resumeTokens[i + 1])}`)
+  // is what actually lets "managed"/"managing"/"manager" in the resume credit a
+  // JD's "management" (well, "manage" — see stemmer limitations above), instead
+  // of requiring an exact literal string match.
+  const zones = resumeEvidenceZones(resumeText)
+  const all = stemSets(resumeText)
+  const ev  = zones.hasSkillsZone ? stemSets(zones.evidence) : all
+  const has = (sets, kw) => {
+    if (kw.includes(' ')) { const [a, b] = kw.split(' '); return sets.bigrams.has(`${stem(a)} ${stem(b)}`) }
+    return sets.stems.has(stem(kw))
   }
-
-  const matched = top25.filter(kw => {
-    if (kw.includes(' ')) {
-      const [a, b] = kw.split(' ')
-      return resumeBigramStems.has(`${stem(a)} ${stem(b)}`)
-    }
-    return resumeStems.has(stem(kw))
-  })
+  const matched = top25.filter(kw => has(all, kw))
   const missing = top25.filter(kw => !matched.includes(kw))
+  const skillsOnly = matched.filter(kw => !has(ev, kw))
+
+  const warnings = []
+  const stuffed = zones.hasSkillsZone && skillsOnly.length >= 6 && skillsOnly.length >= 0.6 * matched.length
+  const skillsOnlyWeight = stuffed ? 0.4 : 1
+  if (stuffed) warnings.push(`${skillsOnly.length} of the ${matched.length} job-description terms appear only in a skills list and nowhere in your roles or projects — they count for less until your experience shows them`)
+
+  let copiedRatio = 0
+  if (jdText) {
+    const rs = shingles(zones.hasSkillsZone ? `${zones.evidence}\n${zones.skills}` : resumeText)
+    if (rs.size >= 30) {
+      const js = shingles(jdText)
+      let shared = 0
+      for (const sh of rs) if (js.has(sh)) shared++
+      copiedRatio = shared / rs.size
+      if (shared >= 15 && copiedRatio >= 0.12) warnings.push('large parts of your resume repeat the job description word for word — write what you actually did in your own words')
+    }
+  }
+  const copied = copiedRatio >= 0.12 && warnings.some(w => w.startsWith('large parts'))
+  const hidden = hiddenTextChars >= HIDDEN_TEXT_MIN
+  if (hidden) warnings.push('hidden text was found in the file (white, tiny, off-page or "hidden"-formatted words)')
+
+  let score = null
+  if (top25.length) {
+    const weight = matched.reduce((sum, kw) => sum + (skillsOnly.includes(kw) ? skillsOnlyWeight : 1), 0)
+    let raw = (weight / top25.length) * 100
+    if (copied || hidden) raw *= 0.5
+    score = Math.round(raw)
+  }
   return {
     // null (not 100) when the JD yielded nothing to match — a posting made only of filler words
     // used to hand out a perfect keyword score, 35 free points. scoreResume() re-weights.
-    score: top25.length ? Math.round((matched.length / top25.length) * 100) : null,
+    score,
     // Canonical tokens (cplusplus, dotnet, ...) are internal — show users the
     // real spelling (C++, .NET, ...).
     detail: {
       matched: matched.map(displayKeyword),
       missing: missing.map(displayKeyword),
       matchRate: top25.length ? matched.length / top25.length : null,
-      noKeywords: top25.length === 0
+      noKeywords: top25.length === 0,
+      warnings,
+      integrity: { skillsOnly: skillsOnly.length, stuffed, copiedRatio: Math.round(copiedRatio * 1000) / 1000, hiddenTextChars }
     }
   }
 }
@@ -566,6 +644,11 @@ function scoreFormat(resumeText, structure = null) {
       { score -= 15; issues.push('Multi-column page layout — text may be read across columns instead of down them') }
     if (structure.images > 0)
       { score -= 5; issues.push('Images or graphics — ATS parsers ignore them, so nothing in them counts') }
+    // SCAN/ATS ROUND 4: facts only the ingest layer can see (see pdf.inspect.js / resume.parser.js).
+    if (structure.hiddenTextChars >= HIDDEN_TEXT_MIN)
+      { score -= 25; issues.push('Hidden text — white, tiny, off-page or "hidden"-formatted words. We ignored it; ATS systems and recruiters treat it as keyword stuffing, so remove it') }
+    if (structure.imageOnly)
+      { score -= 60; issues.push('Image-only PDF — it has no real text, so an employer ATS reads it as a blank page. Rebuild it from a Word or Google Docs export') }
   }
   return { score: Math.max(0, score), detail: { issues } }
 }
@@ -649,6 +732,17 @@ function scoreSections(resumeText) {
   }
 }
 
+// English function words: a resume in English is full of them, one in another language is not. Two-letter words that
+// other languages also use ("a", "in", "on") are left out so they cannot make a Spanish or German resume look English.
+const EN_FUNCTION_WORDS = new Set(['the', 'and', 'of', 'to', 'for', 'with', 'by', 'is', 'as', 'at', 'from', 'that', 'this', 'using', 'are', 'was', 'into', 'across', 'through', 'their', 'our', 'also', 'which', 'while'])
+function looksEnglish(text) {
+  const words = String(text || '').toLowerCase().match(/[a-z\u00c0-\u024f]+/g) || []
+  if (words.length < 60) return true
+  let hits = 0
+  for (const w of words) if (EN_FUNCTION_WORDS.has(w)) hits++
+  return hits / words.length >= 0.05
+}
+
 function scoreContent(resumeText) {
   // Symbolic bullets (•, -, *, ◦, etc.) need no trailing punctuation — the
   // bullet character followed by a space IS the complete marker. Only
@@ -690,7 +784,12 @@ function scoreContent(resumeText) {
     const words = b.trim().replace(BULLET_LINE, '').trim().toLowerCase().split(/\s+/)
     return words.length > 0 && ACTION_VERB_STEMS.has(stem(words[0]))
   }).length
-  let score = Math.round((actionCount / total) * 100)
+  // SCAN/ATS ROUND 4: the action-verb list is English. Section detection is multilingual, so a French or Spanish
+  // resume was recognised as a resume and then scored ~0 on Content for not starting bullets with English verbs
+  // (measured: 80 in English, 9 in Spanish — about 14 points off the total). For a resume that is not in English the
+  // verb check is skipped and given the benefit of the doubt; everything else (numbers, length) still applies.
+  const nonEnglish = !looksEnglish(resumeText)
+  let score = nonEnglish ? 75 : Math.round((actionCount / total) * 100)
   // AUDIT FIX: this only matched digit-THEN-unit order (e.g. "50%", "50k"),
   // which silently missed the standard US currency format where the symbol
   // comes first — "$50,000", "$1,500,000" — since the comma also breaks the
@@ -703,9 +802,19 @@ function scoreContent(resumeText) {
   const wordCount = resumeText.split(/\s+/).filter(Boolean).length
   if (wordCount < 200) score = Math.max(0, score - 20)
   if (/references available/i.test(resumeText)) score = Math.max(0, score - 10)
+  // Bullets that say what was done but not how much — the single most useful thing a person can fix by hand, and
+  // previously only visible to someone who had already paid for a rewrite.
+  const bulletText = b => b.trim().replace(BULLET_LINE, '').trim()
+  const unquantified = bullets.filter(b => !/\d/.test(b) && bulletText(b).split(/\s+/).length >= 6)
   return {
     score,
-    detail: { actionVerbRate: actionCount / total, quantifiedCount, issues: [] }
+    detail: {
+      actionVerbRate: nonEnglish ? null : actionCount / total,
+      quantifiedCount,
+      language: nonEnglish ? 'other' : 'en',
+      unquantified: { count: unquantified.length, total: bullets.length, examples: unquantified.slice(0, 5).map(b => bulletText(b).slice(0, 160)) },
+      issues: nonEnglish ? ['The action-verb check only reads English, so it was skipped for this resume'] : []
+    }
   }
 }
 
@@ -806,7 +915,9 @@ function detectSeniority(jdText) {
 }
 
 function scoreResume(resumeText, jdText, { structure = null } = {}) {
-  const kw  = scoreKeywords(resumeText, jdText)
+  // The ingest layer appends the file's link targets after the text; they are not resume prose and must not be scored as it.
+  resumeText = stripLinkBlock(resumeText)
+  const kw  = scoreKeywords(resumeText, jdText, { hiddenTextChars: structure?.hiddenTextChars || 0 })
   const fmt = scoreFormat(resumeText, structure)
   const sec = scoreSections(resumeText)
   const cnt = scoreContent(resumeText)
@@ -870,5 +981,6 @@ module.exports = {
   fitJobDescription,
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
-  extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears
+  extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears,
+  resumeEvidenceZones, looksEnglish, stripLinkBlock
 }
