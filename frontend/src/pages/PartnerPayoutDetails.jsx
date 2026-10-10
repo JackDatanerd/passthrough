@@ -43,6 +43,7 @@ export default function PartnerPayoutDetails() {
   const [confirmNumber, setConfirmNumber] = useState('')
 
   const [saved,  setSaved ] = useState(false)
+  const [holdUntil, setHoldUntil] = useState(null)
   const { loading: saving, error, execute } = useApi()
 
   useEffect(() => {
@@ -96,8 +97,11 @@ export default function PartnerPayoutDetails() {
       return fail(`The two ${method === 'BANK' ? 'account numbers' : 'phone numbers'} don't match — please re-enter to confirm.`)
 
     try {
-      await execute(() => api.post('/partners/payout-details', body, partnerAuth(token)),
+      const out = await execute(() => api.post('/partners/payout-details', body, partnerAuth(token)),
         { fallback: 'Something went wrong — please try again.' })
+      // Round 8: a CHANGE pauses payouts for a while (a safeguard if the link was ever leaked). Say so now,
+      // not when the partner wonders later why a payout has not arrived.
+      setHoldUntil(out?.payoutHoldUntil || null)
       setSaved(true)
     } catch (_) { /* error already captured by useApi */ }
   }
@@ -132,6 +136,12 @@ export default function PartnerPayoutDetails() {
                 Thanks{partnerName ? `, ${partnerName}` : ''} — we've got your payout details on file.
                 You can revisit this link anytime to update them.
               </p>
+              {holdUntil && (
+                <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4" data-testid="payout-hold-note">
+                  Because these details changed, your next payout is on hold until about {new Date(holdUntil).toLocaleString()}.
+                  This protects you if someone else ever got hold of your link.
+                </p>
+              )}
               <Link to={`/partner/dashboard?token=${encodeURIComponent(dashboardToken || token)}`} className="text-sm text-blue-600 hover:underline">
                 View your dashboard →
               </Link>

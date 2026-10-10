@@ -12,6 +12,7 @@ import Checkbox from '../../components/ui/Checkbox'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatRate, formatDate, downloadCsv, csvText, withinHours } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import PartnersLookupPanel, { OverviewStrip } from './AdminPartnersLookup'
 import { copyToClipboard } from '../../lib/utils'
 
@@ -297,11 +298,15 @@ function ApplicationsPanel({ onApproved }) {
   )
 }
 
+// Round 8: the readiness figures add raw cents, which only means something in one currency. A partner whose unpaid
+// ledger spans currencies is left out of the run (the server would refuse the payout anyway) and flagged instead.
+const isPayable = p => (p.readyToPayCents || 0) > 0 && p.payoutMethod && !p.mixedCurrency
+
 // One row per partner that is actually payable right now and has somewhere to send it — the
 // sheet an admin works through for a payout run. Clamped/zero/no-details partners are left out
 // (their figures are on the page); details come straight from the list payload.
 function exportPayoutRun(partners) {
-  const payable = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod)
+  const payable = partners.filter(isPayable)
   const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted']]
   for (const p of payable) {
     const d = p.payoutDetails || {}
@@ -324,7 +329,7 @@ const RUN_CHUNK = 25   // the server's per-request cap
 
 function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
   const toast = useToast()
-  const rows = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod)
+  const rows = partners.filter(isPayable)
   const held = p => holdHours > 0 && withinHours(p.payoutDetailsSubmittedAt, holdHours)
   // A partner whose details changed inside the hold window starts unselected; ticking them requires the confirmation.
   const [selected, setSelected] = useState(() => new Set(rows.filter(p => !held(p)).map(p => p.id)))
@@ -467,7 +472,18 @@ export default function AdminPartners() {
   // readyToPayCents is already clamped at 0 per partner by the server (a refund credit is not
   // payable and must not net against another partner's real payable); credits are separate.
   const totalReadyToPay = partners.reduce((sum, p) => sum + Math.max(0, p.readyToPayCents || 0), 0)
-  const payableCount = partners.filter(p => (p.readyToPayCents || 0) > 0 && p.payoutMethod).length
+  const payableCount = partners.filter(isPayable).length
+  const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
+  // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
+  const termsOutstanding = partners.filter(p => p.status === 'ACTIVE' && p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
+  const [confirmTerms, setConfirmTerms] = useState(false)
+  async function sendTermsNotice() {
+    const res = await api.post('/partners/terms-notice')
+    const d = res.data
+    toast({ message: `Terms notice sent to ${d.sent} partner(s)${d.failed ? `, ${d.failed} failed` : ''}${d.remaining ? ` - ${d.remaining} still to go, run it again.` : '.'}`, type: d.failed ? 'error' : 'success' })
+    setConfirmTerms(false)
+    load()
+  }
   const totalAccruing   = partners.reduce((sum, p) => sum + (p.currentCycleAccruedCents || 0), 0)
 
   return (
@@ -482,9 +498,24 @@ export default function AdminPartners() {
           <Button variant="secondary" disabled={payableCount === 0} onClick={() => setShowRun(true)}>
             Record payout run
           </Button>
+          {termsOutstanding > 0 && (
+            <Button variant="secondary" onClick={() => setConfirmTerms(true)}>
+              Send terms notice ({termsOutstanding})
+            </Button>
+          )}
           <Button onClick={() => setShowAdd(true)}>Add partner</Button>
         </div>
       </div>
+
+      {mixedCurrencyCount > 0 && (
+        <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="mixed-currency-list">
+          {mixedCurrencyCount} partner{mixedCurrencyCount === 1 ? ' has' : 's have'} unpaid commission in more than one currency and
+          {mixedCurrencyCount === 1 ? ' is' : ' are'} left out of the payout run. Open them individually to settle each currency.
+        </p>
+      )}
+      <ConfirmDialog open={confirmTerms} danger={false} title="Send terms notice?"
+        message={`Email the ${termsOutstanding} active partner${termsOutstanding === 1 ? '' : 's'} who haven't accepted the current partner terms. Each gets one email per terms version (up to 40 per run).`}
+        confirmLabel="Send notice" onConfirm={sendTermsNotice} onCancel={() => setConfirmTerms(false)} />
 
       {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} onClose={() => setShowRun(false)} onDone={load} />}
       <ApplicationsPanel onApproved={load} />

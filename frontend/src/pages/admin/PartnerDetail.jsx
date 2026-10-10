@@ -14,6 +14,7 @@ import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv, 
 import Alert from '../../components/ui/Alert'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import Textarea from '../../components/ui/Textarea'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
 function PayoutDetailsFields({ method, details }) {
@@ -200,10 +201,10 @@ function exportLedgerCsv(partner, { start, end, label } = {}) {
     ['Date', 'Code', 'Payment reference', 'Type', 'Gross', 'Rate', 'Commission', 'Currency', 'Status', 'Reason'],
     ...rows.map(l => [
       (l.createdAt || '').slice(0, 10), l.code || '', l.paymentRef || '',
-      l.reversesLedgerId ? 'Reversal' : 'Sale',
+      l.kind === 'ADJUSTMENT' ? 'Adjustment' : l.reversesLedgerId ? 'Reversal' : 'Sale',
       (l.grossAmountCents || 0) / 100, l.commissionRate ?? '', (l.commissionAmountCents || 0) / 100,
       l.currency || cur, l.payoutId ? 'Paid' : (l.paymentStatus === 'DISPUTED' ? 'Held (dispute)' : 'Unpaid'),
-      l.reversalReason || ''
+      l.kind === 'ADJUSTMENT' ? (l.adjustmentReason || '') : (l.reversalReason || '')
     ])
   ])
 }
@@ -214,6 +215,11 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   const [email, setEmail] = useState(partner.email)
   const [rate, setRate] = useState(String(+(partner.commissionRate * 100).toFixed(2)))
   const [status, setStatus] = useState(partner.status)
+  // Round 8: the profile an applicant typed could never be corrected, an admin-created partner could never get
+  // one, and there was nowhere to keep an internal note. Notes are admin-only and never shown to the partner.
+  const [website, setWebsite] = useState(partner.website || '')
+  const [audience, setAudience] = useState(partner.audience || '')
+  const [notes, setNotes] = useState(partner.internalNotes || '')
   const { loading: saving, error, execute } = useApi()
 
   async function handleSave() {
@@ -238,6 +244,9 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       if (email !== partner.email)        patch.email = email
       if (rateNum !== Number(partner.commissionRate)) patch.commissionRate = rateNum
       if (status !== partner.status)      patch.status = status
+      if (website.trim()  !== (partner.website || ''))       patch.website = website.trim()
+      if (audience.trim() !== (partner.audience || ''))      patch.audience = audience.trim()
+      if (notes.trim()    !== (partner.internalNotes || '')) patch.internalNotes = notes.trim()
       if (Object.keys(patch).length === 0) { onClose(); return }
       await execute(() => api.patch(`/partners/${partner.id}`, patch),
         { fallback: 'Failed to update partner.' })
@@ -269,10 +278,85 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
             ))}
           </div>
         </div>
+        <Input label="Website / channel" value={website} maxLength={300} onChange={e => setWebsite(e.target.value)} />
+        <Input label="Audience" value={audience} maxLength={300} onChange={e => setAudience(e.target.value)} />
+        <Textarea label="Internal notes (admin only)" rows={3} maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}
+          hint="Never shown to the partner. Removed if their personal data is erased." />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Save</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
+// Round 8 (feature gap): a manual ledger adjustment. Until now an admin had no way to claw back commission from a
+// fraudulent referral, grant a goodwill bonus, or write off a balance that could never be paid - and an unpayable
+// balance also blocked erasing the partner. The partner is emailed the amount and the reason (unless unticked) and
+// sees the row, with its reason, on their dashboard.
+function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
+  const toast = useToast()
+  const pending = partner.pendingCommissionCents || 0
+  const [direction, setDirection] = useState(pending > 0 ? 'deduct' : 'add')
+  const [amount, setAmount] = useState(pending !== 0 ? String(Math.abs(pending) / 100) : '')
+  const [reason, setReason] = useState('')
+  const [notify, setNotify] = useState(true)
+  const { loading, error, execute } = useApi()
+
+  function writeOff() {
+    // Whatever sign the unpaid balance has, the adjustment that brings it to zero is the opposite.
+    setDirection(pending > 0 ? 'deduct' : 'add')
+    setAmount(String(Math.abs(pending) / 100))
+    if (!reason.trim()) setReason('Balance written off')
+  }
+
+  async function submit() {
+    const fail = message => execute(() => Promise.reject(new Error(message)), { fallback: message }).catch(() => {})
+    const value = Number(amount)
+    if (!amount.trim() || !Number.isFinite(value) || value <= 0) return fail('Enter an amount greater than zero.')
+    const cents = Math.round(value * 100)
+    if (reason.trim().length < 3) return fail('Say why - the partner sees this reason.')
+    try {
+      const data = await execute(() => api.post(`/partners/${partner.id}/adjustments`, {
+        amountCents: direction === 'deduct' ? -cents : cents, reason: reason.trim(), notify
+      }), { fallback: 'Failed to record the adjustment.' })
+      toast({ message: data.emailed ? 'Adjustment recorded; partner emailed.' : 'Adjustment recorded.', type: 'success' })
+      onAdjusted()
+      onClose()
+    } catch (_) { /* error already captured by useApi */ }
+  }
+
+  return (
+    <Modal open onClose={onClose} title={`Adjust balance — ${partner.name}`}>
+      <Form onSubmit={submit} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-600">
+          Current unpaid balance: <strong>{formatCents(pending, partner.currency)}</strong>. An adjustment is part of the balance and is
+          settled in the next payout, like a refund credit. It never counts as a conversion.
+        </p>
+        <div className="flex gap-2" role="group" aria-label="Direction">
+          {[['deduct', 'Deduct (claw back / write off)'], ['add', 'Add (bonus)']].map(([key, label]) => (
+            <button key={key} type="button" onClick={() => setDirection(key)}
+              className={cn('px-3 py-1.5 rounded-md text-sm border',
+                direction === key ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-600')}>
+              {label}
+            </button>
+          ))}
+        </div>
+        <Input label={`Amount (${partner.currency || 'USD'})`} type="number" step="0.01" min="0" value={amount} onChange={e => setAmount(e.target.value)} />
+        {pending !== 0 && (
+          <button type="button" onClick={writeOff} className="self-start text-xs text-blue-600 hover:underline">
+            Fill in the amount that brings the balance to zero
+          </button>
+        )}
+        <Textarea label="Reason (the partner sees this)" rows={3} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+          placeholder="e.g. Self-referral through a second account" />
+        <Checkbox label="Email the partner about this adjustment" checked={notify} onChange={e => setNotify(e.target.checked)} />
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" loading={loading}>Record adjustment</Button>
         </div>
       </Form>
     </Modal>
@@ -749,7 +833,7 @@ function CyclesTab({ partner, onChanged }) {
 
 function ConversionsTab({ partner }) {
   const ledger = partner.commissionLedger || []
-  if (ledger.length === 0) return <EmptyState className="text-gray-400 italic">No conversions yet.</EmptyState>
+  if (ledger.length === 0) return <EmptyState className="text-gray-400 italic">No conversions or adjustments yet.</EmptyState>
 
   return (
     <div className="flex flex-col gap-3">
@@ -774,7 +858,7 @@ function ConversionsTab({ partner }) {
           {ledger.map(l => (
             <tr key={l.id}>
               <td className="px-4 py-3 text-gray-600">{formatDate(l.createdAt)}</td>
-              <td className="px-4 py-3 font-mono text-xs">{l.code || '—'}</td>
+              <td className="px-4 py-3 font-mono text-xs">{l.kind === 'ADJUSTMENT' ? <span className="font-sans text-gray-600">Adjustment</span> : (l.code || '—')}</td>
               <td className="px-4 py-3 font-mono text-xs text-gray-500">{l.paymentRef || '—'}</td>
               <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, l.currency || partner.currency)}</td>
               <td className="px-4 py-3 text-right text-gray-400">{formatRate(l.commissionRate)}</td>
@@ -786,6 +870,9 @@ function ConversionsTab({ partner }) {
                 )}
                 {l.reversesLedgerId && (
                   <span className="ml-2 text-xs text-red-500">Reversal{l.reversalReason ? ` — ${l.reversalReason}` : ''}</span>
+                )}
+                {l.kind === 'ADJUSTMENT' && l.adjustmentReason && (
+                  <span className="ml-2 text-xs text-gray-500">{l.adjustmentReason}</span>
                 )}
               </td>
             </tr>
@@ -832,7 +919,7 @@ function RemoveDataModal({ partner, onClose, onRemoved }) {
         <p className="text-sm text-gray-600">
           This <strong>cannot be undone</strong>. {partner.name}&apos;s name, email, website, audience and payout details are erased,
           both links stop working, their codes are switched off, and their applications are deleted. Past payouts keep their amounts and
-          dates, with the account reduced to the bank or provider and last four digits. It is refused while any commission is still owed.
+          dates, with the account reduced to the bank or provider and last four digits, and the emails and alerts we sent about them are deleted. It is refused while any commission is still owed - settle it, or write it off with Adjust balance first.
         </p>
         <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={300} />
         <Input label={`Type "${partner.name}" to confirm`} value={typed} onChange={e => setTyped(e.target.value)} />
@@ -854,6 +941,7 @@ export default function PartnerDetail() {
   const [tab, setTab] = useState('overview')
   const [showEdit, setShowEdit] = useState(false)
   const [showRemove, setShowRemove] = useState(false)
+  const [showAdjust, setShowAdjust] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [regenScope, setRegenScope] = useState('payout')
@@ -984,9 +1072,24 @@ export default function PartnerDetail() {
 
       {(partner.website || partner.audience) && (
         <div className="rounded-md bg-gray-50 border border-gray-200 p-3 text-sm text-gray-600">
-          <div className="text-xs font-medium text-gray-400 mb-1">From their application</div>
+          <div className="text-xs font-medium text-gray-400 mb-1">Profile</div>
           {partner.website && <div><span className="text-gray-400">Website:</span> {partner.website}</div>}
           {partner.audience && <div><span className="text-gray-400">Audience:</span> {partner.audience}</div>}
+        </div>
+      )}
+      {partner.internalNotes && (
+        <div className="rounded-md bg-amber-50 border border-amber-200 p-3 text-sm text-amber-900" data-testid="internal-notes">
+          <div className="text-xs font-medium text-amber-700 mb-1">Internal notes (admin only)</div>
+          <div className="whitespace-pre-wrap">{partner.internalNotes}</div>
+        </div>
+      )}
+      {!String(partner.email || '').endsWith('@removed.invalid') && (
+        <div className="text-xs text-gray-500" data-testid="terms-status">
+          {partner.termsCurrent
+            ? `Accepted the current partner terms (version ${partner.termsVersion})${partner.termsAcceptedAt ? ` on ${formatDate(partner.termsAcceptedAt)}` : ''}.`
+            : partner.termsVersion
+              ? `Accepted an older version of the partner terms (${partner.termsVersion}); the current one is ${partner.currentTermsVersion}.`
+              : `Has not accepted the partner terms (current version ${partner.currentTermsVersion}).`}
         </div>
       )}
 
@@ -995,6 +1098,9 @@ export default function PartnerDetail() {
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>
+        {!String(partner.email || '').endsWith('@removed.invalid') && (
+          <Button size="sm" variant="secondary" onClick={() => setShowAdjust(true)}>Adjust balance…</Button>
+        )}
         {!String(partner.email || '').endsWith('@removed.invalid') && (
           <Button size="sm" variant="secondary" onClick={() => setShowRemove(true)}>Remove personal data…</Button>
         )}
@@ -1046,6 +1152,7 @@ export default function PartnerDetail() {
       {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={reload} />}
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
+      {showAdjust && <AdjustBalanceModal partner={partner} onClose={() => setShowAdjust(false)} onAdjusted={reload} />}
       {showRemove && <RemoveDataModal partner={partner} onClose={() => setShowRemove(false)} onRemoved={reload} />}
 
       {confirmRegenerate && (

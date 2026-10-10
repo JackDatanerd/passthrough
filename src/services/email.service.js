@@ -530,6 +530,23 @@ async function sendPartnerCommissionReversed(env, supabase, email, name, commiss
   })
 }
 
+// Round 8: an admin posted a manual ledger adjustment (clawback, write-off or bonus). A balance must never
+// change silently, so the partner is told the amount and the reason the admin recorded.
+async function sendPartnerBalanceAdjusted(env, supabase, email, name, amountCents, currency, reason, dashboardUrl) {
+  const amount = fmtMoney(Math.abs(amountCents), currency)
+  const action = amountCents < 0 ? `deducted ${amount} from your commission balance` : `added ${amount} to your commission balance`
+  return send(env, supabase, email, 'Your Passthrough commission balance was adjusted', 'partner_balance_adjusted', {
+    NAME: name, ACTION: action, REASON: String(reason || '').trim(), DASHBOARD_URL: dashboardUrl
+  })
+}
+
+// Round 8: the terms promise "we will tell you by email" before a change applies; this is that email.
+async function sendPartnerTermsUpdate(env, supabase, email, name, version, termsUrl, dashboardUrl) {
+  return send(env, supabase, email, 'Our Passthrough Partner Program terms were updated', 'partner_terms_update', {
+    NAME: name, VERSION: version, TERMS_URL: termsUrl, DASHBOARD_URL: dashboardUrl
+  })
+}
+
 // Sent when an admin rotates a partner's DASHBOARD link (read-only token).
 async function sendPartnerDashboardLinkRegenerated(env, supabase, email, name, dashboardUrl) {
   return send(env, supabase, email, 'Your Passthrough dashboard link has been reset', 'partner_dashboard_link_regenerated', {
@@ -926,6 +943,7 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed, sendPartnerApplicationRejected,
+  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed,
+  sendPartnerBalanceAdjusted, sendPartnerTermsUpdate, sendPartnerApplicationRejected,
   sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided, sendPartnerLinksRecovery
 }

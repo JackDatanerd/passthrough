@@ -57,7 +57,8 @@ function holdDaysFor(env) {
 // and the commission clawed back, so paying it out first just creates a debt.
 // Needs the ledger select to embed `payments(status)`.
 function isHeldRow(row, holdDays, now = Date.now()) {
-  if (row.payout_id || row.reverses_ledger_id) return false
+  // A manual adjustment is never held: it is the admin's own decision, not a sale a refund could still undo.
+  if (row.payout_id || row.reverses_ledger_id || row.kind === 'ADJUSTMENT') return false
   if (row.payments?.status === 'DISPUTED') return true
   if (!holdDays) return false
   return Date.parse(row.created_at) > now - holdDays * 86400000
@@ -113,12 +114,19 @@ function payoutReadiness(ledgerRows, holdDays, minPayout) {
 }
 
 // A refunded sale is two ledger rows (original + negative reversal). Net
-// conversions = originals that have not been reversed.
+// conversions = originals that have not been reversed. A manual adjustment (round 8, migration 0069) is
+// not a sale and never counts as a conversion.
 function netConversionCount(ledgerRows) {
   const rows = ledgerRows || []
   const reversed = new Set(rows.filter(l => l.reverses_ledger_id).map(l => l.reverses_ledger_id))
-  return rows.filter(l => !l.reverses_ledger_id && !reversed.has(l.id)).length
+  return rows.filter(l => l.kind !== 'ADJUSTMENT' && !l.reverses_ledger_id && !reversed.has(l.id)).length
 }
+
+// A "credit" row is one that is not a sale of its own and is settled by whichever closed-cycle payout comes
+// next: a refund reversal, or a manual adjustment (either sign). Cycle-scoped payouts pull every unpaid one
+// from a closed cycle in with them (recordPayoutCore), and buildCyclesSummary reports the part that lives
+// outside a cycle's own window so the Pay button's default amount matches what the server will settle.
+const isCreditRow = l => !!l.reverses_ledger_id || l.kind === 'ADJUSTMENT'
 
 // Per-code performance: net conversions, net gross revenue and commission
 // (reversal rows are negative, so plain sums already net out).
@@ -179,7 +187,7 @@ function buildCyclesSummary(ledgerRows, count, holdDays = 0) {
   let closedCreditCents = 0
   const creditByKey = new Map()
   for (const row of rows) {
-    if (row.payout_id || !row.reverses_ledger_id || voided.has(row.id)) continue
+    if (row.payout_id || !isCreditRow(row) || voided.has(row.id)) continue
     const k = cycleKey(row.created_at)
     if (k === currentKey) continue
     closedCreditCents += row.commission_amount_cents
@@ -194,7 +202,7 @@ function buildCyclesSummary(ledgerRows, count, holdDays = 0) {
     // Only an ORIGINAL row that has not been reversed is a real conversion (a refund is a
     // SECOND, negative ledger row — see fulfillment.service.js's reverseCommission). Round 5:
     // a refunded original used to still count here, unlike the net totalConversions.
-    if (!row.reverses_ledger_id && !reversedIds.has(row.id)) bucket.ledgerCount += 1
+    if (row.kind !== 'ADJUSTMENT' && !row.reverses_ledger_id && !reversedIds.has(row.id)) bucket.ledgerCount += 1
     if (row.payout_id) {
       bucket.paidCents += row.commission_amount_cents
       bucket.payoutIds.add(row.payout_id)
@@ -229,7 +237,7 @@ function buildCyclesSummary(ledgerRows, count, holdDays = 0) {
 
 const createPartnerSchema = z.object({
   name:  z.string().trim().min(1).max(200),
-  email: z.string().trim().email(),
+  email: z.string().trim().email().max(320),
   // Round 4: a rate could only be set by a second PATCH after creation.
   commissionRate: z.number().min(0).max(1).optional()
 })
@@ -326,15 +334,23 @@ async function adminCreatePartner(ctx) {
 
 const updatePartnerSchema = z.object({
   name:           z.string().trim().min(1).max(200).optional(),
-  email:          z.string().email().optional(),
+  email:          z.string().trim().email().max(320).optional(),
   status:         z.enum(['ACTIVE', 'PAUSED']).optional(),
   // Fraction, not a percentage integer — 0.25 = 25%, matching 0012's
   // commission_rate comment. Bounded 0-1 here at the API boundary; the
   // same bound also exists as a DB-level CHECK (see migration 0015) as a
   // backstop for any future write path that doesn't go through this Zod
   // schema.
-  commissionRate: z.number().min(0).max(1).optional()
+  commissionRate: z.number().min(0).max(1).optional(),
+  // Round 8 (feature gap): the profile an applicant typed could never be corrected after approval, and an
+  // admin-created partner could never be given one. '' or null clears the field. internalNotes is admin-only:
+  // no token-gated partner endpoint selects it.
+  website:        z.string().trim().max(300).nullable().optional(),
+  audience:       z.string().trim().max(300).nullable().optional(),
+  internalNotes:  z.string().trim().max(2000).nullable().optional()
 }).refine(obj => Object.keys(obj).length > 0, 'At least one field is required.')
+
+const PROFILE_FIELDS = [['website', 'website'], ['audience', 'audience'], ['internalNotes', 'internal_notes']]
 
 async function adminUpdatePartner(ctx) {
   const partnerId = ctx.req.param('id')
@@ -364,6 +380,12 @@ async function adminUpdatePartner(ctx) {
   const patch = camelToSnake(body, PARTNER_FIELD_MAP)  // status, commissionRate
   if (body.name !== undefined)  patch.name = body.name
   if (body.email !== undefined) patch.email = body.email
+  const profileEdited = []
+  for (const [key, column] of PROFILE_FIELDS) {
+    if (body[key] === undefined) continue
+    patch[column] = body[key] === null || body[key] === '' ? null : body[key]
+    profileEdited.push(key)
+  }
   patch.updated_at = new Date().toISOString()
 
   // A changed email means the OLD address may still hold the bearer link to
@@ -457,9 +479,12 @@ async function adminUpdatePartner(ctx) {
   // never the actual email addresses (see lib/adminAudit.js's own rule).
   if (rateChanging ||
       emailChanging ||
+      profileEdited.length ||
       (body.status !== undefined && before?.status && before.status !== data.status)) {
     await logAdminAction(ctx, supabase, 'partner.update', 'partner', partnerId, {
       emailChanged: emailChanging,
+      // Field NAMES only - the notes and profile text are not copied into the audit log.
+      ...(profileEdited.length ? { profileEdited } : {}),
       ...(rotatedToken ? { payoutLinkRotated: true } : {}),
       ...(rateChanging ? { rateFrom: Number(before.commission_rate), rateTo: Number(data.commission_rate) } : {}),
       ...(body.status !== undefined && before?.status !== data.status
@@ -498,7 +523,7 @@ async function adminListPartners(ctx) {
   for (let from = 0; ; from += PAGE) {
     const { data: rows, error: lerr } = await supabase
       .from('commission_ledger')
-      .select('id, partner_id, gross_amount_cents, commission_amount_cents, payout_id, reverses_ledger_id, created_at, payments(status)')
+      .select('id, partner_id, gross_amount_cents, commission_amount_cents, payout_id, reverses_ledger_id, kind, currency, created_at, payments(status)')
       .is('payout_id', null)
       .order('created_at', { ascending: true })
       .order('id', { ascending: true })
@@ -532,10 +557,14 @@ async function adminListPartners(ctx) {
     // deliberately skips it, and there is one currency for the whole platform, so
     // the list view labels every figure with env.PAYSTACK_CURRENCY.)
     camel.currency                 = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
+    // Round 8: the totals above add raw cents, which is only meaningful in one currency. adminGetPartner always
+    // flagged mixed-currency ledgers; the list (and the payout run built from it) did not.
+    camel.mixedCurrency            = new Set(ledger.map(l => String(l.currency || camel.currency).toUpperCase())).size > 1
+    camel.termsCurrent             = row.terms_version === PARTNER_TERMS_VERSION
     return camel
   })
   // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
-  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), data: partners })
+  return ctx.json({ success: true, payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env), currentTermsVersion: PARTNER_TERMS_VERSION, data: partners })
 }
 
 // ── Admin: single partner detail — full ledger, full payout history, and a
@@ -550,7 +579,7 @@ async function adminGetPartner(ctx) {
       *,
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, internal_note, settled_commission_cents, period_start, period_end, paid_at, created_at, payout_details_snapshot, voided_at, void_reason),
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, reversal_reason, usage_counted, created_at, payments(status, paystack_ref))
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, currency, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, usage_counted, created_at, payments(status, paystack_ref))
     `)
     // AUDIT FIX (feature gap): adminRecordPayout writes payout_details_snapshot
     // — a copy of the partner's bank/mobile-money details AT THE MOMENT a
@@ -567,6 +596,7 @@ async function adminGetPartner(ctx) {
     .order('paid_at',    { foreignTable: 'payouts',         ascending: false })
     .order('created_at', { foreignTable: 'referral_codes',  ascending: false })
     .order('created_at', { foreignTable: 'commission_ledger', ascending: false })
+    .order('id',         { foreignTable: 'commission_ledger', ascending: true })
     .maybeSingle()
   if (error) throw error
   if (!row) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
@@ -594,6 +624,8 @@ async function adminGetPartner(ctx) {
   camel.payoutDetailsHoldHours = payoutDetailsHoldHoursFor(ctx.env)
   camel.unpaidCurrencies = [...new Set(ledger.filter(l => !l.payout_id).map(l => String(l.currency || camel.currency).toUpperCase()))]
   camel.mixedCurrency = camel.unpaidCurrencies.length > 1
+  camel.currentTermsVersion = PARTNER_TERMS_VERSION
+  camel.termsCurrent = row.terms_version === PARTNER_TERMS_VERSION
 
   return ctx.json({ success: true, data: camel })
 }
@@ -742,6 +774,9 @@ async function adminCreateReferralCode(ctx) {
     usage_limit: body.usageLimit || null,
     expires_at:  body.expiresAt || null
   }).select('*').single()
+  // Round 8: a taken code surfaced as the generic 409 "Already exists." (errorHandler); say what is wrong.
+  if (error && error.code === '23505')
+    return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
   if (error) throw error
 
   // A PAUSED partner's codes don't apply discounts or earn commission (see
@@ -934,7 +969,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
         message: `This partner's payout details were changed in the last ${holdHours} hours. Confirm with them directly that the change was theirs, then record the payout with the confirmation ticked.` }, 409)
   }
 
-  let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
+  let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents, reverses_ledger_id, kind, currency, payments(status)')
     .eq('partner_id', partnerId).is('payout_id', null)
   if (body.periodStart) ledgerQuery = ledgerQuery.gte('created_at', body.periodStart).lte('created_at', body.periodEnd)
   else if (opts.scope === 'ready') ledgerQuery = ledgerQuery.lt('created_at', recentCycles(1)[0].start)
@@ -943,7 +978,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
   const holdDays = holdDaysFor(ctx.env)
   if (holdDays) {
     const cutoff = new Date(Date.now() - holdDays * 86400000).toISOString()
-    ledgerQuery = ledgerQuery.or(`reverses_ledger_id.not.is.null,created_at.lte.${cutoff}`)
+    ledgerQuery = ledgerQuery.or(`reverses_ledger_id.not.is.null,kind.eq.ADJUSTMENT,created_at.lte.${cutoff}`)
   }
   // Paged: PostgREST silently truncates one response at its max-rows cap (1000 by default),
   // and this query had no order, so a big ad hoc backlog was settled — and priced — from an
@@ -970,11 +1005,11 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
   if (body.periodStart) {
     const runningStart = recentCycles(1)[0].start
     const { data: credits, error: creditErr } = await supabase.from('commission_ledger')
-      .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
-      .eq('partner_id', partnerId).is('payout_id', null).not('reverses_ledger_id', 'is', null).lt('created_at', runningStart)
+      .select('id, commission_amount_cents, reverses_ledger_id, kind, currency, payments(status)')
+      .eq('partner_id', partnerId).is('payout_id', null).or('reverses_ledger_id.not.is.null,kind.eq.ADJUSTMENT').lt('created_at', runningStart)
     if (creditErr) throw creditErr
     const haveIds = new Set(unpaidLedger.map(l => l.id))
-    for (const row of credits || []) if (row.reverses_ledger_id && !haveIds.has(row.id)) unpaidLedger.push(row)
+    for (const row of credits || []) if (isCreditRow(row) && !haveIds.has(row.id)) unpaidLedger.push(row)
   }
 
   // SECTION 4 ROUND 4 (bug): settle refund PAIRS together. A refunded-before-payout sale
@@ -991,7 +1026,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
     const extra = []
     if (originalIds.length) {
       const { data: revs, error: rErr } = await supabase.from('commission_ledger')
-        .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
+        .select('id, commission_amount_cents, reverses_ledger_id, kind, currency, payments(status)')
         .eq('partner_id', partnerId).is('payout_id', null).in('reverses_ledger_id', originalIds)
       if (rErr) throw rErr
       // Re-verified here rather than trusting the query alone: only a row that really is the
@@ -1001,7 +1036,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
     }
     if (missingOriginalIds.length) {
       const { data: origs, error: oErr } = await supabase.from('commission_ledger')
-        .select('id, commission_amount_cents, reverses_ledger_id, currency, payments(status)')
+        .select('id, commission_amount_cents, reverses_ledger_id, kind, currency, payments(status)')
         .eq('partner_id', partnerId).is('payout_id', null).in('id', missingOriginalIds)
       if (oErr) throw oErr
       const wanted = new Set(missingOriginalIds)
@@ -1358,6 +1393,24 @@ function payoutDetailsEqual(methodA, detailsA, methodB, detailsB) {
 }
 
 // "BANK ...4821" / "MOBILE_MONEY ...5678" / "none" — enough to compare with the partner, never the full number.
+// Round 8: what the partner's dashboard may show about the account on file - never the whole number.
+function payoutAccountHint(method, details) {
+  if (!method) return null
+  const d = details || {}
+  const raw = String(d.accountNumber || d.phoneNumber || '').replace(/\s+/g, '')
+  return {
+    method,
+    provider: method === 'BANK' ? (d.bankName || null) : (d.provider || null),
+    last4:    raw ? raw.slice(-4) : null
+  }
+}
+// ISO time until which a payout-details change still holds payouts, or null when it no longer does.
+function payoutHoldUntilOf(submittedAt, holdHours) {
+  if (!submittedAt || !(holdHours > 0)) return null
+  const until = Date.parse(submittedAt) + holdHours * 3600000
+  return Number.isFinite(until) && until > Date.now() ? new Date(until).toISOString() : null
+}
+
 function describePayoutTarget(method, details) {
   if (!method) return 'none'
   const raw = String(details?.accountNumber || details?.phoneNumber || '').replace(/\s+/g, '')
@@ -1429,7 +1482,10 @@ async function submitPayoutDetails(ctx) {
     ).catch(() => {})
   ])
 
-  return ctx.json({ success: true, message: 'Payout details saved.' })
+  // Round 8: tell the partner, at the moment it matters, that a change pauses payouts for a while.
+  const holdHours = payoutDetailsHoldHoursFor(ctx.env)
+  return ctx.json({ success: true, message: 'Payout details saved.', payoutDetailsHoldHours: holdHours,
+    payoutHoldUntil: payoutHoldUntilOf(changedAt, holdHours) })
 }
 
 // ── Public (token-gated): partner's own stats dashboard ─────────────────────
@@ -1447,6 +1503,9 @@ function conversionRowOf(row, codeTextById) {
     paid:                  !!row.payout_id,
     isReversal:            !!row.reverses_ledger_id,
     reversalReason:        row.reversal_reason ?? null,
+    // Round 8: a manual admin entry (clawback / write-off / bonus) - shown to the partner WITH its reason.
+    isAdjustment:          row.kind === 'ADJUSTMENT',
+    adjustmentReason:      row.kind === 'ADJUSTMENT' ? (row.adjustment_reason ?? null) : null,
     createdAt:             row.created_at
   }
 }
@@ -1466,9 +1525,9 @@ async function getPartnerDashboard(ctx) {
     const res = await supabase
     .from('partners')
     .select(`
-      name, commission_rate, status, payout_method, notify_conversions,
+      name, commission_rate, status, payout_method, payout_details, payout_details_submitted_at, terms_version, notify_conversions,
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at, payments(status)),
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, created_at, payments(status)),
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, settled_commission_cents, period_start, period_end, paid_at, created_at, voided_at)
     `)
     .eq(column, token)
@@ -1479,6 +1538,7 @@ async function getPartnerDashboard(ctx) {
     .order('paid_at',    { foreignTable: 'payouts',           ascending: false })
     .order('created_at', { foreignTable: 'referral_codes',    ascending: false })
     .order('created_at', { foreignTable: 'commission_ledger', ascending: false })
+    .order('id',         { foreignTable: 'commission_ledger', ascending: true })  // same tiebreak as /conversions
     .maybeSingle()
     if (res.error) { error = res.error; break }
     if (res.data) { partner = res.data; scope = which; break }
@@ -1553,6 +1613,13 @@ async function getPartnerDashboard(ctx) {
       ...rc, stats: { conversions: rc.stats.conversions, conversionRate: rc.stats.conversionRate }
     })),
     notifyConversions: partner.notify_conversions !== false,
+    // Round 8: where payouts go (method + provider/bank + last four only - the full number never rides the
+    // read-only dashboard), when a recent change is still holding payouts, and the terms prompt.
+    payoutAccount:    payoutAccountHint(partner.payout_method, partner.payout_details),
+    payoutHoldUntil:  payoutHoldUntilOf(partner.payout_details_submitted_at, payoutDetailsHoldHoursFor(ctx.env)),
+    termsAcceptanceRequired: partner.terms_version !== PARTNER_TERMS_VERSION,
+    currentTermsVersion:     PARTNER_TERMS_VERSION,
+    acceptedTermsVersion:    partner.terms_version ?? null,
     // So the dashboard can prompt for payout details while money is owed.
     hasPayoutDetails: !!partner.payout_method,
     heldCents:        heldCentsOf(ledger, holdDays),
@@ -1632,7 +1699,7 @@ async function getPartnerConversions(ctx) {
   const [codesRes, ledgerRes] = await Promise.all([
     supabase.from('referral_codes').select('id, code').eq('partner_id', partner.id),
     supabase.from('commission_ledger')
-      .select('id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, created_at', { count: 'exact' })
+      .select('id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, created_at', { count: 'exact' })
       .eq('partner_id', partner.id)
       .order('created_at', { ascending: false }).order('id', { ascending: true })
       .range(offset, offset + limit - 1)
@@ -1904,7 +1971,14 @@ async function adminApproveApplication(ctx) {
     await restoreApplicationToPending(supabase, appId)
     return ctx.json({ success: false, message: made.error }, 400)
   }
-  await supabase.from('partner_applications').update({ partner_id: made.data.id }).eq('id', appId)
+  // Round 8: this error was ignored. The link is what erasure follows (adminAnonymizePartner deletes the
+  // application by partner_id, and by email only as a fallback that an email change defeats), so retry once and
+  // make a persistent failure loud instead of leaving an application that erasure cannot find.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const { error: linkErr } = await supabase.from('partner_applications').update({ partner_id: made.data.id }).eq('id', appId)
+    if (!linkErr) break
+    if (attempt === 1) console.error('adminApproveApplication: could not link application to partner:', appId, linkErr.message)
+  }
 
   // The partner exists and has been emailed by now, so a failure here is reported, not
   // rolled back: the admin can add the code from the partner page.
@@ -2135,6 +2209,42 @@ function maskedPayoutSnapshot(method, snapshot) {
   return {}
 }
 
+// The partner-facing mail templates (src/services/email.service.js). email_logs is shared with candidate
+// accounts, so only these are purged - an address that is also a candidate's login keeps that history.
+const PARTNER_MAIL_TEMPLATES = [
+  'partner_application_received', 'partner_application_rejected', 'partner_balance_adjusted',
+  'partner_commission_reversed', 'partner_conversion_earned', 'partner_dashboard_link_regenerated',
+  'partner_email_changed', 'partner_link_regenerated', 'partner_links_recovery',
+  'partner_payout_details_changed', 'partner_payout_details_request', 'partner_status_changed',
+  'partner_terms_update', 'payout_sent', 'referral_code_created'
+]
+const likeEscape = v => String(v).replace(/[\\%_]/g, '\\$&')
+
+async function purgePartnerLogs(supabase, { partnerId, emails }) {
+  const out = { emailLogs: 0, alertLogs: 0, ok: true }
+  try {
+    const addrs = [...new Set((emails || []).filter(Boolean).flatMap(e => [String(e), String(e).toLowerCase()]))]
+    if (addrs.length) {
+      const { count, error } = await supabase.from('email_logs').delete({ count: 'exact' })
+        .in('to', addrs).in('template', PARTNER_MAIL_TEMPLATES)
+      if (error) throw error
+      out.emailLogs = count || 0
+    }
+    // Owner alerts quote "partner: <name> <email>" in the MESSAGE; match on each address (case-insensitively)
+    // and on the partner id.
+    const needles = [...new Set([...(emails || []).filter(Boolean).map(e => String(e).toLowerCase()), partnerId])]
+    for (const needle of needles) {
+      const { count, error } = await supabase.from('alert_logs').delete({ count: 'exact' }).ilike('message', `%${likeEscape(needle)}%`)
+      if (error) throw error
+      out.alertLogs += count || 0
+    }
+  } catch (err) {
+    out.ok = false
+    console.error('anonymizePartner: could not clear the mail/alert history of a removed partner:', err.message)
+  }
+  return out
+}
+
 async function adminAnonymizePartner(ctx) {
   const partnerId = ctx.req.param('id')
   const body = anonymizePartnerSchema.parse(await ctx.req.json().catch(() => ({})))
@@ -2149,8 +2259,8 @@ async function adminAnonymizePartner(ctx) {
   if (owed !== 0)
     return ctx.json({ success: false, code: 'COMMISSION_OWED',
       message: owed > 0
-        ? `This partner is still owed ${owed} cents of commission. Record the payout (or void and re-record it) before removing their data.`
-        : `This partner has an unsettled refund credit of ${-owed} cents. Settle it before removing their data.` }, 409)
+        ? `This partner is still owed ${owed} cents of commission. Record the payout (or void and re-record it), or write the balance off with a ledger adjustment, before removing their data.`
+        : `This partner has an unsettled refund credit of ${-owed} cents. Settle it, or write it off with a ledger adjustment, before removing their data.` }, 409)
 
   const alreadyRemoved = isRemovedEmail(partner.email)
 
@@ -2181,16 +2291,133 @@ async function adminAnonymizePartner(ctx) {
   const { error: rowErr } = await supabase.from('partners').update({
     name: 'Removed partner', email: `partner-${partnerId}@${REMOVED_EMAIL_DOMAIN}`, status: 'PAUSED',
     payout_method: null, payout_details: null, payout_details_submitted_at: null,
-    website: null, audience: null, notify_conversions: false,
+    website: null, audience: null, notify_conversions: false, internal_notes: null,
     payout_details_token: cryptoLib.randomToken(32), dashboard_token: cryptoLib.randomToken(32),
     updated_at: new Date().toISOString()
   }).eq('id', partnerId)
   if (rowErr) throw rowErr
 
+  // Round 8: an adjustment's reason is free text an admin typed about this person; the amount stays (it is a
+  // financial record), the words go.
+  const { error: adjErr } = await supabase.from('commission_ledger')
+    .update({ adjustment_reason: 'Adjustment (details removed)' }).eq('partner_id', partnerId).eq('kind', 'ADJUSTMENT')
+  if (adjErr) throw adjErr
+
+  // Round 8 (bug): the removal used to leave the address behind in email_logs (every partner mail we ever sent
+  // it) and in alert_logs (owner alerts quote the partner's name, email and payout-target tail) until the 90 /
+  // 180-day retention sweep. The sibling erasure flows (deleteAccount, employer-lead removal) purge email_logs;
+  // this one did not. BEST EFFORT and the LAST step: the erasure above is what a person is owed, and a failed
+  // purge only means the rows age out with the sweep, exactly as before.
+  const logs = alreadyRemoved
+    ? { emailLogs: 0, alertLogs: 0, ok: true }
+    : await purgePartnerLogs(supabase, { partnerId, emails: [partner.email] })
+
   await logAdminAction(ctx, supabase, 'partner.anonymized', 'partner', partnerId,
-    { reason: body.reason, alreadyRemoved, payoutsMasked: (payouts || []).length })
-  return ctx.json({ success: true, alreadyRemoved, payoutsMasked: (payouts || []).length,
+    { reason: body.reason, alreadyRemoved, payoutsMasked: (payouts || []).length, logsPurged: logs.ok, emailLogsPurged: logs.emailLogs, alertLogsPurged: logs.alertLogs })
+  return ctx.json({ success: true, alreadyRemoved, payoutsMasked: (payouts || []).length, logsPurged: logs.ok,
     message: alreadyRemoved ? 'Already removed \u2014 checked and finished any leftover steps.' : 'Partner data removed.' })
+}
+
+// ── Round 8 (feature gap): manual ledger adjustments ───────────────────────
+// The ledger could only ever hold a sale and the reversal of a sale. There was no way to claw back commission
+// from a fraudulent referral (short of refunding the buyer), to grant a goodwill bonus, or to write off a
+// balance that could never be paid - which also blocked erasing the partner (adminAnonymizePartner needs a
+// zero balance, and a partner with no payout details can't be paid). An adjustment is a ledger row of kind
+// ADJUSTMENT (migration 0069): signed amount, mandatory reason, no payment, no code. Everything that reads
+// commission_amount_cents - balances, payout claim, void release, the anonymize check - picks it up unchanged;
+// the cycle logic treats it as a credit row (isCreditRow) and it is never held or counted as a conversion.
+const MAX_ADJUSTMENT_CENTS = 100000000   // 1,000,000.00 - a typo guard, far under the int4 column limit
+const adjustLedgerSchema = z.object({
+  amountCents: z.number().int()
+    .refine(n => n !== 0, 'The amount cannot be zero.')
+    .refine(n => Math.abs(n) <= MAX_ADJUSTMENT_CENTS, 'That amount is larger than the allowed maximum.'),
+  reason: z.string().trim().min(3, 'Say why - the partner sees this reason.').max(500),
+  notify: z.boolean().optional()
+})
+
+async function adminAdjustLedger(ctx) {
+  const partnerId = ctx.req.param('id')
+  const body = adjustLedgerSchema.parse(await ctx.req.json())
+  const supabase = getSupabase(ctx.env)
+
+  const { data: partner, error: pErr } = await supabase
+    .from('partners').select('id, name, email, dashboard_token').eq('id', partnerId).maybeSingle()
+  if (pErr) throw pErr
+  if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  if (isRemovedEmail(partner.email))
+    return ctx.json({ success: false, code: 'PARTNER_REMOVED', message: "This partner's personal data was removed, so their ledger can't be adjusted." }, 409)
+
+  const currency = String(ctx.env.PAYSTACK_CURRENCY || c.CURRENCY).toUpperCase()
+  const actor = ctx.get && ctx.get('user')
+  const { data: row, error } = await supabase.from('commission_ledger').insert({
+    partner_id: partnerId, kind: 'ADJUSTMENT', gross_amount_cents: 0, commission_rate: 0,
+    commission_amount_cents: body.amountCents, currency, adjustment_reason: body.reason,
+    created_by: actor?.id || null
+  }).select('*').single()
+  if (error) throw error
+
+  let emailed = false
+  if (body.notify !== false) {
+    const dashboardUrl = `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
+    emailed = await emailService.sendPartnerBalanceAdjusted(ctx.env, supabase, partner.email, partner.name,
+      body.amountCents, currency, body.reason, dashboardUrl).then(ok => ok === true || ok === undefined).catch(() => false)
+  }
+
+  // Amount and ledger id only - the reason lives on the row, where erasure scrubs it.
+  await logAdminAction(ctx, supabase, 'partner.ledger_adjusted', 'partner', partnerId,
+    { ledgerId: row.id, amountCents: body.amountCents, currency, emailed })
+  return ctx.json({ success: true, data: commissionLedgerRowToCamel(row), emailed })
+}
+
+// ── Round 8 (feature gap): terms acceptance and re-acceptance ───────────────
+// Only an applicant ever recorded terms_accepted_at (applyAsPartner); a partner an admin created directly never
+// did, and a version bump had no path at all although the terms page promises an email before a change applies.
+// Acceptance here is NOT a gate on payouts (that is a policy call for the owner) - it is recorded, shown to the
+// admin, and prompted on the dashboard.
+async function acceptPartnerTerms(ctx) {
+  noStore(ctx)
+  const token = partnerTokenOf(ctx)
+  if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const { partner } = await findPartnerByAnyToken(supabase, token, 'id, email, terms_version')
+  if (!partner || isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  if (partner.terms_version === PARTNER_TERMS_VERSION)
+    return ctx.json({ success: true, alreadyAccepted: true, termsVersion: PARTNER_TERMS_VERSION })
+  const acceptedAt = new Date().toISOString()
+  const { error } = await supabase.from('partners')
+    .update({ terms_accepted_at: acceptedAt, terms_version: PARTNER_TERMS_VERSION }).eq('id', partner.id)
+  if (error) throw error
+  return ctx.json({ success: true, alreadyAccepted: false, termsVersion: PARTNER_TERMS_VERSION, termsAcceptedAt: acceptedAt })
+}
+
+// Emails every ACTIVE partner who has not accepted the current version, once each. Capped per run (the mail
+// provider throttles) and resumable: terms_notified_version records who has been told, so clicking again only
+// sends to the rest and never mails anyone twice for the same version.
+const TERMS_NOTICE_BATCH = 40
+async function adminSendTermsNotice(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const version = PARTNER_TERMS_VERSION
+  const { data, count, error } = await supabase.from('partners')
+    .select('id, name, email, dashboard_token', { count: 'exact' })
+    .eq('status', 'ACTIVE')
+    .or(`terms_version.is.null,terms_version.neq.${version}`)
+    .or(`terms_notified_version.is.null,terms_notified_version.neq.${version}`)
+    .order('created_at', { ascending: true }).limit(TERMS_NOTICE_BATCH)
+  if (error) throw error
+  const targets = (data || []).filter(p => !isRemovedEmail(p.email))
+  let sent = 0, failed = 0
+  for (const p of targets) {
+    const ok = await emailService.sendPartnerTermsUpdate(ctx.env, supabase, p.email, p.name, version,
+      `${ctx.env.FRONTEND_URL}/partner/terms`, `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${p.dashboard_token}`)
+      .then(r => r === true || r === undefined).catch(() => false)
+    if (!ok) { failed += 1; continue }
+    const { error: upErr } = await supabase.from('partners').update({ terms_notified_version: version }).eq('id', p.id)
+    if (upErr) { failed += 1; continue }
+    sent += 1
+  }
+  const remaining = Math.max(0, (count ?? targets.length) - sent)
+  await logAdminAction(ctx, supabase, 'partner.terms_notice_sent', 'partner', null, { version, sent, failed, remaining })
+  return ctx.json({ success: true, version, sent, failed, remaining })
 }
 
 module.exports = {
@@ -2201,5 +2428,6 @@ module.exports = {
   adminListReferralCodes, adminListPayouts, adminPartnersOverview,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
-  recoverPartnerLinks, adminAnonymizePartner
+  recoverPartnerLinks, adminAnonymizePartner,
+  adminAdjustLedger, acceptPartnerTerms, adminSendTermsNotice
 }

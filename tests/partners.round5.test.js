@@ -8,6 +8,10 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 
 const PG_TS = '2026-09-01T10:00:00.123456+00:00'   // exactly what PostgREST returns for timestamptz
 const has = (q, op, col) => (q.filters || []).some(f => f[0] === op && f[1] === col)
+// Round 8: the credits lookup is now `.or('reverses_ledger_id.not.is.null,kind.eq.ADJUSTMENT')` (adjustments
+// settle like refund credits), so it is recognised by that or-filter rather than a bare `not` filter.
+const isCreditsQ = q => has(q, 'not', 'reverses_ledger_id') ||
+  (q.or || []).some(s => s === 'reverses_ledger_id.not.is.null,kind.eq.ADJUSTMENT')
 let t
 afterEach(() => t?.restore())
 
@@ -43,7 +47,7 @@ function setup(o = {}) {
     if (q.table === 'partners' && q.op === 'update') { st.updates.push(q.patch); return { data: o.updated ?? partner, error: null } }
     if (q.table === 'partners' && q.op === 'insert') return { data: o.inserted ?? { id: 'p9', name: 'Ann', email: 'ann@x.co', commission_rate: 0.1, payout_details_token: 'newtok', dashboard_token: 'newd' }, error: null }
     if (q.table === 'commission_ledger' && q.op === 'select') {
-      if (has(q, 'not', 'reverses_ledger_id')) return { data: o.credits ?? [], error: null }
+      if (isCreditsQ(q)) return { data: o.credits ?? [], error: null }
       if (q.filters.some(f => f[0] === 'in')) return { data: [], error: null }
       return { data: o.window ?? [{ id: 'l1', commission_amount_cents: 500, reverses_ledger_id: null, payments: { status: 'SUCCESS' } }], error: null }
     }
@@ -99,14 +103,14 @@ describe('bug 2 — refund credits settle with a cycle payout', () => {
     expect(t.st.inserts[0].amount_cents).toBe(7000)
     expect(t.st.inserts[0].settled_commission_cents).toBe(7000)
     expect([...t.st.claimedIds].sort()).toEqual(['a', 'c'])
-    const creditQ = t.st.queries.find(q => q.table === 'commission_ledger' && has(q, 'not', 'reverses_ledger_id'))
+    const creditQ = t.st.queries.find(q => q.table === 'commission_ledger' && isCreditsQ(q))
     expect(creditQ).toBeTruthy()
     expect(has(creditQ, 'lt', 'created_at')).toBe(true)     // closed cycles only — the running cycle is excluded, matching payableCents()
   })
   it('does NOT go looking for credits on an ad hoc payout (it already takes every unpaid row)', async () => {
     t = setup()
     await t.mod.adminRecordPayout(ctxOf({ body: { amountCents: 500 } }))
-    expect(t.st.queries.some(q => q.table === 'commission_ledger' && has(q, 'not', 'reverses_ledger_id'))).toBe(false)
+    expect(t.st.queries.some(q => q.table === 'commission_ledger' && isCreditsQ(q))).toBe(false)
   })
   it('buildCyclesSummary reports the credit that lives OUTSIDE each cycle, and nets refunded sales out of the count', () => {
     t = setup()

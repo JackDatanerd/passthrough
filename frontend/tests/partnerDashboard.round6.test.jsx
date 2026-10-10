@@ -57,7 +57,7 @@ describe('conversions paging', () => {
   it('loads the next page from the offset it has reached and appends it, never duplicating a row', async () => {
     mount({ conversionsTotal: 5 })
     const more = await screen.findByRole('button', { name: /load more/i })
-    expect(screen.getByText(/showing 3 of 5 conversions/i)).toBeTruthy()
+    expect(screen.getByText(/showing 3 of 5 entries/i)).toBeTruthy()
     api.get.mockImplementation(url => (url.startsWith('/partners/conversions')
       ? Promise.resolve({ data: { success: true, total: 5, data: [cv(3), cv(4), cv(5)] } })   // c3 repeats (a new sale shifted the window)
       : Promise.reject(new Error('x'))))
@@ -92,10 +92,10 @@ describe('CSV export', () => {
     expect(urls).toEqual(['/partners/conversions?limit=200&offset=0', '/partners/conversions?limit=200&offset=200'])
     const [filename, rows] = csv.calls[0]
     expect(filename).toMatch(/^passthrough-conversions-\d{4}-\d{2}-\d{2}\.csv$/)
-    expect(rows[0]).toEqual(['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Currency'])
+    expect(rows[0]).toEqual(['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Note', 'Currency'])
     expect(rows).toHaveLength(1 + 201)
-    expect(rows.at(-1)).toEqual(['2026-09-15', 'COACH20', 'Refund reversal', -10, '20%', -2, 'Reversal', 'USD'])
-    expect(rows[1].slice(2)).toEqual(['Sale', 10, '20%', 2, 'Pending', 'USD'])
+    expect(rows.at(-1)).toEqual(['2026-09-15', 'COACH20', 'Refund reversal', -10, '20%', -2, 'Reversal', '', 'USD'])
+    expect(rows[1].slice(2)).toEqual(['Sale', 10, '20%', 2, 'Pending', '', 'USD'])
   })
 
   it('a failed export says so and writes nothing', async () => {

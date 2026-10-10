@@ -39,6 +39,8 @@ const CALLS = {
   sendPartnerConversionEarned: ['p@x.y', 'P', 'CODE', 500, 'USD', 'https://d'], sendPartnerStatusChanged: ['p@x.y', 'P', 'PAUSED'], sendPartnerApplicationRejected: ['p@x.y', 'P', 'Not a fit yet.'], sendPartnerApplicationReceived: ['p@x.y', 'P'],
   sendPartnerRateChanged: ['p@x.y', 'P', 0.2, 0.25], sendPartnerCommissionReversed: ['p@x.y', 'P', 500, 'USD', 'https://d'],
   sendPartnerLinksRecovery: ['p@x.y', 'P', 'https://d'],
+  sendPartnerBalanceAdjusted: ['p@x.y', 'P', -500, 'USD', 'Self-referral via a second account', 'https://d'],
+  sendPartnerTermsUpdate: ['p@x.y', 'P', '2026-10', 'https://t', 'https://d'],
   sendPartnerDashboardLinkRegenerated: ['p@x.y', 'P', 'https://d'], sendPartnerPayoutVoided: ['p@x.y', 'P', 500, 'USD', 'Entered against the wrong cycle.'],
   sendEmployerLeadRejoin: ['l@x.y', { rejoinUrl: 'https://j', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
   sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],

@@ -161,14 +161,19 @@ function ConversionRow({ conversion, currency }) {
   // from. Shown only for a real (non-reversal) row — a reversal's own
   // "gross" is the negative of the original sale, which is confusing framed
   // as a "sale" line rather than the refund it is.
-  const showSaleLine = !conversion.isReversal && conversion.grossAmountCents != null
+  const showSaleLine = !conversion.isReversal && !conversion.isAdjustment && conversion.grossAmountCents != null
   return (
     <li className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
       <div>
         <div>
           {new Date(conversion.createdAt).toLocaleDateString()}
           {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
+          {conversion.isAdjustment && <> · <span className="text-xs font-medium text-gray-600">Balance adjustment</span></>}
         </div>
+        {/* Round 8: a manual admin entry (clawback / write-off / bonus) always carries the reason the admin gave. */}
+        {conversion.isAdjustment && conversion.adjustmentReason && (
+          <div className="text-xs text-gray-500 mt-0.5">{conversion.adjustmentReason}</div>
+        )}
         {showSaleLine && (
           <div className="text-xs text-gray-400 mt-0.5">
             {fmtCents(conversion.grossAmountCents, currency)} sale
@@ -294,14 +299,15 @@ function ConversionsSection({ token, initial, total, currency }) {
       }
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
       downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
-        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Currency'],
+        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Note', 'Currency'],
         ...unique.map(r => [
           String(r.createdAt || '').slice(0, 10), r.code || '',
-          r.isReversal ? 'Refund reversal' : 'Sale',
+          r.isAdjustment ? 'Adjustment' : r.isReversal ? 'Refund reversal' : 'Sale',
           (r.grossAmountCents || 0) / 100,
           r.commissionRate == null ? '' : `${+(r.commissionRate * 100).toFixed(2)}%`,
           (r.commissionAmountCents || 0) / 100,
           r.isReversal ? 'Reversal' : r.paid ? 'Paid' : 'Pending',
+          r.isAdjustment ? (r.adjustmentReason || '') : '',
           currency || '',
         ]),
       ])
@@ -332,7 +338,7 @@ function ConversionsSection({ token, initial, total, currency }) {
           </ul>
           <div className="flex items-center gap-3">
             {typeof total === 'number' && total > loaded.length && (
-              <p className="text-xs text-gray-400">Showing {loaded.length} of {total} conversions.</p>
+              <p className="text-xs text-gray-400">Showing {loaded.length} of {total} entries (sales, refunds and adjustments).</p>
             )}
             {more && (
               <button type="button" onClick={loadMore} disabled={loadingMore}
@@ -406,6 +412,35 @@ function NotificationPrefs({ token, initial }) {
   )
 }
 
+// Round 8: terms acceptance. An admin-created partner never recorded one and a version bump had no path at all.
+// Not a gate on anything - recorded, and prompted until done.
+function TermsPrompt({ token, version, onAccepted }) {
+  const [state, setState] = useState('idle')   // idle | saving | error
+  async function accept() {
+    setState('saving')
+    try { await api.post('/partners/accept-terms', {}, partnerAuth(token)); onAccepted() } catch (_) { setState('error') }
+  }
+  return (
+    <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" data-testid="terms-prompt">
+      <p>
+        Please review the current <Link to="/partner/terms" className="underline font-medium">Partner Program terms</Link>
+        {version ? ` (version ${version})` : ''} and accept them. Your links keep working in the meantime.
+      </p>
+      <button type="button" onClick={accept} disabled={state === 'saving'}
+        className="mt-2 px-3 py-1.5 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-60">
+        {state === 'saving' ? 'Saving…' : 'I accept the current terms'}
+      </button>
+      {state === 'error' && <p className="text-xs text-red-600 mt-1">Couldn't save that — try again in a moment.</p>}
+    </div>
+  )
+}
+
+function payoutAccountLabel(a) {
+  if (!a) return ''
+  const kind = a.method === 'BANK' ? 'Bank transfer' : 'Mobile money'
+  return `${kind}${a.provider ? ` · ${a.provider}` : ''}${a.last4 ? ` · ending ${a.last4}` : ''}`
+}
+
 export default function PartnerDashboard() {
   const [params] = useSearchParams()
   const token = params.get('token')
@@ -414,6 +449,7 @@ export default function PartnerDashboard() {
   const [invalid, setInvalid] = useState(false)
   const [loadError, setLoadError] = useState(false)
   const [data, setData] = useState(null)
+  const [termsDone, setTermsDone] = useState(false)
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
@@ -500,6 +536,21 @@ export default function PartnerDashboard() {
                 </PayoutDetailsAccess>
               </div>
             )}
+            {/* Round 8: where payouts go (last four only) and, right after a change, that payouts are paused for a while. */}
+            {data.hasPayoutDetails && data.payoutAccount && (
+              <p className="text-sm text-gray-500 mb-5" data-testid="payout-account">
+                Payouts go to: <span className="font-medium text-gray-700">{payoutAccountLabel(data.payoutAccount)}</span>
+              </p>
+            )}
+            {data.payoutHoldUntil && (
+              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="payout-hold">
+                You changed your payout details recently, so the next payout is on hold until about{' '}
+                {new Date(data.payoutHoldUntil).toLocaleString()}. This protects you if someone else ever got hold of your link.
+              </div>
+            )}
+            {data.termsAcceptanceRequired && !termsDone && (
+              <TermsPrompt token={token} version={data.currentTermsVersion} onAccepted={() => setTermsDone(true)} />
+            )}
             {data.belowMinimum && (
               <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
                 Payouts start at {fmtCents(data.minPayoutCents, data.currency)}. Your {fmtCents(data.carriedForwardCents, data.currency)} carries
@@ -516,7 +567,7 @@ export default function PartnerDashboard() {
             )}
             {data.creditCents > 0 && (
               <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600" data-testid="refund-credit">
-                A refund credit of {fmtCents(data.creditCents, data.currency)} will be taken off your next payout.
+                A credit of {fmtCents(data.creditCents, data.currency)} (refunds or balance adjustments) will be taken off your next payout.
               </div>
             )}
 

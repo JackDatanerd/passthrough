@@ -24,6 +24,8 @@ router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 router.post('/recover-links', rl.partnerRecover, c.recoverPartnerLinks)
 // Round 5: the partner's own email preference (per-sale emails on/off).
 router.post('/notifications', rl.partnerPrefs, c.updatePartnerNotifications)
+// Round 8: record acceptance of the current terms version (either partner token). Same light bucket as the prefs switch.
+router.post('/accept-terms',  rl.partnerPrefs, c.acceptPartnerTerms)
 
 // Public — click tracking. Rate-limited with its own dedicated bucket
 // (rl.click) rather than sharing rl.employerLead's lead-spam bucket — see
@@ -50,6 +52,8 @@ router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).
 router.post( '/payouts/batch',             admin, admin.stepUp, c.adminRecordPayoutBatch)
+// Round 8: email partners who have not accepted the current terms version (batched, resumable).
+router.post( '/terms-notice',              admin, c.adminSendTermsNotice)
 router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.
@@ -66,6 +70,9 @@ router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGe
 router.post( '/:id/payouts',               admin, admin.stepUp, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/payouts/:payoutId/void', admin, admin.stepUp, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
 router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam(), c.adminAnonymizePartner)
+// Round 8: manual ledger adjustment (clawback / write-off / bonus). It moves money, so it needs the same
+// step-up as recording or voiding a payout.
+router.post( '/:id/adjustments',          admin, admin.stepUp, validateUuidParam(), c.adminAdjustLedger)
 router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

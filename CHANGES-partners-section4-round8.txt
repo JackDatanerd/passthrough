@@ -1,0 +1,77 @@
+SECTION 4 (Partners / Referral) — ROUND 8
+Independent audit of partners.controller.js, partners.routes.js, referral.service.js, the partner pages, the admin
+partner pages and useReferralCapture (badge.service.js turned out to be the verification short-code generator and
+holds no partner logic). Deploy order: apply migration 0069 FIRST, then deploy the Worker and the frontend together.
+The Worker's dashboard / list / detail queries select the new ledger columns and fail without the migration.
+(Numbered 0069: 0067 and 0068 were taken by other sessions while this round was in progress. Step-up auth, added upstream
+for payouts and erasure, now also guards POST /:id/adjustments.)
+
+BUG FIXED
+ B1  Removing a partner's personal data left their address behind in email_logs (every partner mail ever sent to
+     it) and alert_logs (owner alerts quote the partner's name, email and payout-target tail) until the 90 / 180-day
+     retention sweep, although the sibling erasure flows (deleteAccount, employer-lead removal) purge email_logs.
+     adminAnonymizePartner now deletes the partner-template email_logs rows for the address (candidate mail is never
+     touched) and the alert_logs rows that quote the address or the partner id. Best effort and last: a failed purge
+     never fails the erasure, is reported (logsPurged) and falls back to the retention sweep. Skipped for a partner
+     that was already removed. (partners.controller.js purgePartnerLogs)
+     Not changed on purpose: an admin email CHANGE keeps the old address's logs, because the security notice sent to
+     the old address is deliberately retained evidence.
+
+SMALLER FIXES
+ s1  Dashboard (and admin partner detail) ledger embeds ordered by created_at only, while /conversions orders by
+     created_at then id: rows sharing a timestamp could be duplicated or missed at the 50 / 51 boundary. Same tiebreak.
+ s2  createPartnerSchema / updatePartnerSchema had no email max length (applications cap at 320) and the update schema
+     did not trim. Both now cap at 320; update trims.
+ s3  adminListPartners summed raw cents across currencies and never flagged it (only adminGetPartner did). The list now
+     carries mixedCurrency; such partners are left out of "Record payout run" / "Export payout run" and called out.
+ s4  Approving an application ignored a failed partner_id back-link update. Erasure follows that link (the email
+     fallback is defeated by an email change). Retried once and logged.
+ s5  A taken referral code on the partner page surfaced as the generic 409 "Already exists."; now says so.
+ s6  Dashboard label "N conversions" counted reversal rows as well; it now reads "N entries".
+
+FEATURE GAPS CLOSED
+ G1  Manual ledger adjustments (migration 0069, POST /api/partners/:id/adjustments). The ledger could only hold a sale
+     and the reversal of one, so there was no way to claw back fraudulent commission, grant a goodwill bonus or write
+     off an unpayable balance — and an unpayable balance also blocked erasing the partner (anonymize needs a zero
+     balance, and a partner with no payout details cannot be paid). An adjustment is a commission_ledger row of kind
+     ADJUSTMENT: signed non-zero amount (max 1,000,000.00), mandatory reason (3-500 chars), no payment, no code.
+       - settles, voids and nets exactly like every other unpaid row (payout claim, void release, balance and
+         anonymize checks all read commission_amount_cents);
+       - treated as a credit row by the cycle logic: a cycle-scoped payout pulls unpaid adjustments from other closed
+         cycles in with it, and the Pay button's default amount matches;
+       - never held (not subject to the refund-hold window), never counted as a conversion;
+       - the partner is emailed the amount and reason (admin can untick) and sees the row, with its reason, on the
+         dashboard and in their CSV export; the audit log records amount and ledger id, not the reason text;
+       - erasure scrubs the reason text (the amount stays) and refuses with a pointer to write-off when a balance
+         remains. Admin UI: "Adjust balance…" (deduct / add, "fill in the amount that brings the balance to zero").
+ G2  Terms acceptance and re-acceptance. Only applicants ever recorded terms_accepted_at; partners created by an admin
+     never did, and a PARTNER_TERMS_VERSION bump had no path although the terms page promises an email first.
+       - POST /api/partners/accept-terms (either partner token, idempotent) records the current version;
+       - dashboard shows a prompt until accepted (not a gate on payouts — that is a policy call);
+       - partner page shows accepted / older version / not accepted; list shows who is outstanding;
+       - POST /api/partners/terms-notice (admin) emails ACTIVE partners who have not accepted the current version,
+         40 per run, once per partner per version (partners.terms_notified_version), resumable.
+ G3  Admin can edit website / audience and keep admin-only internal notes (partners.internal_notes). '' clears.
+     Notes are never selected by any token-gated endpoint and are cleared at erasure. Audit logs field names only.
+ G4  Partner-side transparency: the dashboard shows the account payouts go to (method, bank/provider, last four only)
+     and any hold still running after a payout-details change; the payout-details save screen says that a change holds
+     the next payout and until when; the refund-credit banner now reads "refunds or balance adjustments".
+
+MIGRATION 0069 (idempotent)
+ commission_ledger: payment_id and referral_code_id become nullable; kind ('SALE' default | 'ADJUSTMENT'),
+ adjustment_reason, created_by; CHECK keeps every SALE row (original or reversal) tied to a payment and a code and
+ every ADJUSTMENT row payment-less, code-less, non-reversing, reasoned and non-zero. partners: internal_notes,
+ terms_notified_version. Verified against Postgres (PGlite): applies twice cleanly, existing rows stay SALE, valid
+ clawbacks/bonuses insert, all malformed shapes are rejected.
+
+TESTS
+ New: tests/partners.round8.test.js (22), frontend/tests/partnersRound8.test.jsx (16).
+ Expectations updated for intentional changes: partners.controller.test.js (hold filter now also lets ADJUSTMENT
+ through; dashboard order tiebreak), partners.round5.test.js (credits lookup now an or-filter that includes
+ adjustments), partnerDashboard.round6.test.jsx ("entries" label; CSV gains a Note column).
+
+FILES
+ supabase/migrations/0069_partners_round8.sql (new)
+ src/controllers/partners.controller.js, src/routes/partners.routes.js, src/lib/mappers.js,
+ src/services/email.service.js, src/templates/emails.js (partner_balance_adjusted, partner_terms_update)
+ frontend/src/pages/PartnerDashboard.jsx, PartnerPayoutDetails.jsx, admin/AdminPartners.jsx, admin/PartnerDetail.jsx

@@ -323,6 +323,9 @@ function partnerRowToCamel(row) {
     // Round 6: when the partner accepted the program terms (null for partners an admin created directly).
     termsAcceptedAt:           rest.terms_accepted_at ?? null,
     termsVersion:              rest.terms_version ?? null,
+    internalNotes:             rest.internal_notes ?? null,
+    // Which terms version the last "please accept" email went out for (the batched notice's own bookkeeping).
+    termsNotifiedVersion:      rest.terms_notified_version ?? null,
     payouts:                   rest.payouts ? rest.payouts.map(payoutRowToCamel) : undefined,
     referralCodes:             rest.referral_codes ? rest.referral_codes.map(referralCodeRowToCamel) : undefined,
     commissionLedger:          rest.commission_ledger ? rest.commission_ledger.map(commissionLedgerRowToCamel) : undefined,
@@ -395,6 +398,10 @@ function commissionLedgerRowToCamel(row) {
     // Section 8 audit: a reversal is a NEGATIVE row pointing at the row it undoes.
     reversesLedgerId:      row.reverses_ledger_id ?? null,
     reversalReason:        row.reversal_reason ?? null,
+    // Migration 0069: 'SALE' (original or reversal) or 'ADJUSTMENT' (manual admin entry, no payment/code).
+    kind:                  row.kind ?? 'SALE',
+    adjustmentReason:      row.adjustment_reason ?? null,
+    createdBy:             row.created_by ?? null,
     // Migration 0046: false while the referral code's usage count has not yet been credited for this row.
     usageCounted:          row.usage_counted ?? true,
     createdAt:             row.created_at

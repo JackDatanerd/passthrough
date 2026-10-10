@@ -203,7 +203,7 @@ describe('adminRecordPayout', () => {
     await t.mod.adminRecordPayout(call)
     const ledgerSelect = t.db.calls.find(q => q.table === 'commission_ledger' && q.op === 'select')
     expect(ledgerSelect.or).toHaveLength(1)
-    expect(ledgerSelect.or[0]).toMatch(/^reverses_ledger_id\.not\.is\.null,created_at\.lte\./)
+    expect(ledgerSelect.or[0]).toMatch(/^reverses_ledger_id\.not\.is\.null,kind\.eq\.ADJUSTMENT,created_at\.lte\./)
   })
 
   it('400s when the partner has no payout method on file and none was provided', async () => {
@@ -274,6 +274,8 @@ describe('getPartnerDashboard', () => {
       ['paid_at',    { foreignTable: 'payouts', ascending: false }],
       ['created_at', { foreignTable: 'referral_codes', ascending: false }],
       ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
+      // Round 8: same tiebreak as /conversions so rows sharing a timestamp page consistently.
+      ['id',         { foreignTable: 'commission_ledger', ascending: true }],
     ])
     restore()
   })
@@ -790,6 +792,8 @@ describe('adminGetPartner', () => {
       ['paid_at', { foreignTable: 'payouts', ascending: false }],
       ['created_at', { foreignTable: 'referral_codes', ascending: false }],
       ['created_at', { foreignTable: 'commission_ledger', ascending: false }],
+      // Round 8: same tiebreak as /conversions, so rows sharing a timestamp order deterministically.
+      ['id',         { foreignTable: 'commission_ledger', ascending: true }],
     ])
   })
 
