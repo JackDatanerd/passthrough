@@ -39,7 +39,11 @@ const BOT_UA_RE = /bot|crawl|spider|slurp|preview|unfurl|facebookexternalhit|emb
 
 function isBotUserAgent(ua) {
   // An empty UA is not a browser.
-  return !ua || BOT_UA_RE.test(ua)
+  // ROUND-7 FIX (bug): "bot" matched inside the Cubot phone brand ("Mozilla/5.0 (Linux; Android 11;
+  // CUBOT_X30) …"), so every real visitor on a Cubot handset was filtered out as a crawler: their
+  // views and downloads never counted. The brand is removed before testing; a genuine bot UA that
+  // also mentions Cubot still matches on its own tokens.
+  return !ua || BOT_UA_RE.test(String(ua).replace(/cubot/gi, ''))
 }
 
 // Same-visitor dedupe key: one count per visitor per code per day. Hashed so

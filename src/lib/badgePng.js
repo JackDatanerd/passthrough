@@ -167,4 +167,63 @@ function renderBadgePng(label, value, valueColor = '#6b7280') {
   return out
 }
 
-module.exports = { renderBadgePng, textWidth, HEIGHT, SCALE }
+// ROUND-7 (feature gap, Section 7): a link-preview card. The page's og:image was the site-wide
+// logo, so a verification link pasted into LinkedIn / Slack / WhatsApp / iMessage looked like every
+// other Passthrough link and the one thing the reader wants to know — is this resume verified, and
+// at what score — was not on the picture. 1200x630 is the size those previews use; drawn with the
+// same 5x7 font and stored-deflate encoder as the badge (no rasterizer, no dependencies).
+// Palette: 0 white, 1 dark text, 2 status colour, 3 muted text. No '.' or ':' glyph exists — callers
+// pass text made of the glyph set only (unknown characters draw as '?').
+const CARD_W = 1200, CARD_H = 630, CARD_MARGIN = 80
+
+function fitScale(text, maxScale, maxWidth) {
+  const n = [...String(text)].length
+  if (!n) return maxScale
+  return Math.max(1, Math.min(maxScale, Math.floor(maxWidth / (n * (GLYPH_W + 1) - 1))))
+}
+
+function renderSharePng({ headline = '', big = '', sub = '', footer = '', color = '#6b7280' } = {}) {
+  const px = new Uint8Array(CARD_W * CARD_H)   // palette index 0 = white
+  const fill = (x0, y0, w, h, idx) => { for (let y = y0; y < y0 + h; y++) px.fill(idx, y * CARD_W + x0, y * CARD_W + x0 + w) }
+  function draw(text, x, y, scale, idx) {
+    let cx = x
+    for (const ch of String(text).toUpperCase()) {
+      const rows = GLYPH_ROWS[ch] || GLYPH_ROWS['?']
+      for (let r = 0; r < GLYPH_H; r++)
+        for (let c = 0; c < GLYPH_W; c++)
+          if (rows[r][c] === '1') fill(cx + c * scale, y + r * scale, scale, scale, idx)
+      cx += (GLYPH_W + 1) * scale
+    }
+  }
+  const inner = CARD_W - CARD_MARGIN * 2
+  fill(0, 0, CARD_W, 28, 2)                    // status colour bar
+  fill(0, CARD_H - 28, CARD_W, 28, 2)
+  const hs = fitScale(headline, 9, inner)
+  draw(headline, CARD_MARGIN, 120, hs, 2)
+  if (big) { const bs = fitScale(big, 26, inner); draw(big, CARD_MARGIN, 120 + GLYPH_H * hs + 56, bs, 1) }
+  if (sub) draw(sub, CARD_MARGIN, 440, fitScale(sub, 6, inner), 3)
+  if (footer) draw(footer, CARD_MARGIN, 520, fitScale(footer, 6, inner), 3)
+
+  const rowBytes = Math.ceil(CARD_W / 4)
+  const raw = new Uint8Array(CARD_H * (1 + rowBytes))
+  for (let y = 0; y < CARD_H; y++) {
+    const base = y * (1 + rowBytes)
+    for (let x = 0; x < CARD_W; x++) raw[base + 1 + (x >> 2)] |= px[y * CARD_W + x] << (6 - (x & 3) * 2)
+  }
+  const [r, g, b] = parseColor(color)
+  const ihdr = new Uint8Array(13)
+  const dv = new DataView(ihdr.buffer)
+  dv.setUint32(0, CARD_W); dv.setUint32(4, CARD_H)
+  ihdr[8] = 2; ihdr[9] = 3
+  const plte = Uint8Array.from([255, 255, 255, 0x11, 0x18, 0x27, r, g, b, 0x6b, 0x72, 0x80])
+  const parts = [
+    Uint8Array.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk('IHDR', ihdr), chunk('PLTE', plte), chunk('IDAT', zlibStored(raw)), chunk('IEND', new Uint8Array(0)),
+  ]
+  const out = new Uint8Array(parts.reduce((n, p) => n + p.length, 0))
+  let o = 0
+  for (const p of parts) { out.set(p, o); o += p.length }
+  return out
+}
+
+module.exports = { renderBadgePng, renderSharePng, textWidth, HEIGHT, SCALE, CARD_W, CARD_H }

@@ -1,0 +1,20 @@
+Verify (Section 7) — round 7
+
+BUG
+- lib/verification.js isBotUserAgent: "bot" matched inside the Cubot phone brand, so real visitors on Cubot
+  handsets never counted as views/downloads. "cubot" is stripped before the test.
+- verify.controller.js lookupByHash: unknown-file lookups spent the shared 'page' miss budget (30/15min), so a
+  reader checking a few re-saved files was then locked out of opening verification pages. A SHA-256 cannot be
+  guessed; misses are no longer counted or limited by the miss counter (the 240/5min verifyRead limiter stays).
+
+FEATURE GAPS
+- Integrity verdict cache (60s, edge Cache API, keyed by code + stored fingerprints; 'unknown' never cached;
+  revocation never cached). Page loads and badge/card misses no longer re-read and re-hash both files from R2.
+- Preview (?preview=1) now returns the real verdict instead of 'unchecked'/null, so a verified page unfurls as
+  "Passthrough Verified" (frontend/functions/v/[code].js).
+- Per-page link-preview image: GET /api/verify/:code/card.png (1200x630, state + score + code, no name), edge
+  cached and purged with the badge; og:image / twitter:image / twitter:card wired in the Pages Function
+  (added when index.html lacks them).
+- Verify.jsx explainer copy now says the stored-copy check result is reused for up to a minute.
+
+TESTS: tests/verify.round7.test.js, frontend/tests/previewFunction.round7.test.js; round2/4/6 tests updated.

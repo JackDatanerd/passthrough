@@ -229,12 +229,17 @@ describe('round 3 — download integrity, partial integrity, codes, removed page
     expect((await look(await sha256Bytes(OLD))).data.data).toMatchObject({ code: CODE, match: 'previous', kind: 'docx' })
   })
 
-  it('lookup by file: a stranger\'s file is a 404 that spends the miss budget; a malformed value is a 400', async () => {
+  it('lookup by file: a stranger\'s file is a 404 that does NOT spend the page-lookup budget (round 7); a malformed value is a 400', async () => {
     t = harness(await seedRow())
     const look = (h, ip) => t.mod.lookupByHash({ ...t.ctx({ ip }), req: { ...t.ctx({ ip }).req, param: () => h } })
     expect((await look('not-a-hash', '198.51.100.30')).status).toBe(400)
-    for (let i = 0; i < 30; i++) expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(404)
-    expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(429)
+    // ROUND-7: a hash cannot be guessed, so misses are not counted — and so a reader who checks a few
+    // re-saved files is not then locked out of opening a verification PAGE from the same network.
+    for (let i = 0; i < 40; i++) expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(404)
+    expect((await look('a'.repeat(64), '198.51.100.31')).status).toBe(404)
+    expect([...t.KV.m.keys()].some(k => k.startsWith('rl:vmiss'))).toBe(false)
+    const page = await t.mod.getVerification(t.ctx({ ip: '198.51.100.31' }))
+    expect(page.status).toBe(200)
   })
 
   it('lookup by file: reports a revoked page as revoked', async () => {

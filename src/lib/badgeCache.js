@@ -63,10 +63,11 @@ function badgeCache() {
 // ROUND-6: the badge now exists in two formats (SVG, and a PNG for places that cannot show SVG —
 // e-mail signatures, LinkedIn). Each format has its own entry; the SVG key is unchanged so entries
 // already cached stay valid, and purgeBadgeCache() clears both.
-const BADGE_FORMATS = Object.freeze(['svg', 'png'])
+const BADGE_FORMATS = Object.freeze(['svg', 'png', 'card'])
 function badgeCacheKeyForCode(code, format = 'svg') {
   const base = `https://verify-badge.passthrough.internal/${encodeURIComponent(String(code))}`
-  return new Request(format === 'png' ? `${base}.png` : base)
+  // 'card' is the 1200x630 link-preview image (round 7).
+  return new Request(format === 'png' ? `${base}.png` : format === 'card' ? `${base}.card.png` : base)
 }
 
 // Best-effort, like every other cache operation here — a purge failure must never fail (or

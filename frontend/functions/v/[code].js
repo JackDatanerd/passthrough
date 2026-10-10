@@ -118,19 +118,27 @@ export async function onRequestGet(context) {
   if (data.code === 'REVOKED' || data.success === false) return response
 
   // ROUND-2 AUDIT FIX (bug, Section 7): this used to title the card "Passthrough
-  // Verified" whenever the SCORE passed — the exact score-only claim already fixed
-  // on the page and the badge. A preview fetch deliberately skips the integrity
-  // check (it must not cost an R2 read per crawler), so it cannot know whether the
-  // file is still unmodified, and a link card is cached by the platform long after.
-  // The card therefore states only what a preview CAN know — the score — and sends
-  // the reader to the page for the live verified/modified verdict.
+  // Verified" whenever the SCORE passed — a score-only claim, because the preview fetch skipped the
+  // integrity check and could not know whether the file was still unmodified.
+  // ROUND-7: the API now answers the preview with the real verdict (a cached 60-second integrity
+  // check, see verify.controller.js checkIntegrityCached), so `data.verified` can be trusted here and
+  // a genuinely verified page unfurls as "Passthrough Verified". Anything else stays a scan report.
+  // A platform keeps a link card long after we render it, so the description still sends the reader to
+  // the page for the live status.
   const scoreLine = typeof data.atsScore === 'number' ? ` — ATS score ${data.atsScore}/100` : ''
   const namePrefix = data.candidateFirstName ? `${data.candidateFirstName}: ` : ''
-  const title = `${namePrefix}Passthrough Scan Report${scoreLine}`
-  const description = data.passed
-    ? `Scanned and scored by Passthrough's ATS engine${scoreLine}. Open the link to see the live, cryptographically-checked verification status.`
-    : `Scanned by Passthrough's ATS engine${scoreLine}. Open the link for the full report.`
+  const verified = data.verified === true
+  const title = `${namePrefix}${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}${scoreLine}`
+  const description = verified
+    ? `Scanned, scored and checked by Passthrough's ATS engine${scoreLine}. Open the link to see the live verification status.`
+    : data.passed
+      ? `Scanned and scored by Passthrough's ATS engine${scoreLine}. Open the link to see the live, cryptographically-checked verification status.`
+      : `Scanned by Passthrough's ATS engine${scoreLine}. Open the link for the full report.`
   const pageUrl = request.url
+  // ROUND-7: a per-page 1200x630 preview image (state + score + code) instead of the site-wide logo.
+  const imageUrl = `${apiUrl}/verify/${encodeURIComponent(String(code).toUpperCase())}/card.png`
+  const imageAlt = verified ? 'Passthrough Verified resume' : 'Passthrough ATS scan report'
+  const seen = new Set()
 
   class MetaRewriter {
     element(el) {
@@ -141,6 +149,16 @@ export async function onRequestGet(context) {
         el.setAttribute('content', description)
       } else if (key === 'og:url') {
         el.setAttribute('content', pageUrl)
+      } else if (key === 'og:image' || key === 'twitter:image') {
+        el.setAttribute('content', imageUrl); seen.add(key)
+      } else if (key === 'og:image:width') {
+        el.setAttribute('content', '1200'); seen.add(key)
+      } else if (key === 'og:image:height') {
+        el.setAttribute('content', '630'); seen.add(key)
+      } else if (key === 'og:image:alt' || key === 'twitter:image:alt') {
+        el.setAttribute('content', imageAlt); seen.add(key)
+      } else if (key === 'twitter:card') {
+        el.setAttribute('content', 'summary_large_image'); seen.add(key)
       } else if (key === 'robots') {
         el.setAttribute('content', 'noindex, nofollow')
       }
@@ -164,6 +182,16 @@ export async function onRequestGet(context) {
   class HeadRewriter {
     element(el) {
       el.append('<meta name="robots" content="noindex, nofollow">', { html: true })
+      // Runs at </head>, after every <meta> above was visited: add whichever image tags the static
+      // page did not already carry, so the card is used even if index.html loses them.
+      el.onEndTag(end => {
+        const attr = (k, v) => `<meta property="${k}" content="${String(v).replace(/&/g, '&amp;').replace(/"/g, '&quot;')}">`
+        let extra = ''
+        if (!seen.has('og:image')) extra += attr('og:image', imageUrl)
+        if (!seen.has('twitter:image')) extra += `<meta name="twitter:image" content="${imageUrl}">`
+        if (!seen.has('twitter:card')) extra += '<meta name="twitter:card" content="summary_large_image">'
+        if (extra) end.before(extra, { html: true })
+      })
     }
   }
 

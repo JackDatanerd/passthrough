@@ -127,12 +127,12 @@ describe('ROUND-4 AUDIT (feature gap): a genuine file from a DELETED page is "re
     expect([...t.KV.m.keys()].some(k => k.startsWith('rl:vmiss'))).toBe(false)
   })
 
-  it('an unknown hash is still NO_MATCH and still counts as a miss', async () => {
+  it('an unknown hash is still NO_MATCH (and, since round 7, no longer counts as a miss)', async () => {
     t = harness(await seedRow(), { verification_tombstone_hashes: [] })
     const r = await t.mod.lookupByHash(t.ctx({ code: 'b'.repeat(64), ip: '198.51.100.8' }))
     expect(r.status).toBe(404)
     expect(r.data.code).toBe('NO_MATCH')
-    expect([...t.KV.m.keys()].some(k => k.startsWith('rl:vmiss'))).toBe(true)
+    expect([...t.KV.m.keys()].some(k => k.startsWith('rl:vmiss'))).toBe(false)
   })
 
   it('a missing tombstone-hash table fails soft to NO_MATCH', async () => {

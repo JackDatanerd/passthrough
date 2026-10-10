@@ -59,7 +59,7 @@ const cryptoLib = require('../lib/crypto')
 const rateLimiter = require('../middleware/rateLimiter')
 const { runInBackground } = require('../lib/background')
 const { publicFirstName } = require('../lib/text')
-const { renderBadgePng } = require('../lib/badgePng')
+const { renderBadgePng, renderSharePng } = require('../lib/badgePng')
 const { STATUS, SHA256_RE, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview } = require('../lib/verification')
 // SECTION 7 AUDIT FIX (bug): this file used to define its own local
 // `clientIp` (`cf-connecting-ip || x-forwarded-for || 'unknown'`), which
@@ -186,6 +186,40 @@ async function checkIntegrity(env, row, { supabase = null, code = null } = {}) {
     console.error('Integrity check failed:', err.message)
     return 'unknown'
   }
+}
+
+// ROUND-7 (feature gap + cost, Section 7): every page load, and every badge cache miss, re-read BOTH
+// files from R2 and re-hashed them. A page shared into a busy channel (or a scraper that stays under
+// the read limiter) paid that on each request, while the answer only changes when a file does. The
+// verdict is now held in the edge cache for 60 seconds, keyed by the code AND the stored fingerprints
+// (so regenerating a delivery changes the key at once, no purge needed). Tampering with R2 is therefore
+// noticed within a minute instead of instantly — the same bound the badge already had. Revocation is
+// NOT cached: it is read from the row on every request. 'unknown' (R2 hiccup) is never stored.
+const INTEGRITY_CACHE_TTL_SECONDS = 60
+function integrityCacheKey(code, row) {
+  const tag = `${String(row.resume_hash || '').slice(0, 12)}-${String(row.resume_pdf_hash || '').slice(0, 12)}-p${row.resume_pdf_path ? 1 : 0}`
+  return new Request(`https://verify-integrity.passthrough.internal/${encodeURIComponent(code)}/${tag}`)
+}
+
+async function checkIntegrityCached(c, row, { supabase = null, code = null } = {}) {
+  const cache = code && isPlausibleCode(code) ? getBadgeCache() : null
+  const key = cache ? integrityCacheKey(code, row) : null
+  if (cache) {
+    try {
+      const hit = await cache.match(key)
+      if (hit) {
+        const status = (await hit.text()).trim()
+        if (['verified', 'modified', 'partial', 'missing'].includes(status)) return status
+      }
+    } catch (_) { /* a cache hiccup is just a miss */ }
+  }
+  const status = await checkIntegrity(c.env, row, { supabase, code })
+  if (cache && status !== 'unknown') {
+    try {
+      runInBackground(c, cache.put(key, new Response(status, { headers: { 'Cache-Control': `public, max-age=${INTEGRITY_CACHE_TTL_SECONDS}` } })))
+    } catch (_) { /* best effort */ }
+  }
+  return status
 }
 
 // ROUND-6 AUDIT FIX (bug, Section 7): R2 answering "no such object" and R2 failing both returned
@@ -345,7 +379,10 @@ async function getVerification(c) {
   const verifiedScore = row.fix_ats_score ?? row.ats_score
   const passed = verifiedScore != null && verifiedScore >= constants.ATS_BADGE_THRESHOLD
 
-  const integrityStatus = preview ? 'unchecked' : await checkIntegrity(c.env, row, { supabase: loaded.supabase, code })
+  // ROUND-7: the preview used to skip the check ('unchecked', verified: null), so a link pasted into a
+  // chat unfurled as a generic "Scan Report" even for a fully verified page. The verdict is cached
+  // (checkIntegrityCached), which is what makes it affordable here.
+  const integrityStatus = await checkIntegrityCached(c, row, { supabase: loaded.supabase, code })
   if (integrityStatus === 'missing') await reportMissingFile(c, code)
   const counted = preview ? false : await maybeCountView(c, code, row)
 
@@ -356,7 +393,7 @@ async function getVerification(c) {
     atsScore:           verifiedScore,
     passed,
     // The ONLY flag a headline may use to say "Verified".
-    verified:           preview ? null : (passed && integrityStatus === 'verified'),
+    verified:           passed && integrityStatus === 'verified',
     roleCategory:       row.role_category,
     seniorityLevel:     row.seniority_level,
     verifiedAt:         row.verified_at,
@@ -420,15 +457,17 @@ async function downloadVerifiedFile(c) {
 // GET /api/verify/by-hash/:sha256
 // The reader has a file but no link (an ATS strips them, a printout loses them): they hash
 // it in their browser (nothing is uploaded) and this finds the page it belongs to — a
-// current file, or one an earlier delivery of it. Same limiter, and the same miss counter,
-// as a code lookup: a hash is 256 bits and cannot be guessed, but this must not be a
-// cheaper oracle than /:code is.
+// current file, or one an earlier delivery of it.
+//
+// ROUND-7 FIX (bug): this shared the 'page' miss counter with code lookups (30 per 15 minutes). A
+// SHA-256 cannot be guessed, so the counter protected nothing — but it meant that a reader who checked
+// a handful of ordinary files that simply were not Passthrough's (every re-saved or converted copy is a
+// miss) got a 429 and was then locked out of opening any verification PAGE for 15 minutes, the thing
+// they were actually trying to do. The route keeps the 240-per-5-minutes read limiter, which bounds the
+// cost; misses are no longer counted.
 async function lookupByHash(c) {
   noStore(c)
   const hash = String(c.req.param('hash') || '').trim().toLowerCase()
-  const ip = clientIp(c)
-  if (await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, 'page'))
-    return c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429, { 'Retry-After': '900' })
   if (!SHA256_RE.test(hash))
     return c.json({ success: false, message: 'That is not a SHA-256 fingerprint.' }, 400)
 
@@ -470,7 +509,6 @@ async function lookupByHash(c) {
   } catch (err) {
     console.error('[verify] tombstone hash lookup failed:', err.message)
   }
-  if (!isTrustedPreview(c)) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, 'page')
   return c.json({ success: false, code: 'NO_MATCH', message: 'No Passthrough verification matches that file.' }, 404)
 }
 
@@ -531,7 +569,7 @@ const BADGE_IP_QUOTA = 1200              // per IP per 15 min — cache misses o
 // (cheap — a Cache API hit, no R2 read); only the edge copy is stored for the full TTL.
 const BADGE_CLIENT_MAX_AGE_SECONDS = 30
 
-const BADGE_TYPES = { svg: 'image/svg+xml; charset=utf-8', png: 'image/png' }
+const BADGE_TYPES = { svg: 'image/svg+xml; charset=utf-8', png: 'image/png', card: 'image/png' }
 function badgeHeaders(ttl, format = 'svg') {
   return {
     'Content-Type': BADGE_TYPES[format] || BADGE_TYPES.svg,
@@ -565,7 +603,22 @@ function sendBadge(c, body, ttl, cache, key, format = 'svg') {
 // Outlook, LinkedIn or most ATS profile fields, so a candidate could not use the badge where a
 // resume credential most wants to live (an e-mail signature). One handler serves both formats —
 // same state, same caching, same limits; only the encoder and the cache entry differ.
-function drawBadge(format, label, value, color) {
+//
+// ROUND-7: format 'card' is the 1200x630 link-preview image (see renderSharePng). It says the same
+// thing as the badge — same state, same TTLs — plus the code, and never the candidate's name.
+function cardSpec(label, value, color, code) {
+  const footer = code ? `CODE ${code}` : ''
+  const v = String(value)
+  if (v === 'revoked') return { headline: 'VERIFICATION REVOKED', sub: 'THIS PAGE IS NO LONGER VALID', footer, color }
+  if (v === 'removed') return { headline: 'PASSTHROUGH', sub: 'THIS PAGE WAS REMOVED BY ITS OWNER', footer, color }
+  if (v === 'not found') return { headline: 'PASSTHROUGH', sub: 'VERIFICATION NOT FOUND', footer, color }
+  if (label === 'Passthrough Verified') return { headline: 'PASSTHROUGH VERIFIED', big: v, sub: 'ATS SCORE - RESUME FILE NOT MODIFIED', footer, color }
+  const score = /(\d+\/100)/.exec(v)
+  return { headline: 'PASSTHROUGH SCAN REPORT', big: score ? score[1] : '', sub: 'ATS SCAN SCORE - NOT VERIFIED', footer, color }
+}
+
+function drawBadge(format, label, value, color, code) {
+  if (format === 'card') return renderSharePng(cardSpec(label, value, color, code))
   return format === 'png' ? renderBadgePng(label, value, color) : renderBadge(label, value, color)
 }
 
@@ -604,7 +657,7 @@ async function serveBadge(c, format) {
   if (loaded.response) {
     // A genuine "no such page" is answered with a real (grey) badge and cached;
     // only a rate-limit (429) stays a plain error.
-    if (loaded.notFound) return sendBadge(c, drawBadge(format, 'Passthrough', loaded.removed ? 'removed' : 'not found', '#6b7280'), BADGE_STATIC_TTL_SECONDS, cache, key, format)
+    if (loaded.notFound) return sendBadge(c, drawBadge(format, 'Passthrough', loaded.removed ? 'removed' : 'not found', '#6b7280', plausible ? code : null), BADGE_STATIC_TTL_SECONDS, cache, key, format)
     return loaded.response
   }
   const { row } = loaded
@@ -617,17 +670,18 @@ async function serveBadge(c, format) {
     // Only pay for the integrity check when the score alone could otherwise
     // earn the "Verified" claim — a below-threshold scan is never going to
     // say "Verified" regardless of integrity, so there's nothing to check.
-    const integrity = passed ? await checkIntegrity(c.env, row, { supabase: loaded.supabase, code: loaded.code }) : null
+    const integrity = passed ? await checkIntegrityCached(c, row, { supabase: loaded.supabase, code: loaded.code }) : null
     if (integrity === 'unknown') ttl = BADGE_UNSETTLED_TTL_SECONDS
     if (integrity === 'missing') await reportMissingFile(c, loaded.code)
     if (passed && integrity === 'verified') { value = `${Math.round(score)}/100`; color = '#15803d' }
     else { value = score != null ? `scan ${Math.round(score)}/100` : 'scan report'; color = '#b45309' }
   }
   const label = value === 'revoked' || String(value).startsWith('scan') ? 'Passthrough' : 'Passthrough Verified'
-  return sendBadge(c, drawBadge(format, label, value, color), ttl, cache, key, format)
+  return sendBadge(c, drawBadge(format, label, value, color, loaded.code), ttl, cache, key, format)
 }
 
 const getBadge = c => serveBadge(c, 'svg')
 const getBadgePng = c => serveBadge(c, 'png')
+const getCardPng = c => serveBadge(c, 'card')
 
-module.exports = { getVerification, downloadVerifiedFile, getBadge, getBadgePng, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS }
+module.exports = { getVerification, downloadVerifiedFile, getBadge, getBadgePng, getCardPng, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS, INTEGRITY_CACHE_TTL_SECONDS }

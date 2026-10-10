@@ -529,7 +529,7 @@ export default function Verify() {
                     Most "resume checker" badges are just an image — nothing stops a
                     candidate from editing the file after the fact and keeping the badge.
                     Passthrough hashes the exact document at verification time and
-                    re-checks our own stored copy against that hash every time this page loads. If our
+                    re-checks our own stored copy against that hash whenever this page loads (a result is reused for up to a minute). If our
                     copy has changed in any way, this page will say{' '}
                     <strong className="text-red-600">Modified</strong> instead of{' '}
                     <strong className="text-green-700">Unmodified</strong> — automatically,

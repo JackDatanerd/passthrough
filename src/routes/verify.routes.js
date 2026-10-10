@@ -13,5 +13,7 @@ router.get('/:code/download',  rl.verifyRead, c.downloadVerifiedFile)
 router.get('/:code/badge.svg', c.getBadge)
 // The same badge as a PNG — for e-mail signatures, LinkedIn and anywhere SVG is not displayed.
 router.get('/:code/badge.png', c.getBadgePng)
+// ROUND-7: the link-preview image; edge-cached and quota'd like the badge, so no verifyRead limiter.
+router.get('/:code/card.png',  c.getCardPng)
 
 module.exports = router
