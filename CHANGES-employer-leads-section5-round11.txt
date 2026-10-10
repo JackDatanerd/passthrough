@@ -1,0 +1,42 @@
+EMPLOYER LEADS - SECTION 5 - ROUND 11 (independent audit)
+Built on repo head d923c03. NEW MIGRATION: supabase/migrations/0068_employer_leads_round11.sql (schema_version 68).
+Run the migration BEFORE (or with) deploying; the public paths tolerate a missing migration, but
+notify-candidates and bulk "set field" need it.
+
+FEATURE GAPS CLOSED
+G1  Aliases of a removed mailbox (+tag, Gmail dots, googlemail) are now covered by the do-not-contact list
+    and by the per-address mail caps (lib/mailbox.js).
+G2  The acknowledgement no longer echoes the name a stranger typed into the public form.
+G3  The bounce/complaint block is visible and liftable from the leads screen; request-confirmation failures
+    now say why (409 MAIL_SUPPRESSED / 429 EMAIL_LIMIT / 502 SEND_FAILED).
+G4  Re-join: an address that removed ITSELF and submits again gets a "rejoin" email; /employer/rejoin adds it
+    back (never for complaint/bounce/admin/unknown-reason entries).
+G5  Bulk actions can cover everything a filtered list matches (with an expected-count guard).
+G6  "Already told about candidates" is tracked per field; manual add accepts other fields.
+G7  Each lead records consent / how it was confirmed (consent, confirmed_via).
+G8  Optional keyed (HMAC) suppression hashes: SUPPRESSION_HASH_KEY / SUPPRESSION_HASH_KEY_PREVIOUS.
+G9  The hourly ack retry keeps the one-click unsubscribe header (remembered API origin).
+
+BUGS FIXED
+B1  /field no longer overwrites an existing field (and no longer double-counts in open_lead_counts).
+B2  Edit-mode "add anyway" is no longer a dead end (overrideRemoval).
+B3  Bulk setField is one SQL statement (set_lead_field) with its audit entry.
+B4  The confirm page needs a button press (mail scanners no longer confirm people).
+B5  Plain index on employer_leads(email).
+B6  A resubmission that could not be recorded is logged.
+B7  The CSV export streams page by page instead of building 50k rows in memory.
+Also: constraint employer_leads_extras_valid; /employer/* noindex + no-store headers.
+
+OTHER SECTIONS TOUCHED
+resend-webhook.controller.js (records complaint/bounce as the suppression reason, mailbox-hash audit target),
+retention.service.js (purge uses keyed hashes + reason), email.service.js / templates/emails.js (new rejoin mail,
+mailbox-keyed caps), mappers.js, leadTokens.js ('rejoin' purpose), constants.js (schema version 68),
+DEPLOYMENT.md, .dev.vars.example.
+
+NOTE: these are WHOLE files. Other sessions may have changed the same shared files (email.service.js,
+mappers.js, constants.js, resend-webhook.controller.js, retention.service.js, emails.js, App.jsx): compare
+with `git diff` after extracting and keep their changes. If the repo moves again, the migration number may
+also need bumping (and EXPECTED_SCHEMA_VERSION with it).
+
+Tests: full suite 242 files / 4132 tests pass (backend + frontend).
+Not done: the fresh independent re-audit pass of the finished code (the audit agent hit a usage limit).

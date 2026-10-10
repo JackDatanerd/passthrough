@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import Spinner from '../components/ui/Spinner'
@@ -8,13 +8,11 @@ import Footer from '../components/layout/Footer'
 import { ROLE_CATEGORIES } from '../lib/roleCategories'
 
 // The two pages the links in the employer early-access email land on:
-//   /employer/confirm?token=…  — confirms the address is theirs (runs on load:
-//                                harmless, it only sets a timestamp)
-//   /employer/remove?token=…   — removes the address for good. Deliberately
-//                                needs a button press: mail scanners and link
-//                                previewers open links (some run scripts), and
-//                                an unsubscribe that fired on load would
-//                                remove people who never asked.
+//   /employer/confirm?token=…  — confirms the address is theirs
+//   /employer/remove?token=…   — removes the address for good
+// Both deliberately need a button press: mail scanners and link previewers open
+// links (some run scripts), and an action that fired on load would confirm or
+// remove people who never asked.
 // The token is a signed, stateless proof of the address (see the backend's
 // lib/leadTokens.js); no login is involved.
 const CONFIRM_COPY = {
@@ -30,17 +28,16 @@ export default function EmployerLeadAction({ mode }) {
   const [params] = useSearchParams()
   const token = params.get('token')
   const isConfirm = mode === 'confirm'
-  const [state, setState] = useState(token ? (isConfirm ? 'loading' : 'ask') : 'error') // loading | ask | working | done | error
+  const [state, setState] = useState(token ? 'ask' : 'error') // loading | ask | working | done | error
   const [result, setResult] = useState(null)
   const [message, setMessage] = useState(token ? '' : 'This link is missing its token. Use the link from the email we sent you.')
   // A rejected link (400) will never work on a second try; a network or server hiccup might.
   const [retryable, setRetryable] = useState(false)
-  const ran = useRef(false)
   // The confirm response says when the lead never named a field — without one they can never be
   // matched with candidates, so the confirmed screen asks (same signed token, no login).
   const [needsField, setNeedsField] = useState(false)
   const [field, setField] = useState('')
-  const [fieldState, setFieldState] = useState('idle') // idle | saving | saved | error
+  const [fieldState, setFieldState] = useState('idle') // idle | saving | saved | already | error
   const [fieldError, setFieldError] = useState('')
 
   async function saveField() {
@@ -49,6 +46,7 @@ export default function EmployerLeadAction({ mode }) {
     try {
       const res = await api.post('/employer-leads/field', { token, field })
       if (res.data.status === 'not_found') { setNeedsField(false); setResult('not_found') }
+      else if (res.data.status === 'already') setFieldState('already')
       else setFieldState('saved')
     } catch (err) {
       setFieldError(getErrorMessage(err, 'Could not save that. Please try again.'))
@@ -70,13 +68,6 @@ export default function EmployerLeadAction({ mode }) {
     }
   }
 
-  useEffect(() => {
-    if (!isConfirm || !token || ran.current) return   // StrictMode double-invoke guard
-    ran.current = true
-    run()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-
   const copy = isConfirm ? (CONFIRM_COPY[result] || CONFIRM_COPY.confirmed) : null
 
   return (
@@ -92,13 +83,15 @@ export default function EmployerLeadAction({ mode }) {
           )}
           {state === 'ask' && (
             <>
-              <h1 className="text-xl font-bold text-gray-900 mb-2">Remove your email?</h1>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">{isConfirm ? 'Confirm your email?' : 'Remove your email?'}</h1>
               <p className="text-sm text-gray-500 mb-6">
-                We'll delete your early-access request and won't contact you again.
+                {isConfirm
+                  ? "Confirm this address is yours and we'll email you when there are Verified candidates in your field."
+                  : "We'll delete your early-access request and won't contact you again."}
               </p>
               <div className="flex flex-col gap-2">
-                <Button onClick={run}>Yes, remove me</Button>
-                <Link to="/" className="text-sm text-blue-600 hover:underline">No, keep me on the list</Link>
+                <Button onClick={run}>{isConfirm ? 'Yes, confirm my email' : 'Yes, remove me'}</Button>
+                <Link to="/" className="text-sm text-blue-600 hover:underline">{isConfirm ? 'No, not now' : 'No, keep me on the list'}</Link>
               </div>
             </>
           )}
@@ -107,7 +100,7 @@ export default function EmployerLeadAction({ mode }) {
               <div className={`${copy.tone} text-4xl mb-3`}>{copy.icon}</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">{copy.title}</h1>
               <p className="text-sm text-gray-500 mb-6">{copy.body}</p>
-              {needsField && fieldState !== 'saved' && (
+              {needsField && fieldState !== 'saved' && fieldState !== 'already' && (
                 <div className="mb-6 text-left">
                   <label htmlFor="lead-field" className="block text-sm font-medium text-gray-700 mb-1">
                     Which field are you hiring in?
@@ -122,6 +115,9 @@ export default function EmployerLeadAction({ mode }) {
                     {fieldState === 'saving' ? 'Saving…' : 'Save'}
                   </Button>
                 </div>
+              )}
+              {fieldState === 'already' && (
+                <p className="text-sm text-gray-500 mb-6">Your field is already on file.</p>
               )}
               {fieldState === 'saved' && (
                 <p className="text-sm text-green-600 mb-6">Saved — we'll email you when there are Verified candidates in that field.</p>

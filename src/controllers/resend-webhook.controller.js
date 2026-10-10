@@ -19,7 +19,7 @@
 // secret is set.
 const { getSupabase } = require('../config/supabase')
 const { verifySvixSignature } = require('../lib/svix')
-const { sha256 } = require('../lib/crypto')
+const { suppressionHashes } = require('../lib/mailbox')
 const { logAdminAction } = require('../lib/adminAudit')
 const { performRemoval, EMPLOYER_MAIL_TEMPLATES } = require('./employer-leads.controller')
 const inbox = require('./webhooks.controller')
@@ -164,10 +164,10 @@ async function processResendEvent(c, supabase, event) {
       employer = !!(logs && logs.length)
     }
     if (!employer) continue
-    await performRemoval(supabase, email)
+    await performRemoval(supabase, email, { env: c.env, reason: complaint ? 'complaint' : 'bounce' })
     removed++
     // Hash, not the address — same convention as the admin suppression entries.
-    await logAdminAction(c, supabase, 'lead.auto_suppressed', 'employer_lead_suppression', await sha256(email), {
+    await logAdminAction(c, supabase, 'lead.auto_suppressed', 'employer_lead_suppression', (await suppressionHashes(c.env, email)).write[0], {
       reason: complaint ? 'spam_complaint' : 'hard_bounce', source: 'resend'
     })
   }

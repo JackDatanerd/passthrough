@@ -15,6 +15,14 @@
 /v/*
   X-Robots-Tag: noindex, nofollow
 
+# Employer-lead email links (confirm / remove / rejoin) carry a signed token in the query string:
+# same treatment — never indexed, never cached, never leaked in a Referer header.
+/employer/*
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
 # Partner pages are reached by a bearer token in the query string: never cache them,
 # never index them, never leak the URL (token included) in a Referer header.
 /partner/*

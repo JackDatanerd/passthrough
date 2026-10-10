@@ -38,6 +38,9 @@ RESEND_API_KEY=re_...
 # TURNSTILE_SECRET_KEY=1x0000000000000000000000000000000AA
 # Public origin of this Worker for the List-Unsubscribe URL; unset = taken from the request.
 # API_ORIGIN=http://localhost:8787
+# Keyed hash for the employer do-not-contact list (unset = plain SHA-256). See DEPLOYMENT.md before changing.
+# SUPPRESSION_HASH_KEY=replace_with_random_hex
+# SUPPRESSION_HASH_KEY_PREVIOUS=
 # Restrict the admin panel to these IPs (comma-separated single addresses — NOT CIDR ranges; IPv6 matches by /64).
 # ADMIN_ALLOWED_IPS=203.0.113.7,2001:db8:1:2::1
 # Deep health check for /healthz (send it in the X-Health-Key header).

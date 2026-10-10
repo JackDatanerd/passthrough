@@ -20,6 +20,7 @@ const { getSupabase } = require('../config/supabase')
 const rateLimiter = require('../middleware/rateLimiter')
 const { hitQuota, refundQuota } = rateLimiter
 const { sha256 } = require('../lib/crypto')
+const { canonicalMailbox } = require('../lib/mailbox')
 const { must } = require('../lib/db')
 const { isSuppressedFor } = require('../lib/emailSuppression')
 
@@ -136,14 +137,27 @@ const RECIPIENT_LIMITS = {
   // One "there are Verified candidates in your field" email per address per 30 days: an admin
   // pressing the notify action twice (or two admins at once) can never mail the same person twice.
   employer_candidates_available: { max: 1, windowSeconds: 30 * 24 * 3600, refundOnFailure: 2 },
+  // Round 11: "add this address back?" — sent only to an address that removed ITSELF and later typed
+  // itself into the public form again. One per address per month, however many times it is retyped.
+  employer_lead_rejoin: { max: 1, windowSeconds: 30 * 24 * 3600, refundOnFailure: 2 },
 }
 
+// Round 11 (G1): these templates go to an address a stranger typed, so their per-recipient caps count
+// by MAILBOX (bob+1@, bob+2@ and b.o.b@gmail.com are one inbox) rather than by the exact string — one
+// cap per inbox, not one per spelling.
+const MAILBOX_CAPPED = new Set(['employer_lead_ack', 'employer_candidates_available', 'employer_lead_rejoin'])
+// A quota key may carry a suffix after ':' (employer_candidates_available:sales = a separate cap per
+// field); the limit and the canonical-mailbox rule are those of the part before it.
+const baseTemplate = (key) => String(key).split(':')[0]
+const limitFor = (key) => RECIPIENT_LIMITS[key] || RECIPIENT_LIMITS[baseTemplate(key)]
+
 async function recipientKey(to, template) {
-  return `rl:mail:${template}:${(await sha256(String(to).trim().toLowerCase())).slice(0, 32)}`
+  const who = MAILBOX_CAPPED.has(baseTemplate(template)) ? canonicalMailbox(to) : String(to).trim().toLowerCase()
+  return `rl:mail:${template}:${(await sha256(who)).slice(0, 32)}`
 }
 
 async function recipientAllowed(env, to, template) {
-  const limit = RECIPIENT_LIMITS[template]
+  const limit = limitFor(template)
   if (!limit) return true
   return hitQuota(env, await recipientKey(to, template), limit.max, limit.windowSeconds)
 }
@@ -151,7 +165,7 @@ async function recipientAllowed(env, to, template) {
 // Gives back the slot a send consumed when that send then failed outright (see
 // `refundOnFailure` above). Never throws: the caller is already handling a failure.
 async function refundRecipientSlot(env, to, template) {
-  const limit = RECIPIENT_LIMITS[template]
+  const limit = limitFor(template)
   if (!limit || !limit.refundOnFailure || !(env.RATE_LIMIT_DO || env.RATE_LIMIT_KV)) return
   try {
     await refundQuota(env, await recipientKey(to, template), limit.windowSeconds, limit.refundOnFailure)
@@ -263,6 +277,9 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   } catch (logErr) {
     console.error(`email_logs insert failed for [${template}] to ${to}:`, logErr.message)
   }
+  // Round 11: callers that must tell WHY nothing went out ('suppressed' = the address bounced or
+  // reported spam, 'throttled' = its per-recipient cap, 'failed' = the provider) pass an object here.
+  if (opts.outcome && typeof opts.outcome === 'object') opts.outcome.status = status
   return status === 'sent'
 }
 
@@ -824,7 +841,7 @@ async function sendOwnerNotice(env, subject, message) {
 // a public form is whatever a stranger typed, so every copy carries a signed
 // confirm link and a signed one-click removal link (built by the controller —
 // signing needs the secret).
-async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl, unsubscribeUrl } = {}) {
+async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl, unsubscribeUrl, outcome } = {}) {
   // Never send the template with its placeholders unfilled.
   if (!confirmUrl || !removeUrl) throw new Error('sendEmployerLeadAck needs confirmUrl and removeUrl')
   return send(env, supabase, email, 'Confirm your email for Passthrough early access', 'employer_lead_ack', {
@@ -841,14 +858,15 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
     headers: unsubscribeUrl ? {
       'List-Unsubscribe':      `<${unsubscribeUrl}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
-    } : undefined
+    } : undefined,
+    outcome
   })
 }
 
 // Sent by an admin to a CONFIRMED lead whose field now has Verified candidates (see
 // employer-leads.controller.js's adminNotifyCandidates). Carries the same signed one-click
 // removal link and RFC 8058 header as the acknowledgement. Never names a candidate — only a count.
-async function sendEmployerCandidatesAvailable(env, supabase, email, name, fieldLabel, count, { removeUrl, unsubscribeUrl } = {}) {
+async function sendEmployerCandidatesAvailable(env, supabase, email, name, fieldLabel, count, { removeUrl, unsubscribeUrl, fieldKey, outcome } = {}) {
   if (!removeUrl) throw new Error('sendEmployerCandidatesAvailable needs removeUrl')
   const n = Number(count) || 0
   return send(env, supabase, email, `Verified candidates in ${fieldLabel} are now available`, 'employer_candidates_available', {
@@ -861,12 +879,35 @@ async function sendEmployerCandidatesAvailable(env, supabase, email, name, field
     headers: unsubscribeUrl ? {
       'List-Unsubscribe':      `<${unsubscribeUrl}>`,
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
-    } : undefined
+    } : undefined,
+    // Round 11 (G6): one email per address per FIELD per 30 days, not one per address — a lead hiring
+    // in two fields is told about both. (The controller's own per-field timestamps are the first guard;
+    // this is the second, so two admins at once still cannot mail one person twice about one field.)
+    quotaKey: fieldKey ? `employer_candidates_available:${fieldKey}` : undefined,
+    outcome
+  })
+}
+
+// Round 11 (G4): sent when an address that REMOVED ITSELF is typed into the public form again. It asks
+// the inbox owner whether they want back on the list; nothing is re-added unless they say yes. Carries
+// the same removal link and one-click header as every other employer mail.
+async function sendEmployerLeadRejoin(env, supabase, email, { rejoinUrl, removeUrl, unsubscribeUrl, outcome } = {}) {
+  if (!rejoinUrl || !removeUrl) throw new Error('sendEmployerLeadRejoin needs rejoinUrl and removeUrl')
+  return send(env, supabase, email, 'Do you want to hear from Passthrough again?', 'employer_lead_rejoin', {
+    SUPPORT_EMAIL: 'support@passthrough.dev',
+    REJOIN_URL:    rejoinUrl,
+    REMOVE_URL:    removeUrl
+  }, {
+    headers: unsubscribeUrl ? {
+      'List-Unsubscribe':      `<${unsubscribeUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+    } : undefined,
+    outcome
   })
 }
 
 module.exports = {
-  htmlToPlainText, fmtMoney, sendEmployerLeadAck, sendEmployerCandidatesAvailable,
+  htmlToPlainText, fmtMoney, sendEmployerLeadAck, sendEmployerCandidatesAvailable, sendEmployerLeadRejoin,
   reserveRecipientSlot: recipientAllowed,
   refundReservedSlot: refundRecipientSlot,
   sendWelcome, sendVerification, sendPasswordReset,

@@ -17,6 +17,8 @@ router.post('/', rl.employerLead, c.createLead)
 router.post('/confirm', rl.employerLeadLink, c.confirmLead)
 // The confirmed page asks for the field when the lead has none (same signed confirm token).
 router.post('/field', rl.employerLeadLink, c.setLeadField)
+// Round 11 (G4): re-joining after removing yourself (the link in the "rejoin" email).
+router.post('/rejoin', rl.employerLeadLink, c.rejoinLead)
 // BUG FIX (independent audit round 8): the two OPT-OUT endpoints left the shared 30/hour bucket
 // above. Mailbox providers send RFC 8058 one-click requests from a small pool of shared IPs, so
 // a modest number of recipients could 429 each other's unsubscribes — and failing to honour an

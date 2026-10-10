@@ -14,6 +14,11 @@ vi.mock('../../src/components/layout/Navbar', () => ({ default: () => null }))
 vi.mock('../../src/components/layout/Footer', () => ({ default: () => null }))
 
 const renderAt = (mode, url) => render(<MemoryRouter initialEntries={[url]}><EmployerLeadAction mode={mode} /></MemoryRouter>)
+// The confirm page needs a click now (mail scanners that run JS used to confirm addresses on load).
+async function renderConfirmAndClick(user, url) {
+  renderAt('confirm', url)
+  await user.click(await screen.findByRole('button', { name: 'Yes, confirm my email' }))
+}
 const httpError = (status, message) => Object.assign(new Error('x'), { response: { status, data: { message } } })
 
 beforeEach(() => { api.post.mockReset() })
@@ -53,7 +58,7 @@ describe('EmployerLeadAction — asking for the field after confirming', () => {
     const user = userEvent.setup()
     api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: true } })
       .mockResolvedValueOnce({ data: { success: true, status: 'saved' } })
-    renderAt('confirm', url)
+    await renderConfirmAndClick(user, url)
     expect(await screen.findByText('Email confirmed')).toBeInTheDocument()
     const save = screen.getByRole('button', { name: 'Save' })
     expect(save).toBeDisabled()
@@ -63,14 +68,16 @@ describe('EmployerLeadAction — asking for the field after confirming', () => {
     expect(api.post).toHaveBeenLastCalledWith('/employer-leads/field', { token: 'abcdefghijk.lmnop', field: 'design' })
   })
   it('does not ask when a field is already on file', async () => {
+    const user = userEvent.setup()
     api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: false } })
-    renderAt('confirm', url)
+    await renderConfirmAndClick(user, url)
     expect(await screen.findByText('Email confirmed')).toBeInTheDocument()
     expect(screen.queryByLabelText('Which field are you hiring in?')).toBeNull()
   })
   it('asks for an already-confirmed address that still has no field', async () => {
+    const user = userEvent.setup()
     api.post.mockResolvedValueOnce({ data: { success: true, status: 'already', needsField: true } })
-    renderAt('confirm', url)
+    await renderConfirmAndClick(user, url)
     expect(await screen.findByText('Already confirmed')).toBeInTheDocument()
     expect(screen.getByLabelText('Which field are you hiring in?')).toBeInTheDocument()
   })
@@ -78,7 +85,7 @@ describe('EmployerLeadAction — asking for the field after confirming', () => {
     const user = userEvent.setup()
     api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: true } })
       .mockRejectedValueOnce(httpError(503, 'Server busy.'))
-    renderAt('confirm', url)
+    await renderConfirmAndClick(user, url)
     await screen.findByText('Email confirmed')
     await user.selectOptions(screen.getByLabelText('Which field are you hiring in?'), 'sales')
     await user.click(screen.getByRole('button', { name: 'Save' }))
@@ -89,5 +96,35 @@ describe('EmployerLeadAction — asking for the field after confirming', () => {
     renderAt('remove', '/employer/remove?token=abcdefghijk.lmnop')
     expect(await screen.findByRole('button', { name: 'Yes, remove me' })).toBeInTheDocument()
     expect(screen.queryByLabelText('Which field are you hiring in?')).toBeNull()
+  })
+})
+
+describe('EmployerLeadAction — confirm needs a click', () => {
+  const url = '/employer/confirm?token=abcdefghijk.lmnop'
+  it('does not POST on load, only after the button is pressed', async () => {
+    const user = userEvent.setup()
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed' } })
+    renderAt('confirm', url)
+    expect(await screen.findByText('Confirm your email?')).toBeInTheDocument()
+    expect(api.post).not.toHaveBeenCalled()
+    await user.click(screen.getByRole('button', { name: 'Yes, confirm my email' }))
+    expect(await screen.findByText('Email confirmed')).toBeInTheDocument()
+    expect(api.post).toHaveBeenCalledTimes(1)
+    expect(api.post).toHaveBeenCalledWith('/employer-leads/confirm', { token: 'abcdefghijk.lmnop' })
+  })
+  it('a confirm link without a token shows the error state', async () => {
+    renderAt('confirm', '/employer/confirm')
+    expect(await screen.findByText('Confirmation failed')).toBeInTheDocument()
+  })
+  it("shows a neutral message when the field was already on file", async () => {
+    const user = userEvent.setup()
+    api.post.mockResolvedValueOnce({ data: { success: true, status: 'confirmed', needsField: true } })
+      .mockResolvedValueOnce({ data: { success: true, status: 'already' } })
+    await renderConfirmAndClick(user, url)
+    await screen.findByText('Email confirmed')
+    await user.selectOptions(screen.getByLabelText('Which field are you hiring in?'), 'sales')
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+    expect(await screen.findByText('Your field is already on file.')).toBeInTheDocument()
+    expect(screen.queryByText(/Saved — we'll email you/)).toBeNull()
   })
 })

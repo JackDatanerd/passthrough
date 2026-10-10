@@ -115,7 +115,7 @@ describe('purgeArchivedLeads — suppress option', () => {
     expect(state.hashes.every(h => /^[0-9a-f]{64}$/.test(h.email_hash))).toBe(true)
     expect(JSON.stringify(state.hashes)).not.toContain('@')
     expect(state.logFilters.find(f => f[1] === 'to')[2].sort()).toEqual(['a@x.com', 'b@x.com'])
-    expect(state.logFilters.find(f => f[1] === 'template')[2]).toEqual(['employer_lead_ack', 'employer_candidates_available'])
+    expect(state.logFilters.find(f => f[1] === 'template')[2]).toEqual(['employer_lead_ack', 'employer_candidates_available', 'employer_lead_rejoin'])
   })
   it('reports (does not throw) when the list write fails, and leaves the mail history alone', async () => {
     const state = { ops: [], supErr: { message: 'nope' } }

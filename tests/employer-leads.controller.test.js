@@ -11,6 +11,13 @@ const ID2 = '22222222-2222-4222-8222-222222222222'
 const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
+// The export is a stream now; the fake context's c.body() drains it so tests can keep reading `res.raw` as text.
+const drainBody = (body, status = 200, headers = {}) => {
+  if (typeof body === 'string') return { raw: body, status, headers }
+  return (async () => { const dec = new TextDecoder('utf-8', { ignoreBOM: true }); let out = ''; const rd = body.getReader()
+    for (;;) { const { value, done } = await rd.read(); if (done) break; out += dec.decode(value) }
+    return { raw: out, status, headers } })()
+}
 
 function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false, mailLogs = [], logPurgeError = null, updateExtrasError = null } = {}) {
   const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
@@ -37,7 +44,11 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
         if (cur) out.push(cur); return out }
       const clause = (cl, r) => {
         if (cl.startsWith('and(')) return splitTop(cl.slice(4, -1)).every(x => clause(x, r))
-        const [col, op, ...rest] = cl.split('.'); const val = rest.join('.')
+        const [rawCol, op, ...rest] = cl.split('.'); const val = rest.join('.')
+        // Round 11: `candidates_notified_fields->>sales` reads one key of a jsonb column.
+        const [base, key] = rawCol.split('->>')
+        const col = rawCol
+        if (key !== undefined) r = { ...r, [col]: (r[base] || {})[key] ?? null }
         if (op === 'eq') return String(r[col]) === val
         if (op === 'cs') return Array.isArray(r[col]) && val.replace(/[{}]/g, '').split(',').every(v => r[col].includes(v))
         if (op === 'is') return (r[col] ?? null) === null
@@ -49,13 +60,17 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       const orOk = r => (q.or || []).filter(e => !/(created_at|last_submitted_at)\.lt\./.test(e) || /last_ack_attempt_at/.test(e))
         .every(e => splitTop(e).some(cl => clause(cl, r)))
       if (q.op === 'insert') {
-        if (rows.some(r => r.email.toLowerCase() === q.values.email.toLowerCase()))
+        const batch = [].concat(q.values)
+        if (batch.some(v => rows.some(r => r.email.toLowerCase() === v.email.toLowerCase())))
           return { error: { code: '23505', message: 'duplicate key' } }
-        state.inserts++
-        const row = { id: `gen-${++seq}`, status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
-          last_submitted_at: new Date().toISOString(), notes: null, contacted_at: null, ...q.values }
-        rows.push(row)
-        return { data: q.returning ? { ...row } : null, error: null }
+        const made = batch.map(v => {
+          state.inserts++
+          const row = { id: `gen-${++seq}`, status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
+            last_submitted_at: new Date().toISOString(), notes: null, contacted_at: null, candidates_notified_fields: {}, ...v }
+          rows.push(row)
+          return row
+        })
+        return { data: q.returning ? { ...made[0] } : null, error: null }
       }
       if (q.op === 'update') {
         if (q.patch && 'extra_role_categories' in q.patch && updateExtrasError) return { data: null, error: updateExtrasError }
@@ -90,8 +105,12 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : q.limit || undefined), count: filtered.length, error: null }
     }
     if (q.table === 'employer_lead_suppressions') {
-      const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
-      if (q.op === 'upsert') { [].concat(q.values).forEach(v => state.suppressed.add(v.email_hash)); return { data: null, error: null } }
+      // Round 11: lookups are `.in('email_hash', [every hash form of the address])`.
+      const hf = q.filters.find(f => f[1] === 'email_hash')
+      const hs = hf ? [].concat(hf[2]) : []
+      state.reasons = state.reasons || new Map()
+      if (q.op === 'upsert') { [].concat(q.values).forEach(v => { if (!state.suppressed.has(v.email_hash)) state.reasons.set(v.email_hash, v.reason ?? null); state.suppressed.add(v.email_hash) }); return { data: null, error: null } }
+      if (q.op === 'update') { hs.forEach(h => { if (state.suppressed.has(h) && q.patch.reason) state.reasons.set(h, q.patch.reason) }); return { data: null, error: null } }
       // TEST FIX (fresh audit pass, Section 5): adminLiftSuppression chains
       // .select().maybeSingle() onto the delete to learn whether a row was
       // actually removed (real Postgres/Supabase returns the deleted row);
@@ -99,11 +118,12 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       // indistinguishable from "nothing to delete."
       if (q.op === 'delete') {
         if (liftError) return { data: null, error: liftError }
-        const existed = state.suppressed.has(h)
-        state.suppressed.delete(h)
-        return { data: existed ? { email_hash: h } : null, error: null }
+        const hit = hs.filter(h => state.suppressed.has(h))
+        hit.forEach(h => state.suppressed.delete(h))
+        return { data: hit.map(h => ({ email_hash: h })), error: null }
       }
-      return { data: state.suppressed.has(h) ? { email_hash: h } : null, error: null }
+      if (q.selectOpts?.head) return { count: state.suppressed.size, error: null }
+      return { data: hs.filter(h => state.suppressed.has(h)).map(h => ({ email_hash: h, reason: state.reasons.get(h) ?? null, created_at: '2026-01-01T00:00:00.000Z' })), error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') {
@@ -112,6 +132,11 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
         return { data: null, error: logPurgeError }
       }
       return { data: mailLogs, error: null }
+    }
+    if (q.op === 'rpc' && q.name === 'set_lead_field') {
+      const hit = state.leads.filter(l => q.args.p_ids.includes(l.id))
+      hit.forEach(l => { l.role_category = q.args.p_field; l.extra_role_categories = q.args.p_field ? (l.extra_role_categories || []).filter(x => x !== q.args.p_field) : [] })
+      return { data: hit.map(l => ({ id: l.id })), error: null }
     }
     if (q.op === 'rpc' && q.name === 'verified_candidate_counts')
       return supply === 'error' ? { error: { message: 'no such function' } } : { data: supply || [], error: null }
@@ -122,7 +147,12 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     'services/email.service.js': {
       sendOwnerNotice: async (env, subject, message) => { state.notices.push({ subject, message }) },
       sendOwnerAlert: async (...a) => { state.alerts.push(a) },
-      sendEmployerLeadAck: async (env, sb, to, name, field, links) => { state.acks.push({ to, name, field }); state.ackLinks.push(links); return ackResult },
+      sendEmployerLeadAck: async (env, sb, to, name, field, links) => {
+        state.acks.push({ to, name, field }); state.ackLinks.push(links)
+        // A string result ('throttled' | 'suppressed') is a refusal with that reason, as email.service reports it.
+        if (typeof ackResult === 'string') { if (links && links.outcome) links.outcome.status = ackResult; return false }
+        return ackResult
+      },
       sendEmployerCandidatesAvailable: async (env, sb, to, name, field, count, links) => { state.candidateMails.push({ to, name, field, count, links }); return typeof candidateMailResult === 'function' ? candidateMailResult(to) : candidateMailResult },
     },
   })
@@ -136,7 +166,13 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       executionCtx: { waitUntil: p => waits.push(p) },
       req: { json: async () => over.body, param: k => (over.params || {})[k], query: k => (over.query || {})[k] },
       json: (body, status = 200) => ({ body, status }),
-      body: (body, status = 200, headers = {}) => ({ raw: body, status, headers }),
+      // A streamed export is drained here, so tests read `res.raw` as text exactly as before.
+      body: (body, status = 200, headers = {}) => {
+        if (typeof body === 'string') return { raw: body, status, headers }
+        return (async () => { const dec = new TextDecoder('utf-8', { ignoreBOM: true }); let out = ''; const rd = body.getReader()
+          for (;;) { const { value, done } = await rd.read(); if (done) break; out += dec.decode(value) }
+          return { raw: out, status, headers } })()
+      },
       _waits: waits,
     }
   }
@@ -542,6 +578,7 @@ describe('adminExportLeads — chunked pagination survives a concurrent delete',
     return createFakeSupabase(q => {
       if (q.table !== 'employer_leads') return undefined
       let filtered = rows.filter(r => (q.filters || []).every(([op, col, val]) => op === 'eq' ? r[col] === val : true))
+      if (q.selectOpts?.head) return { count: filtered.length, error: null }
       if (q.or) filtered = filtered.filter(r => q.or.every(expr => splitTopLevel(expr).some(c => evalClause(c, r))))
       filtered = filtered.slice().sort(cmp(q.orders))
       return { data: (q.limit != null ? filtered.slice(0, q.limit) : filtered).map(r => ({ ...r })), error: null }
@@ -573,7 +610,7 @@ describe('adminExportLeads — chunked pagination survives a concurrent delete',
     const res = await mod.adminExportLeads({
       env: {}, get: () => ({ id: 'admin-1', role: 'ADMIN' }),
       req: { query: () => undefined }, json: (b, s = 200) => ({ body: b, status: s }),
-      body: (raw, status = 200, headers = {}) => ({ raw, status, headers })
+      body: drainBody
     })
     const lines = res.raw.slice(1).split('\r\n').filter(Boolean)
     expect(lines.length).toBe(rows.length + 1)   // header + every row, no more, no less
@@ -612,7 +649,7 @@ describe('adminExportLeads — chunked pagination survives a concurrent delete',
     const res = await mod.adminExportLeads({
       env: {}, get: () => ({ id: 'admin-1', role: 'ADMIN' }),
       req: { query: () => undefined }, json: (b, s = 200) => ({ body: b, status: s }),
-      body: (raw, status = 200, headers = {}) => ({ raw, status, headers })
+      body: drainBody
     })
     const lines = res.raw.slice(1).split('\r\n').filter(Boolean)
     const emails = new Set(lines.slice(1).map(l => l.match(/lead\d+@corp\.com/)[0]))
@@ -1178,10 +1215,21 @@ describe('adminRequestConfirmation', () => {
     expect(t.state.acks).toHaveLength(0)
   })
   it('reports a throttled / failed send honestly instead of claiming success', async () => {
-    t = setup({ leads: [mkLead()], ackResult: false })
+    t = setup({ leads: [mkLead()], ackResult: 'throttled' })
     const res = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
     expect(res.status).toBe(429)
-    expect(res.body.success).toBe(false)
+    expect(res.body).toMatchObject({ success: false, code: 'EMAIL_LIMIT' })
+  })
+  it('says so when the address bounced or reported spam (409), and when the provider failed (502)', async () => {
+    t = setup({ leads: [mkLead()], ackResult: 'suppressed' })
+    const blocked = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
+    expect(blocked.status).toBe(409)
+    expect(blocked.body).toMatchObject({ success: false, code: 'MAIL_SUPPRESSED' })
+    t.restore()
+    t = setup({ leads: [mkLead()], ackResult: false })
+    const failed = await t.mod.adminRequestConfirmation(t.c({ params: { id: ID1 } }))
+    expect(failed.status).toBe(502)
+    expect(failed.body).toMatchObject({ success: false, code: 'SEND_FAILED' })
   })
 })
 
@@ -1544,6 +1592,7 @@ describe('R6-G3 — a capped CSV export says so', () => {
       const db = createFakeSupabase(q => {
         if (q.table === 'admin_audit_log') return { data: null, error: null }
         if (q.table !== 'employer_leads') return undefined
+        if (q.selectOpts?.head) return { count: all.length, error: null }
         // keyset cursor is irrelevant to this fake: hand out the next slice by how many were already given
         db.given = db.given || 0
         const slice = all.slice(db.given, db.given + q.limit)
@@ -1552,7 +1601,7 @@ describe('R6-G3 — a capped CSV export says so', () => {
       })
       const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', { 'config/supabase.js': { getSupabase: () => db }, 'services/email.service.js': {} })
       try { return await mod.adminExportLeads({ env: {}, get: () => ({ id: 'a', role: 'ADMIN' }), req: { query: () => undefined, header: () => undefined },
-        json: b => b, body: (raw, status, headers) => ({ raw, headers }) }) } finally { restore() }
+        json: b => b, body: drainBody }) } finally { restore() }
     }
     const exact = await run(50_000)
     expect(exact.headers['X-Export-Truncated']).toBe('false')
@@ -1591,8 +1640,8 @@ describe('R6-G1 — adminNotifyCandidates', () => {
       confirmedLead({ id: 'x4', email: 'archived@acme.com', status: 'ARCHIVED' }),
       confirmedLead({ id: 'x5', email: 'converted@acme.com', status: 'CONVERTED' }),
       confirmedLead({ id: 'x6', email: 'none@acme.com', role_category: null }),
-      confirmedLead({ id: 'x7', email: 'recent@acme.com', last_candidates_notified_at: new Date(Date.now() - 5 * 86400_000).toISOString() }),
-      confirmedLead({ id: 'x8', email: 'old@acme.com', last_candidates_notified_at: new Date(Date.now() - 40 * 86400_000).toISOString() }),
+      confirmedLead({ id: 'x7', email: 'recent@acme.com', candidates_notified_fields: { sales: new Date(Date.now() - 5 * 86400_000).toISOString() } }),
+      confirmedLead({ id: 'x8', email: 'old@acme.com', candidates_notified_fields: { sales: new Date(Date.now() - 40 * 86400_000).toISOString() } }),
     ] })
     const res = await post({ field: 'sales' })
     expect(t.state.candidateMails.map(m => m.to).sort()).toEqual(['ok@acme.com', 'old@acme.com'])
@@ -1801,6 +1850,7 @@ describe('R8 — adminExportLeads', () => {
     const db = createFakeSupabase(q => {
       if (q.table === 'admin_audit_log') return { data: null, error: null }
       if (q.table !== 'employer_leads') return undefined
+      if (q.selectOpts?.head) return { count: all.length, error: null }
       db.given = db.given || 0
       const slice = all.slice(db.given, db.given + Math.min(q.limit, perRequest))
       db.given += slice.length
@@ -1808,7 +1858,7 @@ describe('R8 — adminExportLeads', () => {
     })
     const { mod, restore } = loadWithStubs('controllers/employer-leads.controller.js', { 'config/supabase.js': { getSupabase: () => db }, 'services/email.service.js': {} })
     try { return await mod.adminExportLeads({ env: {}, get: () => ({ id: 'a', role: 'ADMIN' }), req: { query: () => undefined, header: () => undefined },
-      json: b => b, body: (raw, status, headers) => ({ raw, headers }) }) } finally { restore() }
+      json: b => b, body: drainBody }) } finally { restore() }
   }
   const rows = (n) => Array.from({ length: n }, (_, i) => ({ id: `id-${String(i).padStart(4, '0')}`, name: 'N', company: 'C', email: `e${i}@x.com`,
     status: 'NEW', notes: null, submission_count: 1, created_at: new Date(Date.UTC(2026, 0, 1) - i * 1000).toISOString() }))
@@ -1902,7 +1952,7 @@ describe('R8 — FRONTEND_URL with a trailing slash', () => {
 })
 
 describe('R8 — removal also clears the address from the mail log', () => {
-  const employerTemplates = ['employer_lead_ack', 'employer_candidates_available']
+  const employerTemplates = ['employer_lead_ack', 'employer_candidates_available', 'employer_lead_rejoin']
   it('removeLead: hash first, then the lead, then the mail history of the two employer templates', async () => {
     t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
     await postToken(t.mod.removeLead, await tokenFor('remove', 'dana@acme.com'))
@@ -2014,7 +2064,7 @@ describe('R8 — bulk actions', () => {
   it('requestConfirmation mails only the unconfirmed ones, reports failures and skips, and does not spend the public hourly budget', async () => {
     t = setup({ leads: three() })
     const res = await bulk({ ids: [ID1, ID2, ID3], action: 'requestConfirmation' })
-    expect(res.body).toEqual({ success: true, affected: 2, sent: 2, failed: 0, skipped: 1 })
+    expect(res.body).toEqual({ success: true, affected: 2, sent: 2, failed: 0, skipped: 1, blocked: 0 })
     expect(t.state.acks.map(a => a.to).sort()).toEqual(['a@x.com', 'c@x.com'])
     expect(t.state.audit.find(a => a.action === 'lead.bulk_request_confirmation').detail).toMatchObject({ failed: 0, skipped: 1 })
   })
@@ -2045,7 +2095,7 @@ describe('R8 — notify-candidates and a lost "already told" stamp', () => {
     t = setup({ supply, candidateMailResult: false, mailLogs: [{ sent_at: earlier }], leads: [confirmedLead()] })
     const res = await post({ field: 'sales' })
     expect(res.body.data).toMatchObject({ sent: 0, failed: 0, skipped: 1, remaining: 0 })
-    expect(t.state.leads[0].last_candidates_notified_at).toBe(earlier)
+    expect(t.state.leads[0].candidates_notified_fields.sales).toBe(earlier)
     // ...so the next call no longer even looks at it
     const next = await post({ field: 'sales' })
     expect(next.body.data.eligible).toBe(0)

@@ -40,6 +40,7 @@ const CALLS = {
   sendPartnerRateChanged: ['p@x.y', 'P', 0.2, 0.25], sendPartnerCommissionReversed: ['p@x.y', 'P', 500, 'USD', 'https://d'],
   sendPartnerLinksRecovery: ['p@x.y', 'P', 'https://d'],
   sendPartnerDashboardLinkRegenerated: ['p@x.y', 'P', 'https://d'], sendPartnerPayoutVoided: ['p@x.y', 'P', 500, 'USD', 'Entered against the wrong cycle.'],
+  sendEmployerLeadRejoin: ['l@x.y', { rejoinUrl: 'https://j', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
   sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
   sendEmployerCandidatesAvailable: ['l@x.y', 'Lee', 'Design', 3, { removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
 }

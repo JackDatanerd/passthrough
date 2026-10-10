@@ -20,7 +20,9 @@
 const enc = new TextEncoder()
 const dec = new TextDecoder()
 
-const PURPOSES = ['confirm', 'remove']
+// 'rejoin' (round 11): the link in the "add this address back?" email sent to someone who removed
+// themselves and later typed their address into the public form again.
+const PURPOSES = ['confirm', 'remove', 'rejoin']
 const MAX_EMAIL_LENGTH = 254   // same bound the lead form enforces
 
 function b64url(bytes) {

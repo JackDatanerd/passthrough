@@ -34,6 +34,8 @@ const SEARCH_DEBOUNCE_MS = 350
 // something a stranger could submit, but an admin browsing/filtering needs
 // to see it same as any other source that actually exists in the table).
 const SOURCES = ['verification_page', 'homepage', 'manual']
+// How a confirmation came about — an admin's word (or an import) is weaker evidence than the inbox owner's click.
+const VIA_LABEL = { admin: 'marked by admin', manual: 'added by admin', import: 'imported', rejoin: 're-joined via email', link: 'via email link' }
 const sourceLabel = (s) => ({ verification_page: 'Verification page', homepage: 'Homepage', manual: 'Manual' })[s] || s
 
 // Filters, sort and page live in the URL (like Payments and Scans), so the
@@ -73,6 +75,9 @@ export default function AdminLeads() {
   const [pendingDelete, setPendingDelete] = useState(null)
   const [exporting, setExporting] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
+  // "Select all N matching": the selection is the whole filtered list, not the ids on this page.
+  // Bulk actions then send the filter plus the count the admin saw (the server refuses if it moved).
+  const [allMatching, setAllMatching] = useState(false)
   const [bulkStatus, setBulkStatus] = useState('CONTACTED')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [confirmBulkDelete, setConfirmBulkDelete] = useState(false)
@@ -108,14 +113,15 @@ export default function AdminLeads() {
   const [suppressionAdding, setSuppressionAdding] = useState(false)
   const [suppressionResult, setSuppressionResult] = useState(null)   // { suppressed, since } for the last checked address
   const [suppressionError, setSuppressionError] = useState('')
+  const [confirmMailLift, setConfirmMailLift] = useState(false)   // the extra warning before lifting a spam-complaint block
 
   function closeSuppression() {
-    setSuppressionOpen(false); setSuppressionEmail(''); setSuppressionResult(null); setSuppressionError('')
+    setSuppressionOpen(false); setSuppressionEmail(''); setSuppressionResult(null); setSuppressionError(''); setConfirmMailLift(false)
   }
 
   async function checkSuppression() {
     if (!suppressionEmail.trim()) return setSuppressionError('Enter an email address.')
-    setSuppressionChecking(true); setSuppressionError(''); setSuppressionResult(null)
+    setSuppressionChecking(true); setSuppressionError(''); setSuppressionResult(null); setConfirmMailLift(false)
     try {
       const res = await api.post('/employer-leads/suppressions/check', { email: suppressionEmail.trim() })
       setSuppressionResult(res.data.data)
@@ -131,7 +137,7 @@ export default function AdminLeads() {
     setSuppressionAdding(true); setSuppressionError('')
     try {
       const res = await api.post('/employer-leads/suppressions', { email: suppressionEmail.trim() })
-      setSuppressionResult({ suppressed: true, since: new Date().toISOString(), leadExists: false })
+      setSuppressionResult(prev => ({ suppressed: true, since: new Date().toISOString(), leadExists: false, mailSuppression: prev?.mailSuppression ?? null }))
       toast({
         message: res.data.data?.leadsRemoved ? 'Address suppressed and its lead removed.' : 'Address added to the do-not-contact list.',
         type: 'success'
@@ -144,12 +150,28 @@ export default function AdminLeads() {
     }
   }
 
-  async function liftSuppression() {
+  async function liftSuppression({ includeMail = false } = {}) {
     setSuppressionLifting(true); setSuppressionError('')
     try {
-      await api.delete('/employer-leads/suppressions', { data: { email: suppressionEmail.trim() } })
-      setSuppressionResult({ suppressed: false, since: null })
-      toast({ message: 'Suppression lifted.', type: 'success' })
+      const res = await api.delete('/employer-leads/suppressions', {
+        data: includeMail ? { email: suppressionEmail.trim(), includeMailSuppression: true } : { email: suppressionEmail.trim() }
+      })
+      const d = res?.data?.data
+      const listLifted = d ? !!d.listLifted : true
+      const mailLifted = d ? !!d.mailLifted : false
+      setSuppressionResult(prev => ({
+        ...(prev || {}),
+        suppressed: listLifted ? false : !!prev?.suppressed,
+        since: listLifted ? null : prev?.since,
+        mailSuppression: mailLifted ? null : prev?.mailSuppression ?? null,
+      }))
+      setConfirmMailLift(false)
+      toast({
+        message: listLifted && mailLifted ? 'Do-not-contact entry and email block both lifted.'
+          : mailLifted ? 'Email block lifted.'
+          : 'Suppression lifted.',
+        type: 'success'
+      })
       await refresh()   // meta.suppressed count changes
     } catch (err) {
       setSuppressionError(getErrorMessage(err, 'Could not lift that suppression.'))
@@ -239,6 +261,12 @@ export default function AdminLeads() {
 
   useEffect(() => { load() }, [load])
   const refresh = () => load({ silent: true })
+  // Any change of filter, search, sort or page ends "all matching" mode (and so does a bulk action).
+  useEffect(() => { setAllMatching(false) }, [page, search, status, field, source, confirmed, ack, reengaged, sort])
+  const bulkFilter = () => {
+    const f = { search, status, field, source, confirmed, ack, reengaged }
+    return Object.fromEntries(Object.entries(f).filter(([, v]) => v))
+  }
 
   async function changeStatus(lead, newStatus) {
     setBusyId(lead.id)
@@ -320,13 +348,16 @@ export default function AdminLeads() {
   async function runBulk(body, doneMessage) {
     setBulkBusy(true)
     try {
-      const res = await api.post('/employer-leads/bulk', { ids: [...selected], ...body })
+      const target = allMatching ? { filter: bulkFilter(), expected: total } : { ids: [...selected] }
+      const res = await api.post('/employer-leads/bulk', { ...target, ...body })
       toast({ message: `${doneMessage} (${res.data.affected}).`, type: 'success' })
       setConfirmBulkDelete(false)
+      if (allMatching) { setAllMatching(false); setSelected(new Set()) }
       await refresh()
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Bulk action failed.'), type: 'error' })
       setConfirmBulkDelete(false)
+      if (allMatching && err?.response?.data?.code === 'LIST_CHANGED') { setAllMatching(false); refresh() }
     } finally {
       setBulkBusy(false)
     }
@@ -338,10 +369,11 @@ export default function AdminLeads() {
     setBulkBusy(true)
     try {
       const res = await api.post('/employer-leads/bulk', { ids: [...selected], action: 'requestConfirmation' })
-      const { sent = 0, failed = 0, skipped = 0 } = res.data
+      const { sent = 0, failed = 0, skipped = 0, blocked = 0 } = res.data
       const parts = [`Confirmation sent to ${sent} lead${sent === 1 ? '' : 's'}`]
       if (failed) parts.push(`${failed} could not be sent (delivery failed or the address has reached its email limit)`)
       if (skipped) parts.push(`${skipped} skipped (already confirmed, or no longer there)`)
+      if (blocked) parts.push(`${blocked} blocked (address bounced or reported spam)`)
       toast({ message: parts.join('; ') + '.', type: failed ? 'warning' : 'success' })
       await refresh()
     } catch (err) {
@@ -410,8 +442,11 @@ export default function AdminLeads() {
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
   const allCount = STATUSES.reduce((sum, s) => sum + (counts[s] || 0), 0)
   const allSelected = leads.length > 0 && leads.every(l => selected.has(l.id))
-  function toggleAll() { setSelected(allSelected ? new Set() : new Set(leads.map(l => l.id))) }
+  const selCount = allMatching ? total : selected.size
+  const matchingLabel = `all ${total} matching leads`
+  function toggleAll() { setAllMatching(false); setSelected(allSelected ? new Set() : new Set(leads.map(l => l.id))) }
   function toggleOne(id) {
+    setAllMatching(false)
     setSelected(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
   }
   const chip = (active) =>
@@ -489,9 +524,27 @@ export default function AdminLeads() {
         </Select>
       </div>
 
-      {selected.size > 0 && (
+      {allSelected && total > leads.length && !allMatching && (
+        <p className="text-sm text-gray-700 rounded-lg border border-gray-200 bg-white px-4 py-2">
+          All {leads.length} leads on this page are selected.{' '}
+          <button type="button" className="text-blue-600 hover:underline font-medium" onClick={() => setAllMatching(true)}>
+            Select all {total} leads matching this filter
+          </button>
+        </p>
+      )}
+      {allMatching && (
+        <p className="text-sm text-gray-700 rounded-lg border border-blue-200 bg-white px-4 py-2">
+          All {total} leads matching this filter are selected.{' '}
+          <button type="button" className="text-blue-600 hover:underline font-medium"
+            onClick={() => { setAllMatching(false); setSelected(new Set()) }}>
+            Clear selection
+          </button>
+        </p>
+      )}
+
+      {selCount > 0 && (
         <div className="flex flex-wrap items-center gap-3 rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
-          <span className="font-medium text-blue-900">{selected.size} selected</span>
+          <span className="font-medium text-blue-900">{allMatching ? `All ${total} matching leads selected` : `${selected.size} selected`}</span>
           <Select aria-label="Set status for selected leads" value={bulkStatus} onChange={e => setBulkStatus(e.target.value)} wrapperClassName="w-fit">
             {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </Select>
@@ -508,11 +561,13 @@ export default function AdminLeads() {
             Set field
           </Button>
           <Button size="sm" variant="secondary" disabled={bulkBusy} onClick={() => setConfirmBulkMarkConfirmed(true)}>Mark confirmed</Button>
-          <Button size="sm" variant="secondary" disabled={bulkBusy || selected.size > BULK_MAIL_MAX}
-            title={selected.size > BULK_MAIL_MAX ? `Select at most ${BULK_MAIL_MAX} leads to send confirmation emails` : undefined}
+          <Button size="sm" variant="secondary" disabled={allMatching || bulkBusy || selected.size > BULK_MAIL_MAX}
+            title={allMatching ? 'Confirmation emails can only be sent to a hand-picked selection.'
+              : selected.size > BULK_MAIL_MAX ? `Select at most ${BULK_MAIL_MAX} leads to send confirmation emails` : undefined}
             onClick={runBulkRequestConfirmation}>
             Request confirmation
           </Button>
+          {allMatching && <span className="text-xs text-gray-500">Request confirmation only works on a hand-picked selection of up to {BULK_MAIL_MAX}.</span>}
           <Button size="sm" variant="danger" disabled={bulkBusy} onClick={() => setConfirmBulkDelete(true)}>Delete</Button>
         </div>
       )}
@@ -554,7 +609,10 @@ export default function AdminLeads() {
                   <td className="px-4 py-3 text-gray-600">
                     <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
                     {l.confirmedAt
-                      ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}`}>✓ confirmed</span>
+                      ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}${VIA_LABEL[l.confirmedVia] ? ` — ${VIA_LABEL[l.confirmedVia]}` : ''}`}>
+                          ✓ confirmed
+                          {VIA_LABEL[l.confirmedVia] && <span className="text-gray-400"> · {VIA_LABEL[l.confirmedVia]}</span>}
+                        </span>
                       : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
                     {!l.confirmedAt && l.status !== 'ARCHIVED' && (l.lastAckAt
                       ? <span className="block text-xs text-gray-400">confirmation sent {formatDate(l.lastAckAt)}</span>
@@ -697,7 +755,7 @@ export default function AdminLeads() {
       <ConfirmDialog
         open={confirmBulkDelete}
         title="Delete selected leads"
-        message={`Delete ${selected.size} lead${selected.size === 1 ? '' : 's'}? This can't be undone.`}
+        message={allMatching ? `Delete ${matchingLabel}? This can't be undone.` : `Delete ${selected.size} lead${selected.size === 1 ? '' : 's'}? This can't be undone.`}
         confirmLabel="Delete"
         loading={bulkBusy}
         onConfirm={async () => { await runBulk({ action: blockOnDelete ? 'deleteAndSuppress' : 'delete' }, blockOnDelete ? 'Leads deleted and blocked' : 'Leads deleted'); setBlockOnDelete(false) }}
@@ -709,7 +767,7 @@ export default function AdminLeads() {
       <ConfirmDialog
         open={confirmBulkMarkConfirmed}
         title="Mark selected as confirmed"
-        message={`Mark ${selected.size} lead${selected.size === 1 ? '' : 's'} as confirmed? Only do this if you know the addresses are theirs (a reply, a call). Already-confirmed leads are left alone. It is recorded in the audit log.`}
+        message={`Mark ${allMatching ? matchingLabel : `${selected.size} lead${selected.size === 1 ? '' : 's'}`} as confirmed? Only do this if you know the addresses are theirs (a reply, a call). Already-confirmed leads are left alone. It is recorded in the audit log.`}
         confirmLabel="Mark confirmed"
         danger={false}
         loading={bulkBusy}
@@ -725,8 +783,20 @@ export default function AdminLeads() {
         </p>
         <Form onSubmit={checkSuppression} className="flex flex-col gap-3">
           <Input label="Email" type="email" value={suppressionEmail}
-            onChange={e => { setSuppressionEmail(e.target.value); setSuppressionResult(null); setSuppressionError('') }} />
+            onChange={e => { setSuppressionEmail(e.target.value); setSuppressionResult(null); setSuppressionError(''); setConfirmMailLift(false) }} />
           {suppressionError && <p role="alert" className="text-sm text-red-600">{suppressionError}</p>}
+          {suppressionResult?.mailSuppression && (
+            <div role="note" className="text-sm text-amber-800 bg-amber-50 border border-amber-300 rounded-md px-3 py-2">
+              <p>
+                This address is also blocked from ALL our email after a {suppressionResult.mailSuppression.reason === 'complaint' ? 'spam complaint' : 'hard bounce'}
+                {' '}({suppressionResult.mailSuppression.reason}, since {formatDate(suppressionResult.mailSuppression.since)}).
+                Nothing we send will reach it.
+              </p>
+              {confirmMailLift && suppressionResult.mailSuppression.reason === 'complaint' && (
+                <p className="mt-2 font-medium">They reported our mail as spam — only lift if they asked.</p>
+              )}
+            </div>
+          )}
           {suppressionResult && (
             suppressionResult.suppressed
               ? <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
@@ -745,8 +815,17 @@ export default function AdminLeads() {
           )}
           <div className="flex gap-3 justify-end">
             {suppressionResult?.suppressed && (
-              <Button type="button" variant="danger" loading={suppressionLifting} onClick={liftSuppression}>
+              <Button type="button" variant="danger" loading={suppressionLifting} onClick={() => liftSuppression()}>
                 Lift suppression
+              </Button>
+            )}
+            {suppressionResult?.mailSuppression && (
+              <Button type="button" variant="secondary" loading={suppressionLifting}
+                onClick={() => {
+                  if (suppressionResult.mailSuppression.reason === 'complaint' && !confirmMailLift) return setConfirmMailLift(true)
+                  liftSuppression({ includeMail: true })
+                }}>
+                {confirmMailLift && suppressionResult.mailSuppression.reason === 'complaint' ? 'Yes, lift this block too' : 'Lift this block too'}
               </Button>
             )}
             {suppressionResult && !suppressionResult.suppressed && (
@@ -807,9 +886,11 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
     setSaving(true); setError('')
     try {
       if (mode === 'add') {
+        const extras = form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : []
         await api.post('/employer-leads/manual', {
           name: form.name, company: form.company, email: form.email,
           roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null, notes: form.notes || null,
+          ...(extras.length ? { extraRoleCategories: extras } : {}),
           ...(override ? { overrideRemoval: true } : {})
         })
       } else {
@@ -818,7 +899,8 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           name: form.name, company: form.company,
           roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null,
           extraRoleCategories: form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : [],
-          ...(emailChanged ? { email: form.email.trim() } : {})
+          ...(emailChanged ? { email: form.email.trim() } : {}),
+          ...(emailChanged && override ? { overrideRemoval: true } : {})
         })
         return onSaved(res.data)
       }
@@ -842,7 +924,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           <option value="">Uncategorised</option>
           {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </Select>
-        {mode === 'edit' && form.roleCategory && (
+        {form.roleCategory && (
           <fieldset className="flex flex-col gap-1">
             <legend className="text-sm font-medium text-gray-700 mb-1">Also hiring in (up to 4)</legend>
             <div className="grid grid-cols-2 gap-x-4 gap-y-1">

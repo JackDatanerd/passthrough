@@ -11,7 +11,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 67,
+  EXPECTED_SCHEMA_VERSION: 68,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as

@@ -11,6 +11,13 @@ const ID2 = '22222222-2222-4222-8222-222222222222'
 const HOURS = h => h * 60 * 60 * 1000
 const SECRET = 'test-secret-'.padEnd(40, 'x')
 const sha = (email) => createHash('sha256').update(email).digest('hex')
+// The export is a stream now; the fake context's c.body() drains it so tests keep reading `res.raw` as text.
+const drainBody = (body, status = 200, headers = {}) => {
+  if (typeof body === 'string') return { raw: body, status, headers }
+  return (async () => { const dec = new TextDecoder('utf-8', { ignoreBOM: true }); let out = ''; const rd = body.getReader()
+    for (;;) { const { value, done } = await rd.read(); if (done) break; out += dec.decode(value) }
+    return { raw: out, status, headers } })()
+}
 
 function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true, envExtra = {}, liftError = null, candidateMailResult = true, failContactStamp = false, mailLogs = [], logPurgeError = null } = {}) {
   const state = { leads: leads.map(l => ({ ...l })), notices: [], alerts: [], acks: [], ackLinks: [], candidateMails: [], inserts: 0, kv,
@@ -69,8 +76,11 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       return { data: filtered.slice(q.range ? q.range[0] : 0, q.range ? q.range[1] + 1 : q.limit || undefined), count: filtered.length, error: null }
     }
     if (q.table === 'employer_lead_suppressions') {
-      const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
-      if (q.op === 'upsert') { [].concat(q.values).forEach(v => state.suppressed.add(v.email_hash)); return { data: null, error: null } }
+      const hf = q.filters.find(f => f[1] === 'email_hash')
+      const hs = hf ? [].concat(hf[2]) : []
+      state.reasons = state.reasons || new Map()
+      if (q.op === 'upsert') { [].concat(q.values).forEach(v => { if (!state.suppressed.has(v.email_hash)) state.reasons.set(v.email_hash, v.reason ?? null); state.suppressed.add(v.email_hash) }); return { data: null, error: null } }
+      if (q.op === 'update') { hs.forEach(h => { if (state.suppressed.has(h) && q.patch.reason) state.reasons.set(h, q.patch.reason) }); return { data: null, error: null } }
       // TEST FIX (fresh audit pass, Section 5): adminLiftSuppression chains
       // .select().maybeSingle() onto the delete to learn whether a row was
       // actually removed (real Postgres/Supabase returns the deleted row);
@@ -78,11 +88,12 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       // indistinguishable from "nothing to delete."
       if (q.op === 'delete') {
         if (liftError) return { data: null, error: liftError }
-        const existed = state.suppressed.has(h)
-        state.suppressed.delete(h)
-        return { data: existed ? { email_hash: h } : null, error: null }
+        const hit = hs.filter(h => state.suppressed.has(h))
+        hit.forEach(h => state.suppressed.delete(h))
+        return { data: hit.map(h => ({ email_hash: h })), error: null }
       }
-      return { data: state.suppressed.has(h) ? { email_hash: h } : null, error: null }
+      if (q.selectOpts?.head) return { count: state.suppressed.size, error: null }
+      return { data: hs.filter(h => state.suppressed.has(h)).map(h => ({ email_hash: h, reason: state.reasons.get(h) ?? null, created_at: '2026-01-01T00:00:00.000Z' })), error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') {
@@ -115,7 +126,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       executionCtx: { waitUntil: p => waits.push(p) },
       req: { json: async () => over.body, param: k => (over.params || {})[k], query: k => (over.query || {})[k] },
       json: (body, status = 200) => ({ body, status }),
-      body: (body, status = 200, headers = {}) => ({ raw: body, status, headers }),
+      body: drainBody,
       _waits: waits,
     }
   }

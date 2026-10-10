@@ -275,7 +275,9 @@ describe('sendEmployerLeadAck', () => {
     const m = t.sent[0]
     expect(m.to).toBe('dana@acme.com')
     expect(m.subject).toMatch(/Confirm your email/)
-    expect(m.html).toContain('Dana &lt;b&gt;')          // escaped like every template value
+    // Round 11 (G2): the form is public, so the name a stranger typed is never repeated back to the address.
+    expect(m.html).not.toContain('Dana')
+    expect(m.text).not.toContain('Dana')
     expect(m.html).toContain('in Sales')
     expect(m.html).toContain('href="https://passthrough.dev/employer/confirm?token=C.T"')
     expect(m.html).toContain('href="https://passthrough.dev/employer/remove?token=R.T"')
@@ -458,5 +460,31 @@ describe('link emails — failed sends give the reserved slot back', () => {
     for (let i = 0; i < 3; i++) await t.mod.reserveRecipientSlot(t.env, 'ok@example.com', 'password_reset')
     await t.mod.sendPasswordReset(t.env, t.db, 'ok@example.com', 'O', 'tok', { slotReserved: true })
     expect(await t.mod.reserveRecipientSlot(t.env, 'ok@example.com', 'password_reset')).toBe(false)
+  })
+})
+
+describe('round 11 — employer mail caps follow the mailbox, not the spelling', () => {
+  const links = { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }
+  it('alias spellings of one inbox share the acknowledgement cap', async () => {
+    t = setup()
+    const results = []
+    for (const to of ['v@gmail.com', 'v+1@gmail.com', 'v+2@gmail.com', 'V.@gmail.com'.replace('.', '')]) results.push(await t.mod.sendEmployerLeadAck(t.env, t.db, to, 'V', 'Sales', links))
+    expect(results.filter(Boolean).length).toBeLessThan(4)
+    expect(t.sent.length).toBe(results.filter(Boolean).length)
+  })
+  it('the candidates notice has a separate cap per field', async () => {
+    t = setup()
+    const send = (fieldKey) => t.mod.sendEmployerCandidatesAvailable(t.env, t.db, 'e@acme.com', 'E', 'Sales', 3, { removeUrl: 'https://r', unsubscribeUrl: 'https://u', fieldKey })
+    expect(await send('sales')).toBe(true)
+    expect(await send('sales')).toBe(false)
+    expect(await send('finance')).toBe(true)
+  })
+  it('the rejoin offer is capped to one a month per mailbox and reports why a send was refused', async () => {
+    t = setup()
+    const o = {}
+    const offer = (to, outcome) => t.mod.sendEmployerLeadRejoin(t.env, t.db, to, { rejoinUrl: 'https://j', removeUrl: 'https://r', unsubscribeUrl: 'https://u', outcome })
+    expect(await offer('d@acme.com', {})).toBe(true)
+    expect(await offer('d+again@acme.com', o)).toBe(false)
+    expect(o.status).toBe('throttled')
   })
 })

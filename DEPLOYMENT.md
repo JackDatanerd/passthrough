@@ -308,9 +308,21 @@ wrangler secret put TURNSTILE_SECRET_KEY
 # single-hostname setup; set it only if requests reach the Worker under a
 # different hostname than the one mail clients should call back.
 # The hourly acknowledgement retry (employer leads, migration 0062) has no incoming request to
-# read it from: set this, or those emails go out without the one-click unsubscribe header.
+# read it from. Without it the Worker falls back to the address of the most recent public request that
+# carried one (remembered for 60 days, only an https address under FRONTEND_URL's domain) — set this to
+# make that certain.
 #   https://api.passthrough.dev
 wrangler secret put API_ORIGIN
+
+# Optional but recommended (migration 0068). Key for the employer do-not-contact list. The list stores
+# only a hash of each removed address; with no key that hash is a plain SHA-256, which anyone can reverse
+# for a guessable address. With a key, new entries are HMAC-SHA256 under it (existing entries keep working:
+# lookups also try the plain form). Use 32+ random bytes of hex. NEVER change it without first moving the
+# old value to SUPPRESSION_HASH_KEY_PREVIOUS — entries written under a key that is no longer set stop
+# matching, and those people could be mailed again. (Entries are not re-hashed; keep PREVIOUS for good, or
+# until the old entries have aged out.)
+wrangler secret put SUPPRESSION_HASH_KEY
+wrangler secret put SUPPRESSION_HASH_KEY_PREVIOUS
 
 # Extra browser origins allowed by CORS in addition to FRONTEND_URL (comma-separated,
 # no trailing slashes) — the www variant, a staging site, a Pages preview.

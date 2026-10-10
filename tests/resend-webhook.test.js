@@ -43,7 +43,8 @@ function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employe
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
       const email = q.filters.find(f => f[1] === 'email')?.[2]
-      if (q.op === 'delete') { state.leads = state.leads.filter(l => l.email !== email); return { data: [], error: null } }
+      // removal deletes by every spelling of the mailbox (`.in('email', [...])`)
+      if (q.op === 'delete') { const forms = [].concat(email); state.leads = state.leads.filter(l => !forms.includes(l.email)); return { data: [], error: null } }
       const hit = state.leads.find(l => l.email === email)
       return { data: hit ? { id: hit.id } : null, error: null }
     }

@@ -394,6 +394,9 @@ function leadRowToCamel(row) {
     ackAttempts:  row.ack_attempts ?? 0,
     lastAckAttemptAt: row.last_ack_attempt_at ?? null,
     archivedResubmittedAt: row.archived_resubmitted_at ?? null,
+    confirmedVia: row.confirmed_via ?? null,
+    consent: row.consent ?? null,
+    candidatesNotifiedFields: row.candidates_notified_fields ?? {},
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }
