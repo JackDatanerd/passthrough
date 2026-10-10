@@ -326,6 +326,20 @@ describe('round 7 — B2: Replay is only offered where there is something to rep
   })
 })
 
+describe('round 8 — B1: a Resend row stranded RECEIVED without a payload is closed by the hourly sweep', () => {
+  it('closes an old payload-less Resend RECEIVED row, leaves a young one and a re-runnable one', async () => {
+    t = setup([
+      ev(1, { provider: 'resend', status: 'RECEIVED', event_type: 'email.complained', reference: null, payload: null, received_at: ago(3600_000) }),
+      ev(2, { provider: 'resend', status: 'RECEIVED', event_type: 'email.complained', reference: null, payload: null, received_at: ago(60_000) }),
+      ev(3, { provider: 'resend', status: 'RECEIVED', event_type: 'email.complained', reference: null, payload: { type: 'email.complained', data: { to: [] } }, received_at: ago(60_000) }),
+    ])
+    const r = await t.mod.redriveStaleEvents(({ RATE_LIMIT_KV: kvMap() }), { waitUntil: () => {} })
+    expect(r.unrunnableClosed).toEqual([1])
+    const st = id => t.world.t.webhook_events.find(e => e.id === id).status
+    expect([st(1), st(2), st(3)]).toEqual(['IGNORED', 'RECEIVED', 'RECEIVED'])
+  })
+})
+
 describe('round 7 — G1: a stored Resend event is re-run by the same Replay / re-drive', () => {
   it('replays a FAILED Resend event through the Resend handler (not the Paystack one)', async () => {
     t = setup([ev(1, { provider: 'resend', status: 'FAILED', event_type: 'email.bounced', reference: null, event_key: 'msg_1',

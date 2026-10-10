@@ -240,8 +240,11 @@ async function handleResend(c) {
         `Until it succeeds the address is not suppressed.`)
     throw err
   }
-  await inbox.markEvent(supabase, row, outcome.status, outcome.note)
-  await clearResendPayload(supabase, row.id)
+  // B1 (round 8): clear the recipient-bearing payload only once the status write has landed. If it was lost,
+  // the row stays RECEIVED WITH its payload, so the hourly re-drive re-runs it (idempotent) instead of
+  // leaving a payload-less RECEIVED row that nothing can re-run, close or prune.
+  const marked = await inbox.markEvent(supabase, row, outcome.status, outcome.note)
+  if (marked) await clearResendPayload(supabase, row.id)
   return c.json({ success: true, removed: outcome.removed })
 }
 

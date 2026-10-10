@@ -308,8 +308,11 @@ function isColumnMissing(err) {
 // failure, and `error` could not be used to find real ones. Notes now live in `note`
 // (migration 0036); `error` is written only for FAILED. Until 0036 is applied the column is
 // missing, and the update falls back to the old shape rather than losing the status change.
+// SECTION 8 (round 8, B1): returns true only when the status write LANDED (false: no inbox row, or the write
+// failed — which is logged, never thrown). Resend callers use it to decide whether the recipient-bearing
+// payload may be cleared: clearing it after a lost status write strands a RECEIVED row nothing can re-run.
 async function markEvent(supabase, inbox, status, note) {
-  if (!inbox?.id) return
+  if (!inbox?.id) return false
   const base = { status, processed_at: new Date().toISOString() }
   const patch = status === 'FAILED'
     ? { ...base, error: note || null, note: null }
@@ -318,12 +321,16 @@ async function markEvent(supabase, inbox, status, note) {
     const { error } = await supabase.from('webhook_events').update(patch).eq('id', inbox.id)
     if (error && isColumnMissing(error)) {
       const { error: legacyErr } = await supabase.from('webhook_events').update({ ...base, error: note || null }).eq('id', inbox.id)
-      if (legacyErr) console.error('webhook_events status update failed:', legacyErr.message)
+      if (legacyErr) { console.error('webhook_events status update failed:', legacyErr.message); return false }
+      return true
     } else if (error) {
       console.error('webhook_events status update failed:', error.message)
+      return false
     }
+    return true
   } catch (err) {
     console.error('webhook_events status update failed:', err.message)
+    return false
   }
 }
 
@@ -637,8 +644,25 @@ async function processDispute(c, supabase, event) {
       } else
         detail = `Resolution: DECLINED — you WON. ${current}, so nothing was changed. If it is still DISPUTED, use Admin → Payments → Clear dispute.`
     } else if (/accept/.test(resolution)) {
-      if (payment && ['SUCCESS', 'DISPUTED'].includes(payment.status) && !partialDispute) {
-        const done = await fulfillment.reversePayment(supabase, payment, { reason: 'DISPUTE', env: c.env, defer: p => runInBackground(c, p) })
+      // SECTION 8 (round 8, G1): the dispute twin of the refund path's "closed before it was ever settled".
+      // A dispute means Paystack took the money, so a payment this app still holds PENDING/ABANDONED/FAILED
+      // is one whose charge.success was lost or is failing. If the dispute is lost and the row is left
+      // revivable, that late success event (Paystack retries ~72h; the dispute auto-accepts after 16h)
+      // fulfils a charged-back sale and earns commission. Close it REFUNDED instead — settlePayment treats
+      // REFUNDED as final. Full disputes only, like the settled path.
+      let live = payment
+      let closedUnsettled = false
+      if (payment && fulfillment.REVIVABLE_STATUSES.includes(payment.status) && !partialDispute) {
+        const v = await fulfillment.refundUnsettledPayment(supabase, payment)
+        if (v.transitioned) closedUnsettled = true
+        else live = v.current   // it settled at the same instant: reverse the settled row the normal way
+      }
+      if (closedUnsettled) {
+        auto = `dispute lost before settlement (was ${payment.status}) — payment closed`
+        detail = `Resolution: ACCEPTED — the money went back to the customer, and this app had not yet marked the payment paid (the charge.success webhook was lost or failing; it was ${payment.status}). ` +
+          `Nothing had been delivered and no commission was recorded; the payment is now REFUNDED, so a late success event can no longer fulfil it.`
+      } else if (live && ['SUCCESS', 'DISPUTED'].includes(live.status) && !partialDispute) {
+        const done = await fulfillment.reversePayment(supabase, live, { reason: 'DISPUTE', env: c.env, defer: p => runInBackground(c, p) })
         auto = 'dispute lost — sale reversed'
         detail = `Resolution: ACCEPTED — the money went back to the customer, so the sale was reversed automatically.\n\n` +
           `payment → REFUNDED: ${done.transitioned ? 'yes' : 'already'}\n` +
@@ -894,8 +918,9 @@ async function runStoredEvent(c, supabase, row, { by = null, redrive = false } =
     const outcome = resend
       ? await resend.processResendEvent(c, supabase, row.payload)
       : await processEvent(c, supabase, row.payload, row.id)
-    await markEvent(supabase, inbox, outcome.status, outcome.note)
-    if (resend) await resend.clearResendPayload(supabase, row.id)   // recipient addresses: kept only while unfinished
+    const marked = await markEvent(supabase, inbox, outcome.status, outcome.note)
+    // recipient addresses: kept only while unfinished — and a row whose status write was lost IS unfinished
+    if (resend && marked) await resend.clearResendPayload(supabase, row.id)
     return { ok: true, outcome }
   } catch (err) {
     await markEvent(supabase, inbox, 'FAILED', err.message)
@@ -1003,12 +1028,15 @@ async function closeResolvedHeldEvents(supabase, { reference = null, limit = 100
 // ROUND-7 (B2): a RECEIVED row of a type no handler acts on keeps no payload (see isActionableEvent), so when
 // its status update was lost it can neither be re-run nor replayed, and sat in "needs attention" for good.
 // Nothing happened for it to finish — close it. Actionable types are left alone (a lost charge.success matters).
+// ROUND 8 (B1): no longer Paystack-only. Resend rows are payload-less once cleared; before the markEvent/clear
+// ordering fix a lost status write could strand one RECEIVED forever (it completed — only the status was lost),
+// and nothing else would ever close it. Resend event types are never in the Paystack exclusions below.
 async function closeUnrunnableReceived(supabase, { now = Date.now() } = {}) {
   try {
     const iso = new Date(now).toISOString()
     const { data, error } = await supabase.from('webhook_events')
       .update({ status: 'IGNORED', processed_at: iso, note: 'closed — unfinished, nothing stored to re-run' })
-      .eq('provider', 'paystack').eq('status', 'RECEIVED').is('payload', null)
+      .eq('status', 'RECEIVED').is('payload', null)
       .lt('received_at', new Date(now - REDRIVE_MIN_AGE_MS).toISOString())
       .neq('event_type', 'charge.success').not('event_type', 'like', 'refund.%').not('event_type', 'like', 'charge.dispute%')
       .select('id')

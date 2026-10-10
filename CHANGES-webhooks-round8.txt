@@ -1,0 +1,25 @@
+SECTION 8 — WEBHOOKS — round 8 (independent pass; 1 feature gap, 1 bug; no migration)
+
+G1 (feature gap) — a lost dispute on a payment this app never settled
+  processDispute only acted on an ACCEPTED (lost) dispute when the payment was SUCCESS/DISPUTED. A payment still
+  PENDING/ABANDONED/FAILED (its charge.success lost or failing) fell through to "nothing changed", so a late
+  charge.success (Paystack retries ~72h; disputes auto-accept at 16h) could fulfil — and pay commission on — a
+  charged-back sale. The refund path closed this in round 5 (refundUnsettledPayment); the dispute path never got
+  the twin. Now: a FULL accepted dispute on a REVIVABLE payment closes it REFUNDED (settlePayment treats REFUNDED
+  as final), with an alert. If it settles at the same instant the settled row is reversed the normal way. Partial
+  disputes and declined resolutions are untouched.
+  Files: src/controllers/webhooks.controller.js
+
+B1 (bug) — a Resend event could be stranded RECEIVED with no payload, forever
+  handleResend / runStoredEvent called markEvent (which swallows its own errors) and then cleared the
+  recipient-bearing payload unconditionally. If the status write was lost but the clear landed, the row stayed
+  RECEIVED with payload NULL: the re-drive needs a payload, closeUnrunnableReceived was Paystack-only, the prune
+  only deletes PROCESSED/IGNORED, and Replay needs a payload — so it sat in "needs attention" permanently.
+  Now markEvent returns whether the write landed and the payload is cleared only then (a lost write leaves the
+  row re-runnable by the hourly re-drive). closeUnrunnableReceived is no longer Paystack-only, so rows already
+  stranded in production close themselves on the next hourly sweep.
+  Files: src/controllers/webhooks.controller.js, src/controllers/resend-webhook.controller.js
+
+Tests added: tests/webhooks.controller.test.js (G1: PENDING/ABANDONED/FAILED close + late charge.success inert,
+partial and declined untouched), tests/resend-webhook.test.js (B1 both directions),
+tests/webhooks.admin.test.js (stranded Resend row closed by the sweep). All 110 backend test files pass.

@@ -1184,3 +1184,30 @@ describe('round 7 — G4: the inbox stores a minimal dispute payload', () => {
     expect(w.t.payments[0].status).toBe('DISPUTED')
   })
 })
+
+describe('round 8 — G1: a lost dispute on a payment this app never settled closes it', () => {
+  const resolve = (over = {}) => ({ event: 'charge.dispute.resolve', data: { id: 9001, status: 'resolved', resolution: 'merchant-accepted', refund_amount: 2900, transaction: { reference: 'ref-1', amount: 2900, currency: 'USD' }, ...over } })
+  for (const status of ['PENDING', 'ABANDONED', 'FAILED']) {
+    it(`an ACCEPTED full dispute on a ${status} payment closes it REFUNDED, so a late charge.success cannot fulfil it`, async () => {
+      const w = seed(); w.t.payments[0].status = status; t = harness(w)
+      await t.fire(resolve())
+      expect(w.t.payments[0].status).toBe('REFUNDED')
+      const late = await t.fire(chargeSuccess())
+      expect(late.status).toBe(200)
+      expect(w.t.payments[0].status).toBe('REFUNDED')
+      expect(t.state.queue).toHaveLength(0)
+      expect(w.t.webhook_events.find(e => e.event_key === 'charge.dispute.resolve:9001').note).toMatch(/closed/)
+      expect(t.state.alerts.find(a => /dispute\.resolve/.test(a.subject)).message).toMatch(/now REFUNDED/)
+    })
+  }
+  it('a PARTIAL dispute on an unsettled payment is left for a human (like the settled path)', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(resolve({ refund_amount: 1000 }))
+    expect(w.t.payments[0].status).toBe('PENDING')
+  })
+  it('a DECLINED dispute on an unsettled payment changes nothing', async () => {
+    const w = seed(); t = harness(w)
+    await t.fire(resolve({ resolution: 'declined' }))
+    expect(w.t.payments[0].status).toBe('PENDING')
+  })
+})

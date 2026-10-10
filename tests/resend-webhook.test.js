@@ -38,7 +38,7 @@ describe('verifySvixSignature', () => {
   })
 })
 
-function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employerMail = [], failMailSuppression = false, failInboxInsert = false } = {}) {
+function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employerMail = [], failMailSuppression = false, failInboxInsert = false, failStatusUpdate = false } = {}) {
   const state = { users, employerMail, events: [], leads: leads.map(l => ({ ...l })), suppressed: new Set(suppressed), audit: [], logPurges: [], mailSuppressed: [], stamps: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'employer_leads') {
@@ -66,6 +66,7 @@ function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employe
         if (state.events.some(e => e.provider === q.values.provider && e.event_key === q.values.event_key)) return { data: null, error: { code: '23505', message: 'duplicate' } }
         const row = { id: 'we' + (state.events.length + 1), status: 'RECEIVED', attempts: 1, ...q.values }; state.events.push(row); return { data: { id: row.id, attempts: 1 }, error: null }
       }
+      if (q.op === 'update' && failStatusUpdate && q.patch && 'status' in q.patch) return { data: null, error: { message: 'blip' } }
       if (q.op === 'update') { const id = q.filters.find(f => f[1] === 'id')?.[2]; const row = state.events.find(e => e.id === id); if (row) Object.assign(row, q.patch); return { data: null, error: null } }
       const key = q.filters.find(f => f[1] === 'event_key')?.[2]; const row = state.events.find(e => e.event_key === key)
       return { data: row ? { id: row.id, status: row.status, attempts: row.attempts } : null, error: null }
@@ -380,5 +381,24 @@ describe('round 7 — the Resend inbox (G1), failure visibility (G2), raw-byte v
     expect(await verifySvixSignature({ ...a, body })).toBe(true)
     expect(await verifySvixSignature({ ...a, body: new TextEncoder().encode(body) })).toBe(true)
     expect(await verifySvixSignature({ ...a, body: new TextEncoder().encode(body + ' ') })).toBe(false)
+  })
+})
+
+describe('round 8 — B1: the recipient payload is cleared only once the status write has landed', () => {
+  let tt, realErr
+  beforeEach(() => { realErr = console.error; console.error = () => {} })
+  afterEach(() => { console.error = realErr; tt?.restore() })
+  it('a lost status write leaves the row RECEIVED WITH its payload, so the re-drive can finish it', async () => {
+    tt = setup({ failStatusUpdate: true })
+    const res = await tt.call({ type: 'email.complained', data: { to: ['someone@example.com'] } })
+    expect(res.status).toBe(200)
+    expect(tt.state.events[0].status).toBe('RECEIVED')
+    expect(tt.state.events[0].payload).not.toBeNull()
+  })
+  it('the normal path still clears it', async () => {
+    tt = setup()
+    await tt.call({ type: 'email.complained', data: { to: ['someone@example.com'] } })
+    expect(tt.state.events[0].status).toBe('PROCESSED')
+    expect(tt.state.events[0].payload).toBeNull()
   })
 })
