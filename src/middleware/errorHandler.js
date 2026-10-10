@@ -6,6 +6,8 @@
 // Postgres unique-constraint violations arrive as SQLSTATE '23505'
 // (unique_violation) via PostgREST, surfaced on error.code by supabase-js.
 
+const { redactPgDetails } = require('../lib/redact')
+
 const validStatus = s => Number.isInteger(s) && s >= 400 && s <= 599 ? s : 500
 
 // A failure of OUR OWN infrastructure that is over in moments — the database did not answer in time or
@@ -45,7 +47,7 @@ function errorHandler(err, ctx) {
   // all — a bug reported to the client as a polite 409 and never seen in the logs.
   if (err.code === '23505') {
     const rayId = ctx.req && typeof ctx.req.header === 'function' ? ctx.req.header('cf-ray') : undefined
-    console.error(`Unique violation answered 409${rayId ? ` [${rayId}]` : ''}:`, err.message, err.details || '')
+    console.error(`Unique violation answered 409${rayId ? ` [${rayId}]` : ''}:`, redactPgDetails(err.message), redactPgDetails(err.details))
     return ctx.json({ success: false, message: 'Already exists.' }, 409)
   }
 

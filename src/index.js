@@ -36,7 +36,6 @@ const partnersRoutes     = require('./routes/partners.routes')
 const adminRoutes        = require('./routes/admin.routes')
 
 const { getSupabase } = require('./config/supabase')
-const { scanRowToCamel } = require('./lib/mappers')
 const emailService = require('./services/email.service')
 const { runRetention } = require('./services/retention.service')
 const { runLeadMatchSweep } = require('./services/lead-match.service')
@@ -163,7 +162,10 @@ async function scheduled(event, env, ctx) {
           .lt('updated_at', stuckCutoff)
           .not('resume_ats_path', 'is', null)
           .gt('fix_retry_count', 0)
-        if (retryErr) { console.error('Stuck retry recovery:', retryErr.message); return }
+        // AUDIT FIX (Cross-cutting infra, B4): this used to `return`, so one failed query here silently skipped the
+        // stuck-scan recovery below too — scans stayed PENDING/SCANNING and quota unrefunded until the next hour.
+        // The two recoveries are independent: log and carry on (stuckRetries is null on error, the loop is a no-op).
+        if (retryErr) console.error('Stuck retry recovery:', retryErr.message)
         for (const row of stuckRetries || []) {
           const { error: revertErr } = await supabase.rpc('revert_fix_retry', { p_scan_id: row.id })
           if (revertErr) console.error(`Stuck retry revert failed for ${row.id}:`, revertErr.message)

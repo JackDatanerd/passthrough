@@ -45,6 +45,7 @@ async function optionalAuth(c, next) {
         if (hasSid) {
           c.set('sessionId', decoded.sid)
           c.set('sessionExpiresAtMs', Date.parse(sessionRes.data.absolute_expires_at))
+          c.set('sessionCreatedAtMs', Date.parse(sessionRes.data.created_at))   // adminOnly's admin-session age cap
           touchSession(c, supabase, sessionRes.data)
         }
         c.set('user', requestUser)

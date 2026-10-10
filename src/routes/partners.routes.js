@@ -49,7 +49,7 @@ router.get(  '/overview',                  admin, c.adminPartnersOverview)
 router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).
-router.post( '/payouts/batch',             admin, c.adminRecordPayoutBatch)
+router.post( '/payouts/batch',             admin, admin.stepUp, c.adminRecordPayoutBatch)
 router.get(  '/:id',                       admin, validateUuidParam(), c.adminGetPartner)
 // commission_rate/status (ACTIVE/PAUSED) had no write path at all until
 // this — see adminUpdatePartner's comment in partners.controller.js.
@@ -63,9 +63,9 @@ router.patch('/:id',                       admin, validateUuidParam(), c.adminUp
 router.post( '/:id/resend-link',           admin, validateUuidParam(), c.adminResendPayoutLink)
 router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRegeneratePayoutLink)
 router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGetPartnerLinks)
-router.post( '/:id/payouts',               admin, validateUuidParam(), c.adminRecordPayout)
-router.post( '/:id/payouts/:payoutId/void', admin, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
-router.post( '/:id/anonymize',            admin, validateUuidParam(), c.adminAnonymizePartner)
+router.post( '/:id/payouts',               admin, admin.stepUp, validateUuidParam(), c.adminRecordPayout)
+router.post( '/:id/payouts/:payoutId/void', admin, admin.stepUp, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
+router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam(), c.adminAnonymizePartner)
 router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

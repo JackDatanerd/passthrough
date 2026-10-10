@@ -37,7 +37,7 @@ router.post('/:reference/resolve',   auth, admin, c.resolvePayment)
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G1): admin-only — queues an
 // actual refund with Paystack (see refundPayment's own comment in
 // payments.controller.js for why this never touches our row directly).
-router.post('/:reference/refund',    auth, admin, c.refundPayment)
+router.post('/:reference/refund',    auth, admin, admin.stepUp, c.refundPayment)
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G4): owner-only (checked
 // inside resendPaymentReceipt itself, same as verify/history) — re-sends a
 // receipt to the buyer's current email. rl.paymentReceipt caps it because

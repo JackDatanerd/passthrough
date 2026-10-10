@@ -1640,5 +1640,5 @@ module.exports = {
   register, login, getMe, forgotPassword, resetPassword, checkResetToken,
   verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
   confirmEmailChange, deleteAccount, claimScan, acceptTerms,
-  logout, listSessions, revokeSession
+  logout, listSessions, revokeSession, comparePassword
 }

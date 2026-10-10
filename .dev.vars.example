@@ -41,8 +41,13 @@ RESEND_API_KEY=re_...
 # Keyed hash for the employer do-not-contact list (unset = plain SHA-256). See DEPLOYMENT.md before changing.
 # SUPPRESSION_HASH_KEY=replace_with_random_hex
 # SUPPRESSION_HASH_KEY_PREVIOUS=
-# Restrict the admin panel to these IPs (comma-separated single addresses — NOT CIDR ranges; IPv6 matches by /64).
-# ADMIN_ALLOWED_IPS=203.0.113.7,2001:db8:1:2::1
+# Restrict the admin panel to these IPs / CIDR ranges (comma-separated; a bare IPv6 address matches its /64).
+# ADMIN_ALLOWED_IPS=203.0.113.7,198.51.100.0/24,2001:db8:abcd::/48
+# Admin session age cap in hours (default 24, 0 = off) and password step-up window in minutes (default 0 = off).
+# ADMIN_SESSION_MAX_HOURS=24
+# ADMIN_STEP_UP_MINUTES=10
+# Out-of-band owner alerts (https incoming-webhook URL; Slack/Discord/Teams style).
+# ALERT_WEBHOOK_URL=
 # Deep health check for /healthz (send it in the X-Health-Key header).
 # HEALTH_CHECK_KEY=replace_with_random_hex
 # How long a rate-limit Durable Object call may take before the limiter fails open (default 3000 ms).

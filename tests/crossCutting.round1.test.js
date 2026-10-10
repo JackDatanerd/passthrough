@@ -312,6 +312,21 @@ describe('email service (B5, B8)', () => {
     expect(await t.mod.sendOwnerAlert(t.env, 'Queue job failed', 'third')).toBe(false)        // a SUCCESSFUL send still dedupes
     expect(t.sent).toHaveLength(1)
   })
+  it('G2 (round 4): with ALERT_WEBHOOK_URL set, an alert still reaches the owner when Resend is down', async () => {
+    t = setup()
+    t.env.ALERT_WEBHOOK_URL = 'https://hooks.example.com/x'
+    const hooks = []; const realFetch = global.fetch
+    global.fetch = async (u, init) => { hooks.push(JSON.parse(init.body)); return new Response('ok', { status: 200 }) }
+    try {
+      t.flags.fail = true
+      expect(await t.mod.sendOwnerAlert(t.env, 'Queue job failed', 'boom')).toBe(false)   // email did not go...
+      expect(hooks).toHaveLength(1)                                                       // ...the webhook did
+      expect(hooks[0].subject).toBe('Queue job failed')
+      t.flags.fail = false
+      await t.mod.sendOwnerAlert(t.env, 'Queue job failed', 'boom')
+      expect(hooks).toHaveLength(1)   // the dedupe window now holds (the slot was spent by the delivered webhook)
+    } finally { global.fetch = realFetch }
+  })
   it('B8: a rejection reason always ends in punctuation before the fixed sentence', async () => {
     t = setup()
     await t.mod.sendPartnerApplicationRejected(t.env, t.db, 'p@x.co', 'P', 'Not enough audience')

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { NavLink, Link, Outlet } from 'react-router-dom'
-import api from '../../lib/api'
+import api, { setStepUpPrompt } from '../../lib/api'
 import { cn, formatCents } from '../../lib/utils'
 
 const NAV = [
@@ -97,9 +97,37 @@ function TopStrip() {
   )
 }
 
+// Asks for the admin's password when a refund / payout / ban needs confirming (see lib/api.js step-up).
+function StepUpModal() {
+  const [open, setOpen] = useState(false)
+  const [value, setValue] = useState('')
+  const [resolver, setResolver] = useState(null)
+  useEffect(() => {
+    setStepUpPrompt(() => new Promise(resolve => { setValue(''); setResolver(() => resolve); setOpen(true) }))
+    return () => setStepUpPrompt(null)
+  }, [])
+  if (!open) return null
+  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null) }
+  return (
+    <div role="dialog" aria-modal="true" aria-label="Confirm your password" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <form onSubmit={e => { e.preventDefault(); done(value) }} className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg flex flex-col gap-3">
+        <h2 className="font-semibold text-gray-900">Confirm your password</h2>
+        <p className="text-sm text-gray-500">Refunds, payouts and account bans need your password again.</p>
+        <input type="password" autoFocus autoComplete="current-password" value={value} onChange={e => setValue(e.target.value)}
+          className="rounded-md border border-gray-300 px-3 py-2 text-sm" aria-label="Password" />
+        <div className="flex justify-end gap-2">
+          <button type="button" onClick={() => done(null)} className="px-3 py-2 text-sm text-gray-600">Cancel</button>
+          <button type="submit" className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white">Confirm</button>
+        </div>
+      </form>
+    </div>
+  )
+}
+
 export default function AdminLayout() {
   return (
     <div className="min-h-screen bg-gray-50">
+      <StepUpModal />
       <div className="border-b border-gray-200 bg-white">
         <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col gap-2">
           <div className="flex items-center justify-between">

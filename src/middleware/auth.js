@@ -76,6 +76,7 @@ async function auth(c, next) {
       return c.json({ success: false, message: 'Session expired.', code: 'SESSION_INVALID' }, 401)
     c.set('sessionId', decoded.sid)
     c.set('sessionExpiresAtMs', Date.parse(sessionRes.data.absolute_expires_at))
+    c.set('sessionCreatedAtMs', Date.parse(sessionRes.data.created_at))
     touchSession(c, supabase, sessionRes.data)
   }
 

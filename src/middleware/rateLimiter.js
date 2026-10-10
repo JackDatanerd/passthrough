@@ -38,6 +38,7 @@ const { isTrustedPreview } = require('../lib/verification')
 const core = require('../lib/rateLimitCore')
 const constants = require('../config/constants')
 const { runInBackground } = require('../lib/background')
+const jwtLib = require('../lib/jwt')
 
 // ── Storage backend ───────────────────────────────────────────────────────
 // With a RATE_LIMIT_DO binding (production) every counter lives in a Durable
@@ -221,7 +222,7 @@ async function refundAnonScanSlot(env, key) {
 // per-account. Falls back to the IP (null) when no user is on the context.
 const byAccount = (c) => { const id = c.get && c.get('user')?.id; return id ? `u:${id}` : null }
 
-// `keyBy(c)` (optional) names who the budget belongs to when that should not be
+// `keyBy(c)` (optional; may be async) names who the budget belongs to when that should not be
 // the network address — a falsy return falls back to the IP. Anything behind
 // `auth` that is genuinely per-account (a heavy personal export) should key on
 // the account: on carrier-grade NAT, campus and office networks many unrelated
@@ -235,7 +236,7 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
     const ip = clientIp(c)
     if (isBypassed(c.env, ip)) return next()
 
-    const key = `${keyPrefix}:${(keyBy && keyBy(c)) || rateKeyIp(ip, ipBits)}`
+    const key = `${keyPrefix}:${(keyBy && await keyBy(c)) || rateKeyIp(ip, ipBits)}`
 
     let slot
     try {
@@ -299,9 +300,32 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
 
 const msg = m => m
 
+// bySignedToken — keyBy for limiters that run BEFORE optionalAuth (so c.get('user') is not set yet).
+// AUDIT FIX (Cross-cutting infra, B1): the app-wide `general` limiter was per-IP only, so on carrier-grade
+// NAT / campus / office networks (this app's customers are mobile-heavy) the 101st request in 15 minutes from
+// ONE address — across every signed-in person behind it — was a 429, on /auth/me, /auth/login and /admin/*
+// too. A cheap HMAC check of the bearer token (no database round trip) names the account; a missing, forged,
+// malformed or expired token verifies to nothing and falls back to the per-IP bucket, so nobody can pick
+// their own bucket without holding a token this Worker signed.
+async function bySignedToken(c) {
+  try {
+    const cached = c.get && c.get('rlSignedUserId')
+    if (cached) return cached
+    const header = c.req.header('Authorization')
+    if (!header || !header.startsWith('Bearer ') || !c.env || !c.env.JWT_SECRET) return null
+    const decoded = await jwtLib.verify(header.slice(7), c.env.JWT_SECRET)
+    const id = decoded && typeof decoded.userId === 'string' ? decoded.userId : null
+    if (!id || id.length > 64) return null
+    const key = `u:${id}`
+    if (c.set) c.set('rlSignedUserId', key)
+    return key
+  } catch { return null }
+}
+
 const general = makeLimiter({
   windowSeconds: 15 * 60, max: 100, keyPrefix: 'rl:general',
   message: msg('Too many requests.'),
+  keyBy: bySignedToken,   // signed-in traffic is budgeted per account; anonymous/invalid tokens stay per-IP
   // /api/webhooks/* gets its own limiter (see `webhook` below) instead of
   // sharing this generic per-IP bucket. Paystack's webhook deliveries all
   // come from the same account, so their volume tracks real payment

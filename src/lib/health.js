@@ -98,6 +98,37 @@ async function checkCron(supabase, nowMs = Date.now()) {
   }
 }
 
+// Cross-cutting infra round 4, G2 — probes for the dependencies that used to fail silently.
+// Email: the cron and /healthz only proved the DATABASE side. A revoked Resend key, an exhausted quota or an
+// unverified domain left every verification / reset / receipt email failing while health read green. The
+// provider is not called (that would spend quota and need a full-access key); instead the outcome of the last
+// hour's real sends is read from email_logs: several failures and NOT ONE success means delivery is down.
+const EMAIL_FAIL_MIN = 5
+async function checkEmailDelivery(supabase, nowMs = Date.now()) {
+  try {
+    const since = new Date(nowMs - 60 * 60 * 1000).toISOString()
+    const { data, error } = await supabase.from('email_logs').select('status').gte('created_at', since).limit(500)
+    if (error) throw error
+    const rows = Array.isArray(data) ? data : []
+    const sent = rows.filter(r => r.status === 'sent').length
+    const failed = rows.filter(r => r.status === 'failed').length
+    const down = failed >= EMAIL_FAIL_MIN && sent === 0
+    return { ok: !down, sent, failed, detail: down ? `${failed} emails failed in the last hour and none were delivered — check the Resend key, quota and sending domain` : null }
+  } catch (err) { return { ok: true, sent: null, failed: null, detail: `could not read email_logs (${err.message})` } }
+}
+
+// R2: a HEAD on a key that does not exist answers null when the bucket is reachable and throws when it is not.
+async function checkStorage(env) {
+  if (!env || !env.RESUMES_BUCKET || typeof env.RESUMES_BUCKET.head !== 'function') return { ok: true, skipped: true }
+  try {
+    await Promise.race([
+      env.RESUMES_BUCKET.head('__healthcheck__'),
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timed out after 3s')), 3000)),
+    ])
+    return { ok: true }
+  } catch (err) { return { ok: false, detail: `resume storage (R2) is not answering: ${err.message}` } }
+}
+
 async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   const config = validateEnv(env)
   const bindings = Object.fromEntries(BINDINGS.map(b => [b, !!(env && env[b])]))
@@ -111,7 +142,7 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
     if (error && !/system_state|relation|does not exist|schema cache/i.test(error.message || '')) throw error
   } catch (err) { db = { ok: false, detail: err.message } }
 
-  const [schema, cron] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs)])
+  const [schema, cron, email, storage] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env)])
   const problems = []
   const notes = []
   if (config.fatal.length) problems.push(...config.fatal.map(f => `config: ${f}`))
@@ -120,15 +151,18 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   if (!schema.ok) problems.push(`schema: ${schema.detail || `expected ${schema.expected}, found ${schema.actual}`}`)
   else if (schema.ahead) notes.push(`schema: ${schema.detail}`)
   if (!cron.ok) problems.push(`cron: ${cron.detail}`)
+  if (!email.ok) problems.push(`email: ${email.detail}`)
+  if (!storage.ok) problems.push(`storage: ${storage.detail}`)
+  if (!(env && env.ALERT_WEBHOOK_URL)) notes.push('alerts: ALERT_WEBHOOK_URL is not set — owner alerts travel only by email, the same provider whose outage they would report')
   return {
     ok: problems.length === 0,
     problems,
     notes,
-    schema, cron, db,
+    schema, cron, db, email, storage,
     bindings,
     config: { fatal: config.fatal, warnings: config.warnings },
     checkedAt: new Date(nowMs).toISOString(),
   }
 }
 
-module.exports = { computeHealth, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }
+module.exports = { computeHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

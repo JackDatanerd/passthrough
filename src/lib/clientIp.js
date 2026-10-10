@@ -90,4 +90,65 @@ function parseIpList(raw) {
   return { valid: entries.filter(isIpLiteral), invalid: entries.filter(x => !isIpLiteral(x)) }
 }
 
-module.exports = { clientIp, rateKeyIp, isIpLiteral, parseIpList }
+// ── CIDR allow-lists ───────────────────────────────────────────────────────────────────────────────
+// AUDIT FIX (Cross-cutting infra, G1): ADMIN_ALLOWED_IPS only took single addresses, so an admin on a
+// carrier or office network whose address changes within a /24 (or an IPv6 /56 prefix) had no way to use
+// the allow-list at all. Entries may now be an address or `address/prefix`.
+function toBig(ip) {
+  const v = String(ip || '').trim().replace(/^\[|\]$/g, '').toLowerCase().split('%')[0]
+  if (!v) return null
+  if (!v.includes(':')) {
+    const m = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(v)
+    if (!m || m.slice(1).some(x => Number(x) > 255)) return null
+    return { v: 4, n: m.slice(1).reduce((acc, x) => (acc << 8n) | BigInt(x), 0n) }
+  }
+  const g = expandIPv6(v)
+  if (!g) return null
+  const n = g.map(x => parseInt(x, 16))
+  if (n.slice(0, 5).every(x => x === 0) && n[5] === 0xffff)      // IPv4-mapped is an IPv4 client
+    return { v: 4, n: (BigInt(n[6]) << 16n) | BigInt(n[7]) }
+  return { v: 6, n: n.reduce((acc, x) => (acc << 16n) | BigInt(x), 0n) }
+}
+
+// 'addr' or 'addr/len' -> { v, n, len } or null. /0 (match everything) is refused: an allow-list that
+// admits the whole internet is a typo, not a policy.
+function parseCidr(entry) {
+  const raw = String(entry || '').trim()
+  const slash = raw.indexOf('/')
+  const addr = slash === -1 ? raw : raw.slice(0, slash)
+  const b = toBig(addr)
+  if (!b) return null
+  if (slash === -1) return { v: b.v, n: b.n, len: b.v === 4 ? 32 : 128 }
+  const lenStr = raw.slice(slash + 1)
+  if (!/^\d{1,3}$/.test(lenStr)) return null
+  const len = Number(lenStr)
+  const max = b.v === 4 ? 32 : 128
+  if (len < 1 || len > max) return null
+  return { v: b.v, n: b.n, len }
+}
+
+function ipInCidr(ip, cidr) {
+  const b = toBig(ip)
+  if (!b || !cidr || b.v !== cidr.v) return false
+  const total = BigInt(cidr.v === 4 ? 32 : 128)
+  const shift = total - BigInt(cidr.len)
+  return (b.n >> shift) === (cidr.n >> shift)
+}
+
+// Splits a comma-separated list of addresses / CIDR ranges into parsed entries and unusable text.
+function parseIpAllowList(raw) {
+  const entries = String(raw || '').split(',').map(x => x.trim()).filter(Boolean)
+  const valid = [], invalid = []
+  for (const e of entries) { const p = parseCidr(e); if (p) valid.push({ text: e, ...p }); else invalid.push(e) }
+  return { valid, invalid }
+}
+
+// A bare IPv6 address in the list keeps its historical meaning: the whole /64 the client sits in.
+function ipAllowed(ip, parsedValid) {
+  return parsedValid.some(e => {
+    if (e.v === 6 && e.len === 128 && !e.text.includes('/')) return rateKeyIp(ip) === rateKeyIp(e.text.replace(/^\[|\]$/g, ''))
+    return ipInCidr(ip, e)
+  })
+}
+
+module.exports = { clientIp, rateKeyIp, isIpLiteral, parseIpList, parseCidr, ipInCidr, parseIpAllowList, ipAllowed }

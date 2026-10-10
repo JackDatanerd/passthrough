@@ -344,15 +344,33 @@ wrangler secret put CORS_EXTRA_ORIGINS
 # included — it switches ALL rate limits off for those IPs, and the Worker logs a warning at start-up
 # while it is set. Use it for a QA window, then delete it).
 
-# Restrict the admin panel to known networks (comma-separated SINGLE IP addresses; IPv6 matched by /64).
-# CIDR ranges ("203.0.113.0/24") are NOT supported: such an entry never matches, and with the list set a
-# request that matches nothing is refused — a list with no usable address locks every admin out. The
-# Worker logs a [CONFIG] warning at start-up naming any entry that is not an IP address. To get back in:
+# Restrict the admin panel to known networks (comma-separated IP addresses and/or CIDR ranges —
+# "203.0.113.0/24", "2001:db8:abcd::/48"; a bare IPv6 address means its whole /64). An entry that is neither
+# never matches, and with the list set a request that matches nothing is refused — a list with no usable
+# entry locks every admin out. The Worker logs a [CONFIG] warning at start-up naming any entry that is not an
+# address or range. To get back in:
 # `wrangler secret delete ADMIN_ALLOWED_IPS`. When set, an
 # ADMIN session is honoured only from these addresses — a stolen admin token is useless elsewhere. It
 # covers every admin-gated route (admin panel, refunds, partners, employer leads). Unset = no restriction.
 #   1.2.3.4,5.6.7.8
 wrangler secret put ADMIN_ALLOWED_IPS
+
+# Admin sessions are capped in AGE: an admin's session is honoured for ADMIN_SESSION_MAX_HOURS after it was
+# created (default 24; 0 disables the cap), however often the SPA silently renews its token — then the admin
+# signs in again. Plain [vars] value.
+#   ADMIN_SESSION_MAX_HOURS = "24"
+
+# Password step-up for refunds, partner payouts (record / batch / void), partner anonymisation and user
+# status/role changes. ADMIN_STEP_UP_MINUTES = N (default 0 = off, 1-240): the admin panel then asks for the
+# admin's own password once (POST /api/admin/elevate) and the confirmation lasts N minutes, bound to that
+# session. A stolen bearer token can still read, but cannot move money or ban anyone. Plain [vars] value.
+#   ADMIN_STEP_UP_MINUTES = "10"
+
+# Out-of-band owner alerts. Every alert is emailed through Resend — the same provider whose outage, exhausted
+# quota or revoked key an alert may need to report. Set an https incoming-webhook URL (Slack, Discord, Teams,
+# Mattermost, ntfy-style; the URL is the credential, so it is a SECRET) and each alert is ALSO posted there,
+# sharing nothing with the email path. Unset = email only (the deep health check notes that).
+wrangler secret put ALERT_WEBHOOK_URL
 
 # Lets an uptime monitor run the DEEP health check: `GET /healthz` with header `X-Health-Key: <value>`
 # returns 503 when the database schema is behind, the hourly cron has stopped, or a binding is missing.
@@ -557,7 +575,8 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 - [ ] `JWT_SECRET` is at least 32 random chars
 - [ ] `RESEND_WEBHOOK_SECRET` set (Section 7) — bounces and spam complaints are acted on only with it
 - [ ] `HEALTH_CHECK_KEY` set and an uptime monitor polling `/healthz` with `X-Health-Key` (alerts on 503)
-- [ ] `ADMIN_ALLOWED_IPS` set if your admins work from fixed networks
+- [ ] `ADMIN_ALLOWED_IPS` set if your admins work from fixed networks (addresses or CIDR ranges)
+- [ ] `ALERT_WEBHOOK_URL` set, so an email-provider outage cannot hide alerts; `ADMIN_STEP_UP_MINUTES` considered
 - [ ] `PAYSTACK_SECRET_KEY` is `sk_live_...` (not `sk_test_...`)
 - [ ] `RATE_LIMIT_BYPASS_IPS` is **unset** (or deleted) — if it was set for
       testing, `wrangler secret delete RATE_LIMIT_BYPASS_IPS` before real
@@ -565,7 +584,8 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 
 ### wrangler.toml [vars]
 - [ ] `NODE_ENV="production"` — without it error messages are not the only thing that changes: the Worker
-      treats the target as non-production (trusts `x-forwarded-for`) and warns on every start-up
+      treats the target as non-production and warns on every start-up (and any value other than `production` makes
+      it honour a client-supplied `x-forwarded-for`, which lets a caller pick its own rate-limit bucket)
 - [ ] `EMAIL_FROM` is an address on your verified Resend domain
 - [ ] `OWNER_ALERT_EMAIL` is YOUR inbox — the repo ships the maintainer's, so a fork's critical alerts
       (failed jobs, schema behind, webhook signature failures) would otherwise go to someone else
@@ -633,6 +653,8 @@ purchases, prove the limits hold on YOUR plan:
   Returns **503** with a `problems` list when any of it is wrong. Point your uptime monitor here.
   A cron that has **never** run is caught too: the first deep check records a starting point, and if no
   heartbeat exists 150 minutes later the check fails (the hourly trigger is not registered or not firing).
+  It also fails when resume storage (R2) does not answer, and when the last hour's email_logs show several
+  failed sends and not one delivered (a revoked Resend key, exhausted quota or unverified domain).
 - `GET /api/admin/health` (admin session) — the same data plus config warnings and binding status.
 - The hourly cron writes the heartbeat and emails the owner when the schema is behind the deployed code.
 
@@ -771,6 +793,38 @@ every limiter failed open until it recovered.
   return as a brand-new lead afterwards. Leave it unset if an archived lead might just
   have been a poor fit: the public form answers an address on that list with a silent
   success, so that person could never sign up again.
+
+### Backups, restore, and provider outages
+
+**What holds what.** Everything a customer owns is in two places: Supabase Postgres (accounts, scans, payments,
+partners, ledger) and the R2 bucket (resume files). The Worker itself holds nothing: Durable Object rate-limit
+counters and KV entries are disposable (a loss resets limits, nothing else), and queue messages are re-creatable
+from scan rows (the failed-fix sweep re-drives them).
+
+**Backups — set these up before launch, not after the first loss.**
+- Postgres: check what your Supabase plan includes (Dashboard → Database → Backups). Daily backups and
+  point-in-time recovery are plan features; if yours has neither, schedule your own `pg_dump` (a nightly job
+  from any machine with the connection string, stored outside Supabase and Cloudflare).
+- R2: it keeps one version of each object. Periodically copy the bucket elsewhere (`rclone sync` with an R2
+  remote works) if losing paid resumes would matter to you.
+- Secrets: keep the list from section 5 in a password manager. Cloudflare never shows a secret again.
+
+**Restoring Postgres.** Restore into a NEW project first (never over the live one), check
+`select value from system_state where key='schema_version'`, then point `SUPABASE_URL` /
+`SUPABASE_SERVICE_ROLE_KEY` at it and redeploy. If the restored schema is older than
+`EXPECTED_SCHEMA_VERSION` the deep health check says so — apply the missing migrations in order. After a restore,
+run the failed-fix sweep by hand (`POST /api/admin/scans/:id/requeue-fix` for anything stuck) and replay
+Paystack events from the admin Webhooks page for the window between the backup and the restore.
+
+**Provider outage — what degrades, what to do.**
+| Provider | What users see | What to do |
+|---|---|---|
+| Supabase | API answers 503 with Retry-After; SPA retries once | Wait; nothing is lost. Stuck scans are recovered by the hourly cron afterwards. |
+| Resend | Sign-up / reset / receipt emails do not arrive; alerts reach you only via `ALERT_WEBHOOK_URL` | Check the deep health check (`email:`). Verification and reset can be re-requested; nothing needs replaying. |
+| Paystack | Checkout fails or confirmations are late | Webhook events are held and replayable (admin → Webhooks → replay) once Paystack is back; use reconcile for payments that settled but were not recorded. |
+| Anthropic (Claude) | New scans and fixes error | Scans moved to ERROR refund their free-scan slot; paid fixes are retried by the failed-fix sweep. |
+| R2 | Uploads and downloads fail | Deep health reports `storage:`. Nothing to replay; retry after recovery. |
+| Cloudflare Queues | Fixes stay in FIX_GENERATING | The hourly cron's stuck-scan recovery re-drives them; DLQ alerts name the scan. |
 
 ### Rolling back a bad deploy
 

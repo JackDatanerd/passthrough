@@ -1,0 +1,33 @@
+Cross-cutting infra (section 9) — round 4
+=========================================
+
+Bugs
+  B1  The app-wide `general` limiter (100 / 15 min) was per-IP only and ran before optionalAuth, so every
+      signed-in person behind one carrier-grade-NAT / campus / office address shared one budget: the 101st
+      request got a 429, on /auth/me, /auth/login and /admin/* too. It now keys on the account named by a
+      cheaply verified (HMAC only, no database round trip) bearer token; anonymous, forged and expired tokens
+      stay on the per-IP bucket. makeLimiter's keyBy may now be async.  (rateLimiter.js; tests/rateLimiter.generalPerAccount)
+  B2  Warning text in lib/env.js and DEPLOYMENT.md claimed an UNSET NODE_ENV trusts x-forwarded-for. It does not
+      (only a set, non-"production" value does). Text corrected.
+  B3  Logs carried personal data: recipient addresses in email.service logs, and the value inside Postgres
+      unique-violation `details` in errorHandler. New lib/redact.js (maskEmail, redactPgDetails).
+  B4  scheduled(): a failed first query ("Stuck retry recovery") `return`ed and silently skipped the stuck-scan
+      recovery and its quota refunds for that hour. It now logs and carries on.
+  B5  Unused scanRowToCamel import in index.js removed.
+  --  SSRF: RFC 8215 64:ff9b:1::/48 spellings other than ::a.b:c.d (e.g. 64:ff9b:1:a9fe:a9:fe00::) were allowed;
+      the whole local-use /48 is now refused, and the dotted 64:ff9b::a.b.c.d spelling is decoded.
+  --  Resend: a 429 naming an exhausted daily/monthly quota is no longer retried (a plain rate-limit 429 still is).
+
+Feature gaps closed
+  G1  Admin hardening: ADMIN_ALLOWED_IPS accepts CIDR ranges; admin sessions are capped in age
+      (ADMIN_SESSION_MAX_HOURS, default 24); optional password step-up (ADMIN_STEP_UP_MINUTES, default off)
+      for refunds, payout record/batch/void, partner anonymise and user status/role changes — POST
+      /api/admin/elevate, X-Admin-Elevation header, password modal in the admin panel (frontend lib/api.js, AdminLayout).
+  G2  Out-of-band owner alerts (ALERT_WEBHOOK_URL, lib/alertWebhook.js); deep health now also checks R2 and the last
+      hour's email delivery, and notes when no alert webhook is configured.
+  G3  toClientScan: allow-list serializer for getScan, with a drift test that forces every new scans column to be
+      classified (lib/mappers.js).
+  G4  (closed upstream in Auth round 6 — email expiry copy now comes from the constants.)
+  G5  DEPLOYMENT.md: backups, restore and provider-outage runbook; new env vars documented.
+
+Not changed (accepted design): G6.

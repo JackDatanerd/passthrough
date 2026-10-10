@@ -36,6 +36,7 @@ api.interceptors.request.use(config => {
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
   config.__hadToken = !!token
+  if (stepUpToken && Date.now() < stepUpUntil && config.headers) config.headers['X-Admin-Elevation'] = stepUpToken
   // Which token this request actually carried, so a late failure can be matched
   // against the session that is current when it lands (see endSession's caller).
   config.__token = token || null
@@ -49,6 +50,36 @@ api.interceptors.request.use(config => {
     config.timeout = LONG_REQUEST_TIMEOUT_MS
   return config
 })
+
+// ── Admin step-up (Worker: ADMIN_STEP_UP_MINUTES, middleware/adminOnly.js) ─────────────────────────
+// A refund / payout / ban answers 403 ADMIN_STEP_UP_REQUIRED until the admin re-enters their password.
+// The password is asked for by whatever registered a prompt (AdminLayout's modal); the elevation token it
+// buys lives in MEMORY only (a reload asks again) and rides on every request as X-Admin-Elevation.
+let stepUpToken = null, stepUpUntil = 0, stepUpPrompt = null, stepUpPending = null
+export function setStepUpPrompt(fn) { stepUpPrompt = fn }
+export function clearStepUp() { stepUpToken = null; stepUpUntil = 0 }
+async function ensureStepUp() {
+  if (stepUpToken && Date.now() < stepUpUntil) return true
+  if (!stepUpPrompt) return false
+  if (!stepUpPending) {
+    stepUpPending = (async () => {
+      for (;;) {
+        const password = await stepUpPrompt()          // null/'' = cancelled
+        if (!password) return false
+        try {
+          const res = await api.post('/admin/elevate', { password }, { __noStepUp: true })
+          const d = res.data?.data
+          stepUpToken = d.elevationToken
+          stepUpUntil = Date.now() + Math.max(0, (d.expiresInSeconds - 5)) * 1000
+          return true
+        } catch (e) {
+          if (e.response?.data?.code !== 'PASSWORD_INCORRECT') return false   // anything else: stop asking
+        }
+      }
+    })().finally(() => { stepUpPending = null })
+  }
+  return stepUpPending
+}
 
 let sessionEnding = false
 
@@ -103,6 +134,14 @@ api.interceptors.response.use(
     // classify, retry or redirect on.
     if (axios.isCancel(err) || !err.config) return Promise.reject(err)
     const config = err.config
+
+    // Step-up: ask once for the password, then replay the request that was refused.
+    if (status === 403 && code === 'ADMIN_STEP_UP_REQUIRED' && !config.__noStepUp && !config.__stepUpTried) {
+      config.__stepUpTried = true
+      clearStepUp()
+      if (await ensureStepUp()) return api.request(config)
+      return Promise.reject(err)
+    }
 
     let verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
     // A failure from a request sent under a session that is no longer the current

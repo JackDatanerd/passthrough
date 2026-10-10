@@ -28,6 +28,17 @@ describe('sendViaResend retries', () => {
     expect(calls).toBe(1)
   })
 
+  it('retries a plain rate-limit 429 but NOT an exhausted daily/monthly quota 429', async () => {
+    let calls = 0
+    global.fetch = async () => { calls++; return calls === 1 ? new Response('{"name":"rate_limit_exceeded"}', { status: 429 }) : new Response('{"id":"e2"}', { status: 200 }) }
+    await expect(sendViaResend(env, msg, { retryDelaysMs: [1, 1] })).resolves.toEqual({ id: 'e2' })
+    expect(calls).toBe(2)
+    calls = 0
+    global.fetch = async () => { calls++; return new Response('{"name":"daily_quota_exceeded"}', { status: 429 }) }
+    await expect(sendViaResend(env, msg, { retryDelaysMs: [1, 1] })).rejects.toThrow(/429/)
+    expect(calls).toBe(1)
+  })
+
   it('a 2xx whose body is not JSON is still a success (the email is already on its way)', async () => {
     global.fetch = async () => new Response('ok', { status: 200 })
     await expect(sendViaResend(env, msg, { retryDelaysMs: [1] })).resolves.toEqual({})

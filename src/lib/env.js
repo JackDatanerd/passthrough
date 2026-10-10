@@ -12,7 +12,7 @@
 // unusable are fatal. Anything merely suspicious is a warning, so a deployment
 // that works today is never taken down by a stricter check.
 
-const { parseIpList } = require('./clientIp')
+const { parseIpAllowList } = require('./clientIp')
 
 const CRITICAL = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET']
 
@@ -68,22 +68,21 @@ function validateEnv(env) {
   }
 
   if (env.NODE_ENV !== 'production')
-    warnings.push(`NODE_ENV is ${env.NODE_ENV ? `"${env.NODE_ENV}"` : 'not set'}, not "production" — fine for local dev, but a deployed Worker without it trusts x-forwarded-for for client IPs and is treated as a non-production target`)
+    warnings.push(`NODE_ENV is ${env.NODE_ENV ? `"${env.NODE_ENV}"` : 'not set'}, not "production" — fine for local dev, but a deployed Worker without it is treated as a non-production target (error detail is not masked, and x-forwarded-for is honoured for client IPs when NODE_ENV is set to anything other than "production")`)
 
   if (env.RATE_LIMIT_BYPASS_IPS && env.NODE_ENV === 'production')
     warnings.push('RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)')
 
-  // ADMIN_ALLOWED_IPS takes single IP addresses (IPv6 is matched by /64). A CIDR range ("203.0.113.0/24") or a
-  // typo matches no request at all — and with the list set, a request that matches nothing is REFUSED, so
-  // one bad entry beside good ones is harmless but a list with no usable entry locks every admin out.
+  // ADMIN_ALLOWED_IPS takes IP addresses and CIDR ranges ("203.0.113.0/24", "2001:db8:abcd::/48"); a bare IPv6
+  // address means its whole /64. A typo matches no request at all — and with the list set, a request that
+  // matches nothing is REFUSED, so one bad entry beside good ones is harmless but a list with no usable
+  // entry locks every admin out.
   if (env.ADMIN_ALLOWED_IPS && String(env.ADMIN_ALLOWED_IPS).trim()) {
-    const { valid, invalid } = parseIpList(env.ADMIN_ALLOWED_IPS)
-    if (invalid.length) {
-      const cidr = invalid.some(x => x.includes('/')) ? ' CIDR ranges are not supported — list each address.' : ''
-      warnings.push(`ADMIN_ALLOWED_IPS has ${invalid.length} entr${invalid.length === 1 ? 'y' : 'ies'} that ${invalid.length === 1 ? 'is' : 'are'} not an IP address (${invalid.join(', ')}) and will never match.${cidr}`)
-    }
+    const { valid, invalid } = parseIpAllowList(env.ADMIN_ALLOWED_IPS)
+    if (invalid.length)
+      warnings.push(`ADMIN_ALLOWED_IPS has ${invalid.length} entr${invalid.length === 1 ? 'y' : 'ies'} that ${invalid.length === 1 ? 'is' : 'are'} not an IP address or CIDR range (${invalid.join(', ')}) and will never match.`)
     if (!valid.length)
-      warnings.push('ADMIN_ALLOWED_IPS has no valid IP address, so EVERY admin request is refused — fix it or `wrangler secret delete ADMIN_ALLOWED_IPS`')
+      warnings.push('ADMIN_ALLOWED_IPS has no valid IP address or range, so EVERY admin request is refused — fix it or `wrangler secret delete ADMIN_ALLOWED_IPS`')
   }
 
   if (env.PROMO_ACTIVE === 'true') {

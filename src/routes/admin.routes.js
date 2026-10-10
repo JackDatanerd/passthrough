@@ -2,6 +2,7 @@ const { Hono } = require('hono')
 const admin = require('../middleware/adminOnly')
 const validateUuidParam = require('../middleware/validateUuidParam')
 const c     = require('../controllers/admin.controller')
+const rl    = require('../middleware/rateLimiter')
 const wh    = require('../controllers/webhooks.controller')
 
 const router = new Hono()
@@ -10,12 +11,15 @@ const router = new Hono()
 // per-route, since there is no non-admin endpoint in this router at all.
 router.use('*', admin)
 
+// Password confirmation that unlocks the money / ban routes for a few minutes (only when ADMIN_STEP_UP_MINUTES > 0).
+router.post('/elevate', rl.auth, c.adminElevate)
+
 router.get('/dashboard', c.adminDashboardStats)
 router.get('/health', c.adminHealth)
 
 router.get('/users',    c.adminListUsers)
 router.get('/users/:id', validateUuidParam(), c.adminGetUserDetail)
-router.patch('/users/:id', validateUuidParam(), c.adminUpdateUser)
+router.patch('/users/:id', admin.stepUp, validateUuidParam(), c.adminUpdateUser)
 
 router.get('/scans',    c.adminListScans)
 router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)

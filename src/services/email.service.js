@@ -22,6 +22,8 @@ const { hitQuota, refundQuota } = rateLimiter
 const { sha256 } = require('../lib/crypto')
 const { canonicalMailbox } = require('../lib/mailbox')
 const { must } = require('../lib/db')
+const { maskEmail } = require('../lib/redact')
+const { webhookUrl, postAlertWebhook } = require('../lib/alertWebhook')
 const { isSuppressedFor } = require('../lib/emailSuppression')
 
 // ── Per-recipient throttle ──────────────────────────────────────────────────
@@ -247,7 +249,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   } else if (!opts.slotReserved && !(await recipientAllowed(env, to, quotaKey))) {
     status = 'throttled'
     error  = 'per-recipient limit reached'
-    console.error(`Email [${template}] to ${to}: throttled (per-recipient limit)`)
+    console.error(`Email [${template}] to ${maskEmail(to)}: throttled (per-recipient limit)`)
   } else {
     // Rendering is INSIDE the try: an unknown template or a throwing variable used to escape
     // send() entirely — no email_logs row, no refund of the throttle slot just spent, and the
@@ -259,7 +261,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
     } catch (err) {
       status = 'failed'
       error  = err.message
-      console.error(`Email [${template}] to ${to}:`, err.message)
+      console.error(`Email [${template}] to ${maskEmail(to)}:`, err.message)
       // The slot is this send's either way: spent here, or reserved by a caller that rotated
       // its link token first (`slotReserved`) and handed the send to us. A failed send reached
       // no inbox, so it gives the slot back (refundRecipientSlot is a no-op for templates
@@ -275,7 +277,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   try {
     must(await supabase.from('email_logs').insert({ to, subject, template, status, error }), 'email_logs insert')
   } catch (logErr) {
-    console.error(`email_logs insert failed for [${template}] to ${to}:`, logErr.message)
+    console.error(`email_logs insert failed for [${template}] to ${maskEmail(to)}:`, logErr.message)
   }
   // Round 11: callers that must tell WHY nothing went out ('suppressed' = the address bounced or
   // reported spam, 'throttled' = its per-recipient cap, 'failed' = the provider) pass an object here.
@@ -754,7 +756,11 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
   let emailed = false
   const dedupeKey = opts && opts.dedupeKey ? `|${String(opts.dedupeKey)}` : ''
   const subjectDigest = (await sha256(`${String(subject)}${dedupeKey}`)).slice(0, 32)
-  const shouldEmail = !!to && await alertEmailAllowed(env, subjectDigest, String(subject), String(message))
+  const hasWebhook = !!webhookUrl(env)
+  const shouldNotify = (!!to || hasWebhook) && await alertEmailAllowed(env, subjectDigest, String(subject), String(message))
+  const shouldEmail = shouldNotify && !!to
+  // Out-of-band copy (ALERT_WEBHOOK_URL) — independent of the email path, so a Resend outage cannot hide it.
+  const webhookSent = shouldNotify && hasWebhook ? await postAlertWebhook(env, String(subject), String(message)) : false
   if (shouldEmail) {
     try {
       await sendViaResend(env, {
@@ -771,8 +777,10 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
       // The dedupe slot was spent BEFORE the send. A send that failed reached nobody, so it must not
       // silence this alert for the next 10 minutes — exactly when the mail provider is the thing that
       // is down. Bounded, so a provider that keeps failing can't turn this into unlimited retries.
-      await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)
+      if (!webhookSent) await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)
     }
+  } else if (shouldNotify && hasWebhook && !webhookSent) {
+    await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)   // nobody was told
   }
   try {
     const supabase = getSupabase(env)

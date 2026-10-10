@@ -206,10 +206,10 @@ describe('validateEnv: silent misconfigurations are named (G3)', () => {
     const set = warn({ OWNER_ALERT_EMAIL: 'me@x.dev', PAYSTACK_CALLBACK_URL: 'https://x.dev/payment/success' }).join('\n')
     expect(set).not.toMatch(/OWNER_ALERT_EMAIL|PAYSTACK_CALLBACK_URL/)
   })
-  it('a CIDR entry in ADMIN_ALLOWED_IPS is named, with the hint, and an all-invalid list says every admin is locked out', () => {
-    const w = warn({ ADMIN_ALLOWED_IPS: '203.0.113.0/24' }).join('\n')
-    expect(w).toMatch(/203\.0\.113\.0\/24/)
-    expect(w).toMatch(/CIDR ranges are not supported/)
+  it('a valid CIDR entry is accepted silently; an all-invalid list says every admin is locked out', () => {
+    expect(warn({ ADMIN_ALLOWED_IPS: '203.0.113.0/24' }).join('\n')).not.toMatch(/ADMIN_ALLOWED_IPS/)
+    const w = warn({ ADMIN_ALLOWED_IPS: '203.0.113.0/99' }).join('\n')
+    expect(w).toMatch(/203\.0\.113\.0\/99/)
     expect(w).toMatch(/EVERY admin request is refused/)
   })
   it('one bad entry beside a good one warns but does not claim a lockout', () => {
@@ -231,8 +231,9 @@ describe('adminOnly: the allow-list only matches real addresses (G3)', () => {
     expect(allowed({ ADMIN_ALLOWED_IPS: '2001:db8:1:2::1' }, '2001:db8:1:2:ffff::9')).toBe(true)
     expect(allowed({ ADMIN_ALLOWED_IPS: '1.2.3.4' }, '1.2.3.5')).toBe(false)
   })
-  it('a CIDR entry matches nothing (it is not compared as a string) and unset allows all', () => {
-    expect(allowed({ ADMIN_ALLOWED_IPS: '1.2.3.0/24' }, '1.2.3.4')).toBe(false)
+  it('a CIDR entry matches its range (round 4) and unset allows all', () => {
+    expect(allowed({ ADMIN_ALLOWED_IPS: '1.2.3.0/24' }, '1.2.3.4')).toBe(true)
+    expect(allowed({ ADMIN_ALLOWED_IPS: '1.2.3.0/24' }, '1.2.4.4')).toBe(false)
     expect(allowed({ ADMIN_ALLOWED_IPS: '' }, 'unknown')).toBe(true)
     expect(allowed({}, 'unknown')).toBe(true)
   })

@@ -59,7 +59,7 @@ async function anonTokenMatches(scan, presented) {
   if (scan.anonExpiresAt && Date.parse(scan.anonExpiresAt) < Date.now()) return false
   return cryptoLib.timingSafeEqual(scan.anonTokenHash, await hashAnonToken(presented))
 }
-const { scanRowToCamel, userRowToCamel } = require('../lib/mappers')
+const { scanRowToCamel, toClientScan, userRowToCamel } = require('../lib/mappers')
 const atsService    = require('../services/ats.service')
 const claudeService  = require('../services/claude.service')
 const resumeParser   = require('../services/resume.parser')
@@ -739,8 +739,8 @@ async function getScan(ctx) {
   // never ride out in the response body. (Scan/ATS pass: `...safe` leaked it.)
   // Round 3 (B7): the job lease, the credit-round marker and the error-recovery counter are
   // server bookkeeping - they rode out in `...safe`. fix_ats_report is re-shaped below (G3).
-  const { fullAtsReport, fixAtsReport, resumePath, resumeAtsPath, resumePdfPath, resumeHashHistory, fixPaymentId, anonTokenHash,
-          fixJobLockUntil, fixCreditRound, fixErrorRecoveries, ...safe } = scan
+  const { fullAtsReport, fixAtsReport, resumeAtsPath, resumePdfPath } = scan
+  const safe = toClientScan(scan)   // allow-list (lib/mappers.js) — a new scans column never ships by default
   const badgeEligible = scan.atsScore != null ? scan.atsScore >= c.ATS_BADGE_THRESHOLD : null
   const atsDetail = buildAtsDetail(fullAtsReport)
   // AUDIT FIX (Auth/Scan round): the storage keys are (rightly) not exposed —

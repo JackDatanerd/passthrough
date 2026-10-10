@@ -179,6 +179,13 @@ function isPrivateIPv6(hostname) {
   //    `64:ff9b:1::a9fe:a9fe` both encode 169.254.169.254.
   const nat64 = h.match(/^64:ff9b(?::1)?::([0-9a-f]{1,4}):([0-9a-f]{1,4})$/)
   if (nat64) return isPrivateIPv4(decodeEmbeddedIPv4Hex(nat64[1], nat64[2]))
+  const nat64Dotted = h.match(/^64:ff9b::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/)
+  if (nat64Dotted) return isPrivateIPv4(nat64Dotted[1])
+  // AUDIT FIX (Cross-cutting infra): RFC 8215's local-use prefix is a /48 whose embedded IPv4 sits at a
+  // different bit offset for every suffix length (RFC 6052 §2.2), so the /96-style match above caught only
+  // one spelling — `64:ff9b:1:a9fe:a9:fe00::` (169.254.169.254) walked through. The prefix is local-use by
+  // definition — never a public address — so the whole /48 is refused rather than decoded.
+  if (/^64:ff9b:1:/.test(h)) return true
 
   return false
 }

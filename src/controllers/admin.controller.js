@@ -21,6 +21,7 @@ const { logAdminAction } = require('../lib/adminAudit')
 const { purgeBadgeCache } = require('../lib/badgeCache')
 const { computeHealth } = require('../lib/health')
 const emailSuppression = require('../lib/emailSuppression')
+const { mintElevation, stepUpMinutes } = require('../middleware/adminOnly')
 
 // Shared page-param parsing — every list endpoint here is paginated the
 // same way so the frontend can use one generic table component for all of
@@ -653,7 +654,31 @@ async function adminBackfillPdfHashes(ctx) {
   } })
 }
 
+// POST /api/admin/elevate { password } — step-up for refunds, payouts and bans (middleware/adminOnly.js `stepUp`).
+// Cross-cutting infra round 4, G1. A wrong password answers 403 (never 401: the SPA signs a person out on any
+// 401 that carried a token). Only exists when ADMIN_STEP_UP_MINUTES > 0.
+async function adminElevate(ctx) {
+  if (!stepUpMinutes(ctx.env)) return ctx.json({ success: false, message: 'Step-up confirmation is not enabled.', code: 'STEP_UP_DISABLED' }, 404)
+  let body = null
+  try { body = await ctx.req.json() } catch { /* handled below */ }
+  const password = body && typeof body.password === 'string' ? body.password : ''
+  if (!password || password.length > 1024) return ctx.json({ success: false, message: 'Enter your password.' }, 400)
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('users').select('password_hash').eq('id', user.id).maybeSingle()
+  if (error) throw error
+  const { comparePassword } = require('./auth.controller')
+  if (!row || !row.password_hash || !(await comparePassword(password, row.password_hash)).ok) {
+    await logAdminAction(ctx, supabase, 'admin.step_up_failed', 'user', user.id, {})
+    return ctx.json({ success: false, message: 'That password is not correct.', code: 'PASSWORD_INCORRECT' }, 403)
+  }
+  const minted = await mintElevation(ctx.env, user, ctx.get('sessionId'))
+  await logAdminAction(ctx, supabase, 'admin.step_up', 'user', user.id, { minutes: stepUpMinutes(ctx.env) })
+  return ctx.json({ success: true, data: { elevationToken: minted.token, expiresInSeconds: minted.expiresInSeconds } })
+}
+
 module.exports = {
+  adminElevate,
   adminBackfillPdfHashes,
   adminRequeueFix,
   adminDashboardStats,

@@ -394,7 +394,7 @@ describe('route + limiter wiring', () => {
     expect(limiter).toMatch(/keyPrefix: 'rl:partnerprefs'/)
   })
   it('new endpoints are registered: admin batch, partner conversions, public program terms', () => {
-    expect(routes).toMatch(/post\(\s*'\/payouts\/batch',\s*admin, c\.adminRecordPayoutBatch/)
+    expect(routes).toMatch(/post\(\s*'\/payouts\/batch',\s*admin, admin\.stepUp, c\.adminRecordPayoutBatch/)
     expect(routes).toMatch(/get\(\s*'\/conversions',\s*rl\.partnerRead,\s*c\.getPartnerConversions/)
     expect(routes).toMatch(/get\(\s*'\/program',\s*rl\.partnerRead,\s*c\.getProgramTerms/)
     // literal paths must come before the '/:id' routes so they are never parsed as an id

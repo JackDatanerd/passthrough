@@ -311,7 +311,7 @@ describe('routes and templates', () => {
   it('/recover-links is public with its own limiter bucket; /:id/anonymize is admin-only', () => {
     const routes = read('../src/routes/partners.routes.js')
     expect(routes).toMatch(/router\.post\('\/recover-links', rl\.partnerRecover, c\.recoverPartnerLinks\)/)
-    expect(routes).toMatch(/router\.post\(\s*'\/:id\/anonymize',\s+admin, validateUuidParam\(\), c\.adminAnonymizePartner\)/)
+    expect(routes).toMatch(/router\.post\(\s*'\/:id\/anonymize',\s+admin, admin\.stepUp, validateUuidParam\(\), c\.adminAnonymizePartner\)/)
   })
   it('the recovery email template exists and carries only the dashboard link', () => {
     const { render } = require('../src/templates/emails.js')

@@ -48,6 +48,7 @@ describe('ssrfGuard — must BLOCK', () => {
     'IPv4-mapped IPv6': ['http://[::ffff:127.0.0.1]/', 'http://[::ffff:a9fe:a9fe]/', 'http://[::ffff:10.0.0.1]/'],
     'IPv4-translated (SIIT) IPv6': ['http://[::ffff:0:7f00:1]/'],
     'NAT64 embedding a private IPv4': ['http://[64:ff9b::a9fe:a9fe]/'],
+    'RFC 8215 /48 spelling of 169.254.169.254': ['http://[64:ff9b:1:a9fe:a9:fe00::]/', 'http://[64:ff9b:1:7f00:0:100::]/'],
     '6to4 / Teredo / documentation IPv6': ['http://[2002:7f00:1::]/', 'http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/', 'http://[2001:db8::1]/'],
     // fe80::/10 spans fe80–febf; only fe80::/16 used to be blocked.
     'full link-local fe80::/10': ['http://[fe80::1]/', 'http://[fe90::1]/', 'http://[fea0::1]/', 'http://[febf::1]/'],

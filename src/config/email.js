@@ -57,7 +57,10 @@ async function sendViaResend(env, { from, to, subject, html, text, headers }, { 
       // 409 concurrent_idempotent_requests: our previous attempt (same Idempotency-Key) is still in
       // flight at Resend — typically after a client-side timeout. Resend documents it as safe to
       // retry; the retry then returns the original result instead of sending a second email.
-      retryable = res.status === 429 || res.status >= 500
+      // A 429 that names an exhausted daily/monthly QUOTA will not clear in two seconds — retrying only
+      // delays the failure being reported. A plain rate-limit 429 (the burst case above) still retries.
+      const quotaExhausted = res.status === 429 && /(daily|monthly)_quota_exceeded/i.test(body)
+      retryable = (res.status === 429 && !quotaExhausted) || res.status >= 500
         || (res.status === 409 && /concurrent_idempotent_requests/i.test(body))
       const hinted = retryAfterMs(res)
       if (hinted !== null) waitMs = Math.max(waitMs ?? 0, hinted)

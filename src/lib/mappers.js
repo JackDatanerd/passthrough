@@ -158,6 +158,37 @@ function scanRowToCamel(row) {
   }
 }
 
+// ── The scan "as the client sees it" ─────────────────────────────────────────────────────────────────
+// AUDIT FIX (Cross-cutting infra, G3): getScan answered with `{ ...safe }` where `safe` was whatever was
+// left after a hand-kept list of destructured-away secrets — so a column added to scanRowToCamel later
+// shipped to the browser by default. users already had one serializer with a drift test (lib/authUser.js);
+// scans now do too. Every key scanRowToCamel produces MUST be named in exactly one of the two lists below
+// (tests/mappers.scanClient.test.js fails otherwise), so a new column forces a decision instead of leaking.
+const SERVER_ONLY_SCAN_FIELDS = [
+  'fullAtsReport', 'fixAtsReport',                       // re-shaped by buildAtsDetail before they leave
+  'resumePath', 'resumeAtsPath', 'resumePdfPath',        // storage keys
+  'resumeHashHistory', 'fixPaymentId',
+  'anonTokenHash',                                       // capability secret at rest (migration 0045)
+  'fixJobLockUntil', 'fixCreditRound', 'fixErrorRecoveries',   // job bookkeeping (migrations 0026 / 0057)
+]
+const CLIENT_SCAN_FIELDS = [
+  'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',
+  'fixAtsScore', 'rewriteFailed', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
+  'contentScore', 'scanCompletedAt', 'candidateFirstName', 'jobTitle', 'fixPurchased', 'fixTier', 'fixGeneratedAt',
+  'coverLetterText', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
+  'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',
+  'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'integrityScore', 'userId',
+  'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
+  'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt',
+]
+// Allow-list: only CLIENT_SCAN_FIELDS get out, whatever else scanRowToCamel grows.
+function toClientScan(scan) {
+  if (!scan) return scan
+  const out = {}
+  for (const k of CLIENT_SCAN_FIELDS) if (k in scan) out[k] = scan[k]
+  return out
+}
+
 function paymentRowToCamel(row) {
   if (!row) return row
   return {
@@ -403,7 +434,7 @@ function leadRowToCamel(row) {
 }
 
 module.exports = {
-  userRowToCamel, scanRowToCamel, paymentRowToCamel, camelToSnake,
+  userRowToCamel, scanRowToCamel, toClientScan, SERVER_ONLY_SCAN_FIELDS, CLIENT_SCAN_FIELDS, paymentRowToCamel, camelToSnake,
   partnerRowToCamel, payoutRowToCamel, referralCodeRowToCamel, commissionLedgerRowToCamel,
   leadRowToCamel,
   PARTNER_FIELD_MAP
