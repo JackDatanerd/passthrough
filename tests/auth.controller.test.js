@@ -226,6 +226,7 @@ async function setup(opts = {}) {
     // `undefined` through instead of catching a real wiring mistake.
     get: k => ({ user: 'sessionUser' in opts ? opts.sessionUser : { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com' }, tokenExp: opts.tokenExp, sessionId: opts.sessionId, sessionExpiresAtMs: opts.sessionExpiresAtMs, authError: opts.authError }[k]),
     req: {
+      method: over.method ?? 'GET',
       json: async () => (over.body ?? {}),
       query: k => (over.query ?? {})[k],
       param: k => (over.params ?? {})[k],
@@ -1767,7 +1768,9 @@ describe('confirmEmailChange — must come from the account owner\'s own session
   it('a failed session lookup on our side is a 5xx, not "sign in"', async () => {
     const row = await pending()
     t = await setup({ userRow: row, pendingLookupRow: row, sessionUser: null, authError: 'unavailable' })
-    await expect(t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))).rejects.toMatchObject({ status: 503 })
+    const r503 = await t.mod.confirmEmailChange(t.c({ body: { token: RAW3 } }))
+    expect(r503.status).toBe(503)
+    expect(r503.body.message).toMatch(/try again/i)
     expect(t.state.updates).toHaveLength(0)
   })
   it('the owner\'s own session completes it, and the OLD address is told it happened', async () => {
@@ -2107,5 +2110,26 @@ describe('writes that race deleteAccount\'s scrub', () => {
     expect(res.status).toBe(401)
     expect(res.body.code).toBe('USER_NOT_FOUND')
     expect(t.state.rpcCalls.filter(r => r.name === 'scrub_account_data')).toEqual([{ name: 'scrub_account_data', args: { p_user_id: 'u1' } }])
+  })
+})
+
+describe('Auth round 6 — tokens travel in a POST body, not the URL (B1)', () => {
+  it('checkResetToken and verifyEmail read the token from a POST body', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    expect((await t.mod.checkResetToken(t.c({ method: 'POST', body: { token: 'raw' } }))).body.data.valid).toBe(true)
+    // a POST with the token only in the query string is NOT honoured (that is the leak being closed)
+    expect((await t.mod.checkResetToken(t.c({ method: 'POST', body: {}, query: { token: 'raw' } }))).body.data.valid).toBe(false)
+    t.restore()
+    t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false }) })
+    expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'raw' } }))).status).toBe(200)
+  })
+  it('a POST with no token / a non-string token is a 400, not a crash', async () => {
+    t = await setup()
+    expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: {} }))).status).toBe(400)
+    expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: { $ne: 1 } } }))).status).toBe(400)
+  })
+  it('the GET form still works for a cached older frontend', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
+    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(true)
   })
 })

@@ -22,7 +22,8 @@ export default function VerifyEmail() {
 
   const verify = useCallback(() => {
     setStatus('loading'); setDetail('')
-    api.get(`/auth/verify-email?token=${encodeURIComponent(token)}`)
+    // POST with the token in the body: a token in the URL ends up in server access logs.
+    api.post('/auth/verify-email', { token })
       .then(() => {
         setStatus('success')
         // If this browser happens to already be logged in (e.g. the link

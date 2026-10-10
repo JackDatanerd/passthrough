@@ -99,25 +99,33 @@ async function lockoutFail(store, key, ip, minDistinctIps = LOCKOUT_MIN_DISTINCT
   let failCount = 0
   let ips = []
   let wasLocked = false
+  let activeLockedUntil = null
   try {
     if (raw) {
       const parsed = JSON.parse(raw)
       failCount = parsed.failCount || 0
       ips = Array.isArray(parsed.ips) ? parsed.ips : []
       wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > now)
+      if (wasLocked) activeLockedUntil = parsed.lockedUntil
       // A lock that already ran its course is stale history, not an ongoing
       // attack: count from zero so the distinct-client bar must be cleared again.
       if (parsed.lockedUntil && parsed.lockedUntil <= now) { failCount = 0; ips = [] }
     }
-  } catch (_) { failCount = 0; ips = []; wasLocked = false }
+  } catch (_) { failCount = 0; ips = []; wasLocked = false; activeLockedUntil = null }
   failCount += 1
 
   if (!ips.includes(ip)) ips.push(ip)
   if (ips.length > LOCKOUT_MAX_TRACKED_IPS) ips = ips.slice(ips.length - LOCKOUT_MAX_TRACKED_IPS)
 
-  const lockedUntil = (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= minDistinctIps)
-    ? now + LOCKOUT_MINUTES * 60 * 1000
-    : null
+  // AUDIT FIX (Auth round 6, B3): a failure that lands while a lock is ALREADY running (only a request from
+  // the owner's own network can reach this — everyone else is refused before it) used to re-arm the full
+  // window, so anyone sharing that network could keep the account locked for every other network forever.
+  // A running lock keeps its original end.
+  const lockedUntil = activeLockedUntil
+    ? activeLockedUntil
+    : (failCount >= LOCKOUT_MAX_CONSECUTIVE_FAILURES && ips.length >= minDistinctIps)
+      ? now + LOCKOUT_MINUTES * 60 * 1000
+      : null
 
   await store.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
     expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)

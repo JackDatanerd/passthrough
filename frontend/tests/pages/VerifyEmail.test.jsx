@@ -13,6 +13,10 @@ import api from '../../src/lib/api'
 import VerifyEmail from '../../src/pages/VerifyEmail'
 
 const refreshUser = vi.fn()
+// Round 6: the token travels in a POST body (not the URL), so verification and resend are both api.post —
+// told apart here by URL.
+const verifyApi = vi.fn()
+const resendApi = vi.fn()
 function renderPage(user = null, url = '/verify-email?token=abc') {
   return render(
     <MemoryRouter initialEntries={[url]}>
@@ -20,39 +24,43 @@ function renderPage(user = null, url = '/verify-email?token=abc') {
     </MemoryRouter>)
 }
 const httpErr = (status, message) => Object.assign(new Error('x'), { response: { status, data: { message } } })
-beforeEach(() => { cleanup(); vi.clearAllMocks() })
+beforeEach(() => {
+  cleanup(); vi.clearAllMocks()
+  verifyApi.mockReset(); resendApi.mockReset()
+  api.post.mockImplementation((url, ...rest) => (url === '/auth/verify-email' ? verifyApi(url, ...rest) : resendApi(url, ...rest)))
+})
 
 describe('VerifyEmail', () => {
   it('success refreshes the cached user', async () => {
-    api.get.mockResolvedValue({ data: { success: true } })
+    verifyApi.mockResolvedValue({ data: { success: true } })
     renderPage()
     await screen.findByText('Email verified')
     expect(refreshUser).toHaveBeenCalledTimes(1)
   })
   it('a 400 means the link is dead; signed-out people are pointed at sign-in', async () => {
-    api.get.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
+    verifyApi.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
     renderPage(null)
     await screen.findByText('Verification failed')
     expect(screen.getAllByRole('link', { name: /sign in/i }).some(a => a.getAttribute('href') === '/login?next=%2Fdashboard')).toBe(true)
     expect(screen.queryByRole('button', { name: /new link/i })).toBeNull()
   })
   it('a signed-in person can ask for a new link right there', async () => {
-    api.get.mockRejectedValue(httpErr(400, 'x'))
-    api.post.mockResolvedValue({ data: { success: true } })
+    verifyApi.mockRejectedValue(httpErr(400, 'x'))
+    resendApi.mockResolvedValue({ data: { success: true } })
     renderPage({ id: 'u1' })
     await userEvent.setup().click(await screen.findByRole('button', { name: /send me a new link/i }))
-    expect(api.post).toHaveBeenCalledWith('/auth/resend-verification')
+    expect(resendApi).toHaveBeenCalledWith('/auth/resend-verification')
     await screen.findByText(/new link sent/i)
   })
   it('a failed resend shows the server message', async () => {
-    api.get.mockRejectedValue(httpErr(400, 'x'))
-    api.post.mockRejectedValue(httpErr(429, 'Too many attempts.'))
+    verifyApi.mockRejectedValue(httpErr(400, 'x'))
+    resendApi.mockRejectedValue(httpErr(429, 'Too many attempts.'))
     renderPage({ id: 'u1' })
     await userEvent.setup().click(await screen.findByRole('button', { name: /send me a new link/i }))
     expect((await screen.findByRole('alert')).textContent).toMatch(/too many attempts/i)
   })
   it('an older link answering 400 while the account is already verified says so, instead of "Verification failed"', async () => {
-    api.get.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
+    verifyApi.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
     refreshUser.mockResolvedValue({ id: 'u1', emailVerified: true })
     renderPage({ id: 'u1' })
     await screen.findByText('Email already verified')
@@ -60,7 +68,7 @@ describe('VerifyEmail', () => {
     expect(screen.queryByRole('button', { name: /new link/i })).toBeNull()
   })
   it('a 400 for a signed-in account that is NOT verified still offers a new link', async () => {
-    api.get.mockRejectedValue(httpErr(400, 'x'))
+    verifyApi.mockRejectedValue(httpErr(400, 'x'))
     refreshUser.mockResolvedValue({ id: 'u1', emailVerified: false })
     renderPage({ id: 'u1' })
     await screen.findByText('Verification failed')
@@ -68,19 +76,25 @@ describe('VerifyEmail', () => {
   })
   it.each([[429, 'Too many attempts.'], [503, 'Down.'], [undefined, undefined]])(
     'status %s is NOT reported as an invalid link — it offers a retry that works', async (status, message) => {
-      api.get.mockRejectedValueOnce(status ? httpErr(status, message) : new Error('Network Error'))
-      api.get.mockResolvedValueOnce({ data: { success: true } })
+      verifyApi.mockRejectedValueOnce(status ? httpErr(status, message) : new Error('Network Error'))
+      verifyApi.mockResolvedValueOnce({ data: { success: true } })
       renderPage()
       expect(await screen.findByText(/couldn't verify just now/i)).toBeInTheDocument()
       expect(screen.queryByText('Verification failed')).toBeNull()
       await userEvent.setup().click(screen.getByRole('button', { name: /try again/i }))
       await screen.findByText('Email verified')
-      expect(api.get).toHaveBeenCalledTimes(2)
+      expect(verifyApi).toHaveBeenCalledTimes(2)
     })
+  it('sends the token in the POST body, never in the URL', async () => {
+    verifyApi.mockResolvedValue({ data: { success: true } })
+    renderPage(null, '/verify-email?token=a%2Bb')
+    await screen.findByText('Email verified')
+    expect(verifyApi).toHaveBeenCalledWith('/auth/verify-email', { token: 'a+b' })
+  })
   it('no token at all is a dead link without calling the API', async () => {
     renderPage(null, '/verify-email')
     await screen.findByText('Verification failed')
-    expect(api.get).not.toHaveBeenCalled()
+    expect(verifyApi).not.toHaveBeenCalled()
   })
 })
 
@@ -88,8 +102,8 @@ describe('VerifyEmail', () => {
 // could only be re-requested by reloading. It now stays, counting down.
 describe('VerifyEmail — resend timer', () => {
   it('keeps the resend button after a send, disabled with a countdown', async () => {
-    api.get.mockRejectedValue(Object.assign(new Error('x'), { response: { status: 400, data: { message: 'bad' } } }))
-    api.post.mockResolvedValue({ data: { success: true } })
+    verifyApi.mockRejectedValue(Object.assign(new Error('x'), { response: { status: 400, data: { message: 'bad' } } }))
+    resendApi.mockResolvedValue({ data: { success: true } })
     const u = userEvent.setup()
     render(
       <MemoryRouter initialEntries={['/verify-email?token=dead']}>

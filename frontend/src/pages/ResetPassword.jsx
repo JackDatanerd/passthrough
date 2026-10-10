@@ -30,7 +30,8 @@ export default function ResetPassword() {
   useEffect(() => {
     if (!token) return
     let cancelled = false
-    api.get(`/auth/reset-password/validate?token=${encodeURIComponent(token)}`)
+    // POST with the token in the body — a live reset credential must not sit in a URL that gets logged.
+    api.post('/auth/reset-password/validate', { token })
       .then(res => { if (!cancelled) setTokenStatus(res.data?.data?.valid ? 'valid' : 'invalid') })
       .catch(() => { if (!cancelled) setTokenStatus('valid') })
     return () => { cancelled = true }

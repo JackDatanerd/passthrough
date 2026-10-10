@@ -269,6 +269,10 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
 // Email links use FRONTEND_URL — NOT the API URL.
 // VerifyEmail.jsx and ResetPassword.jsx read token from URL and call the API.
 
+// AUDIT FIX (Auth round 6, B8): the link lifetimes printed in these emails were typed into the templates,
+// separately from the constants that actually set them. The sender now passes the real value.
+const hoursLabel = h => `${h} hour${h === 1 ? '' : 's'}`
+
 async function sendWelcome(env, supabase, email, name) {
   return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name })
 }
@@ -276,14 +280,16 @@ async function sendWelcome(env, supabase, email, name) {
 async function sendVerification(env, supabase, email, name, rawToken, opts) {
   return send(env, supabase, email, 'Verify your Passthrough email', 'email_verification', {
     NAME:       name,
-    VERIFY_URL: `${env.FRONTEND_URL}/verify-email?token=${rawToken}`
+    VERIFY_URL: `${env.FRONTEND_URL}/verify-email?token=${rawToken}`,
+    EXPIRY:     hoursLabel(c.EMAIL_VERIFY_EXPIRY_HOURS)
   }, opts)
 }
 
 async function sendPasswordReset(env, supabase, email, name, rawToken, opts) {
   return send(env, supabase, email, 'Reset your Passthrough password', 'password_reset', {
     NAME:      name,
-    RESET_URL: `${env.FRONTEND_URL}/reset-password?token=${rawToken}`
+    RESET_URL: `${env.FRONTEND_URL}/reset-password?token=${rawToken}`,
+    EXPIRY:    hoursLabel(c.RESET_TOKEN_EXPIRY_HOURS)
   }, opts)
 }
 
@@ -309,7 +315,8 @@ async function sendPasswordChanged(env, supabase, email, name) {
 async function sendEmailChangeConfirmation(env, supabase, newEmail, name, rawToken, opts) {
   return send(env, supabase, newEmail, 'Confirm your new Passthrough email', 'email_change_confirm', {
     NAME:        name,
-    CONFIRM_URL: `${env.FRONTEND_URL}/confirm-email-change?token=${rawToken}`
+    CONFIRM_URL: `${env.FRONTEND_URL}/confirm-email-change?token=${rawToken}`,
+    EXPIRY:      hoursLabel(c.EMAIL_TOKEN_EXPIRY_HOURS)
   }, opts)
 }
 

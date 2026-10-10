@@ -572,3 +572,22 @@ describe('fixQuote limiter', () => {
     expect((await hit(rl.fixQuote, asUser(env, 'u2'))).passed).toBe(true)
   })
 })
+
+describe('authRegister refund (Auth round 6) — a successful sign-up gives its slot back, within a tighter cap', () => {
+  async function attempt(env, status) {
+    const c = ctx({ env, method: 'POST', path: '/api/auth/register' })
+    let reached = false
+    await rl.authRegister(c, async () => { reached = true; c.res = { status } })
+    return reached
+  }
+  it('five successful sign-ups from one address do not eat the shared bucket', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 15; i++) expect(await attempt(env, 201)).toBe(true)
+    expect(await attempt(env, 201)).toBe(false)   // 10 slots + 5 refunds, then the cap holds
+  })
+  it('failed sign-ups (4xx) still count', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 10; i++) expect(await attempt(env, 400)).toBe(true)
+    expect(await attempt(env, 400)).toBe(false)
+  })
+})

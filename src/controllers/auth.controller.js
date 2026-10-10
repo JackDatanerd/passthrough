@@ -590,6 +590,17 @@ async function getMe(c) {
   return c.json({ success: true, data: { user, ...(token ? { token } : {}) } })
 }
 
+// AUDIT FIX (Auth round 6, B5): the unknown-email branch of forgotPassword reserved a slot under a fresh
+// random address on every request, and each distinct key is its own Durable Object (storage + alarm), so
+// junk requests grew the namespace without bound. The result of that reservation is never used for an
+// unknown email — only its latency matters — so a small fixed set of keys does the same job. Spread
+// across buckets so one hot key does not serialise every junk request.
+const TIMING_BUCKETS = 16
+function timingEqualizerAddress() {
+  const n = cryptoLib.randomToken(1)
+  return `timing-${parseInt(n, 16) % TIMING_BUCKETS}@timing.invalid`
+}
+
 // POST /api/auth/forgot-password
 async function forgotPassword(c) {
   const body = await c.req.json()
@@ -636,7 +647,7 @@ async function forgotPassword(c) {
 
   let allowed = false
   try {
-    allowed = await emailService.reserveRecipientSlot(c.env, user ? email : `${cryptoLib.uuid()}@timing.invalid`, 'password_reset')
+    allowed = await emailService.reserveRecipientSlot(c.env, user ? email : timingEqualizerAddress(), 'password_reset')
   } catch (e) {
     console.error('forgotPassword slot reservation:', e.message)
   }
@@ -769,14 +780,28 @@ async function resetPassword(c) {
   return c.json({ success: true, message: 'Password reset. Please log in.' })
 }
 
-// GET /api/auth/reset-password/validate?token=xxx
+// AUDIT FIX (Auth round 6, B1): the reset and verification tokens used to travel only in a GET query
+// string, which lands in Workers Logs (observability is on) — a live reset credential in a log line.
+// Both endpoints now also accept POST with the token in the body, which is what the SPA uses. The GET form
+// is kept only so a cached older frontend bundle keeps working through a deploy; remove it afterwards.
+async function linkToken(c) {
+  if (c.req.method === 'POST') {
+    try {
+      const body = await c.req.json()
+      return body && typeof body.token === 'string' ? body.token : undefined
+    } catch { return undefined }
+  }
+  return c.req.query('token')
+}
+
+// GET|POST /api/auth/reset-password/validate
 // FEATURE GAP CLOSED (Auth/Scan round): the reset page couldn't tell a dead
 // link from a live one until AFTER the person had typed and submitted a new
 // password — the worst place to learn "expired". Read-only and side-effect
 // free; the answer is only about the caller's own 256-bit token, so it
 // reveals nothing about any account.
 async function checkResetToken(c) {
-  const token = c.req.query('token')
+  const token = await linkToken(c)
   if (!token) return c.json({ success: true, data: { valid: false } })
   const supabase = getSupabase(c.env)
   const stored = await cryptoLib.sha256(token)
@@ -788,9 +813,9 @@ async function checkResetToken(c) {
   return c.json({ success: true, data: { valid: !!row } })
 }
 
-// GET /api/auth/verify-email?token=xxx
+// GET|POST /api/auth/verify-email (token in the POST body — see linkToken)
 async function verifyEmail(c) {
-  const token = c.req.query('token')
+  const token = await linkToken(c)
   if (!token) return c.json({ success: false, message: 'Token required.' }, 400)
 
   const supabase = getSupabase(c.env)
@@ -1316,8 +1341,11 @@ async function confirmEmailChange(c) {
   // else signs in first and opens the link again — nothing is consumed here).
   // optionalAuth already resolved the Authorization header app-wide.
   if (c.get('authError') === 'unavailable') {
-    // Our lookup failed, not their credentials: a 5xx, never "sign in".
-    throw Object.assign(new Error('Could not verify the signed-in session.'), { status: 503, expose: true })
+    // Our lookup failed, not their credentials: a 5xx, never "sign in". Answered directly (not thrown): the
+    // error handler masks a thrown 5xx as "An error occurred." and sends no Retry-After, and nothing here
+    // has been consumed, so the page can honestly say "try again".
+    return c.json({ success: false, message: 'We couldn\'t check your sign-in just now. Your link has not been used — please try again in a moment.' },
+      503, { 'Retry-After': '5' })
   }
   const caller = c.get('user')
   if (!caller || caller.id !== user.id) {

@@ -1,0 +1,21 @@
+Auth — independent audit round 6
+================================
+Apply supabase/migrations/0066_auth_round6.sql (EXPECTED_SCHEMA_VERSION is now 66). Deploy the Worker before the
+frontend: the SPA now POSTs the reset / verification tokens; the old GET routes stay for cached bundles.
+
+B1  Reset and verification tokens no longer travel in a URL (Workers Logs recorded them).
+    POST /auth/reset-password/validate and POST /auth/verify-email take { token }; the GET forms are deprecated.
+B2  TurnstileWidget: a blocked / failed Cloudflare script now shows a message and a "try again" instead of an empty box
+    under "complete the security check below".
+B3  Lockout: a failure while a lock is already running no longer re-arms the full window.
+B4  Migration 0066: partial indexes on users.reset_token / email_verify_token / email_change_done_token.
+B5  forgotPassword: the unknown-email timing equaliser uses 16 fixed keys instead of a new Durable Object per request.
+B6  ConfirmEmailChange: 429 / 5xx / no response -> "Couldn't confirm just now" with Try again (link not consumed);
+    the 503 for a failed session lookup now carries a real message and Retry-After.
+B7  Lockout email: reset is available immediately (and lifts the lock) — no longer says to wait.
+B8  Link-expiry text in the verify / reset / email-change emails comes from the constants ({{EXPIRY}}).
+G9  rl.authRegister: a successful sign-up refunds its slot in the shared /auth bucket (max 5 refunds per window).
+
+Tests: tests/auth.round6.test.js, additions to auth.controller / rateLimiter tests, frontend ConfirmEmailChange.round6,
+TurnstileWidget and VerifyEmail / ResetPassword updated for POST. Full suite 232 files / 3995 tests green; lint and
+frontend build clean.

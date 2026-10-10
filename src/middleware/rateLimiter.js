@@ -461,6 +461,18 @@ const authLogin = makeLimiter({
   refund: { maxRefunds: 20, on: 'success' }
 })
 
+// POST /auth/register. Same shared bucket, but a sign-up that SUCCEEDED gives its slot back, bounded tighter
+// than login's refunds. AUDIT FIX (Auth round 6, G9): register, forgot, reset and every password check shared
+// ten attempts per 15 minutes per IP and only login was refunded — on carrier-grade NAT (this app's customer
+// base is mobile-heavy) the eleventh person to sign up from one address was told "Too many attempts" though
+// nobody had done anything wrong. Five refunds keeps the worst case at 15 sign-ups per window per address,
+// with Turnstile and the per-recipient email limits still in front of abuse.
+const authRegister = makeLimiter({
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
+  message: msg('Too many attempts.'),
+  refund: { maxRefunds: 5, on: 'success' }
+})
+
 const authVerify = makeLimiter({
   windowSeconds: 15 * 60, max: 20, keyPrefix: 'rl:authverify',
   message: msg('Too many attempts. Please wait a few minutes.')
@@ -923,7 +935,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

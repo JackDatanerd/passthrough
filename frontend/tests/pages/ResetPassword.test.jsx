@@ -28,8 +28,9 @@ async function submit() {
 }
 beforeEach(() => {
   cleanup(); vi.clearAllMocks(); localStorage.clear()
-  api.get.mockResolvedValue({ data: { data: { valid: true } } })
-  api.post.mockResolvedValue({ data: { success: true } })
+  api.post.mockImplementation(async url => (url === '/auth/reset-password/validate'
+    ? { data: { data: { valid: true } } }
+    : { data: { success: true } }))
 })
 
 describe('ResetPassword — a session this browser still holds', () => {

@@ -414,6 +414,11 @@ as Paystack's (Admin → Webhooks → Source). **Apply `supabase/migrations/0065
 Worker** (re-drive counter, clears stored card tokens, trims stored dispute payloads). Without it the Worker still runs; the
 hourly re-drive falls back to its old budget.
 
+**Auth round 6.** **Apply `supabase/migrations/0066_auth_round6.sql`** (partial indexes on the reset / verification /
+email-change token columns) — the Worker runs without it, but those unauthenticated lookups scan the users table until it
+is applied. The SPA now sends the reset and verification tokens in a POST body instead of the URL (so they stay out of
+Workers Logs). Deploy the Worker first: the old GET routes stay for cached frontends and can be removed once they age out.
+
 ---
 
 ## 6. Deploy the Frontend (Cloudflare Pages)

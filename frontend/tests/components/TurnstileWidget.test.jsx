@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import userEvent from '@testing-library/user-event'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, waitFor, act } from '@testing-library/react'
 
@@ -56,5 +57,26 @@ describe('TurnstileWidget', () => {
     await waitFor(() => expect(turnstile.render).toHaveBeenCalled())
     unmount()
     expect(turnstile.remove).toHaveBeenCalledWith('w1')
+  })
+
+  it('tells the person when the Cloudflare script cannot load, and lets them try again', async () => {
+    delete window.turnstile
+    const { default: Widget } = await load('site-123')
+    const onToken = vi.fn()
+    // First load attempt fails (script blocked); the retry succeeds.
+    let attempts = 0
+    const spy = vi.spyOn(document.head, 'appendChild').mockImplementation(el => {
+      attempts += 1
+      if (attempts === 1) setTimeout(() => el.onerror && el.onerror(), 0)
+      else { window.turnstile = turnstile; setTimeout(() => el.onload && el.onload(), 0) }
+      return el
+    })
+    render(<Widget onToken={onToken} />)
+    expect((await screen.findByRole('alert')).textContent).toMatch(/couldn't load/i)
+    expect(onToken).toHaveBeenLastCalledWith('')
+    await userEvent.setup().click(screen.getByRole('button', { name: /try again/i }))
+    await waitFor(() => expect(turnstile.render).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('alert')).toBeNull()
+    spy.mockRestore()
   })
 })

@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from 'react'
+import { useCallback, useEffect, useState, useRef } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import { useAuth } from '../hooks/useAuth'
@@ -22,7 +22,7 @@ import Footer from '../components/layout/Footer'
 export default function ConfirmEmailChange() {
   const [params] = useSearchParams()
   const { adoptSession, logout } = useAuth()
-  const [status, setStatus] = useState('loading') // loading | success | error
+  const [status, setStatus] = useState('loading') // loading | success | error | retry (couldn't find out) | signin
   const [message, setMessage] = useState('')
   // AUDIT FIX (Auth round 2, B1): the API now only completes a change for a
   // session of the account itself. 'signin' = nobody signed in (or signed in as
@@ -37,11 +37,9 @@ export default function ConfirmEmailChange() {
   const [alreadyConfirmed, setAlreadyConfirmed] = useState(false)
   const ran = useRef(false)
 
-  useEffect(() => {
-    if (ran.current) return   // StrictMode double-invoke would otherwise burn the one-time token
-    ran.current = true
+  const confirm = useCallback(() => {
     const token = params.get('token')
-    if (!token) { setStatus('error'); setMessage('This link is missing its confirmation token.'); return }
+    setStatus('loading'); setMessage('')
     api.post('/auth/email/confirm', { token })
       .then(async res => {
         const { user, token: sessionToken, alreadyConfirmed: replay } = res.data.data
@@ -66,9 +64,26 @@ export default function ConfirmEmailChange() {
           setStatus('signin')
           return
         }
+        // AUDIT FIX (Auth round 6, B6): only a 4xx means the server looked at the link and refused it. A 429,
+        // a 5xx or no response says nothing about the link (it has not been used up), but this page reported
+        // "Confirmation failed" with no way to retry — VerifyEmail already separates the two.
+        const status = err.response?.status
+        if (!err.response || status === 429 || status >= 500) {
+          setMessage(getErrorMessage(err, "We couldn't reach the server."))
+          setStatus('retry')
+          return
+        }
         setStatus('error')
         setMessage(getErrorMessage(err, 'The link is invalid or has expired.'))
       })
+  }, [params, adoptSession])
+
+  useEffect(() => {
+    if (ran.current) return   // StrictMode double-invoke would otherwise burn the one-time token
+    ran.current = true
+    const token = params.get('token')
+    if (!token) { setStatus('error'); setMessage('This link is missing its confirmation token.'); return }
+    confirm()
   }, [])
 
   // Back to THIS link after signing in (Login validates ?next= via safeNext).
@@ -103,6 +118,18 @@ export default function ConfirmEmailChange() {
                 className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
                 Go to settings →
               </Link>
+            </>
+          )}
+          {status === 'retry' && (
+            <>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't confirm just now</h1>
+              <p role="alert" className="text-sm text-gray-500 mb-6">
+                {message} Your link hasn't been used up — try again in a moment.
+              </p>
+              <button type="button" onClick={confirm}
+                className="inline-block bg-blue-700 text-white px-5 py-2.5 rounded-md text-sm font-medium hover:bg-blue-800 transition-colors">
+                Try again
+              </button>
             </>
           )}
           {status === 'signin' && (

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 // Cloudflare Turnstile bot challenge for the public employer-lead forms.
 //
@@ -37,10 +37,18 @@ export default function TurnstileWidget({ onToken, resetSignal = 0 }) {
   const widgetId = useRef(null)
   const onTokenRef = useRef(onToken)
   onTokenRef.current = onToken
+  // AUDIT FIX (Auth round 6, B2): when the Cloudflare script could not load (an ad blocker, a network that
+  // blocks challenges.cloudflare.com) this used to render an empty box while the form kept saying "complete
+  // the security check below" — nothing to complete, no way forward. The API rejects a missing token when its
+  // secret is set, so letting the form submit tokenless would not help; the person is told what is wrong and
+  // can try again (`attempt` re-runs the load).
+  const [loadFailed, setLoadFailed] = useState(false)
+  const [attempt, setAttempt] = useState(0)
 
   useEffect(() => {
     if (!TURNSTILE_ENABLED) return undefined
     let cancelled = false
+    setLoadFailed(false)
     loadScript().then(ts => {
       if (cancelled || !box.current || widgetId.current != null) return
       widgetId.current = ts.render(box.current, {
@@ -49,7 +57,7 @@ export default function TurnstileWidget({ onToken, resetSignal = 0 }) {
         'expired-callback': () => onTokenRef.current(''),
         'error-callback': () => onTokenRef.current('')
       })
-    }).catch(() => onTokenRef.current(''))
+    }).catch(() => { if (!cancelled) setLoadFailed(true); onTokenRef.current('') })
     return () => {
       cancelled = true
       if (widgetId.current != null && window.turnstile) {
@@ -57,7 +65,7 @@ export default function TurnstileWidget({ onToken, resetSignal = 0 }) {
       }
       widgetId.current = null
     }
-  }, [])
+  }, [attempt])
 
   useEffect(() => {
     if (!resetSignal || widgetId.current == null || !window.turnstile) return
@@ -66,5 +74,15 @@ export default function TurnstileWidget({ onToken, resetSignal = 0 }) {
   }, [resetSignal])
 
   if (!TURNSTILE_ENABLED) return null
-  return <div ref={box} data-testid="turnstile-box" />
+  return (
+    <div>
+      <div ref={box} data-testid="turnstile-box" />
+      {loadFailed && (
+        <p role="alert" className="text-sm text-red-600">
+          The security check couldn't load. If you use an ad or tracker blocker, allow challenges.cloudflare.com, then{' '}
+          <button type="button" onClick={() => setAttempt(n => n + 1)} className="underline">try again</button>.
+        </p>
+      )}
+    </div>
+  )
 }
