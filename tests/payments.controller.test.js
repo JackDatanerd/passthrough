@@ -1779,3 +1779,48 @@ describe('round 4 — verifyPayment tells a definite failure from a lookup probl
     expect(res.body).toMatchObject({ pending: true, data: { scanId: 's1' } })
   })
 })
+
+describe('round 10 — verify on an already-settled payment', () => {
+  it('an accepted overpayment (row SUCCESS, Paystack amount higher) is NOT re-held or alerted on a later verify', async () => {
+    t = worldSetup({
+      scans: [{ id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_payment_id: 'pay1', updated_at: OLD, verification_code: 'AB3XY7', verification_status: 'ACTIVE' }],
+      payments: [{ id: 'pay1', user_id: 'u1', paystack_ref: 'ref1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', referral_code_id: null }],
+    }, { paystack: { data: { status: 'success', currency: 'USD', amount: 3000 } } })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ success: true, data: { scanId: 's1' } })
+    expect(res.body.needsSupport).toBeUndefined()
+    expect(t.state.alerts.some(a => /amount mismatch/i.test(a.subject))).toBe(false)
+  })
+
+  it('a PENDING row with a different amount is still held (the gate is unchanged before settlement)', async () => {
+    t = setup({
+      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'PENDING' },
+      paystack: { data: { status: 'success', currency: 'USD', amount: 3000 } },
+    })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(409)
+    expect(res.body.outcome).toBe('MISMATCH')
+  })
+
+  it('"reversed" on a SUCCESS row answers success + refunded (a partial refund leaves the sale delivered)', async () => {
+    t = setup({
+      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'SUCCESS' },
+      paystack: { data: { status: 'reversed', currency: 'USD', amount: 2900 } },
+    })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body).toMatchObject({ success: true, data: { scanId: 's1', refunded: true } })
+    expect(res.body.declined).toBeUndefined()
+  })
+
+  it('"reversed" on a row that is not SUCCESS keeps the declined answer', async () => {
+    t = setup({
+      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'REFUNDED' },
+      paystack: { data: { status: 'reversed', currency: 'USD', amount: 2900 } },
+    })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(400)
+    expect(res.body.declined).toBe(true)
+  })
+})

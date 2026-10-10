@@ -31,7 +31,7 @@ const RATE_LIMIT_RETRY_MS = 65000
 export default function PaymentSuccess() {
   const [params]  = useSearchParams()
   const navigate  = useNavigate()
-  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | duplicate | declined | no-reference | error
+  const [status,  setStatus ] = useState('loading') // loading | pending | success | still-pending | session-expired | needs-support | rate-limited | duplicate | declined | refunded | no-reference | error
   const [scanId,  setScanId ] = useState(null)
   // Round 6: the server says this payment was a SECOND one for a resume already delivered by an earlier
   // payment, and whether its automatic refund is on the way ('QUEUED') or needs a human ('REVIEW').
@@ -146,6 +146,9 @@ export default function PaymentSuccess() {
           setStatus('duplicate')
           return
         }
+        // Round 10: the payment was settled and delivered, and Paystack now shows a refund on it (verify says so
+        // with `refunded`). Do not announce "Payment confirmed" or redirect — the buyer has to be able to read it.
+        if (res.data.data.refunded) { setStatus('refunded'); return }
         setStatus('success')
         // Guarded separately from the mountedRef check above: this fires
         // 2s LATER, so a user who navigated away during that window (not
@@ -256,6 +259,21 @@ export default function PaymentSuccess() {
               <div className="flex items-center justify-center gap-4">
                 {scanId && <a href={`/scan/${scanId}`} className="text-sm font-medium text-blue-600 hover:underline">Go to your resume</a>}
                 <a href="mailto:support@passthrough.dev" className="text-sm text-blue-600 hover:underline">Email support</a>
+              </div>
+            </>
+          )}
+          {status === 'refunded' && (
+            <>
+              <div className="text-amber-500 text-5xl mb-4">↩</div>
+              <h1 className="text-xl font-bold text-gray-900 mb-2">A refund was issued on this payment</h1>
+              <p className="text-sm text-gray-500 mb-4">
+                Paystack shows a refund on this payment. If it was a partial refund, your resume is unaffected. If the whole
+                payment was refunded, the sale is closed on our side shortly. Questions? Email support@passthrough.dev with the reference below.
+              </p>
+              {reference && <p className="text-xs text-gray-400 mb-4 font-mono break-all">Reference: {reference}</p>}
+              <div className="flex items-center justify-center gap-4">
+                {scanId && <a href={`/scan/${scanId}`} className="text-sm font-medium text-blue-600 hover:underline">Go to your resume</a>}
+                <a href="/dashboard/payments" className="text-sm text-blue-600 hover:underline">View my payments</a>
               </div>
             </>
           )}

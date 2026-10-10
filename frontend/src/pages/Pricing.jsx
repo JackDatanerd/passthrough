@@ -173,7 +173,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score · no verification link</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Retry until it passes','No Passthrough Verified link — just your documents'].map(f => (
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF',`${maxFixRetries} free retries toward the verified score`,'No Passthrough Verified link — just your documents'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -210,10 +210,10 @@ export default function Pricing() {
         {/* Retry guarantee callout */}
         <div className="mt-10 bg-blue-50 border border-blue-200 rounded-xl p-6 text-center">
           <p className="font-semibold text-blue-900 mb-1">
-            Included with every fix: we don't stop until you pass.
+            Included with every fix: free retries and a safety net.
           </p>
           <p className="text-sm text-blue-700 leading-relaxed max-w-xl mx-auto">
-            Multiple AI rewrite attempts, {maxFixRetries} free manual retries, and if we still can't
+            Multiple AI rewrite attempts, {maxFixRetries} free manual retries, and if those still don't
             get you past the verification threshold, a free credit for your next resume.
           </p>
         </div>

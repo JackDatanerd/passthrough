@@ -1,0 +1,7 @@
+Payments & Pricing round 10
+B1  verifyPayment: skip the pre-settlement amount gate for rows already SUCCESS (accepted overpayment no longer re-alerts / shows needsSupport on every later verify).
+B2  verifyPayment: Paystack "reversed" on a SUCCESS row answers success + refunded:true instead of "declined"; PaymentSuccess shows a refund state (no redirect).
+G1  Terms s4: now describes automatic refunds (duplicate / undeliverable), all credit triggers, verified-email requirement; no hardcoded retry count.
+G2  Pricing: removed "Retry until it passes" / "we don't stop until you pass"; retry bullet reads live maxFixRetries.
+Not changed: local-currency pricing (needs owner decision), vitest dedupe (sandbox-only duplicate React; reverted).
+Tests: +4 backend, +1 frontend.

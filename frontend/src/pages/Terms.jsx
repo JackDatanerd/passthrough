@@ -74,23 +74,35 @@ export default function Terms() {
           </p>
         </Section>
 
-        <Section title="4. Retries and Free Credits">
+        <Section title="4. Retries, Free Credits and Refunds">
           <p>
             If a Fix doesn't reach the Passthrough Verified score threshold, you can retry it for
-            free, building on the improved version rather than starting over, up to twice per
-            purchase. If both free retries still don't reach the threshold, we automatically credit
-            your account with one free Fix, usable on a future resume, at no additional charge. This
-            is not a cash refund — it's service credit, and it doesn't expire unless we notify you
+            free, building on the improved version rather than starting over, up to the number of
+            free retries shown on our Pricing page per purchase. If the free retries still don't
+            reach the threshold, we automatically credit your account with one free Fix, usable on
+            a future resume, at no additional charge. We also credit one free Fix if our system
+            fails to produce a rewrite at all (you then receive your original resume unchanged), or
+            if a Verified Credential we deliver does not reach the Verified threshold. A credit is
+            not a cash refund — it's service credit, and it doesn't expire unless we notify you
             otherwise.
           </p>
           <p>
-            We don't currently offer cash refunds for a Fix that doesn't reach the target score,
-            given the free retry and credit mechanism above. If something went genuinely wrong on
-            our end (a failed delivery, a technical error, a duplicate charge), contact{' '}
+            We don't offer cash refunds for a Fix that doesn't reach the target score, given the
+            free retry and credit mechanism above. Money is refunded to your original payment
+            method when a payment buys nothing: if you are charged twice for the same resume, the
+            extra payment is refunded, and if a payment is received but cannot be delivered (for
+            example the resume or account no longer exists), it is refunded. We start these
+            refunds automatically where we can; if one cannot be started automatically we will do
+            it by hand. Your bank may take several business days to show a refund. For anything
+            else that went wrong on our end, contact{' '}
             <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
               support@passthrough.dev
             </a>{' '}
-            and we'll make it right.
+            with your payment reference and we'll make it right.
+          </p>
+          <p>
+            Your email address must be verified before you can buy, because your downloads and
+            receipt are sent to it.
           </p>
         </Section>
 

@@ -184,4 +184,12 @@ describe('PaymentSuccess — round 6', () => {
       expect(screen.getByRole('button', { name: 'Check again' })).toBeInTheDocument()
     } finally { vi.useRealTimers() }
   })
+
+  it('round 10: a settled payment with a refund on it shows the refund state — no "Payment confirmed!", no redirect', async () => {
+    api.get.mockResolvedValue({ data: { success: true, data: { scanId: 's1', refunded: true } } })
+    renderAt()
+    expect(await screen.findByText('A refund was issued on this payment')).toBeInTheDocument()
+    expect(screen.queryByText('Payment confirmed!')).toBeNull()
+    expect(screen.getByText('Go to your resume')).toHaveAttribute('href', '/scan/s1')
+  })
 })

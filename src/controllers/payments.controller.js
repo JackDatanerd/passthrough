@@ -626,6 +626,14 @@ async function verifyPayment(c2) {
   // buyer whose card was simply declined that their payment "may still have gone through". The
   // row stays PENDING exactly as before (a retry on the same checkout can still succeed).
   const paystackStatus = pResult.data?.status
+  // PAYMENTS & PRICING ROUND 10 (bug): a payment OUR row already settled (SUCCESS, delivered) that Paystack now
+  // reports `reversed` has had a refund issued on it — possibly only a partial goodwill refund, which by design
+  // leaves the payment SUCCESS and the work delivered (see refundPayment). It was answered as a declined
+  // payment ("nothing was delivered", 400) — false for the buyer who holds the delivered resume. A fully
+  // refunded sale is closed by the refund webhook / sweepReversedPayments (row -> REFUNDED), after which this
+  // branch is not reached; until then the buyer is told a refund exists, with the scan to go back to.
+  if (paystackStatus === 'reversed' && paymentRow.status === 'SUCCESS')
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id, refunded: true } })
   if (DEFINITE_FAILURE_STATUSES.includes(paystackStatus))
     return c2.json({ success: false, declined: true, paystackStatus, data: { scanId: paymentRow.scan_id },
       message: paystackStatus === 'reversed'
@@ -688,7 +696,12 @@ async function verifyPayment(c2) {
   // and the row stays PENDING for manual review rather than either
   // fulfilling on bad data or destructively marking it FAILED before a
   // human looks at it.
-  if (pResult.data?.amount !== paymentRow.amount_cents) {
+  // PAYMENTS & PRICING ROUND 10 (bug): this ran for rows already SUCCESS too. An amount difference an admin
+  // ACCEPTED (an overpayment — recheckPayment keeps amount_cents at the expected price) then failed this check
+  // on every later verify (a reload of /payment/success): a [CRITICAL] alert and "we're checking it by hand" for
+  // an order that was delivered. A SUCCESS row passed (or was explicitly allowed past) the amount gate when it
+  // settled; the gate exists to hold a payment BEFORE it settles.
+  if (paymentRow.status !== 'SUCCESS' && pResult.data?.amount !== paymentRow.amount_cents) {
     console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${paymentRow.amount_cents}, Paystack reports ${pResult.data?.amount}`)
     try {
       // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — same
