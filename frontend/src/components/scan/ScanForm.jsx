@@ -87,7 +87,7 @@ export default function ScanForm() {
   useEffect(() => {
     if (!user) return
     api.get('/profile')
-      .then(res => { const extras = res.data.data.extraProfiles || []; setExtraProfiles(extras); setPrimaryAvailable(!!res.data.data.hasSavedProfile); setHasSavedProfile(!!res.data.data.hasSavedProfile || extras.length > 0); if (!res.data.data.hasSavedProfile && extras.length) setProfileChoice(extras[0].id); setQuota(res.data.data.quota || null) })
+      .then(res => { const extras = res.data.data.extraProfiles || []; setExtraProfiles(extras); setPrimaryAvailable(!!res.data.data.hasSavedProfile); setHasSavedProfile(!!res.data.data.hasSavedProfile || extras.length > 0); if (!res.data.data.hasSavedProfile && extras.length) setProfileChoice(extras[0].id); const wanted = params.get('profile'); if (wanted && extras.some(x => x.id === wanted)) setProfileChoice(wanted); setQuota(res.data.data.quota || null) })
       .catch(() => {}) // fail silently — worst case the toggle just doesn't show
   }, [user])
 

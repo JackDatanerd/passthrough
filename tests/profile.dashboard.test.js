@@ -83,12 +83,12 @@ describe('getProfile — quota and preferences ride along', () => {
     t = setup(q => q.table === 'users' ? { data: { saved_profile: null, scans_today: 1, scans_day_reset: new Date().toISOString(), notify_scan_results: false }, error: null } : undefined)
     const d = (await t.mod.getProfile(t.c())).body.data
     expect(d.quota).toMatchObject({ limit: 3, used: 1, remaining: 2 })
-    expect(d.preferences).toEqual({ notifyScanResults: false })
+    expect(d.preferences).toEqual({ notifyScanResults: false, notifyOutcomeFollowup: true })
     expect(t.db.calls[0].cols).not.toMatch(/password|token/)
   })
   it('a row from before migration 0052 (no column) reads as notifications on', async () => {
     t = setup(q => q.table === 'users' ? { data: { saved_profile: null }, error: null } : undefined)
-    expect((await t.mod.getProfile(t.c())).body.data.preferences).toEqual({ notifyScanResults: true })
+    expect((await t.mod.getProfile(t.c())).body.data.preferences).toEqual({ notifyScanResults: true, notifyOutcomeFollowup: true })
   })
   it('reports when the profile was last edited', async () => {
     t = setup(q => q.table === 'users' ? { data: { saved_profile: { resumeData: { name: 'J' }, savedAt: 'a', editedAt: 'b' } }, error: null } : undefined)

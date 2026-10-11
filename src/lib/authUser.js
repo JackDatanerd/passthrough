@@ -19,7 +19,7 @@ const constants = require('../config/constants')
 
 const AUTH_USER_COLUMNS = [
   'id', 'email', 'name', 'role', 'status', 'token_version', 'email_verified',
-  'pending_email', 'pending_email_expiry', 'notify_scan_results', 'deleted_at', 'scans_today', 'free_fix_credits', 'scans_day_reset',
+  'pending_email', 'pending_email_expiry', 'notify_scan_results', 'notify_outcome_followup', 'deleted_at', 'scans_today', 'free_fix_credits', 'scans_day_reset',
   'terms_accepted_at', 'terms_version',
   'last_login_at', 'last_login_ip', 'previous_login_at', 'previous_login_ip',
   'created_at', 'updated_at',

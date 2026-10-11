@@ -1,0 +1,41 @@
+Profile & Dashboard (Section 6) — round 9   (built on 0bc9505; migration 0074)
+
+APPLY supabase/migrations/0074_profile_dashboard_round9.sql BEFORE deploying the Worker (idempotent;
+the Worker reads users.notify_outcome_followup on every authenticated request, calls
+promote_saved_profile(), and the schema-version check now expects 74).
+
+BUGS
+ 1. deleteScanHistory (whole-history, filtered, hand-picked purges) never closed open checkouts on the
+    scans it deleted, unlike single deleteScan. They stayed PENDING and payable; paying one charged for a
+    scan that no longer existed. It now closes every open checkout (and releases referral reservations)
+    for the rows actually deleted — fulfillment.abandonPendingForScans, one UPDATE per batch. The delete
+    also repeats the in-flight rule, so a scan that started work between the read and the write is kept.
+ 2. Renaming an additional profile re-wrote its resume from an earlier read and stamped edited_at: a
+    concurrent edit could be lost, an open editor got a false PROFILE_CHANGED, and the card said "edited".
+    update_saved_profile now treats a NULL resume as rename-only (resume + edit stamp untouched).
+ 3. Deleting a scan cascaded scan_outcomes away (interview answer + any published story, shrinking the
+    public rate) — the opposite of account deletion. scan_outcomes now has its own id; scan_id is a nullable
+    unique ON DELETE SET NULL; a BEFORE DELETE trigger on scans scrubs the story text first. The answer
+    stays, anonymously. Delete dialogs say so.
+ 4. A purge could report "nothing deleted" while deletable scans remained, if the oldest 25 were all held
+    by open payments. It now looks at the next-oldest rows (up to 4 rounds).
+ 5. GET /profile/download-pdf (renders in a browser inside the request) had the 30s timeout and the
+    automatic GET retry, which started a second render. Joined the existing LONG_RUNNING_GET rule
+    (long timeout, never auto-retried).
+ 6. The "Email me when a scan finishes" switch also silently governed the interview follow-up email.
+    Separate switch now (users.notify_outcome_followup; accounts that had result emails off keep it off).
+
+FEATURE GAPS CLOSED
+ 1. "Scan with this" on every additional profile card (/?mode=savedProfile&profile=<id>; ScanForm reads it).
+ 2. "Copy as another profile" (POST /api/profile/extras) and "Make main" (POST /api/profile/extras/:id/make-main,
+    one transaction: the old main becomes an additional profile, nothing lost).
+ 3. "Rescan" on dashboard rows that can be rescanned (/?from=<id>).
+ 4. Own preference + checkbox for the interview follow-up email (see bug 6).
+ 5. Additional profile names are unique (case-insensitive): a rename onto a taken name is 409 LABEL_TAKEN;
+    saving from a scan under a taken name appends " (2)", " (3)"…
+
+Tests: tests/profile.round9.test.js, frontend/tests/pages/ProfileDashboard.round9.test.jsx,
+frontend/tests/components/ScanForm.profile.round9.test.jsx, frontend/tests/profile.round9.api.test.js; existing
+tests updated for the new preference field. Migration 0074 was also run twice against a real Postgres 16
+(stub schema + the real 0067 / 0070 tables): idempotent; rename, promote (with and without a main), the
+story scrub, upsert on scan_id and repeated NULL scan_ids all behave as described.

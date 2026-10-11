@@ -73,6 +73,24 @@ function normalizeLabel(raw) {
   if (typeof raw !== 'string') return ''
   return raw.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL_CHARS)
 }
+// Labels are how the scan form tells additional profiles apart, so two may not read the same
+// (case-insensitively). A saved-from-scan label that collides gets " (2)", " (3)"… appended.
+const labelKey = (l) => String(l || '').trim().toLowerCase()
+function uniqueLabel(base, takenLabels) {
+  const taken = new Set(takenLabels.map(labelKey))
+  if (!taken.has(labelKey(base))) return base
+  for (let n = 2; n < 100; n++) {
+    const suffix = ` (${n})`
+    const cand = base.slice(0, MAX_LABEL_CHARS - suffix.length).trimEnd() + suffix
+    if (!taken.has(labelKey(cand))) return cand
+  }
+  return base
+}
+async function extraLabels(supabase, userId, exceptId = null) {
+  const { data, error } = await supabase.from('saved_profiles').select('id, label').eq('user_id', userId)
+  if (error) throw error
+  return (data || []).filter(r => r.id !== exceptId).map(r => r.label)
+}
 function summarizeResume(rd, roleCategory) {
   const count = (v) => Array.isArray(v) ? v.length : 0
   return rd ? {
@@ -90,7 +108,7 @@ async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
   const { data, error } = await supabase.from('users')
-    .select('saved_profile, scans_today, scans_day_reset, notify_scan_results').eq('id', user.id).single()
+    .select('saved_profile, scans_today, scans_day_reset, notify_scan_results, notify_outcome_followup').eq('id', user.id).single()
   if (error) throw error
 
   const saved = data.saved_profile
@@ -122,7 +140,7 @@ async function getProfile(c) {
     sourceScanId:    saved?.sourceScanId || null,
     summary,
     quota:           scanQuota(data),
-    preferences:     { notifyScanResults: data.notify_scan_results !== false }
+    preferences:     { notifyScanResults: data.notify_scan_results !== false, notifyOutcomeFollowup: data.notify_outcome_followup !== false }
   }})
 }
 
@@ -193,19 +211,29 @@ async function updateProfile(c) {
   return c.json({ success: true, message: 'Saved profile updated.', data: { resumeData: checked.data } })
 }
 
-// PATCH /api/profile/preferences  { notifyScanResults: boolean }
-// Only the "your scan finished" result email is optional. Security notices, receipts and a
-// delivered fix are never governed by this.
+// PATCH /api/profile/preferences  { notifyScanResults?: boolean, notifyOutcomeFollowup?: boolean }
+// Two optional emails: the "your scan finished" result, and the one-time "did your fixed resume lead to
+// an interview?" follow-up. Security notices, receipts and a delivered fix are never governed by these.
+const PREFERENCE_COLUMNS = { notifyScanResults: 'notify_scan_results', notifyOutcomeFollowup: 'notify_outcome_followup' }
 async function updatePreferences(c) {
   const user = c.get('user')
   let body
   try { body = await c.req.json() } catch (_) { body = null }
-  const v = body && typeof body === 'object' ? body.notifyScanResults : undefined
-  if (typeof v !== 'boolean') return c.json({ success: false, message: 'notifyScanResults must be true or false.' }, 400)
+  const obj = body && typeof body === 'object' && !Array.isArray(body) ? body : {}
+  const patch = {}, data = {}
+  for (const [key, column] of Object.entries(PREFERENCE_COLUMNS)) {
+    if (obj[key] === undefined) continue
+    if (typeof obj[key] !== 'boolean') return c.json({ success: false, message: `${key} must be true or false.` }, 400)
+    patch[column] = obj[key]; data[key] = obj[key]
+  }
+  if (!Object.keys(patch).length) return c.json({ success: false, message: 'notifyScanResults must be true or false.' }, 400)
   const supabase = getSupabase(c.env)
-  const { error } = await supabase.from('users').update({ notify_scan_results: v }).eq('id', user.id)
+  const { error } = await supabase.from('users').update(patch).eq('id', user.id)
   if (error) throw error
-  return c.json({ success: true, message: v ? 'Scan result emails are on.' : 'Scan result emails are off.', data: { notifyScanResults: v } })
+  const message = Object.entries(data).map(([k, v]) =>
+    k === 'notifyScanResults' ? (v ? 'Scan result emails are on.' : 'Scan result emails are off.')
+      : (v ? 'Interview follow-up email is on.' : 'Interview follow-up email is off.')).join(' ')
+  return c.json({ success: true, message, data })
 }
 
 const SAVEABLE_STATUSES = ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED']
@@ -255,7 +283,8 @@ async function saveProfile(c) {
   // "Save as another profile": goes to the saved_profiles table under a label and never touches
   // the primary profile (so no PROFILE_EDITED prompt either).
   if (body.asExtra === true) {
-    const label = normalizeLabel(body.label) || normalizeLabel(scan.roleCategory) || 'Additional profile'
+    const label = uniqueLabel(normalizeLabel(body.label) || normalizeLabel(scan.roleCategory) || 'Additional profile',
+      await extraLabels(supabase, user.id))
     const { data: newId, error: addErr } = await supabase.rpc('add_saved_profile', {
       p_user_id: user.id, p_label: label, p_resume: scan.originalResumeData,
       p_role_category: scan.roleCategory || null, p_source_scan_id: scan.id, p_max: MAX_EXTRA_PROFILES
@@ -351,7 +380,7 @@ async function exportMyData(c) {
   const from = (part - 1) * EXPORT_SCANS_PER_PART
 
   const { data: account, error: accErr } = await supabase.from('users')
-    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile, pending_email, pending_email_expiry, notify_scan_results, ' +
+    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile, pending_email, pending_email_expiry, notify_scan_results, notify_outcome_followup, ' +
       'terms_accepted_at, terms_version, last_login_at, last_login_ip, previous_login_at, previous_login_ip').eq('id', user.id).single()
   if (accErr) throw accErr
 
@@ -402,7 +431,7 @@ async function exportMyData(c) {
           freeFixCredits: account.free_fix_credits, createdAt: account.created_at,
           // Only a change that can still be confirmed: an expired one is dead (the account's own
           // read, lib/authUser.js, hides it too).
-          pendingEmail: pendingEmailLive(account) ? account.pending_email : null, notifyScanResults: account.notify_scan_results !== false,
+          pendingEmail: pendingEmailLive(account) ? account.pending_email : null, notifyScanResults: account.notify_scan_results !== false, notifyOutcomeFollowup: account.notify_outcome_followup !== false,
           termsAcceptedAt: account.terms_accepted_at ?? null, termsVersion: account.terms_version ?? null,
           lastLoginAt: account.last_login_at ?? null, lastLoginIp: account.last_login_ip ?? null,
           previousLoginAt: account.previous_login_at ?? null, previousLoginIp: account.previous_login_ip ?? null }
@@ -523,6 +552,38 @@ async function deleteStoredFiles(env, rows) {
   }
 }
 
+// A batch is the oldest PURGE_BATCH deletable scans MINUS any with a checkout still in flight. When
+// every row of a full batch is held that way, the next-oldest rows are tried (a few rounds), so a
+// handful of held scans at the front can never make the purge report "nothing deleted" while other
+// deletable scans remain.
+const PURGE_STALL_ROUNDS = 4
+const IN_FLIGHT_OR = (since) => `status.not.in.(${IN_FLIGHT_STATUSES.join(',')}),updated_at.lte.${since}`
+
+async function selectPurgeBatch(supabase, userId, since, filters) {
+  const excluded = []
+  for (let round = 0; round < PURGE_STALL_ROUNDS; round++) {
+    let q = applyScanFilters(supabase.from('scans')
+      .select('id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
+      .eq('user_id', userId)
+      .or(IN_FLIGHT_OR(since)), filters)
+    if (excluded.length) q = q.not('id', 'in', `(${excluded.join(',')})`)
+    const { data: rows, error } = await q
+      .order('created_at', { ascending: true }).order('id', { ascending: true })
+      .limit(PURGE_BATCH)
+    if (error) throw error
+    const batch = rows || []
+    if (!batch.length) return []
+    const { data: busy, error: payErr } = await supabase.from('payments')
+      .select('scan_id').in('scan_id', batch.map(r => r.id)).eq('status', 'PENDING').gt('created_at', since)
+    if (payErr) throw payErr
+    const held = new Set((busy || []).map(p => p.scan_id))
+    const free = batch.filter(r => !held.has(r.id))
+    if (free.length || batch.length < PURGE_BATCH) return free
+    excluded.push(...batch.map(r => r.id))
+  }
+  return []
+}
+
 async function deleteScanHistory(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
@@ -530,27 +591,14 @@ async function deleteScanHistory(c) {
   const filters = purgeFilters(c)
   if (filters.error) return c.json({ success: false, message: filters.error }, 400)
 
-  const { data: rows, error } = await applyScanFilters(supabase.from('scans')
-    .select('id, status, updated_at, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
-    .eq('user_id', user.id)
-    .or(`status.not.in.(${IN_FLIGHT_STATUSES.join(',')}),updated_at.lte.${since}`), filters)
-    .order('created_at', { ascending: true }).order('id', { ascending: true })
-    .limit(PURGE_BATCH)
-  if (error) throw error
-
-  let batch = rows || []
-  if (batch.length) {
-    const { data: busy, error: payErr } = await supabase.from('payments')
-      .select('scan_id').in('scan_id', batch.map(r => r.id)).eq('status', 'PENDING').gt('created_at', since)
-    if (payErr) throw payErr
-    const held = new Set((busy || []).map(p => p.scan_id))
-    batch = batch.filter(r => !held.has(r.id))
-  }
+  const batch = await selectPurgeBatch(supabase, user.id, since, filters)
 
   let deleted = 0
   if (batch.length) {
+    // The in-flight rule is repeated on the delete itself: a scan that started work (or a fix that was
+    // bought) between the read above and this write is left alone instead of deleted under its job.
     const { data: removed, error: delErr } = await supabase.from('scans')
-      .delete().in('id', batch.map(r => r.id)).eq('user_id', user.id).select('id')
+      .delete().in('id', batch.map(r => r.id)).eq('user_id', user.id).or(IN_FLIGHT_OR(since)).select('id')
     if (delErr) throw delErr
     const gone = new Set((removed || []).map(r => r.id))
     const goneRows = batch.filter(r => gone.has(r.id))
@@ -561,6 +609,10 @@ async function deleteScanHistory(c) {
       await deleteStoredFiles(c.env, goneRows)
       warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: goneRows.map(r => r.id) }),
         'deleteScanHistory: clear saved-profile source')
+      // Same as deleting one scan: a checkout still open on a deleted scan (older than the hour that
+      // blocks the delete, or opened between the check and the delete) must not stay payable — paying it
+      // would charge for nothing. Closes them all and releases their referral reservations.
+      await require('../services/fulfillment.service').abandonPendingForScans(supabase, goneRows.map(r => r.id))
     }
   }
 
@@ -668,13 +720,14 @@ async function updateExtra(c) {
   const expected = typeof rawVersion === 'string' && rawVersion ? rawVersion : null
   if (expected && Number.isNaN(Date.parse(expected))) return c.json({ success: false, message: 'Invalid version.' }, 400)
 
-  if (resume === null) {
-    // Rename only — keep the stored resume as is.
-    const { data: cur, error: curErr } = await supabase.from('saved_profiles').select('resume_data').eq('id', id).eq('user_id', user.id).maybeSingle()
-    if (curErr) throw curErr
-    if (!cur) return c.json({ success: false, message: 'Profile not found.' }, 404)
-    resume = cur.resume_data
+  if (label !== null) {
+    const others = await extraLabels(supabase, user.id, id)
+    if (others.some(l => labelKey(l) === labelKey(label)))
+      return c.json({ success: false, code: 'LABEL_TAKEN', message: 'You already have a profile with that name. Pick a different one.' }, 409)
   }
+  // Rename only: resume stays null, and the database leaves the stored resume AND its edit stamp alone
+  // (0074). It used to read the resume here and write it straight back, which could overwrite an edit
+  // made in between and made every rename look like a hand edit.
   const { data: result, error } = await supabase.rpc('update_saved_profile', {
     p_user_id: user.id, p_id: id, p_resume: resume, p_label: label, p_expected_version: expected, p_edited_at: new Date().toISOString()
   })
@@ -693,4 +746,43 @@ async function deleteExtra(c) {
   return c.json({ success: true, message: 'Profile removed.' })
 }
 
-module.exports = { getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }
+
+// POST /api/profile/extras  { label? } — copy the MAIN saved profile into an additional one, so a variant
+// can be branched without going back through a scan.
+async function duplicatePrimary(c) {
+  const user = c.get('user')
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('users').select('saved_profile').eq('id', user.id).single()
+  if (error) throw error
+  const saved = data.saved_profile
+  if (!saved?.resumeData || !hasResumeContent(saved.resumeData))
+    return c.json({ success: false, message: 'No saved profile to copy.' }, 404)
+  const wanted = normalizeLabel(body && typeof body === 'object' ? body.label : '') ||
+    normalizeLabel(`${saved.roleCategory || 'Main profile'} copy`) || 'Main profile copy'
+  const label = uniqueLabel(wanted, await extraLabels(supabase, user.id))
+  const { data: newId, error: addErr } = await supabase.rpc('add_saved_profile', {
+    p_user_id: user.id, p_label: label, p_resume: saved.resumeData,
+    p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null, p_max: MAX_EXTRA_PROFILES
+  })
+  if (addErr) throw addErr
+  if (!newId) return c.json({ success: false, code: 'PROFILE_LIMIT',
+    message: `You can keep up to ${MAX_EXTRA_PROFILES} additional profiles. Remove one first.` }, 409)
+  return c.json({ success: true, message: 'Profile copied.', data: { id: newId, label } })
+}
+
+// POST /api/profile/extras/:id/make-main — swap an additional profile with the main one (done in one
+// transaction, 0074): the old main profile, if there was one, becomes an additional profile, so nothing is lost.
+async function promoteExtra(c) {
+  const user = c.get('user')
+  const id = c.req.param('id')
+  if (!UUID_RE.test(id)) return c.json({ success: false, message: 'Invalid profile.' }, 400)
+  const supabase = getSupabase(c.env)
+  const { data: result, error } = await supabase.rpc('promote_saved_profile', { p_user_id: user.id, p_id: id })
+  if (error) throw error
+  if (result === 'missing') return c.json({ success: false, message: 'Profile not found.' }, 404)
+  return c.json({ success: true, message: 'That profile is now your main one.' })
+}
+
+module.exports = { duplicatePrimary, promoteExtra, getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }

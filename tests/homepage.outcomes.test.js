@@ -237,7 +237,7 @@ describe('pendingOutcomes', () => {
 
 describe('sweepOutcomePrompts', () => {
   const NOW = Date.parse('2026-10-10T12:00:00Z')
-  const user = (over = {}) => ({ email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_scan_results: true, ...over })
+  const user = (over = {}) => ({ email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true, ...over })
   const row = (id, uid, over = {}) => ({ id, user_id: uid, outcome_prompt_attempts: 0, users: user(over) })
   function run(rows, { answered = [], sent = true, claimResult = [{ id: 'x' }] } = {}) {
     const sends = []
@@ -263,7 +263,7 @@ describe('sweepOutcomePrompts', () => {
   })
   it('skips people who answered, opted out, are banned, deleted or unverified', async () => {
     const { r, sends } = await run([
-      row('a', 'u1'), row('b', 'u2', { notify_scan_results: false }), row('c', 'u3', { status: 'BANNED' }),
+      row('a', 'u1'), row('b', 'u2', { notify_outcome_followup: false }), row('c', 'u3', { status: 'BANNED' }),
       row('d', 'u4', { deleted_at: '2026-09-01T00:00:00Z' }), row('e', 'u5', { email_verified: false }), row('f', 'u6'),
     ], { answered: ['a'] })
     expect(sends).toHaveLength(1)

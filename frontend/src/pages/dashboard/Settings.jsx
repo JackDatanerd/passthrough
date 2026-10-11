@@ -191,6 +191,7 @@ export default function Settings() {
   // null until the profile read succeeds: showing a toggle for a preference we could not read
   // would show (and then save over) a guess.
   const [notifyScanResults, setNotifyScanResults] = useState(null)
+  const [notifyOutcomeFollowup, setNotifyOutcomeFollowup] = useState(null)
   const [prefSaving, setPrefSaving] = useState(false)
   const [prefError,  setPrefError ] = useState('')
   const [profileSummary, setProfileSummary ] = useState(null)
@@ -245,6 +246,30 @@ export default function Settings() {
     } finally { setExtraBusy(false) }
   }
 
+  // Copy the main profile into an additional one (branching a variant), or swap an additional profile
+  // with the main one. Both end in a quiet refresh so an open editor is not thrown away.
+  async function handleDuplicatePrimary() {
+    setExtraBusy(true); setExtraError('')
+    try {
+      await api.post('/profile/extras', {})
+      await loadProfile({ quiet: true })
+    } catch (err) {
+      setExtraError(getErrorMessage(err, 'Could not copy the profile.'))
+    } finally { setExtraBusy(false) }
+  }
+
+  async function handleMakeMain(id) {
+    setExtraBusy(true); setExtraError('')
+    try {
+      await api.post(`/profile/extras/${id}/make-main`)
+      // The editors that were open belong to profiles that just changed places.
+      setEditingProfile(false); setEditingExtraId(null); setRenameId(null)
+      await loadProfile({ quiet: true })
+    } catch (err) {
+      setExtraError(getErrorMessage(err, 'Could not change your main profile.'))
+    } finally { setExtraBusy(false) }
+  }
+
   async function handleRemoveExtra() {
     const target = removeExtraTarget
     if (!target) return
@@ -274,6 +299,8 @@ export default function Settings() {
         setProfileSummary(res.data.data.summary)
         const pref = res.data.data.preferences?.notifyScanResults
         setNotifyScanResults(typeof pref === 'boolean' ? pref : null)
+        const follow = res.data.data.preferences?.notifyOutcomeFollowup
+        setNotifyOutcomeFollowup(typeof follow === 'boolean' ? follow : null)
       })
       .catch(err => { if (!quiet) setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")) })
       .finally(() => { if (!quiet) setProfileLoading(false) })
@@ -306,18 +333,20 @@ export default function Settings() {
     }
   }
 
-  async function handleToggleNotify(e) {
+  async function handleTogglePref(key, setter, e) {
     const next = e.target.checked
-    setNotifyScanResults(next); setPrefSaving(true); setPrefError('')
+    setter(next); setPrefSaving(true); setPrefError('')
     try {
-      await api.patch('/profile/preferences', { notifyScanResults: next })
+      await api.patch('/profile/preferences', { [key]: next })
     } catch (err) {
-      setNotifyScanResults(!next)
+      setter(!next)
       setPrefError(getErrorMessage(err, "Couldn't save that setting."))
     } finally {
       setPrefSaving(false)
     }
   }
+  const handleToggleNotify = (e) => handleTogglePref('notifyScanResults', setNotifyScanResults, e)
+  const handleToggleFollowup = (e) => handleTogglePref('notifyOutcomeFollowup', setNotifyOutcomeFollowup, e)
 
   // Delete the whole scan history (not the account, not payments). The server removes it in
   // small batches and says how many are left, so this loops with a running count instead of
@@ -606,16 +635,28 @@ export default function Settings() {
         <SessionsCard reloadKey={sessionsReload} />
 
         {/* Email preferences: only the "your scan finished" result email is optional. */}
-        {notifyScanResults !== null && (
-          <div className="bg-white rounded-lg border border-gray-200 p-6">
-            <h2 className="font-semibold text-gray-900 mb-1">Email</h2>
-            <Checkbox
-              checked={notifyScanResults}
-              disabled={prefSaving}
-              onChange={handleToggleNotify}
-              label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
-              description="The score summary after each scan. Security notices, receipts and your delivered fix are always sent."
-            />
+        {(notifyScanResults !== null || notifyOutcomeFollowup !== null) && (
+          <div className="bg-white rounded-lg border border-gray-200 p-6 flex flex-col gap-3">
+            <h2 className="font-semibold text-gray-900 -mb-1">Email</h2>
+            {notifyScanResults !== null && (
+              <Checkbox
+                checked={notifyScanResults}
+                disabled={prefSaving}
+                onChange={handleToggleNotify}
+                label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
+                description="The score summary after each scan."
+              />
+            )}
+            {notifyOutcomeFollowup !== null && (
+              <Checkbox
+                checked={notifyOutcomeFollowup}
+                disabled={prefSaving}
+                onChange={handleToggleFollowup}
+                label={<span className="font-medium text-gray-900">Ask me how it went after a fix</span>}
+                description="One email, a few weeks after a fixed resume is delivered, asking whether it led to an interview."
+              />
+            )}
+            <p className="text-xs text-gray-500">Security notices, receipts and your delivered fix are always sent.</p>
             {prefError && <p role="alert" className="text-sm text-red-600 mt-2">{prefError}</p>}
           </div>
         )}
@@ -670,6 +711,11 @@ export default function Settings() {
                 {!editingProfile && (
                   <Button variant="secondary" size="sm" onClick={() => setEditingProfile(true)}>Edit</Button>
                 )}
+                {extraProfiles.length < maxExtras && (
+                  <Button variant="secondary" size="sm" onClick={handleDuplicatePrimary} loading={extraBusy} disabled={extraBusy}>
+                    Copy as another profile
+                  </Button>
+                )}
                 <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', null, profileSummary?.name)}
                   loading={downloadingFile === 'primary:docx'} disabled={!!downloadingFile}>Download .docx</Button>
                 <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', null, profileSummary?.name)}
@@ -693,7 +739,7 @@ export default function Settings() {
             <div className="mt-5 border-t border-gray-100 pt-4">
               <h3 className="text-sm font-semibold text-gray-900">Other profiles</h3>
               <p className="text-xs text-gray-500 mb-3">
-                Pick any of them when you scan against a new job. {extraProfiles.length} of {maxExtras} used — save more from a completed scan with “Keep as another profile”.
+                Pick any of them when you scan against a new job, or use “Scan with this”. {extraProfiles.length} of {maxExtras} used — save more from a completed scan with “Keep as another profile”.
               </p>
               <ul className="flex flex-col gap-3">
                 {extraProfiles.map(p => (
@@ -723,7 +769,12 @@ export default function Settings() {
                         )}
                       </div>
                       <div className="flex flex-wrap gap-2 shrink-0">
+                        <Link to={`/?mode=savedProfile&profile=${p.id}`}
+                          className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
+                          Scan with this
+                        </Link>
                         {editingExtraId !== p.id && <Button variant="secondary" size="sm" onClick={() => setEditingExtraId(p.id)}>Edit</Button>}
+                        <Button variant="secondary" size="sm" onClick={() => handleMakeMain(p.id)} disabled={extraBusy}>Make main</Button>
                         <Button variant="secondary" size="sm" onClick={() => { setRenameId(p.id); setRenameValue(p.label) }}>Rename</Button>
                         <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', p.id, p.label)}
                           loading={downloadingFile === `${p.id}:docx`} disabled={!!downloadingFile}>.docx</Button>
@@ -814,7 +865,7 @@ export default function Settings() {
         title="Delete scan history"
         message={purging
           ? `Deleting… ${purgeCount} scan${purgeCount === 1 ? '' : 's'} removed so far.`
-          : 'Permanently delete your whole scan history? Every scan\'s resume file, job description and rewritten documents are removed, and any public verification page you purchased stops working. Your payment records, saved profile and account stay.\n\nScans that are still being processed are skipped.'}
+          : 'Permanently delete your whole scan history? Every scan\'s resume file, job description and rewritten documents are removed, and any public verification page you purchased stops working. A success story you shared about one of them is taken down with it (your interview answer stays, anonymously). Your payment records, saved profile and account stay.\n\nScans that are still being processed are skipped.'}
         confirmLabel="Delete all scans"
         loading={purging}
         onConfirm={handlePurgeHistory}

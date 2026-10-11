@@ -192,6 +192,7 @@ describe('profile routes — GET /export', () => {
       ['GET', '', 'getProfile'], ['GET', '/data', 'getProfileData'], ['PUT', '', 'updateProfile'],
       ['PATCH', '/preferences', 'updatePreferences'], ['POST', '/save', 'saveProfile'],
       ['DELETE', '', 'deleteProfile'], ['DELETE', '/scans', 'deleteScanHistory'], ['GET', '/export', 'exportMyData'],
+      ['POST', '/extras', 'duplicatePrimary'], ['POST', `/extras/${'11111111-1111-4111-8111-111111111111'}/make-main`, 'promoteExtra'],
     ]
     for (const [m, p, handler] of routes) {
       current = undefined

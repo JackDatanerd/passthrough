@@ -35,7 +35,7 @@ const LONG_RUNNING_PATCH = /^\/scan\/[^/?#]+\/(delivered-resume|resume-data)(?:[
 // SHARED FRONTEND (section 11): the draft PDF download is a GET that renders in a browser on the server. It got the
 // generic 30s cut-off AND the automatic GET retry on a timeout, which started a second render on top of the first.
 // It now gets the long timeout and is never auto-retried (the person can press Download again).
-const LONG_RUNNING_GET = /^\/scan\/[^/?#]+\/download-draft-pdf(?:[?#]|$)/
+const LONG_RUNNING_GET = /^\/(?:scan\/[^/?#]+\/download-draft-pdf|profile\/download-pdf)(?:[?#]|$)/  // + the saved-profile PDF (profile round 9): same in-request render
 
 api.interceptors.request.use(config => {
   const token = getToken()

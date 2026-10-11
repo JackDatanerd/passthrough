@@ -126,7 +126,7 @@ async function withdrawStory(c) {
 // ── follow-up email sweep ───────────────────────────────────────────────────────────────────────
 // A month after a fix was delivered, ask once. One scan per person per run; a scan is claimed before
 // the send (so two overlapping runs cannot both mail it) and released again if the send did not go,
-// up to OUTCOME_EMAIL_MAX_ATTEMPTS. Skips anyone who has switched result emails off, is banned or
+// up to OUTCOME_EMAIL_MAX_ATTEMPTS. Skips anyone who has switched the interview follow-up off (Settings), is banned or
 // deleted, never verified their address, or has already answered.
 async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
   const out = { candidates: 0, sent: 0, failed: 0, skipped: 0 }
@@ -134,7 +134,7 @@ async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
   const oldest = iso(nowMs - constants.OUTCOME_EMAIL_MAX_AGE_DAYS * DAY_MS)
 
   const { data: rows, error } = await supabase.from('scans')
-    .select('id, user_id, outcome_prompt_attempts, users(email, name, status, email_verified, deleted_at, notify_scan_results)')
+    .select('id, user_id, outcome_prompt_attempts, users(email, name, status, email_verified, deleted_at, notify_outcome_followup)')
     .eq('fix_purchased', true).not('fix_generated_at', 'is', null)
     .lte('fix_generated_at', newest).gte('fix_generated_at', oldest)
     .is('outcome_prompted_at', null).lt('outcome_prompt_attempts', constants.OUTCOME_EMAIL_MAX_ATTEMPTS)
@@ -154,7 +154,7 @@ async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
   for (const r of rows || []) {
     if (answered.has(r.id) || perUser.has(r.user_id)) continue
     const u = r.users
-    const eligible = u && u.email && !u.deleted_at && u.status === 'ACTIVE' && u.email_verified === true && u.notify_scan_results !== false
+    const eligible = u && u.email && !u.deleted_at && u.status === 'ACTIVE' && u.email_verified === true && u.notify_outcome_followup !== false
     if (!eligible) { out.skipped++; continue }
     perUser.set(r.user_id, r)
   }

@@ -428,6 +428,26 @@ async function abandonPendingForScan(supabase, scanId) {
   }
 }
 
+// Same as abandonPendingForScan for a whole batch of scans in ONE update (bulk history purge: one
+// request per scan would cost dozens of subrequests). Closes every PENDING checkout on the given scans
+// regardless of age and releases their referral reservations. Never throws; returns rows closed.
+async function abandonPendingForScans(supabase, scanIds) {
+  const ids = [...new Set((scanIds || []).filter(Boolean))]
+  if (!ids.length) return 0
+  try {
+    const { data, error } = await supabase.from('payments')
+      .update({ status: 'ABANDONED' }).in('scan_id', ids).eq('status', 'PENDING')
+      .select('id, referral_reservation_id')
+    if (error) { console.error('abandonPendingForScans failed:', error.message); return 0 }
+    const referralService = require('./referral.service')
+    for (const row of data || []) if (row.referral_reservation_id) await referralService.releaseCodeReservation(supabase, row.referral_reservation_id)
+    return (data || []).length
+  } catch (err) {
+    console.error('abandonPendingForScans error:', err && err.message)
+    return 0
+  }
+}
+
 // ── owner notification for outcomes that need a human ──────────────────────
 // Returns true if it sent something. Never throws.
 //
@@ -673,7 +693,7 @@ async function clearDispute(supabase, payment) {
 module.exports = {
   REVIVABLE_STATUSES, REENQUEUE_AFTER_MS,
   generatorFor, chargeMismatch,
-  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan,
+  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan, abandonPendingForScans,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
   refundUnsettledPayment, clearDispute, notifyBuyerReversal,
 }

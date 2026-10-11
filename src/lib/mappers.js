@@ -33,6 +33,8 @@ function userRowToCamel(row) {
     // false = the person turned off the "your scan finished" email (migration 0052). A row from
     // before the column existed reads as on, which is what it always was.
     notifyScanResults:     row.notify_scan_results ?? true,
+    // The one-time "did your fixed resume lead to an interview?" email has its own switch (migration 0074).
+    notifyOutcomeFollowup: row.notify_outcome_followup ?? true,
     // FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
     // (migration 0038) are written at registration (auth.controller.js) but
     // were never read back anywhere — this mapper is the one read path every

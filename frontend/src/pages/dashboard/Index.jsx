@@ -53,7 +53,7 @@ const LIVE_POLL_MAX_SCANS = 3
 function deleteMessage(scan) {
   const paid = scan.fixPurchased || !!scan.verificationCode
   return 'Permanently delete this scan? Its resume file, job description and any rewritten documents are removed.' +
-    (paid ? `\n\nThis scan has a purchased fix${scan.verificationCode ? ' and a public verification page — that page will stop working' : ''}. Your payment record is kept.` : '') +
+    (paid ? `\n\nThis scan has a purchased fix${scan.verificationCode ? ' and a public verification page — that page will stop working' : ''}. Your payment record is kept. A success story you shared about it is taken down (your interview answer stays, anonymously).` : '') +
     '\n\nYour saved profile (Settings) is a separate copy and is not affected.'
 }
 
@@ -553,6 +553,13 @@ export default function DashboardIndex() {
                   })()}
                 </div>
               </Link>
+              {['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status) && (
+                <Link to={`/?from=${scan.id}`} title="Scan this resume against another job"
+                  aria-label={`Rescan ${scanHeading(scan)} against another job`}
+                  className="px-4 flex items-center text-xs text-blue-700 hover:text-blue-900 border-l border-gray-100">
+                  Rescan
+                </Link>
+              )}
               <button type="button"
                 onClick={() => { setDeleteError(''); setPendingDelete(scan) }}
                 disabled={!canDeleteScan(scan)}
@@ -584,7 +591,7 @@ export default function DashboardIndex() {
         title="Delete these scans"
         message={bulkRunning
           ? `Deleting… ${bulkCount} scan${bulkCount === 1 ? '' : 's'} removed so far.`
-          : `Permanently delete the ${total} scan${total === 1 ? '' : 's'} matching ${filterWords}? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. Payment records and your saved profile are kept.\n\nScans that are still being processed are skipped.`}
+          : `Permanently delete the ${total} scan${total === 1 ? '' : 's'} matching ${filterWords}? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. A success story you shared about one of them is taken down with it (your interview answer stays, anonymously). Payment records and your saved profile are kept.\n\nScans that are still being processed are skipped.`}
         confirmLabel={`Delete ${total} scan${total === 1 ? '' : 's'}`}
         loading={bulkRunning}
         onConfirm={confirmBulkDelete}
@@ -594,7 +601,7 @@ export default function DashboardIndex() {
       <ConfirmDialog
         open={selectOpen}
         title="Delete selected scans"
-        message={`Permanently delete the ${selected.size} scan${selected.size === 1 ? '' : 's'} you selected? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. Payment records and your saved profile are kept.`}
+        message={`Permanently delete the ${selected.size} scan${selected.size === 1 ? '' : 's'} you selected? Each scan's resume file, job description and rewritten documents are removed, and any public verification page you purchased for them stops working. A success story you shared about one of them is taken down with it (your interview answer stays, anonymously). Payment records and your saved profile are kept.`}
         confirmLabel={`Delete ${selected.size} scan${selected.size === 1 ? '' : 's'}`}
         loading={selectRunning}
         onConfirm={confirmSelectedDelete}
