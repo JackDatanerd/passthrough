@@ -1,0 +1,54 @@
+Homepage — round 2: match the revised prototype (receipt section, score picker, field picker, pull-quotes),
+fix the hero spacing, and change the navbar entries. Frontend only: no migration, no endpoint changes.
+Base: c5a3288 "Payments & Pricing round 10 ..."
+
+HERO SPACING (the screenshot)
+The two-column hero centred the copy against the tall ScanForm card, floating it mid-page with a large empty gap
+above. The grid is now top-aligned, the section padding is tighter, and a key-facts row (Free / ~30s / {threshold}+
+earns the Verified link) fills the column. The 66% is NOT repeated a third time and nothing says "always free".
+
+NEW / CHANGED SECTIONS
+- Order is now: hero, ATS strip, stats, before/after, RECEIPT, stories, hot categories, how it works, pricing,
+  employers, FAQ, final CTA (the receipt moved ahead of the stories).
+- Before/after: "what the robot read" panel under each score (email not found / merged work history / ...).
+- Receipt (replaces the old verification section): a perforated "ticket" showing what an employer sees; a hands-on
+  tamper test (a sample resume line is SHA-256 hashed as you type; one changed character flips the verdict, the
+  ticket row and highlights the differing fingerprint groups); keyboard-operable placement tabs (email signature /
+  LinkedIn / resume header / application form); the same embed snippets a customer gets; a "how to earn it" note
+  that quotes the live threshold; the existing check-a-code box. The demo's claims were checked against the real
+  /check, which hashes the file in the browser and uploads nothing. Mismatch copy never says "forged": it says the
+  file may have been edited, re-saved or converted, and to ask for the original.
+- lib/sha256.js: plain-JS SHA-256 for that demo only (crypto.subtle needs a secure context, and a demo that shows
+  nothing on an http preview is worse than 40 lines of arithmetic). Verified against Node's crypto at every padding
+  boundary and for UTF-8. The real integrity check still uses crypto.subtle.
+- Stories: third sample is now Dana R. (79 -> 84); samples may carry a closing line and a tag override (sample
+  content only; live stories never do). Six short pull-quotes under the stories (placeholders, see below).
+- Hot categories: flames on the top three; a "which one are you?" picker that says where your field ranks and
+  highlights its row. A field that is not listed is "not ranked yet" (it has fewer than the minimum reports), never
+  "last". Choosing a field below the fold opens the full list.
+- Pricing: a score picker ("if your scan comes back at..."). The plan that fits is marked, Credential only is locked
+  below the Verified threshold and says why, and points are counted ("3 points short"). Thresholds are the server's
+  (/api/pricing badgeThreshold); only the pass line (75) is a constant. Sliding never changes a price. The
+  "charged twice? refunded automatically" line shows only when /api/pricing says autoRefundDuplicates is on.
+- Two new FAQ items (no resume; does it match my target company's ATS) and more careful wording on the Verified one.
+- Employer section links to /check.
+
+NAVBAR
+Stories - Hot categories - Pricing - For employers (the order they appear on the page). "Check a resume" left the
+bar and the mobile menu; it is still in the footer, the receipt section and the employer section.
+
+GUARANTEE WORDING
+Upstream (Payments & Pricing round 10) corrected the Pricing page: "we don't stop until you pass" became "free
+retries and a safety net". The homepage said the old thing; it now uses the corrected wording everywhere (card,
+plan features, FAQ), with a test that fails if the old promise comes back.
+
+PLACEHOLDERS TO REPLACE BEFORE LAUNCH (all in frontend/src/lib/homeContent.js)
+PULL_QUOTES (set QUOTES_ARE_SAMPLE to false once they are real), SAMPLE_STORIES, SAMPLE_HOT, STATS_FALLBACK,
+BEFORE_AFTER / ROBOT_READ (illustrative), TAMPER_DEMO and SAMPLE_VERIFICATION (illustrative). The avatar/star row
+in the hero is still not backed by a real ratings source.
+
+DELIBERATELY NOT BUILT (from the prototype)
+The salary "pays for itself N times over" calculator (an earnings claim the page cannot substantiate), the repeated
+66% hero stat, and numbers in the static meta description / JSON-LD (they cannot track live data).
+
+TESTS: frontend/tests/{sha256,homepage.round2}.test.*, home.page.test.jsx updated. Frontend 1190 passing.

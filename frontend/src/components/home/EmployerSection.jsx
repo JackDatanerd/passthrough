@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import EmployerLeadForm from '../lead/EmployerLeadForm'
 
 export default function EmployerSection() {
@@ -16,6 +17,7 @@ export default function EmployerSection() {
               <li key={t}><span aria-hidden="true" className="text-green-600 font-extrabold mr-2">✓</span>{t}</li>
             ))}
           </ul>
+          <p className="mt-4 text-[15px]"><Link to="/check" className="font-semibold text-blue-700 underline underline-offset-2">Check a resume you were sent →</Link></p>
         </div>
         <EmployerLeadForm />
       </div>

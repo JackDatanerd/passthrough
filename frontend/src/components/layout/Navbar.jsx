@@ -56,21 +56,21 @@ export default function Navbar() {
           >
             {menuOpen ? 'Close' : 'More'}
           </button>
-          {/* Hidden for logged-in users on narrow screens — least essential
-              item once someone already has an account (still reachable via
-              the footer), and without it this row was right at the edge of
-              overflowing a 375px viewport alongside Dashboard/Sign out. */}
+          {/* The links follow the order of the homepage itself (stories, hot fields, pricing, employers). The two
+              proof anchors only show from md up; a logged-in user on a narrow screen loses Pricing too, which is
+              still in the footer — without that this row was at the edge of overflowing a 375px viewport. */}
+          <Link to="/#stories" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
+            Stories
+          </Link>
+          <Link to="/#hot" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
+            Hot categories
+          </Link>
           <Link to="/pricing" className={`text-gray-600 hover:text-gray-900 transition-colors ${user ? 'hidden sm:block' : ''}`}>
             Pricing
           </Link>
           {/* Anchor into the employer section on the homepage */}
           <Link to="/#employers" className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
             For employers
-          </Link>
-          {/* Employers' first need is to check a resume they were sent — the homepage's verification section
-              leads with it, so it is one click from every page. */}
-          <Link to="/check" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
-            Check a resume
           </Link>
           {user ? (
             <>
@@ -108,9 +108,10 @@ export default function Navbar() {
       </div>
       {menuOpen && (
         <div id="navbar-more" className="sm:hidden border-t border-gray-100 px-4 py-2 flex flex-col text-sm">
+          <Link to="/#stories" className="py-2 text-gray-700 hover:text-gray-900">Stories</Link>
+          <Link to="/#hot" className="py-2 text-gray-700 hover:text-gray-900">Hot categories</Link>
           <Link to="/pricing" className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
           <Link to="/#employers" className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
-          <Link to="/check" className="py-2 text-gray-700 hover:text-gray-900">Check a resume</Link>
         </div>
       )}
     </nav>

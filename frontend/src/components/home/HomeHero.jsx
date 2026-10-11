@@ -8,7 +8,7 @@ const FACES = [['A', 'bg-blue-600'], ['D', 'bg-teal-600'], ['P', 'bg-purple-600'
 
 // The hero carries the page's single job: get the visitor to scan. The proof sits right beside the
 // scan card (not three screens below it) because that is where doubt about uploading a resume lives.
-export default function HomeHero({ data }) {
+export default function HomeHero({ data, badgeThreshold }) {
   // Null-safe, like usePricing: a bare render must not throw.
   const signedIn = !!useContext(AuthContext)?.user
   const scans = formatScanCount(data.scans.value, { atLeast: data.scans.isFallback })
@@ -19,7 +19,7 @@ export default function HomeHero({ data }) {
 
   return (
     <section className="bg-gradient-to-b from-blue-50 to-white border-b border-gray-100">
-      <div className="max-w-5xl mx-auto px-4 pt-12 pb-10 grid lg:grid-cols-[1.05fr_.95fr] gap-10 items-center">
+      <div className="max-w-5xl mx-auto px-4 pt-10 pb-10 grid lg:grid-cols-[1.05fr_.95fr] gap-10 items-start">
         <div>
           {scans && (
             <div className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full mb-4">
@@ -51,6 +51,14 @@ export default function HomeHero({ data }) {
               Built for {ATS_NAMES.slice(0, -1).join(', ')} &amp; {ATS_NAMES[ATS_NAMES.length - 1]}
             </div>
           </div>
+          <dl className="flex flex-wrap gap-x-7 gap-y-3 mt-6 pt-5 border-t border-gray-200">
+            {[['Free', 'to scan'], ['~30s', 'to your full score'], [`${badgeThreshold}+`, 'earns the Verified link']].map(([big, small]) => (
+              <div key={small}>
+                <dt className="text-3xl font-extrabold tracking-tight text-gray-900 leading-tight">{big}</dt>
+                <dd className="text-[13px] text-gray-500 leading-snug">{small}</dd>
+              </div>
+            ))}
+          </dl>
         </div>
 
         <div id="scan-form" className="scroll-mt-4 bg-white rounded-xl border border-gray-200 shadow-lg p-5 sm:p-6">

@@ -60,10 +60,10 @@ beforeEach(() => {
 afterEach(() => vi.useRealTimers())
 
 describe('structure', () => {
-  it('renders every section, in the order that sells: scan → proof → verify → price', async () => {
+  it('renders every section, in the order that sells: scan → proof → receipt → stories → hot → price', async () => {
     renderHome()
     await screen.findByText(/31,000\+ resumes scanned/)
-    const ids = ['scan-form', 'proof', 'stories', 'hot', 'verify', 'how', 'pricing', 'employers', 'faq']
+    const ids = ['scan-form', 'proof', 'receipt', 'stories', 'hot', 'how', 'pricing', 'employers', 'faq']
     const els = ids.map(id => document.getElementById(id))
     els.forEach((el, i) => expect(el, ids[i]).toBeTruthy())
     for (let i = 1; i < els.length; i++) expect(els[i - 1].compareDocumentPosition(els[i]) & Node.DOCUMENT_POSITION_FOLLOWING, `${ids[i - 1]} before ${ids[i]}`).toBeTruthy()
@@ -117,7 +117,7 @@ describe('partner referral on the homepage', () => {
     renderHome()
     await screen.findByText(/Your referral discount is applied/)
     expect(api.get).toHaveBeenCalledWith('/pricing?ref=COACH20')
-    const card = screen.getByText('Full fix').closest('div[class*="border-blue-700"]')
+    const card = document.querySelector('[data-plan="full"]')
     expect(within(card).getByText('$39')).toBeInTheDocument()
     expect(within(card).getByText('$49')).toBeInTheDocument()   // struck-through anchor
   })
@@ -157,7 +157,7 @@ describe('pricing section', () => {
     pricingData = new Error('down')
     renderHome()
     await ready()
-    const card = screen.getByText('Full fix').closest('div[class*="border-blue-700"]')
+    const card = document.querySelector('[data-plan="full"]')
     expect(within(card).getByText('$49')).toBeInTheDocument()
   })
 })
@@ -192,26 +192,27 @@ describe('placeholders never pass as real', () => {
 describe('hot categories', () => {
   it('shows the live 7-day list and switches window', async () => {
     renderHome()
-    const section = await waitFor(() => { const s = document.getElementById('hot'); expect(within(s).getByText(/Legal/)).toBeInTheDocument(); return s })
+    const section = await waitFor(() => { const s = document.getElementById('hot'); expect(within(within(s).getByRole('list', { name: /Fields ranked/ })).getByText(/Legal/)).toBeInTheDocument(); return s })
     expect(within(section).getByText('▲ 40%')).toBeInTheDocument()
     expect(within(section).queryByText('Sample')).toBeNull()
     fireEvent.click(within(section).getByRole('button', { name: '30 days' }))
-    expect(within(section).getByText(/Sales/)).toBeInTheDocument()
+    expect(within(within(section).getByRole('list', { name: /Fields ranked/ })).getByText(/Sales/)).toBeInTheDocument()
     expect(within(section).getByText('▼ 5%')).toBeInTheDocument()
     expect(within(section).getByText(/in the last 30 days/)).toBeInTheDocument()
   })
   it('a change that has no usable base is a dash, not a made-up percentage', async () => {
     renderHome()
-    const section = await waitFor(() => { const s = document.getElementById('hot'); expect(within(s).getByText(/Finance/)).toBeInTheDocument(); return s })
+    const section = await waitFor(() => { const s = document.getElementById('hot'); expect(within(within(s).getByRole('list', { name: /Fields ranked/ })).getByText(/Finance/)).toBeInTheDocument(); return s })
     expect(within(section).getAllByText('—').length).toBeGreaterThan(0)
   })
   it('expands the sample list to all 12 fields on request', async () => {
     statsData = new Error('down')
     renderHome()
     const section = await waitFor(() => { const s = document.getElementById('hot'); expect(s).toBeTruthy(); return s })
-    expect(within(section).getAllByRole('listitem')).toHaveLength(6)
+    const list = () => within(within(section).getByRole('list', { name: /Fields ranked/ })).getAllByRole('listitem')
+    expect(list()).toHaveLength(6)
     fireEvent.click(within(section).getByRole('button', { name: /Show all 12 fields/ }))
-    expect(within(section).getAllByRole('listitem')).toHaveLength(12)
+    expect(list()).toHaveLength(12)
   })
 })
 

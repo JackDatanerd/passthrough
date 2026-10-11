@@ -1,12 +1,12 @@
 import { useState } from 'react'
 import useReveal, { useCountUp } from '../../hooks/useReveal'
-import { BEFORE_AFTER } from '../../lib/homeContent'
+import { BEFORE_AFTER, ROBOT_READ } from '../../lib/homeContent'
 
 const R = 40
 const C = 2 * Math.PI * R
 const tone = (v) => (v >= 80 ? { bar: 'bg-green-500', text: 'text-green-700' } : v >= 60 ? { bar: 'bg-amber-400', text: 'text-amber-700' } : { bar: 'bg-red-500', text: 'text-red-700' })
 
-function Panel({ title, badge, badgeClass, data, good, active, className }) {
+function Panel({ title, badge, badgeClass, data, good, active, className, read }) {
   const n = useCountUp(data.score, active)
   const ring = good ? { track: '#dcfce7', arc: '#16a34a', text: 'text-green-700' } : { track: '#fee2e2', arc: '#dc2626', text: 'text-red-700' }
   return (
@@ -46,7 +46,16 @@ function Panel({ title, badge, badgeClass, data, good, active, className }) {
           )
         })}
       </div>
-      <div className="mt-5 pt-4 border-t border-gray-100 flex flex-wrap gap-1.5">
+      <div className="mt-5 rounded-lg border border-gray-200 bg-gray-50 px-3.5 py-3 font-mono text-[12.5px] leading-7">
+        <p className="text-[11px] font-bold uppercase tracking-widest text-gray-500 mb-1">{good ? 'What the robot reads now' : 'What the robot read'}</p>
+        {read.map(([k, kind, v]) => (
+          <div key={k} className="grid grid-cols-[104px_1fr] gap-2">
+            <span className="text-gray-500">{k}</span>
+            <span className={`font-semibold ${kind === 'good' ? 'text-green-700' : 'text-red-700'}`}>{v}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap gap-1.5">
         <p className="w-full text-xs text-gray-500 mb-1">
           {good ? 'Same keywords, now matched truthfully to real experience:' : 'Keywords the job asks for that this resume is missing:'}
         </p>
@@ -82,9 +91,9 @@ export default function BeforeAfter() {
         </div>
 
         <div ref={ref} className="grid md:grid-cols-2 gap-5">
-          <Panel title="Before" badge="Filtered out" badgeClass="bg-red-50 text-red-700" data={before} good={false} active={shown}
+          <Panel title="Before" badge="Filtered out" badgeClass="bg-red-50 text-red-700" data={before} good={false} active={shown} read={ROBOT_READ.before}
             className={which === 'before' ? '' : 'hidden md:block'} />
-          <Panel title="After" badge="✓ Verified" badgeClass="bg-green-100 text-green-800" data={after} good active={shown}
+          <Panel title="After" badge="✓ Verified" badgeClass="bg-green-100 text-green-800" data={after} good active={shown} read={ROBOT_READ.after}
             className={which === 'after' ? '' : 'hidden md:block'} />
         </div>
         <p className="text-center text-xs text-gray-500 mt-4">Illustrative example — your actual score and breakdown appear after a real scan.</p>

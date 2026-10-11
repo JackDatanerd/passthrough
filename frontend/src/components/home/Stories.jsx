@@ -1,8 +1,10 @@
 import { Link } from 'react-router-dom'
 import { roleLabel } from '../../lib/roleCategories'
 import { avatarColour, initialOf, paragraphs } from '../../lib/homeFormat'
+import { PULL_QUOTES, QUOTES_ARE_SAMPLE } from '../../lib/homeContent'
 
 function interviewTag(s) {
+  if (s.tag) return s.tag   // sample content only; real stories never carry one
   if (s.interviewCount > 1) return `${s.interviewCount} interviews`
   return 'Interview booked'
 }
@@ -51,6 +53,7 @@ function Story({ s, isSample, badgeThreshold }) {
                 {timeline.map(t => <li key={t}><span className="text-blue-600" aria-hidden="true">● </span>{t}</li>)}
               </ul>
             )}
+            {s.moral && <p className="font-bold text-gray-900 text-[15.5px]">{s.moral}</p>}
           </div>
         </details>
       )}
@@ -91,6 +94,20 @@ export default function Stories({ stories, badgeThreshold }) {
             ? "Each story links to a live verification page — if the badge doesn't open, the story doesn't run."
             : 'Stories are shared by customers with their permission and reviewed before they appear.'}
         </p>
+
+        {PULL_QUOTES.length > 0 && (
+          <>
+            <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 mt-9">
+              {PULL_QUOTES.map(q => (
+                <figure key={q.text} className="m-0 pt-3.5 border-t-[3px] border-gray-900">
+                  <blockquote className="m-0 text-[16.5px] font-semibold leading-snug text-gray-900 mb-2">“{q.text}”</blockquote>
+                  <figcaption className="text-[13px] text-gray-500">{q.who}</figcaption>
+                </figure>
+              ))}
+            </div>
+            {QUOTES_ARE_SAMPLE && <p className="text-center text-xs text-gray-500 mt-4">The short quotes above are illustrative placeholders.</p>}
+          </>
+        )}
       </div>
     </section>
   )

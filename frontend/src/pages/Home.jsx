@@ -46,7 +46,7 @@ export default function Home() {
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
       <main className="flex-1">
-        <HomeHero data={data} />
+        <HomeHero data={data} badgeThreshold={badgeThreshold} />
 
         <div className="border-b border-gray-100 bg-gray-50 py-4">
           <div className="max-w-5xl mx-auto px-4 flex flex-wrap items-center justify-center gap-x-6 gap-y-1.5 text-sm text-gray-500">
@@ -57,9 +57,9 @@ export default function Home() {
 
         <StatsBand data={data} badgeThreshold={badgeThreshold} />
         <BeforeAfter />
+        <VerifySection badgeThreshold={badgeThreshold} />
         <Stories stories={data.stories} badgeThreshold={badgeThreshold} />
         <HotCategories hot={data.hot} minReports={data.minReports} />
-        <VerifySection badgeThreshold={badgeThreshold} />
         <HowItWorks />
         <PricingSection pricing={pricing} byTier={byTier} refresh={refresh} clockOffsetMs={clockOffsetMs}
           referralCode={referralCode} limits={limits} />
