@@ -129,6 +129,19 @@
 //     * B5: a re-driven event that ended HELD is no longer reported as "recovered".
 //     (B1, the partner-reversal email blocking the 200, is fixed in fulfillment.service reversePayment.)
 //
+// 14. ROUND-11 AUDIT (section 8, independent pass — no migration):
+//     * G1: a failed automatic refund of a duplicate / undeliverable payment is retried by
+//       reconcile.service sweepFailedAutoRefunds (the "next webhook redelivery retries it" promise in the alerts was
+//       false: a PROCESSED charge.success is never redelivered). refund.failed's alert now says what happens next.
+//     * G2: admin Dismiss (POST /admin/webhook-events/:id/dismiss) closes a FAILED / HELD / RECEIVED row that can never
+//       succeed — it used to count on the dashboard and re-email the owner for ever.
+//     * G3: delivery health only counts paid sales NEWER than the last charge.success received, so it recovers as soon
+//       as webhooks flow again instead of staying red (and /healthz 503) for 7 days.
+//     * G4: sweepDisputes pages through Paystack's list and pages the owner about a PARTIAL accepted dispute it leaves alone.
+//     * G5: the admin list takes from/to dates; a replay that ends IGNORED no longer toasts as a success.
+//     * B1: sweepDisputes no longer re-marks a payment DISPUTED after an admin cleared it (it asks the inbox first).
+//     * B3: a re-run that ends IGNORED is not announced as "recovered".   * B4: closeResolvedHeldEvents pages past a backlog.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -474,7 +487,9 @@ async function processRefund(c, supabase, event, eventId) {
   if (event.event === 'refund.failed') {
     alert(c, 'Paystack refund.failed',
       `payment reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n\n` +
-      `The refund did not go through. The payment was NOT changed.`, incident)
+      `The refund did not go through (Paystack returns the money to your balance). The payment was NOT changed.\n\n` +
+      `If this was the automatic refund of a duplicate / undeliverable payment, the hourly sweep retries it (up to 5 times) and pages you if it gives up. ` +
+      `Otherwise refund it again from Paystack or Admin → Payments → Refund — if Paystack says the customer's bank details are needed, supply them in the Paystack dashboard.`, incident)
     return { status: 'PROCESSED', note: 'refund failed — alerted' }
   }
 
@@ -611,6 +626,20 @@ async function disputeResolutionSeen(supabase, event) {
   return !!(data && data.length)
 }
 
+// ROUND-11 (B1): has this exact dispute event already been PROCESSED (live delivery, sweep or replay)? sweepDisputes
+// asks before running a `create`: if the create was handled and an admin then used "clear dispute" while Paystack still
+// shows the dispute open, re-running it would put the payment straight back to DISPUTED. Fails safe: with no inbox, or
+// on a read error, it answers false (the sweep then behaves as before).
+async function disputeEventProcessed(supabase, type, id, { noteMatches = null } = {}) {
+  if (id == null) return false
+  try {
+    const { data, error } = await supabase.from('webhook_events').select('id, note')
+      .eq('provider', 'paystack').eq('event_key', `${type}:${id}`).eq('status', 'PROCESSED').limit(1)
+    if (error || !data || !data.length) return false
+    return noteMatches ? noteMatches.test(String(data[0].note || '')) : true
+  } catch (_) { return false }
+}
+
 // ROUND-9 (G2): Paystack auto-accepts (and refunds the customer) when a dispute is not answered in time; the payload's
 // `due_at` says exactly when, and was kept in DISPUTE_KEEP but never shown. Returns a line for the owner alert, or ''.
 function disputeDeadlineLine(d, now = Date.now()) {
@@ -727,7 +756,7 @@ async function processDispute(c, supabase, event) {
   if (event.event === 'charge.dispute.create') detail += disputeDeadlineLine(d)
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
-  return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (payment ? undefined : 'payment not found')) }
+  return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (marked ? 'marked DISPUTED' : (payment ? undefined : 'payment not found'))) }
 }
 
 async function processEvent(c, supabase, event, eventId) {
@@ -877,6 +906,8 @@ async function handlePaystack(c) {
 const EVENT_STATUSES = ['RECEIVED', 'PROCESSED', 'IGNORED', 'HELD', 'FAILED']
 // PROCESSED is deliberately not replayable: it already did its work.
 const REPLAYABLE = ['RECEIVED', 'IGNORED', 'HELD', 'FAILED']
+// ROUND-11 (G2): the unfinished states a person may close out by hand (see dismissWebhookEvent).
+const DISMISSABLE = ['RECEIVED', 'HELD', 'FAILED']
 // A RECEIVED row this old was not merely in flight: the Worker died mid-event.
 const STUCK_RECEIVED_MS = 15 * 60 * 1000
 
@@ -900,6 +931,10 @@ async function listWebhookEvents(c) {
   const reference = clean(c.req.query('reference'))
   const type = clean(c.req.query('type'))
   const providerQ = c.req.query('provider')
+  // ROUND-11 (G5): optional received-date window (YYYY-MM-DD, inclusive, UTC). Anything else is ignored.
+  const dayOf = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? String(v) : null
+  const fromDay = dayOf(c.req.query('from'))
+  const toDay = dayOf(c.req.query('to'))
 
   const build = cols => {
     let q = getSupabase(c.env).from('webhook_events').select(cols, { count: 'exact' })
@@ -910,6 +945,8 @@ async function listWebhookEvents(c) {
     if (reference) q = q.ilike('reference', `%${reference.replace(/_/g, '\\_')}%`)
     if (type) q = q.eq('event_type', type)
     if (providerQ === 'paystack' || providerQ === 'resend') q = q.eq('provider', providerQ)
+    if (fromDay) q = q.gte('received_at', `${fromDay}T00:00:00.000Z`)
+    if (toDay) q = q.lt('received_at', new Date(Date.parse(`${toDay}T00:00:00Z`) + 24 * 3600 * 1000).toISOString())
     return q
   }
   let { data, error, count } = await build(LIST_COLS_FULL)
@@ -928,6 +965,8 @@ async function listWebhookEvents(c) {
     replayedBy: r.replayed_by || null, replayedAt: r.replayed_at || null,
     // ROUND-7 (B2): Replay only when there is a payload to re-run (non-actionable events keep none).
     replayable: REPLAYABLE.includes(r.status) && !!(r.has_event || r.has_type || r.payload),
+    // ROUND-11 (G2): a row that is waiting on a person (or a Worker that died) and may never succeed can be closed by hand.
+    dismissable: DISMISSABLE.includes(r.status),
   })), meta: { page, pageSize, total: count || 0 } })
 }
 
@@ -1006,6 +1045,44 @@ async function replayWebhookEvent(c) {
     hint: r.outcome.status === 'HELD' ? 'Still held — an amount/currency mismatch needs Admin → Payments → Recheck (accept amount).' : null } })
 }
 
+// POST /api/admin/webhook-events/:id/dismiss  { note?: string }
+// ROUND-11 (G2): a FAILED / HELD / stuck-RECEIVED row whose cause can never be fixed (the payment row is gone, a customer
+// refunded out of band, a mismatch the owner settled by hand elsewhere) had no way out: it counted on the dashboard for ever,
+// was re-driven 8 times and then re-emailed every 7 days (HELD: every 3). Dismiss closes it as IGNORED with the admin's
+// note, audited like Replay. A dismissed row is still replayable (its payload is kept) — except a Resend row, whose
+// recipient addresses are cleared exactly as a finished one's are. Guarded on the status the admin saw, so a row that
+// finished or was replayed in the meantime is never overwritten.
+async function dismissWebhookEvent(c) {
+  const supabase = getSupabase(c.env)
+  let body = {}
+  try { body = await c.req.json() } catch (_) { body = {} }
+  const rawNote = body && typeof body.note === 'string' ? body.note : ''
+  const note = rawNote.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200)
+
+  const { data: row, error } = await supabase.from('webhook_events')
+    .select('id, provider, status, event_type, reference').eq('id', c.req.param('id')).maybeSingle()
+  if (error) throw error
+  if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
+  if (!DISMISSABLE.includes(row.status))
+    return c.json({ success: false, message: `This event is ${row.status} — only FAILED, HELD or stuck RECEIVED events can be dismissed.` }, 409)
+
+  const actor = c.get ? c.get('user') : null
+  const text = `dismissed by admin${note ? `: ${note}` : ''}`
+  const base = { status: 'IGNORED', processed_at: new Date().toISOString() }
+  const run = patch => supabase.from('webhook_events').update(patch).eq('id', row.id).eq('status', row.status).select('id')
+  let { data: moved, error: upErr } = await run({ ...base, error: null, note: text })
+  if (upErr && isColumnMissing(upErr)) ({ data: moved, error: upErr } = await run({ ...base, error: text }))   // 0036 not applied yet
+  if (upErr) throw upErr
+  if (!moved || !moved.length)
+    return c.json({ success: false, message: 'This event changed while you were looking at it — reload and try again.' }, 409)
+
+  if (row.provider === 'resend') await require('./resend-webhook.controller').clearResendPayload(supabase, row.id)
+  await logAdminAction(c, supabase, 'webhook.dismiss', 'webhook_event', row.id, {
+    eventType: row.event_type, provider: row.provider || 'paystack', reference: row.reference || null, from: row.status, byNote: !!note, actor: actor?.id || null,
+  })
+  return c.json({ success: true, data: { status: 'IGNORED', note: text } })
+}
+
 // ROUND-6 (G3): payloads stored before isActionableEvent existed. Only IGNORED rows of types no handler acts on;
 // charge.success / refund.* / charge.dispute.* keep theirs (an unknown-reference charge.success is IGNORED and
 // replayable, so it must keep its payload). Best-effort, never throws, no migration.
@@ -1044,29 +1121,39 @@ const REDRIVE_PER_RUN = 10
 // (the admin Recheck calls it so the dashboard clears at once); otherwise the oldest HELD rows.
 // Best-effort and never throws.
 const HELD_RESOLVED_PAYMENT_STATUSES = ['SUCCESS', 'DISPUTED', 'REFUNDED']
-async function closeResolvedHeldEvents(supabase, { reference = null, limit = 100 } = {}) {
+async function closeResolvedHeldEvents(supabase, { reference = null, limit = 100, maxPages = 5 } = {}) {
   const closed = []
   try {
-    let q = supabase.from('webhook_events').select('id, reference').eq('status', 'HELD')
-    q = reference ? q.eq('reference', reference) : q.order('received_at', { ascending: true }).limit(limit)
-    const { data: held, error } = await q
-    if (error || !held || !held.length) return closed
-    const refs = [...new Set(held.map(h => h.reference).filter(Boolean))]
-    if (!refs.length) return closed
-    const { data: pays, error: payErr } = await supabase.from('payments').select('paystack_ref, status').in('paystack_ref', refs)
-    if (payErr || !pays) return closed
-    const statusOf = new Map(pays.map(p => [p.paystack_ref, p.status]))
-    for (const h of held) {
-      const st = statusOf.get(h.reference)
-      if (!HELD_RESOLVED_PAYMENT_STATUSES.includes(st)) continue
-      const base = { status: 'PROCESSED', processed_at: new Date().toISOString(), error: null }
-      // `.eq('status','HELD')` so a row someone replayed in the meantime is never overwritten.
-      let { error: upErr } = await supabase.from('webhook_events')
-        .update({ ...base, note: `resolved — payment is ${st}` }).eq('id', h.id).eq('status', 'HELD')
-      if (upErr && isColumnMissing(upErr))
-        ({ error: upErr } = await supabase.from('webhook_events').update({ ...base, error: `resolved — payment is ${st}` }).eq('id', h.id).eq('status', 'HELD'))
-      if (upErr) console.error('closeResolvedHeldEvents update failed:', upErr.message)
-      else closed.push(h.id)
+    // ROUND-11 (B4): only the oldest `limit` HELD rows were ever looked at, so a backlog of rows that are still waiting on a
+    // person (never closable) at the front hid every newer, resolved one. Page past them (bounded).
+    let cursor = null   // received_at of the last row seen: closing rows shifts offsets, a cursor does not
+    for (let page = 0; page < (reference ? 1 : maxPages); page++) {
+      let q = supabase.from('webhook_events').select('id, reference, received_at').eq('status', 'HELD')
+      if (!reference && cursor) q = q.gt('received_at', cursor)
+      q = reference ? q.eq('reference', reference) : q.order('received_at', { ascending: true }).limit(limit)
+      const { data: held, error } = await q
+      if (error || !held || !held.length) break
+      const refs = [...new Set(held.map(h => h.reference).filter(Boolean))]
+      if (refs.length) {
+        const { data: pays, error: payErr } = await supabase.from('payments').select('paystack_ref, status').in('paystack_ref', refs)
+        if (payErr || !pays) break
+        const statusOf = new Map(pays.map(p => [p.paystack_ref, p.status]))
+        for (const h of held) {
+          const st = statusOf.get(h.reference)
+          if (!HELD_RESOLVED_PAYMENT_STATUSES.includes(st)) continue
+          const base = { status: 'PROCESSED', processed_at: new Date().toISOString(), error: null }
+          // `.eq('status','HELD')` so a row someone replayed in the meantime is never overwritten.
+          let { error: upErr } = await supabase.from('webhook_events')
+            .update({ ...base, note: `resolved — payment is ${st}` }).eq('id', h.id).eq('status', 'HELD')
+          if (upErr && isColumnMissing(upErr))
+            ({ error: upErr } = await supabase.from('webhook_events').update({ ...base, error: `resolved — payment is ${st}` }).eq('id', h.id).eq('status', 'HELD'))
+          if (upErr) console.error('closeResolvedHeldEvents update failed:', upErr.message)
+          else closed.push(h.id)
+        }
+      }
+      if (held.length < limit) break
+      cursor = held[held.length - 1].received_at
+      if (!cursor) break
     }
   } catch (err) {
     console.error('closeResolvedHeldEvents error:', err.message)
@@ -1131,7 +1218,8 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
     ran++
     result.redriven.push(row.id)
     const r = await runStoredEvent(c, supabase, row, { redrive: useRedrives })
-    if (r.ok && r.outcome.status !== 'HELD') result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
+    // ROUND-11 (B3): only PROCESSED is a recovery — a re-run that ends IGNORED (payment still missing…) or HELD did no work.
+    if (r.ok && r.outcome.status === 'PROCESSED') result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
   }
 
   // Exhausted: said ONCE per row (7-day cooldown), newest first so a fresh failure is never hidden
@@ -1187,6 +1275,8 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
 // Anything already in step is left alone, so a healthy system runs no handler and sends nothing. Never throws.
 const DISPUTE_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
 const MAX_DISPUTES_PER_RUN = 20
+const DISPUTE_PAGE_SIZE = 100
+const DISPUTE_MAX_PAGES = 5
 const isoDay = ms => new Date(ms).toISOString().slice(0, 10)
 
 function disputeIsResolved(d) {
@@ -1194,10 +1284,21 @@ function disputeIsResolved(d) {
 }
 
 async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date.now(), list = null } = {}) {
-  const result = { checked: 0, actioned: [], failed: [], error: null }
+  const result = { checked: 0, actioned: [], failed: [], needsHuman: [], error: null }
   try {
     if (!env.PAYSTACK_SECRET_KEY) return result
-    const fetchList = list || (() => paystackService.listDisputes(env, { from: isoDay(now - DISPUTE_LOOKBACK_MS), to: isoDay(now + 24 * 3600 * 1000) }))
+    // ROUND-11 (G4): the default fetch pages through Paystack's list (it used to read the first 100 only, silently dropping the
+    // rest of a busy window). An injected `list` (tests) answers once, as before.
+    const fetchList = list || (async () => {
+      const all = []
+      for (let page = 1; page <= DISPUTE_MAX_PAGES; page++) {
+        const r = await paystackService.listDisputes(env, { from: isoDay(now - DISPUTE_LOOKBACK_MS), to: isoDay(now + 24 * 3600 * 1000), page, perPage: DISPUTE_PAGE_SIZE })
+        const items = Array.isArray(r?.data) ? r.data : []
+        all.push(...items)
+        if (items.length < DISPUTE_PAGE_SIZE) break
+      }
+      return { data: all }
+    })
     const body = await fetchList()
     const disputes = (Array.isArray(body?.data) ? body.data : []).filter(d => d && d.transaction && typeof d.transaction.reference === 'string')
     result.checked = disputes.length
@@ -1231,8 +1332,15 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         if (!/accept|declin/.test(resolution)) continue
         if (/declin/.test(resolution) && st !== 'DISPUTED') continue
         const disputed = Number(d.refund_amount)
-        if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) continue
+        if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) {
+          // ROUND-11 (G4): left for a human — but if the resolve webhook was the thing that got lost, nobody has been told.
+          result.needsHuman.push({ reference: d.transaction.reference, dispute: d.id ?? null, disputed, paid: known.amount })
+          continue
+        }
       }
+      // ROUND-11 (B1): a create this app already acted on (a live delivery, or an earlier run of this sweep) is not re-run: an admin may
+      // have cleared the dispute since while Paystack still lists it open, and re-running would put the payment straight back to DISPUTED.
+      if (type === 'charge.dispute.create' && await disputeEventProcessed(supabase, 'charge.dispute.create', d.id, { noteMatches: /marked DISPUTED/ })) continue
       try {
         const event = minimalDisputeEvent({ event: type, data: d })
         const outcome = await processDispute(c, supabase, event)
@@ -1242,7 +1350,7 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         if (d.id != null) {
           try {
             const rec = await recordEvent(supabase, { eventKey: eventKeyFor(event, ''), eventType: type, reference: d.transaction.reference, payload: redactEvent(event) })
-            if (rec.mode !== 'done') await markEvent(supabase, rec, 'PROCESSED', 'caught up by the dispute sweep')
+            if (rec.mode !== 'done') await markEvent(supabase, rec, 'PROCESSED', `caught up by the dispute sweep${outcome.note ? ` — ${outcome.note}` : ''}`)
           } catch (err) { console.error('dispute sweep: inbox record failed:', err && err.message) }
         }
         result.actioned.push({ reference: d.transaction.reference, dispute: d.id ?? null, type, note: outcome.note || null })
@@ -1250,6 +1358,13 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         console.error(`dispute sweep failed for ${d.transaction.reference}:`, err && err.message)
         result.failed.push({ reference: d.transaction.reference, error: err && err.message })
       }
+    }
+    for (const n of result.needsHuman) {
+      if (!(await alertAllowed(env, `webhook-alert-cooldown:dispute-partial:${n.dispute ?? n.reference}`, 7 * 24 * 3600))) continue
+      alert(c, 'Partially accepted dispute needs a decision',
+        `reference: ${n.reference}\ndispute: ${n.dispute ?? '?'}\ndisputed: ${n.disputed} of ${n.paid} paid\n\n` +
+        `Paystack reports this dispute as ACCEPTED for only part of the payment (the charge.dispute.resolve webhook did not arrive, so this was found by the sweep). ` +
+        `The payment was left as it is: decide in Admin → Payments (Reverse if the whole sale should come back, Clear dispute if it should count again). Emailed once a week per dispute.`, `${n.reference}:dispute-partial`)
     }
     if (result.actioned.length) console.error(`[CRITICAL] dispute sweep caught up with ${result.actioned.length} dispute(s) the webhooks did not deliver`)
     if (result.actioned.length && await alertAllowed(env, 'webhook-alert-cooldown:dispute-sweep', 6 * 3600))
@@ -1278,7 +1393,7 @@ const HEALTH_GRACE_MS = 30 * 60 * 1000
 const HEALTH_MAX_PAYMENTS = 200
 
 async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
-  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], lastResendEventAt: null }
+  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], unrecovered: 0, unrecoveredReferences: [], lastResendEventAt: null }
   try {
     const latest = async type => {
       let q = supabase.from('webhook_events').select('received_at').eq('provider', 'paystack')   // Resend events have their own stamp below
@@ -1298,20 +1413,28 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
       .order('created_at', { ascending: false }).limit(HEALTH_MAX_PAYMENTS)
     if (payErr) throw payErr
     // Free-credit redemptions never touch Paystack, so they never have a webhook.
-    const refs = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:') && p.amount_cents > 0).map(p => p.paystack_ref)
+    const paid = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:') && p.amount_cents > 0)
+    const refs = paid.map(p => p.paystack_ref)
     out.paidChecked = refs.length
     if (refs.length) {
       const seen = new Set()
+      let latestSeenMs = 0   // when the newest charge.success for one of THIS app's payments arrived
       for (let i = 0; i < refs.length; i += 100) {
         const { data: evs, error: evErr } = await supabase.from('webhook_events')
-          .select('reference').eq('event_type', 'charge.success').in('reference', refs.slice(i, i + 100))
+          .select('reference, received_at').eq('event_type', 'charge.success').in('reference', refs.slice(i, i + 100))
         if (evErr) throw evErr
-        for (const e of evs || []) seen.add(e.reference)
+        for (const e of evs || []) { seen.add(e.reference); const t = Date.parse(e.received_at); if (t > latestSeenMs) latestSeenMs = t }
       }
-      const missing = refs.filter(r => !seen.has(r))
+      const missing = paid.filter(p => !seen.has(p.paystack_ref))
       out.paidWithoutEvent = missing.length
-      out.missingReferences = missing.slice(0, 5)
-    }
+      out.missingReferences = missing.slice(0, 5).map(p => p.paystack_ref)
+      // ROUND-11 (G3): a sale older than the newest charge.success we DID receive for our own payments is history — webhooks have
+      // reached this app since. Only sales newer than that still point at a delivery problem, so the alert (and /healthz) clear as
+      // soon as webhooks flow again instead of staying red until the sale ages out of the 7-day window.
+      const unrecovered = missing.filter(p => !latestSeenMs || Date.parse(p.created_at) > latestSeenMs)
+      out.unrecovered = unrecovered.length
+      out.unrecoveredReferences = unrecovered.slice(0, 5).map(p => p.paystack_ref)
+    } else { out.unrecovered = 0; out.unrecoveredReferences = [] }
   } catch (err) {
     out.available = false
     console.error('webhook health error:', err && err.message)
@@ -1332,9 +1455,11 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
 // no such fallback. Returns a description of the problem, or null when delivery looks healthy / cannot be judged.
 function deliveryProblem(health) {
   if (!health || health.available === false) return null
-  if (!(health.paidWithoutEvent > 0)) return null
-  const refs = (health.missingReferences || []).join(', ')
-  return `${health.paidWithoutEvent} paid sale(s) in the last 7 days (of ${health.paidChecked} checked) have no charge.success webhook on record${refs ? ` — e.g. ${refs}` : ''}`
+  // `unrecovered` (round 11) when the health object has it; older shapes fall back to the raw count.
+  const n = typeof health.unrecovered === 'number' ? health.unrecovered : health.paidWithoutEvent
+  if (!(n > 0)) return null
+  const refs = (typeof health.unrecovered === 'number' ? (health.unrecoveredReferences || []) : (health.missingReferences || [])).join(', ')
+  return `${n} paid sale(s) in the last 7 days (of ${health.paidChecked} checked) have no charge.success webhook on record and are newer than the last one received${refs ? ` — e.g. ${refs}` : ''}`
 }
 
 // Hourly (index.js) — emails the owner once per day while the condition holds. Never throws.
@@ -1361,4 +1486,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

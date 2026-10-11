@@ -1,0 +1,39 @@
+Section 8 (Webhooks) — round 11 (fresh independent audit of webhooks.controller.js, webhooks.routes.js, resend-webhook, reconcile sweeps)
+Base: a44baa3 "Scan/ATS round 5 ..."
+
+NO MIGRATION. Nothing to apply before deploying.
+
+GAPS
+G1  A failed automatic refund was never retried. refund.service tells the owner "the next verify / webhook redelivery also
+    retries it", but nothing re-ran it once Paystack stopped redelivering (about 72 h) and the buyer never returned: a
+    duplicate or undeliverable payment stayed charged for nothing. New hourly sweepFailedAutoRefunds (reconcile.service,
+    called from webhookMaintenanceSweep): finds SUCCESS payments 20 min - 14 days old that bought nothing (no scan, scan
+    missing, another payment owns the scan, or unclaimed scan of a deleted account) and re-runs the same autoRefund
+    path. Budget 5 attempts per payment per week (an IN_PROGRESS refund is not an attempt and gives the slot back),
+    10 payments per run; the owner gets one summary of what was re-queued and one page, once a week per payment, for
+    anything it gave up on. The misleading text in fulfillment.service and the refund.failed alert now says what really
+    happens.
+G2  An inbox event that can never succeed (FAILED forever, HELD for a payment that was settled by hand, RECEIVED row for a
+    Worker that died) could only be left to keep alerting and being re-driven. New POST /admin/webhook-events/:id/dismiss
+    (FAILED / HELD / RECEIVED only, 409 otherwise, guarded update, note up to 200 chars, audit-logged as webhook.dismiss)
+    closes it as IGNORED and keeps it visible with the admin's note. Admin → Webhooks gets a Dismiss button + confirmation.
+G3  The delivery-health alert and /healthz stayed red for up to 7 days after webhooks were fixed: one old sale with no
+    charge.success counted until it aged out of the window. Health now also reports `unrecovered` = missing sales newer
+    than the latest charge.success received for this app's payments; the alert and the banner use that.
+G4  A partially accepted dispute found by the dispute sweep was skipped silently, and the sweep read only the first 100
+    disputes. Partial ones now page the owner once a week per dispute; the list is paged (100 x 5).
+G5  The webhook inbox had no date filter. from / to (YYYY-MM-DD, inclusive) on the API and two date fields on the page.
+
+BUGS
+B1  The dispute sweep re-ran a charge.dispute.create it (or a live delivery) had already acted on. If an admin cleared the
+    dispute meanwhile and Paystack still listed it open, the payment went straight back to DISPUTED. It now skips a create
+    whose inbox row is PROCESSED with a "marked DISPUTED" note.
+B2  The webhook_events prune ignored its own error, so a failing prune was invisible. It is logged now.
+B3  The stale-event re-drive counted any returned outcome as "recovered", including HELD. Only PROCESSED counts.
+B4  closeResolvedHeldEvents only looked at the oldest 100 HELD rows, so 100 genuinely waiting rows hid every later,
+    resolved one. It pages with a received_at cursor (5 x 100).
+(Frontend) the date inputs on Admin → Webhooks accept only real calendar days (2026-99-99 is ignored).
+
+TESTS  tests/webhooks.round11.test.js (14), tests/reconcile.autoRefundSweep.test.js (6),
+       frontend/tests/pages/AdminWebhooks.round11.test.jsx (6).
+NOTE   tests/verify.*, scan.sweep.round4 and mappers.migrations fail on the base commit a44baa3 already (not part of this change).

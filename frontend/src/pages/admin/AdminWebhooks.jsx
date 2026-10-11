@@ -36,6 +36,15 @@ export default function AdminWebhooks() {
   const referenceQ = searchParams.get('reference') || ''
   const typeQ = searchParams.get('type') || ''
   const providerQ = PROVIDERS.some(([v]) => v === searchParams.get('provider')) ? searchParams.get('provider') : ''
+  // ROUND 11 (G5): received-date window (YYYY-MM-DD), kept in the URL like the other filters.
+  const dayParam = k => {
+    const v = searchParams.get(k) || ''
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) return ''
+    const d = new Date(`${v}T00:00:00Z`)
+    return Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== v ? '' : v   // 2026-99-99 / 2026-02-31 are not days
+  }
+  const fromQ = dayParam('from')
+  const toQ = dayParam('to')
   const [refDraft, setRefDraft] = useState(referenceQ)
   const [typeDraft, setTypeDraft] = useState(typeQ)
   // ROUND-3 AUDIT (feature gap): "what exactly did Paystack send?" used to mean SQL.
@@ -47,6 +56,9 @@ export default function AdminWebhooks() {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [pending, setPending] = useState(null)
+  // ROUND 11 (G2): close out a FAILED / HELD / stuck row that can never succeed.
+  const [dismissing, setDismissing] = useState(null)
+  const [dismissNote, setDismissNote] = useState('')
   // ROUND 5 (feature gap): are webhooks reaching this app at all? See webhooks.controller computeWebhookHealth.
   const [health, setHealth] = useState(null)
 
@@ -60,7 +72,7 @@ export default function AdminWebhooks() {
   // back/forward changed the results but left the previous search text in the inputs. Keep them
   // in step with the URL, and start from page 1 whenever the filters change.
   useEffect(() => { setRefDraft(referenceQ); setTypeDraft(typeQ) }, [referenceQ, typeQ])
-  useEffect(() => { setPage(1) }, [status, referenceQ, typeQ, providerQ])
+  useEffect(() => { setPage(1) }, [status, referenceQ, typeQ, providerQ, fromQ, toQ])
 
   const begin = useLatestRequest()
 
@@ -68,7 +80,7 @@ export default function AdminWebhooks() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined, provider: providerQ || undefined } })
+      const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined, provider: providerQ || undefined, from: fromQ || undefined, to: toQ || undefined } })
       if (!isCurrent()) return
       setEvents(res.data.data)
       setTotal(res.data.meta.total)
@@ -78,12 +90,12 @@ export default function AdminWebhooks() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [page, status, referenceQ, typeQ, providerQ])
+  }, [page, status, referenceQ, typeQ, providerQ, fromQ, toQ])
 
   useEffect(() => { load() }, [load])
 
   function applyFilters(next = {}) {
-    const merged = { status, reference: referenceQ, type: typeQ, provider: providerQ, ...next }
+    const merged = { status, reference: referenceQ, type: typeQ, provider: providerQ, from: fromQ, to: toQ, ...next }
     const params = {}
     for (const [k, v] of Object.entries(merged)) if (v) params[k] = v
     setPage(1)
@@ -109,13 +121,29 @@ export default function AdminWebhooks() {
     try {
       const res = await api.post(`/admin/webhook-events/${ev.id}/replay`)
       const d = res.data.data || {}
-      toast({ message: `Replayed → ${d.status}${d.note ? ` (${d.note})` : ''}${d.hint ? `. ${d.hint}` : ''}`, type: d.status === 'HELD' ? 'error' : 'success' })
+      // ROUND 11 (G5): only PROCESSED did work. IGNORED (payment still missing…) is not a success.
+      toast({ message: `Replayed → ${d.status}${d.note ? ` (${d.note})` : ''}${d.hint ? `. ${d.hint}` : ''}`, type: d.status === 'PROCESSED' ? 'success' : d.status === 'HELD' ? 'error' : 'info' })
       load(); loadHealth()
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Replay failed.'), type: 'error' })
     } finally {
       setBusyId(null)
       setPending(null)
+    }
+  }
+
+  async function runDismiss(ev) {
+    setBusyId(ev.id)
+    try {
+      await api.post(`/admin/webhook-events/${ev.id}/dismiss`, { note: dismissNote.trim() || undefined })
+      toast({ message: 'Event dismissed.', type: 'success' })
+      load(); loadHealth()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Dismiss failed.'), type: 'error' })
+    } finally {
+      setBusyId(null)
+      setDismissing(null)
+      setDismissNote('')
     }
   }
 
@@ -142,18 +170,20 @@ export default function AdminWebhooks() {
             placeholder="contains…" wrapperClassName="w-56" className="font-mono" />
           <Input id="wh-type" label="Event type" value={typeDraft} onChange={e => setTypeDraft(e.target.value)}
             placeholder="e.g. refund.processed" wrapperClassName="w-56" className="font-mono" />
+          <Input id="wh-from" label="From" type="date" value={fromQ} onChange={e => applyFilters({ from: e.target.value })} wrapperClassName="w-40" />
+          <Input id="wh-to" label="To" type="date" value={toQ} onChange={e => applyFilters({ to: e.target.value })} wrapperClassName="w-40" />
           <Button type="submit" size="sm" variant="secondary">Search</Button>
         </form>
       </div>
 
       {health && health.available && (
-        <div className={health.paidWithoutEvent > 0 ? 'text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2' : 'text-xs text-gray-500'}>
-          {health.paidWithoutEvent > 0 ? (
+        <div className={(health.unrecovered ?? health.paidWithoutEvent) > 0 ? 'text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2' : 'text-xs text-gray-500'}>
+          {(health.unrecovered ?? health.paidWithoutEvent) > 0 ? (
             <>
-              <strong>{health.paidWithoutEvent} paid sale{health.paidWithoutEvent === 1 ? '' : 's'} in the last 7 days {health.paidWithoutEvent === 1 ? 'has' : 'have'} no charge.success event on record</strong>
+              <strong>{health.unrecovered ?? health.paidWithoutEvent} paid sale{(health.unrecovered ?? health.paidWithoutEvent) === 1 ? '' : 's'} in the last 7 days {(health.unrecovered ?? health.paidWithoutEvent) === 1 ? 'has' : 'have'} no charge.success event on record and {(health.unrecovered ?? health.paidWithoutEvent) === 1 ? 'is' : 'are'} newer than the last one received</strong>
               {' '}(of {health.paidChecked} checked). They were settled by the buyer's return visit or the hourly sweeps, so Paystack may not be
               reaching this app: check the webhook URL and signing key in the Paystack dashboard.
-              {health.missingReferences?.length > 0 && <> e.g. <span className="font-mono text-xs">{health.missingReferences.join(', ')}</span></>}
+              {(health.unrecoveredReferences || health.missingReferences)?.length > 0 && <> e.g. <span className="font-mono text-xs">{(health.unrecoveredReferences || health.missingReferences).join(', ')}</span></>}
               {' '}
             </>
           ) : null}
@@ -173,7 +203,7 @@ export default function AdminWebhooks() {
         and Paystack was told to retry. IGNORED = an event this app doesn't act on, or a reference with no payment row. Resend rows are bounce / complaint /
         delivery-failure events (a failed one means the address was NOT suppressed yet).
         A stuck RECEIVED means the Worker died mid-event. FAILED and stuck events are re-driven automatically every hour
-        (8 automatic re-runs, then you're emailed once; Paystack's own redeliveries are counted separately); HELD ones wait for you. Replay re-runs the stored event through the same handlers a
+        (8 automatic re-runs, then you're emailed once; Paystack's own redeliveries are counted separately); HELD ones wait for you. Dismiss closes a FAILED / HELD / stuck row that can never succeed (it stays visible as IGNORED, with your note). Replay re-runs the stored event through the same handlers a
         live delivery uses; it is safe to repeat.
       </p>
 
@@ -226,6 +256,11 @@ export default function AdminWebhooks() {
                         Replay
                       </Button>
                     )}
+                    {ev.dismissable && (
+                      <Button size="sm" variant="ghost" className="ml-2" disabled={busyId === ev.id} onClick={() => { setDismissNote(''); setDismissing(ev) }}>
+                        Dismiss
+                      </Button>
+                    )}
                   </td>
                 </tr>
                 {openId === ev.id && (
@@ -246,6 +281,20 @@ export default function AdminWebhooks() {
       )}
 
       {totalPages > 1 && <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />}
+
+      <ConfirmDialog
+        open={!!dismissing}
+        title="Dismiss this event?"
+        message={dismissing ? `Close ${dismissing.eventType}${dismissing.reference ? ` (${dismissing.reference})` : ''} as IGNORED. It stops counting as needing attention and stops being re-driven and emailed about. Nothing is re-run. Use this only for an event that can never succeed or that you have already dealt with by hand.` : ''}
+        confirmLabel="Dismiss"
+        danger
+        loading={!!dismissing && busyId === dismissing.id}
+        onConfirm={() => runDismiss(dismissing)}
+        onCancel={() => { setDismissing(null); setDismissNote('') }}
+      >
+        <Input id="wh-dismiss-note" label="Note (optional)" value={dismissNote} maxLength={200} onChange={e => setDismissNote(e.target.value)}
+          placeholder="e.g. refunded in the Paystack dashboard" />
+      </ConfirmDialog>
 
       <ConfirmDialog
         open={!!pending}

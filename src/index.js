@@ -299,6 +299,15 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Refund reconciliation error:', err.message)
       }
+      // Webhooks round 11 (G1): a duplicate / undeliverable payment whose automatic refund failed is retried here (nothing else ever does).
+      try {
+        const r = await require('./services/reconcile.service').sweepFailedAutoRefunds(env, getSupabase(env))
+        if (r.error) console.error('Auto-refund sweep query:', r.error)
+        else if (r.queued.length || r.failed.length || r.gaveUp.length)
+          console.log(`Auto-refund sweep: ${r.candidates} candidate(s), ${r.queued.length} re-queued, ${r.failed.length} failed, ${r.gaveUp.length} gave up`)
+      } catch (err) {
+        console.error('Auto-refund sweep error:', err.message)
+      }
       // Webhooks round 4 (B4): a commission whose ledger write failed after the payment settled is
       // never retried by Paystack (the webhook was answered 200) — re-run it here.
       try {
@@ -320,7 +329,9 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       // webhook_events is an audit log, not an archive.
       try {
         const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
-        await getSupabase(env).from('webhook_events').delete().lt('received_at', cutoff).in('status', ['PROCESSED', 'IGNORED'])
+        // Round 11 (B2): supabase-js returns { error } rather than throwing, so a failing prune used to be invisible.
+        const { error: pruneErr } = await getSupabase(env).from('webhook_events').delete().lt('received_at', cutoff).in('status', ['PROCESSED', 'IGNORED'])
+        if (pruneErr) console.error('webhook_events prune error:', pruneErr.message)
       } catch (err) {
         console.error('webhook_events prune error:', err.message)
       }

@@ -607,7 +607,118 @@ async function sweepMissingCommissions(env, supabase, { now = Date.now(), alert 
   return result
 }
 
+// ── Failed automatic refunds (duplicate / undeliverable payments) ──────────
+// Webhooks round 11 (G1). settlePayment refunds a DUPLICATE payment (a second charge for a scan another payment owns) and an
+// UNDELIVERABLE one (scan or account gone) automatically — once, right after the charge.success webhook, and again only on a
+// verify / recheck. If that refund failed (Paystack error, a lost claim race) or Paystack later failed it (refund.failed), nothing
+// ever tried again: the alerts said "the next verify / webhook redelivery also retries it", but a PROCESSED charge.success is never
+// redelivered and the buyer has no reason to verify again, so the buyer stayed charged for nothing until a human noticed.
+//
+// This hourly sweep finds SUCCESS payments that are provably duplicate / undeliverable and still not refunded, and runs the same
+// guarded auto-refund (claim + Paystack refund-list check that fails closed). Classification is read-only and local; Paystack is
+// only asked about the (rare) payments that classify. Bounded: MAX_AUTO_REFUND_RETRIES attempts per payment per week, then ONE page
+// to the owner and it is left for a human. A payment already refunded (REFUNDED) or with an open/processed refund is left alone by
+// queueRefund itself (OPEN_REFUND / ALREADY_REFUNDED → IN_PROGRESS), so a healthy refund in flight costs one list call per run.
+const AUTO_REFUND_MIN_AGE_MS = 20 * 60 * 1000
+const AUTO_REFUND_LOOKBACK_MS = 14 * 24 * 60 * 60 * 1000
+const MAX_AUTO_REFUND_RETRIES = 5
+const MAX_AUTO_REFUND_PER_RUN = 10
+
+async function sweepFailedAutoRefunds(env, supabase, { now = Date.now(), alert = true } = {}) {
+  const result = { checked: 0, candidates: 0, queued: [], inProgress: 0, failed: [], gaveUp: [], error: null }
+  const refundService = require('./refund.service')
+  if (!refundService.autoRefundEnabled(env) && !refundService.autoRefundUndeliverableEnabled(env)) return result
+
+  const { data: pays, error } = await supabase.from('payments')
+    .select('id, paystack_ref, scan_id, user_id, status, amount_cents, currency, fix_tier, created_at')
+    .eq('status', 'SUCCESS').gt('amount_cents', 0)
+    .lt('created_at', new Date(now - AUTO_REFUND_MIN_AGE_MS).toISOString())
+    .gt('created_at', new Date(now - AUTO_REFUND_LOOKBACK_MS).toISOString())
+    .order('created_at', { ascending: false }).limit(300)
+  if (error) { result.error = error.message; return result }
+  const paid = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:'))
+  result.checked = paid.length
+  if (!paid.length) return result
+
+  const scanIds = [...new Set(paid.map(p => p.scan_id).filter(Boolean))]
+  const scanById = new Map()
+  for (let i = 0; i < scanIds.length; i += 100) {
+    const { data: scans, error: scanErr } = await supabase.from('scans')
+      .select('id, user_id, fix_purchased, fix_payment_id').in('id', scanIds.slice(i, i + 100))
+    if (scanErr) { result.error = scanErr.message; return result }
+    for (const sc of scans || []) scanById.set(sc.id, sc)
+  }
+  // Owners of scans nothing has claimed yet: a deleted account can never be delivered to.
+  const unclaimedOwners = [...new Set([...scanById.values()].filter(sc => !sc.fix_payment_id && sc.user_id).map(sc => sc.user_id))]
+  const deletedOwner = new Set()
+  for (let i = 0; i < unclaimedOwners.length; i += 100) {
+    const { data: users, error: userErr } = await supabase.from('users').select('id, deleted_at').in('id', unclaimedOwners.slice(i, i + 100))
+    if (userErr) { result.error = userErr.message; return result }
+    for (const u of users || []) if (u.deleted_at) deletedOwner.add(u.id)
+  }
+
+  const todo = []
+  for (const p of paid) {
+    if (!p.scan_id) { todo.push({ p, outcome: 'NO_SCAN' }); continue }
+    const sc = scanById.get(p.scan_id)
+    if (!sc) { todo.push({ p, outcome: 'SCAN_MISSING' }); continue }
+    if (sc.fix_payment_id && sc.fix_payment_id !== p.id) { todo.push({ p, outcome: 'DUPLICATE', ownerPaymentId: sc.fix_payment_id }); continue }
+    if (!sc.fix_payment_id && !sc.fix_purchased && sc.user_id && deletedOwner.has(sc.user_id)) todo.push({ p, outcome: 'ACCOUNT_DELETED' })
+  }
+  result.candidates = todo.length
+
+  let attempted = 0
+  for (const { p, outcome, ownerPaymentId } of todo) {
+    if (attempted >= MAX_AUTO_REFUND_PER_RUN) break
+    // Bounded retries per payment per week (shared with nothing else): a Paystack that keeps failing the refund must not be hammered hourly for ever.
+    const { hitQuota } = require('../middleware/rateLimiter')
+    if (!(await hitQuota(env, `autorefund-retry:${p.id}`, MAX_AUTO_REFUND_RETRIES, 7 * 24 * 3600))) {
+      try {
+        const kv = env.RATE_LIMIT_KV
+        const key = `autorefund-gaveup:${p.id}`
+        let fresh = true
+        try { if (kv && await kv.get(key)) fresh = false; else if (kv) await kv.put(key, '1', { expirationTtl: 7 * 24 * 3600 }) } catch (_) { /* over-alert rather than go silent */ }
+        if (fresh) result.gaveUp.push({ reference: p.paystack_ref, scanId: p.scan_id, outcome })
+      } catch (_) { /* never throws */ }
+      continue
+    }
+    attempted++
+    try {
+      const r = outcome === 'DUPLICATE'
+        ? await refundService.autoRefundDuplicate(env, supabase, p, { ownerPaymentId })
+        : await refundService.autoRefundUndeliverable(env, supabase, p, { outcome })
+      if (r.status === 'QUEUED') result.queued.push({ reference: p.paystack_ref, scanId: p.scan_id, outcome })
+      else if (r.status === 'FAILED') result.failed.push({ reference: p.paystack_ref, scanId: p.scan_id, outcome, reason: r.reason })
+      else {
+        // A refund already open / processed at Paystack (or an ineligible payment) is not an attempt: hand the slot back, or a refund
+        // that legitimately takes days would burn the budget and be reported as "gave up".
+        if (r.status === 'IN_PROGRESS') result.inProgress++
+        await require('../middleware/rateLimiter').refundQuota(env, `autorefund-retry:${p.id}`, 7 * 24 * 3600, 1000)
+      }
+    } catch (err) {
+      result.failed.push({ reference: p.paystack_ref, scanId: p.scan_id, outcome, reason: err.message })
+    }
+  }
+
+  if (alert && (result.queued.length || result.gaveUp.length)) {
+    try {
+      const emailService = require('./email.service')
+      if (result.queued.length)
+        await emailService.sendOwnerAlert(env, `Auto-refund sweep: ${result.queued.length} refund(s) re-queued`,
+          `These payments bought nothing (duplicate / undeliverable) and their automatic refund had failed or never completed. A refund was queued with Paystack now; refund.processed will mark each REFUNDED:\n\n` +
+          result.queued.map(q => `${q.reference}  scan ${q.scanId || '(none)'}  ${q.outcome}`).join('\n'), { dedupeKey: 'autorefund-sweep-queued' })
+      if (result.gaveUp.length)
+        await emailService.sendOwnerAlert(env, `Auto-refund sweep gave up on ${result.gaveUp.length} payment(s) — refund by hand`,
+          `The hourly sweep tried ${MAX_AUTO_REFUND_RETRIES} times this week to refund these duplicate / undeliverable payments and could not. The buyers are still charged for nothing. ` +
+          `Refund each in Paystack (or Admin → Payments → Refund); if Paystack asks for the customer's bank details, supply them there:\n\n` +
+          result.gaveUp.map(q => `${q.reference}  scan ${q.scanId || '(none)'}  ${q.outcome}`).join('\n'), { dedupeKey: 'autorefund-sweep-gaveup' })
+    } catch (_) { /* alerting is best effort */ }
+  }
+  return result
+}
+
 module.exports = {
+  sweepFailedAutoRefunds, AUTO_REFUND_MIN_AGE_MS, AUTO_REFUND_LOOKBACK_MS, MAX_AUTO_REFUND_RETRIES, MAX_AUTO_REFUND_PER_RUN,
   sweepMissingCommissions, COMMISSION_MIN_AGE_MS, COMMISSION_LOOKBACK_MS, MAX_COMMISSION_REPAIRS_PER_RUN,
   sweepReversedPayments, REVERSAL_LOOKBACK_MS, REVERSAL_RECHECK_MS, MAX_REVERSAL_CHECKS_PER_RUN,
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,

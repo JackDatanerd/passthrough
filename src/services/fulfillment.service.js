@@ -245,7 +245,7 @@ async function runUndeliverableAutoRefund(env, supabase, row, outcome, source, {
     try {
       await require('./email.service').sendOwnerAlert(env, 'Automatic refund of an undeliverable payment FAILED — refund it by hand',
         `source: ${source}\noutcome: ${outcome}\nreference: ${row.paystack_ref}\nscanId: ${row.scan_id}\namount: ${row.amount_cents} ${row.currency}\n` +
-        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The next verify / webhook redelivery also retries it.`,
+        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The hourly auto-refund sweep also retries it (5 attempts, then you are paged once).`,
         { dedupeKey: `${row.paystack_ref}:autorefund` })
     } catch (_) { /* best effort */ }
   }
@@ -261,7 +261,7 @@ async function runDuplicateAutoRefund(env, supabase, row, ownerPaymentId, source
     try {
       await require('./email.service').sendOwnerAlert(env, 'Automatic refund of a duplicate payment FAILED — refund it by hand',
         `source: ${source}\nreference: ${row.paystack_ref}\nscanId: ${row.scan_id}\namount: ${row.amount_cents} ${row.currency}\n` +
-        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The next verify / webhook redelivery also retries it.`,
+        `reason: ${r.reason}\n\nRefund it in Paystack or Admin → Payments → Refund. The hourly auto-refund sweep also retries it (5 attempts, then you are paged once).`,
         { dedupeKey: `${row.paystack_ref}:autorefund` })
     } catch (_) { /* best effort */ }
   }
@@ -494,7 +494,7 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
     if (autoOk)
       detail = `${owner} The whole amount is being refunded automatically; the refund.processed webhook marks it REFUNDED. Nothing to do unless that webhook never arrives.`
     else if (auto === 'FAILED')
-      detail = `${owner} The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the refund.processed webhook will mark it REFUNDED. The next verify / webhook redelivery also retries it.`
+      detail = `${owner} The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the refund.processed webhook will mark it REFUNDED. The hourly auto-refund sweep also retries it (5 attempts, then you are paged once).`
     else
       detail = `${owner} It was not refunded automatically${auto === 'SKIPPED' ? ` (${result.autoRefund.reason})` : ''}. Refund it in Paystack — the refund.processed webhook will mark it REFUNDED automatically.`
   } else if (result.outcome === 'MISMATCH') {
@@ -504,7 +504,7 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
   } else if (autoOk) {
     detail = `\nNothing was generated. The whole amount is being refunded automatically; the refund.processed webhook marks it REFUNDED. Nothing to do unless that webhook never arrives.`
   } else if (auto === 'FAILED') {
-    detail = `\nNothing was generated. The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the next verify / webhook redelivery also retries it.`
+    detail = `\nNothing was generated. The AUTOMATIC refund failed (${result.autoRefund.reason}). Refund it in Paystack or Admin → Payments → Refund — the hourly auto-refund sweep also retries it (5 attempts, then you are paged once).`
   } else {
     detail = `\nNothing was generated.${auto === 'SKIPPED' ? ` It was not refunded automatically (${result.autoRefund.reason}).` : ''} Refund it in Paystack.`
   }

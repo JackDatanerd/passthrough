@@ -211,8 +211,8 @@ async function createRefund(env, reference, { amount, currency, customerNote, me
 // auto-accepted and refunded after ~16 hours, and no other path ever learns of one). `from` / `to` are
 // dates (YYYY-MM-DD). Each item carries `id`, `status`, `resolution` (null until resolved), `refund_amount`,
 // `due_at`, `currency` and `transaction` ({ reference, amount, currency }).
-async function listDisputes(env, { from, to, perPage = 100 } = {}) {
-  const qs = new URLSearchParams({ perPage: String(perPage) })
+async function listDisputes(env, { from, to, perPage = 100, page = 1 } = {}) {
+  const qs = new URLSearchParams({ perPage: String(perPage), page: String(page) })
   if (from) qs.set('from', from)
   if (to) qs.set('to', to)
   const { res, json } = await paystackRequest(

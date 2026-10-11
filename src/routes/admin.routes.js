@@ -40,6 +40,7 @@ router.get('/webhook-events', wh.listWebhookEvents)
 router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
+router.post('/webhook-events/:id/dismiss', validateUuidParam(), wh.dismissWebhookEvent)
 
 // Customer stories: nothing reaches the public homepage until approved here.
 router.get('/stories', stories.adminListStories)
