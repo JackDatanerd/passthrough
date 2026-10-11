@@ -57,7 +57,10 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
     try {
       const url = `/scan/${scan.id}/structure${anonToken ? `?token=${anonToken}` : ''}`
       const res = await api.post(url)
-      onUpdated({ originalResumeData: res.data.data.originalResumeData })
+      const d = res.data?.data || {}
+      // The same call also scores the formatted document and returns that detail — hand it up too, or
+      // the page keeps asking the person to "Check the formatted file" for a result it already holds.
+      onUpdated({ originalResumeData: d.originalResumeData, ...(d.atsDetail ? { atsDetail: d.atsDetail } : {}) })
     } catch (err) {
       setStructError(getErrorMessage(err, 'We couldn\'t read your file just now — try again in a minute.'))
     }

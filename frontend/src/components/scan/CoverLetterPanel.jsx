@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
-import { downloadBlob } from '../../lib/utils'
+import { downloadBlob, filenameFromDisposition } from '../../lib/utils'
 import { useCopy } from '../../hooks/useCopy'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
@@ -29,7 +29,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
     setError('')
     try {
       const res = await api.get(`/scan/${scan.id}/cover-letter`, { responseType: 'blob' })
-      downloadBlob(res.data, 'cover-letter.docx')
+      downloadBlob(res.data, filenameFromDisposition(res.headers, 'cover-letter.docx'))
     } catch (err) {
       setError(getErrorMessage(err, 'Could not download the letter — try again.'))
     }

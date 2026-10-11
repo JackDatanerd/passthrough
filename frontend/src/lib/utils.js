@@ -133,6 +133,20 @@ export async function copyToClipboard(text) {
 // ignores clicks on detached anchors) and the object URL is revoked LATER —
 // revoking it synchronously after click() cancels the download in Safari and
 // some Firefox versions.
+// The filename the server chose in Content-Disposition (it is exposed through CORS), or `fallback`.
+// Only a plain, path-free name is accepted; a header that is missing, malformed or tries a path
+// falls back rather than naming a download something odd.
+export function filenameFromDisposition(headers, fallback) {
+  try {
+    const raw = typeof headers?.get === 'function' ? headers.get('content-disposition') : (headers?.['content-disposition'] ?? headers?.['Content-Disposition'])
+    if (!raw) return fallback
+    const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(raw)
+    const plain = /filename\s*=\s*"([^"]+)"/i.exec(raw) || /filename\s*=\s*([^;\s]+)/i.exec(raw)
+    const name = star ? decodeURIComponent(star[1].trim()) : plain ? plain[1].trim() : ''
+    return name && !/[\\/]/.test(name) && name.length <= 120 ? name : fallback
+  } catch (_) { return fallback }
+}
+
 export function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')

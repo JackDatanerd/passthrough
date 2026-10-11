@@ -552,13 +552,55 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
 
   // Defensive filter — malformed entries from the model (missing/wrong-typed
   // fields) are dropped rather than allowed to crash the frontend list render.
-  const quantificationOpportunities = Array.isArray(envelope.quantificationOpportunities)
-    ? envelope.quantificationOpportunities.filter(
-        q => q && typeof q.bullet === 'string' && typeof q.suggestion === 'string'
-      )
-    : []
+  const quantificationOpportunities = groundQuantificationPrompts(rewritten, envelope.quantificationOpportunities)
 
   return { success: true, data: rewritten, quantificationOpportunities, error: null }
+}
+
+// Every quantification prompt is an "Add my number" button that edits ONE experience bullet by
+// exact text (QuantificationPrompts.replaceBullet). The model is told to quote the rewritten bullet
+// verbatim, but nothing checked that it had: a prompt whose bullet it had paraphrased, re-cased or
+// trimmed of punctuation shipped as a button that could only ever answer "that line has changed —
+// refresh", and refreshing never helped. Each prompt is now tied to a real bullet of the resume that
+// is being delivered: an exact match is kept, a near-verbatim one is snapped to the real text, and a
+// prompt that points at nothing is dropped. Duplicates collapse to one per bullet.
+const promptKey = t => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}%$]+/gu, ' ').trim()
+function groundQuantificationPrompts(resumeData, raw) {
+  if (!Array.isArray(raw)) return []
+  const bullets = []
+  for (const job of Array.isArray(resumeData?.experience) ? resumeData.experience : [])
+    for (const b of Array.isArray(job?.bullets) ? job.bullets : [])
+      if (typeof b === 'string' && b.trim()) bullets.push({ text: b, key: promptKey(b), words: new Set(promptKey(b).split(' ').filter(w => w.length > 2)) })
+  const out = []
+  const seen = new Set()
+  for (const q of raw) {
+    if (!q || typeof q.bullet !== 'string' || typeof q.suggestion !== 'string') continue
+    const want = q.bullet.trim()
+    if (!want) continue
+    let hit = bullets.find(b => b.text.trim() === want)
+    if (!hit) {
+      const k = promptKey(want)
+      hit = bullets.find(b => b.key === k)
+      if (!hit) {
+        // Near-verbatim (a word or two dropped / added): unique best word-overlap >= 0.8 of the larger side.
+        const words = new Set(k.split(' ').filter(w => w.length > 2))
+        let best = null, bestScore = 0, tie = false
+        for (const b of bullets) {
+          let shared = 0
+          for (const w of words) if (b.words.has(w)) shared++
+          const score = shared / Math.max(words.size, b.words.size, 1)
+          if (score > bestScore) { best = b; bestScore = score; tie = false } else if (score === bestScore && score > 0) tie = true
+        }
+        if (best && !tie && bestScore >= 0.8) hit = best
+      }
+    }
+    if (!hit) continue
+    const bullet = hit.text.trim()
+    if (seen.has(bullet)) continue
+    seen.add(bullet)
+    out.push({ ...q, bullet })
+  }
+  return out
 }
 
 // Languages, awards, publications, volunteer work, a job's location and an education entry's
@@ -1028,17 +1070,7 @@ async function generateBeautifulResumeHTML(env, resumeData, designTokens, verifi
 //      because the prompt legitimately asks for Google Fonts — those are
 //      allowlisted to fonts.googleapis.com/fonts.gstatic.com and every
 //      other target is neutralized.
-const ALLOWED_RESOURCE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com']
-
-function isAllowedResourceUrl(url) {
-  try {
-    const u = new URL(url, 'https://invalid.example/')
-    if (u.protocol !== 'https:' && u.protocol !== 'http:') return false
-    return ALLOWED_RESOURCE_HOSTS.includes(u.hostname.toLowerCase())
-  } catch (_) {
-    return false
-  }
-}
+const { isAllowedResourceUrl } = require('../lib/renderAllowlist')
 
 // BUG FIX (audit): four narrow regex-bypass shapes hardened, all in the same
 // "belt and suspenders" spirit as the rest of this function (JS execution is
@@ -1101,7 +1133,7 @@ function sanitizeGeneratedHtml(html) {
   out = out.replace(/<(img|iframe|object|embed|applet|frame|video|audio|source|track|base|input|use|feImage)\b[^>]*\/?>/gi, '')
   // Attributes that fetch or phone home with no script: srcset/poster (images), ping (beacon on
   // click), formaction, and SVG's xlink:href. None has a role in a static resume.
-  out = out.replace(/[\s/](?:srcset|poster|ping|formaction|xlink:href)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+  out = out.replace(/[\s/](?:srcset|imagesrcset|poster|ping|formaction|xlink:href)\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
   // image-set("http://…" 1x) takes a bare STRING, not url(…), so the url() filter below never
   // sees it — yet it triggers a fetch like any background image.
   out = out.replace(/(?:-webkit-)?image-set\s*\([^)]*\)/gi, 'none')
@@ -1245,4 +1277,4 @@ function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
   return { ok: reasons.length === 0, reasons }
 }
 
-module.exports = { extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
+module.exports = { groundQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }

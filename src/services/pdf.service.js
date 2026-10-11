@@ -22,6 +22,7 @@
 // verification") — run it before assuming this scales.
 
 const puppeteer = require('@cloudflare/puppeteer')
+const { isAllowedRenderRequest } = require('../lib/renderAllowlist')
 
 // A launch refused because the account is over its concurrent-browser or launches-per-minute limit
 // is transient by nature: the limit frees as other sessions close. Retrying a few times with a
@@ -60,6 +61,18 @@ async function generateResumePDF(env, html, { launchRetryDelaysMs } = {}) {
       // disabling it outright closes the whole class of issue rather than
       // relying solely on the upstream regex-based sanitizer.
       await page.setJavaScriptEnabled(false)
+      // SCAN/ATS (fresh pass): the sanitizer upstream is a regex filter, and one attribute it did not
+      // know (`imagesrcset` on an allowlisted <link rel=preload as=image>) made Chromium fetch an
+      // arbitrary URL from inside Cloudflare's network with no JS at all. Instead of chasing every
+      // request-triggering attribute, the browser itself now refuses any request that is not an
+      // allowlisted font host (or inline data), so a miss in the sanitizer can no longer reach the
+      // network. Fail closed: if interception cannot be enabled, the render fails (the caller
+      // degrades to DOCX-only) rather than running unguarded.
+      await page.setRequestInterception(true)
+      page.on('request', req => {
+        if (isAllowedRenderRequest(req.url())) req.continue()
+        else req.abort('blockedbyclient')
+      })
       await page.setDefaultNavigationTimeout(15000)
       // BUG FIX (Scan/ATS pass): the fallback below only wrapped page.pdf(),
       // but the failure it exists for — the render template pulling Google

@@ -19,8 +19,11 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 function fakePuppeteer(pdfBehavior, setContentBehavior) {
   const calls = []
   let pdfCallCount = 0
+  const handlers = {}
   const page = {
     setJavaScriptEnabled: async v => { calls.push(['setJavaScriptEnabled', v]) },
+    setRequestInterception: async v => { calls.push(['setRequestInterception', v]) },
+    on: (evt, fn) => { handlers[evt] = fn },
     setDefaultNavigationTimeout: async ms => { calls.push(['setDefaultNavigationTimeout', ms]) },
     setContent: async (html, opts) => {
       calls.push(['setContent', opts.waitUntil])
@@ -41,7 +44,7 @@ function fakePuppeteer(pdfBehavior, setContentBehavior) {
     newPage: async () => { calls.push(['newPage']); return page },
     close: async () => { calls.push(['browser.close']) },
   }
-  return { calls, launch: async env => { calls.push(['launch', env]); return browser } }
+  return { calls, handlers, launch: async env => { calls.push(['launch', env]); return browser } }
 }
 
 function setup(pdfBehavior, setContentBehavior) {
@@ -49,7 +52,7 @@ function setup(pdfBehavior, setContentBehavior) {
   const { mod, restore } = loadWithStubs('services/pdf.service.js', {
     '@cloudflare/puppeteer': { launch: fake.launch },
   })
-  return { mod, restore, calls: fake.calls }
+  return { mod, restore, calls: fake.calls, handlers: fake.handlers }
 }
 
 let t
@@ -64,13 +67,28 @@ describe('pdf.service — generateResumePDF', () => {
 
     // Order matters: JS must be off before setContent ever runs the HTML.
     expect(t.calls.map(c => c[0])).toEqual([
-      'launch', 'newPage', 'setJavaScriptEnabled', 'setDefaultNavigationTimeout',
+      'launch', 'newPage', 'setJavaScriptEnabled', 'setRequestInterception', 'setDefaultNavigationTimeout',
       'setContent', 'emulateMediaType', 'pdf', 'page.close', 'browser.close',
     ])
     expect(t.calls.find(c => c[0] === 'launch')[1]).toBe(env.BROWSER)
     expect(t.calls.find(c => c[0] === 'setJavaScriptEnabled')[1]).toBe(false)
     expect(t.calls.find(c => c[0] === 'setContent')[1]).toBe('networkidle0')
     expect(t.calls.find(c => c[0] === 'pdf')[2]).toMatchObject({ format: 'A4', printBackground: true })
+  })
+
+  it('refuses every request that is not an allowlisted font host (a sanitizer miss cannot reach the network)', async () => {
+    t = setup()
+    await t.mod.generateResumePDF({ BROWSER: {} }, '<html/>')
+    expect(t.calls.find(c => c[0] === 'setRequestInterception')[1]).toBe(true)
+    const decide = url => { let out; t.handlers.request({ url: () => url, continue: () => { out = 'continue' }, abort: r => { out = `abort:${r}` } }); return out }
+    expect(decide('about:blank')).toBe('continue')
+    expect(decide('data:font/woff2;base64,AAAA')).toBe('continue')
+    expect(decide('https://fonts.googleapis.com/css2?family=Inter')).toBe('continue')
+    expect(decide('https://fonts.gstatic.com/s/inter/v1/x.woff2')).toBe('continue')
+    expect(decide('http://169.254.169.254/latest/meta-data/')).toBe('abort:blockedbyclient')
+    expect(decide('https://evil.example/x.png')).toBe('abort:blockedbyclient')
+    expect(decide('https://fonts.googleapis.com.evil.example/x')).toBe('abort:blockedbyclient')
+    expect(decide('file:///etc/passwd')).toBe('abort:blockedbyclient')
   })
 
   it('retries once with domcontentloaded when the first render times out, and still returns a PDF', async () => {

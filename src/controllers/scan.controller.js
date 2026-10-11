@@ -164,20 +164,20 @@ async function renderStructuredResumeText(resumeData) {
 // consumer is idempotent per scan — see runAtsScan's claim). If the queue itself
 // is unavailable the old in-request path remains as the fallback, so a queue
 // outage degrades the scan rather than losing it.
-async function dispatchAtsScan(ctx, supabase, scanId, anonToken) {
+async function dispatchAtsScan(ctx, supabase, scanId, anonToken, ipSlotKey = null) {
   // An anonymous scan carries the limiter bucket it spent, so a failure on OUR side can hand
   // the visitor's one-an-hour slot back (see refundScanSlot).
   const anonRlKey = anonToken ? rateLimiter.anonScanSlotKey(ctx) : null
   if (ctx.env.FIX_QUEUE) {
     try {
-      await ctx.env.FIX_QUEUE.send({ type: 'runAtsScan', scanId, anonToken: anonToken || null, anonRlKey })
+      await ctx.env.FIX_QUEUE.send({ type: 'runAtsScan', scanId, anonToken: anonToken || null, anonRlKey, ipSlotKey })
       return
     } catch (err) {
       console.error(`createScan: could not enqueue runAtsScan (${scanId}) — falling back to waitUntil:`, err.message)
     }
   }
   ctx.executionCtx?.waitUntil(
-    runAtsScan(ctx.env, supabase, scanId, anonToken || undefined, { anonRlKey }).catch(err => console.error('Unhandled runAtsScan:', err.message))
+    runAtsScan(ctx.env, supabase, scanId, anonToken || undefined, { anonRlKey, ipSlotKey }).catch(err => console.error('Unhandled runAtsScan:', err.message))
   )
 }
 
@@ -317,7 +317,7 @@ async function createScan(ctx) {
   // i.e. the company intro - and the requirements at the bottom were thrown away. It is now fitted:
   // company / benefits / EEO sections go first, title + requirements are kept. Short postings are
   // stored exactly as pasted. The fitted text is what is stored AND shown back to the person.
-  jdText = atsService.fitJobDescription(jdText, c.MAX_JD_CHARS).trim()
+  jdText = atsService.fitJobDescription(atsService.collapseWhitespaceRuns(jdText).trim(), c.MAX_JD_CHARS).trim()
   if (jdText.length < 50) {
     return ctx.json({ success: false, message: 'Job description too short (min 50 chars).' }, 400)
   }
@@ -552,7 +552,7 @@ async function createScan(ctx) {
       throw createErr
     }
 
-    await dispatchAtsScan(ctx, supabase, scanId, null)
+    await dispatchAtsScan(ctx, supabase, scanId, null, ipSlotKey)
     return ctx.json({ success: true, data: { scanId, anonToken: null } })
   }
 
@@ -707,8 +707,17 @@ async function refundScanQuota(supabase, scan, label) {
 // Gives back whatever "one more scan" the submitter spent: a signed-in person's daily slot, or an
 // anonymous visitor's one-an-hour slot (the bucket createScan recorded on the job). The anonymous
 // refund only applies inside the limiter's own window — after that the slot has already reset.
-async function refundScanSlot(env, supabase, scan, label, anonRlKey) {
-  if (scan && scan.userId) return refundScanQuota(supabase, scan, label)
+async function refundScanSlot(env, supabase, scan, label, anonRlKey, ipSlotKey = null) {
+  if (scan && scan.userId) {
+    await refundScanQuota(supabase, scan, label)
+    // The per-IP ceiling is a shared budget the scan also spent a slot of (createScan); a scan that
+    // failed on OUR side must not keep eating it, or five failed scans lock a whole office out for a day.
+    if (ipSlotKey && slotSpentAt(scan) && Date.now() - Date.parse(slotSpentAt(scan)) < 23 * 3600 * 1000) {
+      try { await rateLimiter.refundQuota(env, ipSlotKey, 24 * 3600, 10) }
+      catch (err) { console.error(`${label}: ip-cap refund failed:`, err.message) }
+    }
+    return
+  }
   if (!scan || !anonRlKey || !slotSpentAt(scan)) return
   if (Date.now() - Date.parse(slotSpentAt(scan)) > 55 * 60 * 1000) return
   await rateLimiter.refundAnonScanSlot(env, anonRlKey)
@@ -1931,6 +1940,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
   // default (20s) that fits under its cap.
   const structureOpts = opts.structureTimeoutMs ? { timeoutMs: opts.structureTimeoutMs } : {}
   const anonRlKey = opts.anonRlKey || null
+  const ipSlotKey = opts.ipSlotKey || null
   try {
     // CLAIM, not a blind write. The job now arrives through an at-least-once
     // queue: a redelivery of a scan that already finished would re-score it
@@ -1998,7 +2008,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
           // Only a failure of OUR structuring call is refunded — "tell us more"
           // (too little text) is the person's to fix, and refunding those would
           // make an unlimited free retry loop.
-          if (/could not structure/i.test(parseErrorMessage || '')) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (structure failure)', anonRlKey)
+          if (/could not structure/i.test(parseErrorMessage || '')) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (structure failure)', anonRlKey, ipSlotKey)
           return { success: false, error: parseErrorMessage || 'Could not structure background.' }
         }
       }
@@ -2040,7 +2050,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
           status: 'ERROR',
           full_ats_report: { error: 'Saved profile data missing.' }
         }).eq('id', scanId)
-        await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (saved profile missing)', anonRlKey)
+        await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (saved profile missing)', anonRlKey, ipSlotKey)
         return { success: false, error: 'Saved profile data missing.' }
       }
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
@@ -2076,7 +2086,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       }).eq('id', scanId)
       // No Claude scoring call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.
-      await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey)
+      await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey, ipSlotKey)
       return { success: false, error: failureMessage(code), errorCode: code }
     }
 
@@ -2179,7 +2189,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     } catch (_) {}
     // An unexpected throw mid-pipeline is our fault, not the person's.
     if (failedIt) {
-      try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey) } catch (_) {}
+      try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey, ipSlotKey) } catch (_) {}
     }
     return { success: false, error: err.message }
   }

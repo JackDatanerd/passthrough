@@ -27,7 +27,7 @@ import { statusLabel, formatDate } from '../lib/utils'
 import { useCopy } from '../hooks/useCopy'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
-import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
+import { clearBrainDumpDraft, loadBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Checkbox from '../components/ui/Checkbox'
@@ -780,7 +780,7 @@ export default function ScanResult() {
                 </p>
               </>
             )}
-            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && (
+            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && !!loadBrainDumpDraft()?.text?.trim() && (
               <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
             )}
             {!scan.fixPurchased && scan.failure?.retryable !== false && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (

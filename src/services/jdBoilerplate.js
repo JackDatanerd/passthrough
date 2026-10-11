@@ -111,11 +111,17 @@ const GENERIC_NOISE_PATTERNS = [
   /\bapply (?:now|with linkedin|with indeed)\b/gi,
   /\bback to (?:search results|job search|all jobs)\b/gi,
   /\bcreate a job alert\b/gi,
-  /\bsign in\b/gi,
   /\baccept (?:all )?cookies\b/gi,
   /\bwe use cookies\b/gi,
-  /\bcookie policy\b/gi,
-  /\bprivacy policy\b/gi,
+  // SCAN/ATS (fresh pass): "sign in", "privacy policy" and "cookie policy" are ALSO real job
+  // content (a privacy counsel / DPO / compliance / support posting). Stripping them
+  // case-insensitively everywhere turned "own our privacy policy and cookie policy program" into
+  // "own our and program" and cost those roles their headline keywords. Page chrome writes them as
+  // capitalised link labels that follow a break (a full stop, a pipe, a bullet, another label), so
+  // only that form is removed; a phrase that follows a lowercase word or a comma is prose, and stays.
+  /(?<![a-z,] )\bSign [Ii]n\b/g,
+  /(?<![a-z,] )\bCookie Policy\b/g,
+  /(?<![a-z,] )\bPrivacy (?:Policy|Notice|Statement)\b/g,
 ]
 
 function stripGenericNoise(text) {

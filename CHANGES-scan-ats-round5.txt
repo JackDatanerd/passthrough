@@ -1,0 +1,43 @@
+SCAN / ATS CORE — fresh independent pass (round 5)
+Base: 7e05947. Section 2 audited from scratch; every item below was reproduced with a probe before it was changed.
+
+BUGS FIXED
+1. ReDoS in fitJobDescription (ats.service.js): BOILER_CAPS' `\s{2,}` alternative was quadratic on whitespace runs.
+   A ~100K-char job description with internal whitespace cost ~9.7s of CPU on an unauthenticated request (createScan
+   runs it before the brain-dump length check, so the rate-limit slot is handed back on the 400). Now anchored to the
+   start of a run (`(?<!\s)\s{2,}`): 100K case = ~50ms. createScan also collapses 3+ whitespace runs first
+   (collapseWhitespaceRuns) so indentation/blank-line padding no longer eats the MAX_JD_CHARS budget.
+2. normalizeTechTerms (ats.service.js): the Go / C / R rules used variable-length lookbehinds that re-scan whitespace
+   runs at every position (24K spaces = ~1.3s). Replaced with a captured prefix; behaviour identical (60,000
+   randomised inputs compared old vs new: 0 differences).
+3. Sanitizer bypass (claude.service.js): `imagesrcset` on an allowlisted <link rel=preload as=image> survived
+   sanitizeGeneratedHtml and Chromium fetched it. Stripped.  GAP CLOSED with it: pdf.service.js now enables request
+   interception and refuses every request that is not an allowlisted font host / inline data (shared allowlist in
+   new lib/renderAllowlist.js), so a future sanitizer miss cannot reach the network. Fails closed.
+4. resumeDiff.js paired experience/education/project/volunteer entries BY POSITION when both lists had equal length.
+   A reordered rewrite, or a job swapped for another in the delivered-resume editor, showed phantom title/date changes
+   (Analyst -> Consultant between two employers). Now paired by identity (name, near-identical name, shared dates or
+   bullet); unmatched entries show as added/removed.
+5. quantificationOpportunities were never checked against the rewritten bullets (claude.service.js): a prompt whose
+   bullet the model had paraphrased shipped as an "Add my number" button that could only answer "refresh". Each prompt
+   is now tied to a real experience bullet (exact, or snapped when near-verbatim) or dropped; duplicates collapse.
+6. describeWeakAreas: a non-English resume has actionVerbRate = null and `null < 0.7` is true, so the retry feedback
+   told the rewrite to fix action verbs. Now only a real number counts.
+7. jdBoilerplate.js generic noise stripper deleted "privacy policy", "cookie policy", "sign in" from real posting
+   prose (a privacy/compliance role lost its headline keywords: "own our privacy policy program" -> "own our program").
+   Now only the capitalised link-label form after a break is removed; prose is kept.
+8. ResumeDataEditor "Preview what we extracted" dropped the atsDetail (formattedScore) the server returned, so the
+   banner kept asking to "Check the formatted file". Handed up now.
+9. ScanResult: the "still saved in this browser" line showed for failed manual-entry scans that have no saved draft.
+   Shown only when a draft exists.
+10. CoverLetterPanel ignored the server's Content-Disposition filename (always cover-letter.docx). New
+    filenameFromDisposition helper (path-free names only).
+
+GAP CLOSED
+- A signed-in scan that fails on OUR side now also gives back its slot of the shared per-IP ceiling
+  (ipSlotKey travels in the queue message like anonRlKey already did).
+
+TESTS ADDED / UPDATED
+tests/scan.ats.freshpass.test.js, frontend/tests/scan.freshpass.test.jsx, additions to tests/pdf.service.test.js,
+tests/scan.controller.round4.test.js, frontend/tests/resumeDiff.test.js; tests/scan.ats.closeout.test.js and
+tests/crossCutting.round1.test.js updated for the new queue field / puppeteer stub.

@@ -77,12 +77,13 @@ describe('retryScan: deterministic failures and the slot clock', () => {
 describe('refund rules key on when the slot was spent, not when the scan was created', () => {
   function setup(anonSpy = []) {
     const rpcs = []
+    const ipRefunds = []
     const db = createFakeSupabase(q => { if (q.op === 'rpc') { rpcs.push([q.name, q.args]); return { data: true, error: null } } })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'middleware/rateLimiter.js': { refundAnonScanSlot: async (_e, k) => { anonSpy.push(k) }, anonScanSlotKey: () => 'k' },
+      'middleware/rateLimiter.js': { refundAnonScanSlot: async (_e, k) => { anonSpy.push(k) }, anonScanSlotKey: () => 'k', refundQuota: async (_e, k, w, m) => { ipRefunds.push([k, w, m]) } },
     })
-    return { mod, restore, db, rpcs, anonSpy }
+    return { mod, restore, db, rpcs, anonSpy, ipRefunds }
   }
   it('an account scan CREATED yesterday but RETRIED today is refunded when the retry fails on our side', async () => {
     t = setup()
@@ -104,6 +105,18 @@ describe('refund rules key on when the slot was spent, not when the scan was cre
     t = setup()
     await t.mod.__test.refundScanSlot({}, t.db, { userId: null, createdAt: minutesAgo(180), scanSlotSpentAt: minutesAgo(4) }, 'x', 'anon-key')
     expect(t.anonSpy).toEqual(['anon-key'])
+  })
+  it('a signed-in scan that fails on our side also gives back its slot of the shared per-IP ceiling', async () => {
+    t = setup()
+    await t.mod.__test.refundScanSlot({}, t.db, { userId: 'u1', createdAt: minutesAgo(3) }, 'x', null, 'rl:scanip:abc')
+    expect(t.rpcs).toEqual([['decrement_scan_count', { p_user_id: 'u1' }]])
+    expect(t.ipRefunds).toEqual([['rl:scanip:abc', 24 * 3600, 10]])
+  })
+  it('no per-IP slot is handed back when none was spent (a retry spends none) or it was spent a day ago', async () => {
+    t = setup()
+    await t.mod.__test.refundScanSlot({}, t.db, { userId: 'u1', createdAt: minutesAgo(3) }, 'x', null, null)
+    await t.mod.__test.refundScanSlot({}, t.db, { userId: 'u1', createdAt: minutesAgo(24 * 60 + 5) }, 'x', null, 'rl:scanip:abc')
+    expect(t.ipRefunds).toEqual([])
   })
   it('an anonymous slot spent over 55 minutes ago is not handed back', async () => {
     t = setup()

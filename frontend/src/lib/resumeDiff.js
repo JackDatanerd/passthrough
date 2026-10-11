@@ -131,47 +131,71 @@ function diffJob(original, rewritten) {
   }
 }
 
-function diffExperience(originalJobs, rewrittenJobs) {
-  const matched = []
-  const usedRewrittenIdx = new Set()
-
-  if (originalJobs.length === rewrittenJobs.length) {
-    originalJobs.forEach((job, i) => {
-      matched.push({ original: job, rewritten: rewrittenJobs[i] })
-      usedRewrittenIdx.add(i)
-    })
-  } else {
-    // BUG FIX (Scan/ATS section audit): this file's own header comment
-    // declares that every AI-sourced field gets coerced via str()/optional-
-    // chaining so a wrong-typed or missing value degrades gracefully instead
-    // of throwing — diffJob does that correctly (original?.company etc.), but
-    // this fallback matching path didn't: `r.company`/`job.company` were
-    // accessed directly, with no null-guard. Nothing upstream guarantees
-    // every element of a rewritten/original experience array is a well-
-    // formed object (the envelope check in claude.service.js only validates
-    // that the top-level `resume` is an object, not each nested entry), so a
-    // single `null` entry in either array — valid JSON, not excluded by
-    // anything before this point — threw "Cannot read properties of null"
-    // and blanked the entire delivered-fix results page for a scan the user
-    // already paid for. `?.` here matches the null-safety this file already
-    // applies everywhere else.
-    originalJobs.forEach(job => {
-      const idx = rewrittenJobs.findIndex(
-        (r, i) => !usedRewrittenIdx.has(i) && normCompany(r?.company) === normCompany(job?.company)
-      )
-      if (idx !== -1) {
-        matched.push({ original: job, rewritten: rewrittenJobs[idx] })
-        usedRewrittenIdx.add(idx)
-      } else {
-        matched.push({ original: job, rewritten: null })
-      }
-    })
-    rewrittenJobs.forEach((r, i) => {
-      if (!usedRewrittenIdx.has(i)) matched.push({ original: null, rewritten: r })
-    })
+// SCAN/ATS (fresh pass): entries used to be paired BY POSITION whenever both lists had the same
+// length. The fabrication guard deliberately lets the rewrite reorder jobs, and the delivered-resume
+// editor lets the owner drop one job and add another — both keep the length equal, so the screen
+// that exists to prove nothing was invented reported a title / dates "change" (Analyst -> Consultant)
+// between two different employers, with every bullet shown as removed and re-added. Pairing is now
+// by identity: same name first, then a near-identical name (a corrected typo / renamed suffix) or a
+// shared date range or bullet; only entries that match nothing are shown as added / removed.
+const editDistanceAtMost2 = (a, b) => {
+  if (Math.abs(a.length - b.length) > 2) return false
+  const prev = Array.from({ length: b.length + 1 }, (_, i) => i)
+  for (let i = 1; i <= a.length; i++) {
+    let diag = prev[0]; prev[0] = i; let rowMin = prev[0]
+    for (let j = 1; j <= b.length; j++) {
+      const tmp = prev[j]
+      prev[j] = Math.min(prev[j] + 1, prev[j - 1] + 1, diag + (a[i - 1] === b[j - 1] ? 0 : 1))
+      diag = tmp
+      if (prev[j] < rowMin) rowMin = prev[j]
+    }
+    if (rowMin > 2) return false
   }
+  return prev[b.length] <= 2
+}
+const bulletsOf = e => (Array.isArray(e?.bullets) ? e.bullets.map(b => str(b).trim().toLowerCase()).filter(Boolean) : [])
+function sameEntry(a, b, keyOf) {
+  const ka = normCompany(keyOf(a)), kb = normCompany(keyOf(b))
+  if (ka && kb) {
+    if (ka === kb) return true
+    if (ka.length >= 4 && kb.length >= 4 && (ka.includes(kb) || kb.includes(ka))) return true
+    if (ka.length >= 5 && kb.length >= 5 && editDistanceAtMost2(ka, kb)) return true
+  }
+  const da = str(a?.dates).trim().toLowerCase(), db = str(b?.dates).trim().toLowerCase()
+  if (da && da === db) return true
+  const ba = bulletsOf(a)
+  if (ba.length) { const bb = new Set(bulletsOf(b)); if (ba.some(x => bb.has(x))) return true }
+  return false
+}
+function pairEntries(originalList, rewrittenList, keyOf) {
+  const matched = []
+  const used = new Set()
+  // Pass 1: exact (normalised) name; pass 2: anything that is plainly the same entry, edited.
+  const pairOriginal = (item, test) => {
+    const idx = rewrittenList.findIndex((r, i) => !used.has(i) && test(r))
+    if (idx === -1) return false
+    used.add(idx); matched.push({ original: item, rewritten: rewrittenList[idx], idx }); return true
+  }
+  const paired = new Array(originalList.length).fill(false)
+  originalList.forEach((item, n) => {
+    const k = normCompany(keyOf(item))
+    if (k) paired[n] = pairOriginal(item, r => normCompany(keyOf(r)) === k)
+  })
+  originalList.forEach((item, n) => {
+    if (!paired[n]) paired[n] = pairOriginal(item, r => sameEntry(item, r, keyOf))
+  })
+  originalList.forEach((item, n) => { if (!paired[n]) matched.push({ original: item, rewritten: null, idx: -1 }) })
+  rewrittenList.forEach((r, i) => { if (!used.has(i)) matched.push({ original: null, rewritten: r, idx: -1 }) })
+  // Keep the original's order for everything that existed, then the additions.
+  const order = new Map(originalList.map((item, n) => [item, n]))
+  return matched.sort((x, y) => {
+    const ox = x.original ? order.get(x.original) : Infinity, oy = y.original ? order.get(y.original) : Infinity
+    return ox - oy
+  })
+}
 
-  return matched.map(({ original, rewritten }) => diffJob(original, rewritten))
+function diffExperience(originalJobs, rewrittenJobs) {
+  return pairEntries(originalJobs, rewrittenJobs, j => j?.company).map(({ original, rewritten }) => diffJob(original, rewritten))
 }
 
 // AUDIT FIX (bug — Scan/ATS section audit): this file's own header comment
@@ -232,19 +256,7 @@ function diffEducation(original, rewritten) {
   }
 }
 function diffEntryList(originalList, rewrittenList, diffFn, matchKey) {
-  const matched = []
-  const used = new Set()
-  if (originalList.length === rewrittenList.length) {
-    originalList.forEach((item, i) => { matched.push({ original: item, rewritten: rewrittenList[i] }); used.add(i) })
-  } else {
-    originalList.forEach(item => {
-      const idx = rewrittenList.findIndex((r, i) => !used.has(i) && normCompany(matchKey(r)) === normCompany(matchKey(item)))
-      if (idx !== -1) { matched.push({ original: item, rewritten: rewrittenList[idx] }); used.add(idx) }
-      else matched.push({ original: item, rewritten: null })
-    })
-    rewrittenList.forEach((r, i) => { if (!used.has(i)) matched.push({ original: null, rewritten: r }) })
-  }
-  return matched.map(({ original, rewritten }) => diffFn(original, rewritten))
+  return pairEntries(originalList, rewrittenList, matchKey).map(({ original, rewritten }) => diffFn(original, rewritten))
 }
 function diffProject(original, rewritten) {
   const name = str(original?.name) || str(rewritten?.name)

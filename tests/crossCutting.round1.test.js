@@ -357,7 +357,7 @@ describe('pdf.service launch retry (G1)', () => {
   afterEach(() => t?.restore())
   function setup(launchOutcomes) {
     let n = 0; const calls = []
-    const page = { setJavaScriptEnabled: async () => {}, setDefaultNavigationTimeout: async () => {}, setContent: async () => {}, emulateMediaType: async () => {}, pdf: async () => Buffer.from('pdf'), close: async () => {} }
+    const page = { setJavaScriptEnabled: async () => {}, setRequestInterception: async () => {}, on: () => {}, setDefaultNavigationTimeout: async () => {}, setContent: async () => {}, emulateMediaType: async () => {}, pdf: async () => Buffer.from('pdf'), close: async () => {} }
     const browser = { newPage: async () => page, close: async () => { calls.push('browser.close') } }
     const launch = async () => { calls.push('launch'); const o = launchOutcomes[Math.min(n++, launchOutcomes.length - 1)]; if (o instanceof Error) throw o; return browser }
     const { mod, restore } = loadWithStubs('services/pdf.service.js', { '@cloudflare/puppeteer': { launch } })

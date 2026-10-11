@@ -134,3 +134,45 @@ describe('buildResumeDiff — experience date changes (Scan/ATS pass)', () => {
     expect(diff.experience[0].datesChanged).toBe(false)
   })
 })
+
+describe('entry pairing is by identity, not by position (fresh Scan/ATS pass)', () => {
+  const acme = { company: 'Acme', title: 'Engineer', dates: '2019 - 2021', bullets: ['Built the billing API for Acme customers'] }
+  const globex = { company: 'Globex', title: 'Analyst', dates: '2017 - 2019', bullets: ['Analyzed churn for Globex accounts weekly'] }
+
+  it('a reordered rewrite (same length) shows no phantom title / date / bullet changes', () => {
+    const d = buildResumeDiff({ name: 'A', experience: [acme, globex] }, { name: 'A', experience: [globex, acme] })
+    for (const j of d.experience) {
+      expect(j.titleChanged).toBe(false)
+      expect(j.datesChanged).toBe(false)
+      expect(j.bullets.every(b => b.status === 'unchanged')).toBe(true)
+    }
+  })
+
+  it('swapping one job for a different one reports removed + added, never a title change between employers', () => {
+    const initech = { company: 'Initech', title: 'Consultant', dates: '2022 - 2023', bullets: ['Advised on migrations for Initech'] }
+    const d = buildResumeDiff({ name: 'A', experience: [acme, globex] }, { name: 'A', experience: [acme, initech] })
+    expect(d.experience.map(j => j.jobStatus)).toEqual(['matched', 'removed', 'added'])
+    expect(d.experience.find(j => j.company === 'Initech').titleChanged).toBe(true) // a brand-new entry, not an edit of Globex
+    expect(d.experience.find(j => j.company === 'Globex').afterTitle).toBe('Analyst')
+  })
+
+  it('a corrected company name is still one edited entry', () => {
+    const d = buildResumeDiff({ name: 'A', experience: [acme] }, { name: 'A', experience: [{ ...acme, company: 'Acmee Labs' }] })
+    expect(d.experience).toHaveLength(1)
+    expect(d.experience[0].jobStatus).toBe('matched')
+  })
+})
+
+import { filenameFromDisposition } from '../src/lib/utils.js'
+describe('filenameFromDisposition', () => {
+  const h = v => ({ get: k => (k === 'content-disposition' ? v : null) })
+  it('reads the server-chosen name, quoted or RFC 5987', () => {
+    expect(filenameFromDisposition(h('attachment; filename="Jane-Doe-cover-letter.docx"'), 'x.docx')).toBe('Jane-Doe-cover-letter.docx')
+    expect(filenameFromDisposition(h("attachment; filename*=UTF-8''Zo%C3%AB-cover-letter.docx"), 'x.docx')).toBe('Zoë-cover-letter.docx')
+  })
+  it('falls back when missing, malformed or path-like', () => {
+    expect(filenameFromDisposition(h(null), 'x.docx')).toBe('x.docx')
+    expect(filenameFromDisposition(undefined, 'x.docx')).toBe('x.docx')
+    expect(filenameFromDisposition(h('attachment; filename="../../evil.docx"'), 'x.docx')).toBe('x.docx')
+  })
+})

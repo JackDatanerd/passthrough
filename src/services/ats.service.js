@@ -91,7 +91,11 @@ const SHORT_KEEP = new Set(['ai', 'ml', 'qa', 'ux', 'ui', 'bi', 'js', 'ts', 'db'
 const PROTECTED_TOKENS = new Set([...Object.keys(CANONICAL_DISPLAY), ...SHORT_KEEP])
 
 // A list-ish position: start of line, or right after , ; : / ( | • * -
-const LIST_PREV = String.raw`(?<=(?:^|[,;:/(|•·*\-])[ \t]*)`
+// Matched as a CAPTURED prefix (groups 1+2) rather than a variable-length lookbehind:
+// `(?<=...[ \t]*)` re-scanned the whole preceding whitespace run at every position,
+// which is quadratic (24K spaces cost ~1.3s of CPU). The prefix consumes the delimiter
+// and its trailing blanks once, and each replacement hands it back untouched.
+const LIST_PREV = String.raw`(^|[,;:/(|•·*\-])([ \t]*)`
 
 function normalizeTechTerms(text) {
   return decodeHtmlEntities(String(text ?? ''))
@@ -112,7 +116,7 @@ function normalizeTechTerms(text) {
     // names, and only where the surrounding punctuation says "this is a list
     // of skills" — so "Go to market", "R&D", "Plan C" and "Jane R. Doe" are
     // not misread as programming languages.
-    .replace(new RegExp(LIST_PREV + String.raw`Go(?=[ \t]*(?:[,;:/)|]|$)|[ \t]+(?:and|or|&)[ \t])`, 'gm'), ' golang ')
+    .replace(new RegExp(LIST_PREV + String.raw`Go(?=[ \t]*(?:[,;:/)|]|$)|[ \t]+(?:and|or|&)[ \t])`, 'gm'), '$1$2 golang ')
     // BUG FIX (Scan/ATS section audit): unlike the Go pattern immediately
     // above (whose lookahead explicitly includes `|$`), this lookahead only
     // ever matched a following delimiter — so "C" as the LAST item in a list
@@ -122,11 +126,11 @@ function normalizeTechTerms(text) {
     // case of C being the final language named in a list never counted as a
     // match on either side (resume or JD). Added the same end-of-line/
     // end-of-string alternative Go already had.
-    .replace(new RegExp(LIST_PREV + String.raw`C(?=[ \t]*(?:[,;:/)|]|$))`, 'gm'), ' clang ')
+    .replace(new RegExp(LIST_PREV + String.raw`C(?=[ \t]*(?:[,;:/)|]|$))`, 'gm'), '$1$2 clang ')
     // "... Go and R." — a sentence-final R is still the language when it sits in
     // a list ("," / "and" / "or" / "/" before it); a bare "R. " is otherwise
     // treated as a middle initial ("Jane R. Doe").
-    .replace(/(?<=(?:[,;:/(&]|\b(?:and|or))[ \t]*)R(?=\.?(?:[ \t]|$))/gm, ' rlang ')
+    .replace(/([,;:/(&]|\b(?:and|or))([ \t]*)R(?=\.?(?:[ \t]|$))/gm, '$1$2 rlang ')
     .replace(/(?<![\w.+#])R(?![\w+#]|\.\s|\s*[&/]\s*[Dd]\b)/g, ' rlang ')
 }
 
@@ -229,7 +233,7 @@ const BOILER_PHRASES = /\b(?:about\s+us|about\s+the\s+company|about\s+our\s+comp
 // Bare "Benefits" / "Perks" / "Compensation" are only a heading when written as one: capitalised, and
 // not glued into a sentence. A lowercase "benefits of CI/CD" inside the requirements must not open a
 // boilerplate zone and silently demote everything after it (flattened URL text has no line breaks).
-const BOILER_CAPS    = /(?:^|[.!?]\s+|\s{2,})(?:Benefits|Perks|Compensation|Our Culture|Our Team)(?:\s+(?:and|&)\s+(?:Perks|Benefits))?(?=\s*[:\n]|\s+[A-Z])/
+const BOILER_CAPS    = /(?:^|[.!?]\s+|(?<!\s)\s{2,})(?:Benefits|Perks|Compensation|Our Culture|Our Team)(?:\s+(?:and|&)\s+(?:Perks|Benefits))?(?=\s*[:\n]|\s+[A-Z])/
 const BOILER_PROPER  = /\bAbout\s+(?!the\b|this\b|you\b|your\b)[A-Z][\w&.'’-]*(?:\s+[A-Z][\w&.'’-]*){0,3}/
 const REQ_PHRASES    = /\b(?:what\s+you(?:'|’)?ll\s+(?:do|be\s+doing|work\s+on|bring|need)|what\s+you\s+will\s+(?:do|bring|need)|what\s+you\s+bring|what\s+we(?:'|’)?re\s+looking\s+for|key\s+responsibilities|your\s+responsibilities|your\s+role|about\s+the\s+(?:role|job|position)|day[-\s]to[-\s]day|who\s+you\s+are|must[-\s]haves?|nice[-\s]to[-\s]haves?|minimum\s+qualifications|preferred\s+qualifications|basic\s+qualifications|required\s+skills|technical\s+skills|skills\s+(?:and|&)\s+experience)\b/i
 // One-word headings only count when they stand alone on their own (short) line.
@@ -344,6 +348,16 @@ function rankPool(entries, limit) {
 // Trim an over-long posting (G5). The old behaviour sliced the first N characters, which is the
 // company intro, and threw away the requirements. Boilerplate zones go first; if it still does not
 // fit, title + requirement zones are kept ahead of everything else. Short postings are untouched.
+// Runs of 3+ whitespace characters carry no meaning beyond "a break": a blank line (kept as one) or
+// a wide gap (kept as two spaces, which is the "heading" signal splitJdZones looks for). Collapsing
+// them stops indentation / blank-line padding in a pasted posting from eating the MAX_JD_CHARS budget
+// before any requirement is read, and bounds what every downstream regex has to walk.
+function collapseWhitespaceRuns(text) {
+  return String(text ?? '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/\s{3,}/g, run => (run.includes('\n') ? '\n\n' : '  '))
+}
+
 function fitJobDescription(text, max) {
   const src = String(text || '')
   if (src.length <= max) return src
@@ -962,7 +976,7 @@ function describeWeakAreas(scoreResult) {
   }
   if (scoreResult.contentScore < 70) {
     const rate = scoreResult.detail?.content?.actionVerbRate
-    notes.push(`content score is ${scoreResult.contentScore} — ${rate < 0.7 ? 'more bullets need to open with a strong action verb' : 'bullets need more specific, concrete detail'}; add quantification wherever the user actually gave you a number to work with`)
+    notes.push(`content score is ${scoreResult.contentScore} — ${typeof rate === 'number' && rate < 0.7 ? 'more bullets need to open with a strong action verb' : 'bullets need more specific, concrete detail'}; add quantification wherever the user actually gave you a number to work with`)
   }
   if (scoreResult.sectionsScore < 90) {
     const missing = scoreResult.detail?.sections?.missing || []
@@ -978,7 +992,7 @@ function describeWeakAreas(scoreResult) {
 module.exports = {
   splitJdZones,
   extractWeightedKeywords,
-  fitJobDescription,
+  fitJobDescription, collapseWhitespaceRuns,
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
   extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears,

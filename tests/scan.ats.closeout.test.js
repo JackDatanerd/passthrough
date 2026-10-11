@@ -262,7 +262,7 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     const ctx = csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd, contactName: 'A', contactEmail: 'a@b.co' } })
     const res = await t.mod.createScan(ctx)
     expect(res.body.success).toBe(true)
-    expect(ctx.__sent).toEqual([{ type: 'runAtsScan', scanId: res.body.data.scanId, anonToken: res.body.data.anonToken, anonRlKey: 'rl:anonscan:test' }])
+    expect(ctx.__sent).toEqual([{ type: 'runAtsScan', scanId: res.body.data.scanId, anonToken: res.body.data.anonToken, anonRlKey: 'rl:anonscan:test', ipSlotKey: null }])
     expect(ctx.__waits).toHaveLength(0)
   })
   it('a logged-in scan enqueues with no token', async () => {
