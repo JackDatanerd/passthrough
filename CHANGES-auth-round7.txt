@@ -1,0 +1,17 @@
+Auth round 7 — R2 objects orphaned with personal data
+
+Bug: files in R2 that no DB column names were never removed, and account deletion erased the last record
+that could have found them.
+  (a) generateFix / generateBadge wrote versioned DOCX/PDF objects before repointing the row; a failure in
+      between (PDF/DB error, crash) left them unreferenced forever.
+      -> scan.controller.js cleanupUndeliveredKeys(): the jobs' catch blocks remove this run's keys unless
+         the row points at them (earlier deliveries are never touched).
+  (b) deleteAccount only deleted keys named by the scans' columns.
+      -> lib/r2.js listKeys(); deleteAccount sweeps generated/<scanId>- for scans that reached generation
+         (max 40 scans per request, remainder logged).
+  (c) claimScan, losing a race to the account scrub, re-scrubbed (nulling the paths) but kept the upload.
+      -> now deletes the scan's R2 objects before answering 401.
+Also: frontend/public/_headers — no-referrer / noindex / no-store for /reset-password, /verify-email,
+/confirm-email-change (one-time tokens in the URL).
+
+Tests: auth.controller.test.js (+5), scan.controller.test.js (+2). Full suite 4701 passing, lint clean.

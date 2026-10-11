@@ -214,6 +214,12 @@ async function setup(opts = {}) {
       if (Array.isArray(key) && opts.bucketBulkFails) throw new Error('bulk exploded')
       if (keys.some(k => (opts.bucketFailKeys || []).includes(k))) throw new Error('r2 exploded')
       state.bucketDeletes.push(...keys)
+    },
+    // Auth round 7: list() for deleteAccount's unreferenced-file sweep. opts.bucketListing = { prefix: [keys] }.
+    list: async ({ prefix }) => {
+      state.bucketLists = [...(state.bucketLists || []), prefix]
+      if (opts.bucketListFails) throw new Error('list exploded')
+      return { objects: ((opts.bucketListing || {})[prefix] || []).map(key => ({ key })), truncated: false }
     } },
   }
   const c = (over = {}) => ({
@@ -2066,6 +2072,24 @@ describe('deleteAccount R2 cleanup (B1)', () => {
     expect(t.state.bucketDeletes).toHaveLength(2500)
     expect(Math.max(...t.state.bucketCalls.map(c => [].concat(c).length))).toBeLessThanOrEqual(1000)
   })
+  it('also removes generated files no column points at (a failed generation), found by prefix', async () => {
+    t = await setup({
+      scans: [scan(1, { status: 'FIX_DELIVERED' }), scan(2, { status: 'ERROR', resume_ats_path: null, resume_pdf_path: null }), scan(3, { status: 'COMPLETE_PASS', resume_ats_path: null, resume_pdf_path: null })],
+      bucketListing: { 'generated/s1-': ['r/1-ats.docx', 'generated/s1-ats-orphan.docx'], 'generated/s2-': ['generated/s2-beautiful-zzz.pdf'] }
+    })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    // a plain free scan never reached generation, so its prefix is not listed
+    expect(t.state.bucketLists.sort()).toEqual(['generated/s1-', 'generated/s2-'])
+    expect(t.state.bucketDeletes).toEqual(expect.arrayContaining(['generated/s1-ats-orphan.docx', 'generated/s2-beautiful-zzz.pdf', 'r/2.docx']))
+  })
+  it('a failed listing is logged and never blocks the rest of the cleanup or the response', async () => {
+    console.error = () => {}
+    t = await setup({ scans: [scan(1, { status: 'FIX_DELIVERED' })], bucketListFails: true })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.bucketDeletes.sort()).toEqual(['r/1-ats.docx', 'r/1.docx', 'r/1.pdf'])
+  })
   it('an account with no scans makes no R2 call', async () => {
     t = await setup({ scans: [] })
     await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
@@ -2110,6 +2134,17 @@ describe('writes that race deleteAccount\'s scrub', () => {
     expect(res.status).toBe(401)
     expect(res.body.code).toBe('USER_NOT_FOUND')
     expect(t.state.rpcCalls.filter(r => r.name === 'scrub_account_data')).toEqual([{ name: 'scrub_account_data', args: { p_user_id: 'u1' } }])
+  })
+  it('claimScan that loses to the scrub also deletes the uploaded resume the scrub just un-named (Auth round 7)', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS', resume_path: 'resumes/s1.pdf' }, userRow: null })
+    const res = await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
+    expect(res.status).toBe(401)
+    expect(t.state.bucketDeletes).toEqual(['resumes/s1.pdf'])
+  })
+  it('claimScan on a live account deletes nothing', async () => {
+    t = await setup({ claimScanResult: { id: 's1', status: 'COMPLETE_PASS', resume_path: 'resumes/s1.pdf' } })
+    await t.mod.claimScan(t.c({ body: { anonToken: 'x' } }))
+    expect(t.state.bucketDeletes).toHaveLength(0)
   })
 })
 

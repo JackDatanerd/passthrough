@@ -23,6 +23,25 @@
   X-Robots-Tag: noindex, nofollow
   Cache-Control: no-store
 
+# Account email links (reset password / verify email / confirm email change) carry a one-time
+# token in the query string: never cached, never indexed, never leaked in a Referer header
+# (the page loads Turnstile and other cross-origin resources while the token is in the URL).
+/reset-password
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+/verify-email
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+/confirm-email-change
+  ! Referrer-Policy
+  Referrer-Policy: no-referrer
+  X-Robots-Tag: noindex, nofollow
+  Cache-Control: no-store
+
 # Partner pages are reached by a bearer token in the query string: never cache them,
 # never index them, never leak the URL (token included) in a Referer header.
 /partner/*

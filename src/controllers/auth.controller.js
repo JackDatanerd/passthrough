@@ -30,7 +30,7 @@ const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
 const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
-const { deleteObjects } = require('../lib/r2')
+const { deleteObjects, listKeys } = require('../lib/r2')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
@@ -897,6 +897,8 @@ const IN_FLIGHT_SCAN_STATUSES = ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GE
 const IN_FLIGHT_WINDOW_MS = 60 * 60 * 1000
 // Rows read per page when deleteAccount lists an account's scans (PostgREST's default response cap).
 const SCAN_PAGE = 1000
+// Max scans whose generated-file prefix deleteAccount lists (one R2 list call each).
+const ACCOUNT_SWEEP_MAX_SCANS = 40
 
 async function countInFlightScans(supabase, { userId }) {
   const since = new Date(Date.now() - IN_FLIGHT_WINDOW_MS).toISOString()
@@ -1504,7 +1506,7 @@ async function deleteAccount(c) {
   for (let from = 0; ; from += SCAN_PAGE) {
     const { data: page, error: scansErr } = await supabase
       .from('scans')
-      .select('id, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
+      .select('id, status, resume_path, resume_ats_path, resume_pdf_path, verification_code, resume_hash, resume_pdf_hash, resume_hash_history')
       .eq('user_id', user.id)
       .order('id', { ascending: true })
       .range(from, from + SCAN_PAGE - 1)
@@ -1528,8 +1530,23 @@ async function deleteAccount(c) {
   // deleted) and past the Free plan's subrequest ceiling, with the scrub having already erased the
   // only record of the keys. One bulk call per 1000 keys (lib/r2.js) with a key-by-key fallback; any
   // object that still could not be removed is logged with its key so it can be cleaned up by hand.
+  //
+  // AUDIT FIX (Auth round 7): the DB columns only name the files a scan currently POINTS at. A generation
+  // that wrote its versioned object and then failed before the row was repointed (PDF/DB error, crash,
+  // lost lease) leaves an object no column names — and the scrub above has just erased the last thing
+  // that could have found it. Sweep each generated-file prefix for scans that ever reached generation,
+  // bounded so one request stays inside the subrequest budget.
+  const sweepKeys = []
+  const sweepable = scans.filter(s => s && s.id && (s.resume_ats_path || s.resume_pdf_path || /^(FIX_|ERROR)/.test(s.status || '')))
+  for (const s of sweepable.slice(0, ACCOUNT_SWEEP_MAX_SCANS)) {
+    const { keys, error: listErr } = await listKeys(c.env, `generated/${s.id}-`)
+    if (listErr) console.error(`deleteAccount: could not list generated files for scan ${s.id}:`, listErr)
+    sweepKeys.push(...keys)
+  }
+  if (sweepable.length > ACCOUNT_SWEEP_MAX_SCANS)
+    console.error(`deleteAccount: ${sweepable.length - ACCOUNT_SWEEP_MAX_SCANS} scan(s) of user ${user.id} were not swept for unreferenced generated files`)
   const { failed: orphaned } = await deleteObjects(c.env,
-    scans.flatMap(s => [s.resume_path, s.resume_ats_path, s.resume_pdf_path]), `deleteAccount(${user.id})`)
+    [...scans.flatMap(s => [s.resume_path, s.resume_ats_path, s.resume_pdf_path]), ...sweepKeys], `deleteAccount(${user.id})`)
   if (orphaned.length) console.error(`deleteAccount: ${orphaned.length} R2 object(s) for user ${user.id} could not be deleted:`, orphaned.join(', '))
 
   // FEATURE (Auth section round 2): sent only after the scrub has durably
@@ -1630,6 +1647,10 @@ async function claimScan(c) {
   if (!alive) {
     const { error: rescrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
     if (rescrubErr) throw rescrubErr
+    // AUDIT FIX (Auth round 7): the scrub nulls the scan's file paths, so the uploaded resume it was
+    // holding would be orphaned in R2 for good — remove it (and anything generated) here.
+    const { failed } = await deleteObjects(c.env, [scan.resumePath, scan.resumeAtsPath, scan.resumePdfPath], `claimScan(${scan.id})`)
+    if (failed.length) console.error(`claimScan: could not delete R2 object(s) for scan ${scan.id}:`, failed.join(', '))
     return c.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
   }
 

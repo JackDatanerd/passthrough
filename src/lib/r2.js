@@ -24,4 +24,24 @@ async function deleteObjects(env, keys, label = 'r2') {
   return { deleted: unique.length - failed.length, failed }
 }
 
-module.exports = { deleteObjects, R2_BATCH }
+// Every key under `prefix`, following R2's list cursor. Never throws: a failed list returns what it
+// found so far plus `error`, so a best-effort sweep can log and carry on. `maxPages` bounds the
+// subrequests one prefix can cost.
+async function listKeys(env, prefix, maxPages = 5) {
+  const keys = []
+  if (!prefix || !env || !env.RESUMES_BUCKET || typeof env.RESUMES_BUCKET.list !== 'function') return { keys, error: null }
+  let cursor
+  try {
+    for (let page = 0; page < maxPages; page++) {
+      const res = await env.RESUMES_BUCKET.list({ prefix, cursor, limit: 1000 })
+      for (const o of (res && res.objects) || []) if (o && o.key) keys.push(o.key)
+      if (!res || !res.truncated || !res.cursor) break
+      cursor = res.cursor
+    }
+    return { keys, error: null }
+  } catch (e) {
+    return { keys, error: e && e.message ? e.message : String(e) }
+  }
+}
+
+module.exports = { deleteObjects, listKeys, R2_BATCH }
