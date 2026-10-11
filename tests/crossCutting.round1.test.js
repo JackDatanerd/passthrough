@@ -183,10 +183,12 @@ describe('schema version guard (G3)', () => {
 })
 
 describe('lib/health (G3)', () => {
+  const okDo = { idFromName: k => k, get: () => ({ fetch: async () => new Response(JSON.stringify({ allowed: true, retryAfter: 0 }), { status: 200 }) }) }
+  const okKv = { get: async () => null, put: async () => {}, delete: async () => {} }
   const health = require('../src/lib/health.js')
   const NOW = Date.parse('2026-10-08T12:00:00Z')
   const goodEnv = { SUPABASE_URL: 'u', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'x'.repeat(40), NODE_ENV: 'production',
-    RATE_LIMIT_DO: {}, RATE_LIMIT_KV: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {} }
+    RATE_LIMIT_DO: okDo, RATE_LIMIT_KV: okKv, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {} }
   const dbWith = ({ version = constants.EXPECTED_SCHEMA_VERSION, heartbeatAt = '2026-10-08T11:30:00Z', error = null } = {}) =>
     createFakeSupabase(q => {
       if (q.table !== 'system_state' || q.op !== 'select') return undefined

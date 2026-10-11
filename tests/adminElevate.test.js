@@ -46,3 +46,26 @@ describe('adminElevate', () => {
     try { expect((await t.mod.adminElevate(t.mkCtx(''))).status).toBe(400) } finally { t.restore() }
   })
 })
+
+// Cross-cutting infra round 5: a stolen admin token used to get unlimited password guesses here (the route sat on the
+// generic `auth` limiter and never fed the sign-in lockout). Wrong passwords now count on the account lockout.
+describe('adminElevate — brute-force protection', () => {
+  const kvStore = () => { const m = new Map(); return { get: async k => m.get(k) ?? null, put: async (k, v) => { m.set(k, v) }, delete: async k => { m.delete(k) } } }
+  it('locks after repeated wrong passwords and then refuses even the right one; success clears the count', async () => {
+    const t = await setup()
+    try {
+      const env = { JWT_SECRET: SECRET, ADMIN_STEP_UP_MINUTES: '10', RATE_LIMIT_KV: kvStore() }
+      const ctx = pw => {
+        const c = t.mkCtx(pw, env)
+        c.get = k => (k === 'user' ? { id: 'a1', role: 'ADMIN', email: 'boss@example.com', lastLoginIp: '203.0.113.9' } : k === 'sessionId' ? 's-1' : undefined)
+        c.req.header = h => (/^cf-connecting-ip$/i.test(h) ? '198.51.100.7' : undefined)
+        return c
+      }
+      for (let i = 0; i < 3; i++) expect((await t.mod.adminElevate(ctx('nope'))).status).toBe(403)
+      expect((await t.mod.adminElevate(ctx('correct horse'))).status).toBe(200)   // success resets the streak
+      for (let i = 0; i < 8; i++) await t.mod.adminElevate(ctx('nope'))
+      const locked = await t.mod.adminElevate(ctx('correct horse'))
+      expect(locked.status).toBe(429)
+    } finally { t.restore() }
+  })
+})

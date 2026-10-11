@@ -67,6 +67,20 @@ async function stepUp(c, next) {
   return c.json({ success: false, message: 'Confirm your password to continue.', code: 'ADMIN_STEP_UP_REQUIRED' }, 403)
 }
 
+// Step-up only for the requests that need it. `needs(body, c)` gets the parsed JSON body (null when there is none or
+// it is not JSON) and says whether THIS request is a money / payout-redirect action. Hono caches the parsed body, so
+// the controller still reads it afterwards. A stolen admin token then still cannot, say, re-point a partner's email
+// (which mails a fresh payout link to the new address) without the admin's password, while a harmless rename stays
+// one click.
+function stepUpWhen(needs) {
+  return async (c, next) => {
+    if (!stepUpMinutes(c.env)) return next()
+    let body = null
+    try { body = await c.req.json() } catch { body = null }
+    return needs(body, c) ? stepUp(c, next) : next()
+  }
+}
+
 async function adminOnly(c, next) {
   const user = c.get('user')
   if (!user) {
@@ -96,6 +110,7 @@ async function adminOnly(c, next) {
 module.exports = adminOnly
 module.exports.adminSessionTooOld = adminSessionTooOld
 module.exports.stepUp = stepUp
+module.exports.stepUpWhen = stepUpWhen
 module.exports.mintElevation = mintElevation
 module.exports.stepUpMinutes = stepUpMinutes
 module.exports.adminIpAllowed = adminIpAllowed

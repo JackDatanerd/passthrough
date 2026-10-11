@@ -140,6 +140,22 @@ async function checkWebhookDeliveryHealth(supabase, nowMs = Date.now()) {
   } catch (_) { return { ok: true, detail: null } }
 }
 
+// Cross-cutting infra round 5: the deep check only proved the rate-limit BINDINGS exist. The limiter fails OPEN on any
+// backend error, so a Durable Object that is broken, mis-migrated or timing out disables every limit and the account
+// lockout silently — the only trace was a throttled owner email. A read-only round trip through the real backend
+// (the one a request would use, including its timeout) makes the monitor page on it.
+async function checkRateLimiter(env) {
+  if (!(env && (env.RATE_LIMIT_DO || env.RATE_LIMIT_KV))) return { ok: true, detail: null, backend: null }
+  try {
+    const { runOp, backendName } = require('../middleware/rateLimiter')
+    const backend = backendName(env)
+    await runOp(env, 'missRead', { key: 'rl:healthprobe', max: 1 })
+    return { ok: true, detail: null, backend }
+  } catch (err) {
+    return { ok: false, detail: `the rate-limit backend is not answering (limits and the login lockout are failing open): ${err && err.message}`, backend: null }
+  }
+}
+
 async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   const config = validateEnv(env)
   const bindings = Object.fromEntries(BINDINGS.map(b => [b, !!(env && env[b])]))
@@ -153,7 +169,7 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
     if (error && !/system_state|relation|does not exist|schema cache/i.test(error.message || '')) throw error
   } catch (err) { db = { ok: false, detail: err.message } }
 
-  const [schema, cron, email, storage, webhooks] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env), checkWebhookDeliveryHealth(supabase, nowMs)])
+  const [schema, cron, email, storage, webhooks, limiter] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env), checkWebhookDeliveryHealth(supabase, nowMs), checkRateLimiter(env)])
   const problems = []
   const notes = []
   if (config.fatal.length) problems.push(...config.fatal.map(f => `config: ${f}`))
@@ -164,17 +180,18 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   if (!cron.ok) problems.push(`cron: ${cron.detail}`)
   if (!email.ok) problems.push(`email: ${email.detail}`)
   if (!storage.ok) problems.push(`storage: ${storage.detail}`)
+  if (!limiter.ok) problems.push(`rate limiter: ${limiter.detail}`)
   if (!webhooks.ok) problems.push(`webhooks: ${webhooks.detail} — check the webhook URL and signing key in the Paystack dashboard`)
   if (!(env && env.ALERT_WEBHOOK_URL)) notes.push('alerts: ALERT_WEBHOOK_URL is not set — owner alerts travel only by email, the same provider whose outage they would report')
   return {
     ok: problems.length === 0,
     problems,
     notes,
-    schema, cron, db, email, storage, webhooks,
+    schema, cron, db, email, storage, webhooks, limiter,
     bindings,
     config: { fatal: config.fatal, warnings: config.warnings },
     checkedAt: new Date(nowMs).toISOString(),
   }
 }
 
-module.exports = { computeHealth, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }
+module.exports = { computeHealth, checkRateLimiter, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

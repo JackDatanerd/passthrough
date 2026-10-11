@@ -1,0 +1,19 @@
+Cross-cutting infra — round 5
+
+B1  POST /api/admin/elevate had no brute-force protection beyond the shared `auth` limiter, and wrong passwords never
+    reached the sign-in lockout. A stolen admin bearer token could therefore guess the admin password indefinitely
+    (the step-up exists precisely for that case). Now: own limiter (10 / 15 min per account), wrong passwords feed the
+    account lockout (no distinct-IP requirement), a locked account is refused, success clears the streak.
+B2  Account-lockout DoS: anyone from two networks could lock a victim out for 15 minutes, repeatedly. A browser that
+    has signed in to the account before (hashed X-Device-Id, 30 days, 5 devices) now still reaches the password check;
+    it never bypasses the password or the per-IP limiter.
+B3  Step-up gaps in partner admin routes: resend-link / regenerate-link / GET links (return the payout write token)
+    and PATCH /:id changing email or commissionRate (mails a fresh payout link to the new address) were reachable with
+    a bare stolen token. Now behind step-up (new `stepUpWhen` so a harmless rename stays one click).
+B4  Limiters fail open on backend error, so a dead Durable Object silently disabled every limit and the lockout.
+    /healthz now does a read-only probe of the limiter backend and returns 503 when it is not answering.
+B5  scanPoll limiter keyed by IP only; now per signed token (carrier NAT users no longer share a budget).
+Docs: .dev.vars.example lists the missing optional vars; DEPLOYMENT.md covers step-up coverage, lockout recovery
+      and the health probe.
+Left alone on purpose: lib/mappers.js paymentRowToCamel (unused in production, pinned by tests).
+Not verified: cron CPU budget with 10 hourly jobs on the Workers plan in production.

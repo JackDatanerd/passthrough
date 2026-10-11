@@ -674,13 +674,25 @@ async function adminElevate(ctx) {
   if (!password || password.length > 1024) return ctx.json({ success: false, message: 'Enter your password.' }, 400)
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
+  // CROSS-CUTTING INFRA ROUND 5 (bug): this is a live password check on an already-authenticated request — the
+  // very oracle a stolen admin bearer token would use to guess the password that unlocks refunds, payouts and bans —
+  // yet it was bounded only by the per-IP `rl.auth` bucket (rotate IPs and it never bites). changePassword /
+  // updateEmail / deleteAccount all count their failures on the account lockout; this one was missed. Same
+  // email-keyed counter, so guesses are tallied across every endpoint that can prove the password.
+  const { comparePassword, lockoutBlocks, lockedResponse } = require('./auth.controller')
+  const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
+  const { clientIp } = require('../lib/clientIp')
+  const lockKey = user.email || user.id
+  const lockout = await checkAccountLockout(ctx.env, lockKey)
+  if (lockoutBlocks(ctx, lockout, user.lastLoginIp)) return lockedResponse(ctx, lockout)
   const { data: row, error } = await supabase.from('users').select('password_hash').eq('id', user.id).maybeSingle()
   if (error) throw error
-  const { comparePassword } = require('./auth.controller')
   if (!row || !row.password_hash || !(await comparePassword(password, row.password_hash)).ok) {
+    await recordLoginFailure(ctx.env, lockKey, clientIp(ctx), { requireDistinctIps: false })
     await logAdminAction(ctx, supabase, 'admin.step_up_failed', 'user', user.id, {})
     return ctx.json({ success: false, message: 'That password is not correct.', code: 'PASSWORD_INCORRECT' }, 403)
   }
+  await recordLoginSuccess(ctx.env, lockKey)
   const minted = await mintElevation(ctx.env, user, ctx.get('sessionId'))
   await logAdminAction(ctx, supabase, 'admin.step_up', 'user', user.id, { minutes: stepUpMinutes(ctx.env) })
   return ctx.json({ success: true, data: { elevationToken: minted.token, expiresInSeconds: minted.expiresInSeconds } })

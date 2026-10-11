@@ -21,6 +21,11 @@ const LOCKOUT_MINUTES = 15
 const LOCKOUT_MIN_DISTINCT_IPS = 2
 const LOCKOUT_MAX_TRACKED_IPS = 10
 const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
+// Devices a successful sign-in has been seen from (hashes of the SPA's random X-Device-Id), per account. A locked account
+// still lets a KNOWN device through to the password check — see auth.controller.js lockoutBlocks. Disposable like every
+// other counter here: losing it only falls back to the older "last sign-in network" exemption.
+const TRUSTED_DEVICE_MAX = 5
+const TRUSTED_DEVICE_TTL_SECONDS = 30 * 24 * 3600
 
 // Fixed-window counter. windowStart is set once, on the first request of the
 // window and never moves; each later request increments `count` and re-derives
@@ -165,6 +170,25 @@ async function missRecord(store, key, now = Date.now()) {
   return { ok: true }
 }
 
+async function readTrusted(store, key) {
+  const raw = await store.get(key)
+  if (!raw) return []
+  try { const p = JSON.parse(raw); return Array.isArray(p.devices) ? p.devices.filter(d => typeof d === 'string') : [] } catch (_) { return [] }
+}
+
+// Remember `device` (already hashed by the caller) as one this account has signed in from. Most recent first, bounded.
+async function trustAdd(store, key, device) {
+  if (typeof device !== 'string' || !device) return { ok: false }
+  const devices = [device, ...(await readTrusted(store, key)).filter(d => d !== device)].slice(0, TRUSTED_DEVICE_MAX)
+  await store.put(key, JSON.stringify({ devices }), { expirationTtl: TRUSTED_DEVICE_TTL_SECONDS })
+  return { ok: true }
+}
+
+async function trustCheck(store, key, device) {
+  if (typeof device !== 'string' || !device) return { trusted: false }
+  return { trusted: (await readTrusted(store, key)).includes(device) }
+}
+
 // Operation table shared by the DO and the KV fallback: { op: (store, args) => Promise }.
 const OPS = {
   consume:      (s, a) => consumeSlot(s, a.key, a.windowSeconds, a.max, a.now),
@@ -174,9 +198,11 @@ const OPS = {
   lockoutClear: (s, a) => lockoutClear(s, a.key),
   missRead:     (s, a) => missRead(s, a.key, a.max, a.now),
   missRecord:   (s, a) => missRecord(s, a.key, a.now),
+  trustAdd:     (s, a) => trustAdd(s, a.key, a.device),
+  trustCheck:   (s, a) => trustCheck(s, a.key, a.device),
 }
 
 module.exports = {
-  consumeSlot, refundSlot, lockoutCheck, lockoutFail, lockoutClear, missRead, missRecord, OPS,
+  consumeSlot, refundSlot, lockoutCheck, lockoutFail, lockoutClear, missRead, missRecord, trustAdd, trustCheck, OPS,
   LOCKOUT_MAX_CONSECUTIVE_FAILURES, LOCKOUT_MINUTES, LOCKOUT_MIN_DISTINCT_IPS, LOCKOUT_MAX_TRACKED_IPS, VERIFY_MISS_WINDOW_SECONDS,
 }

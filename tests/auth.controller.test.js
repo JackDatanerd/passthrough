@@ -39,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
+  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], trusted: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -199,6 +199,9 @@ async function setup(opts = {}) {
       recordLoginFailure:  async (env, email, ip, failOpts) => { state.failures.push(email); state.failureIps.push(ip); state.failureOpts.push(failOpts); return { justLocked: !!opts.justLocked } },
       recordLoginSuccess:  async (env, email) => { state.successes.push(email) },
       LOCKOUT_MINUTES: 15,
+      // Trusted-device lockout exemption (cross-cutting infra round 5): opts.trusted = this browser has signed in before.
+      isTrustedDevice: async () => !!opts.trusted,
+      rememberTrustedDevice: async (env, email) => { state.trusted.push(email) },
     },
   })
 

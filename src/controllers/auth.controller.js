@@ -32,7 +32,7 @@ const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
 const { deleteObjects, listKeys } = require('../lib/r2')
 const { verifyTurnstile } = require('../lib/turnstile')
-const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
+const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
 // FEATURE (Auth section round 2): fires the one-time lockout email exactly
 // when recordLoginFailure() reports the transition into a lock, from any of
@@ -499,7 +499,10 @@ async function login(c) {
   let user
   if (lockout.locked) {
     user = await findUser()
-    if (lockoutBlocks(c, lockout, user && user.lastLoginIp)) return lockedResponse(c, lockout)
+    // B2: a locked account still answers a device it has signed in from (see rememberTrustedDevice) — only for a REAL
+    // account, so a lock on an unknown email stays indistinguishable. The password check below still decides.
+    if (lockoutBlocks(c, lockout, user && user.lastLoginIp) && !(user && await isTrustedDevice(c.env, email, c)))
+      return lockedResponse(c, lockout)
   } else {
     user = await findUser()
   }
@@ -533,6 +536,7 @@ async function login(c) {
     return c.json({ success: false, message: 'Account suspended.', code: 'BANNED' }, 403)
 
   await recordLoginSuccess(c.env, email)
+  await rememberTrustedDevice(c.env, email, c)
   if (passwordCheck.legacy) upgradeLegacyHash(c, supabase, user, password)
   // Backgrounded (see recordLoginMetadata's own comment); it hands back the
   // login-metadata values it is about to store so the response below reports
@@ -1661,5 +1665,5 @@ module.exports = {
   register, login, getMe, forgotPassword, resetPassword, checkResetToken,
   verifyEmail, resendVerification, changePassword, signOutOtherSessions, updateName, updateEmail,
   confirmEmailChange, deleteAccount, claimScan, acceptTerms,
-  logout, listSessions, revokeSession, comparePassword
+  logout, listSessions, revokeSession, comparePassword, lockoutBlocks, lockedResponse
 }

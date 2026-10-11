@@ -63,10 +63,16 @@ router.get(  '/:id',                       admin, validateUuidParam(), c.adminGe
 // :id/:codeId route below was still handing an unvalidated param straight to
 // `.eq('id'/'code_id', ...)` against a uuid column, same uncaught-500 shape
 // the middleware exists to prevent elsewhere): validated here too.
-router.patch('/:id',                       admin, validateUuidParam(), c.adminUpdatePartner)
-router.post( '/:id/resend-link',           admin, validateUuidParam(), c.adminResendPayoutLink)
-router.post( '/:id/regenerate-link',       admin, validateUuidParam(), c.adminRegeneratePayoutLink)
-router.get(  '/:id/links',                 admin, validateUuidParam(), c.adminGetPartnerLinks)
+// STEP-UP (cross-cutting infra round 5): the partner's email is where every payout link goes, and the commission rate
+// is what they earn — changing either is a payout decision, like the payout routes below. Name / status / profile edits
+// stay one click.
+const partnerMoneyEdit = admin.stepUpWhen(body => !!body && (body.email !== undefined || body.commissionRate !== undefined))
+router.patch('/:id',                       admin, partnerMoneyEdit, validateUuidParam(), c.adminUpdatePartner)
+// resend / regenerate / links hand the payout-details WRITE token back in the JSON (resend only when the email failed) —
+// a stolen bearer token could otherwise read it and re-point the partner's payouts.
+router.post( '/:id/resend-link',           admin, admin.stepUp, validateUuidParam(), c.adminResendPayoutLink)
+router.post( '/:id/regenerate-link',       admin, admin.stepUp, validateUuidParam(), c.adminRegeneratePayoutLink)
+router.get(  '/:id/links',                 admin, admin.stepUp, validateUuidParam(), c.adminGetPartnerLinks)
 router.post( '/:id/payouts',               admin, admin.stepUp, validateUuidParam(), c.adminRecordPayout)
 router.post( '/:id/payouts/:payoutId/void', admin, admin.stepUp, validateUuidParam(), validateUuidParam('payoutId'), c.adminVoidPayout)
 router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam(), c.adminAnonymizePartner)

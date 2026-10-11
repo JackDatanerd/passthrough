@@ -372,6 +372,11 @@ wrangler secret put ADMIN_ALLOWED_IPS
 # session. A stolen bearer token can still read, but cannot move money or ban anyone. Plain [vars] value.
 #   ADMIN_STEP_UP_MINUTES = "10"
 
+# Step-up coverage (cross-cutting infra round 5): with ADMIN_STEP_UP_MINUTES set, the password confirmation is
+# also required to reverse / clear a payment, to read or rotate a partner's payout links (those hand back the
+# payout-details WRITE token), and to change a partner's email or commission rate (the email receives the new
+# payout link). Wrong passwords on POST /api/admin/elevate count on the same per-account lockout as sign-in.
+
 # Out-of-band owner alerts. Every alert is emailed through Resend — the same provider whose outage, exhausted
 # quota or revoked key an alert may need to report. Set an https incoming-webhook URL (Slack, Discord, Teams,
 # Mattermost, ntfy-style; the URL is the credential, so it is a SECRET) and each alert is ALSO posted there,
@@ -681,6 +686,9 @@ purchases, prove the limits hold on YOUR plan:
   heartbeat exists 150 minutes later the check fails (the hourly trigger is not registered or not firing).
   It also fails when resume storage (R2) does not answer, and when the last hour's email_logs show several
   failed sends and not one delivered (a revoked Resend key, exhausted quota or unverified domain).
+- The deep check also does a read-only round trip through the rate-limit backend (Durable Object, or KV when the
+  binding is absent). The limiter fails OPEN on a backend error, so without this a broken object disabled every
+  limit and the login lockout with no signal beyond a throttled email; now the monitor gets a 503 (`rate limiter:`).
 - `GET /api/admin/health` (admin session) — the same data plus config warnings and binding status.
 - The hourly cron writes the heartbeat and emails the owner when the schema is behind the deployed code.
 
@@ -791,6 +799,12 @@ burst CAN overrun (all the requests read the same count; KV also refuses a
 second write to one key within a second). A `RATE_LIMIT_DO outage` /
 `RATE_LIMIT_KV outage` email means the counting backend itself errored and
 every limiter failed open until it recovered.
+
+### Locked out of sign-in ("Too many failed attempts")
+
+8 failures in a row from 2+ networks lock the account for 15 minutes. The lock does not apply to the network the
+account last signed in from, nor to a browser that has signed in to it before (the SPA's `X-Device-Id`, remembered
+for 30 days, up to 5 devices) — they still reach the password check. A completed password reset clears it.
 
 ### Secret rotation
 

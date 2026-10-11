@@ -13,7 +13,7 @@ const router = new Hono()
 router.use('*', admin)
 
 // Password confirmation that unlocks the money / ban routes for a few minutes (only when ADMIN_STEP_UP_MINUTES > 0).
-router.post('/elevate', rl.auth, c.adminElevate)
+router.post('/elevate', rl.adminElevate, c.adminElevate)
 
 router.get('/dashboard', c.adminDashboardStats)
 router.get('/health', c.adminHealth)

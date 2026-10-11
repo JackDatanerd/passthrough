@@ -39,6 +39,7 @@ const core = require('../lib/rateLimitCore')
 const constants = require('../config/constants')
 const { runInBackground } = require('../lib/background')
 const jwtLib = require('../lib/jwt')
+const { sha256 } = require('../lib/crypto')
 
 // ── Storage backend ───────────────────────────────────────────────────────
 // With a RATE_LIMIT_DO binding (production) every counter lives in a Durable
@@ -381,7 +382,11 @@ const webhook = makeLimiter({
 // Dedicated polling limiter — ~1 request / 1.5s sustained, per IP. Still a
 // real ceiling (a runaway client or a scraper can't hammer the DB with
 // unbounded reads), just sized for how the app legitimately behaves.
+// Cross-cutting infra round 5: signed-in people are budgeted per ACCOUNT (bySignedToken, as `general` is), so several
+// people waiting on scans behind one carrier-grade-NAT address no longer drain one shared per-IP bucket and see their
+// scans "stuck" on a 429; anonymous / invalid-token pollers stay per IP.
 const scanPoll = makeLimiter({
+  keyBy: bySignedToken,
   windowSeconds: 15 * 60, max: 600, keyPrefix: 'rl:scanpoll',
   message: msg('Too many requests.')
 })
@@ -704,6 +709,15 @@ const outcomeWrite = makeLimiter({
   message: msg('Too many updates. Please try again later.')
 })
 
+// Cross-cutting infra round 5: POST /api/admin/elevate used to share `auth`'s per-IP bucket with login / register / reset,
+// so an admin mistyping the step-up password spent the budget everyone behind that address signs in with. Its own
+// bucket, per ACCOUNT (it sits behind the admin gate); the account lockout (see adminElevate) is the real guess bound.
+const adminElevate = makeLimiter({
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:adminelevate',
+  keyBy: byAccount,
+  message: msg('Too many attempts. Please wait a few minutes.')
+})
+
 const employerLead = makeLimiter({
   windowSeconds: 60 * 60, max: 10, keyPrefix: 'rl:lead',
   message: msg('Slow down.')
@@ -918,6 +932,34 @@ async function recordLoginFailure(env, email, ip, opts = {}) {
   }
 }
 
+// ── Known devices (cross-cutting infra round 5, B2) ──────────────────────────────────────────────────
+// The "two distinct IPs" bar still lets anyone with two connections lock a known email, and the only exemption was the
+// network of the owner's LAST sign-in — which a phone on mobile data (this app's audience) leaves every few minutes. A
+// sign-in now also remembers the browser's X-Device-Id (a random id the SPA keeps in localStorage; a stranger cannot
+// know it), and a locked account lets a request from such a device through to the password check. It never skips the
+// password check and never skips the per-IP limiter, so it adds no guessing room. Stored hashed, bounded, best-effort.
+function trustKey(email) { return `rl:trust:${String(email).trim().toLowerCase()}` }
+async function deviceHash(c) {
+  const id = deviceId(c)
+  return id ? (await sha256(`device:${id}`)).slice(0, 32) : null
+}
+async function rememberTrustedDevice(env, email, c) {
+  try {
+    const device = await deviceHash(c)
+    if (device) await runOp(env, 'trustAdd', { key: trustKey(email), device })
+  } catch (err) { console.error('trusted device record backend error (ignored):', err.message) }
+}
+async function isTrustedDevice(env, email, c) {
+  try {
+    const device = await deviceHash(c)
+    if (!device) return false
+    return !!(await runOp(env, 'trustCheck', { key: trustKey(email), device })).trusted
+  } catch (err) {
+    console.error('trusted device check backend error (ignored):', err.message)
+    return false
+  }
+}
+
 // Call on every successful login — clears the failure count so a real user
 // who mistypes their password a few times isn't left one mistake away from
 // a lockout on their next legitimate attempt days later.
@@ -987,9 +1029,9 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, statsRead, outcomeWrite, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
 }

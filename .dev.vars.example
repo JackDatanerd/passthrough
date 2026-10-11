@@ -52,3 +52,24 @@ RESEND_API_KEY=re_...
 # HEALTH_CHECK_KEY=replace_with_random_hex
 # How long a rate-limit Durable Object call may take before the limiter fails open (default 3000 ms).
 # RATE_LIMIT_DO_TIMEOUT_MS=3000
+
+# More optional settings the code reads (all off / defaulted when unset — see DEPLOYMENT.md):
+# Separate signing key for employer-lead confirm / remove / unsubscribe links (falls back to JWT_SECRET).
+# LEAD_LINK_SECRET=replace_with_random_hex
+# LEAD_LINK_SECRET_PREVIOUS=
+# Old Paystack key, ONLY while rotating PAYSTACK_SECRET_KEY (so retried webhooks still verify).
+# PAYSTACK_SECRET_KEY_PREVIOUS=
+# Extra browser origins CORS allows besides FRONTEND_URL (comma-separated, no trailing slashes).
+# CORS_EXTRA_ORIGINS=https://www.passthrough.dev
+# Partner payouts: minimum payout in cents, refund-window hold in days, payout-details hold in hours (default 48).
+# COMMISSION_MIN_PAYOUT_CENTS=0
+# COMMISSION_HOLD_DAYS=0
+# PAYOUT_DETAILS_HOLD_HOURS=48
+# Free scans per IP per day across all accounts (0 disables) and the breached-password check ("off" disables).
+# SCAN_IP_DAILY_CAP=15
+# PWNED_PASSWORDS_CHECK=on
+# Automatic refunds for duplicate / undeliverable payments ("false" = alert only).
+# AUTO_REFUND_DUPLICATES=true
+# AUTO_REFUND_UNDELIVERABLE=true
+# TESTING ONLY: IPs (comma-separated) that skip every rate limit. Delete before real traffic.
+# RATE_LIMIT_BYPASS_IPS=
