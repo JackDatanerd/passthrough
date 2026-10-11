@@ -1,0 +1,28 @@
+WEBHOOKS (Section 8) — round 10, independent pass. No migration.
+
+FEATURE GAPS CLOSED
+G1  Dispute backstop. webhooks.controller.sweepDisputes (hourly, index.js) lists Paystack's disputes
+    (paystack.service.listDisputes, GET /dispute, 45-day window) and runs any the app's payments have not
+    caught up with through processDispute on a synthetic event:
+      unresolved + SUCCESS              -> charge.dispute.create  (DISPUTED + owner page with the deadline)
+      resolved + DISPUTED/unsettled     -> charge.dispute.resolve (declined: back to SUCCESS; accepted: reverse the sale)
+      accepted + still SUCCESS          -> charge.dispute.resolve (reverse the sale)
+    Partial accepted disputes and unrecognised resolutions are left for a human (not re-run hourly). Each handled
+    dispute is recorded in webhook_events under the live event key, so a LATE real delivery dedupes and
+    disputeResolutionSeen still protects against re-marking. A healthy system runs nothing and sends nothing.
+G2  reconcile.sweepReversedPayments: a DISPUTED payment Paystack reports `reversed` with NO processed refund is a
+    lost chargeback — it is reversed (reason DISPUTE: REFUNDED, commission reversed, credential revoked) instead of
+    being filed as a "partial refund — NOT actioned". A SUCCESS payment in that state is still only reported.
+G3  PAYSTACK_SECRET_KEY_PREVIOUS (optional): signatures made with the old key verify during a rotation.
+G4  A signed body that is not a Paystack event is logged and alerted (once/day) instead of vanishing.
+
+BUGS FIXED
+B1  fulfillment.reversePayment awaited the partner-commission email inline (it retries with sleeps), delaying the
+    webhook's 200. It now goes through `defer` like the buyer notice (awaited only when no defer is given).
+B2  PAYSTACK_WEBHOOK_IPS matched by exact string; now address-aware (brackets, case, IPv4-mapped, optional /prefix),
+    consistent with env.js, whose warning text is updated.
+B3  GET /api/admin/webhook-events with a page past the data answered 500 (PostgREST 416); now an empty page.
+B4  A DISPUTED payment left behind by a create/resolve race is cleared by sweepDisputes.
+B5  A re-driven event that ended HELD was announced as "recovered"; it no longer is.
+
+Tests: tests/webhooks.round10.test.js (20). DEPLOYMENT.md documents PAYSTACK_SECRET_KEY_PREVIOUS.

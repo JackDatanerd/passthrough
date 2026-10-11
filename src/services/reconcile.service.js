@@ -493,6 +493,13 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
         if (payment.amount_cents > 0 && total >= payment.amount_cents) {
           await fulfillment.reversePayment(supabase, payment, { reason: 'REFUND', env })
           result.reversed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total })
+        } else if (payment.status === 'DISPUTED' && payment.amount_cents > 0 && total === 0) {
+          // WEBHOOKS ROUND 10 (G2): Paystack reports a charged-back transaction as `reversed` too, but with NO
+          // processed refund. A payment this app already holds as DISPUTED that Paystack now calls reversed, with
+          // nothing refunded, is a LOST dispute whose resolve webhook never arrived: the money is gone, so the
+          // sale is reversed (it used to be filed as a "partial refund — NOT actioned" and stayed SUCCESS-like forever).
+          await fulfillment.reversePayment(supabase, payment, { reason: 'DISPUTE', env })
+          result.reversed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total: payment.amount_cents, chargeback: true })
         } else {
           result.partial.push({ reference: payment.paystack_ref, scanId: payment.scan_id, total, paid: payment.amount_cents })
         }
@@ -516,10 +523,10 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
       if (result.reversed.length)
         await emailService.sendOwnerAlert(env, `Refund reconciliation: ${result.reversed.length} sale(s) reversed after a missed webhook`,
           `Paystack reports these as fully refunded although our records still said paid — the refund.processed webhook never reached (or never finished on) this app. They were reversed now (payment → REFUNDED, partner commission reversed, public credential revoked):\n\n` +
-          result.reversed.map(r => `${r.reference}  scan ${r.scanId}  refunded ${r.total}`).join('\n'))
+          result.reversed.map(r => `${r.reference}  scan ${r.scanId}  ${r.chargeback ? 'CHARGED BACK (lost dispute — resolve webhook missed)' : `refunded ${r.total}`}`).join('\n'))
       if (fresh.length)
         await emailService.sendOwnerAlert(env, `Refund reconciliation: ${fresh.length} partial refund(s) found — NOT actioned`,
-          `Paystack reports these transactions as reversed, but the processed refunds add up to less than was paid, so nothing was changed. If a sale should be reversed: Admin → Payments → Reverse.\n\n` +
+          `Paystack reports these transactions as reversed, but the processed refunds add up to less than was paid (a chargeback on a payment this app never saw disputed looks the same), so nothing was changed. If a sale should be reversed: Admin → Payments → Reverse.\n\n` +
           fresh.map(r => `${r.reference}  scan ${r.scanId}  refunded ${r.total} of ${r.paid}`).join('\n'))
     } catch (_) { /* alerting is best effort */ }
   }

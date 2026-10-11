@@ -577,10 +577,17 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
   const ledger = await reverseCommission(supabase, payment.id, reason)
   // Tell the partner their commission was clawed back (live paths pass `env`).
   // Best-effort by contract: a notification problem must never fail the reversal itself.
+  // WEBHOOKS ROUND 10 (B1): this used to be awaited inline even when the caller passed `defer` — the send retries
+  // with sleeps (config/email.js), so a slow mail provider held the webhook's 200 back and made Paystack
+  // redeliver. It now follows the buyer notice below: deferred when the caller can defer, awaited otherwise.
   if (env && ledger.reversed && ledger.commissionCents > 0) {
-    try {
-      await require('./referral.service').notifyPartnerReversal(env, supabase, ledger.partnerId, ledger.commissionCents, ledger.currency)
-    } catch (err) { console.error('reversePayment partner notice:', err.message) }
+    const partnerTask = (async () => {
+      try {
+        await require('./referral.service').notifyPartnerReversal(env, supabase, ledger.partnerId, ledger.commissionCents, ledger.currency)
+      } catch (err) { console.error('reversePayment partner notice:', err.message) }
+    })()
+    if (typeof defer === 'function') defer(partnerTask)
+    else await partnerTask
   }
 
   let revoked = false

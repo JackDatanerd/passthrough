@@ -73,12 +73,15 @@ function validateEnv(env) {
   if (env.RATE_LIMIT_BYPASS_IPS && env.NODE_ENV === 'production')
     warnings.push('RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)')
 
-  // Round 9: PAYSTACK_WEBHOOK_IPS is exact addresses only (no CIDR); an unusable entry matches nothing, and with the list set every
-  // webhook from an unlisted address is refused 403.
+  // PAYSTACK_WEBHOOK_IPS takes plain addresses (and, since round 10, `address/prefix` ranges); an unusable entry matches nothing,
+  // and with the list set every webhook from an unlisted address is refused 403.
   if (env.PAYSTACK_WEBHOOK_IPS && String(env.PAYSTACK_WEBHOOK_IPS).trim()) {
-    const { invalid } = require('./clientIp').parseIpList(env.PAYSTACK_WEBHOOK_IPS)
-    if (invalid.length) warnings.push(`PAYSTACK_WEBHOOK_IPS has entries that are not plain IP addresses (${invalid.join(', ')}) — CIDR ranges are not supported there; those entries match nothing`)
+    const { valid, invalid } = require('./clientIp').parseIpAllowList(env.PAYSTACK_WEBHOOK_IPS)
+    if (invalid.length) warnings.push(`PAYSTACK_WEBHOOK_IPS has entries that are not IP addresses or address/prefix ranges (${invalid.join(', ')}) — those entries match nothing`)
+    if (!valid.length) warnings.push('PAYSTACK_WEBHOOK_IPS has NO usable entry — every Paystack webhook will be refused with 403')
   }
+  if (env.PAYSTACK_SECRET_KEY_PREVIOUS && env.PAYSTACK_SECRET_KEY_PREVIOUS === env.PAYSTACK_SECRET_KEY)
+    warnings.push('PAYSTACK_SECRET_KEY_PREVIOUS equals PAYSTACK_SECRET_KEY — remove it (it is only for the retry window after a key rotation)')
 
   // ADMIN_ALLOWED_IPS takes IP addresses and CIDR ranges ("203.0.113.0/24", "2001:db8:abcd::/48"); a bare IPv6
   // address means its whole /64. A typo matches no request at all — and with the list set, a request that

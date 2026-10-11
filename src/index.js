@@ -282,6 +282,12 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Webhook re-drive error:', err.message)
       }
+      // Round 10 (G1): disputes have no other backstop — a lost charge.dispute.* webhook is caught up from Paystack's own list.
+      try {
+        const r = await require('./controllers/webhooks.controller').sweepDisputes(env, ctx)
+        if (r.error) console.error('Dispute sweep:', r.error)
+        else if (r.actioned.length || r.failed.length) console.log(`Dispute sweep: checked ${r.checked}, ${r.actioned.length} caught up, ${r.failed.length} failed`)
+      } catch (err) { console.error('Dispute sweep error:', err.message) }
       // Round 9 (G1): page the owner when paid sales exist but Paystack's webhooks are not arriving.
       try { await require('./controllers/webhooks.controller').checkWebhookDelivery(env, ctx) } catch (err) { console.error('Webhook delivery check error:', err.message) }
       try {

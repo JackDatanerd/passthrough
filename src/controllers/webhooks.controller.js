@@ -116,6 +116,19 @@
 //       the budget up and the "stopped retrying" alert was false.
 //     * B4: a refund that states no amount lets Paystack's refund list decide (and fails closed with a 500).
 //
+// 13. ROUND-10 AUDIT (section 8, independent pass — no migration):
+//     * G1: sweepDisputes — the dispute backstop. A lost charge.dispute.create / .resolve was recovered by nothing
+//       (Paystack auto-accepts after ~16h). The hourly sweep lists Paystack's disputes and runs any that this app's
+//       payments have not caught up with through processDispute, exactly as a live delivery would.
+//     * G3: PAYSTACK_SECRET_KEY_PREVIOUS is accepted too, so a key rotation does not 401 (and page as an attack)
+//       every delivery Paystack is still retrying with the old signature.
+//     * G4: a SIGNED body that is not a Paystack event is logged and (throttled) alerted instead of vanishing.
+//     * B2: the PAYSTACK_WEBHOOK_IPS comparison is address-aware (case, brackets, IPv4-mapped), like env.js's check.
+//     * B3: the admin inbox answers an out-of-range page with an empty page, not a 500.
+//     * B4: a dispute left DISPUTED by a create/resolve race is cleared by sweepDisputes.
+//     * B5: a re-driven event that ended HELD is no longer reported as "recovered".
+//     (B1, the partner-reversal email blocking the 200, is fixed in fulfillment.service reversePayment.)
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -127,6 +140,7 @@ const paystackService = require('../services/paystack.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
 const { logAdminAction } = require('../lib/adminAudit')
+const { parseCidr, ipInCidr } = require('../lib/clientIp')
 
 // Real Paystack events are a few KB. Anything near this is not one.
 const MAX_BODY_BYTES = 256 * 1024
@@ -172,8 +186,15 @@ async function alertAllowedFor(env, kind, reference, { globalMax = 20, ttlSecond
   return true
 }
 
+// ROUND-10 (B2): exact-string matching made a list that env.js accepted (brackets, upper-case or IPv4-mapped IPv6) match
+// nothing. Entries are now parsed like env.js parses them; a single address stays an exact match (a /32 or /128), and
+// an optional `address/prefix` works too. Unusable entries match nothing.
 function parseIpList(raw) {
   return String(raw || '').split(',').map(s => s.trim()).filter(Boolean)
+}
+function ipListAllows(raw, ip) {
+  const entries = parseIpList(raw).map(parseCidr).filter(Boolean)
+  return entries.some(e => ipInCidr(ip, e))
 }
 
 // ── payload helpers ─────────────────────────────────────────────────────────
@@ -735,8 +756,8 @@ async function handlePaystack(c) {
   // BLIND. Paystack changing its outbound IPs would otherwise fail every webhook with only a console line;
   // so the signature is checked below, and a VALID one from an unlisted IP pages the owner (throttled).
   const allow = parseIpList(c.env.PAYSTACK_WEBHOOK_IPS)
-  const sourceIp = c.req.header('cf-connecting-ip') || ''
-  const ipRejected = allow.length > 0 && !allow.includes(sourceIp)
+  const sourceIp = (c.req.header('cf-connecting-ip') || '').trim()
+  const ipRejected = allow.length > 0 && !ipListAllows(c.env.PAYSTACK_WEBHOOK_IPS, sourceIp)
   if (ipRejected) console.error(`Webhook rejected: source IP ${sourceIp || '(none)'} is not in PAYSTACK_WEBHOOK_IPS`)
 
   const declared = Number.parseInt(c.req.header('content-length') || '', 10)
@@ -744,8 +765,14 @@ async function handlePaystack(c) {
   const bodyBytes = new Uint8Array(await c.req.arrayBuffer())
   if (bodyBytes.byteLength > MAX_BODY_BYTES) return c.text('Payload too large', 413)
 
-  const expectedSig = await cryptoLib.hmacSha512Hex(secret, bodyBytes)
-  const sigOk = cryptoLib.timingSafeEqual(expectedSig, c.req.header('x-paystack-signature') || '')
+  const givenSig = (c.req.header('x-paystack-signature') || '').trim().toLowerCase()
+  let sigOk = cryptoLib.timingSafeEqual(await cryptoLib.hmacSha512Hex(secret, bodyBytes), givenSig)
+  // ROUND-10 (G3): during a key rotation Paystack's in-flight retries are still signed with the previous key.
+  const previousSecret = c.env.PAYSTACK_SECRET_KEY_PREVIOUS
+  if (!sigOk && previousSecret && previousSecret !== secret) {
+    sigOk = cryptoLib.timingSafeEqual(await cryptoLib.hmacSha512Hex(previousSecret, bodyBytes), givenSig)
+    if (sigOk) console.error('[WARN] Paystack webhook verified with PAYSTACK_SECRET_KEY_PREVIOUS — remove it once retries drain (~72h)')
+  }
   if (ipRejected) {
     if (sigOk && await alertAllowed(c.env, 'webhook-alert-cooldown:paystack-ip-rejected'))
       alert(c, 'Paystack webhook refused — source IP not in PAYSTACK_WEBHOOK_IPS',
@@ -769,10 +796,17 @@ async function handlePaystack(c) {
   let event
   try {
     event = JSON.parse(new TextDecoder().decode(bodyBytes))
-  } catch (_) {
-    return c.text('OK', 200)   // signed but not JSON — nothing sensible to do or retry
+  } catch (_) { event = null }
+  if (!event || typeof event.event !== 'string') {
+    // ROUND-10 (G4): signed, so it came from Paystack (or someone holding the key) — answered 200 (a retry would be
+    // identical) but no longer silently: a payload-format change would otherwise be invisible.
+    console.error('[WARN] signed Paystack webhook is not a recognisable event (not JSON, or no `event` string)')
+    if (await alertAllowed(c.env, 'webhook-alert-cooldown:paystack-unrecognised-body', 24 * 3600))
+      alert(c, 'Paystack sent a signed webhook this app cannot read',
+        `A correctly signed request to /api/webhooks/paystack was not valid JSON or had no string \`event\` field (${bodyBytes.byteLength} bytes). It was acknowledged (200) and dropped.\n\n` +
+        `If this repeats, Paystack may have changed its payload format. Emailed at most once a day.`)
+    return c.text('OK', 200)
   }
-  if (!event || typeof event.event !== 'string') return c.text('OK', 200)
 
   const supabase = getSupabase(c.env)
   const bodyHash = await cryptoLib.sha256Bytes(bodyBytes)
@@ -880,6 +914,8 @@ async function listWebhookEvents(c) {
   }
   let { data, error, count } = await build(LIST_COLS_FULL)
   if (error && isColumnMissing(error)) ({ data, error, count } = await build(LIST_COLS_BASE))   // 0036 not applied yet
+  // ROUND-10 (B3): a page beyond the data is PostgREST's 416 / PGRST103 — an empty page (the UI clamps back), not a 500.
+  if (error && (error.code === 'PGRST103' || /range not satisfiable/i.test(error.message || ''))) { data = []; error = null; count = 0 }
   if (error) throw error
   return c.json({ success: true, data: (data || []).map(r => ({
     id: r.id, provider: r.provider || 'paystack', eventType: r.event_type, eventKey: r.event_key, reference: r.reference, status: r.status,
@@ -1095,7 +1131,7 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
     ran++
     result.redriven.push(row.id)
     const r = await runStoredEvent(c, supabase, row, { redrive: useRedrives })
-    if (r.ok) result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
+    if (r.ok && r.outcome.status !== 'HELD') result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
   }
 
   // Exhausted: said ONCE per row (7-day cooldown), newest first so a fresh failure is never hidden
@@ -1136,6 +1172,95 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
     alert(c, 'A held payment event has been waiting over a day',
       `event: ${h.event_type}\nreference: ${h.reference || '(none)'}\nreason: ${h.note || h.error || 'amount/currency mismatch'}\n\n` +
       `A customer may have paid and received nothing. Admin → Payments → Recheck (accept amount) if the payment is genuine, or refund it.`, `${h.reference || h.id}:held`)
+  }
+  return result
+}
+
+// ── dispute reconciliation (hourly cron, see index.js) ───────────────────────
+// ROUND-10 (G1/B4): a lost charge.dispute.create was recovered by nothing, a lost charge.dispute.resolve left the
+// payment DISPUTED (or a lost sale never reversed) for good, and Paystack auto-accepts an unanswered dispute after
+// ~16 hours. This lists Paystack's own disputes and, for each one whose payment this app has not caught up with,
+// runs the same handler a live delivery would (processDispute) on a synthetic event built from the API item:
+//   unresolved dispute + payment SUCCESS                       → charge.dispute.create  (marks DISPUTED, pages the owner)
+//   resolved dispute  + payment DISPUTED / unsettled           → charge.dispute.resolve (clears it, or reverses the sale)
+//   resolved ACCEPTED + payment still SUCCESS                  → charge.dispute.resolve (reverses the sale)
+// Anything already in step is left alone, so a healthy system runs no handler and sends nothing. Never throws.
+const DISPUTE_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
+const MAX_DISPUTES_PER_RUN = 20
+const isoDay = ms => new Date(ms).toISOString().slice(0, 10)
+
+function disputeIsResolved(d) {
+  return !!d && (String(d.status || '').toLowerCase() === 'resolved' || !!d.resolution)
+}
+
+async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date.now(), list = null } = {}) {
+  const result = { checked: 0, actioned: [], failed: [], error: null }
+  try {
+    if (!env.PAYSTACK_SECRET_KEY) return result
+    const fetchList = list || (() => paystackService.listDisputes(env, { from: isoDay(now - DISPUTE_LOOKBACK_MS), to: isoDay(now + 24 * 3600 * 1000) }))
+    const body = await fetchList()
+    const disputes = (Array.isArray(body?.data) ? body.data : []).filter(d => d && d.transaction && typeof d.transaction.reference === 'string')
+    result.checked = disputes.length
+    if (!disputes.length) return result
+
+    const refs = [...new Set(disputes.map(d => d.transaction.reference))]
+    const statusOf = new Map()
+    for (let i = 0; i < refs.length; i += 100) {
+      const { data, error } = await supabase.from('payments').select('paystack_ref, status, amount_cents').in('paystack_ref', refs.slice(i, i + 100))
+      if (error) { result.error = error.message; return result }
+      for (const p of data || []) statusOf.set(p.paystack_ref, { status: p.status, amount: p.amount_cents })
+    }
+
+    const c = { env, executionCtx: ctx }
+    for (const d of disputes) {
+      if (result.actioned.length >= MAX_DISPUTES_PER_RUN) break
+      const known = statusOf.get(d.transaction.reference)
+      if (!known) continue                                   // not one of this app's payments
+      const st = known.status
+      const resolved = disputeIsResolved(d)
+      const resolution = String(d.resolution || '').toLowerCase()
+      let type = null
+      if (!resolved && st === 'SUCCESS') type = 'charge.dispute.create'
+      else if (resolved && (st === 'DISPUTED' || fulfillment.REVIVABLE_STATUSES.includes(st))) type = 'charge.dispute.resolve'
+      else if (resolved && /accept/.test(resolution) && st === 'SUCCESS') type = 'charge.dispute.resolve'
+      if (!type) continue
+      // Skip what processDispute would leave unchanged, or the sweep would re-run (and re-email) it every hour:
+      // an unrecognised resolution, a declined dispute on a payment that is not DISPUTED, and a PARTIAL accepted dispute
+      // (left for a human, like a partial refund).
+      if (type === 'charge.dispute.resolve') {
+        if (!/accept|declin/.test(resolution)) continue
+        if (/declin/.test(resolution) && st !== 'DISPUTED') continue
+        const disputed = Number(d.refund_amount)
+        if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) continue
+      }
+      try {
+        const event = minimalDisputeEvent({ event: type, data: d })
+        const outcome = await processDispute(c, supabase, event)
+        // Record it in the inbox as a finished event under the key a live delivery would use. Without this a LATE real
+        // charge.dispute.create (Paystack's retries run ~72h) is not deduped and — disputeResolutionSeen reads the inbox —
+        // would re-mark a payment this sweep just cleared (round 5 B1, reintroduced by the sweep).
+        if (d.id != null) {
+          try {
+            const rec = await recordEvent(supabase, { eventKey: eventKeyFor(event, ''), eventType: type, reference: d.transaction.reference, payload: redactEvent(event) })
+            if (rec.mode !== 'done') await markEvent(supabase, rec, 'PROCESSED', 'caught up by the dispute sweep')
+          } catch (err) { console.error('dispute sweep: inbox record failed:', err && err.message) }
+        }
+        result.actioned.push({ reference: d.transaction.reference, dispute: d.id ?? null, type, note: outcome.note || null })
+      } catch (err) {
+        console.error(`dispute sweep failed for ${d.transaction.reference}:`, err && err.message)
+        result.failed.push({ reference: d.transaction.reference, error: err && err.message })
+      }
+    }
+    if (result.actioned.length) console.error(`[CRITICAL] dispute sweep caught up with ${result.actioned.length} dispute(s) the webhooks did not deliver`)
+    if (result.actioned.length && await alertAllowed(env, 'webhook-alert-cooldown:dispute-sweep', 6 * 3600))
+      alert(c, `Dispute sweep: ${result.actioned.length} dispute(s) the webhook never delivered`,
+        `Paystack reports these disputes, but this app's payments had not caught up (the charge.dispute.* webhook was lost or is not arriving). ` +
+        `Each was run through the normal dispute handler (you also get that handler's own email):\n\n` +
+        result.actioned.map(a => `${a.reference}  dispute ${a.dispute ?? '?'}  ${a.type}${a.note ? ` → ${a.note}` : ''}`).join('\n') +
+        `\n\nCheck the webhook URL and signing key in the Paystack dashboard.`, 'dispute-sweep')
+  } catch (err) {
+    result.error = err && err.message
+    console.error('dispute sweep error:', result.error)
   }
   return result
 }
@@ -1236,4 +1361,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

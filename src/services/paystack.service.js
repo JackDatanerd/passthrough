@@ -206,4 +206,23 @@ async function createRefund(env, reference, { amount, currency, customerNote, me
   return json
 }
 
-module.exports = { initializeTransaction, verifyTransaction, listRefunds, createRefund, isPendingStatus, PENDING_STATUSES }
+// GET /dispute — the disputes (chargebacks) Paystack holds for this merchant, newest first. Used by
+// webhooks.controller's sweepDisputes as the backstop for a lost charge.dispute.* webhook (a dispute is
+// auto-accepted and refunded after ~16 hours, and no other path ever learns of one). `from` / `to` are
+// dates (YYYY-MM-DD). Each item carries `id`, `status`, `resolution` (null until resolved), `refund_amount`,
+// `due_at`, `currency` and `transaction` ({ reference, amount, currency }).
+async function listDisputes(env, { from, to, perPage = 100 } = {}) {
+  const qs = new URLSearchParams({ perPage: String(perPage) })
+  if (from) qs.set('from', from)
+  if (to) qs.set('to', to)
+  const { res, json } = await paystackRequest(
+    `https://api.paystack.co/dispute?${qs.toString()}`,
+    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
+    'Paystack dispute list'
+  )
+  if (!res.ok) throw new Error(json?.message || `Paystack dispute list returned HTTP ${res.status}`)
+  if (!json) throw unreadable('Paystack dispute list')
+  return json
+}
+
+module.exports = { initializeTransaction, verifyTransaction, listRefunds, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

@@ -237,6 +237,12 @@ launch:
 #   52.31.139.75,52.49.173.169,52.214.14.220
 wrangler secret put PAYSTACK_WEBHOOK_IPS
 
+# OPTIONAL, only while rotating PAYSTACK_SECRET_KEY: the OLD key. Paystack keeps retrying
+# undelivered webhooks for ~72h, signed with the key that was live when they were first sent;
+# with this set those retries still verify instead of answering 401 (and paging as a possible
+# attack). Delete it once the retries have drained.
+wrangler secret put PAYSTACK_SECRET_KEY_PREVIOUS
+
 # Shared secret between the Worker and the /v/:code Pages Function. When set on
 # BOTH sides (same value; on Pages it is an environment variable named
 # VERIFY_PREVIEW_KEY), the Function's link-preview fetch skips the per-IP verify
