@@ -692,6 +692,18 @@ async function sendFixDeliveredPlain(env, supabase, email, name) {
   })
 }
 
+// Verify round 9: the owner of a verification page that a visitor reported. `phrase` is one of a fixed
+// set of sentence fragments chosen by the caller (see verify.controller.js) — nothing the reporter typed.
+async function sendVerificationReported(env, supabase, email, name, { code, phrase, pageUrl }) {
+  return send(env, supabase, email, 'Your Passthrough verification page was reported', 'verification_reported', {
+    NAME:              name,
+    VERIFICATION_CODE: code,
+    PROBLEM:           phrase,
+    PAGE_URL:          pageUrl,
+    DASHBOARD_URL:     `${env.FRONTEND_URL}/dashboard`
+  })
+}
+
 async function sendFixFailed(env, supabase, email, name) {
   return send(env, supabase, email, "We hit a snag — we're on it", 'fix_failed', { NAME: name })
 }
@@ -950,6 +962,7 @@ module.exports = {
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
+  sendVerificationReported,
   sendPaymentReceipt, sendPaymentReversed,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,

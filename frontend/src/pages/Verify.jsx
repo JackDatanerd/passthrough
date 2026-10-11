@@ -12,7 +12,7 @@ import Footer from '../components/layout/Footer'
 import { formatDate, downloadBlob } from '../lib/utils'
 import { useCopy } from '../hooks/useCopy'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
-import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
+import { sha256Hex, classifyFingerprint, fileKindOf, extractSha256, MAX_CHECK_BYTES, MAX_CHECK_FILES } from '../lib/fileFingerprint'
 import { isRoleCategory, roleLabel } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
@@ -64,6 +64,43 @@ function scoredFor(data) {
   const level = data?.seniorityLevel && data.seniorityLevel !== 'mid'
     ? String(data.seniorityLevel).replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase()) : ''
   return [level, role].filter(Boolean).join(' · ')
+}
+
+// What a file / fingerprint check says, in words. Pure, so a result list (several files, or a pasted hash) and the
+// "from /check" card share one wording. `data` is the page payload (for the integrity note).
+function checkLabelFor(result, data) {
+  if (!result) return null
+  const kindLabel = result.kind === 'pdf' ? 'PDF' : result.kind === 'docx' ? '.docx' : 'version'
+  const base = {
+    current:     { text: 'Matches — this is the current, unmodified file.', cls: 'text-green-700' },
+    previous:    {
+      text: result.at
+        ? `Matches an earlier ${kindLabel}, current until ${formatDate(result.at)} — not the current one, but not tampered with either.`
+        : `Matches an earlier ${kindLabel} — not the current one, but not tampered with either.`,
+      cls: 'text-amber-600',
+    },
+    // ROUND-6 AUDIT FIX (bug): this used to say the file "has been edited, or didn't come from
+    // Passthrough" — an accusation. A fingerprint matches only the exact bytes Passthrough issued, and
+    // saving a copy in Word, converting it to PDF, printing to PDF or an e-mail / cloud-storage system
+    // re-encoding it changes those bytes without anyone altering a word. A hiring manager could reject a
+    // genuine candidate on that red line, so it says what was actually established — and what to do.
+    mismatch:    { text: "This file isn't an exact copy of anything Passthrough issued for this page. That can mean it was edited — but re-saving, converting to PDF or printing a copy changes a file's fingerprint too. Ask the candidate for the original file, or compare it with the current one.", cls: 'text-amber-700' },
+    unavailable: {
+      text: result.scope === 'type'
+        ? "This scan has no fingerprint on file for that type of file, so it can't be checked here."
+        : 'This scan has no fingerprints to check against.',
+      cls: 'text-gray-500',
+    },
+    toolarge:    { text: 'That file is too large to be a resume — pick the .docx or .pdf you were sent.', cls: 'text-gray-500' },
+    error:       { text: "Couldn't check that file — please try again.", cls: 'text-gray-500' },
+  }[result.status]
+  if (!base) return null
+  // ROUND-9 FIX (bug): a green "Matches — current, unmodified" under a headline that says the stored copy is
+  // modified / missing / unchecked read as a contradiction. Both are true — they are about different things
+  // (the reader's file vs Passthrough's own stored copy) — so say that, instead of leaving the reader to guess.
+  if (result.status === 'current' && data && data.integrityStatus && data.integrityStatus !== 'verified')
+    return { ...base, text: `${base.text} Separately, this page's own integrity check is not a full pass (see Integrity above) — that is about the copy Passthrough stores, not about your file.` }
+  return base
 }
 
 // ROUND-8 AUDIT (feature gap, Section 7): "Report a problem" was only a mailto: link — nothing at all on a
@@ -176,11 +213,14 @@ export default function Verify() {
   // only check that can ever catch a candidate's edited copy; the server-side
   // integrity badge above can only compare our own stored copy against itself.
   const [checking, setChecking] = useState(false)
-  // { status: 'current' | 'previous' | 'mismatch' | 'unavailable' | 'error', at, kind } | null
-  const [checkResult, setCheckResult] = useState(null)
-  // True while the result shown is the one that came from the /check lookup (shown at the top of the
-  // page, before the headline); checking another file here replaces it with the normal card below.
-  const [fromLookup, setFromLookup] = useState(false)
+  // ROUND-9: several files can be checked at once, or a fingerprint pasted — a list of
+  // { key, name, result: { status: 'current' | 'previous' | 'mismatch' | 'unavailable' | 'toolarge' | 'error', at, kind } }.
+  const [checkItems, setCheckItems] = useState([])
+  // The verdict that came from the /check lookup (shown at the top of the page, before the headline);
+  // checking something else here replaces it with the normal list below.
+  const [lookupResult, setLookupResult] = useState(null)
+  const [pasted, setPasted] = useState('')
+  const [pasteErr, setPasteErr] = useState('')
   const fileInputRef = useRef(null)
   // ROUND-2 AUDIT (bug): responses used to be applied in whatever order they
   // arrived, so a slow reply for an earlier code could overwrite the page for the
@@ -204,7 +244,7 @@ export default function Verify() {
   function load() {
     const seq = ++loadSeq.current
     setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
-    setDownloadErr(''); setCheckResult(null); setFromLookup(false)
+    setDownloadErr(''); setCheckItems([]); setLookupResult(null); setPasted(''); setPasteErr('')
     setReportOpen(false); setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
     setLeadSent(false); setLeadErr('')
     // encodeURIComponent: the code comes straight from the URL; never let it
@@ -220,8 +260,7 @@ export default function Verify() {
         setRole(isRoleCategory(cat) ? cat : '')
         // Arrived from /check with a file: say how THAT file relates to this page before anything else.
         if (lookupCheck && lookupCheck.hash && String(lookupCheck.code || '').toUpperCase() === String(code || '').toUpperCase()) {
-          setCheckResult(classifyFingerprint(lookupCheck.hash, res.data.data.fingerprints, lookupCheck.kind || null))
-          setFromLookup(true)
+          setLookupResult(classifyFingerprint(lookupCheck.hash, res.data.data.fingerprints, lookupCheck.kind || null))
         }
       })
       .catch(err => {
@@ -292,22 +331,43 @@ export default function Verify() {
   }
 
   async function handleCheckFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setChecking(true); setCheckResult(null); setFromLookup(false)
+    const files = Array.from(e.target.files || []).slice(0, MAX_CHECK_FILES)
+    if (!files.length) return
+    const seq = loadSeq.current
+    setChecking(true); setCheckItems([]); setLookupResult(null); setPasteErr('')
     try {
-      if (file.size > MAX_CHECK_BYTES) {
-        setCheckResult({ status: 'toolarge', at: null, kind: null })
-        return
+      const items = []
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i]
+        let result
+        try {
+          result = file.size > MAX_CHECK_BYTES
+            ? { status: 'toolarge', at: null, kind: null }
+            : classifyFingerprint(await sha256Hex(file), data?.fingerprints, fileKindOf(file))
+        } catch (_) {
+          result = { status: 'error', at: null, kind: null }
+        }
+        items.push({ key: `${i}-${file.name}`, name: file.name, result })
       }
-      const hash = await sha256Hex(file)
-      setCheckResult(classifyFingerprint(hash, data?.fingerprints, fileKindOf(file)))
-    } catch (_) {
-      setCheckResult({ status: 'error', at: null, kind: null })
+      // The visitor moved to another page while the files were being read: those results are not for this one.
+      if (seq === loadSeq.current) setCheckItems(items)
     } finally {
       setChecking(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  // ROUND-9: a fingerprint the reader computed themselves (shasum / certutil) goes through the same check as a
+  // file — including recognising an earlier version, which comparing against the two displayed values cannot.
+  function handleCheckPasted(e) {
+    e?.preventDefault?.()
+    const hash = extractSha256(pasted)
+    if (!hash) {
+      setCheckItems([]); setLookupResult(null)
+      return setPasteErr('That does not look like one SHA-256 fingerprint — it is 64 characters, 0–9 and a–f. Paste just the result of shasum or certutil.')
+    }
+    setPasteErr(''); setLookupResult(null)
+    setCheckItems([{ key: 'pasted', name: 'Pasted fingerprint', result: classifyFingerprint(hash, data?.fingerprints, null) }])
   }
 
   // SECTION 7 AUDIT (bug B7-1): the headline must reflect BOTH the score and
@@ -347,38 +407,10 @@ export default function Verify() {
     data?.integrityStatus === 'modified' || data?.integrityStatus === 'missing' ? 'text-red-600'   :
     'text-amber-600'
 
-  // FEATURE GAP CLOSED: a 'previous' match now names WHEN that version was
-  // superseded (classifyFingerprint carries the matched entry's `at` through)
-  // instead of a flat "an earlier version" with no way to tell which one.
-  //
-  // FIX (Section 7 audit, gap): classifyFingerprint has always returned WHICH
-  // file type matched (`kind: 'docx' | 'pdf'`) but this label never said so —
-  // "an earlier version" left the reader unable to tell whether it was an old
-  // .docx or an old .pdf that matched, which matters when they have both.
-  const kindLabel = checkResult?.kind === 'pdf' ? 'PDF' : checkResult?.kind === 'docx' ? '.docx' : 'version'
-  const checkLabel = checkResult && {
-    current:     { text: 'Matches — this is the current, unmodified file.', cls: 'text-green-700' },
-    previous:    {
-      text: checkResult.at
-        ? `Matches an earlier ${kindLabel}, current until ${formatDate(checkResult.at)} — not the current one, but not tampered with either.`
-        : `Matches an earlier ${kindLabel} — not the current one, but not tampered with either.`,
-      cls: 'text-amber-600',
-    },
-    // ROUND-6 AUDIT FIX (bug): this used to say the file "has been edited, or didn't come from
-    // Passthrough" — an accusation. A fingerprint matches only the exact bytes Passthrough issued, and
-    // saving a copy in Word, converting it to PDF, printing to PDF or an e-mail / cloud-storage system
-    // re-encoding it changes those bytes without anyone altering a word. A hiring manager could reject a
-    // genuine candidate on that red line, so it says what was actually established — and what to do.
-    mismatch:    { text: "This file isn't an exact copy of anything Passthrough issued for this page. That can mean it was edited — but re-saving, converting to PDF or printing a copy changes a file's fingerprint too. Ask the candidate for the original file, or compare it with the current one.", cls: 'text-amber-700' },
-    unavailable: {
-      text: checkResult.scope === 'type'
-        ? "This scan has no fingerprint on file for that type of file, so it can't be checked here."
-        : 'This scan has no fingerprints to check against.',
-      cls: 'text-gray-500',
-    },
-    toolarge:    { text: 'That file is too large to be a resume — pick the .docx or .pdf you were sent.', cls: 'text-gray-500' },
-    error:       { text: "Couldn't check that file — please try again.", cls: 'text-gray-500' },
-  }[checkResult.status]
+  const lookupLabel = checkLabelFor(lookupResult, data)
+  const checkedAtTime = data?.integrityCheckedAt ? new Date(data.integrityCheckedAt) : null
+  const checkedAtLabel = checkedAtTime && !Number.isNaN(checkedAtTime.getTime())
+    ? checkedAtTime.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }) : ''
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -465,10 +497,10 @@ export default function Verify() {
           <div className="flex flex-col gap-6">
             {/* ROUND-5 AUDIT FIX (feature gap): arrived from /check — the verdict on the reader's own file comes first,
                 so a superseded file is not read as the page's green headline applying to it. */}
-            {fromLookup && checkLabel && (
+            {lookupLabel && (
               <div role="status" aria-live="polite" className="bg-white rounded-xl border border-gray-200 shadow-sm p-5">
                 <p className="text-xs uppercase tracking-wide text-gray-400 mb-1">The file you checked</p>
-                <p className={`text-sm font-medium ${checkLabel.cls}`}>{checkLabel.text}</p>
+                <p className={`text-sm font-medium ${lookupLabel.cls}`}>{lookupLabel.text}</p>
               </div>
             )}
 
@@ -521,6 +553,8 @@ export default function Verify() {
                   <p className={`font-bold text-sm ${integrityClass}`}>
                     {integrityLabel}
                   </p>
+                  {/* ROUND-9: the verdict can be up to a minute old (see the explainer below) — say when it was made. */}
+                  {checkedAtLabel && <p className="text-gray-400 text-[11px] mt-0.5">Checked {checkedAtLabel}</p>}
                 </div>
                 {/* ROUND-6: one honest tile (see scoredFor above). */}
                 <div className="bg-gray-50 rounded-lg p-3" title="The field and level of the job description this resume was scored against — not a statement about the candidate.">
@@ -623,7 +657,8 @@ export default function Verify() {
                 <p className="text-sm text-gray-500 mb-3">
                   Prefer to check by hand? Run <code className="font-mono text-xs">shasum -a 256 &lt;file&gt;</code> (macOS/Linux)
                   or <code className="font-mono text-xs">certutil -hashfile &lt;file&gt; SHA256</code> (Windows) on the file
-                  you were sent — it should equal one of these.
+                  you were sent — it should equal one of these. Or paste the result into the box under “Received a file from this
+                  candidate?” below, which also recognises an earlier version.
                 </p>
                 <div className="flex flex-col gap-2">
                   {data.fingerprints.docx && <Fingerprint label=".docx" hash={data.fingerprints.docx} />}
@@ -645,6 +680,7 @@ export default function Verify() {
                 <input
                   ref={fileInputRef}
                   type="file"
+                  multiple
                   accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
                   aria-label="Choose the .docx or .pdf you were sent"
                   onChange={handleCheckFile}
@@ -652,8 +688,31 @@ export default function Verify() {
                 />
                 {checking && <Spinner size="sm" />}
               </div>
-              {checkLabel && !fromLookup && (
-                <p role="status" aria-live="polite" className={`text-sm font-medium mt-3 ${checkLabel.cls}`}>{checkLabel.text}</p>
+              <p className="text-xs text-gray-400 mt-1.5">Got both the Word file and the PDF? Pick them together (up to {MAX_CHECK_FILES}).</p>
+              <Form onSubmit={handleCheckPasted} className="mt-4 flex flex-col gap-2">
+                <Input
+                  label="Or paste a SHA-256 fingerprint you computed yourself"
+                  placeholder="64 characters from shasum or certutil"
+                  value={pasted}
+                  onChange={e => { setPasted(e.target.value); setPasteErr('') }}
+                  autoComplete="off"
+                  spellCheck={false}
+                />
+                {pasteErr && <p role="alert" className="text-xs text-red-600">{pasteErr}</p>}
+                <div><Button type="submit" variant="secondary">Check fingerprint</Button></div>
+              </Form>
+              {checkItems.length > 0 && (
+                <ul role="status" aria-live="polite" className="mt-3 flex flex-col gap-2">
+                  {checkItems.map(item => {
+                    const l = checkLabelFor(item.result, data)
+                    return l && (
+                      <li key={item.key} className="text-sm">
+                        <span className="block text-xs text-gray-400 break-all">{item.name}</span>
+                        <span className={`font-medium ${l.cls}`}>{l.text}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
               )}
             </div>
 

@@ -35,7 +35,13 @@ function isPlausibleCode(code) {
 
 // Link-preview fetchers, crawlers, monitors and scripts. A page view is meant
 // to mean "a person looked at this" — the owner sees the number as a signal.
-const BOT_UA_RE = /bot|crawl|spider|slurp|preview|unfurl|facebookexternalhit|embedly|quora|pinterest|whatsapp|telegram|discord|slack|skype|vkshare|headless|lighthouse|pingdom|uptime|monitor|curl|wget|python-requests|axios|node-fetch|go-http-client|okhttp|java\//i
+// ROUND-9 FIX (bug): quora, pinterest, skype, telegram and discord were listed by NAME. Those are also the names
+// of apps whose IN-APP BROWSER (a real person tapping a shared link) puts them in its User-Agent — Pinterest's and
+// Quora's do — so those readers' views and downloads never counted, the same class of bug as the Cubot one
+// below. Their link-preview fetchers are already caught by the generic tokens (Pinterestbot / Discordbot /
+// TelegramBot contain "bot", "Quora Link Preview" and "SkypeUriPreview" contain "preview"). Slack and WhatsApp
+// stay: their fetchers (Slack-ImgProxy, WhatsApp/2.x) carry no generic token.
+const BOT_UA_RE = /bot|crawl|spider|slurp|preview|unfurl|facebookexternalhit|embedly|whatsapp|slack|vkshare|headless|lighthouse|pingdom|uptime|monitor|curl|wget|python-requests|axios|node-fetch|go-http-client|okhttp|java\//i
 
 function isBotUserAgent(ua) {
   // An empty UA is not a browser.

@@ -62,6 +62,7 @@ const { z } = require('zod')
 const { publicFirstName, cleanNotes, cleanStrangerText } = require('../lib/text')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { renderBadgePng, renderSharePng } = require('../lib/badgePng')
+const { renderQrSvg, renderQrPng } = require('../lib/qr')
 const { STATUS, SHA256_RE, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview } = require('../lib/verification')
 // SECTION 7 AUDIT FIX (bug): this file used to define its own local
 // `clientIp` (`cf-connecting-ip || x-forwarded-for || 'unknown'`), which
@@ -124,11 +125,18 @@ async function loadByCode(c, { columns = PAGE_COLUMNS, scope = 'page' } = {}) {
   const { data: row, error } = await supabase.from('scans').select(columns).eq('verification_code', code).maybeSingle()
   if (error) throw error
   if (!row) {
-    if (!trusted) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, scope)
     // A page whose owner deleted it (or their account) answers "removed" rather than a
     // 404 that looks exactly like a mistyped code on a printed resume.
+    //
+    // ROUND-9 FIX (bug): the miss was recorded BEFORE this check, so a reader opening a few printed links
+    // to pages that were genuinely removed spent the shared 30-per-15-minutes page budget and then could not
+    // open ANY page for a quarter of an hour — the lock-out round 7 already fixed for by-hash lookups. A
+    // tombstoned code is a real, once-issued code: it is not a guess, so it is not counted. (Only codes that
+    // were issued can be tombstoned, so this gives an enumerator nothing new: a removed code is already
+    // distinguishable from an unknown one by the 410.)
     if (await isRemovedCode(supabase, code))
       return { response: c.json({ success: false, code: 'REMOVED', message: 'This verification page was removed by its owner.' }, 410), notFound: true, removed: true, code }
+    if (!trusted) await rateLimiter.recordVerifyMiss(c.env, ip, undefined, scope)
     return { response: c.json({ success: false, message: 'Verification not found.' }, 404), notFound: true, code }
   }
   return { row, code, supabase }
@@ -203,25 +211,45 @@ function integrityCacheKey(code, row) {
   return new Request(`https://verify-integrity.passthrough.internal/${encodeURIComponent(code)}/${tag}`)
 }
 
-async function checkIntegrityCached(c, row, { supabase = null, code = null } = {}) {
+// ROUND-9: the cached body is `status|ISO time of the check` (an entry written before this round is the
+// bare status and reads as "checked at an unknown time"), so the page can say WHEN the verdict it shows was
+// actually produced instead of leaving a reader to guess how old "Unmodified" is.
+const INTEGRITY_STATUSES = ['verified', 'modified', 'partial', 'missing']
+function parseIntegrityEntry(text) {
+  const [status, at] = String(text).trim().split('|')
+  if (!INTEGRITY_STATUSES.includes(status)) return null
+  const t = at ? Date.parse(at) : NaN
+  return { status, checkedAt: Number.isFinite(t) ? new Date(t).toISOString() : null }
+}
+
+// `fresh: true` skips the READ of the cached verdict (the result is still stored). The embeddable badge
+// uses it: it is itself cached at the edge for BADGE_TTL_SECONDS, and reading a 60-second-old verdict into
+// a 60-second-old badge made a tampered file stay "Verified" for up to two minutes (plus the 30 seconds a
+// client keeps the image) while every comment and the page copy promised one.
+async function checkIntegrityDetailed(c, row, { supabase = null, code = null, fresh = false } = {}) {
   const cache = code && isPlausibleCode(code) ? getBadgeCache() : null
   const key = cache ? integrityCacheKey(code, row) : null
-  if (cache) {
+  if (cache && !fresh) {
     try {
       const hit = await cache.match(key)
       if (hit) {
-        const status = (await hit.text()).trim()
-        if (['verified', 'modified', 'partial', 'missing'].includes(status)) return status
+        const entry = parseIntegrityEntry(await hit.text())
+        if (entry) return entry
       }
     } catch (_) { /* a cache hiccup is just a miss */ }
   }
   const status = await checkIntegrity(c.env, row, { supabase, code })
+  const checkedAt = new Date().toISOString()
   if (cache && status !== 'unknown') {
     try {
-      runInBackground(c, cache.put(key, new Response(status, { headers: { 'Cache-Control': `public, max-age=${INTEGRITY_CACHE_TTL_SECONDS}` } })))
+      runInBackground(c, cache.put(key, new Response(`${status}|${checkedAt}`, { headers: { 'Cache-Control': `public, max-age=${INTEGRITY_CACHE_TTL_SECONDS}` } })))
     } catch (_) { /* best effort */ }
   }
-  return status
+  return { status, checkedAt }
+}
+
+async function checkIntegrityCached(c, row, opts = {}) {
+  return (await checkIntegrityDetailed(c, row, opts)).status
 }
 
 // ROUND-6 AUDIT FIX (bug, Section 7): R2 answering "no such object" and R2 failing both returned
@@ -384,7 +412,7 @@ async function getVerification(c) {
   // ROUND-7: the preview used to skip the check ('unchecked', verified: null), so a link pasted into a
   // chat unfurled as a generic "Scan Report" even for a fully verified page. The verdict is cached
   // (checkIntegrityCached), which is what makes it affordable here.
-  const integrityStatus = await checkIntegrityCached(c, row, { supabase: loaded.supabase, code })
+  const { status: integrityStatus, checkedAt: integrityCheckedAt } = await checkIntegrityDetailed(c, row, { supabase: loaded.supabase, code })
   if (integrityStatus === 'missing') await reportMissingFile(c, code)
   const counted = preview ? false : await maybeCountView(c, code, row)
 
@@ -400,11 +428,15 @@ async function getVerification(c) {
     seniorityLevel:     row.seniority_level,
     verifiedAt:         row.verified_at,
     integrityStatus,
+    // ROUND-9: when the verdict above was produced (it can be up to a minute old — see checkIntegrityDetailed).
+    integrityCheckedAt,
     verificationViews:  (row.verification_views || 0) + (counted ? 1 : 0),
     // Only advertise files that can actually be served.
     exposeDocx:         !!(row.verify_expose_docx && row.resume_ats_path),
     exposePdf:          !!(row.verify_expose_pdf && row.resume_pdf_path),
-    fingerprints:       fingerprintsFor(row),
+    // ROUND-9: a link-preview fetch only needs the headline, and the history can be 400 entries long — it was
+    // sent (and cached by the Pages Function) on every unfurl for nothing. The real page asks without preview=1.
+    fingerprints:       preview ? { ...fingerprintsFor(row), previous: [] } : fingerprintsFor(row),
   }})
 }
 
@@ -672,7 +704,7 @@ async function serveBadge(c, format) {
     // Only pay for the integrity check when the score alone could otherwise
     // earn the "Verified" claim — a below-threshold scan is never going to
     // say "Verified" regardless of integrity, so there's nothing to check.
-    const integrity = passed ? await checkIntegrityCached(c, row, { supabase: loaded.supabase, code: loaded.code }) : null
+    const integrity = passed ? await checkIntegrityCached(c, row, { supabase: loaded.supabase, code: loaded.code, fresh: true }) : null
     if (integrity === 'unknown') ttl = BADGE_UNSETTLED_TTL_SECONDS
     if (integrity === 'missing') await reportMissingFile(c, loaded.code)
     if (passed && integrity === 'verified') { value = `${Math.round(score)}/100`; color = '#15803d' }
@@ -712,7 +744,7 @@ async function reportVerification(c) {
   if (!(await verifyTurnstile(c.env, data.turnstileToken, ip)))
     return c.json({ success: false, message: 'Please complete the verification check and try again.' }, 400)
 
-  const loaded = await loadByCode(c, { columns: 'verification_code, verification_status, verification_revoked_at' })
+  const loaded = await loadByCode(c, { columns: 'verification_code, verification_status, verification_revoked_at, user_id' })
   if (loaded.response) return loaded.response
   const { row, code, supabase } = loaded
   // A revoked page is already off; there is nothing to report.
@@ -720,14 +752,60 @@ async function reportVerification(c) {
 
   const details = cleanNotes(data.details || '').slice(0, 1000) || null
   const email = data.email ? cleanStrangerText(data.email).toLowerCase() : null
-  const reporterHash = await cryptoLib.sha256(`report|${rateKeyIp(ip, 48)}|${c.req.header('user-agent') || ''}`)
+  const reporterHash = await reporterKey(c.env, ip)
   const { error } = await supabase.from('verification_reports').insert({
     code, reason: data.reason, details, reporter_email: email, reporter_hash: reporterHash,
   })
   // 23505 = this network already has an OPEN report on this page: absorbed, answered the same.
   if (error && error.code !== '23505') throw error
-  if (!error) await alertReported(c, code, data.reason, details)
+  if (!error) {
+    await alertReported(c, code, data.reason, details)
+    await notifyOwnerOfReport(c, supabase, row, code, data.reason)
+  }
   return c.json({ success: true, message: REPORT_RECEIVED })
+}
+
+// ROUND-9 FIX (bug x2): the one-open-report-per-network key was sha256('report|<ip>|<user-agent>'), so
+//  * changing the User-Agent string minted a "different network" and walked straight past the dedupe the
+//    migration promises (the 5-per-hour limiter still bounded it, but the unique index did nothing), and
+//  * the value was an UNSALTED hash of a /48 prefix or an IPv4 address — a space small enough to enumerate in
+//    seconds, so "a one-way hash, never the address itself" (migration 0073) was not true of what was stored.
+// It is now an HMAC of the network alone, keyed with a server secret (JWT_SECRET, always set), domain-
+// separated so the value cannot be replayed as any other HMAC the app makes. Open reports written under the
+// old key simply stop matching, so one repeat per page can slip in once — harmless.
+async function reporterKey(env, ip) {
+  const secret = String((env && env.JWT_SECRET) || '')
+  const net = rateKeyIp(ip, 48)
+  if (!secret) return cryptoLib.sha256(`report-v2|${net}`)   // no secret (local tests): still network-only
+  return cryptoLib.hmacSha512Hex(secret, `verification-report-v2|${net}`)
+}
+
+// ROUND-9 (feature gap): a candidate whose page was reported heard nothing — the report reached the operator
+// and the admin list only, so a WRONG / FAKE report sat there while the page the candidate had put on their
+// resume stayed up. The owner now gets one plain e-mail per page every 3 days: WHAT kind of problem was
+// reported, never who reported it or what they wrote. 'MINE' ("this is my resume") is left to the admin — it
+// can be a dispute about who owns the document, which is not for the page's owner to be pinged about first.
+// Best-effort and quiet without the shared backend (nothing to dedupe on), like every other alert here.
+const OWNER_NOTICE_DAYS = 3
+const REPORT_REASON_PHRASE = {
+  FAKE:  'that it looks fake or misleading',
+  WRONG: 'that something on it is wrong',
+  OTHER: 'a problem with it',
+}
+async function notifyOwnerOfReport(c, supabase, row, code, reason) {
+  try {
+    if (!REPORT_REASON_PHRASE[reason] || !row || !row.user_id) return
+    if (!(c.env.RATE_LIMIT_DO || c.env.RATE_LIMIT_KV)) return
+    if (!(await rateLimiter.hitQuota(c.env, `rl:verifyreportowner:${code}`, 1, OWNER_NOTICE_DAYS * 24 * 60 * 60))) return
+    const { data: owner, error } = await supabase.from('users').select('name, email, status, deleted_at').eq('id', row.user_id).maybeSingle()
+    if (error || !owner || !owner.email || owner.deleted_at || (owner.status && owner.status !== 'ACTIVE')) return
+    const email = require('../services/email.service')
+    runInBackground(c, email.sendVerificationReported(c.env, supabase, owner.email, owner.name, {
+      code, phrase: REPORT_REASON_PHRASE[reason], pageUrl: `${c.env.FRONTEND_URL}/v/${code}`,
+    }).catch(err => console.error('[verify] owner report notice failed:', err.message)))
+  } catch (err) {
+    console.error('[verify] owner report notice failed:', err.message)
+  }
 }
 
 // One owner alert per page per day however many reports arrive (shared dedupe backend; quiet without one).
@@ -743,8 +821,29 @@ async function alertReported(c, code, reason, details) {
   }
 }
 
+// ── QR code for the page link (round 9) ─────────────────────────────────────
+// GET /api/verify/:code/qr.svg | qr.png — static (the code never changes for a page) and answered without
+// touching the database, so it can be embedded or downloaded freely. It points at the live page, which says
+// revoked / removed itself, so there is no state to leak or to keep fresh. A string that is not shaped like a
+// code answers 404 without encoding anything.
+const QR_TYPES = { svg: 'image/svg+xml; charset=utf-8', png: 'image/png' }
+function serveQr(c, format) {
+  const code = normalizeCode(c.req.param('code'))
+  if (!isPlausibleCode(code) || !c.env.FRONTEND_URL)
+    return c.json({ success: false, message: 'Verification not found.' }, 404)
+  const url = `${String(c.env.FRONTEND_URL).replace(/\/+$/, '')}/v/${code}`
+  const body = format === 'png' ? renderQrPng(url) : renderQrSvg(url)
+  c.header('Content-Type', QR_TYPES[format])
+  c.header('Cache-Control', 'public, max-age=86400')
+  c.header('X-Robots-Tag', 'noindex')
+  c.header('Content-Disposition', `inline; filename="Passthrough-${code}-qr.${format}"`)
+  return c.body(body)
+}
+const getQrSvg = c => serveQr(c, 'svg')
+const getQrPng = c => serveQr(c, 'png')
+
 const getBadge = c => serveBadge(c, 'svg')
 const getBadgePng = c => serveBadge(c, 'png')
 const getCardPng = c => serveBadge(c, 'card')
 
-module.exports = { getVerification, downloadVerifiedFile, reportVerification, REPORT_REASONS, getBadge, getBadgePng, getCardPng, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS, INTEGRITY_CACHE_TTL_SECONDS }
+module.exports = { getVerification, downloadVerifiedFile, reportVerification, REPORT_REASONS, getBadge, getBadgePng, getCardPng, getQrSvg, getQrPng, lookupByHash, reporterKey, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS, INTEGRITY_CACHE_TTL_SECONDS }

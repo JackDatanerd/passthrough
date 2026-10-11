@@ -16,6 +16,9 @@ export function buildBadgeEmbeds(root, code, pageUrl) {
   return {
     image: svg,
     png,
+    // ROUND-9: the page link as a QR code, for a printed resume (GET /verify/:code/qr.svg | qr.png).
+    qrSvg: `${base}/qr.svg`,
+    qrPng: `${base}/qr.png`,
     markdown: `[![Passthrough badge](${svg})](${pageUrl})`,
     html: `<a href="${escAttr(pageUrl)}"><img src="${escAttr(png)}" alt="Passthrough badge" height="20" style="border:0"></a>`,
   }

@@ -58,3 +58,27 @@ export function fileKindOf(file) {
 // Hashing reads the whole file into memory in the reader's browser; a resume is
 // a few hundred KB, so anything huge is not one and would only freeze the tab.
 export const MAX_CHECK_BYTES = 25 * 1024 * 1024
+
+// ROUND-9 (feature gap, Section 7): the page tells a reader who won't put a file into a browser to run
+// `shasum -a 256` or `certutil -hashfile` and compare by eye — 64 hex characters, and no way to notice that the
+// file matches an EARLIER version. Pasting the result into the page runs it through classifyFingerprint like
+// a file. Accepts what those tools actually print: a bare hash, `<hash>  filename`, `SHA256:<hash>`, a whole
+// certutil block ("SHA256 hash of …:\n<hash>\nCertUtil: …"), and the older certutil form with spaces
+// between the byte pairs. Returns the lowercase hash, or null when no single SHA-256 can be found.
+export function extractSha256(text) {
+  const raw = String(text || '')
+  const bare = raw.match(/(?<![a-f0-9])[a-f0-9]{64}(?![a-f0-9])/gi)
+  if (bare) {
+    const uniq = [...new Set(bare.map(h => h.toLowerCase()))]
+    return uniq.length === 1 ? uniq[0] : null     // two different hashes pasted: do not guess which one
+  }
+  const spaced = raw.match(/(?<![a-f0-9])(?:[a-f0-9]{2}[ :]){31}[a-f0-9]{2}(?![a-f0-9])/gi)
+  if (spaced) {
+    const uniq = [...new Set(spaced.map(h => h.replace(/[ :]/g, '').toLowerCase()))]
+    return uniq.length === 1 ? uniq[0] : null
+  }
+  return null
+}
+
+// How many files one selection checks (each is read into memory to be hashed).
+export const MAX_CHECK_FILES = 6

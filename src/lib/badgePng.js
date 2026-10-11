@@ -226,4 +226,4 @@ function renderSharePng({ headline = '', big = '', sub = '', footer = '', color 
   return out
 }
 
-module.exports = { renderBadgePng, renderSharePng, textWidth, HEIGHT, SCALE, CARD_W, CARD_H }
+module.exports = { renderBadgePng, renderSharePng, textWidth, HEIGHT, SCALE, CARD_W, CARD_H, chunk, zlibStored }

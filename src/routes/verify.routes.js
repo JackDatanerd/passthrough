@@ -15,6 +15,9 @@ router.post('/:code/report',   rl.verifyReport, c.reportVerification)
 router.get('/:code/badge.svg', c.getBadge)
 // The same badge as a PNG — for e-mail signatures, LinkedIn and anywhere SVG is not displayed.
 router.get('/:code/badge.png', c.getBadgePng)
+// ROUND-9: the page link as a QR code (SVG / PNG) for a printed resume — static, no database, no view count.
+router.get('/:code/qr.svg',    c.getQrSvg)
+router.get('/:code/qr.png',    c.getQrPng)
 // ROUND-7: the link-preview image; edge-cached and quota'd like the badge, so no verifyRead limiter.
 router.get('/:code/card.png',  c.getCardPng)
 

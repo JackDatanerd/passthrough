@@ -1105,6 +1105,25 @@ export default function ScanResult() {
                         <p className="text-xs text-gray-500 mt-1.5">
                           Follows the live status — a change (an unpublish, a new score) shows within a minute or two, longer where a site caches images. The HTML version uses a PNG, which Gmail, Outlook and LinkedIn can show; the Markdown version uses the sharper SVG.
                         </p>
+                        {/* ROUND-9 (feature gap, Section 7): a link printed on paper has to be typed by hand. */}
+                        <div className="mt-3 flex items-center gap-3 flex-wrap">
+                          <img
+                            src={badgeUrls().qrPng}
+                            alt="QR code for your verification page"
+                            className="w-16 h-16 border border-gray-200 bg-white"
+                          />
+                          <div className="text-xs text-gray-500 max-w-md">
+                            <p className="font-medium text-green-900">QR code for a printed resume</p>
+                            <p className="mt-0.5">
+                              Scans to this page. Save it and place it beside your name in a Word or Canva layout, or on a business card.{' '}
+                              <a href={badgeUrls().qrPng} target="_blank" rel="noopener noreferrer"
+                                className="font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2">Open PNG</a>
+                              {' · '}
+                              <a href={badgeUrls().qrSvg} target="_blank" rel="noopener noreferrer"
+                                className="font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2">Open SVG</a>
+                            </p>
+                          </div>
+                        </div>
                       </div>
                     )}
 

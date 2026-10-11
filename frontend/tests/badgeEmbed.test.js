@@ -17,3 +17,11 @@ describe('buildBadgeEmbeds (round 6: PNG + HTML for e-mail signatures)', () => {
     expect(x.html).toContain('href="https://x.test/v/A?a=1&amp;b=&quot;2&quot;"')
   })
 })
+
+describe('buildBadgeEmbeds (round 9: QR code for a printed resume)', () => {
+  const e = buildBadgeEmbeds('https://api.passthrough.dev/api/', 'AB3XY7K2PQ', 'https://passthrough.dev/v/AB3XY7K2PQ')
+  it('names the QR images next to the badge, as SVG and PNG', () => {
+    expect(e.qrSvg).toBe('https://api.passthrough.dev/api/verify/AB3XY7K2PQ/qr.svg')
+    expect(e.qrPng).toBe('https://api.passthrough.dev/api/verify/AB3XY7K2PQ/qr.png')
+  })
+})
