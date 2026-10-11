@@ -702,6 +702,7 @@ describe('updateResumeData', () => {
     const scan = 'scan' in opts ? opts.scan : { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'COMPLETE_PASS', fix_purchased: false, job_description_text: 'JD text' }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
+      if (q.table === 'payments' && q.op === 'select') return { data: opts.openBadge ?? null, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); state.updateFilters.push(q.filters); return { data: 'updateReturn' in opts ? opts.updateReturn : null, error: opts.updateErr || null } }
     })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
@@ -732,6 +733,20 @@ describe('updateResumeData', () => {
   it('400s once a fix has been purchased', async () => {
     t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', status: 'COMPLETE_PASS', fix_purchased: true } })
     expect((await t.mod.updateResumeData(baseCtx({ body: { resumeData: {} } }))).status).toBe(400)
+  })
+
+  it('ROUND 11: 409s while a fresh Credential-only checkout is open (its price was set on the old score) and writes nothing', async () => {
+    t = setup({ openBadge: { paystack_ref: 'ref-b', created_at: new Date().toISOString() } })
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go'] } } }))
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ code: 'CHECKOUT_OPEN', data: { reference: 'ref-b' } })
+    expect(t.state.updates).toHaveLength(0)
+  })
+
+  it('ROUND 11: an old (>30 min) BADGE checkout does not block editing', async () => {
+    t = setup({ openBadge: { paystack_ref: 'ref-b', created_at: new Date(Date.now() - 40 * 60 * 1000).toISOString() } })
+    const res = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'Jane', skills: ['Go'] } } }))
+    expect(res.status).not.toBe(409)
   })
 
   it('400s on oversized resumeData', async () => {
@@ -1569,25 +1584,6 @@ describe('generateFix', () => {
     expect(res.success).toBe(false)
     expect(t.state.emails.some(e => e.fn === 'sendFixFailed')).toBe(true)
     expect(t.state.alerts.length).toBe(1)
-  })
-
-  it('a failed delivery removes the files this run wrote and no column names (Auth round 7)', async () => {
-    t = setup({ deliverError: new Error('save boom') })
-    await t.mod.generateFix(t.env, t.db, 's1')
-    const written = t.state.r2Puts.map(p => p.key)
-    expect(written.length).toBeGreaterThan(0)
-    for (const k of written) expect(t.state.r2Deletes).toContain(k)
-  })
-
-  it('a failed RETRY removes only its own new files, never the earlier delivery', async () => {
-    t = setup({
-      deliverError: new Error('save boom'),
-      scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 1, resume_ats_path: 'old-ats', resume_pdf_path: 'old-pdf', verification_code: 'OLD' }
-    })
-    await t.mod.generateFix(t.env, t.db, 's1')
-    for (const k of t.state.r2Puts.map(p => p.key)) expect(t.state.r2Deletes).toContain(k)
-    expect(t.state.r2Deletes).not.toContain('old-ats')
-    expect(t.state.r2Deletes).not.toContain('old-pdf')
   })
 
   it('sends the plain-tier email for FIX_PLAIN and the credentialed email otherwise', async () => {

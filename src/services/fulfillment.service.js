@@ -148,11 +148,11 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
   const flip = p => supabase.from('payments')
     .update(p).eq('paystack_ref', paymentRow.paystack_ref).in('status', REVIVABLE_STATUSES).select()
   let { data: flipped, error: flipErr } = await flip(patch)
-  // Round 8: paid_at (migration 0065) is written in the same UPDATE as the flip, so exactly once. If the code
+  // Round 8: paid_at (migration 0064) is written in the same UPDATE as the flip, so exactly once. If the code
   // is deployed before that migration, settlement must NOT break — money is already captured — so an
   // unknown-column error retries once without it (receipts then fall back to created_at, as before).
   if (flipErr && (flipErr.code === '42703' || flipErr.code === 'PGRST204')) {
-    console.error('[WARN] payments.paid_at column missing — apply migration 0065; settling without it')
+    console.error('[WARN] payments.paid_at column missing — apply migration 0064; settling without it')
     const { paid_at: _omit, ...legacyPatch } = patch
     ;({ data: flipped, error: flipErr } = await flip(legacyPatch))
   }

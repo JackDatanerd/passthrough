@@ -535,10 +535,10 @@ describe('pricingRef limiter', () => {
     for (let i = 0; i < 60; i++) expect((await hit(rl.pricingRef, noRef(env))).passed).toBe(true)
   })
 
-  it('allows 30 code lookups per 10 minutes per IP, then answers 429', async () => {
+  it('allows 90 code lookups per 10 minutes per IP, then answers 429', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
     let last
-    for (let i = 0; i < 30; i++) last = await hit(rl.pricingRef, withRef(env, `C${i}`))
+    for (let i = 0; i < 90; i++) last = await hit(rl.pricingRef, withRef(env, `C${i}`))
     expect(last.passed).toBe(true)
     const over = await hit(rl.pricingRef, withRef(env, 'ONE-MORE'))
     expect(over.passed).toBe(false)
@@ -547,7 +547,7 @@ describe('pricingRef limiter', () => {
 
   it('code lookups do not eat the general or payment budgets', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
-    for (let i = 0; i < 31; i++) await hit(rl.pricingRef, withRef(env))
+    for (let i = 0; i < 91; i++) await hit(rl.pricingRef, withRef(env))
     expect((await hit(rl.payment, ctx({ env }))).passed).toBe(true)
   })
 })

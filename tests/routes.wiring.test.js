@@ -359,3 +359,30 @@ describe('homepage evidence routes', () => {
     expect((await call(a, 'POST', '/stories/nope/moderate', {})).status).toBe(400)
   })
 })
+
+// Payments & Pricing round 11 (B1): resolve, and recheck when it ACCEPTS an amount mismatch, ask for the same
+// step-up as refund. A plain recheck stays open.
+describe('payments routes — step-up on money-moving admin actions', () => {
+  const REF = 'PSK-ref-1'
+  const mountApp = () => mount('routes/payments.routes.js', 'controllers/payments.controller.js')
+  const post = (app, path, body, env) => app.request(`/r${path}`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  }, env).then(async res => ({ status: res.status, json: await res.json().catch(() => null) }))
+  const ON = { ADMIN_STEP_UP_MINUTES: '10', JWT_SECRET: 'x'.repeat(32) }
+
+  it('resolve needs the step-up token when step-up is on, and passes through when it is off', async () => {
+    const a = mountApp(); current = { id: 'a1', role: 'ADMIN' }
+    const blocked = await post(a, `/${REF}/resolve`, { action: 'reverse' }, ON)
+    expect(blocked.status).toBe(403)
+    expect(blocked.json.code).toBe('ADMIN_STEP_UP_REQUIRED')
+    expect((await post(a, `/${REF}/resolve`, { action: 'reverse' }, {})).json.handler).toBe('resolvePayment')
+  })
+  it('recheck with acceptAmountMismatch:true needs step-up; a plain recheck does not', async () => {
+    const a = mountApp(); current = { id: 'a1', role: 'ADMIN' }
+    const accepting = await post(a, `/${REF}/recheck`, { acceptAmountMismatch: true }, ON)
+    expect(accepting.status).toBe(403)
+    expect(accepting.json.code).toBe('ADMIN_STEP_UP_REQUIRED')
+    expect((await post(a, `/${REF}/recheck`, {}, ON)).json.handler).toBe('recheckPayment')
+    expect((await post(a, `/${REF}/recheck`, { acceptAmountMismatch: false }, ON)).json.handler).toBe('recheckPayment')
+  })
+})

@@ -31,9 +31,20 @@ router.get( '/pending',    auth,             c.getPendingPayment)
 router.post('/:reference/reconcile', auth, admin, c.reconcilePayment)
 // Section 8 audit: PENDING/ABANDONED/FAILED payments (held mismatches, lost
 // webhooks) — ask Paystack and settle if the money really arrived.
-router.post('/:reference/recheck',   auth, admin, c.recheckPayment)
+// PAYMENTS & PRICING ROUND 11 (bug): only /refund asked for step-up, yet accepting an amount mismatch settles and
+// delivers an UNDERPAID order — a money decision like the refund beside it. A plain recheck (settle only if the amount
+// is exactly right) stays open; the step-up applies when the body asks to accept a mismatch. Hono caches the parsed
+// body, so the controller still reads it.
+const stepUpWhenAccepting = async (ctx, next) => {
+  const body = await ctx.req.json().catch(() => null)
+  if (body && body.acceptAmountMismatch === true) return admin.stepUp(ctx, next)
+  return next()
+}
+router.post('/:reference/recheck',   auth, admin, stepUpWhenAccepting, c.recheckPayment)
 // Section 8 audit: reverse a sale (refund / lost dispute) or clear a won dispute.
-router.post('/:reference/resolve',   auth, admin, c.resolvePayment)
+// ROUND 11 (bug): reverse claws back partner commission and revokes the credential; clear-dispute restores a sale.
+// Both move the record of money, and the partner ledger adjustments next door already require step-up.
+router.post('/:reference/resolve',   auth, admin, admin.stepUp, c.resolvePayment)
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G1): admin-only — queues an
 // actual refund with Paystack (see refundPayment's own comment in
 // payments.controller.js for why this never touches our row directly).

@@ -365,6 +365,16 @@ async function initializePayment(c2) {
     // resolved" — no owner alert, just a normal 400 back to this customer.
     if (err.paystackRejected) {
       console.error(`Paystack declined initialize (scan ${scanId}):`, err.message)
+      // PAYMENTS & PRICING ROUND 11 (bug): a 4xx is "this request only" for a duplicate reference, but a
+      // configuration-level 400 (a currency the Paystack account does not support, an amount under its minimum)
+      // is the same answer to EVERY buyer — and used to be invisible. The buyer's reply is unchanged; the owner
+      // is told, deduped per message so a burst is one email.
+      try {
+        await emailService.sendOwnerAlert(c2.env,
+          'Paystack rejected a checkout — check it is not a configuration problem',
+          `If this repeats, every checkout is failing the same way (currency not enabled on the Paystack account, amount below its minimum, ...).\n\nHTTP ${err.httpStatus || 'n/a (200 with status:false)'}\nmessage: ${err.message}\nscanId: ${scanId}\nfixTier: ${fixTier}\namount: ${amount}\ncurrency: ${c2.env.PAYSTACK_CURRENCY || c.CURRENCY}`,
+          { dedupeKey: `rejected:${err.message}` })
+      } catch (_) {}
       return c2.json({ success: false,
         message: 'Payment could not be started — please try again.'
       }, 400)

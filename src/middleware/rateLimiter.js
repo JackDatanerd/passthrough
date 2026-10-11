@@ -574,7 +574,10 @@ const paymentReceipt = makeLimiter({
 // when a code is actually being looked up (a plain quote stays on the general limiter alone).
 // Generous for a person typing a few codes; hopeless for enumeration.
 const pricingRef = makeLimiter({
-  windowSeconds: 10 * 60, max: 30, keyPrefix: 'rl:pricingref',
+  // ROUND 11: 30 -> 90. Every page that prices with a stored referral code (the pricing page, checkout) counts here,
+  // and referred visitors on one carrier-NAT address share this per-IP bucket; 9 lookups a minute is still hopeless
+  // for guessing codes.
+  windowSeconds: 10 * 60, max: 90, keyPrefix: 'rl:pricingref',
   skip: c => !c.req.query('ref'),
   message: msg('Too many referral code checks. Please wait a few minutes and try again.')
 })

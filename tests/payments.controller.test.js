@@ -321,6 +321,15 @@ describe('initializePayment — referral usage-limit reservation', () => {
     expect(rpcNames()).toEqual(['reserve_referral_code_slot', 'release_referral_code_slot'])
   })
 
+  it('ROUND 11: a Paystack rejection still answers 400 to the buyer but pages the owner (a config-level 400 hits every buyer)', async () => {
+    const err = Object.assign(new Error('Currency not supported by merchant'), { paystackRejected: true, httpStatus: 400 })
+    t = setupInit({ paystackThrows: err })
+    const res = await t.mod.initializePayment(t.c({ body }))
+    expect(res.status).toBe(400)
+    expect(t.state.alerts).toHaveLength(1)
+    expect(t.state.alerts[0].message).toContain('Currency not supported by merchant')
+  })
+
   it('releases the slot when the payments insert fails', async () => {
     t = setupInit({ referralCodes: { LIMITED: limitedCode() }, reservationId: 'res-1', insertError: { code: '08006', message: 'down' } })
     const res = await t.mod.initializePayment(t.c({ body }))

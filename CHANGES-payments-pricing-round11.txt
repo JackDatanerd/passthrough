@@ -1,0 +1,15 @@
+Payments & Pricing round 11 (independent pass)
+
+B1  payments.routes.js: POST /:reference/resolve now requires admin.stepUp; POST /:reference/recheck requires it
+    only when the body sets acceptAmountMismatch:true (a plain recheck stays open).
+B2  payments.controller.js initializePayment: a Paystack 4xx rejection still answers the buyer 400, but now pages the
+    owner (deduped per message) so a configuration-level 400 (currency not enabled, amount under minimum) is not silent.
+B3  fulfillment.service.js: the missing-column warning and comment named migration 0065; paid_at is migration 0064.
+R1  rateLimiter.js: pricingRef 30 -> 90 lookups / 10 min / IP (stored referral codes count on every priced page;
+    referred visitors share carrier-NAT IPs). Tests updated.
+R2  scan.controller.js updateResumeData: 409 CHECKOUT_OPEN while a fresh (<30 min) BADGE checkout exists for the scan
+    (its price was set on the old score). Fails open on lookup error.
+G1/G2  Pricing.jsx: Badge card states the uploaded-file formatted-score rule; Fix-only card says "toward the 80+ target score".
+
+Tests added: routes.wiring (step-up), payments.controller (rejection alert), scan.controller (CHECKOUT_OPEN, old checkout).
+Note: frontend/tests/api.test.js already fails on the untouched clone in this sandbox; unrelated.
