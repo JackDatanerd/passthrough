@@ -17,6 +17,7 @@ router.put(   '/extras/:id',      auth, rl.profileEdit, c.updateExtra)
 router.delete('/extras/:id',      auth, c.deleteExtra)
 router.patch( '/preferences', auth, c.updatePreferences)
 router.post(  '/save',  auth, c.saveProfile)
+router.post(  '/restore-previous', auth, rl.profileEdit, c.restorePreviousProfile)   // swap the main profile with the version it replaced
 router.delete('/',      auth, c.deleteProfile)
 // "Delete my scan history" — batched; the SPA loops until `remaining` is 0.
 router.delete('/scans', auth, rl.historyPurge, c.deleteScanHistory)

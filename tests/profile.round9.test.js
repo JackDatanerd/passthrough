@@ -12,10 +12,12 @@ const ID2 = '22222222-2222-4222-8222-222222222222'
 function setup(resolver, stubs = {}) {
   const db = createFakeSupabase(resolver)
   const abandoned = []
+  const abandonInfo = []
   const { mod, restore } = loadWithStubs('controllers/profile.controller.js', {
     'config/supabase.js': { getSupabase: () => db },
     'lib/verification.js': { recordTombstones: async () => {} },
-    'services/fulfillment.service.js': { abandonPendingForScans: async (_s, ids) => { abandoned.push(...ids); return ids.length } },
+    'services/fulfillment.service.js': { abandonPendingForScans: async (_s, ids, olderThan) => {
+      abandoned.push(...ids); abandonInfo.push({ olderThan, scansAlreadyDeleted: db.calls.some(x => x.table === 'scans' && x.op === 'delete') }); return ids.length } },
     ...stubs,
   })
   const c = (over = {}) => ({
@@ -24,7 +26,7 @@ function setup(resolver, stubs = {}) {
     req: { json: async () => over.body ?? {}, query: k => over.query?.[k], param: k => over.params?.[k] },
     json: (body, status = 200) => ({ body, status }),
   })
-  return { mod, restore, c, db, abandoned }
+  return { mod, restore, c, db, abandoned, abandonInfo }
 }
 let t
 afterEach(() => t?.restore())
@@ -32,14 +34,19 @@ afterEach(() => t?.restore())
 const R = (id) => ({ id, status: 'COMPLETE_PASS', updated_at: '2020-01-01', resume_path: null, resume_ats_path: null, resume_pdf_path: null, verification_code: null })
 
 describe('deleteScanHistory — open checkouts and in-flight races', () => {
-  it('closes every open checkout on the scans it actually deleted (and only those)', async () => {
+  it('closes the open checkouts of the batch BEFORE deleting it (payments.scan_id is set null by the delete), only the old ones', async () => {
     t = setup(q => {
       if (q.table === 'scans' && q.op === 'select' && q.selectOpts?.head) return { count: 0, error: null }
       if (q.table === 'scans' && q.op === 'select') return { data: [R('a'), R('b')], error: null }
       if (q.table === 'scans' && q.op === 'delete') return { data: [{ id: 'b' }], error: null }
     })
     await t.mod.deleteScanHistory(t.c())
-    expect(t.abandoned).toEqual(['b'])
+    expect(t.abandoned).toEqual(['a', 'b'])
+    expect(t.abandonInfo).toHaveLength(1)
+    expect(t.abandonInfo[0].scansAlreadyDeleted).toBe(false)
+    // limited to checkouts at least an hour old — the same window that lets a delete through at all
+    const age = Date.now() - Date.parse(t.abandonInfo[0].olderThan)
+    expect(age).toBeGreaterThanOrEqual(59 * 60 * 1000); expect(age).toBeLessThan(61 * 60 * 1000)
   })
   it('nothing deleted, nothing abandoned', async () => {
     t = setup(q => (q.table === 'scans' && q.op === 'select' && !q.selectOpts?.head) ? { data: [], error: null } : undefined)

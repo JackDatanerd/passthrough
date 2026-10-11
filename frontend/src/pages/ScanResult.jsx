@@ -1187,7 +1187,8 @@ export default function ScanResult() {
                 agnostic signal: it's simply never populated yet for a
                 file-upload scan that hasn't had a fix generated. */}
             {user && scan.originalResumeData && (
-              <SaveProfilePrompt scanId={scan.id} />
+              <SaveProfilePrompt scanId={scan.id}
+                deliveredAvailable={scan.status === 'FIX_DELIVERED' && !!(scan.userEditedResumeData || scan.rewrittenResumeData)} />
             )}
 
             {/* An anonymous result can hold a typed career history and an e-mail address: whoever holds

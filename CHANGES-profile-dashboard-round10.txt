@@ -1,0 +1,31 @@
+PROFILE & DASHBOARD (Section 6) — round 10
+Apply migration 0075 BEFORE deploying the code (schema version 75).
+
+FEATURE GAPS CLOSED
+G1  "Save the fixed version": on a scan whose fix was delivered, the save-profile prompt offers
+    "Your resume as it was" / "The fixed version" (the person's own edits to the delivery included).
+    POST /profile/save accepts source: 'original' | 'delivered', for the main profile and for
+    "keep as another profile". Server-checked: only a FIX_DELIVERED scan has a fixed version.
+G2  Undo: the main saved profile keeps ONE previous version (users.saved_profile_prev). It is written in the
+    same UPDATE that replaces the profile (save from a scan with different content, or a hand edit), so no
+    race can lose it. Settings shows "Earlier version … Restore earlier version"; POST /profile/restore-previous
+    swaps the two (so a restore can be undone too), guarded by the replacedAt stamp the page showed (409 if it
+    moved). Removing the saved profile, deleting the account, the export, and clear_saved_profile_source all
+    cover it. make-main drops it (it was a revision of the profile being swapped out).
+
+BUGS FIXED
+B7  deleteScanHistory closed open checkouts AFTER deleting the scans; payments.scan_id is `on delete set null`,
+    so the update matched nothing — old checkouts stayed payable and referral reservations were never released.
+    Now abandonPendingForScans(supabase, ids, since) runs BEFORE the delete (only checkouts at least an hour
+    old, the window that lets a delete through).
+B1  Default profile names used the raw role key ("software_engineering copy"); now "Software Engineering copy".
+B2  Profile names are unique per account in the database (0075: existing duplicates renamed, unique index on
+    (user_id, lower(label))). add: a lost race re-reads the names and takes the next free one; rename: 409 LABEL_TAKEN.
+B3  PATCH /profile/preferences with an empty/unknown body named only notifyScanResults.
+B4  Export: when a part returns no cursor in cursor mode it was the last one — the part list shrinks to that
+    instead of leaving later buttons disabled with no explanation.
+B5  Dashboard: the "Deleted N scans" / error lines clear when the person changes the filter, sort, search or page.
+B6  getProfile reuses summarizeResume (the inline copy is gone).
+
+TESTS  tests/profile.round10.test.js (new); profile.round9 (abandon order/age) and profile.controller
+       (deleteProfile payload) updated.

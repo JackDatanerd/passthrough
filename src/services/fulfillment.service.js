@@ -430,13 +430,17 @@ async function abandonPendingForScan(supabase, scanId) {
 
 // Same as abandonPendingForScan for a whole batch of scans in ONE update (bulk history purge: one
 // request per scan would cost dozens of subrequests). Closes every PENDING checkout on the given scans
-// regardless of age and releases their referral reservations. Never throws; returns rows closed.
-async function abandonPendingForScans(supabase, scanIds) {
+// (optionally only those opened at or before `olderThan`) and releases their referral reservations. Never throws; returns rows closed.
+async function abandonPendingForScans(supabase, scanIds, olderThan = null) {
   const ids = [...new Set((scanIds || []).filter(Boolean))]
   if (!ids.length) return 0
   try {
-    const { data, error } = await supabase.from('payments')
+    // MUST run BEFORE the scans are deleted: payments.scan_id is `on delete set null`, so afterwards
+    // there is nothing left to match on. `olderThan` (ISO time) leaves a checkout opened since then alone.
+    let q = supabase.from('payments')
       .update({ status: 'ABANDONED' }).in('scan_id', ids).eq('status', 'PENDING')
+    if (olderThan) q = q.lte('created_at', olderThan)
+    const { data, error } = await q
       .select('id, referral_reservation_id')
     if (error) { console.error('abandonPendingForScans failed:', error.message); return 0 }
     const referralService = require('./referral.service')

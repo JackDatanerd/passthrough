@@ -195,6 +195,10 @@ export default function Settings() {
   const [prefSaving, setPrefSaving] = useState(false)
   const [prefError,  setPrefError ] = useState('')
   const [profileSummary, setProfileSummary ] = useState(null)
+  // The version the main profile replaced (a save from a scan, or a hand edit): one step back, restorable.
+  const [previousVersion, setPreviousVersion] = useState(null)
+  const [restoreOpen, setRestoreOpen] = useState(false)
+  const [restoring, setRestoring] = useState(false)
   const [removing,        setRemoving       ] = useState(false)
   const [removeError,     setRemoveError    ] = useState('')
   // FEATURE GAP CLOSED (fresh audit pass, Section 6): "Remove saved profile"
@@ -297,6 +301,7 @@ export default function Settings() {
         setSourceScanId(res.data.data.sourceScanId)
         setEditedAt(res.data.data.editedAt || null)
         setProfileSummary(res.data.data.summary)
+        setPreviousVersion(res.data.data.previousVersion || null)
         const pref = res.data.data.preferences?.notifyScanResults
         setNotifyScanResults(typeof pref === 'boolean' ? pref : null)
         const follow = res.data.data.preferences?.notifyOutcomeFollowup
@@ -324,12 +329,30 @@ export default function Settings() {
       setEditedAt(null)
       setEditingProfile(false)
       setProfileSummary(null)
+      setPreviousVersion(null)
       setRemoveConfirmOpen(false)
     } catch (err) {
       setRemoveError(getErrorMessage(err, 'Failed to remove saved profile.'))
       setRemoveConfirmOpen(false)
     } finally {
       setRemoving(false)
+    }
+  }
+
+  async function handleRestorePrevious() {
+    setRestoring(true); setRemoveError('')
+    try {
+      await api.post('/profile/restore-previous', previousVersion?.replacedAt ? { replacedAt: previousVersion.replacedAt } : {})
+      // The editor that was open belongs to the profile that just changed.
+      setEditingProfile(false)
+      setRestoreOpen(false)
+      await loadProfile({ quiet: true })
+    } catch (err) {
+      setRestoreOpen(false)
+      setRemoveError(getErrorMessage(err, 'Could not restore the earlier version.'))
+      if (err.response?.status === 409 || err.response?.status === 404) loadProfile({ quiet: true })
+    } finally {
+      setRestoring(false)
     }
   }
 
@@ -405,6 +428,9 @@ export default function Settings() {
       } else {
         setExportedParts(prev => prev.includes(part) ? prev : [...prev, part])
         if (next) setExportCursors(prev => ({ ...prev, [part + 1]: next }))
+        // A part with no cursor in cursor mode was the last one: scans deleted since part 1 left fewer files than
+        // first announced. Say so by shrinking the list, rather than leave later buttons disabled with no reason.
+        else if (cursorMode && part < exportParts) setExportParts(part)
       }
     } catch (err) {
       setExportError(getErrorMessage(err, 'Could not export your data.'))
@@ -725,6 +751,16 @@ export default function Settings() {
                 </Button>
               </div>
             </div>
+            {previousVersion && (
+              <div className="mt-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-md bg-gray-50 border border-gray-200 px-3 py-2">
+                <p className="text-xs text-gray-600">
+                  Earlier version{previousVersion.replacedAt ? ` (replaced ${formatDate(previousVersion.replacedAt)})` : ''}
+                  {previousVersion.summary?.name ? ` — ${previousVersion.summary.name}` : ''}
+                  {previousVersion.summary && ` · ${previousVersion.summary.jobCount} job${previousVersion.summary.jobCount === 1 ? '' : 's'}, ${previousVersion.summary.skillCount} skill${previousVersion.summary.skillCount === 1 ? '' : 's'}`}
+                </p>
+                <Button variant="secondary" size="sm" onClick={() => setRestoreOpen(true)} disabled={restoring}>Restore earlier version</Button>
+              </div>
+            )}
             {editingProfile && (
               <SavedProfileEditor onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingProfile(false)} />
             )}
@@ -883,9 +919,19 @@ export default function Settings() {
       />
 
       <ConfirmDialog
+        open={restoreOpen}
+        title="Restore the earlier version?"
+        message="Your saved profile goes back to the version it replaced. What you have now is kept as the earlier version, so you can switch back."
+        confirmLabel="Restore"
+        loading={restoring}
+        onConfirm={handleRestorePrevious}
+        onCancel={() => setRestoreOpen(false)}
+      />
+
+      <ConfirmDialog
         open={removeConfirmOpen}
         title="Remove saved profile"
-        message="Remove your saved profile? You'll need to save it again from a completed scan to reuse it for a rescan."
+        message="Remove your saved profile and its earlier version? You'll need to save it again from a completed scan to reuse it for a rescan. Your other profiles are not affected."
         confirmLabel="Remove"
         loading={removing}
         onConfirm={handleRemoveProfile}

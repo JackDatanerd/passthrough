@@ -17,7 +17,7 @@ import { formatDate } from '../../lib/utils'
 // profile.controller.js for why the server derives the data server-side
 // rather than trusting a client-supplied payload here.
 
-export default function SaveProfilePrompt({ scanId }) {
+export default function SaveProfilePrompt({ scanId, deliveredAvailable = false }) {
   const [status, setStatus] = useState('idle') // idle | saving | saved | error
   const [error,  setError ] = useState('')
   // What is already saved (if anything). Saving overwrites it — one profile per
@@ -32,6 +32,9 @@ export default function SaveProfilePrompt({ scanId }) {
   const [extraLabel, setExtraLabel] = useState('')
   const [extraCount, setExtraCount] = useState(0)
   const [extraMax, setExtraMax] = useState(4)
+  // Which version to keep: the resume as uploaded / typed, or — once a fix was delivered — the improved one.
+  const [version, setVersion] = useState('original')   // 'original' | 'delivered'
+  const sourceBody = version === 'delivered' && deliveredAvailable ? { source: 'delivered' } : {}
 
   useEffect(() => {
     let cancelled = false
@@ -49,7 +52,7 @@ export default function SaveProfilePrompt({ scanId }) {
     setStatus('saving')
     setError('')
     try {
-      await api.post('/profile/save', replaceEdited ? { scanId, replaceEdited: true } : { scanId })
+      await api.post('/profile/save', { scanId, ...sourceBody, ...(replaceEdited ? { replaceEdited: true } : {}) })
       setConfirmOpen(false)
       setExisting({ savedAt: new Date().toISOString(), editedAt: null, sourceScanId: scanId })
       setStatus('saved')
@@ -70,7 +73,7 @@ export default function SaveProfilePrompt({ scanId }) {
   async function handleSaveExtra() {
     setStatus('saving'); setError('')
     try {
-      await api.post('/profile/save', { scanId, asExtra: true, label: extraLabel })
+      await api.post('/profile/save', { scanId, asExtra: true, label: extraLabel, ...sourceBody })
       setExtraOpen(false); setStatus('savedExtra')
     } catch (err) {
       setError(getErrorMessage(err, 'Could not save profile.')); setStatus('error')
@@ -111,6 +114,19 @@ export default function SaveProfilePrompt({ scanId }) {
               ? `Reuse your background against a new job description in one step. This replaces the profile you saved on ${formatDate(existing.savedAt)}.`
               : 'Reuse your background against a new job description in one step — no re-uploading.'}
         </p>
+        {deliveredAvailable && (
+          <fieldset className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-700">
+            <legend className="sr-only">Which version to save</legend>
+            <label className="inline-flex items-center gap-1.5">
+              <input type="radio" name={`profile-version-${scanId}`} checked={version === 'original'} onChange={() => setVersion('original')} />
+              Your resume as it was
+            </label>
+            <label className="inline-flex items-center gap-1.5">
+              <input type="radio" name={`profile-version-${scanId}`} checked={version === 'delivered'} onChange={() => setVersion('delivered')} />
+              The fixed version
+            </label>
+          </fieldset>
+        )}
         {status === 'error' && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
       </div>
       <div className="flex flex-wrap gap-2 shrink-0 items-center">

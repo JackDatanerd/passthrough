@@ -144,6 +144,7 @@ export default function DashboardIndex() {
     const handle = setTimeout(() => {
       if (searchInput === search) return
       committedSearch.current = searchInput
+      clearNotices()
       // replace: a pause in typing is not a place to come back to — every debounced commit used
       // to add a history entry, so Back stepped through half-typed searches.
       setSearchParams(prev => {
@@ -157,7 +158,13 @@ export default function DashboardIndex() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchInput])
 
+  // The last delete's result / error lines describe THAT list; a filter, sort or page the person picks makes
+  // them stale. (Not cleared by the automatic step back to the last page after a delete — the message has to
+  // survive that.)
+  function clearNotices() { setBulkResult(null); setBulkError(''); setDeleteError('') }
+
   function setStatus(newStatus) {
+    clearNotices()
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
       if (newStatus) next.set('status', newStatus); else next.delete('status')
@@ -167,6 +174,7 @@ export default function DashboardIndex() {
   }
 
   function setSort(newSort) {
+    clearNotices()
     setSearchParams(prev => {
       const next = new URLSearchParams(prev)
       if (newSort && newSort !== 'newest') next.set('sort', newSort); else next.delete('sort')
@@ -479,7 +487,7 @@ export default function DashboardIndex() {
             {hasFilters || page > 1 ? (
               <>
                 <p className="text-gray-500 mb-4">No scans match your search.</p>
-                <Button size="sm" variant="secondary" onClick={() => setSearchParams({})}>Clear filters</Button>
+                <Button size="sm" variant="secondary" onClick={() => { clearNotices(); setSearchParams({}) }}>Clear filters</Button>
               </>
             ) : (
               <>
@@ -578,7 +586,7 @@ export default function DashboardIndex() {
             the common case of a user with a handful of scans. */}
         {!loading && total > SCANS_PER_PAGE && (
           <Pagination
-            page={page} totalPages={totalPages} onChange={p => setPage(p)}
+            page={page} totalPages={totalPages} onChange={p => { clearNotices(); setPage(p) }}
             className="flex items-center justify-between gap-3 pt-2"
             prevLabel="← Previous" nextLabel="Next →"
             countClassName="text-xs text-gray-400"

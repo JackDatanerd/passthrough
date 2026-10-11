@@ -86,6 +86,23 @@ function uniqueLabel(base, takenLabels) {
   }
   return base
 }
+// A taxonomy key ('software_engineering') as people read it ('Software Engineering'): the default name
+// of a profile saved without one. Same result as the SPA's roleLabel() for every category.
+const roleName = (key) => String(key || '').replace(/_/g, ' ').replace(/\b\w/g, ch => ch.toUpperCase())
+// Profile names are unique per account in the database too (0075, uq_saved_profiles_user_label): the checks
+// above run before the write, so two requests at once can both pass them.
+const isUniqueViolation = (e) => !!e && (e.code === '23505' || /uq_saved_profiles_user_label/.test(String(e.message || '')))
+// add_saved_profile with a name nobody holds. A collision lost to a concurrent request re-reads the names and
+// tries the next free one. Resolves { id, label }; id is null when the account is already at the cap.
+async function addProfileUniquely(supabase, userId, baseLabel, args) {
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const label = uniqueLabel(baseLabel, await extraLabels(supabase, userId))
+    const { data, error } = await supabase.rpc('add_saved_profile', { p_user_id: userId, p_label: label, ...args, p_max: MAX_EXTRA_PROFILES })
+    if (!error) return { id: data, label }
+    if (!isUniqueViolation(error)) throw error
+  }
+  throw new Error('Could not find a free profile name.')
+}
 async function extraLabels(supabase, userId, exceptId = null) {
   const { data, error } = await supabase.from('saved_profiles').select('id, label').eq('user_id', userId)
   if (error) throw error
@@ -108,22 +125,19 @@ async function getProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
   const { data, error } = await supabase.from('users')
-    .select('saved_profile, scans_today, scans_day_reset, notify_scan_results, notify_outcome_followup').eq('id', user.id).single()
+    .select('saved_profile, saved_profile_prev, scans_today, scans_day_reset, notify_scan_results, notify_outcome_followup').eq('id', user.id).single()
   if (error) throw error
 
   const saved = data.saved_profile
   // Enough to tell what is actually saved without shipping the resume itself
   // (contact details, full history) over this endpoint: who, which field, the
   // most recent title, and how much is in there.
-  const rd = saved?.resumeData
-  const count = (v) => Array.isArray(v) ? v.length : 0
-  const summary = rd ? {
-    name:         rd.name || null,
-    roleCategory: saved.roleCategory || null,
-    latestTitle:  pickLatestTitle(rd.experience),
-    jobCount:     count(rd.experience),
-    educationCount: count(rd.education),
-    skillCount:   count(rd.skills)
+  const summary = summarizeResume(saved?.resumeData, saved?.roleCategory)
+  // The version this profile replaced (0075), one step back — for the "restore previous version" control.
+  const prev = data.saved_profile_prev
+  const previousVersion = prev?.resumeData ? {
+    replacedAt: prev.replacedAt || null, savedAt: prev.savedAt || null, editedAt: prev.editedAt || null,
+    summary: summarizeResume(prev.resumeData, prev.roleCategory)
   } : null
 
   const { data: extraRows, error: extraErr } = await supabase.from('saved_profiles')
@@ -139,6 +153,7 @@ async function getProfile(c) {
     editedAt:        saved?.editedAt || null,
     sourceScanId:    saved?.sourceScanId || null,
     summary,
+    previousVersion,
     quota:           scanQuota(data),
     preferences:     { notifyScanResults: data.notify_scan_results !== false, notifyOutcomeFollowup: data.notify_outcome_followup !== false }
   }})
@@ -226,7 +241,7 @@ async function updatePreferences(c) {
     if (typeof obj[key] !== 'boolean') return c.json({ success: false, message: `${key} must be true or false.` }, 400)
     patch[column] = obj[key]; data[key] = obj[key]
   }
-  if (!Object.keys(patch).length) return c.json({ success: false, message: 'notifyScanResults must be true or false.' }, 400)
+  if (!Object.keys(patch).length) return c.json({ success: false, message: 'Send notifyScanResults and/or notifyOutcomeFollowup as true or false.' }, 400)
   const supabase = getSupabase(c.env)
   const { error } = await supabase.from('users').update(patch).eq('id', user.id)
   if (error) throw error
@@ -274,7 +289,18 @@ async function saveProfile(c) {
     return c.json({ success: false, message: scan.status === 'ERROR'
       ? 'This scan did not finish, so its resume data is not reliable enough to save. Save from a scan that completed.'
       : 'This scan is still being processed. Save the profile once it has finished.' }, 400)
-  if (!hasResumeContent(scan.originalResumeData))
+  // Which version of the resume to keep: the one the person uploaded / typed (default), or — for a scan whose fix
+  // was delivered — the improved resume they paid for (their own edits to it included).
+  const source = body.source
+  if (source !== undefined && source !== 'original' && source !== 'delivered')
+    return c.json({ success: false, message: 'Invalid source.' }, 400)
+  let resumeToSave = scan.originalResumeData
+  if (source === 'delivered') {
+    const delivered = scan.status === 'FIX_DELIVERED' ? (scan.userEditedResumeData || scan.rewrittenResumeData) : null
+    if (!delivered) return c.json({ success: false, message: 'This scan has no fixed version to save.' }, 400)
+    resumeToSave = delivered
+  }
+  if (!hasResumeContent(resumeToSave))
     return c.json({ success: false, message: 'This scan has no work history, education or skills to save.' }, 400)
 
   // Wrapped with savedAt (and now sourceScanId/roleCategory — see
@@ -283,20 +309,16 @@ async function saveProfile(c) {
   // "Save as another profile": goes to the saved_profiles table under a label and never touches
   // the primary profile (so no PROFILE_EDITED prompt either).
   if (body.asExtra === true) {
-    const label = uniqueLabel(normalizeLabel(body.label) || normalizeLabel(scan.roleCategory) || 'Additional profile',
-      await extraLabels(supabase, user.id))
-    const { data: newId, error: addErr } = await supabase.rpc('add_saved_profile', {
-      p_user_id: user.id, p_label: label, p_resume: scan.originalResumeData,
-      p_role_category: scan.roleCategory || null, p_source_scan_id: scan.id, p_max: MAX_EXTRA_PROFILES
-    })
-    if (addErr) throw addErr
-    if (!newId) return c.json({ success: false, code: 'PROFILE_LIMIT',
+    const added = await addProfileUniquely(supabase, user.id,
+      normalizeLabel(body.label) || normalizeLabel(roleName(scan.roleCategory)) || 'Additional profile',
+      { p_resume: resumeToSave, p_role_category: scan.roleCategory || null, p_source_scan_id: scan.id })
+    if (!added.id) return c.json({ success: false, code: 'PROFILE_LIMIT',
       message: `You can keep up to ${MAX_EXTRA_PROFILES} additional profiles. Remove one in Settings first.` }, 409)
-    return c.json({ success: true, message: 'Additional profile saved.', data: { id: newId, label } })
+    return c.json({ success: true, message: 'Additional profile saved.', data: { id: added.id, label: added.label } })
   }
 
   const savedProfile = {
-    resumeData:   scan.originalResumeData,
+    resumeData:   resumeToSave,
     savedAt:      new Date().toISOString(),
     sourceScanId: scan.id,
     roleCategory: scan.roleCategory || null
@@ -318,9 +340,31 @@ async function saveProfile(c) {
 async function deleteProfile(c) {
   const user = c.get('user')
   const supabase = getSupabase(c.env)
-  const { error } = await supabase.from('users').update({ saved_profile: null }).eq('id', user.id)
+  // The previous version (0075) is the same personal data: removing the profile removes it too.
+  const { error } = await supabase.from('users').update({ saved_profile: null, saved_profile_prev: null }).eq('id', user.id)
   if (error) throw error
   return c.json({ success: true, message: 'Saved profile removed.' })
+}
+
+// POST /api/profile/restore-previous  { replacedAt? } — put the version the main profile replaced back
+// (after a save from a scan or a hand edit). A swap, so the version being replaced becomes the new
+// "previous" and the restore can be undone the same way. `replacedAt` is the stamp the person was shown;
+// when it no longer matches, the earlier version changed meanwhile and nothing is written (409).
+async function restorePreviousProfile(c) {
+  const user = c.get('user')
+  let body
+  try { body = await c.req.json() } catch (_) { body = null }
+  const raw = body && typeof body === 'object' ? body.replacedAt : undefined
+  if (raw !== undefined && raw !== null && (typeof raw !== 'string' || raw.length > 100))
+    return c.json({ success: false, message: 'Invalid version.' }, 400)
+  const { data: result, error } = await getSupabase(c.env).rpc('restore_previous_profile', {
+    p_user_id: user.id, p_expected_replaced_at: typeof raw === 'string' && raw ? raw : null
+  })
+  if (error) throw error
+  if (result === 'none') return c.json({ success: false, message: 'There is no earlier version to restore.' }, 404)
+  if (result === 'conflict') return c.json({ success: false, code: 'PROFILE_CHANGED',
+    message: 'The earlier version changed since this page loaded. Reload and check it again.' }, 409)
+  return c.json({ success: true, message: 'Earlier version restored. The version it replaced is now your previous version, so you can switch back.' })
 }
 
 // GET /api/profile/export[?part=N] — the account's own data as JSON downloads
@@ -380,7 +424,7 @@ async function exportMyData(c) {
   const from = (part - 1) * EXPORT_SCANS_PER_PART
 
   const { data: account, error: accErr } = await supabase.from('users')
-    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile, pending_email, pending_email_expiry, notify_scan_results, notify_outcome_followup, ' +
+    .select('name, email, email_verified, free_fix_credits, created_at, saved_profile, pending_email, pending_email_expiry, notify_scan_results, notify_outcome_followup, saved_profile_prev, ' +
       'terms_accepted_at, terms_version, last_login_at, last_login_ip, previous_login_at, previous_login_ip').eq('id', user.id).single()
   if (accErr) throw accErr
 
@@ -445,6 +489,7 @@ async function exportMyData(c) {
       .order('created_at', { ascending: false }).limit(EXPORT_MAX_PAYMENTS)
     if (payErr) throw payErr
     payload.savedProfile = account.saved_profile || null
+    payload.previousSavedProfile = account.saved_profile_prev || null
     const { data: extras, error: extrasErr } = await supabase.from('saved_profiles')
       .select('id, label, resume_data, role_category, source_scan_id, saved_at, edited_at').eq('user_id', user.id).order('saved_at', { ascending: true })
     if (extrasErr) throw extrasErr
@@ -595,6 +640,12 @@ async function deleteScanHistory(c) {
 
   let deleted = 0
   if (batch.length) {
+    // Open checkouts are closed BEFORE the scans go: payments.scan_id is `on delete set null`, so once the rows
+    // are deleted nothing links a checkout to them any more and this would match nothing. Only checkouts old
+    // enough not to have blocked the delete (the same hour as the in-flight rule) are touched; closing one
+    // that is open on a scan the delete then skips (it started work meanwhile) is harmless — a payment arriving
+    // on a closed checkout is still honoured by the settlement path.
+    await require('../services/fulfillment.service').abandonPendingForScans(supabase, batch.map(r => r.id), since)
     // The in-flight rule is repeated on the delete itself: a scan that started work (or a fix that was
     // bought) between the read above and this write is left alone instead of deleted under its job.
     const { data: removed, error: delErr } = await supabase.from('scans')
@@ -609,10 +660,6 @@ async function deleteScanHistory(c) {
       await deleteStoredFiles(c.env, goneRows)
       warnOnError(await supabase.rpc('clear_saved_profile_source', { p_user_id: user.id, p_scan_ids: goneRows.map(r => r.id) }),
         'deleteScanHistory: clear saved-profile source')
-      // Same as deleting one scan: a checkout still open on a deleted scan (older than the hour that
-      // blocks the delete, or opened between the check and the delete) must not stay payable — paying it
-      // would charge for nothing. Closes them all and releases their referral reservations.
-      await require('../services/fulfillment.service').abandonPendingForScans(supabase, goneRows.map(r => r.id))
     }
   }
 
@@ -731,6 +778,7 @@ async function updateExtra(c) {
   const { data: result, error } = await supabase.rpc('update_saved_profile', {
     p_user_id: user.id, p_id: id, p_resume: resume, p_label: label, p_expected_version: expected, p_edited_at: new Date().toISOString()
   })
+  if (isUniqueViolation(error)) return c.json({ success: false, code: 'LABEL_TAKEN', message: 'You already have a profile with that name. Pick a different one.' }, 409)
   if (error) throw error
   if (result === 'missing') return c.json({ success: false, message: 'Profile not found.' }, 404)
   if (result === 'conflict') return c.json({ success: false, code: 'PROFILE_CHANGED', message: 'This profile was changed somewhere else. Reload it and try again.' }, 409)
@@ -760,16 +808,12 @@ async function duplicatePrimary(c) {
   if (!saved?.resumeData || !hasResumeContent(saved.resumeData))
     return c.json({ success: false, message: 'No saved profile to copy.' }, 404)
   const wanted = normalizeLabel(body && typeof body === 'object' ? body.label : '') ||
-    normalizeLabel(`${saved.roleCategory || 'Main profile'} copy`) || 'Main profile copy'
-  const label = uniqueLabel(wanted, await extraLabels(supabase, user.id))
-  const { data: newId, error: addErr } = await supabase.rpc('add_saved_profile', {
-    p_user_id: user.id, p_label: label, p_resume: saved.resumeData,
-    p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null, p_max: MAX_EXTRA_PROFILES
-  })
-  if (addErr) throw addErr
-  if (!newId) return c.json({ success: false, code: 'PROFILE_LIMIT',
+    normalizeLabel(`${roleName(saved.roleCategory) || 'Main profile'} copy`) || 'Main profile copy'
+  const added = await addProfileUniquely(supabase, user.id, wanted,
+    { p_resume: saved.resumeData, p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null })
+  if (!added.id) return c.json({ success: false, code: 'PROFILE_LIMIT',
     message: `You can keep up to ${MAX_EXTRA_PROFILES} additional profiles. Remove one first.` }, 409)
-  return c.json({ success: true, message: 'Profile copied.', data: { id: newId, label } })
+  return c.json({ success: true, message: 'Profile copied.', data: { id: added.id, label: added.label } })
 }
 
 // POST /api/profile/extras/:id/make-main — swap an additional profile with the main one (done in one
@@ -785,4 +829,4 @@ async function promoteExtra(c) {
   return c.json({ success: true, message: 'That profile is now your main one.' })
 }
 
-module.exports = { duplicatePrimary, promoteExtra, getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }
+module.exports = { restorePreviousProfile, duplicatePrimary, promoteExtra, getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }

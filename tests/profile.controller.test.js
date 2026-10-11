@@ -225,7 +225,7 @@ describe('deleteProfile', () => {
     const res = await t.mod.deleteProfile(t.c({ userId: 'u7' }))
     expect(res.body.success).toBe(true)
     const call = t.db.calls.find(c => c.table === 'users')
-    expect(call.patch).toEqual({ saved_profile: null })
+    expect(call.patch).toEqual({ saved_profile: null, saved_profile_prev: null })   // the previous version (0075) goes with it
     expect(call.filters.find(f => f[0] === 'eq')).toEqual(['eq', 'id', 'u7'])
   })
 
