@@ -2342,6 +2342,22 @@ async function deleteSuperseded(env, oldKeys, keepKeys) {
     try { await env.RESUMES_BUCKET.delete(key) } catch (err) { console.error(`[WARN] could not delete superseded ${key}:`, err.message) }
   }
 }
+// AUDIT FIX (Auth round 7): a generation job writes its versioned objects BEFORE the row is repointed, so
+// a job that fails in between (PDF/DB error, crash) used to leave files no column names — unreachable by
+// any later cleanup, and (once the account was deleted) personal data nothing could find. Called from the
+// jobs' catch blocks: removes `keys` unless the row ended up pointing at them (an update whose reply was
+// lost may still have committed). Never throws.
+async function cleanupUndeliveredKeys(env, supabase, scanId, keys) {
+  try {
+    const wanted = (keys || []).filter(Boolean)
+    if (!wanted.length) return
+    const { data: row, error } = await supabase.from('scans').select('resume_ats_path, resume_pdf_path').eq('id', scanId).maybeSingle()
+    // Can't tell what the row points at -> leave the files rather than risk deleting a live one.
+    if (error) return
+    const live = row ? [row.resume_ats_path, row.resume_pdf_path] : []
+    await deleteSuperseded(env, wanted, live)
+  } catch (e) { console.error(`[WARN] cleanup of undelivered files for ${scanId} failed:`, e.message) }
+}
 // Score of the ATS-formatted document that would be DELIVERED for this structured resume (the same
 // render-then-score basis updateResumeData and the paid jobs use), blended exactly like a free scan.
 async function computeFormattedScore(env, resumeData, jdText, label) {
@@ -2437,6 +2453,8 @@ async function generateFixRun(env, supabase, scanId) {
   let priorDelivery = false
   // Whether this run is a paid "Try Again" round (retry counter already spent).
   let retryRound = false
+  // Keys this run may have written (see cleanupUndeliveredKeys).
+  const writtenKeys = []
   try {
     const { scan, user } = await getScanWithUser(supabase, scanId)
     if (!scan) throw new Error('Scan not found')
@@ -2751,6 +2769,7 @@ async function generateFixRun(env, supabase, scanId) {
     // repointed below. See config/storage.js.
     const version = cryptoLib.randomToken(6)
     const docxKey = storage.atsDocxKey(scanId, version)
+    writtenKeys.push(docxKey, storage.beautifulPdfKey(scanId, version))
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
       httpMetadata: { contentType: DOCX_MIME }
     })
@@ -2827,6 +2846,7 @@ async function generateFixRun(env, supabase, scanId) {
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateFix ${scanId}:`, err.message)
+    await cleanupUndeliveredKeys(env, supabase, scanId, writtenKeys)
     try {
       await emailService.sendOwnerAlert(env,
         'generateFix crashed',
@@ -2883,6 +2903,8 @@ async function generateBadgeRun(env, supabase, scanId) {
   // is no retry counter to undo here: badges are one-shot, so this is just
   // "was a docx already sitting on this row before this run started".
   let priorDelivery = false
+  // Keys this run may have written (see cleanupUndeliveredKeys).
+  const writtenKeys = []
   try {
     const { scan, user } = await getScanWithUser(supabase, scanId)
     if (!scan) throw new Error('Scan not found')
@@ -2969,6 +2991,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     }
     const version = cryptoLib.randomToken(6)
     const docxKey = storage.atsDocxKey(scanId, version)
+    writtenKeys.push(docxKey, storage.beautifulPdfKey(scanId, version))
     await env.RESUMES_BUCKET.put(docxKey, docxBytes, {
       httpMetadata: { contentType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }
     })
@@ -3027,6 +3050,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     return { success: true }
   } catch (err) {
     console.error(`[CRITICAL] generateBadge ${scanId}:`, err.message)
+    await cleanupUndeliveredKeys(env, supabase, scanId, writtenKeys)
     try {
       await emailService.sendOwnerAlert(env,
         'generateBadge crashed',
