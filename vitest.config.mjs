@@ -24,6 +24,9 @@ import react from '@vitejs/plugin-react'
 // changes nothing for any test that doesn't ask for it.
 export default defineConfig({
   plugins: [react()],
+  // One React for the whole repo: frontend/node_modules carries its own copy (react-router-dom resolves it), and a second
+  // copy next to the root react-dom breaks every hook with "Cannot read properties of null (reading 'useRef')".
+  resolve: { dedupe: ['react', 'react-dom', 'react-router', 'react-router-dom'] },
   test: {
     environment: 'node',
     // Registers jest-dom matchers + RTL cleanup for the jsdom component tests —

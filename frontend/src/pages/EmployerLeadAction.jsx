@@ -6,6 +6,7 @@ import Button from '../components/ui/Button'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { ROLE_CATEGORIES } from '../lib/roleCategories'
+import Select from '../components/ui/Select'
 
 // The two pages the links in the employer early-access email land on:
 //   /employer/confirm?token=…  — confirms the address is theirs
@@ -105,11 +106,10 @@ export default function EmployerLeadAction({ mode }) {
                   <label htmlFor="lead-field" className="block text-sm font-medium text-gray-700 mb-1">
                     Which field are you hiring in?
                   </label>
-                  <select id="lead-field" value={field} onChange={e => setField(e.target.value)}
-                    className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm mb-2">
+                  <Select id="lead-field" wrapperClassName="mb-2" value={field} onChange={e => setField(e.target.value)}>
                     <option value="">Choose a field…</option>
                     {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-                  </select>
+                  </Select>
                   {fieldState === 'error' && <p role="alert" className="text-xs text-red-600 mb-2">{fieldError}</p>}
                   <Button onClick={saveField} disabled={!field || fieldState === 'saving'} className="w-full">
                     {fieldState === 'saving' ? 'Saving…' : 'Save'}

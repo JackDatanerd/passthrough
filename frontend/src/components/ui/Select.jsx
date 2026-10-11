@@ -66,6 +66,7 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
           // bg-white lives in the ternary: both bg-* on the control at once, and the stylesheet (not the
           // class order) picks the winner — bg-white used to beat bg-red-50, so the error tint never showed.
           error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
+        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',
           className
         )}
         {...props}

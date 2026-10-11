@@ -1,5 +1,5 @@
 import { createContext, useState, useEffect } from 'react'
-import api, { SESSION_ENDED_EVENT } from '../lib/api'
+import api, { SESSION_ENDED_EVENT, clearStepUp } from '../lib/api'
 import { signedOutElsewhereTarget } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
 import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
@@ -202,6 +202,7 @@ export function AuthProvider({ children }) {
     // request time — it has to be sent explicitly here, BEFORE it's cleared
     // below, or this call would go out with no Authorization header at all.
     const token = getToken()
+    clearStepUp()
     storageRemove(TOKEN_KEY)
     storageRemove(USER_KEY)
     // Personal data this browser holds for whoever was typing — the brain-dump draft (name, email,

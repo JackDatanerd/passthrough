@@ -9,6 +9,7 @@ import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import Checkbox from '../../components/ui/Checkbox'
+import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatRate, formatDate, downloadCsv, csvText, withinHours } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
@@ -67,7 +68,7 @@ function AddPartnerModal({ onClose, onCreated }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Add partner">
+    <Modal open onClose={onClose} title="Add partner" dismissible={!saving}>
       <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
@@ -139,7 +140,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Approve ${app.name}`}>
+    <Modal open onClose={onClose} title={`Approve ${app.name}`} dismissible={!saving}>
       <Form onSubmit={handleApprove} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">Creates the partner and emails them a link to enter payout details.</p>
         <Input label="Commission rate % (optional — blank uses the default)" type="number" step="0.01" value={rate}
@@ -184,7 +185,7 @@ function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Reject ${app.name}?`}>
+    <Modal open onClose={onClose} title={`Reject ${app.name}?`} dismissible={!saving}>
       <Form onSubmit={handleReject} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
           {app.name} will be emailed the decision. They can re-apply after {cooldownDays} days.
@@ -392,7 +393,7 @@ function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Record payout run">
+    <Modal open onClose={onClose} title="Record payout run" dismissible={!running}>
       <div className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
           Only use this <strong>after</strong> you've sent the money. Each selected partner is marked paid for the amount shown
@@ -558,10 +559,9 @@ export default function AdminPartners() {
           <input type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0) }}
             placeholder="Search name or email" aria-label="Search partners"
             className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          <select value={sortKey} onChange={e => { setSortKey(e.target.value); setPage(0) }} aria-label="Sort partners"
-            className="text-sm border border-gray-300 rounded-md px-2 py-1.5">
+          <Select size="sm" value={sortKey} onChange={e => { setSortKey(e.target.value); setPage(0) }} aria-label="Sort partners">
             {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
-          </select>
+          </Select>
           <span className="text-xs text-gray-400">{filtered.length} of {partners.length}</span>
         </div>
         {filtered.length === 0 && <EmptyState>No partners match “{query}”.</EmptyState>}

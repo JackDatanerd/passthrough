@@ -108,10 +108,10 @@ export default function Navbar() {
       </div>
       {menuOpen && (
         <div id="navbar-more" className="sm:hidden border-t border-gray-100 px-4 py-2 flex flex-col text-sm">
-          <Link to="/#stories" className="py-2 text-gray-700 hover:text-gray-900">Stories</Link>
-          <Link to="/#hot" className="py-2 text-gray-700 hover:text-gray-900">Hot categories</Link>
-          <Link to="/pricing" className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
-          <Link to="/#employers" className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
+          <Link to="/#stories" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Stories</Link>
+          <Link to="/#hot" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Hot categories</Link>
+          <Link to="/pricing" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
+          <Link to="/#employers" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
         </div>
       )}
     </nav>

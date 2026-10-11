@@ -12,7 +12,7 @@ import Pagination from '../../components/ui/Pagination'
 import Textarea from '../../components/ui/Textarea'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
-import { formatDate } from '../../lib/utils'
+import { formatDate, formatNumber } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
@@ -431,7 +431,7 @@ export default function AdminLeads() {
       URL.revokeObjectURL(url)
       // The server caps an export (50,000 rows) — say so instead of handing over a file that looks complete.
       if (res.headers?.['x-export-truncated'] === 'true')
-        toast({ message: `The export hit its ${Number(res.headers['x-export-rows'] || 0).toLocaleString()}-row limit and is incomplete. Narrow the filters (status, field, source) and export again.`, type: 'warning', duration: 12000 })
+        toast({ message: `The export hit its ${formatNumber(res.headers['x-export-rows'] || 0)}-row limit and is incomplete. Narrow the filters (status, field, source) and export again.`, type: 'warning', duration: 12000 })
     } catch (err) {
       toast({ message: getErrorMessage(err, 'Export failed.'), type: 'error' })
     } finally {

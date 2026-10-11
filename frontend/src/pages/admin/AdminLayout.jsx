@@ -2,6 +2,10 @@ import { useState, useEffect } from 'react'
 import { NavLink, Link, Outlet } from 'react-router-dom'
 import api, { setStepUpPrompt } from '../../lib/api'
 import { cn, formatCents } from '../../lib/utils'
+import Modal from '../../components/ui/Modal'
+import Form from '../../components/ui/Form'
+import PasswordInput from '../../components/ui/PasswordInput'
+import Button from '../../components/ui/Button'
 
 const NAV = [
   { to: '/admin/dashboard', label: 'Dashboard' },
@@ -107,21 +111,20 @@ function StepUpModal() {
     setStepUpPrompt(() => new Promise(resolve => { setValue(''); setResolver(() => resolve); setOpen(true) }))
     return () => setStepUpPrompt(null)
   }, [])
-  if (!open) return null
-  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null) }
+  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null); setValue('') }
+  // The shared Modal (portalled, so it opens ABOVE the refund / ban / payout dialog that asked for the password, with
+  // the focus trap, Escape and focus hand-back) instead of a hand-rolled overlay that rendered underneath them.
   return (
-    <div role="dialog" aria-modal="true" aria-label="Confirm your password" className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <form onSubmit={e => { e.preventDefault(); done(value) }} className="w-full max-w-sm rounded-lg bg-white p-5 shadow-lg flex flex-col gap-3">
-        <h2 className="font-semibold text-gray-900">Confirm your password</h2>
+    <Modal open={open} onClose={() => done(null)} title="Confirm your password" size="sm">
+      <Form onSubmit={() => done(value)} className="flex flex-col gap-3">
         <p className="text-sm text-gray-500">Refunds, payouts and account bans need your password again.</p>
-        <input type="password" autoFocus autoComplete="current-password" value={value} onChange={e => setValue(e.target.value)}
-          className="rounded-md border border-gray-300 px-3 py-2 text-sm" aria-label="Password" />
+        <PasswordInput value={value} onChange={e => setValue(e.target.value)} autoComplete="current-password" aria-label="Password" />
         <div className="flex justify-end gap-2">
-          <button type="button" onClick={() => done(null)} className="px-3 py-2 text-sm text-gray-600">Cancel</button>
-          <button type="submit" className="rounded-md bg-blue-600 px-3 py-2 text-sm font-medium text-white">Confirm</button>
+          <Button type="button" variant="ghost" onClick={() => done(null)}>Cancel</Button>
+          <Button type="submit" disabled={!value}>Confirm</Button>
         </div>
-      </form>
-    </div>
+      </Form>
+    </Modal>
   )
 }
 

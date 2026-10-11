@@ -33,6 +33,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
         'w-full rounded-md border px-3 py-2 text-sm text-gray-900 placeholder-gray-500',
         'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
         error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
+        'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',
         className
       )}
       {...props}

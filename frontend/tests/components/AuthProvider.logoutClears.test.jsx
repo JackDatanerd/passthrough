@@ -8,6 +8,7 @@ import { addAnonScanToken, getAnonScanTokens } from '../../src/lib/anonScans'
 vi.mock('../../src/lib/api', () => ({
   default: { get: vi.fn(), post: vi.fn() },
   SESSION_ENDED_EVENT: 'passthrough:session-ended',
+  clearStepUp: vi.fn(),
 }))
 import api from '../../src/lib/api'
 

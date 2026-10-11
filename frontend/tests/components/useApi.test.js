@@ -62,7 +62,7 @@ describe('useApi', () => {
   // The specific scenario useApi.js's "BUG FIX (audit)" comment describes:
   // call A starts, call B starts after it, B finishes first — then A, which
   // started EARLIER but settles LATER, must not overwrite what B just set.
-  it('a late-failing earlier call cannot clobber a later call\'s successful result', async () => {
+  it('a failure from an earlier call is still shown after a later call succeeded (a failed save must not vanish)', async () => {
     const { result } = renderHook(() => useApi())
     const a = deferred(), b = deferred()
     let outA, outB
@@ -73,7 +73,19 @@ describe('useApi', () => {
     await act(async () => { a.reject({ response: { data: { message: 'stale A failure' } } }) })
     await outA
     await outB
-    expect(result.current.error).toBeNull() // A's late failure must not have set this
+    expect(result.current.error).toBe('stale A failure')
+  })
+
+  it('a call pushed aside by replace:true never reports its failure', async () => {
+    const { result } = renderHook(() => useApi())
+    const a = deferred(), b = deferred()
+    let outA, outB
+    act(() => { outA = result.current.execute(() => a.promise).catch(() => {}) })
+    act(() => { outB = result.current.execute(() => b.promise, { replace: true }) })
+    await act(async () => { b.resolve({ data: 'b' }) })
+    await act(async () => { a.reject({ response: { data: { message: 'superseded failure' } } }) })
+    await outA; await outB
+    expect(result.current.error).toBeNull()
   })
 
   it('a late-succeeding earlier call cannot clear a later call\'s error', async () => {

@@ -9,7 +9,8 @@ import Spinner from '../components/ui/Spinner'
 import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
-import { formatDate, copyToClipboard, downloadBlob } from '../lib/utils'
+import { formatDate, downloadBlob } from '../lib/utils'
+import { useCopy } from '../hooks/useCopy'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, MAX_CHECK_BYTES } from '../lib/fileFingerprint'
 import { isRoleCategory, roleLabel } from '../lib/roleCategories'
@@ -27,13 +28,13 @@ function reportHref(code, why) {
 }
 
 function Fingerprint({ label, hash }) {
-  const [copied, setCopied] = useState(false)
+  const { copied, copy: copyText } = useCopy(1500)
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="text-gray-400 w-12 shrink-0">{label}</span>
       <code className="text-gray-600 break-all font-mono">{hash}</code>
       <button type="button"
-        onClick={async () => { if (await copyToClipboard(hash)) { setCopied(true); setTimeout(() => setCopied(false), 1500) } }}
+        onClick={() => copyText(hash)}
         className="text-blue-700 hover:text-blue-800 underline underline-offset-2 shrink-0">
         {copied ? 'Copied' : 'Copy'}
       </button>
@@ -167,7 +168,7 @@ export default function Verify() {
   const [leadLoading, setLeadLoading] = useState(false)
   const [trap,        setTrap       ] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
 
-  const [linkCopied, setLinkCopied] = useState(false)
+  const { copied: linkCopied, copy: copyLinkText } = useCopy(2000)
   const [reportOpen, setReportOpen] = useState(false)
 
   // SECTION 7 AUDIT (feature gap G7-1): let the READER check the actual file
@@ -278,10 +279,7 @@ export default function Verify() {
   async function handleCopyLink() {
     // copyToClipboard reports failure (insecure context, denied permission);
     // only claim "copied" when it actually was.
-    if (await copyToClipboard(window.location.href)) {
-      setLinkCopied(true)
-      setTimeout(() => setLinkCopied(false), 2000)
-    }
+    await copyLinkText(window.location.href)
   }
 
   async function handleDownload(type) {

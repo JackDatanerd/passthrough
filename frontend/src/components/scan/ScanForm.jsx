@@ -6,6 +6,7 @@ import { useAuth } from '../../hooks/useAuth'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Textarea from '../ui/Textarea'
+import Select from '../ui/Select'
 import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
@@ -13,6 +14,7 @@ import Alert from '../ui/Alert'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import { loadBrainDumpDraft, saveBrainDumpDraft } from '../../lib/brainDumpDraft'
 import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
+import { formatNumber } from '../../lib/utils'
 
 // Mirrors backend/src/config/constants.js MIN_BRAIN_DUMP_CHARS. No shared
 // constants file between frontend/backend in this project (same pattern as
@@ -322,7 +324,7 @@ export default function ScanForm() {
                 brainDumpText.length >= MAX_RESUME_CHARS ? 'text-red-600 font-medium' :
                 brainDumpText.length >= MAX_RESUME_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
               }`}>
-                {brainDumpText.length.toLocaleString()} / {MAX_RESUME_CHARS.toLocaleString()}
+                {formatNumber(brainDumpText.length)} / {formatNumber(MAX_RESUME_CHARS)}
               </span>
             </div>
             {brainDumpText.length >= MAX_RESUME_CHARS && (
@@ -406,14 +408,10 @@ export default function ScanForm() {
               We'll use your saved profile — just add a job description below and we'll translate it fresh.
             </p>
             {extraProfiles.length > 0 && (
-              <label className="block mt-2 text-sm text-gray-700">
-                Profile to use
-                <select value={profileChoice} onChange={e => setProfileChoice(e.target.value)}
-                  className="mt-1 block w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm">
-                  {primaryAvailable && <option value="">Main profile</option>}
-                  {extraProfiles.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
-                </select>
-              </label>
+              <Select label="Profile to use" wrapperClassName="mt-2" value={profileChoice} onChange={e => setProfileChoice(e.target.value)}>
+                {primaryAvailable && <option value="">Main profile</option>}
+                {extraProfiles.map(p => <option key={p.id} value={p.id}>{p.label}</option>)}
+              </Select>
             )}
           </div>
         )}
@@ -464,14 +462,14 @@ export default function ScanForm() {
             <div className="mt-1 flex items-start justify-between gap-3">
               <p className={`text-xs ${jdText.length > MAX_JD_CHARS ? 'text-amber-700' : 'text-gray-500'}`}>
                 {jdText.length > MAX_JD_CHARS
-                  ? `Longer than ${MAX_JD_CHARS.toLocaleString()} characters — we'll trim the company intro, benefits and legal text first and keep the role and requirements. Your result shows what was scored.`
+                  ? `Longer than ${formatNumber(MAX_JD_CHARS)} characters — we'll trim the company intro, benefits and legal text first and keep the role and requirements. Your result shows what was scored.`
                   : ''}
               </p>
               <span className={`shrink-0 text-xs tabular-nums ${
                 jdText.length > MAX_JD_CHARS ? 'text-amber-700 font-medium' :
                 jdText.length >= MAX_JD_CHARS * 0.9 ? 'text-amber-600' : 'text-gray-400'
               }`}>
-                {jdText.length.toLocaleString()} / {MAX_JD_CHARS.toLocaleString()}
+                {formatNumber(jdText.length)} / {formatNumber(MAX_JD_CHARS)}
               </span>
             </div>
           </div>

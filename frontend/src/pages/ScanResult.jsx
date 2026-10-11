@@ -23,7 +23,8 @@ import CoverLetterPanel from '../components/scan/CoverLetterPanel'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
-import { statusLabel, formatDate, copyToClipboard } from '../lib/utils'
+import { statusLabel, formatDate } from '../lib/utils'
+import { useCopy } from '../hooks/useCopy'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
 import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
@@ -128,8 +129,8 @@ export default function ScanResult() {
   // showed the candidate its URL or gave them something to paste into a
   // README/LinkedIn/portfolio. The whole point of an embeddable badge is
   // that most people who see it never click through to this page.
-  const [badgeCopied, setBadgeCopied] = useState(false)
-  const [badgeHtmlCopied, setBadgeHtmlCopied] = useState(false)
+  const { copied: badgeCopied, copy: copyBadgeText } = useCopy(2000)
+  const { copied: badgeHtmlCopied, copy: copyBadgeHtmlText } = useCopy(2000)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   // G1: re-run a free scan that failed on our side, in place.
@@ -614,17 +615,11 @@ export default function ScanResult() {
   }
 
   async function handleCopyBadge() {
-    if (await copyToClipboard(badgeUrls().markdown)) {
-      setBadgeCopied(true)
-      setTimeout(() => setBadgeCopied(false), 2000)
-    }
+    await copyBadgeText(badgeUrls().markdown)
   }
 
   async function handleCopyBadgeHtml() {
-    if (await copyToClipboard(badgeUrls().html)) {
-      setBadgeHtmlCopied(true)
-      setTimeout(() => setBadgeHtmlCopied(false), 2000)
-    }
+    await copyBadgeHtmlText(badgeUrls().html)
   }
 
   async function handleDownload(type) {

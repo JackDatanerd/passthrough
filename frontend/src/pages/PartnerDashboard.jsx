@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { copyToClipboard, formatCents, formatRate, downloadCsv } from '../lib/utils'
+import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime } from '../lib/utils'
+import { useCopy } from '../hooks/useCopy'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import Navbar from '../components/layout/Navbar'
@@ -28,14 +29,11 @@ const fmtCents = formatCents
 // is the one thing that was missing entirely before: a code alone isn't
 // shareable, a URL is.
 function ShareLink({ code }) {
-  const [copied, setCopied] = useState(false)
+  const { copied, copy: copyText } = useCopy(2000)
   const url = `${window.location.origin}/?ref=${encodeURIComponent(code)}`
 
   async function copy() {
-    if (await copyToClipboard(url)) {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    }
+    await copyText(url)
   }
 
   return (
@@ -166,7 +164,7 @@ function ConversionRow({ conversion, currency }) {
     <li className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
       <div>
         <div>
-          {new Date(conversion.createdAt).toLocaleDateString()}
+          {formatDate(conversion.createdAt)}
           {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
           {conversion.isAdjustment && <> · <span className="text-xs font-medium text-gray-600">Balance adjustment</span></>}
         </div>
@@ -545,7 +543,7 @@ export default function PartnerDashboard() {
             {data.payoutHoldUntil && (
               <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="payout-hold">
                 You changed your payout details recently, so the next payout is on hold until about{' '}
-                {new Date(data.payoutHoldUntil).toLocaleString()}. This protects you if someone else ever got hold of your link.
+                {formatDateTime(data.payoutHoldUntil)}. This protects you if someone else ever got hold of your link.
               </div>
             )}
             {data.termsAcceptanceRequired && !termsDone && (
@@ -619,7 +617,7 @@ export default function PartnerDashboard() {
               <ul className="flex flex-col gap-2">
                 {data.payouts.map(p => (
                   <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex justify-between">
-                    <span>{new Date(p.paidAt).toLocaleDateString()}{p.note ? ` — ${p.note}` : ''}</span>
+                    <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
                     <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
                   </li>
                 ))}

@@ -1,4 +1,5 @@
 import { useEffect, useId, useRef } from 'react'
+import { createPortal } from 'react-dom'
 
 const FOCUSABLE =
   'a[href],button:not([disabled]),textarea:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),[tabindex]:not([tabindex="-1"])'
@@ -78,18 +79,29 @@ let nextModalId = 0
 //    request can't be orphaned by closing mid-way.
 //  - `ariaLabel` names a title-less dialog and `describedBy` (an element id inside it) gives assistive
 //    tech the body text to read on open — ConfirmDialog uses both.
-export default function Modal({ open, onClose, title, children, dismissible = true, ariaLabel, describedBy }) {
+// size: 'sm' | 'md' (default) | 'lg' | 'xl' — dialog width. Wide content (tables, previews) no longer has to
+// hand-roll its own overlay just to escape max-w-md.
+const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl' }
+
+export default function Modal({ open, onClose, title, children, dismissible = true, ariaLabel, describedBy, size = 'md' }) {
   const titleId = useId()
   const dialogRef = useRef(null)
   const onCloseRef = useRef(onClose)
   const dismissibleRef = useRef(dismissible)
   onCloseRef.current = onClose
   dismissibleRef.current = dismissible
+  // The element that had focus BEFORE the dialog opened. Captured during render: by the time the effect runs, React has
+  // already honoured an `autoFocus` inside the dialog, so reading it there recorded an element that is about to be
+  // unmounted and focus was never handed back to the trigger.
+  const triggerRef = useRef(null)
+  const wasOpen = useRef(false)
+  if (open && !wasOpen.current) { wasOpen.current = true; triggerRef.current = typeof document !== 'undefined' ? document.activeElement : null }
+  else if (!open && wasOpen.current) wasOpen.current = false
 
   useEffect(() => {
     if (!open) return
     const dialog = dialogRef.current
-    const previouslyFocused = document.activeElement
+    const previouslyFocused = triggerRef.current
     lockScroll()
 
     const id = ++nextModalId
@@ -150,7 +162,10 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     </button>
   )
 
-  return (
+  // Rendered into <body>, not where the <Modal> sits in the tree: a dialog opened later is later in the DOM, so it is
+  // painted above the ones already open (a password prompt over a refund dialog) — in-tree, two z-50 dialogs were
+  // stacked by whichever component happened to come first. It also escapes any transformed/clipped ancestor.
+  const node = (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
         className="absolute inset-0 bg-black/50"
@@ -170,7 +185,7 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
         // 90dvh tracks the VISIBLE viewport on phones (the URL bar / keyboard shrink it, 90vh doesn't);
         // a browser without dvh drops the inline value and keeps the 90vh class.
         style={{ maxHeight: '90dvh' }}
-        className="relative bg-white rounded-lg shadow-xl w-full max-w-md p-6 z-10 max-h-[90vh] overflow-y-auto focus:outline-none"
+        className={`relative bg-white rounded-lg shadow-xl w-full ${SIZES[size] || SIZES.md} p-6 z-10 max-h-[90vh] overflow-y-auto focus:outline-none`}
       >
         {title ? (
           <div className="flex items-center justify-between mb-4">
@@ -184,4 +199,5 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       </div>
     </div>
   )
+  return typeof document === 'undefined' ? node : createPortal(node, document.body)
 }

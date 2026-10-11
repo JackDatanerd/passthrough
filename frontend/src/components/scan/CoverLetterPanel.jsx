@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
-import { downloadBlob, copyToClipboard } from '../../lib/utils'
+import { downloadBlob } from '../../lib/utils'
+import { useCopy } from '../../hooks/useCopy'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
 
@@ -10,7 +11,7 @@ import Alert from '../ui/Alert'
 export default function CoverLetterPanel({ scan, onUpdated }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const [copied, setCopied] = useState(false)
+  const { copied, copy: copyText } = useCopy(2000)
   const letter = scan.coverLetterText
 
   async function generate() {
@@ -35,7 +36,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   }
 
   async function copy() {
-    if (await copyToClipboard(letter)) { setCopied(true); setTimeout(() => setCopied(false), 2000) }
+    await copyText(letter)
   }
 
   return (

@@ -111,14 +111,18 @@ export async function copyToClipboard(text) {
     }
   } catch (_) { /* fall through to the legacy path */ }
   try {
+    // The fallback focuses a scratch textarea; hand focus back afterwards so a keyboard user isn't dropped on <body>.
+    const prev = document.activeElement
     const ta = document.createElement('textarea')
     ta.value = text
     ta.setAttribute('readonly', '')
     ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
     document.body.appendChild(ta)
     ta.select()
+    try { ta.setSelectionRange(0, text.length) } catch (_) { /* iOS Safari ignores select() alone */ }
     const ok = document.execCommand('copy')
     document.body.removeChild(ta)
+    if (prev && typeof prev.focus === 'function' && document.contains(prev)) prev.focus({ preventScroll: true })
     return !!ok
   } catch (_) {
     return false
@@ -138,6 +142,14 @@ export function downloadBlob(blob, filename) {
   document.body.appendChild(a)
   a.click()
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1500)
+}
+
+// Whole/decimal numbers with thousands separators, always en-US like formatDate/formatMoney — a bare
+// `.toLocaleString()` follows the browser's locale ("12.000" in de-DE) and made one screen mix styles.
+export function formatNumber(n, decimals = 0) {
+  const v = Number(n)
+  if (n == null || n === '' || !Number.isFinite(v)) return '—'
+  return v.toLocaleString('en-US', { maximumFractionDigits: decimals })
 }
 
 // Commission rates are stored as fractions (0.125 = 12.5%). Show up to 2

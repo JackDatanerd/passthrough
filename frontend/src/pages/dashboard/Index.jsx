@@ -7,6 +7,7 @@ import Badge from '../../components/ui/Badge'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
+import Checkbox from '../../components/ui/Checkbox'
 import Spinner from '../../components/ui/Spinner'
 import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -424,10 +425,7 @@ export default function DashboardIndex() {
               {SORT_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
             </Select>
             {selectableIds.length > 0 && !loading && !loadError && (
-              <label className="flex items-center gap-2 text-sm text-gray-700 pb-2">
-                <input type="checkbox" checked={allSelected} onChange={toggleAll} className="h-4 w-4" />
-                Select page
-              </label>
+              <Checkbox label="Select page" wrapperClassName="pb-2" checked={allSelected} indeterminate={selected.size > 0 && !allSelected} onChange={toggleAll} />
             )}
             {selected.size > 0 && (
               <Button size="sm" variant="secondary" onClick={() => { setBulkError(''); setBulkResult(null); setSelectOpen(true) }}>
@@ -500,12 +498,12 @@ export default function DashboardIndex() {
             {scans.map(scan => (
               <div key={scan.id}
                 className="bg-white rounded-lg border border-gray-200 hover:border-blue-300 transition-colors flex items-stretch">
-              <label className="pl-4 pr-1 flex items-center">
-                <input type="checkbox" className="h-4 w-4 disabled:opacity-40"
+              <span className="pl-4 pr-1 flex items-center">
+                <Checkbox className="disabled:opacity-40"
                   checked={selected.has(scan.id)} disabled={!canDeleteScan(scan)}
                   onChange={() => toggleOne(scan.id)}
                   aria-label={`Select ${scanHeading(scan)}`} />
-              </label>
+              </span>
               <Link
                 to={`/scan/${scan.id}`}
                 className="flex-1 min-w-0 px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3"

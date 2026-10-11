@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
+import Textarea from '../ui/Textarea'
 import Alert from '../ui/Alert'
 
 // Phase 3 — Claude's rewriteResumeContent flags bullets that describe an outcome or improvement where a number would
@@ -60,13 +61,12 @@ function PromptRow({ prompt, scan, onSaved }) {
       )}
       {onSaved && editing && (
         <div className="mt-2 flex flex-col gap-2">
-          <textarea
+          <Textarea
             value={text}
             onChange={e => setText(e.target.value)}
             rows={2}
             maxLength={400}
             aria-label="Edit this bullet"
-            className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
           />
           {trimmed && !/\d/.test(trimmed) && (
             <p className="text-xs text-gray-500">Include the figure itself — for example "by 30%", "for 12 clients" or "in 2 weeks".</p>

@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../../lib/api'
 import { buildBadgeEmbeds } from '../../lib/badgeEmbed'
-import { copyToClipboard } from '../../lib/utils'
+import { useCopy } from '../../hooks/useCopy'
 import { extractVerificationCode } from '../../lib/verificationCode'
 import { sha256Text } from '../../lib/sha256'
 import { SAMPLE_VERIFICATION, TAMPER_DEMO, PLACEMENTS } from '../../lib/homeContent'
@@ -187,16 +187,14 @@ export default function VerifySection({ badgeThreshold }) {
   const { original, edit } = TAMPER_DEMO
   const [text, setText] = useState(original)
   const [fmt, setFmt] = useState('html')
-  const [copied, setCopied] = useState(false)
+  const { copied, failed, copy: copyText } = useCopy(1800)
   const embeds = useMemo(sampleEmbeds, [])
   const issued = useMemo(() => sha256Text(original), [original])
   const hash = useMemo(() => sha256Text(text), [text])
   const exact = text === original
 
   async function copy() {
-    const ok = await copyToClipboard(embeds[fmt])
-    setCopied(ok ? 'Copied ✓' : 'Select & copy manually')
-    setTimeout(() => setCopied(false), 1800)
+    await copyText(embeds[fmt])
   }
 
   return (
@@ -251,7 +249,7 @@ export default function VerifySection({ badgeThreshold }) {
             </div>
             <pre className="bg-gray-900 text-slate-200 rounded-lg p-3.5 text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap break-all" aria-label="Example embed snippet"><code>{embeds[fmt]}</code></pre>
             <div className="mt-2 flex items-center gap-3">
-              <button type="button" onClick={copy} className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3 py-1.5 hover:bg-gray-50">{copied || 'Copy snippet'}</button>
+              <button type="button" onClick={copy} className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3 py-1.5 hover:bg-gray-50">{copied ? 'Copied ✓' : failed ? 'Select & copy manually' : 'Copy snippet'}</button>
               <span className="text-xs text-gray-500">Yours uses your own code, after you verify.</span>
             </div>
           </div>

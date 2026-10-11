@@ -15,6 +15,7 @@ import Alert from '../../components/ui/Alert'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
 import Textarea from '../../components/ui/Textarea'
+import Select from '../../components/ui/Select'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
 function PayoutDetailsFields({ method, details }) {
@@ -77,7 +78,7 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Void payout — ${formatCents(payout.amountCents, payout.currency)}`}>
+    <Modal open onClose={onClose} title={`Void payout — ${formatCents(payout.amountCents, payout.currency)}`} dismissible={!loading}>
       <Form onSubmit={handleVoid} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
           Use this only for a payout that was <strong>recorded by mistake</strong>. It does not move any money:
@@ -257,7 +258,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
   }
 
   return (
-    <Modal open onClose={onClose} title="Edit partner">
+    <Modal open onClose={onClose} title="Edit partner" dismissible={!saving}>
       <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <Input label="Name" value={name} onChange={e => setName(e.target.value)} />
         <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} />
@@ -329,7 +330,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Adjust balance — ${partner.name}`}>
+    <Modal open onClose={onClose} title={`Adjust balance — ${partner.name}`} dismissible={!loading}>
       <Form onSubmit={submit} className="flex flex-col gap-4">
         <p className="text-sm text-gray-600">
           Current unpaid balance: <strong>{formatCents(pending, partner.currency)}</strong>. An adjustment is part of the balance and is
@@ -454,7 +455,7 @@ function RecordPayoutModal({ partner, cycle, onClose, onRecorded }) {
   const recentChange = detailsChangedRecently(partner.payoutDetailsSubmittedAt)
 
   return (
-    <Modal open onClose={onClose} title={cycle ? `Record payout — ${cycle.label}` : `Record ad hoc payout — ${partner.name}`}>
+    <Modal open onClose={onClose} title={cycle ? `Record payout — ${cycle.label}` : `Record ad hoc payout — ${partner.name}`} dismissible={!saving}>
       <Form onSubmit={handleRecord} className="flex flex-col gap-4">
         <p className="text-sm text-gray-500">
           Only use this <strong>after</strong> you've actually sent the money via your bank
@@ -558,7 +559,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`New referral code — ${partner.name}`}>
+    <Modal open onClose={onClose} title={`New referral code — ${partner.name}`} dismissible={!saving}>
       <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="COACHNAME20" />
         <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
@@ -633,7 +634,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Edit ${codeRow.code}`}>
+    <Modal open onClose={onClose} title={`Edit ${codeRow.code}`} dismissible={!saving}>
       <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <p className="text-xs text-gray-400">
           The code string itself, clicks, and usage history stay unchanged — only pricing and limits update.
@@ -914,7 +915,7 @@ function RemoveDataModal({ partner, onClose, onRemoved }) {
   }
 
   return (
-    <Modal open onClose={onClose} title={`Remove personal data — ${partner.name}`}>
+    <Modal open onClose={onClose} title={`Remove personal data — ${partner.name}`} dismissible={!loading}>
       <Form onSubmit={handleRemove} className="flex flex-col gap-4">
         <p className="text-sm text-gray-600">
           This <strong>cannot be undone</strong>. {partner.name}&apos;s name, email, website, audience and payout details are erased,
@@ -1161,15 +1162,11 @@ export default function PartnerDetail() {
             <p className="text-sm text-gray-600">
               Pick which link to revoke. The old link stops working immediately and {partner.name} is emailed the new one.
             </p>
-            <label className="text-sm text-gray-700 flex flex-col gap-1">
-              Which link?
-              <select value={regenScope} onChange={e => setRegenScope(e.target.value)}
-                className="border border-gray-300 rounded-md px-3 py-2 text-sm bg-white" data-testid="regen-scope">
-                <option value="payout">Payout-details link (can change where money goes)</option>
-                <option value="dashboard">Dashboard link (read-only — the one conversion emails carry)</option>
-                <option value="both">Both</option>
-              </select>
-            </label>
+            <Select label="Which link?" value={regenScope} onChange={e => setRegenScope(e.target.value)} data-testid="regen-scope">
+              <option value="payout">Payout-details link (can change where money goes)</option>
+              <option value="dashboard">Dashboard link (read-only — the one conversion emails carry)</option>
+              <option value="both">Both</option>
+            </Select>
             <div className="flex gap-2 justify-end">
               <Button variant="secondary" onClick={() => setConfirmRegenerate(false)}>Cancel</Button>
               <Button loading={regenerating} onClick={confirmRegenerateLink}>Regenerate</Button>

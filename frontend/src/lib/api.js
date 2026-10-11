@@ -32,6 +32,10 @@ const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-
 // a browser, all inside the one request — the heaviest call in the product, and the one most likely to be cut off at 30s
 // while the server finished anyway. Editing the free scan's data re-scores it (one Claude call).
 const LONG_RUNNING_PATCH = /^\/scan\/[^/?#]+\/(delivered-resume|resume-data)(?:[?#]|$)/
+// SHARED FRONTEND (section 11): the draft PDF download is a GET that renders in a browser on the server. It got the
+// generic 30s cut-off AND the automatic GET retry on a timeout, which started a second render on top of the first.
+// It now gets the long timeout and is never auto-retried (the person can press Download again).
+const LONG_RUNNING_GET = /^\/scan\/[^/?#]+\/download-draft-pdf(?:[?#]|$)/
 
 api.interceptors.request.use(config => {
   const token = getToken()
@@ -41,7 +45,11 @@ api.interceptors.request.use(config => {
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
   config.__hadToken = !!token
-  if (stepUpToken && Date.now() < stepUpUntil && config.headers) config.headers['X-Admin-Elevation'] = stepUpToken
+  // Only state-changing calls need the elevation (every step-up route is a POST/PATCH/DELETE), so reads and
+  // unrelated requests never carry it.
+  const reqMethod = String(config.method || 'get').toLowerCase()
+  if (stepUpToken && Date.now() < stepUpUntil && config.headers && reqMethod !== 'get' && reqMethod !== 'head')
+    config.headers['X-Admin-Elevation'] = stepUpToken
   // Which token this request actually carried, so a late failure can be matched
   // against the session that is current when it lands (see endSession's caller).
   config.__token = token || null
@@ -53,8 +61,10 @@ api.interceptors.request.use(config => {
   const method = String(config.method || 'get').toLowerCase()
   if (config.__customTimeout !== true && config.timeout === 30_000
       && ((method === 'post' && LONG_RUNNING_POST.test(String(config.url || '')))
-          || (method === 'patch' && LONG_RUNNING_PATCH.test(String(config.url || '')))))
+          || (method === 'patch' && LONG_RUNNING_PATCH.test(String(config.url || '')))
+          || (method === 'get' && LONG_RUNNING_GET.test(String(config.url || '')))))
     config.timeout = LONG_REQUEST_TIMEOUT_MS
+  if (method === 'get' && LONG_RUNNING_GET.test(String(config.url || ''))) config.__noRetry = true
   return config
 })
 
@@ -93,6 +103,7 @@ let sessionEnding = false
 function endSession(reason) {
   if (sessionEnding) return            // several in-flight requests can all fail at once
   sessionEnding = true
+  clearStepUp()                         // an elevation belongs to the session that just ended
   storageRemove(TOKEN_KEY)
   storageRemove(USER_KEY)
   // Let AuthProvider drop `user` in-place (Navbar flips to "Sign in") without a page reload.
@@ -116,6 +127,9 @@ function endSession(reason) {
     const flag = reason === 'banned' ? 'banned=true' : 'expired=true'
     const next = reason === 'banned' ? '' : `&next=${encodeURIComponent(pathname + search)}`
     window.location.replace(`/login?${flag}${next}`)
+    // If the navigation is cancelled (an unsaved-changes prompt answered "Stay"), the page lives on with no token;
+    // without this the flag stayed set for good and a later session end was ignored.
+    setTimeout(() => { sessionEnding = false }, 3000)
   } else {
     setTimeout(() => { sessionEnding = false }, 1000)
   }
@@ -184,7 +198,7 @@ api.interceptors.response.use(
     const retryAfter = Number(err.response?.headers?.['retry-after'])
     const decision = shouldRetryRequest({
       method: config.method, status, hasResponse: !!err.response,
-      retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried, cancelled: false,
+      retryAfterSeconds: retryAfter, alreadyRetried: !!config.__retried || !!config.__noRetry, cancelled: false,
     })
     if (decision.retry && !verdict) {
       config.__retried = true

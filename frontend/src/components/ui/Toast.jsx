@@ -31,6 +31,8 @@ export function ToastProvider({ children }) {
   const nextId = useRef(0)
   const timers = useRef(new Map())
   const paused = useRef(false)
+  const stackRef = useRef(null)
+  const resumeRef = useRef(() => {})
 
   // Each timer entry is { handle, deadline, remaining }. Hovering or focusing the stack pauses every
   // toast's countdown (WCAG 2.2.1: nobody should lose a message mid-read) and leaving resumes it
@@ -50,6 +52,13 @@ export function ToastProvider({ children }) {
     // thing that just got removed. With the stack empty there is nothing left to pause, so reset it here;
     // otherwise every later toast was armed "paused" and stayed on screen until reload.
     if (next.length === 0) paused.current = false
+    // Same problem with toasts left: dismissing one from the keyboard removes the focused button, no blur follows, and
+    // the pause stuck for the survivors (they never expired). Once the DOM has settled, un-pause unless the pointer or
+    // focus really is still in the stack.
+    else if (paused.current) setTimeout(() => {
+      const el = stackRef.current
+      if (paused.current && el && !el.matches(':hover') && !el.contains(document.activeElement)) resumeRef.current()
+    }, 0)
   }, [clearTimer, commit])
 
   const arm = useCallback((id, ms) => {
@@ -71,6 +80,8 @@ export function ToastProvider({ children }) {
     paused.current = false
     timers.current.forEach((t, id) => { if (t.handle == null) arm(id, t.remaining) })
   }, [arm])
+
+  resumeRef.current = resume
 
   const toast = useMemo(() => {
     // Errors are the messages people most need to read (and often retype from), so they stay up
@@ -118,6 +129,7 @@ export function ToastProvider({ children }) {
     <ToastContext.Provider value={toast}>
       {children}
       <div
+        ref={stackRef}
         className="fixed right-4 z-[60] flex flex-col gap-2 pointer-events-none"
         // Sits above anything fixed to the bottom edge (the Terms banner publishes
         // its height as --bottom-inset) so toasts never cover its button.

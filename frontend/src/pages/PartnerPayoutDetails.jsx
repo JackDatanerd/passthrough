@@ -9,6 +9,7 @@ import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
+import { formatDateTime } from '../lib/utils'
 
 // Public page, reached via the link emailed by adminCreatePartner /
 // adminResendPayoutLink — identity is the ?token= in the URL, not a login.
@@ -144,7 +145,7 @@ export default function PartnerPayoutDetails() {
               </p>
               {holdUntil && (
                 <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4" data-testid="payout-hold-note">
-                  Because these details changed, your next payout is on hold until about {new Date(holdUntil).toLocaleString()}.
+                  Because these details changed, your next payout is on hold until about {formatDateTime(holdUntil)}.
                   This protects you if someone else ever got hold of your link.
                 </p>
               )}

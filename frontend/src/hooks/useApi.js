@@ -16,7 +16,8 @@ import { getErrorMessage, isCancelError } from '../lib/errors'
 // second one had just set, regardless of which was actually the user's
 // most recent action. Guarded with a call-id ref: only the latest-STARTED
 // call is allowed to write `error` when it finishes, so an earlier call
-// settling late can no longer override a newer one's outcome.
+// settling late can no longer override a newer one's outcome. (Only a SUCCESS is latest-wins now: a failure from any
+// call is reported, because hiding a failed save behind a newer reload meant no error was ever shown.)
 //
 // Abort support: `apiCall` receives `{ signal }` — pass it on (`api.get(url, { signal })`) and the
 // request is cancelled when the component unmounts (nothing is left running for a screen that is
@@ -33,6 +34,7 @@ export function useApi() {
   const mounted = useRef(true)
   const callId = useRef(0)
   const controllers = useRef(new Map())   // call id -> AbortController, for calls still running
+  const superseded = useRef(new Set())    // ids a `replace: true` call pushed aside — their outcome no longer matters
 
   useEffect(() => {
     mounted.current = true
@@ -45,12 +47,14 @@ export function useApi() {
   }, [])
 
   const execute = useCallback(async (apiCall, options) => {
-    const { fallback, replace = false } = options || {}
+    // keepAlive: for a write that must finish even if its screen goes away (a dialog closed mid-save): the call is
+    // handed no signal and is never aborted by unmount or `replace`.
+    const { fallback, replace = false, keepAlive = false } = options || {}
     const id = ++callId.current
     if (replace) {
-      controllers.current.forEach((c, otherId) => { if (otherId !== id) c.abort() })
+      controllers.current.forEach((c, otherId) => { if (otherId !== id) { superseded.current.add(otherId); c.abort() } })
     }
-    const controller = typeof AbortController !== 'undefined' ? new AbortController() : null
+    const controller = !keepAlive && typeof AbortController !== 'undefined' ? new AbortController() : null
     if (controller) controllers.current.set(id, controller)
     if (mounted.current) { setPending(n => n + 1); setError(null) }
     try {
@@ -63,10 +67,13 @@ export function useApi() {
       return res?.data
     } catch (err) {
       // A call cancelled on purpose (unmount, or replaced by a newer one) is not an error to display.
-      if (!isCancelError(err) && mounted.current && id === callId.current) setError(getErrorMessage(err, fallback))
+      // A FAILURE surfaces even from an earlier-started call (only one a `replace: true` call pushed aside is ignored): only a success is "latest wins" (above). Before,
+      // a failed save was swallowed whenever a newer call (a reload) had started, so the person saw no error at all.
+      if (!isCancelError(err) && mounted.current && !superseded.current.has(id)) setError(getErrorMessage(err, fallback))
       throw err
     } finally {
       controllers.current.delete(id)
+      superseded.current.delete(id)
       if (mounted.current) setPending(n => Math.max(0, n - 1))
     }
   }, [])

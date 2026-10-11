@@ -83,8 +83,8 @@ describe('Modal', () => {
   it('clicking the backdrop closes a dismissible modal; the X button also closes it', async () => {
     const user = userEvent.setup()
     const onClose = vi.fn()
-    const { container } = render(<Modal open title="T" onClose={onClose}>Body</Modal>)
-    await user.click(container.querySelector('.absolute.inset-0[aria-hidden="true"]'))
+    render(<Modal open title="T" onClose={onClose}>Body</Modal>)
+    await user.click(document.body.querySelector('.absolute.inset-0[aria-hidden="true"]'))   // the Modal is portalled into <body>
     expect(onClose).toHaveBeenCalledTimes(1)
 
     onClose.mockClear()

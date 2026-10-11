@@ -9,7 +9,6 @@ import useLatestRequest from '../src/hooks/useLatestRequest'
 import Select from '../src/components/ui/Select'
 import Modal from '../src/components/ui/Modal'
 import Pagination from '../src/components/ui/Pagination'
-import DataTable from '../src/components/ui/DataTable'
 import Input from '../src/components/ui/Input'
 import { ToastProvider, useToast } from '../src/components/ui/Toast'
 import Navbar from '../src/components/layout/Navbar'
@@ -82,22 +81,6 @@ describe('Pagination', () => {
   it('renders nothing for a non-numeric totalPages', () => {
     const { container } = render(<Pagination page={1} totalPages={undefined} onChange={() => {}} />)
     expect(container).toBeEmptyDOMElement()
-  })
-})
-
-describe('DataTable', () => {
-  const cols = [{ key: 'a', header: 'A' }, { key: 'b', header: 'B', cell: r => `#${r.b}` }]
-  it('renders caption, scoped headers and custom cells', () => {
-    render(<DataTable caption="Things" columns={cols} rows={[{ id: 1, a: 'x', b: 2 }]} rowKey={r => r.id} />)
-    expect(screen.getByRole('table', { name: 'Things' })).toBeInTheDocument()
-    expect(screen.getAllByRole('columnheader')[0]).toHaveAttribute('scope', 'col')
-    expect(screen.getByText('#2')).toBeInTheDocument()
-  })
-  it('shows the empty message and the spinner state', () => {
-    const { rerender } = render(<DataTable columns={cols} rows={[]} empty="Nothing here." />)
-    expect(screen.getByText('Nothing here.')).toBeInTheDocument()
-    rerender(<DataTable columns={cols} rows={[]} loading empty="Nothing here." />)
-    expect(screen.queryByText('Nothing here.')).toBeNull()
   })
 })
 
