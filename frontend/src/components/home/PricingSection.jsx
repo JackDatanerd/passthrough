@@ -55,9 +55,9 @@ function ScorePicker({ score, setScore, pass, badge }) {
       <input type="range" min="0" max="100" value={score} onChange={e => setScore(Number(e.target.value))} aria-label="Your ATS score" aria-valuetext={`${score} out of 100`}
         className="w-full my-3 accent-blue-700" />
       <div aria-hidden="true" className="flex gap-0.5 font-mono text-[11px] font-semibold uppercase tracking-wide">
-        <span className="bg-red-50 text-red-700 rounded px-1.5 py-1 text-center whitespace-nowrap overflow-hidden text-ellipsis" style={{ flex: `${pctPass} 1 0` }}>Below {pass}: fails</span>
+        <span className="bg-red-50 text-red-700 rounded px-1.5 py-1 text-center whitespace-nowrap overflow-hidden text-ellipsis" style={{ flex: `${pctPass} 1 0` }}><span className="sm:hidden">Fails</span><span className="hidden sm:inline">Below {pass}: fails</span></span>
         {pctBadge > pctPass && <span className="bg-amber-50 text-amber-800 rounded py-1 text-center overflow-hidden" style={{ flex: `${pctBadge - pctPass} 1 0` }}>{pass}</span>}
-        <span className="bg-green-50 text-green-700 rounded px-1.5 py-1 text-center whitespace-nowrap overflow-hidden text-ellipsis" style={{ flex: `${100 - pctBadge} 1 0` }}>{badge}+: credential</span>
+        <span className="bg-green-50 text-green-700 rounded px-1.5 py-1 text-center whitespace-nowrap overflow-hidden text-ellipsis" style={{ flex: `${100 - pctBadge} 1 0` }}><span className="sm:hidden">{badge}+</span><span className="hidden sm:inline">{badge}+: credential</span></span>
       </div>
       <p aria-live="polite" className="mt-3.5 text-[15.5px] text-gray-700">{why}</p>
     </div>
@@ -120,7 +120,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
               : <Link to="/pricing" className={ghostBtn}>Get credential</Link>}
           </div>
 
-          <div data-plan="full" data-fit={rec === 'full' ? 'true' : undefined} className={`relative bg-gradient-to-b from-white to-blue-50 rounded-xl border-2 border-blue-700 shadow-xl p-6 flex flex-col lg:-translate-y-2 ${rec === 'full' ? 'ring-4 ring-blue-100' : ''}`}>
+          <div data-plan="full" data-fit={rec === 'full' ? 'true' : undefined} className={`relative bg-gradient-to-b from-white to-blue-50 rounded-xl border-2 border-blue-700 shadow-xl p-6 flex flex-col mt-3 sm:mt-0 order-first sm:col-span-2 lg:order-none lg:col-span-1 lg:-translate-y-2 ${rec === 'full' ? 'ring-4 ring-blue-100' : ''}`}>
             <span className="absolute -top-3.5 left-1/2 -translate-x-1/2 bg-blue-700 text-white text-xs font-bold px-3.5 py-1 rounded-full whitespace-nowrap">Most popular · best value</span>
             <div className="text-sm font-semibold text-blue-700 mb-1.5">Full fix</div>
             {rec === 'full' && <FitPill />}

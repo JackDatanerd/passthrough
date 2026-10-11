@@ -14,7 +14,7 @@ export function RoleFields({ category, onCategory, title, onTitle }) {
   return (
     <>
       <Select id="lead-role-category" aria-label="Field you are hiring in" value={category} onChange={e => onCategory(e.target.value)}>
-        <option value="">What field are you hiring in? (optional)</option>
+        <option value="">Field you are hiring in (optional)</option>
         {ROLE_CATEGORIES.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
       </Select>
       <Input placeholder="Job title (optional, e.g. Senior Engineer)" value={title} maxLength={100}

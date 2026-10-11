@@ -7,10 +7,17 @@ export default function StickyScanCta() {
   useEffect(() => {
     if (typeof IntersectionObserver === 'undefined') return undefined
     const card = document.getElementById('scan-form')
+    const final = document.getElementById('final-cta')
     if (!card) return undefined
-    const io = new IntersectionObserver(([e]) => setShow(!e.isIntersecting && e.boundingClientRect.top < 0), { threshold: 0 })
-    io.observe(card)
-    return () => io.disconnect()
+    // Shown once the scan card has scrolled away above the viewport, and hidden again while the closing call to
+    // action (which says the same thing, bigger) is on screen.
+    const state = { passed: false, atFinal: false }
+    const apply = () => setShow(state.passed && !state.atFinal)
+    const a = new IntersectionObserver(([e]) => { state.passed = !e.isIntersecting && e.boundingClientRect.top < 0; apply() }, { threshold: 0 })
+    a.observe(card)
+    let b = null
+    if (final) { b = new IntersectionObserver(([e]) => { state.atFinal = e.isIntersecting; apply() }, { threshold: 0 }); b.observe(final) }
+    return () => { a.disconnect(); b?.disconnect() }
   }, [])
   return (
     <div aria-hidden={!show} className={`sm:hidden fixed inset-x-0 bottom-0 z-40 bg-white border-t border-gray-200 px-4 pt-2.5 flex items-center gap-3 transition-transform duration-200 ${show ? 'translate-y-0' : 'translate-y-full'}`}

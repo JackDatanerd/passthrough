@@ -48,7 +48,7 @@ function Ticket({ exact, hash, issued }) {
           {[0, 1, 2].map(i => <i key={i} className="w-2.5 h-2.5 rounded-full bg-gray-300" />)}
           <span className="flex-1 ml-2 bg-white border border-gray-200 rounded-md px-2.5 py-1 font-mono text-xs text-gray-500 truncate">passthrough.dev/v/<b className="text-gray-900">{SAMPLE_VERIFICATION.code}</b></span>
         </div>
-        <div className="px-6 pt-5 pb-8">
+        <div className="px-4 sm:px-6 pt-5 pb-8">
           <div className="flex items-center gap-3.5">
             <span aria-hidden="true" className="w-[52px] h-[52px] rounded-full bg-green-100 border-2 border-green-600 flex items-center justify-center shrink-0">
               <svg width="26" height="26" viewBox="0 0 26 26" fill="none"><path d="m6 13.5 4.8 4.8L20 8.6" stroke="#15803d" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
@@ -58,8 +58,8 @@ function Ticket({ exact, hash, issued }) {
               <p className="text-sm text-gray-500">Candidate: {SAMPLE_VERIFICATION.name} · {SAMPLE_VERIFICATION.field}</p>
             </div>
           </div>
-          <div className="grid grid-cols-[auto_1fr] gap-5 items-center my-4 p-4 bg-green-50 rounded-xl border border-green-100">
-            <div className="text-5xl font-extrabold leading-none text-green-700 tracking-tighter">{SAMPLE_VERIFICATION.score}<small className="text-base text-gray-500 font-semibold"> / 100</small></div>
+          <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-3 sm:gap-5 items-center my-4 p-3 sm:p-4 bg-green-50 rounded-xl border border-green-100">
+            <div className="text-4xl sm:text-5xl font-extrabold leading-none text-green-700 tracking-tighter">{SAMPLE_VERIFICATION.score}<small className="text-base text-gray-500 font-semibold"> / 100</small></div>
             <div className="grid gap-1.5" aria-label="Category breakdown">
               {rows.map(([label, v]) => (
                 <div key={label}>
@@ -79,7 +79,7 @@ function Ticket({ exact, hash, issued }) {
           </dl>
         </div>
       </div>
-      <div className="relative bg-white rounded-b-2xl px-6 pt-5 pb-5" style={{ WebkitMask: maskStub, WebkitMaskComposite: 'source-in', mask: maskStub, maskComposite: 'intersect' }}>
+      <div className="relative bg-white rounded-b-2xl px-4 sm:px-6 pt-5 pb-5" style={{ WebkitMask: maskStub, WebkitMaskComposite: 'source-in', mask: maskStub, maskComposite: 'intersect' }}>
         <div aria-hidden="true" className="absolute left-[18px] right-[18px] top-0 border-t-2 border-dashed border-gray-300" />
         <div className="font-mono text-[11px] font-bold uppercase tracking-widest text-gray-500">File fingerprint · SHA-256</div>
         <Fingerprint hash={hash} against={issued} label="Fingerprint of the text you are holding" />
@@ -143,7 +143,7 @@ function Placements() {
         {PLACEMENTS.map((p, i) => (
           <button key={p.id} type="button" role="tab" id={`home-tab-${p.id}`} aria-selected={active === p.id} aria-controls={`home-panel-${p.id}`}
             tabIndex={active === p.id ? 0 : -1} ref={el => { refs.current[p.id] = el }} onClick={() => setActive(p.id)} onKeyDown={e => onKey(e, i)}
-            className={`px-3 py-2 -mb-px text-sm font-semibold border-b-[3px] ${active === p.id ? 'text-blue-700 border-blue-700' : 'text-gray-500 border-transparent hover:text-gray-700'}`}>{p.label}</button>
+            className={`px-3 py-3 -mb-px text-sm font-semibold border-b-[3px] ${active === p.id ? 'text-blue-700 border-blue-700' : 'text-gray-500 border-transparent hover:text-gray-700'}`}>{p.label}</button>
         ))}
       </div>
       <div role="tabpanel" id={`home-panel-${active}`} aria-labelledby={`home-tab-${active}`} className="pt-4">
@@ -175,7 +175,7 @@ function CheckBox() {
         <label className="sr-only" htmlFor="home-verify-code">Verification code or link</label>
         <input id="home-verify-code" value={text} onChange={e => setText(e.target.value)} placeholder="e.g. K7M2QX9P4A"
           aria-invalid={error ? true : undefined} aria-describedby={error ? 'home-verify-error' : undefined}
-          className="flex-1 min-w-0 rounded-md border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          className="flex-1 min-w-0 rounded-md border border-gray-300 px-3 py-2.5 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
         <button type="submit" className="bg-blue-700 text-white font-semibold px-4 rounded-md hover:bg-blue-800">Check</button>
       </form>
       {error && <p id="home-verify-error" role="alert" className="w-full text-xs text-red-600">{error}</p>}
@@ -207,20 +207,20 @@ export default function VerifySection({ badgeThreshold }) {
         </div>
 
         <div className="grid lg:grid-cols-2 gap-9 items-start">
-          <div>
+          <div className="min-w-0">
             <Ticket exact={exact} hash={hash} issued={issued} />
             <p className="mt-3.5 text-xs text-gray-500 text-center">Illustrative example of what an employer sees when they open a candidate&apos;s link.</p>
           </div>
 
-          <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+          <div className="min-w-0 bg-white rounded-xl border border-gray-200 shadow-sm p-4 sm:p-6">
             <h3 className="text-xl font-bold text-gray-900 mb-1.5">Try the tamper test</h3>
             <p className="text-[15px] text-gray-500 mb-3.5">This is one line from the resume a recruiter was sent. Change a single character and watch the fingerprint react.</p>
             <label htmlFor="home-tamper" className="sr-only">Resume line</label>
             <textarea id="home-tamper" value={text} onChange={e => setText(e.target.value)} spellCheck={false}
-              className="w-full text-[15px] leading-normal px-3 py-3 border-[1.5px] border-gray-300 rounded-lg resize-y min-h-[84px] text-gray-900 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100" />
+              className="w-full text-base sm:text-[15px] leading-normal px-3 py-3 border-[1.5px] border-gray-300 rounded-lg resize-y min-h-[84px] text-gray-900 focus:outline-none focus:border-blue-600 focus:ring-2 focus:ring-blue-100" />
             <div className="flex flex-wrap gap-2.5 my-3">
-              <button type="button" onClick={() => setText(original.replace(edit[0], edit[1]))} className="px-3.5 py-2.5 rounded-lg bg-blue-700 text-white font-semibold text-sm border border-blue-700 hover:bg-blue-800">Change one character</button>
-              <button type="button" onClick={() => setText(original)} className="px-3.5 py-2.5 rounded-lg bg-white text-gray-800 font-semibold text-sm border border-gray-300 hover:border-gray-500">Reset</button>
+              <button type="button" onClick={() => setText(original.replace(edit[0], edit[1]))} className="px-3.5 py-3 rounded-lg bg-blue-700 text-white font-semibold text-sm border border-blue-700 hover:bg-blue-800">Change one character</button>
+              <button type="button" onClick={() => setText(original)} className="px-3.5 py-3 rounded-lg bg-white text-gray-800 font-semibold text-sm border border-gray-300 hover:border-gray-500">Reset</button>
             </div>
             <div><span className="font-mono text-[11px] font-bold uppercase tracking-widest text-gray-500">Fingerprint issued by Passthrough</span><Fingerprint hash={issued} label="Issued fingerprint" /></div>
             <div><span className="font-mono text-[11px] font-bold uppercase tracking-widest text-gray-500">Fingerprint of the text above</span><Fingerprint hash={hash} against={issued} label="Fingerprint of the text above" /></div>
@@ -244,12 +244,12 @@ export default function VerifySection({ badgeThreshold }) {
             <div role="group" aria-label="Embed format" className="inline-flex bg-gray-100 rounded-full p-1 mt-3.5 mb-2 text-sm">
               {FORMATS.map(([k, label]) => (
                 <button key={k} type="button" aria-pressed={fmt === k} onClick={() => setFmt(k)}
-                  className={`px-3.5 py-1.5 rounded-full font-semibold ${fmt === k ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{label}</button>
+                  className={`px-3.5 py-2 rounded-full font-semibold ${fmt === k ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{label}</button>
               ))}
             </div>
             <pre className="bg-gray-900 text-slate-200 rounded-lg p-3.5 text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap break-all" aria-label="Example embed snippet"><code>{embeds[fmt]}</code></pre>
             <div className="mt-2 flex items-center gap-3">
-              <button type="button" onClick={copy} className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3 py-1.5 hover:bg-gray-50">{copied ? 'Copied ✓' : failed ? 'Select & copy manually' : 'Copy snippet'}</button>
+              <button type="button" onClick={copy} className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3.5 py-2.5 hover:bg-gray-50">{copied ? 'Copied ✓' : failed ? 'Select & copy manually' : 'Copy snippet'}</button>
               <span className="text-xs text-gray-500">Yours uses your own code, after you verify.</span>
             </div>
           </div>

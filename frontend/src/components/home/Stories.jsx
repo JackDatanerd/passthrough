@@ -20,7 +20,7 @@ function Story({ s, isSample, badgeThreshold }) {
   return (
     <article className="relative bg-white rounded-xl border border-gray-200 shadow-sm p-5">
       {isSample && (
-        <span className="absolute top-2.5 right-3 text-[10px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>
+        <span className="absolute top-2.5 right-3 text-[11px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>
       )}
       <div className="flex items-center gap-3 mb-3">
         <div aria-hidden="true" className={`w-10 h-10 rounded-full text-white font-bold flex items-center justify-center ${avatarColour(s.displayName)}`}>{initialOf(s.displayName)}</div>
@@ -43,7 +43,7 @@ function Story({ s, isSample, badgeThreshold }) {
 
       {(body.length > 0 || timeline.length > 0) && (
         <details className="group mt-3">
-          <summary className="cursor-pointer list-none text-sm font-semibold text-blue-700 inline-flex items-center gap-1.5 [&::-webkit-details-marker]:hidden">
+          <summary className="cursor-pointer list-none text-sm font-semibold text-blue-700 inline-flex items-center gap-1.5 min-h-[44px] [&::-webkit-details-marker]:hidden">
             Read my story <span aria-hidden="true" className="font-extrabold group-open:hidden">＋</span><span aria-hidden="true" className="font-extrabold hidden group-open:inline">−</span>
           </summary>
           <div className="mt-3 border-l-[3px] border-blue-200 pl-3.5 flex flex-col gap-2.5 text-sm text-gray-700">
@@ -98,8 +98,8 @@ export default function Stories({ stories, badgeThreshold }) {
         {PULL_QUOTES.length > 0 && (
           <>
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-5 mt-9">
-              {PULL_QUOTES.map(q => (
-                <figure key={q.text} className="m-0 pt-3.5 border-t-[3px] border-gray-900">
+              {PULL_QUOTES.map((q, i) => (
+                <figure key={q.text} className={`m-0 pt-3.5 border-t-[3px] border-gray-900 ${i >= 3 ? 'hidden sm:block' : ''}`}>
                   <blockquote className="m-0 text-[16.5px] font-semibold leading-snug text-gray-900 mb-2">“{q.text}”</blockquote>
                   <figcaption className="text-[13px] text-gray-500">{q.who}</figcaption>
                 </figure>

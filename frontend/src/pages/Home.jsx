@@ -68,6 +68,8 @@ export default function Home() {
         <FinalCta />
       </main>
       <Footer />
+      {/* room for the fixed phone bar, so the last footer row is never covered by it */}
+      <div className="sm:hidden h-16" aria-hidden="true" />
       <StickyScanCta />
     </div>
   )

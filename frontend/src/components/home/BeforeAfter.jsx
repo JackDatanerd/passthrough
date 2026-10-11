@@ -25,7 +25,7 @@ function Panel({ title, badge, badgeClass, data, good, active, className, read }
           </svg>
           <div className={`absolute inset-0 flex flex-col items-center justify-center ${ring.text}`}>
             <span className="text-2xl font-extrabold leading-none">{n}</span>
-            <span className="text-[10px] text-gray-400">/ 100</span>
+            <span className="text-[11px] text-gray-500">/ 100</span>
           </div>
         </div>
         <div>
@@ -85,7 +85,7 @@ export default function BeforeAfter() {
           <div role="group" aria-label="Show" className="inline-flex bg-gray-100 rounded-full p-1">
             {[['before', 'Before'], ['after', 'After']].map(([k, label]) => (
               <button key={k} type="button" aria-pressed={which === k} onClick={() => setWhich(k)}
-                className={`px-5 py-2 rounded-full text-sm font-semibold ${which === k ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{label}</button>
+                className={`px-5 py-2.5 rounded-full text-sm font-semibold ${which === k ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{label}</button>
             ))}
           </div>
         </div>

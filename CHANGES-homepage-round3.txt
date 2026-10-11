@@ -1,0 +1,46 @@
+Homepage — round 3: mobile responsiveness and the small remaining details. Frontend only.
+Method: the built app was rendered in headless Chromium at 320/360/375/390/414/768/1024/1280px with the API mocked,
+and measured (horizontal overflow, where the upload box lands, tap-target sizes, input font sizes, anchor offsets).
+The original homepage (commit before our work) was built and measured the same way for comparison.
+
+FOUND AND FIXED
+1. Phone first screen (regression from round 2). The upload box sat at y=916 on a 390x800 phone (the original: 826),
+   i.e. entirely below the fold, behind the pitch, proof row and facts. The hero is now three blocks in the order
+   pitch -> scan card -> proof on phones (desktop layout unchanged: card top-aligned on the right, spanning both
+   rows). Upload box now at y=544, with its mode tabs visible. Headline steps down to 34px on phones.
+2. Horizontal scroll at 320px (page 334px wide). Cause: the receipt ticket's grid column could not shrink below its
+   content. Columns are min-w-0, the score row uses minmax(0,1fr), the big score and paddings step down on phones.
+   Verified: no overflow at any of the eight widths.
+3. Navbar at 320-360px: "Sign in" and "Get started" wrapped to two lines and touched the logo. Pricing leaves the bar
+   below sm, "Sign in" leaves it below 340px (both remain in "More"), items no longer wrap, and bar items get
+   thumb-sized vertical hit areas.
+4. iOS Safari zoomed the page on focus for every field smaller than 16px (ten of them, including the scan form's).
+   Shared Input / Textarea / Select now use 16px text below sm (14px from sm up) and a 44px field on phones; the
+   homepage's own inputs follow suit.
+5. Tap targets: "Read my story" was 20px tall (now 44), the 7/30-day and Before/After toggles, the embed-format
+   toggle, placement tabs, "Show all fields", footer links (20px -> 32px), the scan form's mode toggles and the
+   employer submit button were all 28-36px. All raised.
+6. Pricing on a phone listed Free, a locked Credential only, THEN the recommended Full fix. Full fix is now first on
+   phones/tablets (desktop keeps it in the middle). Score-picker zone labels were clipped ("80+: CR...") and have a
+   short form for narrow screens.
+7. Count-up: the stats started at "0+ / 0%" and stayed there for anything that never scrolled them into view (a
+   screenshot, a link preview, a failed animation frame). The real number is now the default; it restarts from 0
+   only when the band is actually revealed (reset happens before paint, so no flash).
+8. Sticky phone bar: now also hides while the closing call to action is on screen (it said the same thing, over it),
+   and the page leaves room under the footer so the last footer row is never covered.
+9. Employer form: the field <select> label was cut off ("(optiona"); shortened. Scan form email placeholder was
+   clipped at the new 16px size; shortened to "Email me the result (optional)".
+10. Phones show three pull-quotes instead of six (saves ~400px of an already long page; all six from sm up).
+11. Small text: delta arrows 11->12px, Sample tags and ring caption 10->11px, the live dot respects reduced motion.
+
+MEASURED, NOT CHANGED
+- Anchor jumps land correctly: the navbar is static, not sticky, so nothing hides under it.
+- 360x640 (small Android): the upload box starts at y=619, so only its top edge is in view.
+- Page length on a phone: 15.7k px (the original: 6.7k). DOM nodes 873 (265). Main bundle +~17KB gzip since the
+  pre-homepage baseline (part of that is other sessions' work). Home is not code-split.
+
+NOT DONE ON PURPOSE
+- viewport-fit=cover (iOS landscape notch): the page would then need safe-area padding everywhere.
+- Shared Button is left at its current height; only the homepage's own submit buttons were raised.
+
+TESTS: frontend/tests/homepage.mobile.test.jsx (21), Select/round2 tests updated. Frontend 1248 passing.

@@ -315,7 +315,8 @@ describe('navbar entries', () => {
     fireEvent.click(screen.getByRole('button', { name: /More/ }))
     expect(screen.queryByText('Check a resume')).toBeNull()
     const menu = document.getElementById('navbar-more')
-    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['Stories', 'Hot categories', 'Pricing', 'For employers'])
+    // "Sign in" joins the menu for signed-out visitors (on the very narrowest phones it has no room in the bar)
+    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['Stories', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
   })
   it('the check link is still one click away from the employer section and the receipt', async () => {
     renderHome(); await ready()

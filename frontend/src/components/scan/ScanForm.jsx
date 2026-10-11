@@ -243,21 +243,21 @@ export default function ScanForm() {
           <button type="button"
             onClick={() => switchEntryMode('upload')}
             aria-pressed={entryMode === 'upload'}
-            className={`px-3 py-1.5 transition-colors ${entryMode === 'upload' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            className={`px-3 py-2.5 sm:py-1.5 transition-colors ${entryMode === 'upload' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Upload resume
           </button>
           <button type="button"
             onClick={() => switchEntryMode('brainDump')}
             aria-pressed={entryMode === 'brainDump'}
-            className={`px-3 py-1.5 transition-colors ${entryMode === 'brainDump' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            className={`px-3 py-2.5 sm:py-1.5 transition-colors ${entryMode === 'brainDump' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Start from scratch
           </button>
           <button type="button"
             onClick={() => switchEntryMode('manual')}
             aria-pressed={entryMode === 'manual'}
-            className={`px-3 py-1.5 transition-colors ${entryMode === 'manual' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+            className={`px-3 py-2.5 sm:py-1.5 transition-colors ${entryMode === 'manual' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
           >
             Fill it in myself
           </button>
@@ -265,7 +265,7 @@ export default function ScanForm() {
             <button type="button"
               onClick={() => switchEntryMode('rescan')}
             aria-pressed={entryMode === 'rescan'}
-              className={`px-3 py-1.5 transition-colors ${entryMode === 'rescan' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              className={`px-3 py-2.5 sm:py-1.5 transition-colors ${entryMode === 'rescan' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Same resume
             </button>
@@ -274,7 +274,7 @@ export default function ScanForm() {
             <button type="button"
               onClick={() => switchEntryMode('savedProfile')}
             aria-pressed={entryMode === 'savedProfile'}
-              className={`px-3 py-1.5 transition-colors ${entryMode === 'savedProfile' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              className={`px-3 py-2.5 sm:py-1.5 transition-colors ${entryMode === 'savedProfile' ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Use saved profile
             </button>
@@ -287,7 +287,7 @@ export default function ScanForm() {
           <div>
             <Input
               type="email"
-              placeholder="Email me a link to my result (optional)"
+              placeholder="Email me the result (optional)"
               value={uploadEmail}
               onChange={e => setUploadEmail(e.target.value)}
               aria-label="Email address for a link to your result (optional)"
@@ -423,13 +423,13 @@ export default function ScanForm() {
           <div className="flex rounded-md overflow-hidden border border-gray-300 text-sm">
             <button type="button"
               onClick={() => setUseUrl(false)}
-              className={`px-3 py-1.5 transition-colors ${!useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              className={`px-3 py-2.5 sm:py-1.5 transition-colors ${!useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               Paste text
             </button>
             <button type="button"
               onClick={() => setUseUrl(true)}
-              className={`px-3 py-1.5 transition-colors ${useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+              className={`px-3 py-2.5 sm:py-1.5 transition-colors ${useUrl ? 'bg-blue-700 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
             >
               URL
             </button>

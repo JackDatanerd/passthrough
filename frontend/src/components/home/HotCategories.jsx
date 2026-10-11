@@ -45,15 +45,15 @@ export default function HotCategories({ hot, minReports }) {
         </div>
         <div className="grid lg:grid-cols-[1.3fr_.7fr] gap-5 items-start">
           <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            {isSample && <span className="absolute top-2.5 right-3 text-[10px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>}
+            {isSample && <span className="absolute top-2.5 right-3 text-[11px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>}
             <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                <span aria-hidden="true" className="w-2 h-2 rounded-full bg-green-600 animate-pulse" />Hot categories
+                <span aria-hidden="true" className="w-2 h-2 rounded-full bg-green-600 animate-pulse motion-reduce:animate-none" />Hot categories
               </h3>
               <div role="group" aria-label="Period" className="inline-flex bg-gray-100 rounded-full p-1 text-sm">
                 {WINDOWS.map(d => (
                   <button key={d} type="button" aria-pressed={days === d} onClick={() => setDays(d)}
-                    className={`px-3.5 py-1 rounded-full font-semibold ${days === d ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{d} days</button>
+                    className={`px-4 py-2.5 sm:px-3.5 sm:py-1 rounded-full font-semibold ${days === d ? 'bg-white text-gray-900 shadow' : 'text-gray-600'}`}>{d} days</button>
                 ))}
               </div>
             </div>
@@ -71,7 +71,7 @@ export default function HotCategories({ hot, minReports }) {
                       </span>
                       <span className="text-right tabular-nums font-bold text-gray-900">
                         {r.interviews.toLocaleString('en-US')}
-                        <small className={`block text-[11px] font-semibold ${r.changePct > 0 ? 'text-green-700' : r.changePct < 0 ? 'text-red-700' : 'text-gray-500'}`}>
+                        <small className={`block text-xs font-semibold ${r.changePct > 0 ? 'text-green-700' : r.changePct < 0 ? 'text-red-700' : 'text-gray-500'}`}>
                           {r.changePct == null ? '—' : `${r.changePct > 0 ? '▲' : r.changePct < 0 ? '▼' : '='} ${Math.abs(r.changePct)}%`}
                         </small>
                       </span>
@@ -81,7 +81,7 @@ export default function HotCategories({ hot, minReports }) {
               })}
             </ol>
             {rows.length > SHOWN && (
-              <button type="button" aria-expanded={all} onClick={() => setAll(a => !a)} className="mt-2 px-2 py-1.5 text-sm font-semibold text-blue-700 hover:underline">
+              <button type="button" aria-expanded={all} onClick={() => setAll(a => !a)} className="mt-1 px-2 py-3 text-sm font-semibold text-blue-700 hover:underline">
                 {all ? `Show top ${SHOWN} ▴` : `Show all ${rows.length} fields ▾`}
               </button>
             )}
@@ -95,7 +95,7 @@ export default function HotCategories({ hot, minReports }) {
             <h3 className="text-xl font-bold mb-2.5 leading-snug">Your field is moving. Is your resume ready?</h3>
             <p className="text-blue-200 text-sm mb-4">Pick your field to see where it ranks, then scan your resume against a real job description and see exactly what is holding it back.</p>
             <label htmlFor="home-pick-field" className="block font-bold text-sm mb-1.5">Which one are you?</label>
-            <select id="home-pick-field" value={pick} onChange={e => choose(e.target.value)} className="w-full font-semibold text-[15px] px-3 py-2.5 rounded-lg bg-white text-gray-900">
+            <select id="home-pick-field" value={pick} onChange={e => choose(e.target.value)} className="w-full font-semibold text-base px-3 py-3 rounded-lg bg-white text-gray-900">
               <option value="">Choose your field…</option>
               {ROLE_CATEGORIES.filter(([k]) => k !== 'other').map(([k, label]) => <option key={k} value={k}>{label}</option>)}
               <option value={SOMETHING_ELSE}>Something else</option>

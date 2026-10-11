@@ -73,7 +73,7 @@ export default function EmployerLeadForm() {
         <input type="text" name="lead_ref_code" value={trap} onChange={e => setTrap(e.target.value)}
           tabIndex={-1} autoComplete="off" aria-hidden="true" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
           style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
-        <Button type="submit" loading={loading}>Get early access</Button>
+        <Button type="submit" loading={loading} className="py-3 sm:py-2">Get early access</Button>
       </Form>
     </div>
   )

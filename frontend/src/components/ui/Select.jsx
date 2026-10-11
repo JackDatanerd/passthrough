@@ -26,7 +26,7 @@ import { cn } from '../../lib/utils'
 // utility pairs at once via className, with the winner decided by stylesheet
 // order rather than anything visible at the call site.
 const sizes = {
-  md: 'px-3 py-2 text-sm',
+  md: 'px-3 py-2.5 text-base sm:py-2 sm:text-sm',
   sm: 'px-2 py-1 text-xs',
 }
 

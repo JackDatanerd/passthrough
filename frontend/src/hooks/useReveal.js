@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 // True once the element has scrolled into view (and stays true). Without IntersectionObserver (old
 // browsers, jsdom) or with prefers-reduced-motion, content is simply shown — nothing is ever hidden
@@ -21,13 +21,17 @@ export default function useReveal({ threshold = 0.15 } = {}) {
   return [ref, shown]
 }
 
-// Counts from 0 to `target` once `active`; shows `target` straight away when motion is off.
+// Shows `target` from the first paint (a crawler, a screenshot, a tab that never scrolls there, or a failed
+// animation frame must see the real number, never "0%"). When `active` first turns true it restarts from 0
+// and counts up — the reset happens in a layout effect, i.e. BEFORE that frame is painted, so there is no
+// flash of the final value. Motion off, or no IntersectionObserver: it simply stays at `target`.
 export function useCountUp(target, active, ms = 1100) {
-  const [n, setN] = useState(() => (typeof IntersectionObserver === 'undefined' || reduced() ? target : 0))
+  const [n, setN] = useState(target)
   const raf = useRef(0)
-  useEffect(() => {
-    if (!active) return undefined
-    if (typeof IntersectionObserver === 'undefined' || reduced()) { setN(target); return undefined }
+  const animate = typeof IntersectionObserver !== 'undefined' && !reduced()
+  useLayoutEffect(() => {
+    if (!active || !animate) { setN(target); return undefined }
+    setN(0)
     const start = performance.now()
     const tick = (now) => {
       const p = Math.min((now - start) / ms, 1)
@@ -36,6 +40,6 @@ export function useCountUp(target, active, ms = 1100) {
     }
     raf.current = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf.current)
-  }, [target, active, ms])
+  }, [target, active, animate, ms])
   return n
 }

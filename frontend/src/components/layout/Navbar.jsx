@@ -46,13 +46,13 @@ export default function Navbar() {
         <Link to="/" className="font-bold text-blue-700 text-lg tracking-tight">
           Passthrough
         </Link>
-        <div className="flex items-center gap-2 sm:gap-4 text-xs sm:text-sm">
+        <div className="flex items-center gap-3 sm:gap-4 text-[13px] sm:text-sm whitespace-nowrap">
           <button
             type="button"
             onClick={() => setMenuOpen(o => !o)}
             aria-expanded={menuOpen}
             aria-controls="navbar-more"
-            className="sm:hidden text-gray-600 hover:text-gray-900 transition-colors"
+            className="sm:hidden py-3 text-gray-600 hover:text-gray-900 transition-colors"
           >
             {menuOpen ? 'Close' : 'More'}
           </button>
@@ -65,7 +65,7 @@ export default function Navbar() {
           <Link to="/#hot" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
             Hot categories
           </Link>
-          <Link to="/pricing" className={`text-gray-600 hover:text-gray-900 transition-colors ${user ? 'hidden sm:block' : ''}`}>
+          <Link to="/pricing" className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
             Pricing
           </Link>
           {/* Anchor into the employer section on the homepage */}
@@ -74,7 +74,7 @@ export default function Navbar() {
           </Link>
           {user ? (
             <>
-              <Link to="/dashboard" className="text-gray-600 hover:text-gray-900 transition-colors">
+              <Link to="/dashboard" className="py-3 sm:py-0 text-gray-600 hover:text-gray-900 transition-colors">
                 Dashboard
               </Link>
               {/* The admin page had no link anywhere — admins had to type the URL. */}
@@ -86,19 +86,20 @@ export default function Navbar() {
               <button
                 type="button"
                 onClick={handleLogout}
-                className="text-gray-600 hover:text-gray-900 transition-colors"
+                className="py-3 sm:py-0 text-gray-600 hover:text-gray-900 transition-colors"
               >
                 Sign out
               </button>
             </>
           ) : (
             <>
-              <Link to="/login" className="text-gray-600 hover:text-gray-900 transition-colors">
+              {/* Below 340px there is no room for it next to the button; it moves into "More" (see below). */}
+              <Link to="/login" className="py-3 text-gray-600 hover:text-gray-900 transition-colors hidden min-[340px]:block">
                 Sign in
               </Link>
               <Link
                 to="/register"
-                className="bg-blue-700 text-white px-3 py-1.5 rounded-md hover:bg-blue-800 transition-colors"
+                className="bg-blue-700 text-white px-3 py-2 sm:py-1.5 rounded-md hover:bg-blue-800 transition-colors"
               >
                 Get started
               </Link>
@@ -112,6 +113,7 @@ export default function Navbar() {
           <Link to="/#hot" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Hot categories</Link>
           <Link to="/pricing" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
           <Link to="/#employers" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
+          {!user && <Link to="/login" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900 min-[340px]:hidden">Sign in</Link>}
         </div>
       )}
     </nav>
