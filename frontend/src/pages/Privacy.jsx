@@ -62,6 +62,13 @@ export default function Privacy() {
             (the address, subject and whether it was delivered) for 90 days. This is stored
             separately from candidate accounts.
           </p>
+          <p>
+            <strong>Reports about a verification page:</strong> if you use "Report a problem with
+            this page" on a candidate's verification page, we store the reason you pick, any note you
+            write, the optional email address you give if you want a reply, and a one-way hash of your
+            network (never the address itself) so one person can't flood a page with reports. Reports
+            are read by our team only.
+          </p>
         </Section>
 
         <Section title="3. How We Use It">
@@ -108,6 +115,10 @@ export default function Privacy() {
             that nobody has followed up, are deleted automatically after 90 days. When you remove
             your address we keep a one-way hash of it (not the address itself) so the form can't
             add you again; ask us if you'd like that lifted.
+          </p>
+          <p>
+            <strong>Verification-page reports</strong> are deleted automatically after 180 days,
+            whatever their status.
           </p>
           <p>
             <strong>Payment records</strong> are retained for accounting and legal purposes even

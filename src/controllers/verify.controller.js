@@ -58,7 +58,9 @@ const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
 const rateLimiter = require('../middleware/rateLimiter')
 const { runInBackground } = require('../lib/background')
-const { publicFirstName } = require('../lib/text')
+const { z } = require('zod')
+const { publicFirstName, cleanNotes, cleanStrangerText } = require('../lib/text')
+const { verifyTurnstile } = require('../lib/turnstile')
 const { renderBadgePng, renderSharePng } = require('../lib/badgePng')
 const { STATUS, SHA256_RE, normalizeCode, isPlausibleCode, isBotUserAgent, visitorKey, isTrustedPreview } = require('../lib/verification')
 // SECTION 7 AUDIT FIX (bug): this file used to define its own local
@@ -680,8 +682,69 @@ async function serveBadge(c, format) {
   return sendBadge(c, drawBadge(format, label, value, color, loaded.code), ttl, cache, key, format)
 }
 
+// ── report this page (round 8) ──────────────────────────────────────────────
+// ROUND-8 (feature gap, Section 7): "Report a problem" was a mailto: link — nothing on a machine with no mail
+// client, and no record an admin could act on. POST /api/verify/:code/report stores the report (migration 0073),
+// the admin Scans page lists the open ones beside the Revoke button, and the owner address is alerted once a day
+// per page. Public by design (a hiring manager has no account), so it is guarded like the other public forms:
+// its own tight limiter (routes), Turnstile when configured, a honeypot, and one OPEN report per page per network.
+const REPORT_REASONS = ['FAKE', 'WRONG', 'MINE', 'OTHER']
+const REPORT_RECEIVED = 'Thanks — your report was received and will be reviewed.'
+const reportSchema = z.object({
+  reason: z.enum(REPORT_REASONS),
+  details: z.string().max(1000).nullish(),
+  email: z.union([z.literal(''), z.string().trim().max(254).email()]).nullish(),
+  trap: z.string().max(200).nullish(),
+  turnstileToken: z.string().max(2048).nullish(),
+})
+
+async function reportVerification(c) {
+  noStore(c)
+  const raw = await c.req.json().catch(() => null)
+  const parsed = reportSchema.safeParse(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
+  if (!parsed.success)
+    return c.json({ success: false, message: 'Choose what looks wrong, keep the note under 1000 characters, and check the e-mail address if you gave one.' }, 400)
+  const data = parsed.data
+  // Honeypot: a person never sees this field. Same answer as a real report, nothing stored.
+  if (data.trap) return c.json({ success: true, message: REPORT_RECEIVED })
+
+  const ip = clientIp(c)
+  if (!(await verifyTurnstile(c.env, data.turnstileToken, ip)))
+    return c.json({ success: false, message: 'Please complete the verification check and try again.' }, 400)
+
+  const loaded = await loadByCode(c, { columns: 'verification_code, verification_status, verification_revoked_at' })
+  if (loaded.response) return loaded.response
+  const { row, code, supabase } = loaded
+  // A revoked page is already off; there is nothing to report.
+  if (row.verification_status === STATUS.REVOKED) return revokedResponse(c, row)
+
+  const details = cleanNotes(data.details || '').slice(0, 1000) || null
+  const email = data.email ? cleanStrangerText(data.email).toLowerCase() : null
+  const reporterHash = await cryptoLib.sha256(`report|${rateKeyIp(ip, 48)}|${c.req.header('user-agent') || ''}`)
+  const { error } = await supabase.from('verification_reports').insert({
+    code, reason: data.reason, details, reporter_email: email, reporter_hash: reporterHash,
+  })
+  // 23505 = this network already has an OPEN report on this page: absorbed, answered the same.
+  if (error && error.code !== '23505') throw error
+  if (!error) await alertReported(c, code, data.reason, details)
+  return c.json({ success: true, message: REPORT_RECEIVED })
+}
+
+// One owner alert per page per day however many reports arrive (shared dedupe backend; quiet without one).
+async function alertReported(c, code, reason, details) {
+  try {
+    if (!(c.env.RATE_LIMIT_DO || c.env.RATE_LIMIT_KV)) return
+    if (!(await rateLimiter.hitQuota(c.env, `rl:verifyreport:${code}`, 1, 24 * 60 * 60))) return
+    const email = require('../services/email.service')
+    runInBackground(c, email.sendOwnerAlert(c.env, 'Verification page reported',
+      `verification code: ${code}\nreason: ${reason}\n${details ? `note: ${String(details).slice(0, 500)}\n` : ''}\nReview it under Admin > Scans (open reports), where the page can be revoked.`))
+  } catch (err) {
+    console.error('[verify] report alert failed:', err.message)
+  }
+}
+
 const getBadge = c => serveBadge(c, 'svg')
 const getBadgePng = c => serveBadge(c, 'png')
 const getCardPng = c => serveBadge(c, 'card')
 
-module.exports = { getVerification, downloadVerifiedFile, getBadge, getBadgePng, getCardPng, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS, INTEGRITY_CACHE_TTL_SECONDS }
+module.exports = { getVerification, downloadVerifiedFile, reportVerification, REPORT_REASONS, getBadge, getBadgePng, getCardPng, lookupByHash, renderBadge, historyContains, BADGE_TTL_SECONDS, BADGE_STATIC_TTL_SECONDS, BADGE_UNSETTLED_TTL_SECONDS, INTEGRITY_CACHE_TTL_SECONDS }

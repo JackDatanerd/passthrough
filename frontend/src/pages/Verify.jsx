@@ -3,6 +3,8 @@ import { useParams, useLocation, Link } from 'react-router-dom'
 import api, { getErrorMessage } from '../lib/api'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
+import Select from '../components/ui/Select'
+import Textarea from '../components/ui/Textarea'
 import Spinner from '../components/ui/Spinner'
 import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
@@ -63,6 +65,72 @@ function scoredFor(data) {
   return [level, role].filter(Boolean).join(' · ')
 }
 
+// ROUND-8 AUDIT (feature gap, Section 7): "Report a problem" was only a mailto: link — nothing at all on a
+// machine with no mail client, and no record an admin could act on. This sends the report to the API
+// (POST /verify/:code/report), where it lands in the admin Scans page next to the Revoke button. The mailto
+// stays as the fallback. Honeypot + Turnstile (when configured) like the hiring-manager form.
+const REPORT_REASONS = [
+  ['FAKE', 'This page looks fake or misleading'],
+  ['WRONG', 'Something on this page is wrong'],
+  ['MINE', 'This is my resume and I want it changed'],
+  ['OTHER', 'Something else'],
+]
+
+function ReportForm({ code, onClose }) {
+  const [reason, setReason] = useState('')
+  const [details, setDetails] = useState('')
+  const [email, setEmail] = useState('')
+  const [trap, setTrap] = useState('')
+  const [captcha, setCaptcha] = useState('')
+  const [captchaReset, setCaptchaReset] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const [sent, setSent] = useState('')
+
+  async function submit(e) {
+    e?.preventDefault?.()
+    if (!reason) return setErr('Choose what looks wrong.')
+    if (TURNSTILE_ENABLED && !captcha) return setErr('Please complete the verification check below.')
+    setBusy(true); setErr('')
+    try {
+      const res = await api.post(`/verify/${encodeURIComponent(code)}/report`, {
+        reason, details: details.trim() || undefined, email: email.trim() || undefined, trap, turnstileToken: captcha || undefined,
+      })
+      setSent(res?.data?.message || 'Thanks — your report was received.')
+    } catch (error) {
+      setErr(getErrorMessage(error, 'Could not send the report — please try again, or email support.'))
+      setCaptcha(''); setCaptchaReset(n => n + 1)   // a token is single-use
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  if (sent) return <p role="status" className="text-sm text-green-700 font-medium">{sent}</p>
+  return (
+    <Form onSubmit={submit} className="flex flex-col gap-3 text-left">
+      <h2 className="font-semibold text-gray-900">Report a problem with this page</h2>
+      <Select label="What looks wrong?" value={reason} onChange={e => setReason(e.target.value)}>
+        <option value="">Choose…</option>
+        {REPORT_REASONS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
+      </Select>
+      <Textarea label="Details (optional)" rows={3} maxLength={1000} value={details} onChange={e => setDetails(e.target.value)}
+        hint="Do not include anything private — this goes to the Passthrough team." />
+      <Input type="email" label="Your e-mail (optional, only if you want a reply)" value={email} onChange={e => setEmail(e.target.value)} />
+      <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />
+      {err && <p role="alert" className="text-xs text-red-600">{err}</p>}
+      {/* Honeypot: invisible to a person, tempting to a bot filling every field. */}
+      <input type="text" name="report_ref_code" value={trap} onChange={e => setTrap(e.target.value)}
+        tabIndex={-1} autoComplete="off" aria-hidden="true" data-lpignore="true" data-1p-ignore="true" data-form-type="other"
+        style={{ position: 'absolute', left: '-9999px', width: 1, height: 1, opacity: 0 }} />
+      <div className="flex items-center gap-3 flex-wrap">
+        <Button type="submit" loading={busy}>Send report</Button>
+        <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
+        <a href={reportHref(code, 'reported page')} className="text-xs text-gray-400 underline underline-offset-2 hover:text-gray-600">or email support</a>
+      </div>
+    </Form>
+  )
+}
+
 export default function Verify() {
   const { code } = useParams()
   // ROUND-5 AUDIT FIX (feature gap): /check hands over { code, hash, kind } for the file the reader looked up.
@@ -100,6 +168,7 @@ export default function Verify() {
   const [trap,        setTrap       ] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
 
   const [linkCopied, setLinkCopied] = useState(false)
+  const [reportOpen, setReportOpen] = useState(false)
 
   // SECTION 7 AUDIT (feature gap G7-1): let the READER check the actual file
   // they were sent, in their own browser — nothing is uploaded. This is the
@@ -135,7 +204,7 @@ export default function Verify() {
     const seq = ++loadSeq.current
     setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
     setDownloadErr(''); setCheckResult(null); setFromLookup(false)
-    setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
+    setReportOpen(false); setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
     setLeadSent(false); setLeadErr('')
     // encodeURIComponent: the code comes straight from the URL; never let it
     // add path segments or a query string to the API call.
@@ -597,8 +666,14 @@ export default function Verify() {
               Have a file but not its link?{' '}
               <Link to="/check" className="underline underline-offset-2 hover:text-gray-600">Find its verification page</Link>
               {' · '}
-              <a href={reportHref(code, 'reported page')} className="underline underline-offset-2 hover:text-gray-600">Report a problem with this page</a>
+              <button type="button" onClick={() => setReportOpen(o => !o)} aria-expanded={reportOpen}
+                className="underline underline-offset-2 hover:text-gray-600">Report a problem with this page</button>
             </p>
+            {reportOpen && (
+              <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                <ReportForm key={code} code={code} onClose={() => setReportOpen(false)} />
+              </div>
+            )}
 
             {/* Hiring manager soft opt-in — shown above the full form */}
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">

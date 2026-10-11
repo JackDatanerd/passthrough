@@ -24,6 +24,8 @@ router.patch('/users/:id', admin.stepUp, validateUuidParam(), c.adminUpdateUser)
 
 router.get('/scans',    c.adminListScans)
 router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)
+router.get('/verification-reports', c.adminListVerificationReports)
+router.patch('/verification-reports/:id', validateUuidParam(), c.adminReviewVerificationReport)
 router.get('/payments', c.adminListPayments)
 
 // One-off: fingerprint PDFs of pages issued before migration 0025 (see the controller).

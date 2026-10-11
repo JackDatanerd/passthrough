@@ -9,6 +9,8 @@ const router = new Hono()
 router.get('/by-hash/:hash',   rl.verifyRead, c.lookupByHash)
 router.get('/:code',           rl.verifyRead, c.getVerification)
 router.get('/:code/download',  rl.verifyRead, c.downloadVerifiedFile)
+// ROUND-8: "report this page" — its own tight limiter, never the read budget.
+router.post('/:code/report',   rl.verifyReport, c.reportVerification)
 // Embeddable live status badge — image/svg+xml, cacheable, no view count.
 router.get('/:code/badge.svg', c.getBadge)
 // The same badge as a PNG — for e-mail signatures, LinkedIn and anywhere SVG is not displayed.

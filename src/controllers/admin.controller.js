@@ -418,6 +418,15 @@ async function adminSetVerification(ctx) {
   // ROUND-5 AUDIT FIX (feature gap, Section 7): a takedown (or restore) of someone's public
   // credential left no record of who did it or when. Logged only when the row actually changed.
   if (changed) await logAdminAction(ctx, supabase, action === 'revoke' ? 'verification.revoke' : 'verification.restore', 'scan', scanId, {})
+  // ROUND-8: revoking a page settles the reports waiting on it. Best-effort: the revoke itself already happened.
+  if (changed && action === 'revoke') {
+    try {
+      const { error: repErr } = await supabase.from('verification_reports')
+        .update({ status: 'ACTIONED', reviewed_at: new Date().toISOString(), reviewed_by: ctx.get('user')?.id || null })
+        .eq('code', scan.verification_code).eq('status', 'OPEN')
+      if (repErr) console.error('adminSetVerification: could not close reports:', repErr.message)
+    } catch (err) { console.error('adminSetVerification: could not close reports:', err.message) }
+  }
   return ctx.json({ success: true, data: { changed, verificationStatus: action === 'revoke' ? 'REVOKED' : 'ACTIVE' } })
 }
 
@@ -677,8 +686,61 @@ async function adminElevate(ctx) {
   return ctx.json({ success: true, data: { elevationToken: minted.token, expiresInSeconds: minted.expiresInSeconds } })
 }
 
+// ── Verification reports (Verify round 8, migration 0073) ─────────────────────
+const REPORT_STATUSES = ['OPEN', 'ACTIONED', 'DISMISSED']
+
+// GET /api/admin/verification-reports?status=OPEN|ACTIONED|DISMISSED&page=&pageSize=
+// Reports a reader sent from a public verification page, newest first, each with the CURRENT state of the
+// page it names so the admin can revoke it from the same list.
+async function adminListVerificationReports(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const asked = String(ctx.req.query('status') || 'OPEN').toUpperCase()
+  const status = REPORT_STATUSES.includes(asked) ? asked : 'OPEN'
+  const { data, error, count } = await supabase.from('verification_reports')
+    .select('id, code, reason, details, reporter_email, status, created_at, reviewed_at', { count: 'exact' })
+    .eq('status', status).order('created_at', { ascending: false }).range(from, to)
+  if (error) throw error
+  const rows = data || []
+  const pages = new Map()
+  const codes = [...new Set(rows.map(r => r.code))]
+  if (codes.length) {
+    const { data: scans, error: scanErr } = await supabase.from('scans')
+      .select('id, verification_code, verification_status, verification_revoked_reason').in('verification_code', codes)
+    if (scanErr) throw scanErr
+    for (const s of scans || []) pages.set(s.verification_code, s)
+  }
+  return ctx.json({ success: true, meta: { page, pageSize, total: count || 0 }, data: rows.map(r => {
+    const s = pages.get(r.code)
+    return {
+      id: r.id, code: r.code, reason: r.reason, details: r.details, reporterEmail: r.reporter_email, status: r.status,
+      createdAt: r.created_at, reviewedAt: r.reviewed_at,
+      scanId: s ? s.id : null,
+      // 'GONE' = the page was deleted since (its code is a tombstone now).
+      pageStatus: s ? s.verification_status : 'GONE',
+      pageRevokedReason: s ? s.verification_revoked_reason : null,
+    }
+  }) })
+}
+
+// PATCH /api/admin/verification-reports/:id  { status: 'ACTIONED' | 'DISMISSED' }
+async function adminReviewVerificationReport(ctx) {
+  const parsed = z.object({ status: z.enum(['ACTIONED', 'DISMISSED']) }).safeParse(await ctx.req.json().catch(() => null))
+  if (!parsed.success) return ctx.json({ success: false, message: 'status must be ACTIONED or DISMISSED.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const id = ctx.req.param('id')
+  const { data, error } = await supabase.from('verification_reports')
+    .update({ status: parsed.data.status, reviewed_at: new Date().toISOString(), reviewed_by: ctx.get('user')?.id || null })
+    .eq('id', id).select('id')
+  if (error) throw error
+  if (!data || data.length === 0) return ctx.json({ success: false, message: 'Report not found.' }, 404)
+  await logAdminAction(ctx, supabase, 'verification.report_reviewed', 'verification_report', id, { status: parsed.data.status })
+  return ctx.json({ success: true, data: { id, status: parsed.data.status } })
+}
+
 module.exports = {
   adminElevate,
+  adminListVerificationReports, adminReviewVerificationReport,
   adminBackfillPdfHashes,
   adminRequeueFix,
   adminDashboardStats,

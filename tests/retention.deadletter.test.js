@@ -67,7 +67,7 @@ describe('purgeOldLogs / clearExpiredTokens', () => {
   it('runRetention runs every step and never throws', async () => {
     const db = createFakeSupabase(() => ({ data: [], error: null }))
     const r = await runRetention({ RESUMES_BUCKET: { delete: async () => {} } }, db, NOW)
-    expect(Object.keys(r).sort()).toEqual(['anon', 'applications', 'leads', 'logs', 'staleLeads', 'tokens'])
+    expect(Object.keys(r).sort()).toEqual(['anon', 'applications', 'leads', 'logs', 'reports', 'staleLeads', 'tokens'])
   })
 })
 

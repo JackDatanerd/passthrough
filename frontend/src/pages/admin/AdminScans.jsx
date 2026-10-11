@@ -10,6 +10,7 @@ import { formatDate, statusLabel, scoreColor } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
 import useLatestRequest from '../../hooks/useLatestRequest'
+import VerificationReports from './VerificationReports'
 
 const PAGE_SIZE = 25
 const STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
@@ -101,6 +102,8 @@ export default function AdminScans() {
   return (
     <div className="flex flex-col gap-6">
       <h1 className="text-2xl font-bold text-gray-900">Scans</h1>
+
+      <VerificationReports onChanged={load} />
 
       <div className="flex items-end gap-4 flex-wrap">
         <Select label="Status" value={status} onChange={e => setStatus(e.target.value)} wrapperClassName="w-56">

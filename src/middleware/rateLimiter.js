@@ -398,6 +398,15 @@ const verifyRead = makeLimiter({
   ipBits: 48   // bucket a whole /48, not a /64 — see rateKeyIp
 })
 
+// Verify round 8: the public "report this page" form. Writes a row (and may e-mail the owner), so it is far
+// tighter than a read: 5 per hour per /48. Its own bucket, so a reader who reports a page is never locked out
+// of opening one, and a flood of reports can never spend the read budget.
+const verifyReport = makeLimiter({
+  windowSeconds: 60 * 60, max: 5, keyPrefix: 'rl:vreport',
+  message: msg('Too many reports from your network. Please wait a while.'),
+  ipBits: 48
+})
+
 // GAP CLOSED (cross-cutting infra round 1, G6): the anonymous scan allowance was keyed on the IP
 // alone, at ANON_SCANS_PER_HOUR (1). On mobile CGNAT — many unrelated visitors behind one carrier
 // address, which is most of this product's audience — that meant ONE person per carrier IP per hour
@@ -976,7 +985,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, statsRead, outcomeWrite, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
-  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, isBypassed,
+  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS

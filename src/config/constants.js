@@ -11,7 +11,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 72,
+  EXPECTED_SCHEMA_VERSION: 73,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -147,6 +147,12 @@ module.exports = {
   // code is the only capability guarding a page's optional .docx/PDF download (a full
   // resume with contact details), so 30 bits was too small to leave unguarded.
   VERIFY_CODE_LENGTH: 10,
+  // Verify round 8: superseded file fingerprints kept per page (resume_hash_history). Every owner edit adds one; the
+  // old cap of 20 let the FIRST file a candidate emailed fall off after twenty edits, and a reader holding it then read
+  // "not an exact copy of anything Passthrough issued". ~100 bytes each, so 200 is ~20 KB of jsonb at the very most.
+  MAX_HASH_HISTORY: 200,
+  // Verify round 8: how long a public "report this page" row (it can hold a reporter's e-mail) is kept.
+  VERIFY_REPORT_RETENTION_DAYS: 180,
   SHORT_CODE_CHARS:  'ABCDEFGHJKLMNPQRSTUVWXYZ23456789',
   // Short-lived emailed links that act on the account itself (pending email-change confirmation).
   EMAIL_TOKEN_EXPIRY_HOURS: 1,

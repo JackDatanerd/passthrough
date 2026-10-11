@@ -2309,9 +2309,9 @@ async function grantFixCreditOnce(env, supabase, scan, round, why) {
 function nextHashHistory(scan) {
   const history = Array.isArray(scan.resumeHashHistory) ? [...scan.resumeHashHistory] : []
   if ((scan.resumeHash || scan.resumePdfHash) &&
-      !history.some(h => h.docx === (scan.resumeHash || null) && h.pdf === (scan.resumePdfHash || null)))
+      !history.some(h => h && h.docx === (scan.resumeHash || null) && h.pdf === (scan.resumePdfHash || null)))
     history.push({ docx: scan.resumeHash || null, pdf: scan.resumePdfHash || null, at: scan.verifiedAt || scan.fixGeneratedAt || null })
-  return history.slice(-20)
+  return history.slice(-c.MAX_HASH_HISTORY)
 }
 
 // Best-effort removal of objects the row no longer points at. Runs only AFTER

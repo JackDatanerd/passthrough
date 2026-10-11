@@ -51,13 +51,52 @@ function cleanNotes(input) {
   return String(input ?? '').replace(NOTE_CONTROL_CHARS, '').replace(INVISIBLE_FILLER, '').replace(DIRECTIONAL_MARKS, '').trim()
 }
 
+// Titles and credentials that open a name on a resume ("Dr. Priya Patel", "Eng. John Kamau",
+// "CPA Jane Doe"). They are not a first name, and the PUBLIC verification page prints the first token
+// under "Passthrough Verified" and in the link preview.
+//  * HONORIFICS_ANY: unmistakable with or without a dot.
+//  * HONORIFICS_DOTTED: also real given names or surnames elsewhere ("Eng Hock", "Hon Gil-dong", "Er Wei",
+//    "Pastor", "Md Rahman"), so they are only a title when written as an abbreviation ("Eng.", "Hon.").
+const HONORIFICS_ANY = new Set([
+  'mr', 'mrs', 'ms', 'miss', 'mx', 'mister', 'madam', 'madame', 'mme', 'mlle', 'herr', 'frau', 'sra', 'srta',
+  'dr', 'prof', 'professor', 'engr', 'cpa', 'cfa', 'pmp', 'mba', 'phd', 'esq',
+])
+const HONORIFICS_DOTTED = new Set(['eng', 'ing', 'er', 'hon', 'rev', 'revd', 'fr', 'sr', 'capt', 'col', 'maj', 'gen', 'lt'])
+const isHonorific = tok => {
+  const key = String(tok).toLowerCase().replace(/[.,]+/g, '')
+  return HONORIFICS_ANY.has(key) || (HONORIFICS_DOTTED.has(key) && /\.,?$/.test(tok))
+}
+
+// "JOHN" / "O'BRIEN" -> "John" / "O'Brien". Only a token that is ALL capitals (three or more letters) is
+// touched, so "McDonald", "DeShawn" and "J." are left exactly as written.
+function softenAllCaps(tok) {
+  // Initials ('J.R.') and two-letter tokens ('JR', 'DJ') are not shouting: they keep their capitals.
+  if (tok.includes('.') || [...tok].filter(ch => /\p{L}/u.test(ch)).length < 3) return tok
+  if (tok !== tok.toLocaleUpperCase() || tok === tok.toLocaleLowerCase()) return tok
+  return tok.toLocaleLowerCase().replace(/(^|[-'\u2019])(\p{L})/gu, (_, sep, ch) => sep + ch.toLocaleUpperCase())
+}
+
 // The first word of a name, cleaned — what the PUBLIC verification page shows. Null when there is
 // no real word (so the page falls back to "no name" instead of a blank or a reordered heading).
+//   * "Last, First" (a comma inside the first word) -> the word after the comma;
+//   * leading titles / credentials are skipped ("Dr. Priya Patel" -> "Priya"); a value that is ONLY
+//     titles (a stored "Dr.") is no name at all;
+//   * a stored surname-first leftover ("Doe,") cannot be turned back into a first name -> null.
 function firstNameOf(input) {
   // A parsed resume can hand back anything (an object stringifies to letters): only text counts.
   if (typeof input !== 'string') return null
-  const first = cleanName(input).split(' ')[0] || ''
-  return hasSubstance(first) ? first : null
+  let text = cleanName(input)
+  const firstWord = text.split(' ')[0] || ''
+  const comma = firstWord.indexOf(',')
+  if (comma !== -1) {
+    text = text.slice(text.indexOf(',') + 1).trim()
+    if (!text) return null
+  }
+  const tokens = text.split(' ').filter(Boolean)
+  let i = 0
+  while (i < tokens.length && isHonorific(tokens[i])) i++
+  const first = (tokens[i] || '').replace(/,+$/, '')
+  return hasSubstance(first) ? softenAllCaps(first) : null
 }
 
 // ROUND-6 AUDIT FIX (bug, Section 7): firstNameOf kept ANY single token, however long and whatever it

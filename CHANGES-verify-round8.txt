@@ -1,0 +1,35 @@
+Verify (Section 7) — round 8 (fresh independent pass)
+
+APPLY: run supabase/migrations/0073_verification_reports.sql BEFORE deploying the code (the report endpoint and the
+admin reports list answer 500 until the table exists; nothing else is affected). EXPECTED_SCHEMA_VERSION is now 73.
+
+BUGS
+B1 (medium) lib/text.js firstNameOf/publicFirstName: the first space-separated token of the resume name became the
+   public "first name", so "Dr. Priya Patel" / "Eng. John Kamau" / "CPA Jane Doe" / "Doe, Jane" printed "Dr." / "Eng." /
+   "CPA" / "Doe," under "Passthrough Verified" and in the link-preview title. Now: leading titles and credentials are
+   skipped ("Eng Hock", "Hon Gil-dong", "Er Wei", "Md Rahman" are real names and stay names unless written as an
+   abbreviation with a dot); "Last, First" yields First; an ALL-CAPS name of 3+ letters is title-cased (initials such
+   as "J.R." are left alone); a stored value that is only a title ("Dr.", "Doe,") is hidden when the page is read, which
+   covers pages issued before this fix. Reaches scan.controller.js through candidateFirstNameFrom (7 call sites).
+B2 (low-medium) scan.controller.js nextHashHistory kept only the last 20 superseded fingerprints, and every owner edit
+   adds one, so after ~20 edits the FIRST file the candidate emailed fell off and a reader holding it read "not an exact
+   copy of anything Passthrough issued" (page) / "no match" (/check). Cap is now constants.MAX_HASH_HISTORY = 200; the
+   history read is also null-entry safe.
+B3 (trivial) NOT CHANGED: the link-preview Function holds a page's name for up to 60s per data center and social
+   platforms hold an unfurl far longer; neither can be purged from the Worker. "Hide my name" still takes effect on the
+   page, the API and the next un-cached preview immediately.
+
+FEATURE GAP (closed)
+- "Report a problem" was only a mailto: link. POST /api/verify/:code/report now stores the report (verification_reports,
+  0073): reason FAKE | WRONG | MINE | OTHER, optional note (<=1000, control characters stripped) and optional reply
+  e-mail, a one-way hash of the reporter's /48 + UA (one OPEN report per page per network; a repeat is absorbed and
+  answered the same), honeypot, Turnstile when configured, its own limiter (5/hour per /48, rl:vreport), and one owner
+  alert per page per day. Unknown code 404, revoked 410, removed 410.
+- Admin Scans page: an "Open verification reports" panel (hidden when empty) with Revoke page / Mark done / Dismiss;
+  GET /api/admin/verification-reports and PATCH /api/admin/verification-reports/:id (audit-logged); revoking a page
+  closes its open reports as ACTIONED.
+- Retention: reports are purged after 180 days (constants.VERIFY_REPORT_RETENTION_DAYS); Privacy page says so.
+- Verify.jsx: the footer link opens an in-page form; the mailto stays as "or email support".
+
+TESTS: tests/verify.round8.test.js, frontend/tests/pages/Verify.round8.test.jsx,
+frontend/tests/pages/AdminVerificationReports.test.jsx; retention.deadletter.test.js key list gains 'reports'.

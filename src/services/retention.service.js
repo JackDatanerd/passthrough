@@ -180,19 +180,33 @@ async function purgeRejectedPartnerApplications(supabase, now = Date.now()) {
   }
 }
 
+// Public "report this verification page" rows (Verify round 8). They can hold a reporter's e-mail address
+// and free text, so they do not live forever: every status is purged after VERIFY_REPORT_RETENTION_DAYS.
+async function purgeOldVerifyReports(supabase, now = Date.now()) {
+  try {
+    const { data, error } = await supabase.from('verification_reports').delete()
+      .lt('created_at', new Date(now - c.VERIFY_REPORT_RETENTION_DAYS * DAY).toISOString()).select('id')
+    if (error) return { deleted: 0, error: error.message }
+    return { deleted: (data || []).length }
+  } catch (err) {
+    return { deleted: 0, error: err.message }
+  }
+}
+
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads, staleLeads, applications] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads, applications, reports] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
     purgeArchivedLeads(supabase, now, { suppress: !!env && String(env.ARCHIVED_LEAD_PURGE_SUPPRESSES).toLowerCase() === 'true', env }),
     purgeStaleUnconfirmedLeads(supabase, now),
     purgeRejectedPartnerApplications(supabase, now),
+    purgeOldVerifyReports(supabase, now),
   ])
-  return { anon, logs, tokens, leads, staleLeads, applications }
+  return { anon, logs, tokens, leads, staleLeads, applications, reports }
 }
 
 module.exports = {
-  runRetention, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
+  runRetention, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
   REJECTED_APPLICATION_RETENTION_DAYS, EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }
