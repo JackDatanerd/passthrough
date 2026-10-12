@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useLocation } from 'react-router-dom'
 import api from '../lib/api'
+import { getToken } from '../lib/storage'
 import { ATTRIBUTION_WINDOW_DAYS } from '../lib/partnerTerms'
 
 const STORAGE_KEY = 'passthrough_referral_code'
@@ -61,8 +62,27 @@ function readStored() {
   return parsed.code
 }
 
-function writeStored(code) {
-  storageSet(JSON.stringify({ code, capturedAt: Date.now() }))
+// The full stored record (code, capturedAt, source) while it is still inside the window; null otherwise.
+function readStoredRecord() {
+  if (!readStored()) return null
+  try { return JSON.parse(storageGet()) } catch (_) { return null }
+}
+
+// Round 10: `source` records HOW the code got here — 'link' (a ?ref= URL), 'typed' (the checkout field) or 'account'
+// (restored from the signed-in account on another device). It rides along to checkout so the admin can see which sales
+// came from a shared link and which from a typed code. Older stored values have none.
+const SOURCES = new Set(['link', 'typed', 'account'])
+function writeStored(code, source = 'link', capturedAt = Date.now()) {
+  storageSet(JSON.stringify({ code, capturedAt, source }))
+}
+
+// Round 10 (feature gap): the code lived ONLY in this browser, so a visitor who clicked a partner's link on a phone and
+// bought on a laptop — or cleared site data, or switched in-app browsers — was never credited. For a signed-in person the
+// code is also kept on their ACCOUNT (users.referred_by_code, migration 0076). Best-effort and silent: a failed sync only
+// means the code stays browser-local, exactly as before.
+function syncToAccount(code) {
+  if (!getToken()) return
+  api.post('/partners/attribution', { code: code || null }).catch(() => {})
 }
 
 // Codes captured synchronously (see getStoredReferralCode) whose click has not been logged
@@ -99,7 +119,7 @@ function trackClick(code) {
   // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
   // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
   api.post('/partners/track-click', { code })
-    .then(res => { if (res?.data?.valid === false) rejectCode(code) })
+    .then(res => { if (res?.data?.valid === false) rejectCode(code); else syncToAccount(code) })
     .catch(() => {})
 }
 // The last location.search the synchronous capture looked at. It runs ONCE per distinct
@@ -182,6 +202,34 @@ export function getStoredReferralCode() {
 // the same attribution window).
 export function setStoredReferralCode(code) {
   const trimmed = (code || '').trim().toUpperCase()
-  if (trimmed) writeStored(trimmed)
+  if (trimmed) writeStored(trimmed, 'typed')
   else storageRemove()
+  // Removing the code on purpose must also clear it on the account, or it would be restored on the next sign-in.
+  syncToAccount(trimmed)
+}
+
+// How the stored code got here ('link' | 'typed' | 'account'), or '' when there is none / it predates this field.
+export function getStoredReferralSource() {
+  captureFromLocationNow()
+  const rec = readStoredRecord()
+  return rec && SOURCES.has(rec.source) ? rec.source : ''
+}
+
+// Called when a session is established or refreshed (AuthContext). Reconciles the browser's code with the account's,
+// last click winning, in both directions:
+//   - no code here, the account has a live one      -> adopt it (source 'account', its original timestamp)
+//   - both, and the account's is newer              -> adopt the account's
+//   - both differ and the browser's is newer / only the browser has one -> push the browser's to the account
+export function restoreReferralFromAccount(user) {
+  try {
+    const accountCode = user?.referredByCode ? String(user.referredByCode).toUpperCase() : ''
+    const accountAt = user?.referredAt ? Date.parse(user.referredAt) : NaN
+    const accountLive = !!accountCode && Number.isFinite(accountAt) && Date.now() - accountAt <= ATTRIBUTION_TTL_MS
+    const local = readStoredRecord()
+    if (accountLive && (!local || (local.code !== accountCode && accountAt > local.capturedAt))) {
+      if (!rejectedThisSession.has(accountCode)) writeStored(accountCode, 'account', accountAt)
+      return
+    }
+    if (local && local.code !== accountCode) syncToAccount(local.code)
+  } catch (_) { /* attribution is best-effort */ }
 }

@@ -2,6 +2,7 @@ const { Hono } = require('hono')
 const admin = require('../middleware/adminOnly')
 const rl    = require('../middleware/rateLimiter')
 const validateUuidParam = require('../middleware/validateUuidParam')
+const auth  = require('../middleware/auth')
 const c     = require('../controllers/partners.controller')
 
 const router = new Hono()
@@ -18,10 +19,16 @@ router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
 router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
 router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 // Round 6: every conversion, paged (the dashboard itself only carries the latest 50).
-router.get( '/conversions',    rl.partnerRead,  c.getPartnerConversions)
+// Round 10: the CSV export (?export=1) pages through this route up to 50 times; it has its own bucket so exporting a
+// long history cannot spend the dashboard's read budget.
+router.get( '/conversions',    (ctx, next) => (ctx.req.query('export') === '1' ? rl.partnerExport : rl.partnerRead)(ctx, next), c.getPartnerConversions)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 // Round 7: "I lost my link" — mails the read-only dashboard link to the address on file (own limiter bucket).
 router.post('/recover-links', rl.partnerRecover, c.recoverPartnerLinks)
+// Round 10: "reset my links" — replaces BOTH links and mails the new ones to the address on file (never returned).
+router.post('/reset-links', rl.partnerReset, c.resetMyPartnerLinks)
+// Round 10: a signed-in person's referral attribution, kept on the account so it survives a device switch / cleared storage.
+router.post('/attribution', auth, rl.referralAttribution, c.setMyReferralAttribution)
 // Round 5: the partner's own email preference (per-sale emails on/off).
 router.post('/notifications', rl.partnerPrefs, c.updatePartnerNotifications)
 // Round 8: record acceptance of the current terms version (either partner token). Same light bucket as the prefs switch.
@@ -39,11 +46,12 @@ router.post('/apply', rl.partnerApply, c.applyAsPartner)
 // Admin — application review. Registered BEFORE the '/:id' routes below so
 // 'applications' is never parsed as a partner id.
 router.get( '/applications',                    admin, c.adminListApplications)
-router.post('/applications/:id/approve',        admin, validateUuidParam(), c.adminApproveApplication)
+// STEP-UP (round 10): approving mints a partner (email + commission rate + payout link), same as creating one below.
+router.post('/applications/:id/approve',        admin, admin.stepUp, validateUuidParam(), c.adminApproveApplication)
 router.post('/applications/:id/reject',         admin, validateUuidParam(), c.adminRejectApplication)
 
 // Admin only
-router.post( '/',                          admin, c.adminCreatePartner)
+router.post( '/',                          admin, admin.stepUp, c.adminCreatePartner)
 router.get(  '/',                          admin, c.adminListPartners)
 // Round 5: cross-partner views. Registered BEFORE '/:id' so these literals are never
 // parsed as a partner id.
@@ -79,7 +87,10 @@ router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam
 // Round 8: manual ledger adjustment (clawback / write-off / bonus). It moves money, so it needs the same
 // step-up as recording or voiding a payout.
 router.post( '/:id/adjustments',          admin, admin.stepUp, validateUuidParam(), c.adminAdjustLedger)
-router.post( '/:id/referral-codes',        admin, validateUuidParam(), c.adminCreateReferralCode)
-router.patch('/referral-codes/:codeId',    admin, validateUuidParam('codeId'), c.adminUpdateReferralCode)
+// STEP-UP (round 10): a code's tier prices decide what a buyer pays and what the partner earns on it, so setting or changing
+// them is a money decision like the commission rate above. Switching a code off / changing its limit or expiry stays one click.
+const priceEdit = admin.stepUpWhen(body => !!body && body.tierPrices !== undefined)
+router.post( '/:id/referral-codes',        admin, priceEdit, validateUuidParam(), c.adminCreateReferralCode)
+router.patch('/referral-codes/:codeId',    admin, priceEdit, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 
 module.exports = router

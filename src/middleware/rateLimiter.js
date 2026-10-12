@@ -822,6 +822,25 @@ const partnerRecover = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerrecover',
   message: msg('Too many requests. Please wait a few minutes.')
 })
+// Round 10: the partner's own "reset my links" button (POST /api/partners/reset-links). Rotating a bearer credential is
+// rare; per IP, tight, and its own bucket so it can never spend a payout-details save.
+const partnerReset = makeLimiter({
+  windowSeconds: 60 * 60, max: 3, keyPrefix: 'rl:partnerreset',
+  message: msg('Too many requests. Please wait a while before trying again.')
+})
+// Round 10: the conversions CSV export pages through GET /partners/conversions 200 rows at a time (up to 50 pages), which
+// shared the 30-per-5-minutes `partnerRead` bucket with the dashboard itself — a partner with a long history exhausted
+// it mid-export and was then locked out of their own dashboard. The paged export route gets a roomier bucket of its own.
+const partnerExport = makeLimiter({
+  windowSeconds: 5 * 60, max: 90, keyPrefix: 'rl:partnerexport',
+  message: msg('Too many requests. Please wait a few minutes.')
+})
+// Round 10: a signed-in person syncing their stored referral code to their account (POST /api/partners/attribution).
+const referralAttribution = makeLimiter({
+  windowSeconds: 5 * 60, max: 30, keyPrefix: 'rl:refattr',
+  keyBy: byAccount,
+  message: msg('Too many requests. Please wait a moment.')
+})
 const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
@@ -1079,7 +1098,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
-  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
+  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS

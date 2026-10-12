@@ -22,6 +22,7 @@ const AUTH_USER_COLUMNS = [
   'pending_email', 'pending_email_expiry', 'notify_scan_results', 'notify_outcome_followup', 'deleted_at', 'scans_today', 'free_fix_credits', 'scans_day_reset',
   'terms_accepted_at', 'terms_version',
   'last_login_at', 'last_login_ip', 'previous_login_at', 'previous_login_ip',
+  'referred_by_code', 'referred_at',
   'created_at', 'updated_at',
 ].join(', ')
 

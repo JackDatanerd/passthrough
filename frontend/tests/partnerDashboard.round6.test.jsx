@@ -89,13 +89,13 @@ describe('CSV export', () => {
     fireEvent.click(await screen.findByRole('button', { name: /download csv/i }))
     await waitFor(() => expect(csv.calls).toHaveLength(1))
     const urls = api.get.mock.calls.map(c => c[0]).filter(u => u.startsWith('/partners/conversions'))
-    expect(urls).toEqual(['/partners/conversions?limit=200&offset=0', '/partners/conversions?limit=200&offset=200'])
+    expect(urls).toEqual(['/partners/conversions?limit=200&offset=0&export=1', '/partners/conversions?limit=200&offset=200&export=1'])   // round 10: the export has its own rate-limit bucket
     const [filename, rows] = csv.calls[0]
     expect(filename).toMatch(/^passthrough-conversions-\d{4}-\d{2}-\d{2}\.csv$/)
-    expect(rows[0]).toEqual(['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Note', 'Currency'])
+    expect(rows[0]).toEqual(['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency'])
     expect(rows).toHaveLength(1 + 201)
-    expect(rows.at(-1)).toEqual(['2026-09-15', 'COACH20', 'Refund reversal', -10, '20%', -2, 'Reversal', '', 'USD'])
-    expect(rows[1].slice(2)).toEqual(['Sale', 10, '20%', 2, 'Pending', '', 'USD'])
+    expect(rows.at(-1)).toEqual(['2026-09-15', 'COACH20', 'Refund reversal', -10, '20%', -2, 'Reversal', '', '', 'USD'])
+    expect(rows[1].slice(2)).toEqual(['Sale', 10, '20%', 2, 'Pending', '', '', 'USD'])
   })
 
   it('a failed export says so and writes nothing', async () => {

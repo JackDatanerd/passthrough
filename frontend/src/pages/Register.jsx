@@ -14,6 +14,7 @@ import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/Turnstile
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { passwordProblem } from '../lib/passwordRules'
+import { getStoredReferralCode } from '../hooks/useReferralCapture'
 import { usePricing } from '../hooks/usePricing'
 import { FREE_SCANS_PER_DAY } from '../lib/scoreThresholds'
 
@@ -72,7 +73,7 @@ export default function Register() {
     if (TURNSTILE_ENABLED && !captcha) return fail('Please complete the security check below.')
     try {
       await execute(async () => {
-        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true, turnstileToken: captcha || undefined })
+        const res = await api.post('/auth/register', { name: name.trim(), email: email.trim(), password, acceptTerms: true, turnstileToken: captcha || undefined, referralCode: getStoredReferralCode() || undefined })
         const { token, user } = res.data.data
         const scanId = await postRegisterActions(token, user)
         // A pending anon scan still wins — it's a specific piece of work the

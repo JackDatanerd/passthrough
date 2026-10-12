@@ -84,6 +84,8 @@ const initializeSchema = z.object({
   scanId:       z.string().regex(UUID_RE),
   fixTier:      z.enum(['FIX', 'BADGE', 'FIX_PLAIN']),
   referralCode: z.string().nullable().optional(),
+  // Round 10 (partners, migration 0076): how the code reached checkout. Lenient like referralCode: anything else is dropped.
+  referralSource: z.enum(['link', 'typed', 'account']).nullable().optional().catch(undefined),
 })
 
 // POST /api/payments/initialize
@@ -431,7 +433,9 @@ async function initializePayment(c2) {
     referral_code:         finalPriced.referralCode?.code || null,
     // Only present when a slot is actually held, so a payment with no
     // reservation inserts exactly the pre-0044 row shape.
-    ...(reservationId ? { referral_reservation_id: reservationId } : {})
+    ...(reservationId ? { referral_reservation_id: reservationId } : {}),
+    // Round 10 (0076): kept only when a code actually priced this checkout.
+    ...(finalPriced.referralCode && parsed.data.referralSource ? { referral_source: parsed.data.referralSource } : {})
   })
   // AUDIT FIX (bug): Paystack has ALREADY been successfully initialized for
   // this reference at this point — every other critical failure in this

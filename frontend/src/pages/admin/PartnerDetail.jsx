@@ -86,7 +86,7 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
           if the transfer really went out, recover it from {partner.name} separately. The commission this payout
           settled becomes owed again and will appear in their next payout.
         </p>
-        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={300} />
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={1000} />
         <Checkbox label={`Email ${partner.name} that this record was corrected`} checked={notify} onChange={e => setNotify(e.target.checked)} />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
@@ -280,8 +280,8 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
             ))}
           </div>
         </div>
-        <Input label="Website / channel" value={website} maxLength={300} onChange={e => setWebsite(e.target.value)} />
-        <Input label="Audience" value={audience} maxLength={300} onChange={e => setAudience(e.target.value)} />
+        <Input label="Website / channel" value={website} maxLength={1000} onChange={e => setWebsite(e.target.value)} />
+        <Input label="Audience" value={audience} maxLength={1000} onChange={e => setAudience(e.target.value)} />
         <Textarea label="Internal notes (admin only)" rows={3} maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}
           hint="Never shown to the partner. Removed if their personal data is erased." />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
@@ -305,6 +305,17 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
   const [amount, setAmount] = useState(pending !== 0 ? String(Math.abs(pending) / 100) : '')
   const [reason, setReason] = useState('')
   const [notify, setNotify] = useState(true)
+  // Round 10: a PARTIAL refund reverses nothing automatically (the ledger reverses whole sales), so the admin claws back the
+  // commission on the refunded part by hand — and used to do the multiplication themselves. rate x refunded amount, rounded the
+  // way the ledger rounds a commission.
+  const [refundAmount, setRefundAmount] = useState('')
+  const rate = Number(partner.commissionRate)
+  const refundValue = Number(refundAmount)
+  const refundCommissionCents = Number.isFinite(rate) && Number.isFinite(refundValue) && refundValue > 0 ? Math.round(refundValue * 100 * rate) : 0
+  function useRefundCalc() {
+    setDirection('deduct'); setAmount((refundCommissionCents / 100).toFixed(2))
+    if (!reason.trim()) setReason('Commission on a partial refund')
+  }
   const { loading, error, execute } = useApi()
 
   function writeOff() {
@@ -352,6 +363,14 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
             Fill in the amount that brings the balance to zero
           </button>
         )}
+        <div className="flex items-end gap-2 flex-wrap" data-testid="partial-refund-calc">
+          <Input label={`Partial refund of a sale (${partner.currency || 'USD'}) — optional`} type="number" step="0.01" min="0" value={refundAmount} onChange={e => setRefundAmount(e.target.value)} />
+          {refundCommissionCents > 0 && (
+            <button type="button" onClick={useRefundCalc} className="text-xs text-blue-600 hover:underline pb-2">
+              Claw back {formatCents(refundCommissionCents, partner.currency)} ({+(rate * 100).toFixed(2)}% of it)
+            </button>
+          )}
+        </div>
         <Textarea label="Reason (the partner sees this)" rows={3} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
           placeholder="e.g. Self-referral through a second account" />
         <Checkbox label="Email the partner about this adjustment" checked={notify} onChange={e => setNotify(e.target.checked)} />
@@ -527,6 +546,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
   const [fixPlain, setFixPlain] = useState('')
   const [usageLimit, setUsageLimit] = useState('')
   const [expiresAt, setExpiresAt] = useState('')
+  const [confirmLow, setConfirmLow] = useState(false)
   const { loading: saving, error, execute } = useApi()
 
   async function handleCreate() {
@@ -549,11 +569,13 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
         // createReferralCodeSchema's expiresAt is optional but NOT
         // nullable — omit the key entirely rather than send null when no
         // date was picked.
-        ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {})
+        ...(expiresAt ? { expiresAt: dateToExpiresAt(expiresAt) } : {}),
+        ...(confirmLow ? { confirmLowPrice: true } : {})
       }), { fallback: 'Failed to create code.' })
       toast(res?.partnerPaused
         ? { message: `Code ${cleanCode.toUpperCase()} created, but ${partner.name} is PAUSED — it won't apply or earn until they're reactivated, and no email was sent.`, type: 'warning' }
         : { message: `Code ${cleanCode.toUpperCase()} created — ${partner.name} has been emailed.`, type: 'success' })
+      for (const w of res?.warnings || []) toast({ message: w, type: 'warning' })
       onCreated()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -576,6 +598,12 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
             onChange={e => setExpiresAt(e.target.value)} />
         </div>
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        {/* Round 10: the server refuses a tier price far below the standard price (a missing zero) until it is confirmed. */}
+        {error && /far below/.test(error) && (
+          <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="confirm-low-price">
+            <Checkbox label="Yes, these prices are intentional — tick this, then submit again." checked={confirmLow} onChange={e => setConfirmLow(e.target.checked)} />
+          </div>
+        )}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Create & notify</Button>
@@ -597,6 +625,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
   const [fixPlain, setFixPlain] = useState(tp.FIX_PLAIN != null ? (tp.FIX_PLAIN / 100).toFixed(2) : '')
   const [usageLimit, setUsageLimit] = useState(codeRow.usageLimit != null ? String(codeRow.usageLimit) : '')
   const [expiresAt, setExpiresAt] = useState(expiresAtToDateInput(codeRow.expiresAt))
+  const [confirmLow, setConfirmLow] = useState(false)
   const { loading: saving, error, execute } = useApi()
 
   async function handleSave() {
@@ -620,8 +649,9 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     }
 
     try {
-      await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
+      const res = await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
         tierPrices,
+        ...(confirmLow ? { confirmLowPrice: true } : {}),
         usageLimit: usageLimit ? Number(usageLimit) : null,
         // updateReferralCodeSchema's expiresAt is nullable — unlike create,
         // an explicit null here is how an admin clears an existing
@@ -629,6 +659,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         ...(expiresChanged ? { expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null } : {})
       }), { fallback: 'Failed to update code.' })
       toast({ message: `Code ${codeRow.code} updated.`, type: 'success' })
+      for (const w of res?.warnings || []) toast({ message: w, type: 'warning' })
       onSaved()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -652,6 +683,12 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
             onChange={e => setExpiresAt(e.target.value)} />
         </div>
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        {/* Round 10: the server refuses a tier price far below the standard price (a missing zero) until it is confirmed. */}
+        {error && /far below/.test(error) && (
+          <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="confirm-low-price">
+            <Checkbox label="Yes, these prices are intentional — tick this, then submit again." checked={confirmLow} onChange={e => setConfirmLow(e.target.checked)} />
+          </div>
+        )}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Save</Button>
@@ -885,6 +922,24 @@ function ConversionsTab({ partner }) {
           cell: l => formatCents(l.commissionAmountCents, l.currency || partner.currency),
         },
         {
+          // Round 10: how the code reached checkout — a shared link, typed by the buyer, or restored from their account.
+          key: 'source',
+          header: 'Source',
+          cellClassName: 'text-xs text-gray-500',
+          cell: l => ({ link: 'Link', typed: 'Typed code', account: 'Account' }[l.attributionSource] || '—'),
+        },
+        {
+          // Round 10: which payout settled the row (its paid date), so a payout can be traced back to its sales.
+          key: 'payout',
+          header: 'Payout',
+          cellClassName: 'text-xs text-gray-500',
+          cell: l => {
+            if (!l.payoutId) return '—'
+            const po = (partner.payouts || []).find(p => p.id === l.payoutId)
+            return po ? formatDate(po.paidAt || po.createdAt) : 'Paid'
+          },
+        },
+        {
           key: 'status',
           header: 'Status',
           cell: l => (
@@ -947,7 +1002,7 @@ function RemoveDataModal({ partner, onClose, onRemoved }) {
           both links stop working, their codes are switched off, and their applications are deleted. Past payouts keep their amounts and
           dates, with the account reduced to the bank or provider and last four digits, and the emails and alerts we sent about them are deleted. It is refused while any commission is still owed - settle it, or write it off with Adjust balance first.
         </p>
-        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={300} />
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={1000} />
         <Input label={`Type "${partner.name}" to confirm`} value={typed} onChange={e => setTyped(e.target.value)} />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">

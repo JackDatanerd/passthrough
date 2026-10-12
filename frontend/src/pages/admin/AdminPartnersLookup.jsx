@@ -33,7 +33,7 @@ export function OverviewStrip() {
   )
   return (
     <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-4" data-testid="partners-overview">
-      {cell('Owed to partners', formatCents(o.owedCents, o.currency), 'Unpaid commission, net of refund credits')}
+      {cell('Owed to partners', formatCents(o.owedCents, o.currency), o.creditCents > 0 ? `Per partner; ${formatCents(o.creditCents, o.currency)} of refund credit is held against future sales` : 'Unpaid commission, summed per partner')}
       {cell('Paid out to date', formatCents(o.paidOutCents, o.currency), 'Voided payouts excluded')}
       {cell('Lifetime commission', formatCents(o.lifetimeCommissionCents, o.currency))}
       {cell('Applications waiting', o.pendingApplications, `${o.activePartners} active of ${o.partners} partners`)}
@@ -71,8 +71,9 @@ function CodeLookup() {
   const [q, setQ] = useState('')
   const [debounced, setDebounced] = useState('')
   const [offset, setOffset] = useState(0)
+  const [activeFilter, setActiveFilter] = useState('')   // '' | 'true' | 'false' (round 10: the server always supported it)
   useEffect(() => { const t = setTimeout(() => { setDebounced(q.trim()); setOffset(0) }, 300); return () => clearTimeout(t) }, [q])
-  const { rows, total, loading, error } = usePagedFetch('/partners/codes', { q: debounced || undefined, limit: PAGE, offset })
+  const { rows, total, loading, error } = usePagedFetch('/partners/codes', { q: debounced || undefined, active: activeFilter || undefined, limit: PAGE, offset })
   return (
     <div className="flex flex-col gap-3">
       <Input size="sm" type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a referral code…" aria-label="Find a referral code"
@@ -144,15 +145,20 @@ function PayoutsLog() {
   const [offset, setOffset] = useState(0)
   const [includeVoided, setIncludeVoided] = useState(false)
   const [exporting, setExporting] = useState(false)
-  const params = { limit: PAGE, offset, ...(includeVoided ? { includeVoided: 'true' } : {}) }
+  // Round 10: "what did we pay in September?" — the server filtered on from/to all along; the page never sent them. A bare
+  // date is inclusive of the whole day (the server treats a date-only `to` as end of day).
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const range = { ...(from ? { from } : {}), ...(to ? { to } : {}) }
+  const params = { limit: PAGE, offset, ...(includeVoided ? { includeVoided: 'true' } : {}), ...range }
   const { rows, total, loading, error } = usePagedFetch('/partners/payouts', params)
 
   async function exportAll() {
     setExporting(true)
     try {
       const out = [['Paid at', 'Partner', 'Email', 'Method', 'Amount', 'Currency', 'Commission settled', 'Period start', 'Period end', 'Status', 'Note', 'Internal note']]
-      for (let from = 0; ; from += 200) {
-        const r = await api.get('/partners/payouts', { params: { limit: 200, offset: from, ...(includeVoided ? { includeVoided: 'true' } : {}) } })
+      for (let page = 0; ; page += 200) {
+        const r = await api.get('/partners/payouts', { params: { limit: 200, offset: page, ...(includeVoided ? { includeVoided: 'true' } : {}), ...range } })
         for (const p of r.data.data) out.push([
           p.paidAt || p.createdAt, p.partnerName || '', p.partnerEmail || '', p.payoutMethod || '',
           (p.amountCents || 0) / 100, p.currency, p.settledCommissionCents != null ? p.settledCommissionCents / 100 : '',
@@ -169,6 +175,15 @@ function PayoutsLog() {
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-4 flex-wrap text-sm">
         <Checkbox label="Show voided" checked={includeVoided} onChange={e => { setIncludeVoided(e.target.checked); setOffset(0) }} />
+        <label className="flex items-center gap-2 text-gray-600">From
+          <input type="date" value={from} max={to || undefined} onChange={e => { setFrom(e.target.value); setOffset(0) }} aria-label="Paid from"
+            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex items-center gap-2 text-gray-600">To
+          <input type="date" value={to} min={from || undefined} onChange={e => { setTo(e.target.value); setOffset(0) }} aria-label="Paid to"
+            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+        </label>
+        {(from || to) && <button type="button" onClick={() => { setFrom(''); setTo(''); setOffset(0) }} className="text-xs text-gray-400 hover:text-gray-600">Clear dates</button>}
         <Button size="sm" variant="secondary" loading={exporting} onClick={exportAll}>Export CSV</Button>
       </div>
       {loading && <Spinner />}

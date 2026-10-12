@@ -1,0 +1,60 @@
+Partners / referral program — Section 4, round 10 (fresh independent audit; feature gaps closed AND bugs fixed)
+
+Files in section: partners.controller/routes, referral.service, badge.service, PartnerDashboard.jsx, PartnerPayoutDetails.jsx,
+admin/AdminPartners.jsx (+ AdminPartnersLookup, PartnerDetail), useReferralCapture.js. Cross-section files touched are listed at the end.
+
+DEPLOY ORDER: apply migration 0079 BEFORE deploying the Worker (auth reads users.referred_by_code on every request;
+EXPECTED_SCHEMA_VERSION is now 79).
+
+FEATURE GAPS CLOSED
+G1  Attribution lived only in the browser: a click on a phone + purchase on a laptop, cleared site data, or an in-app browser
+    that blocks storage was never credited. Migration 0079 adds users.referred_by_code / referred_at. register accepts an optional
+    referralCode; POST /api/partners/attribution (signed in, own limiter) stores/clears it; the SPA restores it into its own
+    store on sign-in/refresh (last click wins, 30-day window, deliberate removal also clears the account). Quotes and checkout
+    still use ONE code path (the client's), so a quote can never drift from the charge.
+G2  Referral-code price guardrails: tier prices were free-typed cents ($49 typed as 49 gave a $0.49 product). A price below
+    REFERRAL_MIN_PRICE_PCT (default 10) % of the STANDARD price is refused (PRICE_TOO_LOW) until confirmLowPrice; a price not below
+    standard returns a warning. Admin UI shows the refusal with an "intentional" confirmation.
+G3  Partner self-serve "Reset my links" (POST /partners/reset-links): rotates both links, emails the new ones to the address on file
+    only, never returns them, undoes the swap if the email fails, owner is told. Dashboard button with a confirm step.
+G4  Payout statement: each payout on the partner dashboard has "Sales in this payout" (GET /partners/conversions?payoutId=). Conversion
+    rows carry payoutId; the CSV gains a "Paid on" column; payouts show the sales period.
+G5  Notices: owner alert when one code converts >= REFERRAL_VELOCITY_ALERT (default 10, 0 = off) times in an hour (KV-deduped daily);
+    partner email when a limited code reaches its limit (once); partner email 7 days before a code expires (hourly sweep, once per
+    expiry date, re-armed when extended).
+G6  Admin cross-partner views: payouts log date range (from/to) and codes active/inactive filter (the server supported both; the UI
+    never sent them). Overview reports refund credit separately.
+G7  Attribution source: payments.referral_source / commission_ledger.attribution_source ('link' | 'typed' | 'account'), shown in the
+    admin ledger next to each conversion, with a Payout column (which payout settled the row).
+G8  Partial-refund helper in Adjust balance: rate x refunded amount, one click to claw back.
+G9  Terms accepted through the READ-ONLY dashboard token now send a confirmation email to the address on file.
+G10 Step-up (when ADMIN_STEP_UP_MINUTES is set) on the remaining credential/price routes: create partner, approve application, and
+    referral-code create/update when tierPrices are set.
+
+BUGS FIXED
+B1  Overview "Owed to partners" netted one partner's refund credit against OTHER partners' balances; now per partner max(0, net),
+    credit reported separately.
+B2  Payout recording put every ledger id in a PostgREST URL (.in('id', ...)): a partner with a few hundred unpaid rows failed with a 500
+    AFTER the money was sent. All three id lists are chunked.
+B3  Admin payouts `to=2026-09-30` excluded everything paid on the 30th; a date-only `to` is now end of day.
+B4  Batch ('ready') and ad hoc payouts stored no period; they now take it from the sales they settle.
+B5  Partner edit allowed audience 300 chars while the application allowed 1000 (an approved application could not be re-saved);
+    both 1000, UI maxLength too.
+B6  Dashboard commissionRate was the raw numeric string; now a Number.
+B7  The CSV export walk shared the 30-per-5-min dashboard bucket and could lock the partner out of their own dashboard; it has its own
+    bucket (?export=1).
+
+CROSS-SECTION FILES (small, intentional)
+ - payments.controller.js: accepts referralSource, stores payments.referral_source when a code priced the checkout.
+ - auth.controller.js (register), mappers.js, authUser.js, constants.js (EXPECTED_SCHEMA_VERSION 79), rateLimiter.js (3 buckets),
+   email.service.js + templates/emails.js (4 senders, 1 template), reconcile.service.js (expiry sweep), AuthContext.jsx, Register.jsx,
+   ScanResult.jsx.
+ - tests: partners.round6/8 and email.registry updated for the new routes/senders; partnerDashboard.round6 for the export URL/column.
+
+NOT BUILT (deliberate)
+ - Payout account-name verification (needs a bank-code picker and a live external API that cannot be tested here).
+ - Sub-IDs / UTM / QR assets per partner (needs a new data model).
+
+TESTS: tests/partners.round10.test.js (new, 24), frontend/tests/partnersRound10.test.jsx (new, 10).
+Pre-existing failures NOT from this change: tests/rateLimiter.test.js historyPurge (Profile section), frontend sharedFrontend.section11.round7d
+(raw checkbox in AdminLeads.jsx). Local runs of frontend tests need the duplicate frontend/node_modules/react(-dom) moved aside.

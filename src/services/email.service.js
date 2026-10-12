@@ -84,6 +84,8 @@ const RECIPIENT_LIMITS = {
   partner_payout_link_self: { max: 4, windowSeconds: 3600, refundOnFailure: 8 },
   // Round 7: the public "I lost my link" form mails an address typed by anyone, so it is capped per recipient.
   partner_links_recovery: { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
+  // Round 10: the partner's own "reset my links" button mails an address on file, so it is capped per recipient.
+  partner_links_self_reset: { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   password_reset:        { max: 3, windowSeconds: 3600, refundOnFailure: 6 },
   welcome:                { max: 2, windowSeconds: 24 * 3600 },
   anon_scan_result:       { max: 3, windowSeconds: 3600 },
@@ -562,6 +564,38 @@ async function sendPartnerDashboardLinkRegenerated(env, supabase, email, name, d
   })
 }
 
+// Round 10: the partner reset both links from their dashboard. Both new links, to the address on file only.
+async function sendPartnerLinksSelfReset(env, supabase, email, name, dashboardUrl, payoutUrl) {
+  return send(env, supabase, email, 'Your Passthrough partner links were reset', 'partner_links_self_reset', {
+    NAME: name, DASHBOARD_URL: dashboardUrl, PAYOUT_URL: payoutUrl
+  })
+}
+
+// Round 10: a code hit its usage limit / is about to expire — the partner used to find out only when a buyer
+// reported the code "not working". Generic template, own wording.
+async function sendPartnerCodeLimitReached(env, supabase, email, name, code, limit) {
+  return send(env, supabase, email, `Your referral code ${code} has reached its limit`, 'partner_status_changed', {
+    NAME: name, HEADING: `${code} has reached its usage limit`,
+    BODY: `your referral code ${code} has been used ${limit} time${limit === 1 ? '' : 's'}, which is its limit, so it no longer applies a discount to new checkouts. Sales already made are unaffected. If you'd like it extended or a new code, reply to this email.`
+  })
+}
+async function sendPartnerCodeExpiring(env, supabase, email, name, code, expiresAtIso) {
+  const when = new Date(expiresAtIso).toISOString().slice(0, 10)
+  return send(env, supabase, email, `Your referral code ${code} expires soon`, 'partner_status_changed', {
+    NAME: name, HEADING: `${code} expires on ${when}`,
+    BODY: `your referral code ${code} stops applying its discount after ${when} (UTC). Links you've already shared will stop giving buyers a discount then. If you'd like it extended, reply to this email.`
+  })
+}
+
+// Round 10: accepting the terms via the READ-ONLY dashboard link records a legal acceptance on a bearer token alone.
+// The partner gets a confirmation at the address on file, so an acceptance they did not make is visible to them.
+async function sendPartnerTermsAccepted(env, supabase, email, name, version) {
+  return send(env, supabase, email, 'You accepted the Passthrough Partner Program terms', 'partner_status_changed', {
+    NAME: name, HEADING: 'Partner Program terms accepted',
+    BODY: `we recorded your acceptance of the Partner Program terms (version ${version}). If that wasn't you, reply to this email right away so we can reset your links.`
+  })
+}
+
 // Round 7: the partner asked (public form) for their dashboard link back. Read-only link only.
 async function sendPartnerLinksRecovery(env, supabase, email, name, dashboardUrl) {
   return send(env, supabase, email, 'Your Passthrough partner dashboard link', 'partner_links_recovery', {
@@ -979,6 +1013,7 @@ module.exports = {
   sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,
   sendVerificationReported,
+  sendPartnerLinksSelfReset, sendPartnerCodeLimitReached, sendPartnerCodeExpiring, sendPartnerTermsAccepted,
   sendPaymentReceipt, sendPaymentReversed,
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,

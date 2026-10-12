@@ -54,6 +54,9 @@ function userRowToCamel(row) {
     previousLoginAt:       row.previous_login_at ?? null,
     previousLoginIp:       row.previous_login_ip ?? null,
     lastLoginAlertAt:      row.last_login_alert_at ?? null,
+    // Round 10 (migration 0076): the partner code this person arrived with (restored into the SPA's attribution store on sign-in).
+    referredByCode:        row.referred_by_code ?? null,
+    referredAt:            row.referred_at ?? null,
     createdAt:             row.created_at,
     updatedAt:             row.updated_at
   }
@@ -214,6 +217,7 @@ function paymentRowToCamel(row) {
     fixTier:             row.fix_tier,
     referralCodeId:      row.referral_code_id,
     referralCode:        row.referral_code,
+    referralSource:      row.referral_source ?? null,
     // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
     // (migrations 0024/0025) were missing here, same latent-drop shape as
     // fix_tier/referral_code above — no current caller of paymentRowToCamel
@@ -401,6 +405,8 @@ function commissionLedgerRowToCamel(row) {
     reversalReason:        row.reversal_reason ?? null,
     // Migration 0069: 'SALE' (original or reversal) or 'ADJUSTMENT' (manual admin entry, no payment/code).
     kind:                  row.kind ?? 'SALE',
+    // Migration 0076: how the code reached checkout — 'link' | 'typed' | 'account' (null before the migration).
+    attributionSource:     row.attribution_source ?? null,
     adjustmentReason:      row.adjustment_reason ?? null,
     createdBy:             row.created_by ?? null,
     // Migration 0046: false while the referral code's usage count has not yet been credited for this row.

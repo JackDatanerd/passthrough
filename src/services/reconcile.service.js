@@ -205,6 +205,8 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
   // pruneReferralCodeReservations. Runs even when nothing is stale, never
   // throws, never affects this sweep's own result.
   await referralService.pruneReferralCodeReservations(supabase, { now })
+  // Round 10: partners hear (once) that a code expires within a week. Same hourly cadence, never throws.
+  try { await referralService.sweepExpiringCodes?.(supabase, env) } catch (_) {}
 
   result.checked = stale?.length || 0
   if (!result.checked) return result

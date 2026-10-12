@@ -55,6 +55,7 @@ function setup(o = {}) {
     'services/email.service.js': {
       sendOwnerAlert: async () => {},
       sendPartnerBalanceAdjusted: async (...a) => { st.emails.push(['adjusted', a[4], a[5], a[6]]); return o.emailOk ?? true },
+      sendPartnerTermsAccepted: async () => true,
       sendPartnerTermsUpdate: async (...a) => { st.emails.push(['terms', a[2]]); return o.termsMailOk ? o.termsMailOk(a[2]) : true },
       sendPartnerStatusChanged: async () => true, sendPartnerRateChanged: async () => true,
       sendPartnerLinkRegenerated: async () => true, sendPartnerEmailChanged: async () => true,

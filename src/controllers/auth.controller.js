@@ -401,7 +401,7 @@ function passwordEmailProblem(password, email) {
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
-  const { name, email, password, turnstileToken } = z.object({
+  const { name, email, password, turnstileToken, referralCode } = z.object({
     // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for — or
     // recorded — acceptance of the Terms/Privacy Policy. Required now, and
     // stored with the version accepted so a later terms change can tell who
@@ -415,6 +415,9 @@ async function register(c) {
     name:     nameSchema,
     email:    signupEmailSchema,
     turnstileToken: z.string().max(2048).nullish(),
+    // Partners round 10: the partner code the visitor arrived with (stored on the account so attribution survives a device
+    // switch). Lenient — a bad or unknown code never blocks sign-up; it is just not stored.
+    referralCode: z.string().max(100).nullish().catch(undefined),
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
     // that is quietly ignored with no error, giving false confidence in
@@ -464,6 +467,15 @@ async function register(c) {
   }
   if (error) throw error
   const user = userRowToCamel(row)
+
+  // Partners round 10 (migration 0076): remember the referral code on the new account. Best-effort and AFTER the insert, so
+  // nothing about it can fail a sign-up; a code that cannot apply (unknown, expired, the partner's own address) is simply not stored.
+  if (referralCode) {
+    try {
+      const out = await require('../services/referral.service').setUserAttribution(supabase, { id: user.id, email: user.email }, referralCode)
+      if (out.stored) { user.referredByCode = out.code; user.referredAt = new Date().toISOString() }
+    } catch (e) { console.error('register referral attribution (ignored):', e.message) }
+  }
 
   // Send both emails without delaying the response — but MUST be wrapped in
   // waitUntil(), not truly fire-and-forget. Once this function returns its

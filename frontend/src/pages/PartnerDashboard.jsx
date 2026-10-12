@@ -258,9 +258,9 @@ function CycleRow({ cycle, currency }) {
 // N" with no way to see the rest or keep a record. "Load more" pages through GET /partners/conversions (newest first);
 // "Download CSV" walks every page and writes one row per conversion or refund reversal.
 const CSV_PAGE = 200
-const CSV_MAX_PAGES = 25   // 5,000 rows; the endpoint is rate limited (30 reads per 5 minutes)
+const CSV_MAX_PAGES = 25   // 5,000 rows; the export has its own rate-limit bucket (90 reads per 5 minutes)
 
-function ConversionsSection({ token, initial, total, currency }) {
+function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   const [extra, setExtra] = useState([])
   const [loadingMore, setLoadingMore] = useState(false)
   const [exporting, setExporting] = useState(false)
@@ -271,10 +271,12 @@ function ConversionsSection({ token, initial, total, currency }) {
   const known = typeof total === 'number' ? total : loaded.length
   const more = known > loaded.length
 
-  async function fetchPage(offset, limit) {
-    const res = await api.get(`/partners/conversions?limit=${limit}&offset=${offset}`, partnerAuth(token))
+  // `export=1` puts the CSV walk in its own rate-limit bucket (round 10) so a long export cannot lock the dashboard out.
+  async function fetchPage(offset, limit, exportMode = false) {
+    const res = await api.get(`/partners/conversions?limit=${limit}&offset=${offset}${exportMode ? '&export=1' : ''}`, partnerAuth(token))
     return res.data
   }
+  const paidOnById = new Map(payouts.map(p => [p.id, p.paidAt]))
 
   async function loadMore() {
     setLoadingMore(true); setError('')
@@ -291,13 +293,13 @@ function ConversionsSection({ token, initial, total, currency }) {
     try {
       const rows = []
       for (let page = 0; page < CSV_MAX_PAGES; page++) {
-        const out = await fetchPage(page * CSV_PAGE, CSV_PAGE)
+        const out = await fetchPage(page * CSV_PAGE, CSV_PAGE, true)
         rows.push(...(out.data || []))
         if ((out.data || []).length < CSV_PAGE) break
       }
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
       downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
-        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Note', 'Currency'],
+        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency'],
         ...unique.map(r => [
           String(r.createdAt || '').slice(0, 10), r.code || '',
           r.isAdjustment ? 'Adjustment' : r.isReversal ? 'Refund reversal' : 'Sale',
@@ -305,6 +307,7 @@ function ConversionsSection({ token, initial, total, currency }) {
           r.commissionRate == null ? '' : `${+(r.commissionRate * 100).toFixed(2)}%`,
           (r.commissionAmountCents || 0) / 100,
           r.isReversal ? 'Reversal' : r.paid ? 'Paid' : 'Pending',
+          r.paid && paidOnById.get(r.payoutId) ? String(paidOnById.get(r.payoutId)).slice(0, 10) : '',
           r.isAdjustment ? (r.adjustmentReason || '') : '',
           currency || '',
         ]),
@@ -379,6 +382,85 @@ function PayoutDetailsAccess({ token, scope, children, className }) {
   )
 }
 
+// Round 10 (feature gap): a payout showed only a date and an amount, so a partner could not reconcile what they were paid
+// against the sales behind it. "Sales in this payout" lists exactly the ledger rows that payout settled (refund credits
+// netted into it show as negative lines) and totals them.
+function PayoutStatement({ token, payout, currency }) {
+  const [state, setState] = useState('loading')   // loading | ready | error
+  const [rows, setRows] = useState([])
+  useEffect(() => {
+    let alive = true
+    ;(async () => {
+      try {
+        const all = []
+        for (let offset = 0; offset < 2000; offset += 200) {
+          const res = await api.get(`/partners/conversions?payoutId=${encodeURIComponent(payout.id)}&limit=200&offset=${offset}`, partnerAuth(token))
+          all.push(...(res.data.data || []))
+          if ((res.data.data || []).length < 200) break
+        }
+        if (alive) { setRows(all); setState('ready') }
+      } catch (_) { if (alive) setState('error') }
+    })()
+    return () => { alive = false }
+  }, [token, payout.id])
+  const total = rows.reduce((sum, r) => sum + (r.commissionAmountCents || 0), 0)
+  return (
+    <div className="mt-2 bg-gray-50 border border-gray-200 rounded-md px-3 py-2" data-testid="payout-statement">
+      {state === 'loading' && <p className="text-xs text-gray-500">Loading…</p>}
+      {state === 'error' && <p role="alert" className="text-xs text-red-600">Could not load the sales for this payout — please try again.</p>}
+      {state === 'ready' && rows.length === 0 && <p className="text-xs text-gray-500">No itemised sales are linked to this payout (it may be an ad hoc or bonus payment).</p>}
+      {state === 'ready' && rows.length > 0 && (
+        <>
+          <ul className="flex flex-col gap-1">
+            {rows.map(r => (
+              <li key={r.id} className="text-xs text-gray-700 flex justify-between gap-3">
+                <span>{formatDate(r.createdAt)}{r.code ? ` · ${r.code}` : ''}{r.isAdjustment ? ' · adjustment' : r.isReversal ? ' · refund' : ''}</span>
+                <span className={r.commissionAmountCents < 0 ? 'text-red-600' : ''}>{fmtCents(r.commissionAmountCents, currency)}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs font-medium text-gray-900 mt-2 flex justify-between"><span>Commission settled by this payout</span><span>{fmtCents(total, currency)}</span></p>
+        </>
+      )}
+    </div>
+  )
+}
+
+// Round 10 (feature gap): reset both links yourself. The new links are emailed to the address on file only.
+function ResetLinks({ token }) {
+  const [state, setState] = useState('idle')   // idle | confirm | sending | sent | error
+  const [message, setMessage] = useState('')
+  async function reset() {
+    setState('sending'); setMessage('')
+    try {
+      const res = await api.post('/partners/reset-links', {}, partnerAuth(token))
+      setMessage(res.data?.message || 'Done — check your email for your new links.'); setState('sent')
+    } catch (err) {
+      setMessage(err?.response?.data?.message || 'Could not reset your links — please try again in a few minutes.'); setState('error')
+    }
+  }
+  return (
+    <div className="mt-4 bg-white border border-gray-200 rounded-md px-4 py-3" data-testid="reset-links">
+      <p className="text-sm font-medium text-gray-900">Think your link leaked?</p>
+      <p className="text-xs text-gray-500 mb-2">Reset your dashboard and payout links. The old ones stop working immediately and the new ones are emailed to the address we have on file.</p>
+      {state === 'sent' ? (
+        <p className="text-sm text-green-700" role="status">{message} This page's link no longer works.</p>
+      ) : state === 'confirm' || state === 'sending' || state === 'error' ? (
+        <div className="flex items-center gap-3 flex-wrap">
+          <button type="button" onClick={reset} disabled={state === 'sending'}
+            className="text-sm text-red-600 hover:underline disabled:opacity-50 disabled:no-underline">
+            {state === 'sending' ? 'Resetting…' : 'Yes, reset both links'}
+          </button>
+          <button type="button" onClick={() => setState('idle')} disabled={state === 'sending'} className="text-sm text-gray-500 hover:underline">Cancel</button>
+          {state === 'error' && <span role="alert" className="text-xs text-red-600">{message}</span>}
+        </div>
+      ) : (
+        <button type="button" onClick={() => setState('confirm')} className="text-sm text-blue-600 hover:underline">Reset my links</button>
+      )}
+    </div>
+  )
+}
+
 // Round 5: one email per sale is the default; a busy partner can switch those off. Reversal,
 // payout and account emails are never suppressed by this.
 function NotificationPrefs({ token, initial }) {
@@ -448,6 +530,7 @@ export default function PartnerDashboard() {
   const [loadError, setLoadError] = useState(false)
   const [data, setData] = useState(null)
   const [termsDone, setTermsDone] = useState(false)
+  const [statementId, setStatementId] = useState(null)   // round 10: which payout's sales are expanded
 
   useEffect(() => {
     if (!token) { setInvalid(true); setLoading(false); return }
@@ -608,7 +691,7 @@ export default function PartnerDashboard() {
               </div>
             )}
 
-            <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} />
+            <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} />
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
             {data.payouts.length === 0 ? (
@@ -616,15 +699,26 @@ export default function PartnerDashboard() {
             ) : (
               <ul className="flex flex-col gap-2">
                 {data.payouts.map(p => (
-                  <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex justify-between">
-                    <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
-                    <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
+                  <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3">
+                    <div className="flex justify-between">
+                      <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
+                      <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
+                    </div>
+                    <div className="flex items-center gap-3 mt-0.5">
+                      {p.periodStart && <span className="text-xs text-gray-400">Sales {formatDate(p.periodStart)} – {formatDate(p.periodEnd)}</span>}
+                      <button type="button" className="text-xs text-blue-600 hover:underline"
+                        onClick={() => setStatementId(id => (id === p.id ? null : p.id))}>
+                        {statementId === p.id ? 'Hide sales' : 'Sales in this payout'}
+                      </button>
+                    </div>
+                    {statementId === p.id && <PayoutStatement token={token} payout={p} currency={p.currency || data.currency} />}
                   </li>
                 ))}
               </ul>
             )}
 
             <NotificationPrefs token={token} initial={data.notifyConversions} />
+            <ResetLinks token={token} />
           </>
         )}
       </main>

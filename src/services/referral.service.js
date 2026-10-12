@@ -381,7 +381,10 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
       commission_rate:         commissionRate,
       commission_amount_cents: commissionAmountCents,
       currency:                payment.currency || (env && env.PAYSTACK_CURRENCY) || c.CURRENCY,
-      usage_counted:           false
+      usage_counted:           false,
+      // Round 10 (0076): how the code reached checkout. Only written when the payment carries one, so a database that
+      // has not run the migration yet (or a payment from before it) inserts exactly the old row shape.
+      ...(payment.referral_source ? { attribution_source: payment.referral_source } : {})
     }).select('id').single())
 
     let ledgerId = ledgerRes.data?.id || null
@@ -459,6 +462,7 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
     // recordConversion's comment) means it stays quiet on a retry, same as
     // notifyConversionFailure just above.
     if (env && !opts.adminRetry) await warnIfOverLimit(supabase, env, codeRow.id)
+    if (env && !opts.adminRetry) await afterConversionNotices(supabase, env, codeRow, partner)
     // AUDIT FIX (Section 3/4 pass, feature gap): a partner gets emailed for
     // every OTHER account-adjacent event this file/partners.controller.js
     // handles — a payout sent, payout details changed, a new code created,
@@ -507,6 +511,95 @@ async function warnIfOverLimit(supabase, env, codeId) {
       `checkouts.\n\n(Further redemptions of this same code are throttled to one alert per day.)`
     )
   } catch (_) {}
+}
+
+// ── Round 10: velocity alert + partner "limit reached" notice ─────────────────────────────────────────────────
+// A code redeemed many times inside an hour is either a great day or abuse (a leaked single-partner code posted to a
+// coupon site, a scripted checkout). Nothing watched for it: the owner saw it only by reading the ledger. Over
+// REFERRAL_VELOCITY_ALERT (default 10, 0 = off) conversions of one code in the last hour, the owner is told once per
+// code per day. The partner is told once when a limited code reaches its limit (otherwise they learn of it from a
+// buyer who says the code stopped working). Both are KV-deduped, best-effort, and never change the conversion result.
+function velocityThreshold(env) {
+  const n = Number(env && env.REFERRAL_VELOCITY_ALERT)
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 10
+}
+async function onceKey(env, key, ttlSeconds) {
+  const kv = env && env.RATE_LIMIT_KV
+  if (!kv) return true                      // no KV (tests / local): allow, the callers are already rare events
+  if (await kv.get(key)) return false
+  await kv.put(key, '1', { expirationTtl: ttlSeconds })
+  return true
+}
+async function afterConversionNotices(supabase, env, codeRow, partner) {
+  try {
+    const threshold = velocityThreshold(env)
+    if (threshold > 0) {
+      const since = new Date(Date.now() - 3600 * 1000).toISOString()
+      const { count, error } = await supabase.from('commission_ledger')
+        .select('id', { count: 'exact', head: true })
+        .eq('referral_code_id', codeRow.id).is('reverses_ledger_id', null).eq('kind', 'SALE').gte('created_at', since)
+      if (!error && (count || 0) >= threshold && await onceKey(env, `referral-velocity-alert:${codeRow.id}`, 24 * 3600)) {
+        const emailService = require('./email.service')
+        await emailService.sendOwnerAlert(env, `Referral code ${codeRow.code} is being redeemed unusually fast`,
+          `code: ${codeRow.code}\nconversions in the last hour: ${count}\nthreshold: ${threshold} (REFERRAL_VELOCITY_ALERT)\n\n` +
+          `Could be a good day — or a code leaked to a coupon site, or scripted checkouts. Review the code's recent ` +
+          `conversions (Admin -> Partners) and deactivate it if it looks wrong. (One alert per code per day.)`)
+      }
+    }
+    const { data: code } = await supabase.from('referral_codes')
+      .select('code, usage_limit, uses_so_far').eq('id', codeRow.id).maybeSingle()
+    if (code && code.usage_limit != null && code.uses_so_far >= code.usage_limit && partner?.email
+        && await onceKey(env, `referral-limit-partner:${codeRow.id}`, 30 * 24 * 3600)) {
+      const emailService = require('./email.service')
+      await emailService.sendPartnerCodeLimitReached(env, supabase, partner.email, partner.name, code.code, code.usage_limit)
+    }
+  } catch (err) {
+    console.error('afterConversionNotices:', err.message)
+  }
+}
+
+// Round 10: partners hear their code is about to expire (the hourly sweep calls this). Once per code, 7 days ahead.
+const EXPIRY_NOTICE_DAYS = 7
+async function sweepExpiringCodes(supabase, env) {
+  const out = { notified: 0 }
+  try {
+    const now = new Date(), horizon = new Date(Date.now() + EXPIRY_NOTICE_DAYS * 86400000)
+    const { data, error } = await supabase.from('referral_codes')
+      .select('id, code, expires_at, partners(name, email, status)')
+      .eq('active', true).gt('expires_at', now.toISOString()).lte('expires_at', horizon.toISOString()).limit(50)
+    if (error) { console.error('sweepExpiringCodes:', error.message); return out }
+    const emailService = require('./email.service')
+    for (const row of data || []) {
+      const p = row.partners
+      if (!p?.email || p.status !== 'ACTIVE') continue
+      // The key carries the expiry date, so extending a code re-arms its notice.
+      if (!(await onceKey(env, `referral-expiry-notice:${row.id}:${String(row.expires_at).slice(0, 10)}`, 30 * 24 * 3600))) continue
+      await emailService.sendPartnerCodeExpiring(env, supabase, p.email, p.name, row.code, row.expires_at).catch(() => {})
+      out.notified++
+    }
+  } catch (err) { console.error('sweepExpiringCodes unexpected:', err.message) }
+  return out
+}
+
+// ── Round 10: remember the code on the ACCOUNT (migration 0076) ────────────────────────────────────────────────
+// Returns { stored: true, code } | { stored: false, reason } | { cleared: true }. Never throws on a bad/unknown code —
+// an attribution that cannot apply is simply not stored, the same rule isCodeUsable gives a checkout.
+const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
+async function setUserAttribution(supabase, user, rawCode) {
+  if (rawCode == null || String(rawCode).trim() === '') {
+    const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null }).eq('id', user.id)
+    if (error) throw error
+    return { cleared: true }
+  }
+  const code = String(rawCode).trim().toUpperCase()
+  if (!CODE_FORMAT_RE.test(code)) return { stored: false, reason: 'format' }
+  const row = await lookupCode(supabase, code)
+  if (!isCodeUsable(row)) return { stored: false, reason: 'unusable' }
+  if (isSelfReferral(row, user.email)) return { stored: false, reason: 'self' }
+  const { error } = await supabase.from('users')
+    .update({ referred_by_code: code, referred_at: new Date().toISOString() }).eq('id', user.id)
+  if (error) throw error
+  return { stored: true, code }
 }
 
 // Owner alert for a conversion that could not be (fully) recorded. Lazy
@@ -563,6 +656,7 @@ module.exports = {
   canonicalEmail,
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable, lookupCode,
+  setUserAttribution, sweepExpiringCodes, afterConversionNotices, isSelfReferral,
   priceForResolvedCode, reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
   countLiveReservations, countOwnLiveReservations,
 }
