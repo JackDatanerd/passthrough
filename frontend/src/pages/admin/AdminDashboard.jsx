@@ -70,9 +70,11 @@ export default function AdminDashboard() {
 
       <div>
         <h2 className="font-semibold text-gray-900 mb-3">Needs attention</h2>
-        {webhookHealth?.available && webhookHealth.paidWithoutEvent > 0 && (
+        {/* Webhooks round 12 (W3): `unrecovered` (round 11) — sales newer than the last charge.success received — not the raw
+            count, so the banner clears when webhooks flow again instead of staying lit for the whole 7-day window. */}
+        {webhookHealth?.available && (webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent) > 0 && (
           <Link to="/admin/webhooks" className="block mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 hover:border-amber-300">
-            {webhookHealth.paidWithoutEvent} paid sale{webhookHealth.paidWithoutEvent === 1 ? ' has' : 's have'} no Paystack webhook on record
+            {webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent} paid sale{(webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent) === 1 ? ' has' : 's have'} no Paystack webhook on record
             (last 7 days) — payments are being settled without webhooks reaching this app. Check the webhook URL and signing key →
           </Link>
         )}

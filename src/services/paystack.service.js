@@ -145,20 +145,62 @@ async function verifyTransaction(env, reference) {
   // json.data.status — ONE level of .data (native fetch, not Axios)
 }
 
-// GET /refund?reference=… — the refunds Paystack has recorded for one transaction. Used by
-// reconcile.service.js's sweepReversedPayments to tell a FULL refund (reverse the sale) from a
-// partial one (leave it, tell a human) when a refund.processed webhook never reached us.
+// GET /refund — the refunds Paystack has recorded for ONE transaction. Used by webhooks.controller (the running
+// refund total), reconcile.service's sweepReversedPayments and refund.service's queueRefund, all of which decide
+// money movement from the SUM / presence of what comes back.
+//
+// WEBHOOKS ROUND 12 (W1/G1): this used to send only `?reference=<ref>`. Paystack's documented List Refunds filter is
+// `transaction` (the transaction's numeric ID) — there is no documented `reference` parameter. A request whose filter
+// is ignored answers with the account's most recent refunds for EVERY customer, and every caller then summed them as
+// if they were this payment's: an unrelated refund could reverse a sale, or block / "already refund" a legitimate one.
+// Now: the transaction ID (given, or resolved from the reference with one verify call) is sent as `transaction`;
+// `reference` is still sent (harmless where it is honoured); `currency` is sent when known; and whatever comes back
+// is filtered so an item that visibly belongs to a DIFFERENT transaction can never be counted
+// (see scopeRefundsToTransaction). When the ID cannot be resolved this THROWS — every caller already fails closed.
 // Each item carries `status` (pending | processing | needs-attention | failed | processed),
 // `amount` (minor units) and `currency`.
-async function listRefunds(env, reference) {
+
+// Which transaction does a refund-list item say it belongs to? { reference, id } — either may be null.
+function refundItemTransaction(item) {
+  const tx = item && item.transaction
+  const reference = [item && item.transaction_reference, tx && typeof tx === 'object' ? tx.reference : null, typeof tx === 'string' && !/^\d+$/.test(tx) ? tx : null]
+    .find(v => typeof v === 'string' && v.length > 0) || null
+  const rawId = tx && typeof tx === 'object' ? tx.id : (typeof tx === 'number' || (typeof tx === 'string' && /^\d+$/.test(tx)) ? tx : null)
+  return { reference, id: rawId == null ? null : String(rawId) }
+}
+
+// Keeps the items that belong to this transaction. An item that names a transaction (by reference or ID) is kept only
+// when that matches; an item that names none is kept (the request itself was scoped by `transaction`).
+function scopeRefundsToTransaction(items, { reference, transactionId = null }) {
+  const wantId = transactionId == null ? null : String(transactionId)
+  return (Array.isArray(items) ? items : []).filter(item => {
+    const t = refundItemTransaction(item)
+    if (t.reference && reference && t.reference !== reference) return false
+    if (t.id && wantId && t.id !== wantId) return false
+    return true
+  })
+}
+
+async function resolveTransactionId(env, reference) {
+  const v = await verifyTransaction(env, reference)
+  const id = v && v.data && v.data.id
+  if (id == null) throw new Error(`Paystack did not return a transaction id for ${reference}`)
+  return id
+}
+
+async function listRefunds(env, reference, { transactionId = null, currency = null } = {}) {
+  const id = transactionId != null ? transactionId : await resolveTransactionId(env, reference)
+  const qs = new URLSearchParams({ transaction: String(id), reference: String(reference) })
+  if (currency) qs.set('currency', String(currency))
+  qs.set('perPage', '50')
   const { res, json } = await paystackRequest(
-    `https://api.paystack.co/refund?reference=${encodeURIComponent(reference)}&perPage=50`,
+    `https://api.paystack.co/refund?${qs.toString()}`,
     { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
     'Paystack refund list'
   )
   if (!res.ok) throw new Error(json?.message || `Paystack refund list returned HTTP ${res.status}`)
   if (!json) throw unreadable('Paystack refund list')
-  return json
+  return { ...json, data: scopeRefundsToTransaction(json.data, { reference, transactionId: id }) }
 }
 
 // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G1): the app could only
@@ -225,4 +267,4 @@ async function listDisputes(env, { from, to, perPage = 100, page = 1 } = {}) {
   return json
 }
 
-module.exports = { initializeTransaction, verifyTransaction, listRefunds, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }
+module.exports = { initializeTransaction, verifyTransaction, listRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

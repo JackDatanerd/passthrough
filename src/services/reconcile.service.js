@@ -488,7 +488,7 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
     try {
       const v = await paystackService.verifyTransaction(env, payment.paystack_ref)
       if (v?.data?.status === 'reversed') {
-        const list = await paystackService.listRefunds(env, payment.paystack_ref)
+        const list = await paystackService.listRefunds(env, payment.paystack_ref, { currency: payment.currency, transactionId: v.data.id ?? null })
         const total = (list?.data || [])
           .filter(r => String(r.status || '').toLowerCase() === 'processed' && (!r.currency || r.currency === payment.currency))
           .reduce((sum, r) => sum + (Number.isFinite(Number(r.amount)) ? Number(r.amount) : 0), 0)

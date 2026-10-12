@@ -221,10 +221,17 @@ const STRIP_KEYS = ['authorization', 'customer', 'log', 'plan', 'subaccount', 's
 const DISPUTE_KEEP = ['id', 'status', 'resolution', 'refund_amount', 'currency', 'category', 'reference', 'transaction_reference', 'due_at', 'resolved_at', 'created_at']
 const DISPUTE_TX_KEEP = ['id', 'reference', 'amount', 'currency']
 const isScalar = v => v != null && typeof v !== 'object'
+// ROUND-12 (W4): Paystack's dispute LIST (what sweepDisputes reads) spells these fields camelCase (dueAt, resolvedAt,
+// createdAt) where the webhook uses snake_case, so a swept dispute lost its deadline and resolution time. Either spelling
+// is kept, under the snake_case name the handlers read.
+const DISPUTE_CAMEL = { due_at: 'dueAt', resolved_at: 'resolvedAt', created_at: 'createdAt' }
 function minimalDisputeEvent(ev) {
   const d = ev.data && typeof ev.data === 'object' ? ev.data : {}
   const data = {}
-  for (const k of DISPUTE_KEEP) if (isScalar(d[k])) data[k] = d[k]
+  for (const k of DISPUTE_KEEP) {
+    if (isScalar(d[k])) data[k] = d[k]
+    else if (DISPUTE_CAMEL[k] && isScalar(d[DISPUTE_CAMEL[k]])) data[k] = d[DISPUTE_CAMEL[k]]
+  }
   if (d.transaction && typeof d.transaction === 'object') {
     const tx = {}
     for (const k of DISPUTE_TX_KEEP) if (isScalar(d.transaction[k])) tx[k] = d.transaction[k]
@@ -446,7 +453,7 @@ async function processChargeSuccess(c, supabase, event) {
 // when it cannot be read (no key, API error) — callers then keep their local total.
 async function paystackRefundTotal(env, payment, { strict = false } = {}) {
   try {
-    const list = await paystackService.listRefunds(env, payment.paystack_ref)
+    const list = await paystackService.listRefunds(env, payment.paystack_ref, { currency: payment.currency })
     return (list?.data || [])
       .filter(r => String(r.status || '').toLowerCase() === 'processed' && (!r.currency || r.currency === payment.currency))
       .reduce((sum, r) => sum + (Number.isFinite(Number(r.amount)) ? Number(r.amount) : 0), 0)
@@ -911,6 +918,11 @@ const DISMISSABLE = ['RECEIVED', 'HELD', 'FAILED']
 // A RECEIVED row this old was not merely in flight: the Worker died mid-event.
 const STUCK_RECEIVED_MS = 15 * 60 * 1000
 
+function isStuckReceived(receivedAt, now = Date.now()) {
+  const t = Date.parse(receivedAt)
+  return Number.isFinite(t) && now - t > STUCK_RECEIVED_MS
+}
+
 // has_event / has_type: whether a payload exists to replay (its top-level key — `event` for Paystack, `type` for
 // Resend) without shipping the payload itself in a list.
 const LIST_COLS_BASE = 'id, provider, event_type, event_key, reference, status, attempts, error, received_at, processed_at, has_event:payload->>event, has_type:payload->>type'
@@ -966,7 +978,9 @@ async function listWebhookEvents(c) {
     // ROUND-7 (B2): Replay only when there is a payload to re-run (non-actionable events keep none).
     replayable: REPLAYABLE.includes(r.status) && !!(r.has_event || r.has_type || r.payload),
     // ROUND-11 (G2): a row that is waiting on a person (or a Worker that died) and may never succeed can be closed by hand.
-    dismissable: DISMISSABLE.includes(r.status),
+    // ROUND-12 (G3): a RECEIVED row is only dismissable once it is stuck (the same 15 minutes the dashboard counts it after);
+    // a fresh one is a delivery still being worked on.
+    dismissable: DISMISSABLE.includes(r.status) && (r.status !== 'RECEIVED' || isStuckReceived(r.received_at)),
   })), meta: { page, pageSize, total: count || 0 } })
 }
 
@@ -1060,9 +1074,11 @@ async function dismissWebhookEvent(c) {
   const note = rawNote.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200)
 
   const { data: row, error } = await supabase.from('webhook_events')
-    .select('id, provider, status, event_type, reference').eq('id', c.req.param('id')).maybeSingle()
+    .select('id, provider, status, event_type, reference, received_at').eq('id', c.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
+  if (row.status === 'RECEIVED' && !isStuckReceived(row.received_at))
+    return c.json({ success: false, message: 'This event was received moments ago and is still being processed — only a RECEIVED event stuck for over 15 minutes can be dismissed.' }, 409)
   if (!DISMISSABLE.includes(row.status))
     return c.json({ success: false, message: `This event is ${row.status} — only FAILED, HELD or stuck RECEIVED events can be dismissed.` }, 409)
 
@@ -1366,6 +1382,12 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         `Paystack reports this dispute as ACCEPTED for only part of the payment (the charge.dispute.resolve webhook did not arrive, so this was found by the sweep). ` +
         `The payment was left as it is: decide in Admin → Payments (Reverse if the whole sale should come back, Clear dispute if it should count again). Emailed once a week per dispute.`, `${n.reference}:dispute-partial`)
     }
+    // ROUND-12 (G2): a dispute the sweep could not process used to reach only the console — the one recovery for a lost
+    // dispute webhook failing, with Paystack's 16-hour auto-accept clock running, paged nobody. One summary, at most every 6 hours.
+    if (result.failed.length && await alertAllowed(env, 'webhook-alert-cooldown:dispute-sweep-failed', 6 * 3600))
+      alert(c, `Dispute sweep could not process ${result.failed.length} dispute(s)`,
+        `The hourly dispute sweep found these disputes on Paystack but the handler failed, so this app has NOT caught up with them (Paystack auto-accepts an unanswered dispute after about 16 hours). It retries every hour; if it keeps failing, fix the cause (see the error) or handle them in Admin → Payments:\n\n` +
+        result.failed.map(f => `${f.reference}  ${f.error || 'unknown error'}`).join('\n') + `\n\nEmailed at most every 6 hours.`, 'dispute-sweep-failed')
     if (result.actioned.length) console.error(`[CRITICAL] dispute sweep caught up with ${result.actioned.length} dispute(s) the webhooks did not deliver`)
     if (result.actioned.length && await alertAllowed(env, 'webhook-alert-cooldown:dispute-sweep', 6 * 3600))
       alert(c, `Dispute sweep: ${result.actioned.length} dispute(s) the webhook never delivered`,

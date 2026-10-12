@@ -113,6 +113,7 @@ describe('route wiring (infra round 6)', () => {
     ['PATCH',  '/users/:id'],
     ['PATCH',  '/scans/:id/verification'],
     ['POST',   '/scans/:id/requeue-fix'],
+    ['POST',   '/webhook-events/:id/replay'],
     ['POST',   '/webhook-events/:id/dismiss'],
     ['DELETE', '/email-suppressions'],
   ])('admin %s %s needs step-up', (m, p) => { expect(has(adminRoutes, m, p, admin.stepUp)).toBe(true) })
@@ -128,7 +129,7 @@ describe('route wiring (infra round 6)', () => {
   it('routine admin writes stay one click (no step-up on moderation or a single lead\'s status)', () => {
     expect(has(adminRoutes, 'POST', '/stories/:id/moderate', admin.stepUp)).toBe(false)
     expect(has(leadRoutes, 'PATCH', '/:id', admin.stepUp)).toBe(false)
-    expect(has(adminRoutes, 'POST', '/webhook-events/:id/replay', admin.stepUp)).toBe(false)
+    // (Replay was listed here until webhooks round 12 (W2): it re-runs a stored event, which can reverse a sale or clear a dispute — money actions — so it now needs step-up like Dismiss.)
   })
 
   it('the QR endpoints have their own limiter', () => {

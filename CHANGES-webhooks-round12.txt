@@ -1,0 +1,19 @@
+Webhooks — round 12 (fresh independent audit; repo HEAD 44187a3)
+
+W1/G1  paystack.service.listRefunds: Paystack's List Refunds filters by `transaction` (ID), not `reference`.
+       Now resolves the transaction ID (one verifyTransaction call, or reuses the caller's ID), queries
+       /refund?transaction=<id>&reference=<ref>[&currency]&perPage=50, and drops any returned refund that names a
+       different transaction. Prevents another sale's refunds being summed into this payment. No migration.
+       Callers: webhooks.controller (paystackRefundTotal), reconcile.service (reuses verify ID), refund.service.
+W2     POST /admin/webhook-events/:id/replay now requires admin step-up (as Dismiss already did).
+       NOTE: deliberately overrides infra round 6's "replay is routine" decision; its test was updated.
+W3     AdminDashboard banner counts webhookHealth.unrecovered (falls back to paidWithoutEvent for older APIs),
+       so it no longer cries wolf for sales already covered by a later charge.success.
+W4     minimalDisputeEvent reads Paystack's camelCase dueAt/resolvedAt/createdAt when snake_case is absent,
+       so swept disputes carry their respond-by deadline.
+G2     Dispute sweep pages the admin (6h throttle) when it cannot process disputes.
+G3     A RECEIVED webhook event is only dismissable once stuck > 15 min; dismiss returns 409 otherwise
+       (stops dismissing an event that is mid-processing).
+
+Tests: tests/webhooks.round12.test.js (new), tests/paystack.service.test.js, tests/crossCutting.round6.test.js,
+       frontend/tests/pages/AdminDashboard.round12.test.jsx (new).

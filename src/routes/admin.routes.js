@@ -42,7 +42,9 @@ router.post('/scans/:id/requeue-fix', admin.stepUp, validateUuidParam(), c.admin
 router.get('/webhook-events', wh.listWebhookEvents)
 router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
-router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
+// Webhooks round 12 (W2): a Replay re-runs the stored event, which can reverse a sale or clear a dispute — the same actions
+// /payments/:ref/resolve and /refund put behind step-up — so it needs the same password confirmation.
+router.post('/webhook-events/:id/replay', admin.stepUp, validateUuidParam(), wh.replayWebhookEvent)
 router.post('/webhook-events/:id/dismiss', admin.stepUp, validateUuidParam(), wh.dismissWebhookEvent)
 
 // Customer stories: nothing reaches the public homepage until approved here.

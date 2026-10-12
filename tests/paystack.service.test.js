@@ -113,16 +113,45 @@ describe('verifyTransaction', () => {
 })
 
 describe('listRefunds', () => {
-  it('GETs /refund for ONE transaction (reference URL-encoded) with the secret key', async () => {
-    mockFetch(200, { status: true, data: [{ status: 'processed', amount: 2900, currency: 'USD' }] })
-    const result = await listRefunds(env, 'ref with spaces')
-    expect(global.fetch.mock.calls[0][0]).toBe('https://api.paystack.co/refund?reference=ref%20with%20spaces&perPage=50')
-    expect(global.fetch.mock.calls[0][1].headers.Authorization).toBe('Bearer sk_test_123')
+  // Round 12 (W1): scoped by the transaction ID (Paystack's documented filter), resolved with one verify call.
+  function mockSeq(...responses) {
+    let i = 0
+    global.fetch = vi.fn(async () => { const r = responses[Math.min(i++, responses.length - 1)]; return { ok: r.status < 300, status: r.status, json: async () => r.json } })
+  }
+  it('resolves the transaction id, then GETs /refund filtered by it (plus reference and currency), with the secret key', async () => {
+    mockSeq({ status: 200, json: { status: true, data: { id: 4099, status: 'success' } } },
+            { status: 200, json: { status: true, data: [{ status: 'processed', amount: 2900, currency: 'USD', transaction: 4099 }] } })
+    const result = await listRefunds(env, 'ref with spaces', { currency: 'USD' })
+    expect(global.fetch.mock.calls[0][0]).toBe('https://api.paystack.co/transaction/verify/ref%20with%20spaces')
+    expect(global.fetch.mock.calls[1][0]).toBe('https://api.paystack.co/refund?transaction=4099&reference=ref+with+spaces&currency=USD&perPage=50')
+    expect(global.fetch.mock.calls[1][1].headers.Authorization).toBe('Bearer sk_test_123')
     expect(result.data[0].amount).toBe(2900)
+  })
+  it('skips the verify call when the transaction id is already known', async () => {
+    mockFetch(200, { status: true, data: [] })
+    await listRefunds(env, 'ref-1', { transactionId: 77 })
+    expect(global.fetch).toHaveBeenCalledTimes(1)
+    expect(global.fetch.mock.calls[0][0]).toContain('transaction=77')
+  })
+  it('DROPS refunds that name a different transaction (an ignored filter must not leak other customers\' refunds)', async () => {
+    mockFetch(200, { status: true, data: [
+      { id: 1, status: 'processed', amount: 2900, transaction: 77 },
+      { id: 2, status: 'processed', amount: 5000, transaction: 78 },
+      { id: 3, status: 'processed', amount: 100, transaction: { id: 79, reference: 'other-ref' } },
+      { id: 4, status: 'processed', amount: 200, transaction_reference: 'other-ref' },
+      { id: 5, status: 'pending', amount: 300 },
+      { id: 6, status: 'processed', amount: 400, transaction: { id: 77, reference: 'ref-1' } },
+    ] })
+    const r = await listRefunds(env, 'ref-1', { transactionId: 77 })
+    expect(r.data.map(x => x.id)).toEqual([1, 5, 6])
+  })
+  it('throws (callers fail closed) when Paystack returns no transaction id', async () => {
+    mockFetch(200, { status: true, data: {} })
+    await expect(listRefunds(env, 'ref-1')).rejects.toThrow('transaction id')
   })
   it('throws on a non-2xx response (an outage or a bad key is not "no refunds")', async () => {
     mockFetch(401, { status: false, message: 'Invalid key' })
-    await expect(listRefunds(env, 'ref-1')).rejects.toThrow('Invalid key')
+    await expect(listRefunds(env, 'ref-1', { transactionId: 1 })).rejects.toThrow('Invalid key')
   })
 })
 
@@ -156,7 +185,7 @@ describe('body-read timeout (B3)', () => {
   })
   it('a stalled refund-list body fails as a timeout', async () => {
     stalledBody(); fireTimersNow()
-    await expect(listRefunds(env, 'ref')).rejects.toThrow('Paystack refund list timed out after 15s')
+    await expect(listRefunds(env, 'ref', { transactionId: 1 })).rejects.toThrow('Paystack refund list timed out after 15s')
   })
 })
 
@@ -173,7 +202,7 @@ describe('non-JSON responses', () => {
   it('a 200 with a non-JSON body is an explicit unreadable-response error (never a fake success)', async () => {
     htmlBody(200)
     await expect(verifyTransaction(env, 'r')).rejects.toThrow('unreadable')
-    await expect(listRefunds(env, 'r')).rejects.toThrow('unreadable')
+    await expect(listRefunds(env, 'r', { transactionId: 1 })).rejects.toThrow('unreadable')
   })
 })
 

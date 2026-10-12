@@ -87,7 +87,7 @@ async function queueRefund(env, supabase, payment, { amountCents: requested = nu
     // refunds we must not risk a second one.
     let existing
     try {
-      existing = await paystackService.listRefunds(env, reference)
+      existing = await paystackService.listRefunds(env, reference, { currency: payment.currency })
     } catch (err) {
       return { ok: false, code: 'LIST_FAILED', status: 502,
         message: `Could not check existing refunds with Paystack (${err.message}) — nothing was sent. Try again.` }
