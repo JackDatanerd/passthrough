@@ -366,7 +366,7 @@ describe('adminImportLeads', () => {
     ) })
     expect(res.status).toBe(200)
     expect(res.body.data).toMatchObject({ created: 2, invalid: 2, duplicateInFile: 1, exists: 1, removed: 1, fieldIgnored: 1 })
-    const created = t.state.leads.filter(l => l.source === 'manual')
+    const created = t.state.leads.filter(l => l.source === 'import')
     expect(created.map(l => l.email).sort()).toEqual(['new@acme.com', 'other@acme.com'])
     expect(created.every(l => l.confirmed_at && l.status === 'NEW')).toBe(true)
     expect(created.find(l => l.email === 'new@acme.com')).toMatchObject({ role_category: 'data_science', role_title: 'ML lead', notes: 'met at conf' })

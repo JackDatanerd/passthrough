@@ -33,10 +33,10 @@ const SEARCH_DEBOUNCE_MS = 350
 // ALL_LEAD_SOURCES there ('manual' is adminCreateLead's own source value, not
 // something a stranger could submit, but an admin browsing/filtering needs
 // to see it same as any other source that actually exists in the table).
-const SOURCES = ['verification_page', 'homepage', 'manual']
+const SOURCES = ['verification_page', 'homepage', 'manual', 'import', 'rejoin']
 // How a confirmation came about — an admin's word (or an import) is weaker evidence than the inbox owner's click.
 const VIA_LABEL = { admin: 'marked by admin', manual: 'added by admin', import: 'imported', rejoin: 're-joined via email', link: 'via email link' }
-const sourceLabel = (s) => ({ verification_page: 'Verification page', homepage: 'Homepage', manual: 'Manual' })[s] || s
+const sourceLabel = (s) => ({ verification_page: 'Verification page', homepage: 'Homepage', manual: 'Manual', import: 'CSV import', rejoin: 'Re-joined' })[s] || s
 
 // Filters, sort and page live in the URL (like Payments and Scans), so the
 // dashboard's "N new leads" link can open the list already filtered, a
@@ -88,6 +88,7 @@ export default function AdminLeads() {
   const [bulkField, setBulkField] = useState('')   // '' = clear the field (uncategorised)
   const [confirmBulkMarkConfirmed, setConfirmBulkMarkConfirmed] = useState(false)
   const [editing, setEditing] = useState(null)     // lead being edited
+  const [detailId, setDetailId] = useState(null)   // lead whose detail panel is open
   const [adding, setAdding] = useState(false)
   // Independent audit round 6 (G1): "tell confirmed leads in this field there are Verified
   // candidates now" — a dry run first (how many would be emailed), then the real send.
@@ -302,7 +303,9 @@ export default function AdminLeads() {
       await api.post(`/employer-leads/${lead.id}/request-confirmation`)
       toast({ message: `Confirmation email sent to ${lead.email}.`, type: 'success' })
     } catch (err) {
-      toast({ message: getErrorMessage(err, 'Could not send the confirmation email.'), type: 'error' })
+      toast({ message: err?.response?.data?.code === 'DO_NOT_CONTACT'
+        ? `${lead.email} is on the do-not-contact list, so no email was sent.`
+        : getErrorMessage(err, 'Could not send the confirmation email.'), type: 'error' })
     } finally {
       setBusyId(null)
     }
@@ -330,9 +333,11 @@ export default function AdminLeads() {
     const lead = pendingDelete
     setBusyId(lead.id)
     try {
-      if (blockOnDelete) await api.delete(`/employer-leads/${lead.id}`, { params: { suppress: true } })
-      else await api.delete(`/employer-leads/${lead.id}`)
-      toast({ message: blockOnDelete ? 'Lead deleted and its address blocked.' : 'Lead deleted.', type: 'success' })
+      const res = blockOnDelete
+        ? await api.delete(`/employer-leads/${lead.id}`, { params: { suppress: true } })
+        : await api.delete(`/employer-leads/${lead.id}`)
+      const alias = blockOnDelete && res?.data?.alsoRemoved ? ` ${res.data.alsoRemoved} other lead${res.data.alsoRemoved === 1 ? '' : 's'} for the same inbox ${res.data.alsoRemoved === 1 ? 'was' : 'were'} removed too.` : ''
+      toast({ message: (blockOnDelete ? 'Lead deleted and its address blocked.' : 'Lead deleted.') + alias, type: 'success' })
       setPendingDelete(null)
       setBlockOnDelete(false)
       await refresh()
@@ -350,7 +355,8 @@ export default function AdminLeads() {
     try {
       const target = allMatching ? { filter: bulkFilter(), expected: total } : { ids: [...selected] }
       const res = await api.post('/employer-leads/bulk', { ...target, ...body })
-      toast({ message: `${doneMessage} (${res.data.affected}).`, type: 'success' })
+      const alias = res.data.alsoRemoved ? ` ${res.data.alsoRemoved} more lead${res.data.alsoRemoved === 1 ? '' : 's'} for the same inbox ${res.data.alsoRemoved === 1 ? 'was' : 'were'} removed too.` : ''
+      toast({ message: `${doneMessage} (${res.data.affected}).${alias}`, type: 'success' })
       setConfirmBulkDelete(false)
       if (allMatching) { setAllMatching(false); setSelected(new Set()) }
       await refresh()
@@ -358,6 +364,8 @@ export default function AdminLeads() {
       toast({ message: getErrorMessage(err, 'Bulk action failed.'), type: 'error' })
       setConfirmBulkDelete(false)
       if (allMatching && err?.response?.data?.code === 'LIST_CHANGED') { setAllMatching(false); refresh() }
+      // The server stopped part-way through a filter-wide action: some leads WERE changed, so show the list as it is now.
+      if (err?.response?.data?.code === 'PARTIAL') { setAllMatching(false); setSelected(new Set()); refresh() }
     } finally {
       setBulkBusy(false)
     }
@@ -369,11 +377,12 @@ export default function AdminLeads() {
     setBulkBusy(true)
     try {
       const res = await api.post('/employer-leads/bulk', { ids: [...selected], action: 'requestConfirmation' })
-      const { sent = 0, failed = 0, skipped = 0, blocked = 0 } = res.data
+      const { sent = 0, failed = 0, skipped = 0, blocked = 0, doNotContact = 0 } = res.data
       const parts = [`Confirmation sent to ${sent} lead${sent === 1 ? '' : 's'}`]
       if (failed) parts.push(`${failed} could not be sent (delivery failed or the address has reached its email limit)`)
       if (skipped) parts.push(`${skipped} skipped (already confirmed, or no longer there)`)
       if (blocked) parts.push(`${blocked} blocked (address bounced or reported spam)`)
+      if (doNotContact) parts.push(`${doNotContact} on the do-not-contact list`)
       toast({ message: parts.join('; ') + '.', type: failed ? 'warning' : 'success' })
       await refresh()
     } catch (err) {
@@ -404,6 +413,7 @@ export default function AdminLeads() {
       const d = res.data.data
       const parts = [`Emailed ${d.sent} lead${d.sent === 1 ? '' : 's'}`]
       if (d.skipped) parts.push(`${d.skipped} skipped (already told recently, or on the do-not-contact list)`)
+      if (d.removed) parts.push(`${d.removed} removed (their address had asked not to be contacted)`)
       if (d.failed) parts.push(`${d.failed} could not be sent — they will be tried again next time`)
       if (d.remaining) parts.push(`${d.remaining} still waiting — press the button again to continue`)
       toast({ message: parts.join('; ') + '.', type: d.failed ? 'warning' : 'success' })
@@ -608,6 +618,9 @@ export default function AdminLeads() {
                   <td className="px-4 py-3 text-gray-600">{l.company}</td>
                   <td className="px-4 py-3 text-gray-600">
                     <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
+                    {l.doNotContact && (
+                      <span className="block text-xs text-red-600" title="This address is on the do-not-contact list: it will not be emailed from here.">do not contact</span>
+                    )}
                     {l.confirmedAt
                       ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}${VIA_LABEL[l.confirmedVia] ? ` — ${VIA_LABEL[l.confirmedVia]}` : ''}`}>
                           ✓ confirmed
@@ -706,6 +719,9 @@ export default function AdminLeads() {
                         Mark confirmed
                       </Button>
                     )}
+                    <Button size="sm" variant="secondary" onClick={() => setDetailId(l.id)} className="mr-2">
+                      Details
+                    </Button>
                     <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
                       Edit
                     </Button>
@@ -838,6 +854,7 @@ export default function AdminLeads() {
         </Form>
       </Modal>
 
+      <LeadDetailModal id={detailId} onClose={() => setDetailId(null)} />
       <LeadFormModal
         open={adding} mode="add" onClose={() => setAdding(false)}
         onSaved={() => { setAdding(false); toast({ message: 'Lead added.', type: 'success' }); refresh() }}
@@ -868,6 +885,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
   // The server refuses an address that used its "remove me" link (409,
   // code REMOVAL_REQUESTED) unless the admin confirms the person has since
   // asked to be added.
+  // REMOVAL_LIFT_FAILED: the edit was saved but lifting the old block failed — the same button retries it.
   const [needsOverride, setNeedsOverride] = useState(false)
 
   useEffect(() => {
@@ -899,14 +917,14 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           name: form.name, company: form.company,
           roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null,
           extraRoleCategories: form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : [],
-          ...(emailChanged ? { email: form.email.trim() } : {}),
-          ...(emailChanged && override ? { overrideRemoval: true } : {})
+          ...(emailChanged || override ? { email: form.email.trim() } : {}),
+          ...(override ? { overrideRemoval: true } : {})
         })
         return onSaved(res.data)
       }
       onSaved()
     } catch (err) {
-      setNeedsOverride(err.response?.data?.code === 'REMOVAL_REQUESTED')
+      setNeedsOverride(['REMOVAL_REQUESTED', 'REMOVAL_LIFT_FAILED'].includes(err.response?.data?.code) ? err.response.data.code : false)
       setError(getErrorMessage(err, 'Could not save the lead.'))
     } finally {
       setSaving(false)
@@ -943,7 +961,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
         {needsOverride && (
           <Button variant="danger" onClick={() => submit({ override: true })} disabled={saving}>
-            They've asked me to add them — add anyway
+            {needsOverride === 'REMOVAL_LIFT_FAILED' ? 'Try lifting the block again' : "They've asked me to add them — add anyway"}
           </Button>
         )}
         <div className="flex justify-end gap-2">
@@ -951,6 +969,75 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           <Button type="submit" loading={saving}>{mode === 'add' ? 'Add lead' : 'Save'}</Button>
         </div>
       </Form>
+    </Modal>
+  )
+}
+
+// ── Lead detail ─────────────────────────────────────────────────────────────
+
+// One lead with everything the list cannot show: the notes and consent record, what we have emailed the address,
+// its do-not-contact / bounce state, and other leads that share its inbox (dana+jobs@ and dana@ are one person).
+function LeadDetailModal({ id, onClose }) {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    if (!id) return
+    let live = true
+    setData(null); setError('')
+    api.get(`/employer-leads/${id}`).then(res => { if (live) setData(res.data.data) })
+      .catch(err => { if (live) setError(getErrorMessage(err, 'Could not load this lead.')) })
+    return () => { live = false }
+  }, [id])
+  const lead = data?.lead
+  const told = lead?.candidatesNotifiedFields ? Object.entries(lead.candidatesNotifiedFields) : []
+  return (
+    <Modal open={!!id} onClose={onClose} title="Lead details">
+      {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
+      {!error && !data && <div className="flex justify-center py-8"><Spinner /></div>}
+      {lead && (
+        <div className="flex flex-col gap-4 text-sm text-gray-700">
+          <div>
+            <p className="font-medium text-gray-900">{lead.name} · {lead.company}</p>
+            <p>{lead.email}</p>
+            <p className="text-gray-500">
+              {lead.roleCategory ? roleLabel(lead.roleCategory) : 'No field'}
+              {lead.extraRoleCategories?.length > 0 && ` (also: ${lead.extraRoleCategories.map(roleLabel).join(', ')})`}
+              {lead.roleTitle ? ` · ${lead.roleTitle}` : ''} · {sourceLabel(lead.source)} · {lead.status}
+            </p>
+            {lead.notes && <p className="mt-1 whitespace-pre-wrap text-gray-600">{lead.notes}</p>}
+          </div>
+          <div>
+            <p className="font-medium text-gray-900">Contact status</p>
+            {data.doNotContact?.suppressed
+              ? <p className="text-red-600">On the do-not-contact list{data.doNotContact.reason ? ` (${data.doNotContact.reason})` : ''}{data.doNotContact.since ? ` since ${formatDate(data.doNotContact.since)}` : ''}.</p>
+              : <p className="text-green-700">Not on the do-not-contact list.</p>}
+            {data.mailSuppression && <p className="text-red-600">Mail to this address is blocked ({data.mailSuppression.reason}).</p>}
+            {lead.confirmedAt
+              ? <p>Confirmed {formatDate(lead.confirmedAt)}{VIA_LABEL[lead.confirmedVia] ? ` — ${VIA_LABEL[lead.confirmedVia]}` : ''}.</p>
+              : <p className="text-amber-600">Not confirmed.</p>}
+            {lead.consent?.kind && <p className="text-gray-500">Consent: {lead.consent.kind}{lead.consent.at ? `, ${formatDate(lead.consent.at)}` : ''}</p>}
+          </div>
+          {told.length > 0 && (
+            <div>
+              <p className="font-medium text-gray-900">Told about candidates</p>
+              <ul>{told.map(([f, at]) => <li key={f}>{roleLabel(f)} — {formatDate(at)}</li>)}</ul>
+            </div>
+          )}
+          <div>
+            <p className="font-medium text-gray-900">Emails sent to this address</p>
+            {data.emails?.length
+              ? <ul>{data.emails.map((e, i) => <li key={i}>{formatDate(e.sentAt)} — {e.subject || e.template} <span className="text-gray-400">({e.status})</span></li>)}</ul>
+              : <p className="text-gray-500">None on record.</p>}
+          </div>
+          {data.sameInbox?.length > 0 && (
+            <div>
+              <p className="font-medium text-gray-900">Other leads for the same inbox</p>
+              <ul>{data.sameInbox.map(o => <li key={o.id}>{o.name} — {o.email} <span className="text-gray-400">({o.status})</span></li>)}</ul>
+            </div>
+          )}
+        </div>
+      )}
+      <div className="flex justify-end mt-4"><Button variant="secondary" onClick={onClose}>Close</Button></div>
     </Modal>
   )
 }

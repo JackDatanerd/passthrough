@@ -440,6 +440,8 @@ function leadRowToCamel(row) {
     confirmedVia: row.confirmed_via ?? null,
     consent: row.consent ?? null,
     candidatesNotifiedFields: row.candidates_notified_fields ?? {},
+    // Migration 0076: the inbox this address delivers to (lib/mailbox.js) — what finds every lead of one inbox.
+    mailboxKey:   row.mailbox_key ?? null,
     createdAt:    row.created_at,
     updatedAt:    row.updated_at
   }

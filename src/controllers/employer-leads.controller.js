@@ -255,14 +255,16 @@ async function configuredApiOrigin(env) {
 const frontendBase = (env) => String((env && env.FRONTEND_URL) || '').replace(/\/+$/, '')
 
 async function leadLinks(env, email, origin = null) {
-  const [confirmTok, removeTok] = await Promise.all([
+  const [confirmTok, removeTok, prefsTok] = await Promise.all([
     signLeadToken(leadLinkSecrets(env).sign, 'confirm', email),
-    signLeadToken(leadLinkSecrets(env).sign, 'remove', email)
+    signLeadToken(leadLinkSecrets(env).sign, 'remove', email),
+    signLeadToken(leadLinkSecrets(env).sign, 'prefs', email)
   ])
   const base = frontendBase(env)
   return {
     confirmUrl: `${base}/employer/confirm?token=${confirmTok}`,
     removeUrl:  `${base}/employer/remove?token=${removeTok}`,
+    prefsUrl:   `${base}/employer/preferences?token=${prefsTok}`,
     unsubscribeUrl: origin ? `${origin}/api/employer-leads/unsubscribe?token=${removeTok}` : null
   }
 }
@@ -361,10 +363,12 @@ const ok = (c) => c.json({ success: true, message: "We'll be in touch." })
 // exist yet — log it loudly and carry on rather than 500 the public form.
 const MISSING_RELATION = ['42P01', 'PGRST205']
 const MISSING_COLUMN = ['42703', 'PGRST204']
-// Columns added by migration 0064 that the PUBLIC paths write. A deployment that ran the code before the
+// Columns added by migration 0068 that the PUBLIC paths write. A deployment that ran the code before the
 // migration must still capture a lead and honour a confirm / remove click — these are dropped and the
-// write retried when the database says it has no such column.
-const OPTIONAL_LEAD_COLUMNS = ['consent', 'confirmed_via']
+// write retried when the database says it has no such column. (Round 12: the comment used to say 0064 — that
+// is the payments migration; and the per-field notification map is now covered too, since an admin's email
+// edit resets it.)
+const OPTIONAL_LEAD_COLUMNS = ['consent', 'confirmed_via', 'candidates_notified_fields']
 
 async function insertLead(supabase, row) {
   const res = await supabase.from('employer_leads').insert(row)
@@ -386,7 +390,7 @@ async function updateTolerant(supabase, patch, apply) {
 }
 
 // The do-not-contact rows that cover this address: [{ email_hash, reason, created_at }]. `reason` is
-// null for entries written before migration 0064.
+// null for entries written before migration 0068.
 async function findSuppressions(env, supabase, email) {
   const { read } = await suppressionHashes(env, email)
   const table = () => supabase.from('employer_lead_suppressions')
@@ -406,6 +410,66 @@ async function isSuppressed(env, supabase, email) { return (await findSuppressio
 // Only an address that removed ITSELF may be offered a way back. Complaints, bounces, admin entries and
 // anything written before the reason was recorded stay closed.
 const isRejoinable = (rows) => rows.length > 0 && rows.every(r => r.reason === 'self')
+// Round 12: an entry whose reason is the PERSON (or their mail provider) saying "no" — as opposed to an admin's
+// own decision, a retention purge, or an entry from before reasons were recorded. A lead that still exists for such
+// an address should not: the remove page promises the request is deleted.
+const REMOVAL_REASONS = ['self', 'complaint', 'bounce']
+const isRemovalRequest = (rows) => rows.length > 0 && rows.every(r => REMOVAL_REASONS.includes(r.reason))
+
+// Which of these addresses are on the do-not-contact list — by any alias of the mailbox and any hash form
+// (lib/mailbox.js) — and why: Map<address, [{ email_hash, reason, created_at }]>. Lookups travel in the URL, so
+// they go out in small groups (see IN_LOOKUP_CHUNK).
+async function suppressionsAmong(env, supabase, emails) {
+  const found = new Map()
+  if (!emails.length) return found
+  const byHash = new Map()
+  for (const e of emails)
+    for (const h of (await suppressionHashes(env, e)).read) {
+      if (!byHash.has(h)) byHash.set(h, new Set())
+      byHash.get(h).add(e)
+    }
+  for (const group of inChunks([...byHash.keys()], HASH_LOOKUP_CHUNK)) {
+    const table = () => supabase.from('employer_lead_suppressions')
+    let res = await table().select('email_hash, reason, created_at').in('email_hash', group)
+    if (res.error && MISSING_COLUMN.includes(res.error.code))
+      res = await table().select('email_hash, created_at').in('email_hash', group)
+    if (res.error) {
+      if (MISSING_RELATION.includes(res.error.code)) return new Map()
+      throw res.error
+    }
+    for (const r of res.data || [])
+      for (const e of byHash.get(r.email_hash) || []) {
+        if (!found.has(e)) found.set(e, [])
+        found.get(e).push(r)
+      }
+  }
+  return found
+}
+async function suppressedAmong(env, supabase, emails) { return new Set((await suppressionsAmong(env, supabase, emails)).keys()) }
+
+// Deletes EVERY lead stored for these inboxes — the address as typed, its canonical form, and (migration 0076) any
+// other spelling of the same mailbox (bob+x@, b.o.b@gmail.com …). Leads are stored as typed, so removing only the
+// typed and canonical forms left an alias lead (name, company, address) standing after "we won't contact you again".
+// Two statements however many inboxes: a filter-wide bulk delete calls this once per chunk. Returns [{ id, email }].
+// Deployed ahead of 0076 it still removes the exact addresses and says so.
+async function deleteLeadsForMailboxes(supabase, emails) {
+  const removed = new Map()
+  const keep = (rows) => { for (const r of rows || []) removed.set(r.id, r.email) }
+  let keyed = true
+  for (const group of inChunks([...new Set(emails)], 50)) {
+    const byEmail = await supabase.from('employer_leads').delete().in('email', mailboxForms(group)).select('id, email')
+    if (byEmail.error) throw byEmail.error
+    keep(byEmail.data)
+    if (!keyed) continue
+    const byKey = await supabase.from('employer_leads').delete().in('mailbox_key', [...new Set(group.map(canonicalMailbox))]).select('id, email')
+    if (byKey.error) {
+      if (!MISSING_COLUMN.includes(byKey.error.code)) throw byKey.error
+      keyed = false
+      console.error('employer_leads.mailbox_key does not exist — run migration 0076. Only the exact address was removed.')
+    } else keep(byKey.data)
+  }
+  return [...removed].map(([id, email]) => ({ id, email }))
+}
 
 // `reason`: 'self' | 'admin' | 'complaint' | 'bounce' | 'purge' (null = unknown). A later, stronger reason
 // replaces 'self' on an existing entry — a person who removed themselves and then reported us as spam is
@@ -698,7 +762,7 @@ const OPEN_STATUSES = ['NEW', 'CONTACTED']
 // 'manual' (adminCreateLead's own source value) since an admin browsing or
 // counting leads needs to be able to select every source that actually
 // exists in the table, not just the ones a stranger could have typed.
-const ALL_LEAD_SOURCES = [...LEAD_SOURCES, 'manual', 'rejoin']
+const ALL_LEAD_SOURCES = [...LEAD_SOURCES, 'manual', 'rejoin', 'import']
 
 // `get(name)` answers the raw value of one filter: from the query string (the list, the export) or from
 // the body of a bulk action aimed at "everything matching this filter" (round 11) — both are judged by
@@ -869,8 +933,54 @@ async function adminListLeads(c) {
       supply = Object.fromEntries(rows.map(r => [r.role_category, Number(r.candidate_count)]))
   } catch (_) { supply = null }
 
-  return c.json({ success: true, data: (data || []).map(leadRowToCamel),
+  // Round 12 (G2): which rows on this page sit on the do-not-contact list (one batched lookup), so the admin sees it
+  // BEFORE clicking "request confirmation" / "notify". Best-effort: the list must load without it.
+  let blocked = new Map()
+  try { blocked = await suppressionsAmong(c.env, supabase, (data || []).map(r => r.email)) }
+  catch (err) { console.error('employer-leads: could not flag do-not-contact rows:', err.message) }
+
+  return c.json({ success: true, data: (data || []).map(r => ({ ...leadRowToCamel(r), doNotContact: blocked.has(r.email) })),
     meta: { page, pageSize, total: count || 0, counts, sourceCounts, unconfirmed: uErr ? null : (unconfirmed || 0), neverEmailed, reengaged, suppressed, candidateSupply: supply } })
+}
+
+// GET /api/employer-leads/:id — admin only.
+// FEATURE GAP CLOSED (round 12, G1/G2): the list shows a row; nothing showed the story behind it. Before emailing,
+// archiving or removing a lead an admin needs to see, in one place: the whole row (notes, consent record, per-field
+// "already told" dates), what we have actually mailed the address, whether it is on the do-not-contact list or the
+// global bounce list (and why), and whether OTHER leads share its inbox (dana+jobs@ and dana@ are one person).
+async function adminGetLead(c) {
+  const id = c.req.param('id')
+  const supabase = getSupabase(c.env)
+  const { data: lead, error } = await supabase.from('employer_leads').select('*').eq('id', id).maybeSingle()
+  if (error) throw error
+  if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
+
+  const suppressions = await findSuppressions(c.env, supabase, lead.email)
+  const mail = await emailSuppression.getSuppression(supabase, lead.email)
+
+  const forms = mailboxForms([lead.email])
+  let emails = []
+  const logs = await supabase.from('email_logs').select('template, subject, status, sent_at')
+    .in('to', forms).like('template', 'employer\\_%').order('sent_at', { ascending: false }).limit(20)
+  if (logs.error) console.error('employer-leads: could not read the mail log for a lead:', logs.error.message)
+  else emails = (logs.data || []).map(r => ({ template: r.template, subject: r.subject, status: r.status, sentAt: r.sent_at }))
+
+  let sameInbox = []
+  const key = canonicalMailbox(lead.email)
+  const sib = await supabase.from('employer_leads').select('id, name, email, status').eq('mailbox_key', key).neq('id', lead.id).limit(10)
+  if (sib.error) { if (!MISSING_COLUMN.includes(sib.error.code)) console.error('employer-leads: could not look up leads sharing an inbox:', sib.error.message) }
+  else sameInbox = sib.data || []
+
+  const since = suppressions.map(r => r.created_at).filter(Boolean).sort()[0] || null
+  const reason = suppressions.length === 0 ? null
+    : suppressions.every(r => r.reason === 'self') ? 'self'
+    : (suppressions.find(r => r.reason && r.reason !== 'self') || {}).reason || null
+  return c.json({ success: true, data: {
+    lead: leadRowToCamel(lead),
+    doNotContact: { suppressed: suppressions.length > 0, reason, since },
+    mailSuppression: mail ? { reason: mail.reason, since: mail.created_at } : null,
+    emails, sameInbox
+  } })
 }
 
 // CSV cells are always quoted, and any cell that starts with a character a
@@ -1082,7 +1192,7 @@ async function adminUpdateLeadStatus(c) {
   const supabase = getSupabase(c.env)
 
   const { data: existing, error: readErr } = await supabase
-    .from('employer_leads').select('id, contacted_at, email, status, role_category, extra_role_categories').eq('id', id).maybeSingle()
+    .from('employer_leads').select('*').eq('id', id).maybeSingle()
   if (readErr) throw readErr
   if (!existing) return c.json({ success: false, message: 'Lead not found.' }, 404)
 
@@ -1112,30 +1222,50 @@ async function adminUpdateLeadStatus(c) {
   // or candidate notices carries over. A do-not-contact address stays that way.
   const emailChanged = d.email !== undefined && d.email !== existing.email
   let liftAfterSave = false
-  if (emailChanged) {
+  // BUG FIX (round 12, B7): the lift only ever ran when the address CHANGED in this request. If it failed after the
+  // edit had saved (a database blip), the retry found the address already changed, never looked at the list again and
+  // answered 200 — a lead that exists next to a do-not-contact entry that never goes, so it is never mailed or told
+  // about candidates. A retry that says `overrideRemoval` for the lead's own address now finishes the job
+  // (adminCreateLead got the same treatment in round 6).
+  if (d.email !== undefined && (emailChanged || d.overrideRemoval)) {
     liftAfterSave = await isSuppressed(c.env, supabase, d.email)
-    if (liftAfterSave && !d.overrideRemoval)
+    if (emailChanged && liftAfterSave && !d.overrideRemoval)
       return c.json({
         success: false, code: 'REMOVAL_REQUESTED',
         message: 'That address asked to be removed and is on the do-not-contact list. Only use it if they have since asked you to.'
       }, 409)
+  }
+  if (emailChanged) {
+    // A new address is a new person to ask — including what they agreed to. BUG FIX (round 12, B6): the old
+    // consent record (the form the PREVIOUS address was typed into, and when) used to stay on the row and was
+    // exported as the new address's consent. It is replaced by what actually happened: an admin moved the lead here.
     Object.assign(patch, {
       email: d.email, confirmed_at: null, confirmed_via: null, last_ack_at: null, ack_attempts: 0, last_ack_attempt_at: null,
-      last_candidates_notified_at: null, candidates_notified_fields: {}
+      last_candidates_notified_at: null, candidates_notified_fields: {},
+      consent: { kind: 'admin_edit', at: patch.updated_at, v: CONSENT_VERSION, by: actorId(c), replaced: (existing.consent && existing.consent.kind) || null }
     })
   }
 
-  const { data, error } = await supabase
-    .from('employer_leads').update(patch).eq('id', id).select().maybeSingle()
+  const { data, error } = await updateTolerant(supabase, patch, q => q.eq('id', id).select().maybeSingle())
   if (error) {
     if (error.code === '23505') return c.json({ success: false, message: 'A lead with that email already exists.' }, 409)
     throw error
   }
   if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
   // The removal is lifted only AFTER the edit has saved (a failed save must not silently undo someone's
-  // request), and it is safe to repeat.
+  // request), and it is safe to repeat. If the lift itself fails the edit stays saved: say so, with a code the
+  // admin screen turns into a one-click retry.
   if (liftAfterSave) {
-    await liftListSuppression(c.env, supabase, d.email)
+    try {
+      await liftListSuppression(c.env, supabase, d.email)
+    } catch (err) {
+      console.error('employer-leads: the lead was saved but its do-not-contact entry could not be lifted:', err.message)
+      await logAdminAction(c, supabase, 'lead.update', 'employer_lead', id, {
+        fields: Object.keys(d).filter(k => d[k] !== undefined && k !== 'overrideRemoval'), ...(emailChanged ? { emailChanged: true } : {}), liftFailed: true
+      })
+      return c.json({ success: false, code: 'REMOVAL_LIFT_FAILED', saved: true,
+        message: 'The lead was saved, but its address could not be taken off the do-not-contact list. Try again — nothing else needs changing.' }, 409)
+    }
     await logAdminAction(c, supabase, 'lead.suppression_lift', 'employer_lead_suppression', (await suppressionHashes(c.env, d.email)).write[0], { via: 'edit_override' })
   }
   // Field NAMES and the status transition only — never the values typed.
@@ -1207,9 +1337,15 @@ async function performBulk(c, supabase, { ids, action, status, field }) {
     }
     const { data, error } = await supabase.from('employer_leads').delete().in('id', ids).select('id')
     if (error) throw error
-    if (suppress) await purgeAddressLogs(supabase, mailboxForms(emails))
-    return { audit: 'lead.bulk_delete', ids: (data || []).map(r => r.id), detail: suppress ? { suppressed: true } : {},
-      response: { success: true, affected: (data || []).length } }
+    // Round 12 (B1): blocking an address blocks its whole inbox — leads of the same inbox that were not ticked go too.
+    let alsoRemoved = []
+    if (suppress) {
+      alsoRemoved = (await deleteLeadsForMailboxes(supabase, emails)).filter(r => !ids.includes(r.id))
+      await purgeAddressLogs(supabase, mailboxForms([...emails, ...alsoRemoved.map(r => r.email)]))
+    }
+    return { audit: 'lead.bulk_delete', ids: [...(data || []).map(r => r.id), ...alsoRemoved.map(r => r.id)],
+      detail: suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } : {},
+      response: { success: true, affected: (data || []).length, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } }
   }
 
   const now = new Date().toISOString()
@@ -1218,7 +1354,7 @@ async function performBulk(c, supabase, { ids, action, status, field }) {
     // BUG FIX (round 11, B3): this used to write the new primary field for every lead and THEN loop over
     // the leads whose "other fields" list needed a matching fix, one update each — a failure part-way
     // left the first write committed, the lists wrong and no audit entry. One statement now (see
-    // set_lead_field in migration 0064): the field and the list change together or not at all.
+    // set_lead_field in migration 0068): the field and the list change together or not at all.
     const { data, error } = await supabase.rpc('set_lead_field', { p_ids: ids, p_field: field })
     if (error) throw error
     const done = (data || []).map(r => r.id)
@@ -1244,17 +1380,21 @@ async function performBulk(c, supabase, { ids, action, status, field }) {
     if (error) throw error
     const origin = apiOrigin(c)
     const sentIds = []
-    let failed = 0, blocked = 0
+    let failed = 0, blocked = 0, doNotContact = 0
+    // Round 12 (B4): an address on the employer do-not-contact list is never mailed from here (see
+    // adminRequestConfirmation) — one lookup for the whole batch.
+    const onList = await suppressedAmong(c.env, supabase, (leads || []).map(l => l.email))
     // One at a time: each send reserves its own per-address slot and may be refused by it.
     for (const lead of leads || []) {
+      if (onList.has(lead.email)) { doNotContact++; continue }
       const r = await attemptAck(c.env, lead, { skipBudget: true, origin })
       if (r.sent) sentIds.push(lead.id)
       else if (r.reason === 'suppressed') blocked++   // bounced / reported spam: nothing will ever reach it
       else failed++
     }
     const skipped = ids.length - (leads || []).length   // already confirmed, archived, or gone
-    return { audit: 'lead.bulk_request_confirmation', ids: sentIds, detail: { failed, blocked, skipped },
-      response: { success: true, affected: sentIds.length, sent: sentIds.length, failed, blocked, skipped } }
+    return { audit: 'lead.bulk_request_confirmation', ids: sentIds, detail: { failed, blocked, skipped, ...(doNotContact ? { doNotContact } : {}) },
+      response: { success: true, affected: sentIds.length, sent: sentIds.length, failed, blocked, skipped, doNotContact } }
   }
 
   const { data, error } = await supabase
@@ -1309,24 +1449,40 @@ async function adminBulkUpdateLeads(c) {
     const filters = normalizeFilters(k => (typeof body.filter[k] === 'string' ? body.filter[k] : undefined))
     const resolved = await resolveFilterIds(supabase, filters, body.expected)
     if (resolved.error) return c.json(resolved.error.body, resolved.error.status)
-    let affected = 0, audit = null, detail = {}
+    let affected = 0, alsoRemoved = 0, audit = null, detail = {}
     const done = []
     let deferredError = null
-    for (let i = 0; i < resolved.ids.length; i += BULK_MAX) {
-      const r = await performBulk(c, supabase, { ids: resolved.ids.slice(i, i + BULK_MAX), action, status, field })
-      affected += r.response.affected
-      done.push(...r.ids)
-      audit = r.audit
-      detail = { ...detail, ...r.detail }
-      if (r.deferredError) { deferredError = r.deferredError; break }
+    // BUG FIX (round 12, B5): the chunks are committed one after another, so a failure in chunk 2 left chunk 1's
+    // changes in place with NO audit entry at all (the throw skipped the log below) and the admin looking at a bare
+    // 500 with no idea how many leads had been deleted. The audit entry is now written for whatever DID change, and
+    // the answer says how far the action got.
+    let failure = null
+    try {
+      for (let i = 0; i < resolved.ids.length; i += BULK_MAX) {
+        const r = await performBulk(c, supabase, { ids: resolved.ids.slice(i, i + BULK_MAX), action, status, field })
+        affected += r.response.affected
+        alsoRemoved += r.response.alsoRemoved || 0
+        done.push(...r.ids)
+        audit = r.audit
+        detail = { ...detail, ...r.detail }
+        if (r.deferredError) { deferredError = r.deferredError; break }
+      }
+    } catch (err) { failure = err }
+    if (alsoRemoved) detail.alsoRemoved = alsoRemoved
+    if (done.length || !failure)
+      await logAdminAction(c, supabase, audit || 'lead.bulk_status', 'employer_lead', null, {
+        ids: done, ...detail, filtered: true, matched: resolved.total, ...(failure ? { partial: true } : {}),
+        filter: Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && k !== 'search' && !(k === 'sort' && v === 'created'))),
+        searched: !!filters.search
+      })
+    if (failure) {
+      console.error('employer-leads: a filter-wide bulk action stopped part-way:', failure.message)
+      if (!done.length) throw failure
+      return c.json({ success: false, code: 'PARTIAL', affected, matched: resolved.total,
+        message: `Stopped after changing ${affected} of ${resolved.total} leads because of a server error. Reload the list and repeat the action to finish.` }, 500)
     }
-    await logAdminAction(c, supabase, audit || 'lead.bulk_status', 'employer_lead', null, {
-      ids: done, ...detail, filtered: true, matched: resolved.total,
-      filter: Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && k !== 'search' && !(k === 'sort' && v === 'created'))),
-      searched: !!filters.search
-    })
     if (deferredError) throw deferredError
-    return c.json({ success: true, affected, matched: resolved.total })
+    return c.json({ success: true, affected, matched: resolved.total, ...(alsoRemoved ? { alsoRemoved } : {}) })
   }
 
   const ids = [...new Set(body.ids.map(i => i.toLowerCase()))]
@@ -1360,9 +1516,15 @@ async function adminDeleteLead(c) {
     .from('employer_leads').delete().eq('id', id).select().maybeSingle()
   if (error) throw error
   if (!data) return c.json({ success: false, message: 'Lead not found.' }, 404)
-  if (suppress) await purgeAddressLogs(supabase, mailboxForms([data.email]))
-  await logAdminAction(c, supabase, 'lead.delete', 'employer_lead', id, suppress ? { suppressed: true } : {})
-  return c.json({ success: true, message: suppress ? 'Lead deleted and its address added to the do-not-contact list.' : 'Lead deleted.' })
+  // Round 12 (B1): blocking an address blocks its whole inbox, so another lead of the same inbox (dana+jobs@ next
+  // to dana@) goes with it — otherwise it would be left suppressed but present.
+  let alsoRemoved = []
+  if (suppress) {
+    alsoRemoved = await deleteLeadsForMailboxes(supabase, [data.email])
+    await purgeAddressLogs(supabase, mailboxForms([data.email, ...alsoRemoved.map(r => r.email)]))
+  }
+  await logAdminAction(c, supabase, 'lead.delete', 'employer_lead', id, suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } : {})
+  return c.json({ success: true, message: suppress ? 'Lead deleted and its address added to the do-not-contact list.' : 'Lead deleted.', ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) })
 }
 
 // ── Public: confirm / remove (the links in the acknowledgement email) ───────
@@ -1465,9 +1627,19 @@ async function rejoinLead(c) {
   const { data: existing, error: exErr } = await supabase.from('employer_leads').select('id').eq('email', email).maybeSingle()
   if (exErr) throw exErr
   const alreadyIn = () => c.json({ success: true, status: 'already', message: "You're already on the list." })
-  if (existing) return alreadyIn()
-
   const suppressions = await findSuppressions(c.env, supabase, email)
+  if (existing) {
+    // BUG FIX (round 12, B7): the lead is stored BEFORE the block is lifted (so a failure in between leaves the address
+    // blocked, never mailable-without-a-lead). If the lift then failed, the person saw "try again" — and the retry
+    // landed here, said "already on the list" and never lifted anything, leaving a lead that is never mailed. The
+    // inbox owner has just proved the inbox is theirs, so a block they themselves put there is lifted now.
+    if (suppressions.length && isRejoinable(suppressions)) {
+      await liftListSuppression(c.env, supabase, email)
+      await logAdminAction(c, supabase, 'lead.rejoin', 'employer_lead_suppression', (await suppressionHashes(c.env, email)).write[0], { liftedList: true, via: 'retry' })
+    }
+    return alreadyIn()
+  }
+
   if (suppressions.length && !isRejoinable(suppressions)) return unavailable()
   // The global bounce / complaint block: an address that cannot receive mail is not "joined".
   if (await emailSuppression.getSuppression(supabase, email)) return unavailable()
@@ -1487,6 +1659,50 @@ async function rejoinLead(c) {
   await notifyOwner(c, 'Employer lead re-joined', describeLead(row))
   await logAdminAction(c, supabase, 'lead.rejoin', 'employer_lead_suppression', (await suppressionHashes(c.env, email)).write[0], { liftedList: suppressions.length > 0 })
   return c.json({ success: true, status: 'joined', message: "You're back on the list. We'll email you when there are Verified candidates in your field." })
+}
+
+// POST /api/employer-leads/preferences/load { token }  and  POST /api/employer-leads/preferences { token, field, ... }
+// FEATURE GAP CLOSED (round 12, G3): the field on a lead is chosen on a public form by a stranger who may have picked
+// the wrong one, and the only ways to change it were an admin editing the row or replying to an email. /field (round 9)
+// fills an EMPTY field only, on purpose. Every email we send an employer now carries an "update my details" link
+// (purpose "prefs" — see lib/leadTokens.js) that lets the inbox owner correct the field, the other fields they hire in
+// and the job title. Nothing else: name, company, status, consent and the notified-fields history are untouched, and a
+// link proves nothing beyond "this inbox", so it reveals only what the person typed into the form themselves.
+const prefsLoadSchema = z.object({ token: z.string().min(10).max(700) })
+const prefsSaveSchema = z.object({
+  token:       z.string().min(10).max(700),
+  field:       z.enum(ROLE_CATEGORIES),
+  extraFields: z.array(z.enum(ROLE_CATEGORIES)).max(MAX_EXTRA_FIELDS + 1).optional(),
+  roleTitle:   text(100).nullish()
+})
+async function loadLeadPreferences(c) {
+  const { token } = prefsLoadSchema.parse(await c.req.json())
+  const email = await verifyLeadToken(leadLinkSecrets(c.env).verify, 'prefs', token)
+  if (!email) return c.json(INVALID_LINK, 400)
+  const { data: lead, error } = await getSupabase(c.env).from('employer_leads').select('*').eq('email', email).maybeSingle()
+  if (error) throw error
+  if (!lead) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  return c.json({ success: true, status: 'ok', data: {
+    email: lead.email, name: lead.name,
+    field: lead.role_category || null,
+    extraFields: Array.isArray(lead.extra_role_categories) ? lead.extra_role_categories : [],
+    roleTitle: lead.role_title || ''
+  } })
+}
+async function saveLeadPreferences(c) {
+  const d = prefsSaveSchema.parse(await c.req.json())
+  const email = await verifyLeadToken(leadLinkSecrets(c.env).verify, 'prefs', d.token)
+  if (!email) return c.json(INVALID_LINK, 400)
+  const extras = [...new Set(d.extraFields || [])].filter(f => f !== d.field)
+  if (extras.length > MAX_EXTRA_FIELDS)
+    return c.json({ success: false, message: `Choose at most ${MAX_EXTRA_FIELDS} other fields.` }, 400)
+  const supabase = getSupabase(c.env)
+  const { data: updated, error } = await supabase.from('employer_leads')
+    .update({ role_category: d.field, extra_role_categories: extras, role_title: d.roleTitle || null, updated_at: new Date().toISOString() })
+    .eq('email', email).select('id').maybeSingle()
+  if (error) throw error
+  if (!updated) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  return c.json({ success: true, status: 'saved', message: "Saved. We'll use these the next time there are Verified candidates for you." })
 }
 
 // POST /api/employer-leads/remove { token }
@@ -1525,13 +1741,17 @@ async function purgeAddressLogs(supabase, emails) {
 }
 
 // Every step is safe to repeat: the hash first (so nothing can re-create the lead), then the lead
-// row, then the mail history.
+// row(s), then the mail history.
+//
+// BUG FIX (round 12, B1): only the address as typed and its canonical form used to be deleted, but leads are stored
+// as typed — so removing dana@gmail.com left a lead stored as dana+jobs@gmail.com (name, company, address) behind,
+// suppressed but present, despite "we won't contact you again". Every lead of the INBOX goes now (migration 0076's
+// mailbox_key), and so does the employer mail history of each spelling. Answers how many leads were removed.
 async function performRemoval(supabase, email, { env = null, reason = null } = {}) {
   await recordSuppressions(env, supabase, [email], reason)
-  const forms = mailboxForms([email])
-  const { error: delErr } = await supabase.from('employer_leads').delete().in('email', forms)
-  if (delErr) throw delErr
-  await purgeAddressLogs(supabase, forms)
+  const removed = await deleteLeadsForMailboxes(supabase, [email])
+  await purgeAddressLogs(supabase, mailboxForms([email, ...removed.map(r => r.email)]))
+  return removed.length
 }
 
 // POST /api/employer-leads/unsubscribe?token=… — the RFC 8058 one-click target named in
@@ -1616,11 +1836,9 @@ async function adminAddSuppression(c) {
   const supabase = getSupabase(c.env)
   const hash = (await suppressionHashes(c.env, email)).write[0]
   await recordSuppressions(c.env, supabase, [email], 'admin')
-  const forms = mailboxForms([email])
-  const { data: removed, error: delErr } = await supabase
-    .from('employer_leads').delete().in('email', forms).select('id')
-  if (delErr) throw delErr
-  await purgeAddressLogs(supabase, forms)
+  // Round 12 (B1): every lead of the inbox, not just the two spellings that happen to match this address.
+  const removed = await deleteLeadsForMailboxes(supabase, [email])
+  await purgeAddressLogs(supabase, mailboxForms([email, ...removed.map(r => r.email)]))
   // target_id is the hash, not the address — same reasoning as
   // adminLiftSuppression's own audit entry below.
   await logAdminAction(c, supabase, 'lead.suppression_add', 'employer_lead_suppression', hash, {
@@ -1673,6 +1891,11 @@ async function adminRequestConfirmation(c) {
   if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
   if (lead.confirmed_at) return c.json({ success: false, message: 'This address is already confirmed.' }, 409)
   if (lead.status === 'ARCHIVED') return c.json({ success: false, message: 'This lead is archived. Move it back to New before asking it to confirm.' }, 409)
+  // BUG FIX (round 12, B4): this button (and its bulk twin) mailed an address on the employer do-not-contact list —
+  // send() only consults the provider's bounce / complaint block, never this list — which is exactly the failure the
+  // list exists to prevent. Every automatic path already checked; the admin's own did not.
+  if (await isSuppressed(c.env, supabase, lead.email))
+    return c.json({ success: false, code: 'DO_NOT_CONTACT', message: 'This address is on the do-not-contact list, so nothing can be sent to it. Look it up under Do-not-contact to see why, or delete the lead.' }, 409)
 
   const result = await attemptAck(c.env, lead, { skipBudget: true, origin: apiOrigin(c) })
   await logAdminAction(c, supabase, 'lead.request_confirmation', 'employer_lead', id, { sent: result.sent, reason: result.reason })
@@ -1732,6 +1955,8 @@ const NOTIFY_BATCH_MAX = 25
 // per-recipient cap) is never stamped, so it stays eligible and sorts first on every call; with
 // a batch of exactly 25, 25 such leads would have blocked everyone behind them for good.
 const NOTIFY_EXAMINE_MAX = 100
+// …and how many in total one call may walk through while looking (round 12: the window moves, see adminNotifyCandidates).
+const NOTIFY_SCAN_MAX = 500
 const NOTIFY_COOLDOWN_MS = 30 * 24 * 60 * 60 * 1000
 // Round 11 (G6): "already told" is tracked PER FIELD (candidates_notified_fields), so a lead hiring in two
 // fields hears about each; the old single timestamp silenced the second for 30 days. The subject names the
@@ -1772,56 +1997,90 @@ async function adminNotifyCandidates(c) {
 
   const cutoff = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString()
   const eligible = () => supabase.from('employer_leads')
-    .select('id, name, email, status, contacted_at, candidates_notified_fields', { count: 'exact' })
+    .select('id, name, email, status, contacted_at, created_at, candidates_notified_fields', { count: 'exact' })
     .or(`role_category.eq.${field},extra_role_categories.cs.{${field}}`)
     .not('confirmed_at', 'is', null).in('status', OPEN_STATUSES)
     .or(`candidates_notified_fields->>${field}.is.null,candidates_notified_fields->>${field}.lt.${cutoff}`)
-  const { data: batch, error: selErr, count } = await eligible()
-    .order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_EXAMINE_MAX)
-  if (selErr) {
-    if (MISSING_COLUMN.includes(selErr.code))
-      return c.json({ success: false, message: 'Run migration 0068 before using this.' }, 409)
-    throw selErr
-  }
-  const total = count || 0
-  if (dryRun) return c.json({ success: true, data: { field, candidates, eligible: total, sent: 0, failed: 0, remaining: total, dryRun: true } })
 
+  // Round 12 (B3): the old version looked at ONE window of NOTIFY_EXAMINE_MAX leads. A lead that cannot be mailed and is
+  // never stamped (a do-not-contact address, an address at its cap) sorts first on every call, so enough of them filled the
+  // whole window and nobody behind them was ever reached. Now the window MOVES (keyset on created_at, id) up to
+  // NOTIFY_SCAN_MAX leads, the do-not-contact list is checked a page at a time rather than lead by lead, and a lead whose
+  // address asked to be removed is deleted — it should not have survived that request — instead of being skipped forever.
   const origin = apiOrigin(c)
-  let sent = 0, failed = 0, skipped = 0
+  const seen = new Set()
+  let total = 0, scanned = 0, sent = 0, failed = 0, skipped = 0, removed = 0, blockedByList = 0
+  let cursor = null
   const sentIds = []
-  for (const lead of batch || []) {
-    if (sent >= NOTIFY_BATCH_MAX) break
-    let ok = false
-    const outcome = {}
-    try {
-      // Re-checked right before each send: someone who clicked "remove" after this batch was
-      // selected must not be emailed. (Their lead row is normally already gone; this covers the gap.)
-      if (await isSuppressed(c.env, supabase, lead.email)) { skipped++; continue }
-      const { removeUrl, unsubscribeUrl } = await leadLinks(c.env, lead.email, origin)
-      ok = await emailService.sendEmployerCandidatesAvailable(
-        c.env, supabase, lead.email, lead.name, fieldLabel(field), candidates, { removeUrl, unsubscribeUrl, fieldKey: field, outcome })
-    } catch (err) {
-      console.error('Employer-lead candidate notification failed:', err.message)
+  scan: while (scanned < NOTIFY_SCAN_MAX && (dryRun || sent < NOTIFY_BATCH_MAX)) {
+    let q = eligible().order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_EXAMINE_MAX)
+    if (cursor) q = q.gte('created_at', cursor)
+    const { data: page, error: selErr, count } = await q
+    if (selErr) {
+      if (MISSING_COLUMN.includes(selErr.code))
+        return c.json({ success: false, message: 'Run migration 0068 before using this.' }, 409)
+      throw selErr
     }
-    if (!ok) {
-      // Bounced / complained addresses can never be reached: that is "skipped", not a failure to retry.
-      if (outcome.status === 'suppressed' || await adoptEarlierNotification(supabase, lead, field)) skipped++
-      else failed++
-      continue
+    if (cursor === null) total = count || 0
+    const fresh = (page || []).filter(l => !seen.has(l.id))
+    if (!fresh.length) break
+    for (const l of fresh) seen.add(l.id)
+    cursor = fresh[fresh.length - 1].created_at
+    scanned += fresh.length
+
+    const suppressions = await suppressionsAmong(c.env, supabase, fresh.map(l => l.email))
+    for (const lead of fresh) {
+      if (!dryRun && sent >= NOTIFY_BATCH_MAX) break scan
+      const rows = suppressions.get(lead.email)
+      if (rows && rows.length) {
+        blockedByList++
+        if (dryRun) continue
+        if (isRemovalRequest(rows)) {
+          try {
+            const gone = await deleteLeadsForMailboxes(supabase, [lead.email])
+            await purgeAddressLogs(supabase, mailboxForms([lead.email, ...gone.map(r => r.email)]))
+            removed += Math.max(gone.length, 1)
+            continue
+          } catch (err) { console.error('Employer-lead removal during notify failed:', err.message) }
+        }
+        skipped++
+        continue
+      }
+      if (dryRun) continue
+      let ok = false
+      const outcome = {}
+      try {
+        const { removeUrl, unsubscribeUrl, prefsUrl } = await leadLinks(c.env, lead.email, origin)
+        ok = await emailService.sendEmployerCandidatesAvailable(
+          c.env, supabase, lead.email, lead.name, fieldLabel(field), candidates, { removeUrl, unsubscribeUrl, prefsUrl, fieldKey: field, outcome })
+      } catch (err) {
+        console.error('Employer-lead candidate notification failed:', err.message)
+      }
+      if (!ok) {
+        // Bounced / complained addresses can never be reached: that is "skipped", not a failure to retry.
+        if (outcome.status === 'suppressed' || await adoptEarlierNotification(supabase, lead, field)) skipped++
+        else failed++
+        continue
+      }
+      sent++; sentIds.push(lead.id)
+      const stamp = new Date().toISOString()
+      const patch = {
+        last_candidates_notified_at: stamp, updated_at: stamp,
+        candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: stamp }
+      }
+      if (lead.status === 'NEW') patch.status = 'CONTACTED'
+      if (!lead.contacted_at) patch.contacted_at = stamp
+      const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id)
+      if (stampErr) console.error('Employer-lead candidate notification sent but not recorded:', stampErr.message)
     }
-    sent++; sentIds.push(lead.id)
-    const stamp = new Date().toISOString()
-    const patch = {
-      last_candidates_notified_at: stamp, updated_at: stamp,
-      candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: stamp }
-    }
-    if (lead.status === 'NEW') patch.status = 'CONTACTED'
-    if (!lead.contacted_at) patch.contacted_at = stamp
-    const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id)
-    if (stampErr) console.error('Employer-lead candidate notification sent but not recorded:', stampErr.message)
+    if ((page || []).length < NOTIFY_EXAMINE_MAX) break   // a short page is the last one (the page may repeat a lead already seen)
   }
-  await logAdminAction(c, supabase, 'lead.notify_candidates', 'employer_lead', null, { field, candidates, sent, failed, skipped, ids: sentIds })
-  return c.json({ success: true, data: { field, candidates, eligible: total, sent, failed, skipped, remaining: Math.max(0, total - sent - skipped - failed) } })
+  if (dryRun) {
+    const eligibleNow = Math.max(0, total - blockedByList)
+    return c.json({ success: true, data: { field, candidates, eligible: eligibleNow, sent: 0, failed: 0, remaining: eligibleNow, dryRun: true } })
+  }
+  await logAdminAction(c, supabase, 'lead.notify_candidates', 'employer_lead', null, { field, candidates, sent, failed, skipped, removed, ids: sentIds })
+  return c.json({ success: true, data: { field, candidates, eligible: total, sent, failed, skipped, removed, remaining: Math.max(0, total - sent - skipped - failed - removed) } })
 }
 
 // ── Admin: bulk import ──────────────────────────────────────────────────────
@@ -1856,27 +2115,9 @@ const IN_LOOKUP_CHUNK = 50
 const inChunks = (list, size = IN_LOOKUP_CHUNK) => { const out = []; for (let i = 0; i < list.length; i += size) out.push(list.slice(i, i + size)); return out }
 const HASH_LOOKUP_CHUNK = 50
 
-// Which of these addresses are on the do-not-contact list — by any alias of the mailbox and any hash form
-// (lib/mailbox.js) — so an import cannot put back a mailbox that removed itself under a different spelling.
-async function suppressedAmong(env, supabase, emails) {
-  if (!emails.length) return new Set()
-  const byHash = new Map()
-  for (const e of emails)
-    for (const h of (await suppressionHashes(env, e)).read) {
-      if (!byHash.has(h)) byHash.set(h, new Set())
-      byHash.get(h).add(e)
-    }
-  const hit = new Set()
-  for (const group of inChunks([...byHash.keys()], HASH_LOOKUP_CHUNK)) {
-    const { data, error } = await supabase.from('employer_lead_suppressions').select('email_hash').in('email_hash', group)
-    if (error) {
-      if (MISSING_RELATION.includes(error.code)) return new Set()
-      throw error
-    }
-    for (const r of data || []) for (const e of byHash.get(r.email_hash) || []) hit.add(e)
-  }
-  return hit
-}
+// (suppressedAmong / suppressionsAmong — which of these addresses are on the do-not-contact list, by any alias of
+// the mailbox and any hash form, so an import cannot put back a mailbox that removed itself under a different
+// spelling — live with the other do-not-contact helpers near the top of the file.)
 
 async function adminImportLeads(c) {
   const { rows: rawRows, dryRun } = importSchema.parse(await c.req.json())
@@ -1921,7 +2162,7 @@ async function adminImportLeads(c) {
     toInsert.push({
       name: v.d.name, company: v.d.company, email: v.d.email,
       role_category: v.key, role_title: v.d.role || null, notes: v.d.notes || null,
-      status: 'NEW', source: 'manual', confirmed_at: now, confirmed_via: 'import',
+      status: 'NEW', source: 'import', confirmed_at: now, confirmed_via: 'import',
       consent: { kind: 'import', at: now, v: CONSENT_VERSION, by: actorId(c), attested: true }
     })
   }
@@ -1975,9 +2216,28 @@ async function sweepUnacknowledgedLeads(env, supabase = getSupabase(env), now = 
   // Round 11 (G9): API_ORIGIN, else the address a recent request carried (see rememberApiOrigin), so a retried
   // acknowledgement keeps its one-click unsubscribe header.
   const origin = await configuredApiOrigin(env)
-  const out = { examined: (leads || []).length, sent: 0, failed: 0, adopted: 0, suppressed: 0, blocked: 0, budgetExhausted: false }
+  const out = { examined: (leads || []).length, sent: 0, failed: 0, adopted: 0, suppressed: 0, removed: 0, blocked: 0, budgetExhausted: false }
+  // Round 12 (B2): one batch lookup instead of a query per lead, and a suppressed lead is no longer just skipped. Skipped,
+  // it kept matching this query (nothing marked it) and sat at the head of the queue every hour, so a handful of them
+  // starved every lead behind them. A lead whose address asked to be removed (or complained / bounced) should not be
+  // here at all: delete it. Any other suppression (an admin entry, a purge) is closed out so the sweep stops revisiting it.
+  const suppressions = await suppressionsAmong(env, supabase, (leads || []).map(l => l.email))
   for (const lead of leads || []) {
-    if (await isSuppressed(env, supabase, lead.email)) { out.suppressed++; continue }
+    const rows = suppressions.get(lead.email)
+    if (rows && rows.length) {
+      if (isRemovalRequest(rows)) {
+        try {
+          const gone = await deleteLeadsForMailboxes(supabase, [lead.email])
+          await purgeAddressLogs(supabase, mailboxForms([lead.email, ...gone.map(r => r.email)]))
+          out.removed += Math.max(gone.length, 1)
+          console.error(`[employer-leads] sweep removed lead ${lead.id}: its address is on the do-not-contact list`)
+          continue
+        } catch (e) { console.error('[employer-leads] sweep removal failed:', e && e.message) }
+      }
+      await stampLead(env, { id: lead.id }, { ack_attempts: constants.LEAD_ACK_MAX_ATTEMPTS, last_ack_attempt_at: iso(Date.now()) })
+      out.suppressed++
+      continue
+    }
     // The email may have gone out and only the bookkeeping failed: take the log's word for it.
     const earlier = await findEarlierAck(supabase, lead.email, now)
     if (earlier) { await stampLead(env, { id: lead.id }, { last_ack_at: earlier }); out.adopted++; continue }
@@ -2014,6 +2274,6 @@ module.exports = {
   adminListLeads, adminExportLeads, adminCreateLead, adminImportLeads, sweepUnacknowledgedLeads,
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,
-  rejoinLead, performRemoval,
+  rejoinLead, performRemoval, adminGetLead, loadLeadPreferences, saveLeadPreferences,
   LEAD_STATUSES, LEAD_SOURCES
 }

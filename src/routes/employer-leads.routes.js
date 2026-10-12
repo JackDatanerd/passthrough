@@ -19,6 +19,9 @@ router.post('/confirm', rl.employerLeadLink, c.confirmLead)
 router.post('/field', rl.employerLeadLink, c.setLeadField)
 // Round 11 (G4): re-joining after removing yourself (the link in the "rejoin" email).
 router.post('/rejoin', rl.employerLeadLink, c.rejoinLead)
+// Round 12 (G3): the "update my details" link in the acknowledgement and candidates emails (token purpose "prefs").
+router.post('/preferences/load', rl.employerLeadLink, c.loadLeadPreferences)
+router.post('/preferences',      rl.employerLeadLink, c.saveLeadPreferences)
 // BUG FIX (independent audit round 8): the two OPT-OUT endpoints left the shared 30/hour bucket
 // above. Mailbox providers send RFC 8058 one-click requests from a small pool of shared IPs, so
 // a modest number of recipients could 429 each other's unsubscribes — and failing to honour an
@@ -72,6 +75,8 @@ router.delete('/suppressions',       admin, c.adminLiftSuppression)
 router.post(  '/:id/request-confirmation', admin, validateUuidParam(), c.adminRequestConfirmation)
 // Fresh audit pass 2 (G1): an admin recording that the address was confirmed by other means.
 router.post(  '/:id/mark-confirmed', admin, validateUuidParam(), c.adminMarkConfirmed)
+// Round 12 (G1): one lead with its mail history and do-not-contact state. After every fixed-path GET above.
+router.get(   '/:id', admin, validateUuidParam(), c.adminGetLead)
 router.patch( '/:id', admin, validateUuidParam(), c.adminUpdateLeadStatus)
 router.delete('/:id', admin, validateUuidParam(), c.adminDeleteLead)
 

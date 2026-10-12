@@ -1,0 +1,47 @@
+Section 5 (Employer leads) - independent audit round 12 (controller + routes, with the token, email, mapper, frontend
+and migration code they touch)
+Base: 982dcc9 "Auth round 8 ..."   ONE MIGRATION: 0076_employer_leads_round12.sql (run it; the Worker is safe to deploy
+before it - every new column read falls back - but alias removal only covers exact spellings until it has run).
+No new env var.
+
+GAPS
+G1  GET /api/employer-leads/:id (admin): the whole lead, its do-not-contact state and reason, the global mail block, the
+    employer mail sent to the address, and OTHER leads for the same inbox. Admin list has a "Details" button for it.
+G2  The admin list flags rows on the do-not-contact list ("do not contact"), from one batched lookup per page.
+G3  "Update my details" link in the acknowledgement and candidates emails: POST /employer-leads/preferences/load and
+    /preferences (new signed-token purpose "prefs", rate-limited like the other public links) and a public page
+    /employer/preferences. Edits main field, up to 4 other fields and job title only - never name, company or status.
+
+BUGS
+B1  A removal ("remove me", complaint, bounce, admin do-not-contact, delete-and-block, bulk delete-and-block) deleted only
+    the typed and canonical spellings, so a lead stored as dana+jobs@gmail.com survived dana@gmail.com's removal - with its
+    name and company - despite the promise on the remove page. employer_leads.mailbox_key (migration 0076, kept by a
+    trigger, backfilled) holds the inbox; every removal path now deletes by exact address AND mailbox_key in two statements
+    per 50 inboxes, purges the logs of every removed spelling, and reports/audits "alsoRemoved". Works before 0076.
+B2  The hourly acknowledgement sweep only SKIPPED a suppressed lead, never marking it, so enough of them sat at the head of
+    the queue every hour and starved the leads behind. It now looks the batch up in one query, deletes leads whose address
+    asked to be removed, and closes out other suppressed leads.
+B3  notify-candidates examined one fixed window of 100 leads; unmailable leads that are never stamped filled it and nobody
+    behind them was reached. The window now moves (keyset on created_at, id; up to 500 examined), the list is checked a page
+    at a time, removal-request leads are deleted ("removed" in the response), dry-run eligibility excludes blocked leads.
+B4  Single "send confirm link" mailed a do-not-contact address; now 409 DO_NOT_CONTACT. Bulk request-confirmation counts
+    them in "doNotContact".
+B5  A filter-wide bulk action that failed part-way discarded its audit entry and answered a bare 500 although some leads had
+    changed. It now audits what changed (partial: true) and answers 500 code PARTIAL with how many.
+B6  Editing a lead's email recorded no consent for the new address (the old consent stayed); it now records
+    kind admin_edit with the replaced kind and the admin.
+B7  A failed do-not-contact lift during an edit (or a re-join) left a lead that is never mailed and no way to retry: edit now
+    answers 409 REMOVAL_LIFT_FAILED (saved: true; the dialog offers a retry that carries overrideRemoval), and the re-join
+    retry lifts a self-placed block when the lead already exists.
+B8  CSV-imported leads were stored as source 'manual'; now 'import' (existing rows relabelled by 0076; filter/labels added).
+B9  Three comments pointed at migration 0064 for candidates_notified_fields; it is 0068.
+
+CROSS-SECTION
+- email.service.js / templates: both employer senders require prefsUrl and the templates carry {{PREFS_URL}}.
+- constants.EXPECTED_SCHEMA_VERSION 76; tests/profile.round10.test.js now pins "at least 75" instead of exactly 75.
+- mappers.leadRowToCamel reads mailbox_key (mapper-coverage test).
+
+TESTS
+tests/employer-leads.round12.test.js, tests/fixtures/mailbox-keys.json (JS/SQL parity pairs; the SQL was also run against
+real Postgres via PGlite: 24/24, backfill, trigger, idempotent), frontend AdminLeads.round12 and EmployerLeadPreferences.
+Full suite 4885 pass; npm run lint clean.

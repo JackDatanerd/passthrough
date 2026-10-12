@@ -2064,7 +2064,7 @@ describe('R8 — bulk actions', () => {
   it('requestConfirmation mails only the unconfirmed ones, reports failures and skips, and does not spend the public hourly budget', async () => {
     t = setup({ leads: three() })
     const res = await bulk({ ids: [ID1, ID2, ID3], action: 'requestConfirmation' })
-    expect(res.body).toEqual({ success: true, affected: 2, sent: 2, failed: 0, skipped: 1, blocked: 0 })
+    expect(res.body).toEqual({ success: true, affected: 2, sent: 2, failed: 0, skipped: 1, blocked: 0, doNotContact: 0 })
     expect(t.state.acks.map(a => a.to).sort()).toEqual(['a@x.com', 'c@x.com'])
     expect(t.state.audit.find(a => a.action === 'lead.bulk_request_confirmation').detail).toMatchObject({ failed: 0, skipped: 1 })
   })

@@ -895,15 +895,16 @@ async function sendOwnerNotice(env, subject, message) {
 // a public form is whatever a stranger typed, so every copy carries a signed
 // confirm link and a signed one-click removal link (built by the controller —
 // signing needs the secret).
-async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl, unsubscribeUrl, outcome } = {}) {
+async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { confirmUrl, removeUrl, prefsUrl, unsubscribeUrl, outcome } = {}) {
   // Never send the template with its placeholders unfilled.
-  if (!confirmUrl || !removeUrl) throw new Error('sendEmployerLeadAck needs confirmUrl and removeUrl')
+  if (!confirmUrl || !removeUrl || !prefsUrl) throw new Error('sendEmployerLeadAck needs confirmUrl, removeUrl and prefsUrl')
   return send(env, supabase, email, 'Confirm your email for Passthrough early access', 'employer_lead_ack', {
     NAME:          name,
     FIELD_PHRASE:  fieldLabel ? ` in ${fieldLabel}` : '',
     SUPPORT_EMAIL: 'support@passthrough.dev',
     CONFIRM_URL:   confirmUrl,
-    REMOVE_URL:    removeUrl
+    REMOVE_URL:    removeUrl,
+    PREFS_URL:     prefsUrl
   }, {
     // Fresh audit pass 2 (G4): this goes to an address a stranger typed, from the same
     // sending domain as password resets — so mail clients get a real one-click
@@ -920,15 +921,16 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
 // Sent by an admin to a CONFIRMED lead whose field now has Verified candidates (see
 // employer-leads.controller.js's adminNotifyCandidates). Carries the same signed one-click
 // removal link and RFC 8058 header as the acknowledgement. Never names a candidate — only a count.
-async function sendEmployerCandidatesAvailable(env, supabase, email, name, fieldLabel, count, { removeUrl, unsubscribeUrl, fieldKey, outcome } = {}) {
-  if (!removeUrl) throw new Error('sendEmployerCandidatesAvailable needs removeUrl')
+async function sendEmployerCandidatesAvailable(env, supabase, email, name, fieldLabel, count, { removeUrl, prefsUrl, unsubscribeUrl, fieldKey, outcome } = {}) {
+  if (!removeUrl || !prefsUrl) throw new Error('sendEmployerCandidatesAvailable needs removeUrl and prefsUrl')
   const n = Number(count) || 0
   return send(env, supabase, email, `Verified candidates in ${fieldLabel} are now available`, 'employer_candidates_available', {
     NAME:          name,
     FIELD:         fieldLabel,
     COUNT_PHRASE:  n === 1 ? 'there is 1 Verified candidate' : `there are ${n} Verified candidates`,
     SUPPORT_EMAIL: 'support@passthrough.dev',
-    REMOVE_URL:    removeUrl
+    REMOVE_URL:    removeUrl,
+    PREFS_URL:     prefsUrl
   }, {
     headers: unsubscribeUrl ? {
       'List-Unsubscribe':      `<${unsubscribeUrl}>`,

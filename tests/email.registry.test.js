@@ -44,8 +44,8 @@ const CALLS = {
   sendPartnerTermsUpdate: ['p@x.y', 'P', '2026-10', 'https://t', 'https://d'],
   sendPartnerDashboardLinkRegenerated: ['p@x.y', 'P', 'https://d'], sendPartnerPayoutVoided: ['p@x.y', 'P', 500, 'USD', 'Entered against the wrong cycle.'],
   sendEmployerLeadRejoin: ['l@x.y', { rejoinUrl: 'https://j', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
-  sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
-  sendEmployerCandidatesAvailable: ['l@x.y', 'Lee', 'Design', 3, { removeUrl: 'https://r', unsubscribeUrl: 'https://u' }],
+  sendEmployerLeadAck: ['l@x.y', 'Lee', 'Design', { confirmUrl: 'https://c', removeUrl: 'https://r', prefsUrl: 'https://p', unsubscribeUrl: 'https://u' }],
+  sendEmployerCandidatesAvailable: ['l@x.y', 'Lee', 'Design', 3, { removeUrl: 'https://r', prefsUrl: 'https://p', unsubscribeUrl: 'https://u' }],
 }
 
 describe('email templates — every sender renders through the real templates', () => {
@@ -79,7 +79,7 @@ describe('email templates — every sender renders through the real templates', 
 describe('send() failure handling', () => {
   it('a render failure is LOGGED as failed and gives the throttle slot back, instead of escaping', async () => {
     const { svc, sent, logs, refunds, db, env } = setup({ renderThrows: 'Unknown email template: nope' })
-    const ok = await svc.sendEmployerLeadAck(env, db, 'l@x.y', 'Lee', 'Design', { confirmUrl: 'a', removeUrl: 'b', unsubscribeUrl: 'c' })
+    const ok = await svc.sendEmployerLeadAck(env, db, 'l@x.y', 'Lee', 'Design', { confirmUrl: 'a', removeUrl: 'b', prefsUrl: 'p', unsubscribeUrl: 'c' })
     expect(ok).toBe(false)
     expect(sent).toHaveLength(0)
     expect(logs).toHaveLength(1)
@@ -89,7 +89,7 @@ describe('send() failure handling', () => {
 
   it('a Resend failure is logged as failed and refunds the slot', async () => {
     const { svc, logs, refunds, db, env } = setup({ failSend: 'Resend down' })
-    expect(await svc.sendEmployerLeadAck(env, db, 'l@x.y', 'Lee', 'Design', { confirmUrl: 'a', removeUrl: 'b', unsubscribeUrl: 'c' })).toBe(false)
+    expect(await svc.sendEmployerLeadAck(env, db, 'l@x.y', 'Lee', 'Design', { confirmUrl: 'a', removeUrl: 'b', prefsUrl: 'p', unsubscribeUrl: 'c' })).toBe(false)
     expect(logs[0]).toMatchObject({ status: 'failed', error: 'Resend down' })
     expect(refunds).toHaveLength(1)
   })

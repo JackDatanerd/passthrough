@@ -267,7 +267,7 @@ describe('sendOwnerNotice — employer leads', () => {
 })
 
 describe('sendEmployerLeadAck', () => {
-  const links = { confirmUrl: 'https://passthrough.dev/employer/confirm?token=C.T', removeUrl: 'https://passthrough.dev/employer/remove?token=R.T' }
+  const links = { confirmUrl: 'https://passthrough.dev/employer/confirm?token=C.T', removeUrl: 'https://passthrough.dev/employer/remove?token=R.T', prefsUrl: 'https://passthrough.dev/employer/preferences?token=P.T' }
 
   it('sends the confirmation with the name, field, both signed links, support address and both content and plain-text parts', async () => {
     t = setup()
@@ -327,7 +327,7 @@ describe('htmlToPlainText / fmtMoney', () => {
 
 // ══ Employer leads, fresh audit pass 2 (Section 5) ═══════════════════════════
 describe('employer_lead_ack — failed sends and List-Unsubscribe', () => {
-  const links = { confirmUrl: 'https://x/c', removeUrl: 'https://x/r' }
+  const links = { confirmUrl: 'https://x/c', removeUrl: 'https://x/r', prefsUrl: 'https://x/p' }
   const mk = (sendImpl) => {
     const sent = []
     const { mod, restore } = loadWithStubs('services/email.service.js', {
@@ -372,7 +372,7 @@ describe('employer_lead_ack — failed sends and List-Unsubscribe', () => {
 
 // Independent audit round 6 (Section 5, G1): the admin-triggered "candidates are available" email.
 describe('employer_candidates_available — per-address cap, honest failures, one-click unsubscribe', () => {
-  const links = { removeUrl: 'https://x/r' }
+  const links = { removeUrl: 'https://x/r', prefsUrl: 'https://x/p' }
   const mk2 = (sendImpl) => {
     const sent = []
     const { mod, restore } = loadWithStubs('services/email.service.js', {
@@ -464,7 +464,7 @@ describe('link emails — failed sends give the reserved slot back', () => {
 })
 
 describe('round 11 — employer mail caps follow the mailbox, not the spelling', () => {
-  const links = { confirmUrl: 'https://c', removeUrl: 'https://r', unsubscribeUrl: 'https://u' }
+  const links = { confirmUrl: 'https://c', removeUrl: 'https://r', prefsUrl: 'https://p', unsubscribeUrl: 'https://u' }
   it('alias spellings of one inbox share the acknowledgement cap', async () => {
     t = setup()
     const results = []
@@ -474,7 +474,7 @@ describe('round 11 — employer mail caps follow the mailbox, not the spelling',
   })
   it('the candidates notice has a separate cap per field', async () => {
     t = setup()
-    const send = (fieldKey) => t.mod.sendEmployerCandidatesAvailable(t.env, t.db, 'e@acme.com', 'E', 'Sales', 3, { removeUrl: 'https://r', unsubscribeUrl: 'https://u', fieldKey })
+    const send = (fieldKey) => t.mod.sendEmployerCandidatesAvailable(t.env, t.db, 'e@acme.com', 'E', 'Sales', 3, { removeUrl: 'https://r', prefsUrl: 'https://p', unsubscribeUrl: 'https://u', fieldKey })
     expect(await send('sales')).toBe(true)
     expect(await send('sales')).toBe(false)
     expect(await send('finance')).toBe(true)

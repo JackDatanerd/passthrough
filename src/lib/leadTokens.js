@@ -22,7 +22,11 @@ const dec = new TextDecoder()
 
 // 'rejoin' (round 11): the link in the "add this address back?" email sent to someone who removed
 // themselves and later typed their address into the public form again.
-const PURPOSES = ['confirm', 'remove', 'rejoin']
+//
+// 'prefs' (round 12): the "update your details" link in the acknowledgement and candidates emails — lets the inbox
+// owner correct the field(s) and job title on their own lead. Its own purpose, so a link that can only edit those
+// can never be replayed as a confirmation, a removal or a re-join (and the reverse).
+const PURPOSES = ['confirm', 'remove', 'rejoin', 'prefs']
 const MAX_EMAIL_LENGTH = 254   // same bound the lead form enforces
 
 function b64url(bytes) {
