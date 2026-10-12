@@ -41,7 +41,11 @@ router.get('/unsubscribe', rl.employerLeadOptOut, c.unsubscribeRedirect)
 // a manual Supabase query.
 router.get('/', admin, c.adminListLeads)
 // Must not be shadowed by a future GET /:id.
-router.get('/export.csv', admin, c.adminExportLeads)
+// Round 12: the whole list of names and addresses leaves the system here, so it is behind the same password
+// re-entry (ADMIN_STEP_UP_MINUTES; off unless configured) as import, bulk change and delete already are.
+router.get('/export.csv', admin, admin.stepUp, c.adminExportLeads)
+// Round 12: leads that share one inbox (hiring@ and hiring+eng@), and folding them into one.
+router.get('/duplicates', admin, c.adminListDuplicates)
 
 // Admin-only writes that are not keyed by an :id, registered before the /:id
 // routes so 'manual' / 'bulk' can never be read as an id.
@@ -52,7 +56,9 @@ router.post('/import', admin, admin.stepUp, c.adminImportLeads)
 router.post('/bulk',   admin, admin.stepUp, c.adminBulkUpdateLeads)
 // FEATURE GAP CLOSED (independent audit round 6, G1): tell confirmed leads in a field that now has
 // Verified candidates. Not keyed by :id, so it sits with the other fixed-path writes.
-router.post('/notify-candidates', admin, c.adminNotifyCandidates)
+// Mass mail from our sending domain: the real send needs the step-up, the dry run (counts + who) does not.
+router.post('/notify-candidates', admin, admin.stepUpWhen(body => !!body && body.dryRun !== true), c.adminNotifyCandidates)
+router.post('/merge', admin, c.adminMergeLeads)
 
 // FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way to learn an
 // address was suppressed used to be trying to re-add it via /manual and

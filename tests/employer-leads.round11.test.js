@@ -537,7 +537,8 @@ describe('retention records the reason', () => {
     expect(r).toMatchObject({ deleted: 1, suppressed: 1 })
     expect(upserts[0].every(v => v.reason === 'purge')).toBe(true)
     expect(upserts[1].every(v => !('reason' in v))).toBe(true)
-    expect(upserts[1]).toHaveLength(2)
-    expect(upserts[1][0].email_hash).toBe(createHmac('sha256', 'k').update('dana+x@gmail.com').digest('hex'))
+    // Round 12: ONE entry per mailbox, under the canonical hash (an alias-only row could not be lifted from the plain address).
+    expect(upserts[1]).toHaveLength(1)
+    expect(upserts[1][0].email_hash).toBe(createHmac('sha256', 'k').update('dana@gmail.com').digest('hex'))
   })
 })

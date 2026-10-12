@@ -6,6 +6,7 @@ import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import { formatDateTime } from '../../lib/utils'
+import { auditDetailParts } from '../../lib/auditDetail'
 import usePageClamp from '../../hooks/usePageClamp'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
@@ -23,11 +24,11 @@ const PAGE_SIZE = 20
 // counts, field names and status transitions, so there's nothing here that
 // needs hiding, just formatting for a human to actually read at a glance.
 function DetailLine({ detail }) {
-  const entries = Object.entries(detail || {}).filter(([, v]) => v !== undefined && v !== null && v !== '')
-  if (entries.length === 0) return null
+  const parts = auditDetailParts(detail)
+  if (parts.length === 0) return null
   return (
     <div className="text-xs text-gray-400">
-      {entries.map(([k, v]) => `${k}: ${typeof v === 'boolean' ? (v ? 'yes' : 'no') : v}`).join(' · ')}
+      {parts.join(' · ')}
     </div>
   )
 }

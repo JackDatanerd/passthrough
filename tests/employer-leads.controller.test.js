@@ -1698,7 +1698,8 @@ describe('R6-G1 — adminNotifyCandidates', () => {
   })
   it('is admin-only at the route', () => {
     const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/routes/employer-leads.routes.js'), 'utf8')
-    expect(src).toMatch(/router\.post\('\/notify-candidates', admin, c\.adminNotifyCandidates\)/)
+    // Round 12: the real send also needs the password step-up (the dry run does not).
+    expect(src).toMatch(/router\.post\('\/notify-candidates', admin, admin\.stepUpWhen\([^\n]*\), c\.adminNotifyCandidates\)/)
   })
 })
 

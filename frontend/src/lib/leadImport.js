@@ -61,3 +61,19 @@ export const chunk = (arr, size = IMPORT_BATCH_SIZE) => {
   for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size))
   return out
 }
+
+// Round 12 (Section 5): the server only sees one batch at a time, so an address repeated in two different batches
+// of a big file was reported as "would import" twice by the check, then created once by the real run (the second
+// copy "already a lead") — the check over-promised. Repeats are taken out here, before batching, keeping the first
+// copy. -> { send: rows to upload, lineOf: original 1-based line of each uploaded row, repeats: [{ line, email }] }
+export function spreadRepeats(rows) {
+  const seen = new Set()
+  const send = [], lineOf = [], repeats = []
+  rows.forEach((r, i) => {
+    const key = String((r && r.email) || '').trim().toLowerCase()
+    if (key && seen.has(key)) { repeats.push({ line: i + 1, email: key }); return }
+    if (key) seen.add(key)
+    send.push(r); lineOf.push(i + 1)
+  })
+  return { send, lineOf, repeats }
+}

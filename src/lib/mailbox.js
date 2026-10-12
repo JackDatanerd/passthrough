@@ -54,10 +54,14 @@ async function suppressionHashes(env, email) {
   const forms = [...new Set([exact, canonicalMailbox(exact)])]
   const { current, previous } = hashKeys(env)
   const plain = await Promise.all(forms.map(f => sha256(f)))
-  if (!current) return { write: plain, read: plain }
+  // `store` (round 12, B10): the ONE hash a NEW do-not-contact entry is written under — the canonical mailbox's.
+  // Every lookup (`read`) already includes the canonical hash of whatever was typed, so one entry covers every
+  // spelling, and it can be lifted from any spelling. `write` (typed + canonical) left an alias-only row that
+  // lifting the plain address could never find, so bob+x@ stayed blocked after an admin lifted bob@.
+  if (!current) return { write: plain, read: plain, store: [plain[plain.length - 1]] }
   const keyed = await Promise.all(forms.map(f => hmacHex(current, f)))
   const old = previous ? await Promise.all(forms.map(f => hmacHex(previous, f))) : []
-  return { write: keyed, read: [...new Set([...keyed, ...old, ...plain])] }
+  return { write: keyed, read: [...new Set([...keyed, ...old, ...plain])], store: [keyed[keyed.length - 1]] }
 }
 
 module.exports = { canonicalMailbox, suppressionHashes, normalizeMailbox }

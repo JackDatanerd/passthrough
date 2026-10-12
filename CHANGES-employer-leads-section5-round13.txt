@@ -1,0 +1,58 @@
+Section 5 (Employer leads) - independent audit round 13 (controller + routes, with the mailbox, retention, email, mapper
+frontend and migration code they touch)
+Base: 5bac9b4 "database layer audit - move 0077 files to correct paths ..."   ONE MIGRATION: 0078_employer_leads_duplicates.sql
+(apply after 0076 and 0077; the Worker is safe to deploy before it - only the new Duplicates screen answers "Run migration 0078"
+until it has run). EXPECTED_SCHEMA_VERSION is now 78.
+No new env var (SUPPORT_EMAIL is now READ if set; the default is unchanged).
+
+This round started as a fresh audit of the controller and routes with no reference to earlier comments. Midway the repo
+moved: round 12 (9327648) had independently fixed the alias-removal bug (mailbox_key), the sweep/notify queue starvation, the
+rejoin and PATCH block-lift retries, the consent reset and the 0064 comments. Those are NOT redone here; everything below
+is what was still open on top of that, found by running the same probes against the current code.
+
+BUGS
+B1  The check-an-address answer (POST /suppressions/check) said "no lead" while another SPELLING of the same inbox was a
+    lead, so the warning before "add to do-not-contact" (which now deletes those leads) did not fire. It now looks by
+    mailbox_key too (leadExistsForMailbox).
+B2  Public form: a too-long verificationCode (>32) or roleCategory/roleTitle (>100) failed the whole submission with a 400
+    and the lead was lost - against the schema's own comments. roleCategory/roleTitle are now cut, a bad code is dropped.
+B3  Admin "Add lead" used a plain insert and 500'd on a database that had not run 0068 (consent / confirmed_via); it now
+    degrades like every other write of those columns.
+B4  PATCH /:id and the edit form: the form sends every field, so a save from a stale screen overwrote what the lead (a
+    resubmission adding a field, the confirm page setting one) or another admin had changed meanwhile. PATCH now takes
+    expectedUpdatedAt and the write is conditional on updated_at: 409 LEAD_CHANGED, nothing written. The edit form and the
+    notes box send it. The REMOVAL_LIFT_FAILED answer now carries the saved row so the retry it asks for is not refused.
+B5  A new do-not-contact entry was written under BOTH the typed alias and the canonical mailbox; lifting the plain address
+    could never find the alias row, so bob+x@ stayed blocked after an admin lifted bob@. New entries are written under the
+    canonical mailbox only (suppressionHashes().store; recordSuppressions and the retention purge). Every lookup already
+    covered both, so nothing that was blocked is unblocked. Entries written before this are unchanged.
+B6  Rejoin with an existing lead and a block that is not the person's to re-open (complaint, admin) answered "you're already
+    on the list". It now says unavailable.
+B7  Audit log screen printed "filters: [object Object]" for EVERY lead export (even with no filters) and a filter-wide bulk
+    action printed up to 2000 ids on one line. lib/auditDetail.js formats values (objects readable, long id lists summarised).
+B8  Import check over-reported: the server de-duplicates one batch at a time, so an address repeated in two 200-row batches
+    was "would import" twice then created once. The screen now removes repeats before batching (spreadRepeats), keeping
+    original row numbers in the problem list.
+
+GAPS
+G1  Duplicates: GET /api/employer-leads/duplicates (leads sharing an inbox, grouped; duplicate_leads() in 0078) and
+    POST /merge { keepId, mergeIds } (same-inbox leads only, max 10; counts add up, furthest status, confirmation and mail
+    times, notes, every field; conditional on the kept lead's updated_at). "Duplicates" button on the admin list.
+G2  Notify: the dry run now names who the next send would reach (preview) and the dialog shows them; a send can be limited to
+    the leads ticked in the list (ids, still only the eligible ones).
+G3  Import: bounced / spam-reported addresses (email_suppressions) are skipped and counted ("blocked"), checked in groups.
+G4  Step-up: the CSV export and the real notify send now need the password re-entry when ADMIN_STEP_UP_MINUTES is on (import,
+    bulk, delete and do-not-contact edits already did). The notify DRY RUN does not.
+G5  Employer emails' support address reads SUPPORT_EMAIL when set (was hard-coded).
+
+TESTS  tests/employer-leads.round12b.test.js (17), frontend/tests/leadAdmin.round12.test.js (7). Three existing assertions
+that pinned the old behaviour were updated: notify route middleware (employer-leads.controller), keyed-hash count on a
+retention purge (round11: one canonical entry, not two), and profile.round11's EXPECTED_SCHEMA_VERSION == 76 (now >= 76).
+
+NOT DONE / NEEDS A DECISION
+- 0077 (database layer audit, another session) must be applied BEFORE 0078: 0078 writes schema_version 78, so a database that
+  skipped 0077 would report itself healthy while missing it. (The two 0076 files are already a known pair in
+  tests/migrations.numbering.test.js.)
+- Not run against a real Postgres or a browser: the SQL parses (pglast) and the controller/lib/frontend-lib logic is
+  covered by tests on the repo's fake database; the two screens (Duplicates, notify preview) are syntax-checked only.
+- Considered and left: a snooze/pause (instead of all-or-nothing removal), an undo for an import batch.

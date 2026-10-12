@@ -143,7 +143,7 @@ async function purgeArchivedLeads(supabase, now = Date.now(), { suppress = false
       const emails = [...new Set(data.map(r => r.email).filter(Boolean))]
       // Round 11: keyed hashes (SUPPRESSION_HASH_KEY) for the address and its mailbox form, with the reason
       // recorded; falls back to hash-only rows when migration 0068 has not run.
-      const hashes = [...new Set((await Promise.all(emails.map(e => suppressionHashes(env, e)))).flatMap(h => h.write))]
+      const hashes = [...new Set((await Promise.all(emails.map(e => suppressionHashes(env, e)))).flatMap(h => h.store))]
       const upsert = (rows) => supabase.from('employer_lead_suppressions').upsert(rows, { onConflict: 'email_hash', ignoreDuplicates: true })
       let { error: supErr } = await upsert(hashes.map(h => ({ email_hash: h, reason: 'purge' })))
       if (supErr && ['42703', 'PGRST204'].includes(supErr.code)) ({ error: supErr } = await upsert(hashes.map(h => ({ email_hash: h }))))
