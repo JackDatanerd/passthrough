@@ -209,13 +209,19 @@ function fmtMoney(cents, currency) {
   const amount = cents % 100 === 0 ? String(cents / 100) : (cents / 100).toFixed(2)
   return currency === 'USD' ? `$${amount}` : `${amount} ${currency}`
 }
+// Round 12: a currency with no price table must not stop every email (scan results, receipts, resets) from
+// sending — the price line falls back to wording that is true whatever the price is.
+function emailPrice(tier, env, currency) {
+  try { return fmtMoney(c.priceForTier(tier, env), currency) }
+  catch (_) { return 'see pricing' }
+}
 function globalVars(env) {
   const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
   return {
     FRONTEND_URL:    env.FRONTEND_URL,
-    PRICE_FIX:       fmtMoney(c.priceForTier('FIX', env), currency),
-    PRICE_BADGE:     fmtMoney(c.priceForTier('BADGE', env), currency),
-    PRICE_FIX_PLAIN: fmtMoney(c.priceForTier('FIX_PLAIN', env), currency),
+    PRICE_FIX:       emailPrice('FIX', env, currency),
+    PRICE_BADGE:     emailPrice('BADGE', env, currency),
+    PRICE_FIX_PLAIN: emailPrice('FIX_PLAIN', env, currency),
     PASS_THRESHOLD:  String(c.ATS_PASS_THRESHOLD),
     BADGE_THRESHOLD: String(c.ATS_BADGE_THRESHOLD),
   }

@@ -192,8 +192,10 @@ async function adminDashboardStats(ctx) {
     promo: {
       active: c.isPromoActive(ctx.env),
       endsAt: ctx.env.PROMO_ENDS_AT || null,
-      standardCents: { FIX: c.PRICE_FIX, BADGE: c.PRICE_BADGE, FIX_PLAIN: c.PRICE_FIX_PLAIN },
-      promoCents:    { FIX: c.PROMO_PRICE_FIX, BADGE: c.PROMO_PRICE_BADGE, FIX_PLAIN: c.PROMO_PRICE_FIX_PLAIN }
+      // Round 12: read from the active currency's table (null when PAYSTACK_CURRENCY has none — see envCheck).
+      standardCents: c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).standard } : null,
+      promoCents:    c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).promo } : null,
+      priceTableMissing: !c.isSupportedCurrency(ctx.env)
     },
     openItems: {
       erroredScansThisWeek: erroredScansCount || 0,

@@ -57,6 +57,15 @@ describe('PaymentSuccess', () => {
     expect(api.get).toHaveBeenCalledTimes(1)
   })
 
+  it('ROUND 12 (B1): a disputed payment shows "under review" with a link to the delivered resume — not "nothing delivered", not a redirect', async () => {
+    api.get.mockResolvedValue({ data: { success: true, data: { scanId: 's1', disputed: true } } })
+    renderAt()
+    expect(await screen.findByText('This payment is under review')).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Go to your resume' })).toHaveAttribute('href', '/scan/s1')
+    expect(screen.queryByText('Payment confirmed!')).toBeNull()
+    expect(screen.queryByText('Verification failed')).toBeNull()
+  })
+
   it('a 401 still shows the sign-in state', async () => {
     reject(401)
     renderAt()

@@ -1416,7 +1416,7 @@ async function initiateFix(ctx) {
     // originalAmount/promoActive let the checkout UI show the same
     // anchor+slash treatment as the public pricing page, without a second,
     // independently-maintained price table on the frontend.
-    originalAmount: c.standardPriceForTier(fixTier),
+    originalAmount: c.standardPriceForTier(fixTier, ctx.env),
     promoActive,
     referralApplied: priced.referralApplied
   } })

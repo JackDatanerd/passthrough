@@ -101,6 +101,17 @@ async function initializePayment(c2) {
     return c2.json({ success: false, code: 'EMAIL_NOT_VERIFIED',
       message: 'Please verify your email address before buying — your downloads and receipt are sent to it.' }, 403)
   const referralCode = typeof parsed.data.referralCode === 'string' ? parsed.data.referralCode.slice(0, 100) : undefined
+  // ROUND 12 (G1): no price table for the configured currency — refuse before anything is priced or sent to
+  // Paystack (it would otherwise charge a USD figure in that currency's minor units) and tell the owner.
+  if (!c.isSupportedCurrency(c2.env)) {
+    console.error(`[CRITICAL] initializePayment: no price table for currency ${c.activeCurrency(c2.env)}`)
+    try {
+      await emailService.sendOwnerAlert(c2.env, 'Checkout disabled — no price table for PAYSTACK_CURRENCY',
+        `PAYSTACK_CURRENCY is ${c.activeCurrency(c2.env)} but constants.js PRICES_BY_CURRENCY has no row for it, so every checkout is refused. Add the prices (in that currency's minor units) or set PAYSTACK_CURRENCY back.`,
+        { dedupeKey: 'unsupported-currency' })
+    } catch (_) {}
+    return c2.json({ success: false, message: 'Payments are temporarily unavailable. We have been notified — please try again later.' }, 503)
+  }
 
   const supabase = getSupabase(c2.env)
   const { data: row, error } = await supabase.from('scans').select('*').eq('id', scanId).maybeSingle()
@@ -642,7 +653,9 @@ async function verifyPayment(c2) {
   // payment ("nothing was delivered", 400) — false for the buyer who holds the delivered resume. A fully
   // refunded sale is closed by the refund webhook / sweepReversedPayments (row -> REFUNDED), after which this
   // branch is not reached; until then the buyer is told a refund exists, with the scan to go back to.
-  if (paystackStatus === 'reversed' && paymentRow.status === 'SUCCESS')
+  // ROUND 12 (bug B1): a REFUNDED row (the refund closed the sale) answered here as "reversed, so nothing was
+  // delivered" — the same false claim; the buyer was delivered and then refunded. Same refunded answer.
+  if (paystackStatus === 'reversed' && ['SUCCESS', 'REFUNDED'].includes(paymentRow.status))
     return c2.json({ success: true, data: { scanId: paymentRow.scan_id, refunded: true } })
   if (DEFINITE_FAILURE_STATUSES.includes(paystackStatus))
     return c2.json({ success: false, declined: true, paystackStatus, data: { scanId: paymentRow.scan_id },
@@ -770,6 +783,14 @@ async function verifyPayment(c2) {
   // polling/retrying and show a "we've got your payment, we'll sort it out"
   // state. DUPLICATE deliberately stays a success: the scan IS delivered (by the
   // earlier payment), the refund is the owner's problem, not a fault to show.
+  // ROUND 12 (bug B1): settlement refuses to re-run a DISPUTED or REFUNDED row (IGNORED_STATUS), and that was
+  // reported as "nothing was delivered". Both statuses can only follow a SUCCESS, i.e. a delivered order, so a
+  // buyer reloading /payment/success mid-dispute (or after a refund) was told something false. Answer with what
+  // is true: delivered, and the payment is under dispute / refunded.
+  if (result.outcome === 'IGNORED_STATUS' && result.status === 'DISPUTED')
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id, disputed: true } })
+  if (result.outcome === 'IGNORED_STATUS' && result.status === 'REFUNDED')
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id, refunded: true } })
   const NOT_DELIVERED = ['SCAN_MISSING', 'NO_SCAN', 'ACCOUNT_DELETED', 'UNKNOWN_REFERENCE', 'IGNORED_STATUS']
   if (NOT_DELIVERED.includes(result.outcome)) {
     const reversed = result.outcome === 'IGNORED_STATUS'

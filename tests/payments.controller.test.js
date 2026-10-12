@@ -687,20 +687,20 @@ describe('verifyPayment — outcomes that delivered nothing (B6)', () => {
     expect(res.status).toBe(409)
     expect(res.body.outcome).toBe('NO_SCAN')
   })
-  it('a REFUNDED row (late duplicate Paystack success) answers 409 naming the status — never "confirmed"', async () => {
+  it('ROUND 12 (B1): a REFUNDED row (late Paystack success) answers refunded:true — never "confirmed", never re-delivered', async () => {
     t = worldSetup(); t.world.t.payments[0].status = 'REFUNDED'
     const res = await t.mod.verifyPayment(t.c())
-    expect(res.status).toBe(409)
-    expect(res.body).toMatchObject({ success: false, needsSupport: true, outcome: 'IGNORED_STATUS' })
-    expect(res.body.message).toContain('REFUNDED')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1', refunded: true } })
     expect(t.state.queue).toHaveLength(0)
     expect(t.world.t.payments[0].status).toBe('REFUNDED')
   })
-  it('a DISPUTED row answers 409 naming the status', async () => {
+  it('ROUND 12 (B1): a DISPUTED row answers disputed:true — the order was delivered, "nothing was delivered" was false', async () => {
     t = worldSetup(); t.world.t.payments[0].status = 'DISPUTED'
     const res = await t.mod.verifyPayment(t.c())
-    expect(res.status).toBe(409)
-    expect(res.body.message).toContain('DISPUTED')
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ success: true, data: { scanId: 's1', disputed: true } })
+    expect(t.state.queue).toHaveLength(0)
   })
   it('DUPLICATE stays a success — the scan IS delivered (by the earlier payment) — and now says so; with no provable owner payment nothing is refunded blind', async () => {
     t = worldSetup()
@@ -1823,13 +1823,22 @@ describe('round 10 — verify on an already-settled payment', () => {
     expect(res.body.declined).toBeUndefined()
   })
 
-  it('"reversed" on a row that is not SUCCESS keeps the declined answer', async () => {
+  it('"reversed" on a row that never settled (PENDING) keeps the declined answer', async () => {
     t = setup({
-      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'REFUNDED' },
+      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'PENDING' },
       paystack: { data: { status: 'reversed', currency: 'USD', amount: 2900 } },
     })
     const res = await t.mod.verifyPayment(t.c())
     expect(res.status).toBe(400)
     expect(res.body.declined).toBe(true)
+  })
+  it('ROUND 12 (B1): "reversed" on a REFUNDED row is the refunded answer, not a decline', async () => {
+    t = setup({
+      paymentRow: { user_id: 'u1', amount_cents: 2900, currency: 'USD', scan_id: 's1', fix_tier: 'FIX', status: 'REFUNDED' },
+      paystack: { data: { status: 'reversed', currency: 'USD', amount: 2900 } },
+    })
+    const res = await t.mod.verifyPayment(t.c())
+    expect(res.status).toBe(200)
+    expect(res.body.data).toMatchObject({ refunded: true })
   })
 })

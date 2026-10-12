@@ -1,0 +1,33 @@
+Payments & Pricing — round 12 (fresh independent audit of Section 3)
+
+Files in section: payments.controller/routes, pricing.controller/routes, paystack.service, Pricing.jsx,
+PaymentSuccess.jsx, usePricing.js.
+
+G1 (feature gap) — prices existed only in USD cents, but PAYSTACK_CURRENCY was honoured by the quote, the charge,
+the verify/webhook amount check and the receipt. Setting it to e.g. KES would have charged 49.00 KES for a $49 product
+with every check agreeing and no alert.
+  * constants.js: PRICES_BY_CURRENCY (USD row = the existing prices), activeCurrency / isSupportedCurrency /
+    priceTable / unsupportedCurrencyError. priceForTier and standardPriceForTier read the active currency's table
+    and throw an exposed 503 (UNSUPPORTED_CURRENCY) for a currency with no row. standardPriceForTier takes an
+    optional env (pricing.controller + scan.controller pass ctx.env).
+  * payments.controller initializePayment: refuses with 503 BEFORE pricing or calling Paystack, and pages the owner
+    (dedupeKey unsupported-currency).
+  * lib/env.js: startup warning naming the currency with no table.
+  * admin.controller: promo readout comes from the active table (null + priceTableMissing when absent).
+  * email.service: a missing table degrades the price line to "see pricing" instead of failing every email.
+  To sell in another currency: add a row to PRICES_BY_CURRENCY (minor units; mind Paystack's per-currency
+  minimum), then set PAYSTACK_CURRENCY. Partner tier_prices are in the platform currency's minor units.
+
+B1 (bug) — GET /payments/verify on a DISPUTED row (Paystack still "success") answered 409 "nothing was delivered",
+and on a REFUNDED row answered 409 "nothing was delivered" / 400 "reversed, nothing delivered". Both statuses can only
+follow a delivered SUCCESS.
+  * payments.controller verifyPayment: DISPUTED -> 200 { disputed: true }; REFUNDED (Paystack success or
+    reversed) -> 200 { refunded: true }. A never-settled PENDING row reported reversed is still a decline.
+  * PaymentSuccess.jsx: new "This payment is under review" state (resume link, reference, no redirect).
+
+Tests: tests/payments.round12.test.js (new), payments.controller.test.js (3 expectations updated to the true
+answers), pricing.controller.test.js + referral.pricing.test.js (KES tests now register a KES table),
+frontend/tests/pages/PaymentSuccess.test.jsx (disputed state).
+
+Not changed (pre-existing, outside Section 3): tests/mappers.migrations.test.js fails on a clean checkout —
+users.saved_profile_prev is not read by userRowToCamel.

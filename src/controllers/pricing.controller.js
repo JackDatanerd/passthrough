@@ -56,7 +56,7 @@ async function getPricing(ctx) {
     // arrived with a ?ref= code (see referral.service.js's resolvePrice).
     // standardPriceForTier() is never promo-adjusted, so this is now a real
     // "was $X" anchor regardless of whether a referral code is present.
-    const originalAmount = c.standardPriceForTier(tier)
+    const originalAmount = c.standardPriceForTier(tier, ctx.env)
     const currentAmount  = c.priceForTier(tier, ctx.env)
     if (!priced) return { tier, amount: currentAmount, originalAmount, referralApplied: false, discountApplied: false, selfReferral: false }
 

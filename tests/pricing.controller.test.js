@@ -1,6 +1,13 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
+
+// Round 12: a currency needs a price table (constants.js PRICES_BY_CURRENCY). These tests are about the QUOTED
+// CURRENCY label following PAYSTACK_CURRENCY, so KES gets a table for their duration.
+import { createRequire as __cr } from 'module'
+const __c = __cr(import.meta.url)('../src/config/constants')
+beforeEach(() => { __c.PRICES_BY_CURRENCY.KES = { standard: { FIX: 600000, BADGE: 500000, FIX_PLAIN: 500000 }, promo: { FIX: 400000, BADGE: 100000, FIX_PLAIN: 250000 } } })
+afterEach(() => { delete __c.PRICES_BY_CURRENCY.KES })
 
 function setup(opts = {}) {
   const db = createFakeSupabase(q => {

@@ -95,6 +95,14 @@ function validateEnv(env) {
       warnings.push('ADMIN_ALLOWED_IPS has no valid IP address or range, so EVERY admin request is refused — fix it or `wrangler secret delete ADMIN_ALLOWED_IPS`')
   }
 
+  // Round 12 (G1): prices exist per currency (constants.js PRICES_BY_CURRENCY). A currency with no row makes
+  // every quote and checkout answer 503 rather than charge a USD figure in the wrong currency.
+  {
+    const c = require('../config/constants')
+    if (!c.isSupportedCurrency(env))
+      warnings.push(`PAYSTACK_CURRENCY is "${c.activeCurrency(env)}" but constants.js PRICES_BY_CURRENCY has no price table for it — pricing and checkout answer 503 until one is added`)
+  }
+
   if (env.PROMO_ACTIVE === 'true') {
     const ends = Date.parse(env.PROMO_ENDS_AT || '')
     if (Number.isNaN(ends)) warnings.push('PROMO_ACTIVE is "true" but PROMO_ENDS_AT is missing/unparseable — promo pricing is OFF')

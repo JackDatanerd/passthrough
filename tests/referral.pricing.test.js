@@ -1,9 +1,16 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createFakeSupabase, eqValue } from './helpers/fakeSupabase.cjs'
 import {
   resolvePrice, recordConversion, isCodeUsable,
   reserveCodeUsage, releaseCodeReservation, pruneReferralCodeReservations,
 } from '../src/services/referral.service.js'
+
+// Round 12: a currency needs a price table (constants.js PRICES_BY_CURRENCY). These tests are about the QUOTED
+// CURRENCY label following PAYSTACK_CURRENCY, so KES gets a table for their duration.
+import { createRequire as __cr } from 'module'
+const __c = __cr(import.meta.url)('../src/config/constants')
+beforeEach(() => { __c.PRICES_BY_CURRENCY.KES = { standard: { FIX: 600000, BADGE: 500000, FIX_PLAIN: 500000 }, promo: { FIX: 400000, BADGE: 100000, FIX_PLAIN: 250000 } } })
+afterEach(() => { delete __c.PRICES_BY_CURRENCY.KES })
 
 const FUTURE = new Date(Date.now() + 86400_000).toISOString()
 const PAST = new Date(Date.now() - 86400_000).toISOString()
