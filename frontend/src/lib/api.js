@@ -110,6 +110,18 @@ async function ensureStepUp() {
   return stepUpPending
 }
 
+// A replayed request still carries the headers the FIRST attempt was built with. The request interceptor re-sets the
+// bearer token and the elevation when there is a current one, but never removes them when there is not (signed out
+// during the delay, elevation expired) — so a replay could present a stale session token or elevation. Dropped here;
+// the interceptor puts back whatever is valid now.
+function dropStaleAuthHeaders(config) {
+  if (!config.headers) return
+  for (const name of ['Authorization', 'X-Admin-Elevation']) {
+    if (typeof config.headers.delete === 'function') config.headers.delete(name)
+    else delete config.headers[name]
+  }
+}
+
 let sessionEnding = false
 
 function endSession(reason) {
@@ -172,7 +184,7 @@ api.interceptors.response.use(
     if (status === 403 && code === 'ADMIN_STEP_UP_REQUIRED' && !config.__noStepUp && !config.__stepUpTried) {
       config.__stepUpTried = true
       clearStepUp()
-      if (await ensureStepUp()) return api.request(config)
+      if (await ensureStepUp()) { dropStaleAuthHeaders(config); return api.request(config) }
       return Promise.reject(err)
     }
 
@@ -214,13 +226,10 @@ api.interceptors.response.use(
     })
     if (decision.retry && !verdict) {
       config.__retried = true
-      // The first attempt's Authorization header is still on `config`; drop it so
-      // the request interceptor re-reads the CURRENT token (or sends none if the
-      // person signed out during the delay) instead of replaying a stale one.
-      if (config.headers) {
-        if (typeof config.headers.delete === 'function') config.headers.delete('Authorization')
-        else delete config.headers.Authorization
-      }
+      // The first attempt's Authorization / elevation headers are still on `config`; drop them so the request
+      // interceptor re-reads the CURRENT token and elevation (or sends none if the person signed out, or the elevation
+      // lapsed, during the delay) instead of replaying stale ones.
+      dropStaleAuthHeaders(config)
       await sleep(decision.delayMs)
       return api.request(config)
     }

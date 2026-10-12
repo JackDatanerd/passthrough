@@ -6,6 +6,7 @@ import Spinner from '../../components/ui/Spinner'
 import Badge from '../../components/ui/Badge'
 import { formatCents, formatDate, cn } from '../../lib/utils'
 import StatCard from '../../components/ui/StatCard'
+import Alert from '../../components/ui/Alert'
 
 export default function AdminDashboard() {
   const [data, setData] = useState(null)
@@ -20,17 +21,28 @@ export default function AdminDashboard() {
   if (error) return <p role="alert" className="text-sm text-red-600">{error}</p>
   if (!data) return <div className="flex justify-center py-16"><Spinner /></div>
 
-  const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts, webhookHealth } = data
+  const { revenue, totalPendingCommissionCents, promo, openItems, recentAlerts, webhookHealth, currency, otherCurrency } = data
+  // Every money figure on this page is in the Worker's active currency (an older Worker sends none: USD, as before).
+  const money = cents => formatCents(cents, currency || 'USD')
+  const leftOut = (otherCurrency?.payments || 0) + (otherCurrency?.ledgerRows || 0)
 
   return (
     <div className="flex flex-col gap-8">
       <div>
         <h1 className="text-2xl font-bold text-gray-900 mb-4">Dashboard</h1>
+        {leftOut > 0 && (
+          <Alert variant="warning" className="mb-4">
+            Totals below count {currency || 'USD'} only. {otherCurrency.payments > 0 && `${otherCurrency.payments} payment${otherCurrency.payments === 1 ? '' : 's'} `}
+            {otherCurrency.payments > 0 && otherCurrency.ledgerRows > 0 && 'and '}
+            {otherCurrency.ledgerRows > 0 && `${otherCurrency.ledgerRows} commission row${otherCurrency.ledgerRows === 1 ? '' : 's'} `}
+            in another currency {leftOut === 1 ? 'is' : 'are'} not included — see Payments and Partners for those.
+          </Alert>
+        )}
         <div className="grid sm:grid-cols-3 gap-4">
-          <StatCard label="Revenue today" value={formatCents(revenue.todayCents)} />
-          <StatCard label="Revenue this week" value={formatCents(revenue.weekCents)} />
-          <StatCard label="Revenue this month" value={formatCents(revenue.monthCents)}
-            sub={revenue.monthPartialRefundsCents > 0 ? `net of ${formatCents(revenue.monthPartialRefundsCents)} partially refunded` : undefined} />
+          <StatCard label="Revenue today" value={money(revenue.todayCents)} />
+          <StatCard label="Revenue this week" value={money(revenue.weekCents)} />
+          <StatCard label="Revenue this month" value={money(revenue.monthCents)}
+            sub={revenue.monthPartialRefundsCents > 0 ? `net of ${money(revenue.monthPartialRefundsCents)} partially refunded` : undefined} />
         </div>
       </div>
 
@@ -40,7 +52,7 @@ export default function AdminDashboard() {
             <h2 className="font-semibold text-gray-900">Partner commissions</h2>
             <Link to="/admin/partners" className="text-xs text-blue-600 hover:underline">View partners →</Link>
           </div>
-          <div className="text-3xl font-bold text-gray-900">{formatCents(totalPendingCommissionCents)}</div>
+          <div className="text-3xl font-bold text-gray-900">{money(totalPendingCommissionCents)}</div>
           <div className="text-sm text-gray-400 mt-1">Pending across all partners</div>
         </div>
 
@@ -54,17 +66,25 @@ export default function AdminDashboard() {
               </span>
             )}
           </div>
-          <div className="text-sm text-gray-600 grid grid-cols-3 gap-2">
-            {['FIX', 'BADGE', 'FIX_PLAIN'].map(tier => (
-              <div key={tier}>
-                <div className="text-xs text-gray-400">{tier}</div>
-                <div className={cn(promo.active && 'line-through text-gray-400')}>
-                  {formatCents(promo.standardCents[tier])}
+          {promo.priceTableMissing || !promo.standardCents ? (
+            // The Worker sends null price tables when PAYSTACK_CURRENCY has none; every checkout is refused until one exists.
+            <Alert variant="error">
+              No price table for {currency || 'the configured currency'}, so checkout is refused. Add its prices to PRICES_BY_CURRENCY in
+              constants.js, or set PAYSTACK_CURRENCY back to a supported currency.
+            </Alert>
+          ) : (
+            <div className="text-sm text-gray-600 grid grid-cols-3 gap-2">
+              {['FIX', 'BADGE', 'FIX_PLAIN'].map(tier => (
+                <div key={tier}>
+                  <div className="text-xs text-gray-400">{tier}</div>
+                  <div className={cn(promo.active && 'line-through text-gray-400')}>
+                    {money(promo.standardCents[tier])}
+                  </div>
+                  {promo.active && promo.promoCents && <div className="text-green-700 font-semibold">{money(promo.promoCents[tier])}</div>}
                 </div>
-                {promo.active && <div className="text-green-700 font-semibold">{formatCents(promo.promoCents[tier])}</div>}
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

@@ -467,3 +467,30 @@ describe('round 5 — partial refunds are visible and netted out of revenue', ()
     expect(call.filters.find(f => f[0] === 'ilike' && f[1] === 'paystack_ref')[2]).toBe('%r1x%')
   })
 })
+
+describe('shared frontend round 8 — dashboard money is in ONE currency, and says which', () => {
+  const todayIso = () => {
+    const now = new Date()
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString()
+  }
+  const run = async (env, payments, ledger) => {
+    t = setup(q => {
+      if (q.table === 'payments' && q.cols?.includes('amount_cents')) return { data: payments, error: null }
+      if (q.table === 'commission_ledger') return { data: ledger, error: null }
+      return { data: [], error: null, count: 0 }
+    })
+    return (await t.mod.adminDashboardStats(t.c({ env }))).body.data
+  }
+
+  it('reports the active currency and sums only rows in it', async () => {
+    const d = await run({ PAYSTACK_CURRENCY: 'kes' },
+      [{ id: 'a', amount_cents: 5000, currency: 'KES', created_at: todayIso() },
+       { id: 'b', amount_cents: 4000, currency: 'USD', created_at: todayIso() },
+       { id: 'c', amount_cents: 1000, currency: null, created_at: todayIso() }],
+      [{ commission_amount_cents: 700, currency: 'KES' }, { commission_amount_cents: 300, currency: 'USD' }, { commission_amount_cents: 100, currency: null }])
+    expect(d.currency).toBe('KES')
+    expect(d.revenue.todayCents).toBe(6000)
+    expect(d.totalPendingCommissionCents).toBe(800)
+    expect(d.otherCurrency).toEqual({ payments: 1, ledgerRows: 1 })
+  })
+})

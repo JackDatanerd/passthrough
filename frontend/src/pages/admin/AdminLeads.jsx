@@ -13,10 +13,11 @@ import Pagination from '../../components/ui/Pagination'
 import Textarea from '../../components/ui/Textarea'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
-import { formatDate, formatNumber } from '../../lib/utils'
+import { formatDate, formatNumber, saveBlobResponse } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import Radio from '../../components/ui/Radio'
 import FileUpload from '../../components/ui/FileUpload'
 import { leadRowsFromCsv, chunk, spreadRepeats } from '../../lib/leadImport'
 
@@ -440,11 +441,7 @@ export default function AdminLeads() {
         params: { search: search || undefined, status: status || undefined, field: field || undefined, source: source || undefined, confirmed: confirmed || undefined, ack: ack || undefined, reengaged: reengaged || undefined, sort },
         responseType: 'blob'
       })
-      const url = URL.createObjectURL(res.data)
-      const a = document.createElement('a')
-      a.href = url; a.download = 'employer-leads.csv'
-      document.body.appendChild(a); a.click(); a.remove()
-      URL.revokeObjectURL(url)
+      saveBlobResponse(res, 'employer-leads.csv')   // shared helper: the object URL is revoked LATER (an immediate revoke cancels the download in Safari)
       // The server caps an export (50,000 rows) — say so instead of handing over a file that looks complete.
       if (res.headers?.['x-export-truncated'] === 'true')
         toast({ message: `The export hit its ${formatNumber(res.headers['x-export-rows'] || 0)}-row limit and is incomplete. Narrow the filters (status, field, source) and export again.`, type: 'warning', duration: 12000 })
@@ -746,7 +743,7 @@ export default function AdminLeads() {
               header: 'Notes',
               cell: l => (
                 <>
-                  <textarea
+                  <Textarea
                     key={`${l.id}:${l.notes || ''}`}
                     aria-label={`Notes for ${l.email}`}
                     defaultValue={l.notes || ''}
@@ -755,7 +752,8 @@ export default function AdminLeads() {
                     onBlur={e => saveNotes(l, e.target.value.trim())}
                     placeholder="Add a note…"
                     rows={1}
-                    className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs resize-y"
+                    size="sm"
+                    wrapperClassName="w-40"
                   />
                 </>
               ),
@@ -1168,19 +1166,16 @@ function DuplicatesModal({ open, onClose, onMerged }) {
           const tooMany = g.leads.length > 10
           return (
             <div key={g.mailbox} className="rounded-md border border-gray-200 px-3 py-2">
-              <ul className="flex flex-col gap-1">
+              <ul role="radiogroup" aria-label={`Which record to keep for ${g.mailbox}`} className="flex flex-col gap-1">
                 {g.leads.map(l => (
                   <li key={l.id}>
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <input type="radio" name={`keep-${g.mailbox}`} className="mt-1" checked={chosen === l.id}
-                        onChange={() => setKeep(k => ({ ...k, [g.mailbox]: l.id }))} />
-                      <span>
-                        <span className="text-gray-900">{l.email}</span>
-                        <span className="block text-xs text-gray-500">
-                          {l.name}, {l.company} · {l.status}{l.roleCategory ? ` · ${roleLabel(l.roleCategory)}` : ''} · {l.confirmedAt ? 'confirmed' : 'unconfirmed'} · {l.submissionCount} submission{l.submissionCount === 1 ? '' : 's'} · added {formatDate(l.createdAt)}
-                        </span>
-                      </span>
-                    </label>
+                    <Radio
+                      name={`keep-${g.mailbox}`}
+                      checked={chosen === l.id}
+                      onChange={() => setKeep(k => ({ ...k, [g.mailbox]: l.id }))}
+                      label={l.email}
+                      description={`${l.name}, ${l.company} · ${l.status}${l.roleCategory ? ` · ${roleLabel(l.roleCategory)}` : ''} · ${l.confirmedAt ? 'confirmed' : 'unconfirmed'} · ${l.submissionCount} submission${l.submissionCount === 1 ? '' : 's'} · added ${formatDate(l.createdAt)}`}
+                    />
                   </li>
                 ))}
               </ul>

@@ -37,6 +37,8 @@ export function formatDateTime(dateStr) {
 export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
   if (cents === null || cents === undefined || typeof cents === 'boolean' || (typeof cents === 'string' && cents.trim() === '') || !Number.isFinite(Number(cents))) return '—'
   const value = Number(cents) / 100
+  // A currency code is compared in upper case: a lower-case 'usd' (Stripe-style) used to lose its "$" and read "12.34 usd".
+  currency = String(currency || 'USD').trim().toUpperCase() || 'USD'
   // Grouped ("12,345.67"): bare "12345.67" is hard to read on admin revenue and
   // partner payout totals. Fixed 'en-US' so the separators match the rest of
   // the UI's en-US dates regardless of the browser's locale.
@@ -110,10 +112,11 @@ export async function copyToClipboard(text) {
       return true
     }
   } catch (_) { /* fall through to the legacy path */ }
+  let ta = null
   try {
     // The fallback focuses a scratch textarea; hand focus back afterwards so a keyboard user isn't dropped on <body>.
     const prev = document.activeElement
-    const ta = document.createElement('textarea')
+    ta = document.createElement('textarea')
     ta.value = text
     ta.setAttribute('readonly', '')
     ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0;pointer-events:none'
@@ -121,11 +124,13 @@ export async function copyToClipboard(text) {
     ta.select()
     try { ta.setSelectionRange(0, text.length) } catch (_) { /* iOS Safari ignores select() alone */ }
     const ok = document.execCommand('copy')
-    document.body.removeChild(ta)
     if (prev && typeof prev.focus === 'function' && document.contains(prev)) prev.focus({ preventScroll: true })
     return !!ok
   } catch (_) {
     return false
+  } finally {
+    // Removed even when select()/execCommand threw — the scratch box used to be left in the page.
+    if (ta && ta.parentNode) ta.parentNode.removeChild(ta)
   }
 }
 
@@ -158,12 +163,21 @@ export function downloadBlob(blob, filename) {
   setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url) }, 1500)
 }
 
+// Saves the body of an axios `responseType: 'blob'` response under the name the server chose (Content-Disposition), or
+// `fallbackName`. Three pages used to hand-roll this: one revoked the object URL immediately after click() — which
+// cancels the download in Safari and some Firefox versions — and none used the server's filename.
+export function saveBlobResponse(res, fallbackName) {
+  downloadBlob(res.data, filenameFromDisposition(res.headers, fallbackName))
+}
+
 // Whole/decimal numbers with thousands separators, always en-US like formatDate/formatMoney — a bare
 // `.toLocaleString()` follows the browser's locale ("12.000" in de-DE) and made one screen mix styles.
 export function formatNumber(n, decimals = 0) {
   const v = Number(n)
   if (n == null || typeof n === 'boolean' || (typeof n === 'string' && n.trim() === '') || !Number.isFinite(v)) return '—'
-  return v.toLocaleString('en-US', { maximumFractionDigits: decimals })
+  // -0 (and a tiny negative that rounds to nothing) is just zero; it used to print "-0".
+  const out = v.toLocaleString('en-US', { maximumFractionDigits: decimals })
+  return /^-0(\.0*)?$/.test(out) ? out.slice(1) : out
 }
 
 // Commission rates are stored as fractions (0.125 = 12.5%). Show up to 2
@@ -173,6 +187,13 @@ export function formatRate(rate) {
   const n = Number(rate)
   if (!Number.isFinite(n)) return '—'
   return `${+(n * 100).toFixed(2)}%`
+}
+
+// ── Time windows ─────────────────────────────────────────────────────────────
+// True when `iso` is a valid timestamp less than `hours` ago (used for the post-payout-details-change hold).
+export function withinHours(iso, hours) {
+  const ms = Date.parse(iso)
+  return Number.isFinite(ms) && Date.now() - ms < hours * 3600000
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────────
@@ -187,12 +208,6 @@ export function formatRate(rate) {
 // is made only of letters, digits and `+ ( ) - space` (so it can hold no quote, comma or operator that could form a
 // formula) and starts like a number, it is written as ="value", which Excel and Sheets show verbatim. Anything else
 // falls back to the normal rules.
-// True when `iso` is a valid timestamp less than `hours` ago (used for the post-payout-details-change hold).
-export function withinHours(iso, hours) {
-  const ms = Date.parse(iso)
-  return Number.isFinite(ms) && Date.now() - ms < hours * 3600000
-}
-
 export function csvText(v) { return { __csvText: v == null ? '' : String(v) } }
 
 export function csvCell(v) {

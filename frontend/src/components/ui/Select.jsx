@@ -52,6 +52,7 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
       {label && (
         <label htmlFor={selectId} className="text-sm font-medium text-gray-700">
           {label}
+          {props.required && <span aria-hidden="true" className="text-red-600"> *</span>}
         </label>
       )}
       <select

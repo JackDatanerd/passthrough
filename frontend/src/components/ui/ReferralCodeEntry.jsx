@@ -50,7 +50,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
     // UI) is the signal "you got a discount" copy must hang on.
     const saves = pricing.discountApplied !== false   // older/cached responses without the field keep the old wording
     return (
-      <p className="text-sm font-medium text-emerald-700 mb-3">
+      <p role="status" className="text-sm font-medium text-emerald-700 mb-3">
         {saves
           ? <>✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}</>
           : <>✓ Referral code <span className="font-mono">{referralCode}</span> recognised — today's price is already as low as your code's, so it doesn't change what you pay.{' '}</>}
@@ -127,7 +127,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
 // otherwise look identical to a normal, no-discount load.
 export function PricingFailedNotice({ referralCode, onRetry, className = 'text-xs mb-3' }) {
   return (
-    <p className={`text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 ${className}`}>
+    <p role="status" className={`text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 ${className}`}>
       {referralCode
         ? "We couldn't verify your referral discount just now — showing standard pricing below. "
         : "We couldn't load current pricing just now — showing standard pricing below. "}

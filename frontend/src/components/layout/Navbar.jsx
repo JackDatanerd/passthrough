@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
 
@@ -24,11 +24,17 @@ export default function Navbar() {
   // this menu is how they are reached without scrolling to the footer.
   const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => { setMenuOpen(false) }, [pathname, hash])
+  const moreBtn = useRef(null)
+  const navRef = useRef(null)
   useEffect(() => {
     if (!menuOpen) return undefined
-    const onKey = e => { if (e.key === 'Escape') setMenuOpen(false) }
+    // Escape closes the menu AND hands focus back to the button that opened it (the menu — and the focused link in
+    // it — disappears, which would otherwise drop a keyboard user on <body>); a press or tap outside closes it too.
+    const onKey = e => { if (e.key === 'Escape') { setMenuOpen(false); moreBtn.current?.focus() } }
+    const onPointer = e => { if (navRef.current && !navRef.current.contains(e.target)) setMenuOpen(false) }
     document.addEventListener('keydown', onKey)
-    return () => document.removeEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointer)
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer) }
   }, [menuOpen])
 
   function handleLogout() {
@@ -37,7 +43,7 @@ export default function Navbar() {
   }
 
   return (
-    <nav aria-label="Main" className="bg-white border-b border-gray-200">
+    <nav ref={navRef} aria-label="Main" className="bg-white border-b border-gray-200">
       <a
         href="#main"
         onClick={skipToMain}
@@ -51,6 +57,7 @@ export default function Navbar() {
         </Link>
         <div className="flex items-center gap-3 sm:gap-4 text-[13px] sm:text-sm whitespace-nowrap">
           <button
+            ref={moreBtn}
             type="button"
             onClick={() => setMenuOpen(o => !o)}
             aria-expanded={menuOpen}

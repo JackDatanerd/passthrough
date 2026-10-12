@@ -38,7 +38,10 @@ export default function DataTable({
   }
   const pad = density === 'compact' ? 'px-3 py-2' : 'px-4 py-3'
   return (
-    <div className={cn('overflow-x-auto rounded-lg border border-gray-200 bg-white', loading && 'opacity-60', className)} aria-busy={loading || undefined}>
+    // A scrolling container must be reachable from the keyboard (a wide table on a phone or a narrow window), and a
+    // focusable region needs a name: it takes the table's caption.
+    <div className={cn('overflow-x-auto rounded-lg border border-gray-200 bg-white focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500', loading && 'opacity-60', className)} aria-busy={loading || undefined}
+      {...(caption ? { role: 'region', 'aria-label': caption, tabIndex: 0 } : {})}>
       <table className="w-full text-sm">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>

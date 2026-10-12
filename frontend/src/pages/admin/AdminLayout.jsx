@@ -51,11 +51,11 @@ function TopStrip() {
       <div className="flex flex-wrap gap-6 items-center">
         <div>
           <span className="text-gray-400">Owed to partners: </span>
-          <span className="font-semibold text-gray-900">{formatCents(stats.totalPendingCommissionCents)}</span>
+          <span className="font-semibold text-gray-900">{formatCents(stats.totalPendingCommissionCents, stats.currency || 'USD')}</span>
         </div>
         <div>
           <span className="text-gray-400">Revenue today: </span>
-          <span className="font-semibold text-gray-900">{formatCents(stats.revenue.todayCents)}</span>
+          <span className="font-semibold text-gray-900">{formatCents(stats.revenue.todayCents, stats.currency || 'USD')}</span>
         </div>
         <div>
           <span className="text-gray-400">Promo: </span>

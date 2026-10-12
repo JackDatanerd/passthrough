@@ -12,6 +12,7 @@ export default function Spinner({ size = 'md', className, label = 'Loading', ton
       className={cn('animate-spin motion-reduce:[animation-duration:3s]', tone === 'brand' && 'text-blue-600', sizes[size], className)}
       fill="none" viewBox="0 0 24 24"
     >
+      {!decorative && <title>{label}</title>}
       <circle className="opacity-25" cx="12" cy="12" r="10"
         stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor"

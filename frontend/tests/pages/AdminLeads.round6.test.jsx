@@ -78,7 +78,10 @@ describe('AdminLeads — capped export', () => {
     URL.createObjectURL = vi.fn(() => 'blob:x'); URL.revokeObjectURL = vi.fn()
     renderAt('/admin/leads')
     await userEvent.click(await screen.findByRole('button', { name: 'Export CSV' }))
-    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalled())
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalled())
+    // Shared-frontend round 8: the object URL is revoked LATER (an immediate revoke cancels the download in Safari).
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled()
+    await waitFor(() => expect(URL.revokeObjectURL).toHaveBeenCalled(), { timeout: 3000 })
     expect(screen.queryByText(/incomplete/)).toBeNull()
   })
 })

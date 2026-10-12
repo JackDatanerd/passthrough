@@ -124,6 +124,9 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       // above any others) reacts — see the module-level comment above.
       if (modalStack[modalStack.length - 1] !== id) return
       if (e.key === 'Escape') {
+        // Escape that confirms/cancels an IME candidate, or that an inner widget (an open menu, a combobox) already
+        // handled, must not also close the dialog.
+        if (e.isComposing || e.defaultPrevented) return
         if (dismissibleRef.current) { e.stopPropagation(); onCloseRef.current?.() }
         return
       }

@@ -24,7 +24,10 @@ export default function useScrollToHash() {
 
   useEffect(() => {
     if (!hash) return
-    const id = decodeURIComponent(hash.slice(1))
+    // A malformed escape ("/#%", "/#100%") makes decodeURIComponent throw, and this effect sits OUTSIDE the route-level
+    // error boundary — one bad link took the whole app down. Fall back to the raw text.
+    let id = hash.slice(1)
+    try { id = decodeURIComponent(id) } catch (_) { /* keep the raw fragment */ }
     let cancelled = false
 
     function tryScroll(attempt = 0) {

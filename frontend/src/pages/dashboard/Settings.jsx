@@ -10,7 +10,7 @@ import PasswordInput from '../../components/ui/PasswordInput'
 import { getToken, setToken, storageSet } from '../../lib/storage'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
-import { formatDate, formatDateTime } from '../../lib/utils'
+import { formatDate, formatDateTime, saveBlobResponse } from '../../lib/utils'
 import { exportFileName, exportPartsFrom, exportCursorFrom } from '../../lib/dataExport'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 import { passwordProblem } from '../../lib/passwordRules'
@@ -226,12 +226,8 @@ export default function Settings() {
     setDownloadingFile(key); setExtraError('')
     try {
       const res = await api.get(`/profile/download-${kind}`, { params: profileId ? { profileId } : {}, responseType: 'blob' })
-      const url = URL.createObjectURL(res.data)
-      const a = document.createElement('a')
       const stem = String(name || 'resume').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'resume'
-      a.href = url; a.download = `${stem}-resume.${kind}`
-      document.body.appendChild(a); a.click(); a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlobResponse(res, `${stem}-resume.${kind}`)
     } catch (err) {
       setExtraError(getErrorMessage(err, 'Could not download the profile.'))
     } finally {
@@ -415,11 +411,7 @@ export default function Settings() {
       const params = { part }
       if (exportCursors[part]) params.cursor = exportCursors[part]
       const res = await api.get('/profile/export', { params, responseType: 'blob' })
-      const url = URL.createObjectURL(res.data)
-      const a = document.createElement('a')
-      a.href = url; a.download = exportFileName(part)
-      document.body.appendChild(a); a.click(); a.remove()
-      setTimeout(() => URL.revokeObjectURL(url), 1000)
+      saveBlobResponse(res, exportFileName(part))
       const next = exportCursorFrom(res)
       if (part === 1) {
         setExportParts(await exportPartsFrom(res)); setExportedParts([1])

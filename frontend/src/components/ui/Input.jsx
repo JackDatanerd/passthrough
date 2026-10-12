@@ -51,6 +51,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
       {label && (
         <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
           {label}
+          {props.required && <span aria-hidden="true" className="text-red-600"> *</span>}
         </label>
       )}
       {endAdornment ? (

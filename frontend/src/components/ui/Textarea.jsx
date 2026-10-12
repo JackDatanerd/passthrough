@@ -2,7 +2,8 @@ import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
 
 // See Input.jsx for what changed and why (useId, forwardRef, aria wiring).
-const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, 'aria-describedby': extraDescribedBy, ...props }, ref) {
+// `size="sm"` is the compact box for table cells and inline notes (a per-row note field), like Input's and Select's.
+const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, size = 'md', 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
@@ -18,6 +19,7 @@ const Textarea = forwardRef(function Textarea({ label, error, hint, className, w
       {label && (
         <label htmlFor={inputId} className="text-sm font-medium text-gray-700">
           {label}
+          {props.required && <span aria-hidden="true" className="text-red-600"> *</span>}
         </label>
       )}
       <textarea
@@ -28,7 +30,8 @@ const Textarea = forwardRef(function Textarea({ label, error, hint, className, w
         aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
         className={cn(
-          'w-full rounded-md border px-3 py-2 text-base sm:text-sm text-gray-900 placeholder-gray-500',
+          'w-full rounded-md border text-gray-900 placeholder-gray-500',
+          size === 'sm' ? 'px-2 py-1 text-xs' : 'px-3 py-2 text-base sm:text-sm',
           'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent resize-y',
           error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
         'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',

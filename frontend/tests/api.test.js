@@ -436,3 +436,19 @@ describe('automatic GET retry', () => {
     expect(seen).toEqual(['Bearer first', undefined])
   }, 10_000)
 })
+
+describe('shared frontend round 8 — replays do not carry stale auth headers', () => {
+  it('a GET retry drops an elevation header the request interceptor would not set again', async () => {
+    vi.useFakeTimers()
+    setGlobals({ pathname: '/dashboard', token: 'tok' })
+    const api = await loadApi()
+    const seen = []
+    const { adapter } = fakeAdapter([{ error: {} }, { data: {} }])
+    const wrapped = async config => { seen.push(config.headers['X-Admin-Elevation']); return adapter(config) }
+    const promise = api.get('/scan/history', { adapter: wrapped, headers: { 'X-Admin-Elevation': 'old-elevation' } })
+    await vi.advanceTimersByTimeAsync(800)
+    await promise
+    expect(seen[0]).toBe('old-elevation')   // first attempt as built by the caller
+    expect(seen[1]).toBeUndefined()         // the replay does not present it
+  })
+})

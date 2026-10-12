@@ -1,0 +1,26 @@
+SHARED FRONTEND (section 11) — round 8
+======================================
+Bugs
+ B1  Hand-rolled blob downloads (AdminLeads CSV, Settings profile + data export) replaced by utils.saveBlobResponse().
+     The AdminLeads one revoked its object URL immediately (cancels the download in Safari/Firefox); the helper revokes later
+     and uses the server's Content-Disposition filename.
+ B2  AdminDashboard crashed on promo.standardCents === null (no price table for the active currency). Now an explicit error.
+ B3  Admin money was formatted as USD whatever the currency. Worker /admin/dashboard now returns `currency` and sums only
+     rows in the active currency (reports otherCurrency counts it left out); AdminDashboard + AdminLayout format with it.
+     formatMoney accepts lower-case currency codes.
+ B4  useScrollToHash: decodeURIComponent threw on "/#%" and took the whole app down. Guarded.
+ B5  copyToClipboard fallback left its scratch textarea in the page when execCommand threw. Always removed.
+ B6  api.js: replays (GET retry, step-up replay) no longer carry stale Authorization / X-Admin-Elevation headers.
+ B7  a11y: Spinner <title>; referral-applied + pricing-failed messages are role=status; Navbar More menu closes on outside
+     press and Escape returns focus; Modal ignores IME / already-handled Escape; DataTable scroll region focusable + named.
+ B8  utils.js: csvText comment re-attached to csvText (withinHours moved); formatNumber(-0) no longer "-0".
+ B9  (found while merging) AdminLeads duplicate-merge dialog added a raw <input type="radio">, failing the section-11 guard
+     test; now uses <Radio> inside a labelled radiogroup.
+Feature gaps
+ G1  Input/Select/Textarea show a required asterisk when `required`.
+ G2  Textarea size="sm"; AdminLeads per-row notes adopt it.
+Tests
+ Worker: tests/admin.controller.test.js (currency). Frontend: sharedFrontend.round8.test.jsx, pages/AdminDashboard.round8.test.jsx,
+ api.test.js (stale headers); AdminLeads.round6 updated (expects the delayed revoke).
+Known, NOT from this round: tests/rateLimiter.test.js "historyPurge limiter" fails on upstream HEAD 0639160 (another session's
+purge-limit change).

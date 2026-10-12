@@ -106,12 +106,21 @@ async function adminDashboardStats(ctx) {
   const queryFrom = startOfWeek < startOfMonth ? startOfWeek : startOfMonth
 
   const { data: revenueWindowPayments, error: payErr } = await supabase
-    .from('payments').select('id, amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
+    .from('payments').select('id, amount_cents, currency, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
   if (payErr) throw payErr
 
   const { data: pendingLedger, error: ledgerErr } = await supabase
-    .from('commission_ledger').select('commission_amount_cents').is('payout_id', null)
+    .from('commission_ledger').select('commission_amount_cents, currency').is('payout_id', null)
   if (ledgerErr) throw ledgerErr
+
+  // SHARED FRONTEND (section 11, round 8): the totals below are shown with ONE currency symbol, but the rows can
+  // carry several (PAYSTACK_CURRENCY changed mid-life, old rows in another currency). Adding 5,000 KES to 40 USD
+  // gives a number that means nothing, so only rows in the ACTIVE currency are summed, a row with no currency
+  // (older ledger rows) counts as the active one, and what was left out is reported instead of silently merged.
+  const activeCurrency = c.activeCurrency(ctx.env)
+  const inActiveCurrency = r => !r.currency || String(r.currency).trim().toUpperCase() === activeCurrency
+  const otherCurrencyPayments = (revenueWindowPayments || []).filter(r => !inActiveCurrency(r)).length
+  const otherCurrencyLedgerRows = (pendingLedger || []).filter(r => !inActiveCurrency(r)).length
 
   // Scans that flipped to ERROR recently — updated_at moves whenever status
   // changes (see the set_updated_at trigger), so this is "recently errored",
@@ -172,16 +181,20 @@ async function adminDashboardStats(ctx) {
   // Best-effort: with the table missing, revenue is gross as before.
   const partialRefunds = await partialRefundsInWindow(supabase, queryFrom)
   const net = p => Math.max(0, p.amount_cents - (partialRefunds.byPayment.get(p.id) || 0))
-  const revenueMonthCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + net(p), 0)
-  const revenueWeekCents  = (revenueWindowPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + net(p), 0)
-  const revenueTodayCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + net(p), 0)
-  const monthPartialRefundsCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + Math.min(p.amount_cents, partialRefunds.byPayment.get(p.id) || 0), 0)
+  const sameCurrencyPayments = (revenueWindowPayments || []).filter(inActiveCurrency)
+  const revenueMonthCents = sameCurrencyPayments.filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + net(p), 0)
+  const revenueWeekCents  = sameCurrencyPayments.filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + net(p), 0)
+  const revenueTodayCents = sameCurrencyPayments.filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + net(p), 0)
+  const monthPartialRefundsCents = sameCurrencyPayments.filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + Math.min(p.amount_cents, partialRefunds.byPayment.get(p.id) || 0), 0)
   let webhookHealth = null
   try { webhookHealth = await require('./webhooks.controller').computeWebhookHealth(supabase, { now: now.getTime() }) }
   catch (err) { console.error('dashboard webhook health:', err.message) }
-  const totalPendingCommissionCents = (pendingLedger || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
+  const totalPendingCommissionCents = (pendingLedger || []).filter(inActiveCurrency).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 
   return ctx.json({ success: true, data: {
+    // The currency every money figure in this response is in (see the filter above); the SPA formats with it.
+    currency: activeCurrency,
+    otherCurrency: { payments: otherCurrencyPayments, ledgerRows: otherCurrencyLedgerRows },
     revenue: { todayCents: revenueTodayCents, weekCents: revenueWeekCents, monthCents: revenueMonthCents, monthPartialRefundsCents },
     webhookHealth,
     totalPendingCommissionCents,
