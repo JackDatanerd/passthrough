@@ -452,6 +452,24 @@ async function abandonPendingForScans(supabase, scanIds, olderThan = null) {
   }
 }
 
+// AUDIT FIX (Auth round 8, B1): account deletion closes every open checkout of the account, as deleting a scan does for
+// that scan. Runs BEFORE the scrub. Never throws; returns rows closed.
+async function abandonPendingForUser(supabase, userId) {
+  if (!userId) return 0
+  try {
+    const { data, error } = await supabase.from('payments')
+      .update({ status: 'ABANDONED' }).eq('user_id', userId).eq('status', 'PENDING')
+      .select('id, referral_reservation_id')
+    if (error) { console.error('abandonPendingForUser failed:', error.message); return 0 }
+    const referralService = require('./referral.service')
+    for (const row of data || []) if (row.referral_reservation_id) await referralService.releaseCodeReservation(supabase, row.referral_reservation_id)
+    return (data || []).length
+  } catch (err) {
+    console.error('abandonPendingForUser error:', err && err.message)
+    return 0
+  }
+}
+
 // ── owner notification for outcomes that need a human ──────────────────────
 // Returns true if it sent something. Never throws.
 //
@@ -697,7 +715,7 @@ async function clearDispute(supabase, payment) {
 module.exports = {
   REVIVABLE_STATUSES, REENQUEUE_AFTER_MS,
   generatorFor, chargeMismatch,
-  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan, abandonPendingForScans,
+  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan, abandonPendingForScans, abandonPendingForUser,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
   refundUnsettledPayment, clearDispute, notifyBuyerReversal,
 }

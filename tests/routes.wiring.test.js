@@ -281,8 +281,8 @@ describe('auth routes — session endpoints and public/authenticated split', () 
     const a = app()
     for (const [method, path] of [
       ['POST', '/register'], ['POST', '/login'], ['POST', '/forgot-password'],
-      ['POST', '/reset-password'], ['GET', '/reset-password/validate'],
-      ['GET', '/verify-email'], ['POST', '/email/confirm'],
+      ['POST', '/reset-password'], ['POST', '/reset-password/validate'],
+      ['POST', '/verify-email'], ['POST', '/email/confirm'],
     ]) expect((await call(a, method, path)).json.handler, `${method} ${path}`).toBeDefined()
   })
   it('/password, /email and /account require BOTH login and the current password check reaching the handler', async () => {

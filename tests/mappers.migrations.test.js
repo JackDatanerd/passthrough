@@ -18,7 +18,7 @@ const TABLE_TO_MAPPER = {
 
 // Columns a mapper must NOT surface: single-use secrets/tokens. Anything else missing is a bug.
 const DELIBERATELY_UNMAPPED = {
-  users: ['email_change_done_token'],
+  users: ['email_change_done_token', 'saved_profile_prev'],   // saved_profile_prev (0075): the previous résumé profile — PII, read only by profile.controller.js, never mapped onto the user object
   // Homepage outcomes (0070): follow-up email bookkeeping only the hourly sweep reads — never part of a scan the API returns.
   scans: ['outcome_prompted_at', 'outcome_prompt_attempts'],
   // Both partner bearer tokens are secrets: payout_details_token (write) and dashboard_token (read-only, migration 0055).

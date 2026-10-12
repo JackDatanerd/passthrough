@@ -1,0 +1,9 @@
+Auth round 8
+B1 deleteAccount: 409 while a checkout opened in the last hour is pending; otherwise closes the account's pending checkouts (+ referral reservations) BEFORE the scrub (fulfillment.service abandonPendingForUser).
+B2 Trusted devices cleared on password reset/change, sign-out-everywhere, email change, account deletion (rateLimitCore trustClear, rateLimiter forgetTrustedDevices); the acting browser is spared where its session continues.
+B3 changePassword / updateEmail / deleteAccount honour a trusted device through one shared helper, like login.
+B4 deleteAccount email_logs purge also covers the staged pending_email address. Addresses used before a confirmed change still age out with the 180-day retention.
+B5 register / updateEmail reject deleted-<uuid>@passthrough.dev and @removed.invalid.
+B6 Deprecated GET /verify-email and GET /reset-password/validate removed; tokens are read from the POST body only.
+B7 Register free-tier line reads the live limit via usePricing (fallback constant).
+Tests: auth.controller (new round-8 suites), crossCutting.round5 (trustClear / forgetTrustedDevices), routes.wiring, mappers.migrations (saved_profile_prev allow-listed: pre-existing red test), frontend AuthForms / AuthProvider.

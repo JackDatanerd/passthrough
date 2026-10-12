@@ -184,6 +184,18 @@ async function trustAdd(store, key, device) {
   return { ok: true }
 }
 
+// AUDIT FIX (Auth round 8, B2): forget this account's trusted devices — all of them, or all but `keep` (the hash of the
+// browser that just changed the credential and is still signed in). A device trusted before a password reset / change /
+// sign-out-everywhere / email change must not keep its lock exemption afterwards.
+async function trustClear(store, key, keep = null) {
+  if (typeof keep === 'string' && keep && (await readTrusted(store, key)).includes(keep)) {
+    await store.put(key, JSON.stringify({ devices: [keep] }), { expirationTtl: TRUSTED_DEVICE_TTL_SECONDS })
+  } else {
+    await store.delete(key)
+  }
+  return { ok: true }
+}
+
 async function trustCheck(store, key, device) {
   if (typeof device !== 'string' || !device) return { trusted: false }
   return { trusted: (await readTrusted(store, key)).includes(device) }
@@ -200,9 +212,10 @@ const OPS = {
   missRecord:   (s, a) => missRecord(s, a.key, a.now),
   trustAdd:     (s, a) => trustAdd(s, a.key, a.device),
   trustCheck:   (s, a) => trustCheck(s, a.key, a.device),
+  trustClear:   (s, a) => trustClear(s, a.key, a.keep),
 }
 
 module.exports = {
-  consumeSlot, refundSlot, lockoutCheck, lockoutFail, lockoutClear, missRead, missRecord, trustAdd, trustCheck, OPS,
+  consumeSlot, refundSlot, lockoutCheck, lockoutFail, lockoutClear, missRead, missRecord, trustAdd, trustCheck, trustClear, OPS,
   LOCKOUT_MAX_CONSECUTIVE_FAILURES, LOCKOUT_MINUTES, LOCKOUT_MIN_DISTINCT_IPS, LOCKOUT_MAX_TRACKED_IPS, VERIFY_MISS_WINDOW_SECONDS,
 }

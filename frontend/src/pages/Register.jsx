@@ -14,6 +14,8 @@ import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/Turnstile
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { passwordProblem } from '../lib/passwordRules'
+import { usePricing } from '../hooks/usePricing'
+import { FREE_SCANS_PER_DAY } from '../lib/scoreThresholds'
 
 const TERMS_REQUIRED = 'Please accept the Terms of Service and Privacy Policy to continue.'
 
@@ -21,6 +23,10 @@ export default function Register() {
   const navigate = useNavigate()
   const [params]  = useSearchParams()
   const { postRegisterActions, user, authLoading } = useAuth()
+  // AUDIT FIX (Auth round 8, B7): the free-tier line was hardcoded to "3 scans per day" — the Home page and Pricing read the
+  // live limit from /api/pricing (the fallback constant is only for the moment before that answer lands), this page did not.
+  const { pricing } = usePricing('')
+  const freeScansPerDay = pricing?.freeScansPerDay ?? FREE_SCANS_PER_DAY
   const [name,     setName    ] = useState('')
   const [email,    setEmail   ] = useState('')
   const [password, setPassword] = useState('')
@@ -87,7 +93,7 @@ export default function Register() {
       <main className="flex-1 flex items-center justify-center px-4 py-12">
         <div className="w-full max-w-sm bg-white rounded-lg border border-gray-200 shadow-sm p-8">
           <h1 className="text-2xl font-bold text-gray-900 mb-2">Create account</h1>
-          <p className="text-sm text-gray-500 mb-6">Free. 3 scans per day. No credit card.</p>
+          <p className="text-sm text-gray-500 mb-6">Free. {freeScansPerDay} {freeScansPerDay === 1 ? 'scan' : 'scans'} per day. No credit card.</p>
 
           <Form onSubmit={handleSubmit} className="flex flex-col gap-4">
             <Input label="Name" type="text" value={name}

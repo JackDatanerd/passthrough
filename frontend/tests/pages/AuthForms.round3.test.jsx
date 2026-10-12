@@ -36,7 +36,8 @@ function renderAt(path, element, route, ctx = {}) {
       </AuthContext.Provider>
     </MemoryRouter>)
 }
-beforeEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear() })
+// Register reads the free-scan limit through usePricing (api.get('/pricing')) — an unanswered mock must not be a crash.
+beforeEach(() => { cleanup(); vi.clearAllMocks(); localStorage.clear(); api.get.mockResolvedValue({ data: { data: {} } }) })
 afterEach(() => vi.restoreAllMocks())
 
 describe('Login (B3, G3)', () => {
@@ -108,6 +109,26 @@ describe('Register — Turnstile (G1) and password toggles (G2)', () => {
   })
 })
 
+describe('Register — the free-tier line follows the live limit (Auth round 8, B7)', () => {
+  it('quotes the limit /api/pricing returns, not a hardcoded number', async () => {
+    // usePricing caches per viewer for 5 minutes at module level — a viewer id of its own keeps each case independent.
+    api.get.mockResolvedValue({ data: { data: { freeScansPerDay: 7 } } })
+    renderAt('/register', <Register />, '/register', { user: { id: 'viewer-7' } })
+    expect(await screen.findByText(/Free\. 7 scans per day\. No credit card\./)).toBeTruthy()
+  })
+  it('singular when the limit is 1', async () => {
+    api.get.mockResolvedValue({ data: { data: { freeScansPerDay: 1 } } })
+    renderAt('/register', <Register />, '/register', { user: { id: 'viewer-1' } })
+    expect(await screen.findByText(/Free\. 1 scan per day\./)).toBeTruthy()
+  })
+  it('falls back to the built-in default when the pricing request fails', async () => {
+    api.get.mockRejectedValue(new Error('offline'))
+    renderAt('/register', <Register />, '/register', { user: { id: 'viewer-off' } })
+    expect(await screen.findByText(/Free\. 3 scans per day\. No credit card\./)).toBeTruthy()
+  })
+})
+
+
 describe('ForgotPassword — prefill, Turnstile, resend timer (G1, G3)', () => {
   it('is prefilled from ?email=', () => {
     renderAt('/forgot-password?email=ada%40example.com', <ForgotPassword />, '/forgot-password')
@@ -177,3 +198,4 @@ describe('AuthProvider with browser storage blocked (B5)', () => {
     await waitFor(() => expect(screen.getByTestId('u').textContent).toBe('u7'))
   })
 })
+

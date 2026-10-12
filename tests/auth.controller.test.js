@@ -39,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], trusted: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [] }
+  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], trusted: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [], trustForgotten: [], abandoned: [], steps: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -83,6 +83,8 @@ async function setup(opts = {}) {
       if (opts.userUpdateErrorOnce && !state.onceFired) { state.onceFired = true; return { data: null, error: opts.userUpdateErrorOnce } }
       return { data: opts.updatedUserRow ?? { ...userRow, ...q.patch }, error: opts.userUpdateError || null }
     }
+    // Auth round 8 (B1): deleteAccount's fresh-checkout guard. opts.freshCheckouts = PENDING payments opened in the last hour.
+    if (q.table === 'payments' && q.op === 'select') { state.paymentQueries = [...(state.paymentQueries || []), q]; return { data: opts.freshCheckouts ?? [], error: null } }
     if (q.table === 'scans' && q.op === 'select' && q.selectOpts?.head) {
       // deleteAccount's in-flight-work guard: a head-only count.
       state.inFlightQueries = (state.inFlightQueries || 0) + 1
@@ -202,7 +204,11 @@ async function setup(opts = {}) {
       // Trusted-device lockout exemption (cross-cutting infra round 5): opts.trusted = this browser has signed in before.
       isTrustedDevice: async () => !!opts.trusted,
       rememberTrustedDevice: async (env, email) => { state.trusted.push(email) },
+      // Auth round 8 (B2): records WHICH address was cleared and whether the calling browser was spared.
+      forgetTrustedDevices: async (env, email, keepFor) => { state.trustForgotten.push({ email, keep: !!keepFor }); state.steps.push('trust-forgotten') },
     },
+    // Auth round 8 (B1): deleteAccount closes the account's open checkouts before the scrub.
+    'services/fulfillment.service.js': { abandonPendingForUser: async (db, userId) => { state.abandoned.push(userId); state.steps.push('abandon'); return 0 } },
   })
 
   const env = {
@@ -726,11 +732,11 @@ describe('resetPassword — additions (Auth/Scan round)', () => {
 describe('checkResetToken', () => {
   it('reports valid for a live token, invalid otherwise, with no side effects', async () => {
     t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
-    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(true)
+    expect((await t.mod.checkResetToken(t.c({ method: 'POST', body: { token: 'raw' } }))).body.data.valid).toBe(true)
     expect(t.state.updates).toHaveLength(0)
     t.restore()
     t = await setup({ userRow: null })
-    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(false)
+    expect((await t.mod.checkResetToken(t.c({ method: 'POST', body: { token: 'raw' } }))).body.data.valid).toBe(false)
     expect((await t.mod.checkResetToken(t.c({ query: {} }))).body.data.valid).toBe(false)
   })
 })
@@ -742,11 +748,11 @@ describe('verifyEmail', () => {
   })
   it('400s for an invalid/expired token', async () => {
     t = await setup({ userRow: null })
-    expect((await t.mod.verifyEmail(t.c({ query: { token: 'bad' } }))).status).toBe(400)
+    expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'bad' } }))).status).toBe(400)
   })
   it('flips email_verified on a valid token', async () => {
     t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false }) })
-    const res = await t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))
+    const res = await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'raw' } }))
     expect(res.status).toBe(200)
     expect(t.state.updates[0].patch).toEqual({ email_verified: true, email_verify_expiry: null })
   })
@@ -756,14 +762,14 @@ describe('verifyEmail — replay of an already-used link', () => {
   // AUDIT FIX (Auth/Scan round)
   it('answers success ("already verified") instead of "invalid or expired", changing nothing', async () => {
     t = await setup({ userRow: null, replayRow: { id: 'u1' } })
-    const res = await t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))
+    const res = await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'raw' } }))
     expect(res.status).toBe(200)
     expect(res.body.message).toMatch(/already verified/i)
     expect(t.state.updates).toHaveLength(0)
   })
   it('a genuinely unknown token is still a 400', async () => {
     t = await setup({ userRow: null })
-    expect((await t.mod.verifyEmail(t.c({ query: { token: 'nope' } }))).status).toBe(400)
+    expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'nope' } }))).status).toBe(400)
   })
 })
 
@@ -1180,7 +1186,7 @@ describe('unchecked-write bug class: a failed DB write must never be reported as
   })
   it('verifyEmail: a failed update rejects', async () => {
     t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false }), userUpdateError: dbErr })
-    await expect(t.mod.verifyEmail(t.c({ query: { token: 'raw' } }))).rejects.toThrow()
+    await expect(t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'raw' } }))).rejects.toThrow()
   })
   it('resendVerification: if the token cannot be stored, no email is sent', async () => {
     t = await setup({ sessionUser: { id: 'u1', tokenVersion: 1, emailVerified: false, email: 'user@example.com', name: 'Ada' }, userUpdateError: dbErr })
@@ -2166,8 +2172,146 @@ describe('Auth round 6 — tokens travel in a POST body, not the URL (B1)', () =
     expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: {} }))).status).toBe(400)
     expect((await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: { $ne: 1 } } }))).status).toBe(400)
   })
-  it('the GET form still works for a cached older frontend', async () => {
+  // Auth round 8 (B6): the deprecated GET form is gone — a token in a query string is never read, whatever the method.
+  it('a token in the query string is never honoured (the deprecated GET form is removed)', async () => {
     t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE() }) })
-    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(true)
+    expect((await t.mod.checkResetToken(t.c({ query: { token: 'raw' } }))).body.data.valid).toBe(false)
+  })
+})
+
+
+// ── Auth round 8 ─────────────────────────────────────────────────────────────────────────────────────────────────
+describe('Auth round 8 — trusted devices are forgotten when a credential changes (B2)', () => {
+  it('resetPassword forgets every trusted device for the account', async () => {
+    t = await setup({ userRow: baseUserRow({ reset_token: 'hashed', reset_token_expiry: FUTURE(), token_version: 3 }) })
+    expect((await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))).status).toBe(200)
+    expect(t.state.trustForgotten).toEqual([{ email: 'user@example.com', keep: false }])
+  })
+  it('changePassword forgets the others but spares the browser that made the change', async () => {
+    t = await setup({ sessions: true })
+    const res = await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'a-new-longer-one' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.trustForgotten).toEqual([{ email: 'user@example.com', keep: true }])
+  })
+  it('a rejected password change forgets nothing', async () => {
+    t = await setup()
+    await t.mod.changePassword(t.c({ body: { currentPassword: 'wrong', newPassword: 'a-new-longer-one' } }))
+    expect(t.state.trustForgotten).toHaveLength(0)
+  })
+  it('signOutOtherSessions forgets the other devices, sparing this browser', async () => {
+    t = await setup({ sessions: true, sessionId: SID, sessionExpiresAtMs: Date.now() + 86400000 })
+    expect((await t.mod.signOutOtherSessions(t.c())).status).toBe(200)
+    expect(t.state.trustForgotten).toEqual([{ email: 'user@example.com', keep: true }])
+  })
+  it('confirmEmailChange drops the OLD address\'s list and trusts only the confirming browser under the new one', async () => {
+    const RAW = 'a-raw-token'
+    const row = baseUserRow({ pending_email: 'new@example.com', pending_email_token: await sha256(RAW), pending_email_expiry: FUTURE(), token_version: 4 })
+    t = await setup({ userRow: row, pendingLookupRow: row })
+    expect((await t.mod.confirmEmailChange(t.c({ body: { token: RAW } }))).status).toBe(200)
+    expect(t.state.trustForgotten).toEqual([{ email: 'user@example.com', keep: false }])
+    expect(t.state.trusted).toEqual(['new@example.com'])
+  })
+  it('deleteAccount forgets the real address\'s trusted devices only after the scrub committed', async () => {
+    t = await setup({ scans: [] })
+    expect((await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).status).toBe(200)
+    expect(t.state.trustForgotten).toEqual([{ email: 'user@example.com', keep: false }])
+    t.restore()
+    t = await setup({ scans: [], rpcError: { message: 'boom' } })
+    await expect(t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).rejects.toThrow()
+    expect(t.state.trustForgotten).toHaveLength(0)
+  })
+})
+
+describe('Auth round 8 — the lock exemption is one rule for login and the password-gated endpoints (B3)', () => {
+  const locked = { locked: true, retryAfterSeconds: 600 }
+  const owner = { id: 'u1', tokenVersion: 1, emailVerified: true, email: 'user@example.com', lastLoginIp: '9.9.9.9' }
+  it('a locked account refuses changePassword / updateEmail / deleteAccount from an unknown network and device', async () => {
+    for (const [fn, body] of [['changePassword', { currentPassword: 'correct-password', newPassword: 'a-new-longer-one' }],
+                              ['updateEmail', { newEmail: 'n@example.com', password: 'correct-password' }],
+                              ['deleteAccount', { password: 'correct-password' }]]) {
+      t = await setup({ locked, sessionUser: owner, scans: [] })
+      expect((await t.mod[fn](t.c({ body }))).status, fn).toBe(429)
+      expect(t.state.updates, fn).toHaveLength(0)
+      t.restore()
+    }
+  })
+  it('a trusted device is let through to the password check on all three, as login already did', async () => {
+    t = await setup({ locked, trusted: true, sessionUser: owner, sessions: true })
+    expect((await t.mod.changePassword(t.c({ body: { currentPassword: 'correct-password', newPassword: 'a-new-longer-one' } }))).status).toBe(200)
+    t.restore()
+    t = await setup({ locked, trusted: true, sessionUser: owner })
+    expect((await t.mod.updateEmail(t.c({ body: { newEmail: 'n@example.com', password: 'wrong' } }))).status).toBe(400)  // reached the password check
+    t.restore()
+    t = await setup({ locked, trusted: true, sessionUser: owner })
+    expect((await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))).status).toBe(400)
+  })
+})
+
+describe('Auth round 8 — deleteAccount and open checkouts (B1)', () => {
+  it('refuses with 409, touching nothing, while a checkout opened in the last hour is still payable', async () => {
+    t = await setup({ scans: [], freshCheckouts: [{ id: 'pay1' }] })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(409)
+    expect(res.body.message).toMatch(/payment is still open/i)
+    expect(t.state.rpcCalls).toHaveLength(0)
+    expect(t.state.abandoned).toHaveLength(0)
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('the guard is scoped to this user\'s PENDING payments from the last hour', async () => {
+    t = await setup({ scans: [] })
+    await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    const q = t.state.paymentQueries[0]
+    expect(q.filters.find(f => f[0] === 'eq' && f[1] === 'user_id')[2]).toBe('u1')
+    expect(q.filters.find(f => f[0] === 'eq' && f[1] === 'status')[2]).toBe('PENDING')
+    const since = q.filters.find(f => f[0] === 'gt' && f[1] === 'created_at')[2]
+    expect(Date.now() - Date.parse(since)).toBeGreaterThan(59 * 60 * 1000)
+    expect(Date.now() - Date.parse(since)).toBeLessThan(61 * 60 * 1000)
+  })
+  it('closes the remaining open checkouts BEFORE the scrub runs', async () => {
+    t = await setup({ scans: [] })
+    expect((await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).status).toBe(200)
+    expect(t.state.abandoned).toEqual(['u1'])
+    expect(t.state.steps.indexOf('abandon')).toBeLessThan(t.state.steps.indexOf('trust-forgotten'))
+    expect(t.state.rpcCalls[0].name).toBe('scrub_account_data')
+  })
+  it('a wrong password closes nothing', async () => {
+    t = await setup({ scans: [] })
+    await t.mod.deleteAccount(t.c({ body: { password: 'wrong' } }))
+    expect(t.state.abandoned).toHaveLength(0)
+  })
+})
+
+describe('Auth round 8 — deleteAccount purges mail to a staged, unconfirmed address too (B4)', () => {
+  it('includes the pending_email in the email_logs purge', async () => {
+    t = await setup({ scans: [], userRow: baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10), pending_email: 'typo@strangers-inbox.com' }) })
+    expect((await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))).status).toBe(200)
+    expect(t.state.logPurges).toEqual([['user@example.com', 'deleted-u1@passthrough.dev', 'typo@strangers-inbox.com']])
+  })
+})
+
+describe('Auth round 8 — reserved placeholder addresses cannot be taken (B5)', () => {
+  const RESERVED = ['deleted-aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee@passthrough.dev', 'Deleted-AAAAAAAA-BBBB-4CCC-8DDD-EEEEEEEEEEEE@Passthrough.dev', 'gone@removed.invalid']
+  it('register refuses them before touching the DB', async () => {
+    for (const email of RESERVED) {
+      t = await setup()
+      await expect(t.mod.register(t.c({ body: { name: 'Ada', email, password: 'longenough', acceptTerms: true } }))).rejects.toBeTruthy()
+      expect(t.db.calls).toHaveLength(0)
+      t.restore()
+    }
+  })
+  it('updateEmail refuses them as the new address', async () => {
+    for (const newEmail of RESERVED) {
+      t = await setup()
+      await expect(t.mod.updateEmail(t.c({ body: { newEmail, password: 'correct-password' } }))).rejects.toBeTruthy()
+      expect(t.state.updates).toHaveLength(0)
+      t.restore()
+    }
+  })
+  it('ordinary passthrough.dev and lookalike addresses are still fine', async () => {
+    t = await setup()
+    expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'ada@passthrough.dev', password: 'longenough', acceptTerms: true } }))).status).toBe(201)
+    t.restore()
+    t = await setup()
+    expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'deleted-ada@passthrough.dev', password: 'longenough', acceptTerms: true } }))).status).toBe(201)
   })
 })

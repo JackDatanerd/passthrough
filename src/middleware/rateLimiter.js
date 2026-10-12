@@ -960,6 +960,15 @@ async function isTrustedDevice(env, email, c) {
   }
 }
 
+// AUDIT FIX (Auth round 8, B2): called after a password reset/change, sign-out-everywhere, an email change and an
+// account deletion. `keepFor` (a request context) spares the browser making the change, which stays signed in.
+async function forgetTrustedDevices(env, email, keepFor = null) {
+  try {
+    const keep = keepFor ? await deviceHash(keepFor) : null
+    await runOp(env, 'trustClear', { key: trustKey(email), keep })
+  } catch (err) { console.error('trusted device clear backend error (ignored):', err.message) }
+}
+
 // Call on every successful login — clears the failure count so a real user
 // who mistypes their password a few times isn't left one mistake away from
 // a lockout on their next legitimate attempt days later.
@@ -1031,7 +1040,7 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, LOCKOUT_MINUTES,
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
 }

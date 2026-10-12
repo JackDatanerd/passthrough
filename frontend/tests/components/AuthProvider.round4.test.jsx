@@ -32,7 +32,7 @@ function Probe() {
   )
 }
 
-beforeEach(() => { localStorage.clear(); api.get.mockReset(); api.post.mockReset() })
+beforeEach(() => { localStorage.clear(); api.get.mockReset(); api.post.mockReset(); api.get.mockResolvedValue({ data: { data: {} } }) })   // Register reads the free-scan limit via usePricing
 afterEach(() => { cleanup(); vi.clearAllMocks() })
 
 describe('AuthProvider — a cached user is only real alongside its token (B2)', () => {

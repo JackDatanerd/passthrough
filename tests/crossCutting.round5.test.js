@@ -48,6 +48,31 @@ describe('trusted devices (lockout-DoS mitigation)', () => {
     await rl.rememberTrustedDevice(env, 'o@e.com', mk({ device: DEV_A }))
     expect([...env.RATE_LIMIT_KV.m.values()].join('')).not.toContain(DEV_A)
   })
+  // Auth round 8 (B2)
+  it('trustClear forgets every device, or every device but the one kept', async () => {
+    const s = kv()
+    for (const d of ['d1', 'd2', 'd3']) await core.trustAdd(s, 'k', d)
+    await core.trustClear(s, 'k', 'd2')
+    expect((await core.trustCheck(s, 'k', 'd2')).trusted).toBe(true)
+    expect((await core.trustCheck(s, 'k', 'd1')).trusted).toBe(false)
+    expect((await core.trustCheck(s, 'k', 'd3')).trusted).toBe(false)
+    await core.trustClear(s, 'k', 'never-trusted')   // a keep that was not on the list must not be invented
+    expect((await core.trustCheck(s, 'k', 'd2')).trusted).toBe(false)
+    expect(s.m.has('k')).toBe(false)
+    await expect(core.trustClear(s, 'missing')).resolves.toEqual({ ok: true })
+  })
+  it('forgetTrustedDevices: per account, spares only the calling browser, and a broken backend never throws', async () => {
+    const env = { RATE_LIMIT_KV: kv() }
+    for (const [email, dev] of [['o@e.com', DEV_A], ['o@e.com', DEV_B], ['other@e.com', DEV_A]]) await rl.rememberTrustedDevice(env, email, mk({ device: dev }))
+    await rl.forgetTrustedDevices(env, 'O@E.com', mk({ device: DEV_A }))
+    expect(await rl.isTrustedDevice(env, 'o@e.com', mk({ device: DEV_A }))).toBe(true)
+    expect(await rl.isTrustedDevice(env, 'o@e.com', mk({ device: DEV_B }))).toBe(false)
+    expect(await rl.isTrustedDevice(env, 'other@e.com', mk({ device: DEV_A }))).toBe(true)
+    await rl.forgetTrustedDevices(env, 'o@e.com')
+    expect(await rl.isTrustedDevice(env, 'o@e.com', mk({ device: DEV_A }))).toBe(false)
+    const broken = { RATE_LIMIT_KV: { get: async () => { throw new Error('down') }, put: async () => { throw new Error('down') }, delete: async () => { throw new Error('down') } } }
+    await expect(rl.forgetTrustedDevices(broken, 'o@e.com', mk({ device: DEV_A }))).resolves.toBeUndefined()
+  })
   it('a broken backend fails closed for the exemption (not trusted) and never throws', async () => {
     const env = { RATE_LIMIT_KV: { get: async () => { throw new Error('down') }, put: async () => { throw new Error('down') } } }
     await expect(rl.rememberTrustedDevice(env, 'o@e.com', mk({ device: DEV_A }))).resolves.toBeUndefined()

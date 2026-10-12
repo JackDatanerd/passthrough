@@ -32,7 +32,9 @@ const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
 const { deleteObjects, listKeys } = require('../lib/r2')
 const { verifyTurnstile } = require('../lib/turnstile')
-const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
+const { isRemovedEmail } = require('../lib/removedPartner')
+const { abandonPendingForUser } = require('../services/fulfillment.service')
+const { checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES } = require('../middleware/rateLimiter')
 
 // FEATURE (Auth section round 2): fires the one-time lockout email exactly
 // when recordLoginFailure() reports the transition into a lock, from any of
@@ -194,6 +196,14 @@ function lockoutBlocks(c, lockout, lastKnownIp) {
   return true
 }
 
+// AUDIT FIX (Auth round 8, B3): login() lets a TRUSTED DEVICE through a lock, but changePassword / updateEmail /
+// deleteAccount only honoured the last-login-IP exemption — so a stranger who locked the email via login left the signed-in
+// owner, on a phone whose IP had moved, refused on these three while login would have let them in. One predicate for all four
+// (the account's own signed-in session is the caller here, so the account is real).
+async function lockoutBlocksRequest(c, lockout, email, lastKnownIp) {
+  return lockoutBlocks(c, lockout, lastKnownIp) && !(await isTrustedDevice(c.env, email, c))
+}
+
 // BUG FIX (Auth round 3, B2): forgotPassword / resendVerification / updateEmail
 // reserve the per-recipient email slot BEFORE rotating the stored token. If the
 // token write then failed (a database blip), nothing was mailed yet the slot
@@ -285,6 +295,14 @@ async function getDummyPasswordHash() {
 // max 254 = the RFC 5321 limit. Without it a multi-KB "email" reaches
 // Postgres and blows the unique-index row-size limit as an unhandled 500.
 const emailSchema = z.string().trim().toLowerCase().email().max(254)
+
+// AUDIT FIX (Auth round 8, B5): deleteAccount renames the user row to `deleted-<id>@passthrough.dev` (scrub_account_data,
+// under the unique email index) and partner removal uses `@removed.invalid`. Nothing stopped a live account from taking
+// one of those addresses — pre-registering `deleted-<someone's id>@passthrough.dev` made that person's scrub hit a
+// unique violation, so their account could not be deleted. An address someone is signing UP with or CHANGING TO refuses
+// the reserved shapes; login / forgot-password keep plain emailSchema (a lookup of such an address just finds nothing).
+const RESERVED_ADDRESS = /^deleted-[0-9a-f-]{36}@passthrough\.dev$/
+const signupEmailSchema = emailSchema.refine(e => !RESERVED_ADDRESS.test(e) && !isRemovedEmail(e), { message: 'That email address can\'t be used.' })
 
 // Passwords being CHECKED (login, current-password confirmations) get a
 // generous but bounded ceiling — hashing a multi-MB string is a free
@@ -391,7 +409,7 @@ async function register(c) {
     // of zero-width characters through, which then rendered as a blank
     // "Hi ," in every email and an empty heading in the app.
     name:     nameSchema,
-    email:    emailSchema,
+    email:    signupEmailSchema,
     turnstileToken: z.string().max(2048).nullish(),
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
@@ -772,6 +790,8 @@ async function resetPassword(c) {
   // meant to hand control back to them didn't. Clearing it here is the same
   // call login() makes on a successful password check.
   await recordLoginSuccess(c.env, user.email)
+  // AUDIT FIX (Auth round 8, B2): a device trusted before the reset must not keep its lock exemption after it.
+  await forgetTrustedDevices(c.env, user.email)
 
   // FEATURE (Auth section round 2): see sendPasswordChanged's comment —
   // resetPassword is the other of the two paths that leave the password
@@ -784,18 +804,14 @@ async function resetPassword(c) {
   return c.json({ success: true, message: 'Password reset. Please log in.' })
 }
 
-// AUDIT FIX (Auth round 6, B1): the reset and verification tokens used to travel only in a GET query
-// string, which lands in Workers Logs (observability is on) — a live reset credential in a log line.
-// Both endpoints now also accept POST with the token in the body, which is what the SPA uses. The GET form
-// is kept only so a cached older frontend bundle keeps working through a deploy; remove it afterwards.
+// AUDIT FIX (Auth round 6, B1; round 8, B6): the reset and verification tokens travel in a POST body, never a URL — a
+// query string lands in Workers Logs (observability is on), a live credential in a log line. The deprecated GET forms
+// (kept one release for a cached older bundle) are gone; nothing reads a token from the query string any more.
 async function linkToken(c) {
-  if (c.req.method === 'POST') {
-    try {
-      const body = await c.req.json()
-      return body && typeof body.token === 'string' ? body.token : undefined
-    } catch { return undefined }
-  }
-  return c.req.query('token')
+  try {
+    const body = await c.req.json()
+    return body && typeof body.token === 'string' ? body.token : undefined
+  } catch { return undefined }
 }
 
 // GET|POST /api/auth/reset-password/validate
@@ -939,7 +955,7 @@ async function changePassword(c) {
   // means guesses against this account are counted together regardless of
   // which endpoint they came through.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
+  if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
   // maybeSingle, not single: the row can vanish between the auth middleware and
@@ -1018,6 +1034,8 @@ async function changePassword(c) {
   // login) keeps the current session alive across the change, which is
   // what the message already claimed was happening.
   const token = await issueSessionToken(c, { id: user.id, tokenVersion: newTokenVersion })
+  // AUDIT FIX (Auth round 8, B2): every other device loses its lock exemption; this browser keeps its own.
+  await forgetTrustedDevices(c.env, user.email, c)
 
   // FEATURE (Auth section round 2): see sendPasswordChanged's comment.
   c.executionCtx.waitUntil(
@@ -1061,6 +1079,8 @@ async function signOutOtherSessions(c) {
   const token = sid
     ? await issueJWT(c.env, identity, { id: sid, expiresAtMs: c.get('sessionExpiresAtMs') })
     : await issueSessionToken(c, identity) // a pre-sessions token: start a real session for this browser
+  // AUDIT FIX (Auth round 8, B2): signing everything else out also forgets every other trusted device.
+  await forgetTrustedDevices(c.env, sessionUser.email, c)
   return c.json({ success: true, message: 'Other sessions signed out.', data: { token } })
 }
 
@@ -1194,7 +1214,7 @@ async function updateEmail(c) {
   const sessionUser = c.get('user')
   const body = await c.req.json()
   const { newEmail, password, cancelPending } = z.object({
-    newEmail: emailSchema,
+    newEmail: signupEmailSchema,
     password: checkPasswordSchema,
     // FEATURE GAP CLOSED (Section 6, second fixing-time pass): the pending-
     // email flow above needed a way BACK — a change requested by mistake
@@ -1209,7 +1229,7 @@ async function updateEmail(c) {
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
+  if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
   // maybeSingle, not single: the row can vanish between the auth middleware and
@@ -1426,6 +1446,10 @@ async function confirmEmailChange(c) {
   // fresh session for the browser that confirmed.
   await revokeAllSessions(supabase, user.id)
   const newToken = await issueSessionToken(c, { id: user.id, tokenVersion: newTokenVersion })
+  // AUDIT FIX (Auth round 8, B2): the trusted-device list is keyed by email. Drop the old address's list and trust only
+  // the browser that just confirmed under the new one.
+  await forgetTrustedDevices(c.env, user.email)
+  await rememberTrustedDevice(c.env, updated.email, c)
   // FEATURE (Auth round 2, G3): the old address only ever heard about the
   // REQUEST. The moment the change actually lands is the one it most needs to
   // know about — and the only thing it can still do about it is act fast.
@@ -1446,7 +1470,7 @@ async function deleteAccount(c) {
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
   const lockout = await checkAccountLockout(c.env, sessionUser.email)
-  if (lockoutBlocks(c, lockout, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
+  if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
   // maybeSingle, not single: the row can vanish between the auth middleware and
@@ -1480,11 +1504,26 @@ async function deleteAccount(c) {
       message: 'One of your scans is still being processed. Please try again in a few minutes.' }, 409)
   }
 
+  // AUDIT FIX (Auth round 8, B1): deleting a scan refuses while a checkout opened in the last hour may still be paid, and
+  // closes older ones; account deletion did neither. The scrub keeps the scan rows, so an open Paystack tab stayed payable —
+  // the buyer was charged, then auto-refunded (ACCOUNT_DELETED), and the checkout's referral-code reservation stayed held.
+  // Same rule here: a fresh checkout blocks (it ages out in an hour), the rest are closed BEFORE the scrub.
+  const freshCheckoutSince = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const { data: freshCheckout, error: freshErr } = await supabase.from('payments')
+    .select('id').eq('user_id', user.id).eq('status', 'PENDING').gt('created_at', freshCheckoutSince).limit(1)
+  if (freshErr) throw freshErr
+  if (freshCheckout && freshCheckout.length) {
+    return c.json({ success: false,
+      message: 'A payment is still open on your account. Please finish or wait for it to expire (about an hour), then try again.' }, 409)
+  }
+  await abandonPendingForUser(supabase, user.id)
+
   // Captured before scrub_account_data overwrites both columns with
   // placeholder values (see migration 0022) — needed below to send the
   // deletion confirmation to the real address after the scrub commits.
   const preScrubEmail = user.email
   const preScrubName  = user.name
+  const preScrubPendingEmail = user.pendingEmail || null
 
   // BUG FIX (Section 6, fixing-time pass): the scan-content scrub and the
   // user soft-delete used to run as two separate best-effort UPDATEs whose
@@ -1521,6 +1560,8 @@ async function deleteAccount(c) {
 
   const { error: scrubErr } = await supabase.rpc('scrub_account_data', { p_user_id: user.id })
   if (scrubErr) throw scrubErr
+  // AUDIT FIX (Auth round 8, B2): the trusted-device list is keyed by the real address, which a later registration can reuse.
+  await forgetTrustedDevices(c.env, preScrubEmail)
 
   // The scrub nulled every verification_code; leave the codes' tombstones so links already
   // in circulation read "removed by its owner" rather than "not found".
@@ -1591,7 +1632,10 @@ async function deleteAccount(c) {
     // before it survived under `deleted-<id>@…`, which still ties it to the
     // account's id. Purge both.
     const { error: logErr } = await supabase.from('email_logs').delete()
-      .in('to', [preScrubEmail, `deleted-${user.id}@passthrough.dev`])
+      // AUDIT FIX (Auth round 8, B4): also the staged-but-unconfirmed new address — mail went to it (a third party's inbox,
+      // if it was a typo) and the scrub only renames rows addressed to the CURRENT email. Addresses the account used
+      // BEFORE a confirmed change are not recorded anywhere; their rows age out with the 180-day email_logs retention.
+      .in('to', [preScrubEmail, `deleted-${user.id}@passthrough.dev`, ...(preScrubPendingEmail ? [preScrubPendingEmail] : [])])
     if (logErr) console.error('deleteAccount: email_logs purge failed:', logErr.message)
   } catch (e) { console.error('deleteAccount: email_logs purge failed:', e.message) }
 
