@@ -726,7 +726,9 @@ const profileEdit = makeLimiter({
 // batches (each one deletes up to a few dozen scans and their stored files), so the ceiling is
 // per ACCOUNT and sized for a large history being cleared in one sitting, a few times at most.
 const historyPurge = makeLimiter({
-  windowSeconds: 60 * 60, max: 120, keyPrefix: 'rl:historypurge',
+  // 600 batches of 25 = 15,000 scans in a sitting (the client loop allows 400 batches); 120 stopped an account of
+  // more than ~3,000 scans part-way through its own purge.
+  windowSeconds: 60 * 60, max: 600, keyPrefix: 'rl:historypurge',
   keyBy: byAccount,
   message: msg('Too many delete requests. Please try again later.')
 })

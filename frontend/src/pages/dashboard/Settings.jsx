@@ -769,7 +769,11 @@ export default function Settings() {
             <p className="text-sm text-gray-400">
               No saved profile yet — you can save one from any completed scan.
             </p>
-          ) : null}
+          ) : (
+            <p className="text-sm text-gray-400">
+              No main profile right now — pick one of your other profiles below and choose “Make main”, or save one from a completed scan.
+            </p>
+          )}
 
           {extraProfiles.length > 0 && (
             <div className="mt-5 border-t border-gray-100 pt-4">
@@ -812,9 +816,9 @@ export default function Settings() {
                         {editingExtraId !== p.id && <Button variant="secondary" size="sm" onClick={() => setEditingExtraId(p.id)}>Edit</Button>}
                         <Button variant="secondary" size="sm" onClick={() => handleMakeMain(p.id)} disabled={extraBusy}>Make main</Button>
                         <Button variant="secondary" size="sm" onClick={() => { setRenameId(p.id); setRenameValue(p.label) }}>Rename</Button>
-                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', p.id, p.label)}
+                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', p.id, p.summary?.name || p.label)}
                           loading={downloadingFile === `${p.id}:docx`} disabled={!!downloadingFile}>.docx</Button>
-                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', p.id, p.label)}
+                        <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', p.id, p.summary?.name || p.label)}
                           loading={downloadingFile === `${p.id}:pdf`} disabled={!!downloadingFile}>PDF</Button>
                         <Button variant="secondary" size="sm" onClick={() => { setExtraError(''); setRemoveExtraTarget(p) }}>Remove</Button>
                       </div>
