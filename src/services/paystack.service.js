@@ -65,7 +65,7 @@ async function initializeTransaction(env, { email, amount, userId, scanId, fixTi
       'Content-Type':   'application/json'
     },
     body: JSON.stringify({
-      email, amount, currency: env.PAYSTACK_CURRENCY || c.CURRENCY, reference,
+      email, amount, currency: c.activeCurrency(env), reference,
       metadata: { userId, scanId, fixTier, custom_fields: [] },
       callback_url: env.PAYSTACK_CALLBACK_URL
     })

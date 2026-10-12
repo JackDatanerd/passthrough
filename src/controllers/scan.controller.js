@@ -1480,7 +1480,7 @@ async function redeemCredit(ctx) {
     // falsy.
     const { data: creditPayment, error: paymentErr } = await supabase.from('payments').insert({
       amount_cents: 0,
-      currency:     ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+      currency:     c.activeCurrency(ctx.env),
       status:       'SUCCESS',
       fix_tier:     'FIX',
       paystack_ref: `credit:${scan.id}:${Date.now()}`,

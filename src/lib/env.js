@@ -109,6 +109,8 @@ function validateEnv(env) {
     const c = require('../config/constants')
     if (!c.isSupportedCurrency(env))
       warnings.push(`PAYSTACK_CURRENCY is "${c.activeCurrency(env)}" but constants.js PRICES_BY_CURRENCY has no price table for it — pricing and checkout answer 503 until one is added`)
+    else if (env.PAYSTACK_CURRENCY && env.PAYSTACK_CURRENCY !== c.activeCurrency(env))
+      warnings.push(`PAYSTACK_CURRENCY "${env.PAYSTACK_CURRENCY}" is not in canonical form — it is used as "${c.activeCurrency(env)}"; set it to exactly that`)
   }
 
   if (env.PROMO_ACTIVE === 'true') {

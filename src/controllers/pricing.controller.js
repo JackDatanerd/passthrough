@@ -71,13 +71,13 @@ async function getPricing(ctx) {
     // AUDIT FIX: was hardcoded c.CURRENCY ('USD'), while every place that
     // actually charges money (paystack.service.js, payments.controller.js's
     // insert, scan.controller.js's price preview) already uses
-    // `env.PAYSTACK_CURRENCY || c.CURRENCY`. If PAYSTACK_CURRENCY is ever set
+    // `c.activeCurrency(env)`. If PAYSTACK_CURRENCY is ever set
     // to anything but USD, this public quote would show the wrong currency
     // for what Paystack actually charges — the exact "future currency
     // misconfig" scenario the webhook/verify amount check already guards
     // against, just missed here. See the same fix in referral.service.js's
     // resolvePrice, which this endpoint also calls into below.
-    currency: ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency: c.activeCurrency(ctx.env),
     // Server clock, so the client countdown can correct for a user's
     // wrong/skewed device clock — the deadline it counts toward is enforced
     // against THIS clock at checkout, not theirs.

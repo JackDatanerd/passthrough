@@ -592,7 +592,7 @@ async function adminListPartners(ctx) {
     // carry a per-row currency — adminGetPartner selects it — but the list select
     // deliberately skips it, and there is one currency for the whole platform, so
     // the list view labels every figure with env.PAYSTACK_CURRENCY.)
-    camel.currency                 = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
+    camel.currency                 = c.activeCurrency(ctx.env)
     // Round 8: the totals above add raw cents, which is only meaningful in one currency. adminGetPartner always
     // flagged mixed-currency ledgers; the list (and the payout run built from it) did not.
     camel.mixedCurrency            = new Set(ledger.map(l => String(l.currency || camel.currency).toUpperCase())).size > 1
@@ -654,7 +654,7 @@ async function adminGetPartner(ctx) {
   camel.referralCodes = attachCodeStats(camel.referralCodes, ledger, row.referral_codes)
   // AUDIT FIX (Section 3/4 pass, bug): see the matching fix in
   // adminListPartners above — same currency-drift gap, same fix.
-  camel.currency = ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
+  camel.currency = c.activeCurrency(ctx.env)
   // Round 6: surfaced for the admin screen — the hold window the server enforces on payouts after a payout-details
   // change, and whether unpaid commission spans more than one currency (a payout can only settle one).
   camel.payoutDetailsHoldHours = payoutDetailsHoldHoursFor(ctx.env)
@@ -1156,7 +1156,7 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
   // Round 6 (bug): `currency` was any 3 characters ('usd' stored as-is) and was never compared with the
   // ledger rows being settled, so a payout could silently total commission earned in one currency and label
   // it another (the ledger has carried its own currency since 0051). Normalised, and refused on a mismatch.
-  const envCurrency = String(ctx.env.PAYSTACK_CURRENCY || c.CURRENCY).toUpperCase()
+  const envCurrency = c.activeCurrency(ctx.env)
   const currency = body.currency || envCurrency
   const ledgerCurrencies = new Set(unpaidLedger.map(l => String(l.currency || envCurrency).toUpperCase()))
   if ([...ledgerCurrencies].some(cur => cur !== currency))
@@ -1745,7 +1745,7 @@ async function getPartnerDashboard(ctx) {
     // fix in adminListPartners/adminGetPartner above. Without this,
     // PartnerDashboard.jsx's Pending/Paid stats and per-tier prices always
     // rendered as USD regardless of what's actually configured.
-    currency:       ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency:       c.activeCurrency(ctx.env),
     // Per-code conversions + conversion rate (clicks -> sales), net of refunds.
     // partnerId is an internal id with no partner-facing purpose — dropped here (round 5).
     referralCodes:  attachCodeStats(codes.map(referralCodeRowToCamel), ledger, codes).map(({ partnerId, ...rc }) => ({
@@ -1853,7 +1853,7 @@ async function getPartnerConversions(ctx) {
   if (ledgerRes.error) throw ledgerRes.error
   const codeTextById = new Map((codesRes.data || []).map(r => [r.id, r.code]))
   return ctx.json({ success: true, total: ledgerRes.count ?? null,
-    currency: ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency: c.activeCurrency(ctx.env),
     data: (ledgerRes.data || []).map(row => conversionRowOf(row, codeTextById)) })
 }
 
@@ -2024,7 +2024,7 @@ async function applyAsPartner(ctx) {
 async function getProgramTerms(ctx) {
   return ctx.json({ success: true, data: {
     termsVersion:          PARTNER_TERMS_VERSION,
-    currency:              ctx.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency:              c.activeCurrency(ctx.env),
     holdDays:              holdDaysFor(ctx.env),
     minPayoutCents:        minPayoutFor(ctx.env),
     payoutDetailsHoldHours: payoutDetailsHoldHoursFor(ctx.env),
@@ -2272,7 +2272,7 @@ async function adminListPayouts(ctx) {
   }
   const { data, error, count } = await query.order('paid_at', { ascending: false }).order('id', { ascending: true }).range(offset, offset + limit - 1)
   if (error) throw error
-  return ctx.json({ success: true, total: count ?? null, currency: ctx.env.PAYSTACK_CURRENCY || c.CURRENCY, data: (data || []).map(r => ({
+  return ctx.json({ success: true, total: count ?? null, currency: c.activeCurrency(ctx.env), data: (data || []).map(r => ({
     ...payoutRowToCamel(r), partnerName: r.partners?.name ?? null, partnerEmail: r.partners?.email ?? null
   })) })
 }
@@ -2322,7 +2322,7 @@ async function adminPartnersOverview(ctx) {
   return ctx.json({ success: true, data: {
     partners: partnersRes.count ?? 0, activePartners: activeRes.count ?? 0, pendingApplications: pendingAppsRes.count ?? 0,
     paidOutCents, owedCents, creditCents, lifetimeCommissionCents: earnedCents,
-    currency: ctx.env.PAYSTACK_CURRENCY || c.CURRENCY
+    currency: c.activeCurrency(ctx.env)
   } })
 }
 
@@ -2528,7 +2528,7 @@ async function adminAdjustLedger(ctx) {
   if (isRemovedEmail(partner.email))
     return ctx.json({ success: false, code: 'PARTNER_REMOVED', message: "This partner's personal data was removed, so their ledger can't be adjusted." }, 409)
 
-  const currency = String(ctx.env.PAYSTACK_CURRENCY || c.CURRENCY).toUpperCase()
+  const currency = c.activeCurrency(ctx.env)
   const actor = ctx.get && ctx.get('user')
   const { data: row, error } = await supabase.from('commission_ledger').insert({
     partner_id: partnerId, kind: 'ADJUSTMENT', gross_amount_cents: 0, commission_rate: 0,

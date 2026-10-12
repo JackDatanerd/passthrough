@@ -79,10 +79,10 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   const standard = c.priceForTier(fixTier, env)
   // AUDIT FIX: this used to hardcode c.CURRENCY ('USD') in all three returns
   // below, while the actual charge (paystack.service.js, payments.controller.js's
-  // insert) uses `env.PAYSTACK_CURRENCY || c.CURRENCY`. Same class of bug as
+  // insert) uses `c.activeCurrency(env)`. Same class of bug as
   // pricing.controller.js's getPricing — if PAYSTACK_CURRENCY is ever set,
   // the quoted currency here would silently disagree with what gets charged.
-  const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
+  const currency = c.activeCurrency(env)
   const tierPrice = codeRow?.tier_prices?.[fixTier]
 
   if (!isCodeUsable(codeRow) || tierPrice == null)
@@ -380,7 +380,7 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
       gross_amount_cents:      payment.amount_cents,
       commission_rate:         commissionRate,
       commission_amount_cents: commissionAmountCents,
-      currency:                payment.currency || (env && env.PAYSTACK_CURRENCY) || c.CURRENCY,
+      currency:                payment.currency || c.activeCurrency(env),
       usage_counted:           false,
       // Round 10 (0076): how the code reached checkout. Only written when the payment carries one, so a database that
       // has not run the migration yet (or a payment from before it) inserts exactly the old row shape.
@@ -648,7 +648,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
     const emailService = require('./email.service')
     const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
     await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
-      commissionCents, currency || env.PAYSTACK_CURRENCY || c.CURRENCY, dashboardUrl)
+      commissionCents, currency || c.activeCurrency(env), dashboardUrl)
   } catch (_) {}
 }
 

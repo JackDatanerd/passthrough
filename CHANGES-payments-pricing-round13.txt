@@ -1,0 +1,15 @@
+PAYMENTS & PRICING ROUND 13 — bugs only (independent pass, no feature gaps found/pursued)
+
+B1  payments.controller.js verifyPayment: a DISPUTED row that Paystack reports as `reversed` (the lost-chargeback shape)
+    was answered as a 400 decline — "reversed, so nothing was delivered" / "you have not been charged" — for an order that
+    was delivered. Now { success: true, data: { scanId, disputed: true } }; PaymentSuccess already renders it.
+B2  payments.controller.js verifyPayment: the amount-mismatch gate exempted only SUCCESS rows. REFUNDED/DISPUTED rows can
+    only follow a SUCCESS, so they are exempt too (an accepted overpayment otherwise re-alerted and told the buyer
+    "checking by hand" on every reload).
+B3  Currency: the price table used c.activeCurrency(env) (trim + upper-case) but the charge, the stored row, the quote, the
+    verify/webhook comparison, receipts and partner screens used the raw env value. ` usd ` passed the env check, then
+    stored/compared/displayed as raw. Every use now goes through c.activeCurrency(env): pricing, payments, paystack,
+    referral, email, scan (price preview) and partners controllers. env.js now warns on a non-canonical value.
+
+Tests: tests/payments.round13.test.js. Files: partners/payments/pricing/scan controllers, email/paystack/referral
+services, lib/env.js. No migration.

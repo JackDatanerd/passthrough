@@ -218,7 +218,7 @@ function emailPrice(tier, env, currency) {
   catch (_) { return 'see pricing' }
 }
 function globalVars(env) {
-  const currency = env.PAYSTACK_CURRENCY || c.CURRENCY
+  const currency = c.activeCurrency(env)
   return {
     FRONTEND_URL:    env.FRONTEND_URL,
     PRICE_FIX:       emailPrice('FIX', env, currency),

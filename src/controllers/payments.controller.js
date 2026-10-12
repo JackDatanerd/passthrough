@@ -282,7 +282,7 @@ async function initializePayment(c2) {
         reference:   pendingRow.paystack_ref,
         // G1 (round 4): what this checkout will actually charge, so the client can show it.
         amount:      pendingRow.amount_cents ?? null,
-        currency:    pendingRow.currency || c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+        currency:    pendingRow.currency || c.activeCurrency(c2.env),
         referralDropped: false
       }})
     }
@@ -385,7 +385,7 @@ async function initializePayment(c2) {
       try {
         await emailService.sendOwnerAlert(c2.env,
           'Paystack rejected a checkout — check it is not a configuration problem',
-          `If this repeats, every checkout is failing the same way (currency not enabled on the Paystack account, amount below its minimum, ...).\n\nHTTP ${err.httpStatus || 'n/a (200 with status:false)'}\nmessage: ${err.message}\nscanId: ${scanId}\nfixTier: ${fixTier}\namount: ${amount}\ncurrency: ${c2.env.PAYSTACK_CURRENCY || c.CURRENCY}`,
+          `If this repeats, every checkout is failing the same way (currency not enabled on the Paystack account, amount below its minimum, ...).\n\nHTTP ${err.httpStatus || 'n/a (200 with status:false)'}\nmessage: ${err.message}\nscanId: ${scanId}\nfixTier: ${fixTier}\namount: ${amount}\ncurrency: ${c.activeCurrency(c2.env)}`,
           { dedupeKey: `rejected:${err.message}` })
       } catch (_) {}
       return c2.json({ success: false,
@@ -422,7 +422,7 @@ async function initializePayment(c2) {
   // regardless of what happens to the code afterward.
   const { error: insertErr } = await supabase.from('payments').insert({
     amount_cents:          amount,
-    currency:              c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency:              c.activeCurrency(c2.env),
     status:                'PENDING',
     paystack_ref:          reference,
     paystack_access_code:  result.access_code,
@@ -495,7 +495,7 @@ async function initializePayment(c2) {
     access_code:        result.access_code,
     reference,
     amount,
-    currency: c2.env.PAYSTACK_CURRENCY || c.CURRENCY,
+    currency: c.activeCurrency(c2.env),
     // Only when it changed what the buyer pays: if the site promo already beat the code's price,
     // losing the code leaves the amount identical and there is nothing to warn about.
     referralDropped: !!(priced.referralCode && !finalPriced.referralCode && finalPriced.amount !== priced.amount)
@@ -661,6 +661,11 @@ async function verifyPayment(c2) {
   // delivered" — the same false claim; the buyer was delivered and then refunded. Same refunded answer.
   if (paystackStatus === 'reversed' && ['SUCCESS', 'REFUNDED'].includes(paymentRow.status))
     return c2.json({ success: true, data: { scanId: paymentRow.scan_id, refunded: true } })
+  // ROUND 13 (bug): Paystack reports a charged-back transaction as `reversed` too, so a DISPUTED row (delivered, then
+  // disputed) hit the generic decline below: "reversed, nothing was delivered" / "you have not been charged".
+  // It is delivered and under dispute — the same answer the non-reversed DISPUTED path gives.
+  if (paystackStatus === 'reversed' && paymentRow.status === 'DISPUTED')
+    return c2.json({ success: true, data: { scanId: paymentRow.scan_id, disputed: true } })
   if (DEFINITE_FAILURE_STATUSES.includes(paystackStatus))
     return c2.json({ success: false, declined: true, paystackStatus, data: { scanId: paymentRow.scan_id },
       message: paystackStatus === 'reversed'
@@ -672,7 +677,7 @@ async function verifyPayment(c2) {
     return c2.json({ success: false, message: 'Payment verification failed.' }, 400)
 
   // BUGFIX: previously compared against the CURRENT env config
-  // (c2.env.PAYSTACK_CURRENCY || c.CURRENCY) rather than what THIS payment
+  // (c.activeCurrency(c2.env)) rather than what THIS payment
   // was actually initialized with. webhooks.controller.js's handlePaystack
   // already checks against paymentRow.currency — the two fulfillment paths
   // could reach different verdicts on the exact same transaction if
@@ -728,7 +733,11 @@ async function verifyPayment(c2) {
   // on every later verify (a reload of /payment/success): a [CRITICAL] alert and "we're checking it by hand" for
   // an order that was delivered. A SUCCESS row passed (or was explicitly allowed past) the amount gate when it
   // settled; the gate exists to hold a payment BEFORE it settles.
-  if (paymentRow.status !== 'SUCCESS' && pResult.data?.amount !== paymentRow.amount_cents) {
+  // ROUND 13 (bug): only SUCCESS was exempt, but REFUNDED and DISPUTED rows can only follow a SUCCESS, so they passed the
+  // gate too — an accepted overpayment on a row that later became DISPUTED/REFUNDED re-alerted and told the buyer
+  // "checking by hand" on every reload.
+  const settledStatus = ['SUCCESS', 'REFUNDED', 'DISPUTED'].includes(paymentRow.status)
+  if (!settledStatus && pResult.data?.amount !== paymentRow.amount_cents) {
     console.error(`[CRITICAL] Amount mismatch on ${reference}: expected ${paymentRow.amount_cents}, Paystack reports ${pResult.data?.amount}`)
     try {
       // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: reference — same
