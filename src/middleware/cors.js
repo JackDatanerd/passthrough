@@ -18,7 +18,9 @@ const { cors } = require('hono/cors')
 //                         its "wait N seconds" copy key off it
 //  - Content-Disposition: the server's chosen filename for downloads
 //  - X-Export-Truncated / X-Export-Rows: the employer-leads CSV says whether it hit its row cap
-const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows', 'X-Export-Cursor']
+//  - X-Passthrough-SHA256 / X-Passthrough-Integrity: the verified-file download's digest and integrity verdict
+//    (Verify round 10: sent for the reader to compare, but invisible to cross-origin scripts until exposed)
+const EXPOSED_HEADERS = ['X-Export-Parts', 'Retry-After', 'Content-Disposition', 'X-Export-Truncated', 'X-Export-Rows', 'X-Export-Cursor', 'X-Passthrough-SHA256', 'X-Passthrough-Integrity']
 
 // Browsers cap this themselves (Chrome 2h, Firefox 24h). Without it every
 // credentialed API call re-sent a preflight on top of itself.

@@ -145,7 +145,7 @@ describe('admin: list, review and revoke-settles-reports', () => {
     })
     return { mod, world, ctx, restore }
   }
-  it('lists open reports, each with the page\'s current state (newest first is the query\'s order; the in-memory fake does not sort)', async () => {
+  it('lists open reports, each with the page\'s current state (OPEN is oldest first since round 10, closed ones newest first; the in-memory fake does not sort)', async () => {
     t = adminHarness()
     const r = await t.mod.adminListVerificationReports(t.ctx())
     const byId = Object.fromEntries(r.data.data.map(x => [x.id, x]))
@@ -153,7 +153,7 @@ describe('admin: list, review and revoke-settles-reports', () => {
     expect(byId.r1).toMatchObject({ scanId: 'scan1', pageStatus: 'ACTIVE', reason: 'FAKE' })
     expect(byId.r2).toMatchObject({ scanId: null, pageStatus: 'GONE', reporterEmail: 'a@b.co' })
     const src = fs.readFileSync(new URL('../src/controllers/admin.controller.js', import.meta.url), 'utf8')
-    expect(src).toMatch(/from\('verification_reports'\)[\s\S]{0,300}\.order\('created_at', \{ ascending: false \}\)/)
+    expect(src).toMatch(/from\('verification_reports'\)[\s\S]{0,300}\.order\('created_at', \{ ascending: status !== 'OPEN' \}\)/)
   })
   it('filters by status and treats an unknown status as OPEN', async () => {
     t = adminHarness()

@@ -279,7 +279,10 @@ async function reportMissingFile(c, code) {
     if (!(await rateLimiter.hitQuota(c.env, `rl:verifymissing:${code}`, 1, 24 * 60 * 60))) return
     const email = require('../services/email.service')
     runInBackground(c, email.sendOwnerAlert(c.env, 'Verified page points at a missing file',
-      `verification code: ${code}\n\nThe stored resume file for this live verification page is not in storage, so its integrity cannot be confirmed and its download is unavailable. Restore the object, or regenerate the delivery.`))
+      `verification code: ${code}\n\nThe stored resume file for this live verification page is not in storage, so its integrity cannot be confirmed and its download is unavailable. Restore the object, or regenerate the delivery.`,
+      // VERIFY ROUND 10 (bug): without a dedupeKey sendOwnerAlert dedupes on the SUBJECT alone, so a second page
+      // going missing within its window was swallowed behind the first. One alert per page, as the quota intends.
+      { dedupeKey: `verifymissing:${code}` }))
   } catch (err) {
     console.error('[verify] missing-file alert failed:', err.message)
   }
@@ -374,6 +377,7 @@ function fingerprintsFor(row) {
   const history = Array.isArray(row.resume_hash_history) ? row.resume_hash_history : []
   const current = { docx: row.resume_hash || null, pdf: row.resume_pdf_hash || null }
   const previous = []
+  const seen = new Map()
 
   for (const kind of ['docx', 'pdf']) {
     let lastHash
@@ -388,9 +392,15 @@ function fingerprintsFor(row) {
         const nextHash = j < history.length ? (history[j]?.[kind] || null) : current[kind]
         if (nextHash !== hash) { supersededAt = (j < history.length ? history[j]?.at : row.verified_at) || null; break }
       }
-      previous.push({ kind, hash, at: supersededAt })
+      // VERIFY ROUND 10 (bug): a value that comes back later (A, B, A, then something else) used to be listed once
+      // per appearance, and the reader's page takes the FIRST match — "current until" the first, long-gone
+      // supersession. One entry per distinct value, carrying its LAST supersession (the latest appearance wins).
+      const key = `${kind}:${hash}`
+      seen.delete(key)
+      seen.set(key, { kind, hash, at: supersededAt })
     }
   }
+  previous.push(...seen.values())
   return { docx: current.docx, pdf: current.pdf, previous }
 }
 
@@ -815,7 +825,9 @@ async function alertReported(c, code, reason, details) {
     if (!(await rateLimiter.hitQuota(c.env, `rl:verifyreport:${code}`, 1, 24 * 60 * 60))) return
     const email = require('../services/email.service')
     runInBackground(c, email.sendOwnerAlert(c.env, 'Verification page reported',
-      `verification code: ${code}\nreason: ${reason}\n${details ? `note: ${String(details).slice(0, 500)}\n` : ''}\nReview it under Admin > Scans (open reports), where the page can be revoked.`))
+      `verification code: ${code}\nreason: ${reason}\n${details ? `note: ${String(details).slice(0, 500)}\n` : ''}\nReview it under Admin > Scans (open reports), where the page can be revoked.`,
+      // VERIFY ROUND 10 (bug): per-page dedupe, same reason as reportMissingFile above.
+      { dedupeKey: `verifyreport:${code}` }))
   } catch (err) {
     console.error('[verify] report alert failed:', err.message)
   }

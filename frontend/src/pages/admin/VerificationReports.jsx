@@ -19,9 +19,12 @@ export default function VerificationReports({ onChanged }) {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
 
-  const load = useCallback(async () => {
+  // VERIFY ROUND 10 (bug): the panel showed the first 25 reports and never refilled, so clearing those 25 emptied
+  // the list and hid the panel while the "(total)" still counted more waiting. `silent` reloads in place (no
+  // spinner) after each review so the next reports slide up; the server lists OPEN reports oldest-first.
+  const load = useCallback(async (silent = false) => {
     const isCurrent = begin()
-    setLoading(true)
+    if (!silent) setLoading(true)
     try {
       const res = await api.get('/admin/verification-reports', { params: { status: 'OPEN', pageSize: 25 } })
       if (!isCurrent()) return
@@ -42,6 +45,7 @@ export default function VerificationReports({ onChanged }) {
       await api.patch(`/admin/verification-reports/${report.id}`, { status })
       setReports(prev => prev.filter(r => r.id !== report.id))
       setTotal(t => Math.max(0, t - 1))
+      await load(true)
     } catch (_) {
       toast({ message: 'Could not update the report.', type: 'error' })
     } finally {
@@ -54,7 +58,7 @@ export default function VerificationReports({ onChanged }) {
     try {
       await api.patch(`/admin/scans/${report.scanId}/verification`, { action: 'revoke' })
       toast({ message: 'Verification revoked.', type: 'success' })
-      await load()
+      await load(true)
       if (onChanged) onChanged()
     } catch (_) {
       toast({ message: 'Could not revoke that page.', type: 'error' })
@@ -63,12 +67,15 @@ export default function VerificationReports({ onChanged }) {
     }
   }
 
-  if (loading) return <div className="flex justify-center py-4"><Spinner /></div>
-  if (reports.length === 0) return null   // nothing waiting: the panel stays out of the way
+  if (loading && reports.length === 0) return <div className="flex justify-center py-4"><Spinner /></div>
+  if (reports.length === 0 && total === 0) return null   // nothing waiting: the panel stays out of the way
 
   return (
     <section aria-label="Open verification reports" className="border border-amber-200 bg-amber-50 rounded-lg p-4 flex flex-col gap-3">
       <h2 className="text-sm font-semibold text-gray-900">Open verification reports ({total})</h2>
+      {total > reports.length && (
+        <p className="text-xs text-gray-500">Showing the oldest {reports.length}. The rest appear as these are cleared.</p>
+      )}
       <ul className="flex flex-col gap-2">
         {reports.map(r => (
           <li key={r.id} className="bg-white border border-gray-200 rounded-md p-3 text-sm flex flex-col gap-1">

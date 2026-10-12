@@ -704,7 +704,8 @@ async function adminElevate(ctx) {
 const REPORT_STATUSES = ['OPEN', 'ACTIONED', 'DISMISSED']
 
 // GET /api/admin/verification-reports?status=OPEN|ACTIONED|DISMISSED&page=&pageSize=
-// Reports a reader sent from a public verification page, newest first, each with the CURRENT state of the
+// Reports a reader sent from a public verification page — OLDEST first while OPEN (Verify round 10: a
+// newest-first queue starves the oldest report behind new ones), newest first once closed — each with the CURRENT state of the
 // page it names so the admin can revoke it from the same list.
 async function adminListVerificationReports(ctx) {
   const supabase = getSupabase(ctx.env)
@@ -713,7 +714,7 @@ async function adminListVerificationReports(ctx) {
   const status = REPORT_STATUSES.includes(asked) ? asked : 'OPEN'
   const { data, error, count } = await supabase.from('verification_reports')
     .select('id, code, reason, details, reporter_email, status, created_at, reviewed_at', { count: 'exact' })
-    .eq('status', status).order('created_at', { ascending: false }).range(from, to)
+    .eq('status', status).order('created_at', { ascending: status !== 'OPEN' }).range(from, to)
   if (error) throw error
   const rows = data || []
   const pages = new Map()

@@ -222,6 +222,11 @@ export default function Verify() {
   const [pasted, setPasted] = useState('')
   const [pasteErr, setPasteErr] = useState('')
   const fileInputRef = useRef(null)
+  // VERIFY ROUND 10: a second selection / drop / paste while the first batch is still being hashed used to be
+  // overwritten by the slower first one. Only the newest check may write results.
+  const checkSeq = useRef(0)
+  const [dragging, setDragging] = useState(false)
+  const [checkNote, setCheckNote] = useState('')
   // ROUND-2 AUDIT (bug): responses used to be applied in whatever order they
   // arrived, so a slow reply for an earlier code could overwrite the page for the
   // current one. Only the newest request may write state.
@@ -244,7 +249,7 @@ export default function Verify() {
   function load() {
     const seq = ++loadSeq.current
     setLoading(true); setNotFound(false); setLoadError(false); setRateLimited(false); setRevoked(null); setRemoved(false); setData(null)
-    setDownloadErr(''); setCheckItems([]); setLookupResult(null); setPasted(''); setPasteErr('')
+    setDownloadErr(''); setCheckItems([]); setLookupResult(null); setPasted(''); setPasteErr(''); setCheckNote(''); checkSeq.current++; setChecking(false)
     setReportOpen(false); setHmExpanded(false); setName(''); setCompany(''); setRole(''); setRoleTitle(''); setEmail(''); setTrap('')
     setLeadSent(false); setLeadErr('')
     // encodeURIComponent: the code comes straight from the URL; never let it
@@ -330,11 +335,23 @@ export default function Verify() {
     }
   }
 
-  async function handleCheckFile(e) {
-    const files = Array.from(e.target.files || []).slice(0, MAX_CHECK_FILES)
+  function handleCheckFile(e) {
+    const files = Array.from(e.target.files || [])
+    return runFileCheck(files)
+  }
+
+  // VERIFY ROUND 10 (feature gap): files can also be dropped on the check card. Both entry points land here.
+  async function runFileCheck(picked) {
+    const files = picked.slice(0, MAX_CHECK_FILES)
     if (!files.length) return
     const seq = loadSeq.current
+    const mine = ++checkSeq.current
+    const latest = () => seq === loadSeq.current && mine === checkSeq.current
     setChecking(true); setCheckItems([]); setLookupResult(null); setPasteErr('')
+    // VERIFY ROUND 10 (feature gap): files past the limit were dropped without a word.
+    setCheckNote(picked.length > MAX_CHECK_FILES
+      ? `Only the first ${MAX_CHECK_FILES} files were checked — ${picked.length - MAX_CHECK_FILES} more were left out. Check them in a second go.`
+      : '')
     try {
       const items = []
       for (let i = 0; i < files.length; i++) {
@@ -348,13 +365,20 @@ export default function Verify() {
           result = { status: 'error', at: null, kind: null }
         }
         items.push({ key: `${i}-${file.name}`, name: file.name, result })
+        if (!latest()) return   // superseded by a newer check (or the visitor moved to another page)
       }
-      // The visitor moved to another page while the files were being read: those results are not for this one.
-      if (seq === loadSeq.current) setCheckItems(items)
+      if (latest()) setCheckItems(items)
     } finally {
-      setChecking(false)
+      // Only the newest check owns the spinner and the input.
+      if (mine === checkSeq.current) setChecking(false)
       if (fileInputRef.current) fileInputRef.current.value = ''
     }
+  }
+
+  function handleDrop(e) {
+    e.preventDefault()
+    setDragging(false)
+    runFileCheck(Array.from(e.dataTransfer?.files || []))
   }
 
   // ROUND-9: a fingerprint the reader computed themselves (shasum / certutil) goes through the same check as a
@@ -363,9 +387,11 @@ export default function Verify() {
     e?.preventDefault?.()
     const hash = extractSha256(pasted)
     if (!hash) {
+      checkSeq.current++; setChecking(false); setCheckNote('')
       setCheckItems([]); setLookupResult(null)
       return setPasteErr('That does not look like one SHA-256 fingerprint — it is 64 characters, 0–9 and a–f. Paste just the result of shasum or certutil.')
     }
+    checkSeq.current++; setChecking(false); setCheckNote('')   // a pending file check must not overwrite this result
     setPasteErr(''); setLookupResult(null)
     setCheckItems([{ key: 'pasted', name: 'Pasted fingerprint', result: classifyFingerprint(hash, data?.fingerprints, null) }])
   }
@@ -544,7 +570,7 @@ export default function Verify() {
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-6 text-sm">
                 <div className="bg-gray-50 rounded-lg p-3">
                   <p className="text-gray-400 text-xs mb-1">ATS Score</p>
-                  <p className={`font-bold text-xl ${data.passed ? 'text-green-700' : 'text-red-600'}`}>
+                  <p className={`font-bold text-xl ${data.verified ? 'text-green-700' : data.passed ? 'text-amber-600' : 'text-red-600'}`}>
                     {data.atsScore}
                   </p>
                 </div>
@@ -670,7 +696,11 @@ export default function Verify() {
             {/* SECTION 7 AUDIT (feature gap): check the file YOU were sent, not
                 just our stored copy — this is the only check that can catch a
                 candidate's edited copy. Runs entirely in your browser. */}
-            <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+            <div
+              onDragOver={e => { e.preventDefault(); setDragging(true) }}
+              onDragLeave={() => setDragging(false)}
+              onDrop={handleDrop}
+              className={`bg-white rounded-xl border shadow-sm p-6 ${dragging ? 'border-blue-400 ring-2 ring-blue-200' : 'border-gray-200'}`}>
               <h2 className="font-semibold text-gray-900 mb-1">Received a file from this candidate?</h2>
               <p className="text-sm text-gray-500 mb-3">
                 Check whether the .docx or .pdf you were sent matches what's on file. This
@@ -688,7 +718,8 @@ export default function Verify() {
                 />
                 {checking && <Spinner size="sm" />}
               </div>
-              <p className="text-xs text-gray-400 mt-1.5">Got both the Word file and the PDF? Pick them together (up to {MAX_CHECK_FILES}).</p>
+              <p className="text-xs text-gray-400 mt-1.5">Got both the Word file and the PDF? Pick them together, or drop them on this card (up to {MAX_CHECK_FILES}).</p>
+              {checkNote && <p role="status" className="text-xs text-amber-700 mt-1.5">{checkNote}</p>}
               <Form onSubmit={handleCheckPasted} className="mt-4 flex flex-col gap-2">
                 <Input
                   label="Or paste a SHA-256 fingerprint you computed yourself"
@@ -758,11 +789,13 @@ export default function Verify() {
                   </div>
                   <Input
                     placeholder="Your name"
+                    autoComplete="name"
                     value={name}
                     onChange={e => setName(e.target.value)}
                   />
                   <Input
                     placeholder="Company"
+                    autoComplete="organization"
                     value={company}
                     onChange={e => setCompany(e.target.value)}
                   />
@@ -770,6 +803,7 @@ export default function Verify() {
                   <Input
                     type="email"
                     placeholder="Work email"
+                    autoComplete="email"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
                   />
