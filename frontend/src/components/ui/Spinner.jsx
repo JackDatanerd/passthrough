@@ -9,7 +9,7 @@ export default function Spinner({ size = 'md', className, label = 'Loading', ton
   return (
     <svg
       {...(decorative ? { 'aria-hidden': true } : { role: 'status', 'aria-label': label })}
-      className={cn('animate-spin', tone === 'brand' && 'text-blue-600', sizes[size], className)}
+      className={cn('animate-spin motion-reduce:[animation-duration:3s]', tone === 'brand' && 'text-blue-600', sizes[size], className)}
       fill="none" viewBox="0 0 24 24"
     >
       <circle className="opacity-25" cx="12" cy="12" r="10"

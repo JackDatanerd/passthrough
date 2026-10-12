@@ -9,8 +9,11 @@ import { buttonClasses } from './Button'
 // disabled state of its own). forwardRef so callers can focus it, like <Button>.
 const ButtonLink = forwardRef(function ButtonLink({ variant = 'primary', size = 'md', className, disabled = false, children, ...props }, ref) {
   if (disabled) {
+    // Navigation and handler props (to, onClick, target…) are dropped on purpose; the ones that NAME or DESCRIBE the
+    // control (aria-*, id, title, data-*) used to be dropped too, so a disabled link lost its aria-label.
+    const keep = Object.fromEntries(Object.entries(props).filter(([k]) => /^(aria-|data-)/.test(k) || k === 'id' || k === 'title'))
     return (
-      <span ref={ref} role="link" aria-disabled="true"
+      <span ref={ref} role="link" {...keep} aria-disabled="true"
         className={cn(buttonClasses(variant, size), 'opacity-50 cursor-not-allowed', className)}>
         {children}
       </span>

@@ -10,14 +10,14 @@ import Button from './Button'
 //   {totalPages > 1 && <Pagination page={page} totalPages={totalPages} onChange={setPage} />}
 export default function Pagination({
   page, totalPages, onChange, className,
-  compact = false, prevLabel = 'Prev', nextLabel = 'Next', countClassName
+  compact = false, prevLabel = 'Prev', nextLabel = 'Next', countClassName, ariaLabel = 'Pagination'
 }) {
   if (!Number.isFinite(Number(totalPages)) || totalPages <= 1) return null
   return (
-    <div className={className || 'flex items-center justify-center gap-3'}>
+    <nav aria-label={ariaLabel} className={className || 'flex items-center justify-center gap-3'}>
       <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => onChange(page - 1)}>{prevLabel}</Button>
-      <span className={countClassName || (compact ? 'text-xs text-gray-500' : 'text-sm text-gray-500')}>Page {page} of {totalPages}</span>
+      <span aria-live="polite" className={countClassName || (compact ? 'text-xs text-gray-500' : 'text-sm text-gray-500')}>Page {page} of {totalPages}</span>
       <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => onChange(page + 1)}>{nextLabel}</Button>
-    </div>
+    </nav>
   )
 }

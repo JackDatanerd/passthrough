@@ -4,6 +4,7 @@ import api, { getErrorMessage } from '../lib/api'
 import Spinner from '../components/ui/Spinner'
 import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
+import Checkbox from '../components/ui/Checkbox'
 import Select from '../components/ui/Select'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -84,11 +85,8 @@ export default function EmployerLeadPreferences() {
                   <legend className="text-sm font-medium text-gray-700 mb-1">Also hiring in (up to {MAX_EXTRA_FIELDS})</legend>
                   <div className="grid grid-cols-2 gap-1">
                     {ROLE_CATEGORIES.filter(([key]) => key !== field).map(([key, label]) => (
-                      <label key={key} className="flex items-center gap-2 text-sm text-gray-700">
-                        <input type="checkbox" checked={extras.includes(key)} onChange={() => toggle(key)}
-                          disabled={!extras.includes(key) && extras.length >= MAX_EXTRA_FIELDS} />
-                        {label}
-                      </label>
+                      <Checkbox key={key} label={label} checked={extras.includes(key)} onChange={() => toggle(key)}
+                        disabled={!extras.includes(key) && extras.length >= MAX_EXTRA_FIELDS} />
                     ))}
                   </div>
                 </fieldset>

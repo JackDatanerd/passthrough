@@ -8,6 +8,7 @@ import Modal from '../../components/ui/Modal'
 import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv, withinHours } from '../../lib/utils'
@@ -841,46 +842,70 @@ function ConversionsTab({ partner }) {
       <div className="flex justify-end">
         <Button size="sm" variant="secondary" onClick={() => exportLedgerCsv(partner)}>Export CSV</Button>
       </div>
-    <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-      <table className="w-full text-sm">
-        <caption className="sr-only">Partner commission ledger</caption>
-        <thead>
-          <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-            <th scope="col" className="px-4 py-3">Date</th>
-            <th scope="col" className="px-4 py-3">Code</th>
-            <th scope="col" className="px-4 py-3">Payment ref</th>
-            <th scope="col" className="px-4 py-3 text-right">Gross sale</th>
-            <th scope="col" className="px-4 py-3 text-right">Rate</th>
-            <th scope="col" className="px-4 py-3 text-right">Commission</th>
-            <th scope="col" className="px-4 py-3">Status</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-gray-100">
-          {ledger.map(l => (
-            <tr key={l.id}>
-              <td className="px-4 py-3 text-gray-600">{formatDate(l.createdAt)}</td>
-              <td className="px-4 py-3 font-mono text-xs">{l.kind === 'ADJUSTMENT' ? <span className="font-sans text-gray-600">Adjustment</span> : (l.code || '—')}</td>
-              <td className="px-4 py-3 font-mono text-xs text-gray-500">{l.paymentRef || '—'}</td>
-              <td className="px-4 py-3 text-right">{formatCents(l.grossAmountCents, l.currency || partner.currency)}</td>
-              <td className="px-4 py-3 text-right text-gray-400">{formatRate(l.commissionRate)}</td>
-              <td className="px-4 py-3 text-right font-medium">{formatCents(l.commissionAmountCents, l.currency || partner.currency)}</td>
-              <td className="px-4 py-3">
-                <Badge variant={l.payoutId ? 'green' : 'amber'}>{l.payoutId ? 'Paid' : 'Unpaid'}</Badge>
-                {l.paymentStatus === 'DISPUTED' && !l.payoutId && (
-                  <span className="ml-2 text-xs text-amber-700">Held — open dispute</span>
-                )}
-                {l.reversesLedgerId && (
-                  <span className="ml-2 text-xs text-red-500">Reversal{l.reversalReason ? ` — ${l.reversalReason}` : ''}</span>
-                )}
-                {l.kind === 'ADJUSTMENT' && l.adjustmentReason && (
-                  <span className="ml-2 text-xs text-gray-500">{l.adjustmentReason}</span>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <DataTable
+      caption="Partner commission ledger"
+      columns={[
+        {
+          key: 'date',
+          header: 'Date',
+          cellClassName: 'text-gray-600',
+          cell: l => formatDate(l.createdAt),
+        },
+        {
+          key: 'code',
+          header: 'Code',
+          cellClassName: 'font-mono text-xs',
+          cell: l => l.kind === 'ADJUSTMENT' ? <span className="font-sans text-gray-600">Adjustment</span> : (l.code || '—'),
+        },
+        {
+          key: 'paymentRef',
+          header: 'Payment ref',
+          cellClassName: 'font-mono text-xs text-gray-500',
+          cell: l => l.paymentRef || '—',
+        },
+        {
+          key: 'grossSale',
+          header: 'Gross sale',
+          headerClassName: 'text-right',
+          cellClassName: 'text-right',
+          cell: l => formatCents(l.grossAmountCents, l.currency || partner.currency),
+        },
+        {
+          key: 'rate',
+          header: 'Rate',
+          headerClassName: 'text-right',
+          cellClassName: 'text-right text-gray-400',
+          cell: l => formatRate(l.commissionRate),
+        },
+        {
+          key: 'commission',
+          header: 'Commission',
+          headerClassName: 'text-right',
+          cellClassName: 'text-right font-medium',
+          cell: l => formatCents(l.commissionAmountCents, l.currency || partner.currency),
+        },
+        {
+          key: 'status',
+          header: 'Status',
+          cell: l => (
+            <>
+              <Badge variant={l.payoutId ? 'green' : 'amber'}>{l.payoutId ? 'Paid' : 'Unpaid'}</Badge>
+              {l.paymentStatus === 'DISPUTED' && !l.payoutId && (
+                <span className="ml-2 text-xs text-amber-700">Held — open dispute</span>
+              )}
+              {l.reversesLedgerId && (
+                <span className="ml-2 text-xs text-red-500">Reversal{l.reversalReason ? ` — ${l.reversalReason}` : ''}</span>
+              )}
+              {l.kind === 'ADJUSTMENT' && l.adjustmentReason && (
+                <span className="ml-2 text-xs text-gray-500">{l.adjustmentReason}</span>
+              )}
+            </>
+          ),
+        },
+      ]}
+      rows={ledger}
+      rowKey={l => l.id}
+    />
     </div>
   )
 }

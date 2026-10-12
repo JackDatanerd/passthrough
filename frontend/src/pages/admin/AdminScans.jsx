@@ -3,6 +3,7 @@ import { useSearchParams } from 'react-router-dom'
 import api from '../../lib/api'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
@@ -122,74 +123,101 @@ export default function AdminScans() {
       ) : scans.length === 0 ? (
         <EmptyState>No scans found.</EmptyState>
       ) : (
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Scans</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">User</th>
-                <th scope="col" className="px-4 py-3">Resume</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3 text-right">ATS score</th>
-                <th scope="col" className="px-4 py-3">Fix tier</th>
-                <th scope="col" className="px-4 py-3">Created</th>
-                <th scope="col" className="px-4 py-3">Updated</th>
-                <th scope="col" className="px-4 py-3">Verification</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {scans.map(s => (
-                <tr key={s.id}>
-                  <td className="px-4 py-3 text-gray-600">{s.userEmail || <span className="italic text-gray-400">anonymous</span>}</td>
-                  <td className="px-4 py-3 text-gray-600 max-w-[16rem] truncate">{s.resumeOriginalName || '—'}</td>
-                  <td className="px-4 py-3">
-                    <Badge variant={s.status === 'ERROR' ? 'red' : s.status.startsWith('COMPLETE') || s.status === 'FIX_DELIVERED' ? 'green' : 'gray'}>
-                      {statusLabel(s.status)}
-                    </Badge>
-                  </td>
-                  <td className={`px-4 py-3 text-right font-medium ${s.atsScore != null ? scoreColor(s.atsScore) : 'text-gray-300'}`}>
-                    {s.atsScore ?? '—'}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {s.fixPurchased ? (s.fixTier || 'FIX') : '—'}
-                    {/* AUDIT FIX (Section 9/10 pass): fix_error_recoveries was tracked
-                        (migration 0026, reconcile.service.js) but never shown anywhere —
-                        the admin had no way to see "this delivery only succeeded after N
-                        automatic retries" versus a clean one. */}
-                    {s.fixErrorRecoveries > 0 && (
-                      <span className="ml-2 inline-block" title={`${s.fixErrorRecoveries} automatic recovery attempt(s) before this fix succeeded`}>
-                        <Badge variant="amber">{s.fixErrorRecoveries} auto-retry{s.fixErrorRecoveries === 1 ? '' : 's'}</Badge>
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(s.createdAt)}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(s.updatedAt)}</td>
-                  <td className="px-4 py-3">
-                    {!s.verificationCode ? (
-                      <span className="text-gray-300">—</span>
-                    ) : s.verificationStatus === 'REVOKED' ? (
-                      <div className="flex items-center gap-2">
-                        <Badge variant="gray">Revoked{s.verificationRevokedReason ? ` (${s.verificationRevokedReason})` : ''}</Badge>
-                        <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'restore')}
-                          className="text-xs text-blue-700 hover:text-blue-800 underline disabled:opacity-50">
-                          Restore
-                        </button>
-                      </div>
-                    ) : (
-                      <div className="flex items-center gap-2">
-                        <Badge variant="green">Active</Badge>
-                        <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'revoke')}
-                          className="text-xs text-red-600 hover:text-red-700 underline disabled:opacity-50">
-                          Revoke
-                        </button>
-                      </div>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Scans"
+          columns={[
+            {
+              key: 'user',
+              header: 'User',
+              cellClassName: 'text-gray-600',
+              cell: s => s.userEmail || <span className="italic text-gray-400">anonymous</span>,
+            },
+            {
+              key: 'resume',
+              header: 'Resume',
+              cellClassName: 'text-gray-600 max-w-[16rem] truncate',
+              cell: s => s.resumeOriginalName || '—',
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: s => (
+                <>
+                  <Badge variant={s.status === 'ERROR' ? 'red' : s.status.startsWith('COMPLETE') || s.status === 'FIX_DELIVERED' ? 'green' : 'gray'}>
+                    {statusLabel(s.status)}
+                  </Badge>
+                </>
+              ),
+            },
+            {
+              key: 'atsScore',
+              header: 'ATS score',
+              headerClassName: 'text-right',
+              cellClassName: s => `text-right font-medium ${s.atsScore != null ? scoreColor(s.atsScore) : 'text-gray-300'}`,
+              cell: s => s.atsScore ?? '—',
+            },
+            {
+              key: 'fixTier',
+              header: 'Fix tier',
+              cellClassName: 'text-gray-500',
+              cell: s => (
+                <>
+                  {s.fixPurchased ? (s.fixTier || 'FIX') : '—'}
+                  {/* AUDIT FIX (Section 9/10 pass): fix_error_recoveries was tracked
+                      (migration 0026, reconcile.service.js) but never shown anywhere —
+                      the admin had no way to see "this delivery only succeeded after N
+                      automatic retries" versus a clean one. */}
+                  {s.fixErrorRecoveries > 0 && (
+                    <span className="ml-2 inline-block" title={`${s.fixErrorRecoveries} automatic recovery attempt(s) before this fix succeeded`}>
+                      <Badge variant="amber">{s.fixErrorRecoveries} auto-retry{s.fixErrorRecoveries === 1 ? '' : 's'}</Badge>
+                    </span>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'created',
+              header: 'Created',
+              cellClassName: 'text-gray-500',
+              cell: s => formatDate(s.createdAt),
+            },
+            {
+              key: 'updated',
+              header: 'Updated',
+              cellClassName: 'text-gray-500',
+              cell: s => formatDate(s.updatedAt),
+            },
+            {
+              key: 'verification',
+              header: 'Verification',
+              cell: s => (
+                <>
+                  {!s.verificationCode ? (
+                    <span className="text-gray-300">—</span>
+                  ) : s.verificationStatus === 'REVOKED' ? (
+                    <div className="flex items-center gap-2">
+                      <Badge variant="gray">Revoked{s.verificationRevokedReason ? ` (${s.verificationRevokedReason})` : ''}</Badge>
+                      <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'restore')}
+                        className="text-xs text-blue-700 hover:text-blue-800 underline disabled:opacity-50">
+                        Restore
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <Badge variant="green">Active</Badge>
+                      <button disabled={busyId === s.id} onClick={() => handleSetVerification(s, 'revoke')}
+                        className="text-xs text-red-600 hover:text-red-700 underline disabled:opacity-50">
+                        Revoke
+                      </button>
+                    </div>
+                  )}
+                </>
+              ),
+            },
+          ]}
+          rows={scans}
+          rowKey={s => s.id}
+        />
       )}
 
       {totalPages > 1 && (

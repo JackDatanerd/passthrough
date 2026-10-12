@@ -107,13 +107,17 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     const id = ++nextModalId
     modalStack.push(id)
 
-    const initial =
+    const marked = dialog.querySelector('[data-autofocus]')
+    // React has already honoured an `autoFocus` inside the dialog by now; the person who wrote it chose that element,
+    // so only an explicit data-autofocus outranks it (the old code always moved focus to the first input).
+    const alreadyInside = !marked && document.activeElement && document.activeElement !== dialog && dialog.contains(document.activeElement)
+    const initial = alreadyInside ? document.activeElement :
       // Two queries on purpose: one selector list returns the first match in DOCUMENT order, so a
       // checkbox rendered above the buttons would beat `data-autofocus` (the safe default button).
-      dialog.querySelector('[data-autofocus]') ||
+      marked ||
       dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])') ||
       dialog.querySelector(FOCUSABLE) || dialog
-    initial.focus()
+    if (!alreadyInside) initial.focus()
 
     function onKeyDown(e) {
       // Only the topmost Modal (the last one pushed, i.e. still on screen
@@ -142,8 +146,17 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       document.removeEventListener('keydown', onKeyDown)
       modalStack = modalStack.filter(x => x !== id)
       unlockScroll()
-      if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused))
+      if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused)) {
         previouslyFocused.focus()
+      } else {
+        // The element that opened the dialog is gone (confirming a delete removed its own row, say): hand focus to the page's
+        // <main> rather than dropping a keyboard user on <body>, where the next Tab starts from the top of the document.
+        const main = document.querySelector('main')
+        if (main) {
+          if (!main.hasAttribute('tabindex')) main.setAttribute('tabindex', '-1')
+          main.focus({ preventScroll: true })
+        }
+      }
     }
   }, [open])
 

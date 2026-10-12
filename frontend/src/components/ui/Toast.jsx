@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback, useMemo, isValidElement } from 'react'
 import { cn } from '../../lib/utils'
+import { getErrorMessage } from '../../lib/errors'
 
 const ToastContext = createContext(null)
 
@@ -16,6 +17,9 @@ const ToastContext = createContext(null)
 // crash the render with "Objects are not valid as a React child"; it is turned into text instead.
 function normalizeMessage(m) {
   if (typeof m === 'string' || typeof m === 'number' || isValidElement(m)) return m
+  // An axios failure's own .message is "Request failed with status code 500" / "Network Error" — not for people. It goes
+  // through the same translation every inline error uses.
+  if (m && m.isAxiosError) return getErrorMessage(m)
   if (m instanceof Error) return m.message || 'Something went wrong.'
   if (m === null || m === undefined) return ''
   try { return String(m) } catch (_) { return '' }
@@ -86,12 +90,15 @@ export function ToastProvider({ children }) {
   const toast = useMemo(() => {
     // Errors are the messages people most need to read (and often retype from), so they stay up
     // longer by default. `duration: 0` keeps a toast until it is dismissed.
-    const show = ({ message, type = 'info', duration = type === 'error' ? 9000 : 4000 }) => {
+    // `action: { label, onClick }` adds one button (Undo, Retry): it runs onClick and dismisses the toast. A toast with an
+    // action is never merged into an identical one, and it stays 10s by default — long enough to reach the button.
+    const show = ({ message, type = 'info', action, duration = action ? 10000 : type === 'error' ? 9000 : 4000 }) => {
       const text = normalizeMessage(message)
+      const act = action && typeof action.onClick === 'function' && action.label ? { label: String(action.label), onClick: action.onClick } : null
       // The same text of the same kind already on screen (a retry loop, a double-clicked action) is
       // not stacked again: the one showing just has its countdown restarted.
-      if (typeof text === 'string') {
-        const dupe = list.current.find(t => t.type === type && t.message === text)
+      if (typeof text === 'string' && !act) {
+        const dupe = list.current.find(t => t.type === type && t.message === text && !t.action)
         if (dupe) {
           clearTimer(dupe.id)
           if (duration > 0) arm(dupe.id, duration)
@@ -99,7 +106,7 @@ export function ToastProvider({ children }) {
         }
       }
       const id = ++nextId.current
-      const next = [...list.current, { id, message: text, type }]
+      const next = [...list.current, { id, message: text, type, action: act }]
       // Cap at 5 on screen; whatever is pushed off loses its timer too.
       const dropped = next.slice(0, Math.max(0, next.length - 5))
       dropped.forEach(t => clearTimer(t.id))
@@ -148,11 +155,20 @@ export function ToastProvider({ children }) {
             role={t.type === 'error' ? 'alert' : 'status'}
             className={cn(
               'flex items-center gap-3 px-4 py-3 rounded-lg text-white text-sm shadow-lg',
-              'pointer-events-auto max-w-sm animate-fade-in',
+              'pointer-events-auto max-w-sm animate-fade-in motion-reduce:animate-none',
               colors[t.type] || colors.info
             )}
           >
             <span className="flex-1 min-w-0 break-words">{t.message}</span>
+            {t.action && (
+              <button
+                type="button"
+                onClick={() => { try { t.action.onClick() } finally { remove(t.id) } }}
+                className="shrink-0 font-semibold underline underline-offset-2 hover:no-underline"
+              >
+                {t.action.label}
+              </button>
+            )}
             <button
               type="button"
               onClick={() => remove(t.id)}

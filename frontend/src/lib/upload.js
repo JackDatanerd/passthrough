@@ -10,10 +10,20 @@ export function extensionOf(name) {
   return i === -1 ? '' : String(name).slice(i + 1).toLowerCase()
 }
 
-export function validateUpload(file, maxMB = 5) {
+const DEFAULT_EXTENSIONS = Object.keys(ALLOWED_UPLOADS)
+
+// "PDF and DOCX", "CSV", "PDF, DOCX and TXT".
+function listExtensions(exts) {
+  const up = exts.map(e => e.toUpperCase())
+  return up.length <= 1 ? up.join('') : `${up.slice(0, -1).join(', ')} and ${up[up.length - 1]}`
+}
+
+// `extensions` (lower-case, no dot) is what THIS dropzone accepts; the default is the resume pair. It used to be hardcoded,
+// so a dropzone for anything else (a CSV import, a file to fingerprint) could not reuse the component at all.
+export function validateUpload(file, maxMB = 5, extensions = DEFAULT_EXTENSIONS) {
   if (!file) return 'No file selected.'
   const ext = extensionOf(file.name)
-  if (!ALLOWED_UPLOADS[ext]) return 'Only PDF and DOCX files are accepted.'
+  if (!extensions.includes(ext)) return `Only ${listExtensions(extensions)} files are accepted.`
   if (file.size === 0) return 'That file is empty.'
   if (file.size > maxMB * 1024 * 1024) return `File too large. Max ${maxMB}MB.`
   return null

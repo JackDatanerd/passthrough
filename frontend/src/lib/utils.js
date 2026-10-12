@@ -162,7 +162,7 @@ export function downloadBlob(blob, filename) {
 // `.toLocaleString()` follows the browser's locale ("12.000" in de-DE) and made one screen mix styles.
 export function formatNumber(n, decimals = 0) {
   const v = Number(n)
-  if (n == null || n === '' || !Number.isFinite(v)) return '—'
+  if (n == null || typeof n === 'boolean' || (typeof n === 'string' && n.trim() === '') || !Number.isFinite(v)) return '—'
   return v.toLocaleString('en-US', { maximumFractionDigits: decimals })
 }
 

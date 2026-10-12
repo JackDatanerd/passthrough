@@ -37,6 +37,11 @@ const LONG_RUNNING_PATCH = /^\/scan\/[^/?#]+\/(delivered-resume|resume-data)(?:[
 // It now gets the long timeout and is never auto-retried (the person can press Download again).
 const LONG_RUNNING_GET = /^\/(?:scan\/[^/?#]+\/download-draft-pdf|profile\/download-pdf)(?:[?#]|$)/  // + the saved-profile PDF (profile round 9): same in-request render
 
+// Routes that sit behind the Worker's step-up gate (middleware/adminOnly.js `stepUp`): the admin console, the
+// admin side of partners (payout runs, links, ledger adjustments) and payment refunds / resolutions.
+const STEP_UP_URL = /^\/(?:admin|partners|payments)(?:[/?#]|$)/
+export function isStepUpUrl(url) { return STEP_UP_URL.test(String(url || '')) }
+
 api.interceptors.request.use(config => {
   const token = getToken()
   if (token) config.headers.Authorization = `Bearer ${token}`
@@ -45,10 +50,13 @@ api.interceptors.request.use(config => {
   // Remembered so the response side knows whether a session was actually
   // presented — a 401 on a request that carried no token isn't an "expiry".
   config.__hadToken = !!token
-  // Only state-changing calls need the elevation (every step-up route is a POST/PATCH/DELETE), so reads and
-  // unrelated requests never carry it.
-  const reqMethod = String(config.method || 'get').toLowerCase()
-  if (stepUpToken && Date.now() < stepUpUntil && config.headers && reqMethod !== 'get' && reqMethod !== 'head')
+  // The elevation rides only on requests to the routes that can ask for it (see STEP_UP_URL), of ANY method:
+  // GET /partners/:id/links is gated by the same step-up as the money actions, and the old "state-changing
+  // calls only" rule meant it could never succeed (the prompt was shown, the password accepted, and the replay
+  // went out without the token). Everything else — the public API, the user's own routes — never carries it.
+  // The replay of a request the server just refused for step-up carries it wherever the route lives, so a gated
+  // route outside the known prefixes still works (one extra round trip) instead of failing for good.
+  if (stepUpToken && Date.now() < stepUpUntil && config.headers && (isStepUpUrl(config.url) || config.__stepUpTried))
     config.headers['X-Admin-Elevation'] = stepUpToken
   // Which token this request actually carried, so a late failure can be matched
   // against the session that is current when it lands (see endSession's caller).
@@ -80,8 +88,11 @@ async function ensureStepUp() {
   if (!stepUpPrompt) return false
   if (!stepUpPending) {
     stepUpPending = (async () => {
+      // After a wrong password the prompt is opened again WITH that fact, so it can say so — it used to reopen blank,
+      // which looked like a glitch rather than a mistyped password.
+      let incorrect = false
       for (;;) {
-        const password = await stepUpPrompt()          // null/'' = cancelled
+        const password = await stepUpPrompt({ incorrect })          // null/'' = cancelled
         if (!password) return false
         try {
           const res = await api.post('/admin/elevate', { password }, { __noStepUp: true })
@@ -91,6 +102,7 @@ async function ensureStepUp() {
           return true
         } catch (e) {
           if (e.response?.data?.code !== 'PASSWORD_INCORRECT') return false   // anything else: stop asking
+          incorrect = true
         }
       }
     })().finally(() => { stepUpPending = null })

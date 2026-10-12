@@ -1,9 +1,10 @@
-import { Fragment, useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Pagination from '../../components/ui/Pagination'
 import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
@@ -212,72 +213,92 @@ export default function AdminWebhooks() {
       ) : events.length === 0 ? (
         <EmptyState>No events found.</EmptyState>
       ) : (
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Webhook events</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">Received</th>
-                <th scope="col" className="px-4 py-3">Event</th>
-                <th scope="col" className="px-4 py-3">Reference</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3 text-right">Tries</th>
-                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {events.map(ev => (
-                <Fragment key={ev.id}>
-                <tr>
-                  <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(ev.receivedAt)}</td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-700">
-                    {ev.eventType}
-                    {ev.provider && ev.provider !== 'paystack' && <div className="text-gray-400 mt-0.5">{ev.provider}</div>}
-                  </td>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                    {ev.reference
-                      ? <Link to={`/admin/payments?reference=${encodeURIComponent(ev.reference)}`} className="text-blue-700 hover:underline" title="Open this payment">{ev.reference}</Link>
-                      : '—'}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={badgeVariant(ev.status)}>{ev.status}</Badge>
-                    {ev.error && <div role="alert" className="text-xs text-red-600 mt-0.5 max-w-xs break-words">{ev.error}</div>}
-                    {ev.note && <div className="text-xs text-gray-500 mt-0.5 max-w-xs break-words">{ev.note}</div>}
-                    {ev.replayedAt && <div className="text-xs text-gray-400 mt-0.5">replayed {formatDate(ev.replayedAt)}</div>}
-                  </td>
-                  <td className="px-4 py-3 text-right text-gray-500">{ev.attempts}</td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button type="button" onClick={() => togglePayload(ev)}
-                      className="text-xs text-blue-700 hover:text-blue-800 underline underline-offset-2 mr-3">
-                      {openId === ev.id ? 'Hide payload' : 'Payload'}
-                    </button>
-                    {ev.replayable && (
-                      <Button size="sm" variant="secondary" loading={busyId === ev.id} onClick={() => setPending(ev)}>
-                        Replay
-                      </Button>
-                    )}
-                    {ev.dismissable && (
-                      <Button size="sm" variant="ghost" className="ml-2" disabled={busyId === ev.id} onClick={() => { setDismissNote(''); setDismissing(ev) }}>
-                        Dismiss
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-                {openId === ev.id && (
-                  <tr>
-                    <td colSpan={6} className="px-4 pb-4 bg-gray-50">
-                      {payloads[ev.id] === 'loading' ? <Spinner /> :
-                       payloads[ev.id] === 'error' ? <p className="text-xs text-red-600 py-2">Couldn't load the payload.</p> :
-                       <pre className="text-xs text-gray-700 overflow-x-auto py-2">{JSON.stringify(payloads[ev.id], null, 2)}</pre>}
-                      <p className="text-xs text-gray-400">Stored minimised: card, customer and IP details removed (Resend events keep only the recipient, bounce type and id).</p>
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Webhook events"
+          columns={[
+            {
+              key: 'received',
+              header: 'Received',
+              cellClassName: 'text-gray-500 whitespace-nowrap',
+              cell: ev => formatDate(ev.receivedAt),
+            },
+            {
+              key: 'event',
+              header: 'Event',
+              cellClassName: 'font-mono text-xs text-gray-700',
+              cell: ev => (
+                <>
+                  {ev.eventType}
+                  {ev.provider && ev.provider !== 'paystack' && <div className="text-gray-400 mt-0.5">{ev.provider}</div>}
+                </>
+              ),
+            },
+            {
+              key: 'reference',
+              header: 'Reference',
+              cellClassName: 'font-mono text-xs text-gray-500',
+              cell: ev => (
+                <>
+                  {ev.reference
+                    ? <Link to={`/admin/payments?reference=${encodeURIComponent(ev.reference)}`} className="text-blue-700 hover:underline" title="Open this payment">{ev.reference}</Link>
+                    : '—'}
+                </>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: ev => (
+                <>
+                  <Badge variant={badgeVariant(ev.status)}>{ev.status}</Badge>
+                  {ev.error && <div role="alert" className="text-xs text-red-600 mt-0.5 max-w-xs break-words">{ev.error}</div>}
+                  {ev.note && <div className="text-xs text-gray-500 mt-0.5 max-w-xs break-words">{ev.note}</div>}
+                  {ev.replayedAt && <div className="text-xs text-gray-400 mt-0.5">replayed {formatDate(ev.replayedAt)}</div>}
+                </>
+              ),
+            },
+            {
+              key: 'tries',
+              header: 'Tries',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-500',
+              cell: ev => ev.attempts,
+            },
+            {
+              key: 'actions',
+              header: <span className="sr-only">Actions</span>,
+              cellClassName: 'text-right whitespace-nowrap',
+              cell: ev => (
+                <>
+                  <button type="button" onClick={() => togglePayload(ev)}
+                    className="text-xs text-blue-700 hover:text-blue-800 underline underline-offset-2 mr-3">
+                    {openId === ev.id ? 'Hide payload' : 'Payload'}
+                  </button>
+                  {ev.replayable && (
+                    <Button size="sm" variant="secondary" loading={busyId === ev.id} onClick={() => setPending(ev)}>
+                      Replay
+                    </Button>
+                  )}
+                  {ev.dismissable && (
+                    <Button size="sm" variant="ghost" className="ml-2" disabled={busyId === ev.id} onClick={() => { setDismissNote(''); setDismissing(ev) }}>
+                      Dismiss
+                    </Button>
+                  )}
+                </>
+              ),
+            },
+          ]}
+          rows={events}
+          rowKey={ev => ev.id}
+          expandedRow={ev => openId === ev.id && (
+            <>
+              {payloads[ev.id] === 'loading' ? <Spinner /> :
+               payloads[ev.id] === 'error' ? <p className="text-xs text-red-600 py-2">Couldn't load the payload.</p> :
+               <pre className="text-xs text-gray-700 overflow-x-auto py-2">{JSON.stringify(payloads[ev.id], null, 2)}</pre>}
+              <p className="text-xs text-gray-400">Stored minimised: card, customer and IP details removed (Resend events keep only the recipient, bounce type and id).</p>
+            </>
+          )}
+        />
       )}
 
       {totalPages > 1 && <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} />}

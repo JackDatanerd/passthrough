@@ -107,18 +107,21 @@ function StepUpModal() {
   const [open, setOpen] = useState(false)
   const [value, setValue] = useState('')
   const [resolver, setResolver] = useState(null)
+  // True when the previous attempt was refused (api.js passes { incorrect: true } on the re-ask).
+  const [incorrect, setIncorrect] = useState(false)
   useEffect(() => {
-    setStepUpPrompt(() => new Promise(resolve => { setValue(''); setResolver(() => resolve); setOpen(true) }))
+    setStepUpPrompt(({ incorrect: wrong } = {}) => new Promise(resolve => { setValue(''); setIncorrect(!!wrong); setResolver(() => resolve); setOpen(true) }))
     return () => setStepUpPrompt(null)
   }, [])
-  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null); setValue('') }
+  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null); setValue(''); setIncorrect(false) }
   // The shared Modal (portalled, so it opens ABOVE the refund / ban / payout dialog that asked for the password, with
   // the focus trap, Escape and focus hand-back) instead of a hand-rolled overlay that rendered underneath them.
   return (
     <Modal open={open} onClose={() => done(null)} title="Confirm your password" size="sm">
       <Form onSubmit={() => done(value)} className="flex flex-col gap-3">
-        <p className="text-sm text-gray-500">Refunds, payouts and account bans need your password again.</p>
-        <PasswordInput value={value} onChange={e => setValue(e.target.value)} autoComplete="current-password" aria-label="Password" />
+        <p className="text-sm text-gray-500">Refunds, payouts, partner links and account bans need your password again.</p>
+        <PasswordInput value={value} onChange={e => { setValue(e.target.value); setIncorrect(false) }} autoComplete="current-password" aria-label="Password"
+          error={incorrect ? 'That password is not correct. Try again.' : undefined} />
         <div className="flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={() => done(null)}>Cancel</Button>
           <Button type="submit" disabled={!value}>Confirm</Button>

@@ -10,7 +10,9 @@ import { cn } from '../../lib/utils'
 //  - `error` is wired to aria-invalid / aria-describedby and announced.
 //  - an unlabeled input falls back to aria-label = placeholder, so it still has
 //    an accessible name (several forms used placeholder-only fields).
-const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, 'aria-describedby': extraDescribedBy, ...props }, ref) {
+// `size="sm"` is the compact field used in toolbars and inline forms (search boxes, a rename field) — those had hand-rolled
+// `<input>`s because the only size here was the full form-field one. (It shadows the native `size` attribute, as Select's does.)
+const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, size = 'md', 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
@@ -30,7 +32,8 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
       aria-invalid={error ? true : undefined}
       aria-describedby={describedBy}
       className={cn(
-        'w-full rounded-md border px-3 py-2.5 text-base sm:py-2 sm:text-sm text-gray-900 placeholder-gray-500',
+        'w-full rounded-md border px-3 text-gray-900 placeholder-gray-500',
+        size === 'sm' ? 'py-1.5 text-sm' : 'py-2.5 text-base sm:py-2 sm:text-sm',
         'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
         error ? 'border-red-400 bg-red-50' : 'border-gray-300 bg-white',
         'disabled:bg-gray-100 disabled:text-gray-500 disabled:cursor-not-allowed',

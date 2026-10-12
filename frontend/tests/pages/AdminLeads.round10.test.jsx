@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor, within, fireEvent } from '@testing-library/react'
+import { render, screen, waitFor, within, fireEvent, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { ToastProvider } from '../../src/components/ui/Toast'
@@ -117,7 +117,7 @@ describe('AdminLeads — CSV import', () => {
     return screen.getByRole('dialog')
   }
   const pick = async (dialog, text) => {
-    const input = within(dialog).getByLabelText('CSV file')
+    const input = dialog.querySelector('input[type="file"]')
     const file = csvFile(text)
     // jsdom's File has no text() on older versions
     if (!file.text) file.text = async () => text
@@ -158,5 +158,37 @@ describe('AdminLeads — CSV import', () => {
     await userEvent.click(within(dialog).getByRole('button', { name: 'Check file' }))
     expect(await within(dialog).findByText(/Row 1 \(ann@acme.com\): Already a lead\./)).toBeInTheDocument()
     expect(within(dialog).getByRole('button', { name: 'Import 0' })).toBeDisabled()
+  })
+})
+
+describe('Import leads — the file picker (Section 11 round 7)', () => {
+  const open = async () => {
+    api.get.mockResolvedValue(list([lead()]))
+    renderAt()
+    await userEvent.click(await screen.findByRole('button', { name: 'Import CSV' }))
+    return screen.getByRole('dialog')
+  }
+  it('refuses a non-CSV file with a message instead of parsing it', async () => {
+    const dialog = await open()
+    fireEvent.change(dialog.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'leads.pdf', { type: 'application/pdf' })] } })
+    expect(await within(dialog).findByText('Only CSV files are accepted.')).toBeInTheDocument()
+  })
+  it('an unreadable file shows a message instead of an unhandled rejection', async () => {
+    const dialog = await open()
+    const bad = new File(['x'], 'leads.csv', { type: 'text/csv' }); bad.text = async () => { throw new Error('nope') }
+    fireEvent.change(dialog.querySelector('input[type="file"]'), { target: { files: [bad] } })
+    expect(await within(dialog).findByText(/Couldn't read that file/)).toBeInTheDocument()
+  })
+  it('a slow read of an earlier file cannot overwrite a later pick', async () => {
+    const dialog = await open()
+    let release
+    const slow = new File(['x'], 'slow.csv', { type: 'text/csv' }); slow.text = () => new Promise(r => { release = () => r('name,company,email\nOld,Acme,old@acme.com') })
+    const fast = new File(['x'], 'fast.csv', { type: 'text/csv' }); fast.text = async () => 'name,company,email\nA,Acme,a@acme.com\nB,Acme,b@acme.com'
+    const el = dialog.querySelector('input[type="file"]')
+    fireEvent.change(el, { target: { files: [slow] } })
+    fireEvent.change(el, { target: { files: [fast] } })
+    expect(await within(dialog).findByText(/2 rows found/)).toBeInTheDocument()
+    await act(async () => { release() })
+    expect(within(dialog).getByText(/fast\.csv: 2 rows found/)).toBeInTheDocument()
   })
 })

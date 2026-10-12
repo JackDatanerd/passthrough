@@ -5,6 +5,7 @@ import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
@@ -99,86 +100,112 @@ export default function AdminUsers() {
       ) : users.length === 0 ? (
         <EmptyState>No users found.</EmptyState>
       ) : (
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Users</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">User</th>
-                <th scope="col" className="px-4 py-3">Role</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3 text-right">Scans today</th>
-                <th scope="col" className="px-4 py-3">Joined</th>
-                {/* FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
-                    (migration 0038) were captured at signup but never shown anywhere —
-                    not here, not on the user's own account. This is the compliance-
-                    facing read path: which version, and when. Pre-migration accounts
-                    show "—" (they signed up before the checkbox existed, not an error). */}
-                <th scope="col" className="px-4 py-3">Terms</th>
-                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {users.map(u => (
-                <tr key={u.id}>
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{u.name}</div>
-                    <div className="text-gray-400 text-xs">{u.email}</div>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={u.role === 'ADMIN' ? 'blue' : 'gray'}>{u.role}</Badge>
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={u.status === 'ACTIVE' ? 'green' : 'red'}>{u.status}</Badge>
-                    {!u.emailVerified && <span className="text-xs text-gray-400 ml-1">(unverified)</span>}
-                  </td>
-                  <td className="px-4 py-3 text-right text-gray-600">{u.scansToday}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(u.createdAt)}</td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {u.termsAcceptedAt ? (
-                      <span title={u.termsVersion ? `Version ${u.termsVersion}` : undefined}>
-                        {formatDate(u.termsAcceptedAt)}
-                        {u.termsVersion && <span className="text-xs text-gray-400 ml-1">({u.termsVersion})</span>}
-                      </span>
-                    ) : (
-                      <span className="text-xs text-gray-400">—</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="flex gap-2 justify-end flex-wrap">
-                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                        onClick={() => updateUser(u, { resetScansToday: true })}>
-                        Reset quota
+        <DataTable
+          caption="Users"
+          columns={[
+            {
+              key: 'user',
+              header: 'User',
+              cell: u => (
+                <>
+                  <div className="font-medium text-gray-900">{u.name}</div>
+                  <div className="text-gray-400 text-xs">{u.email}</div>
+                </>
+              ),
+            },
+            {
+              key: 'role',
+              header: 'Role',
+              cell: u => (
+                <>
+                  <Badge variant={u.role === 'ADMIN' ? 'blue' : 'gray'}>{u.role}</Badge>
+                </>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: u => (
+                <>
+                  <Badge variant={u.status === 'ACTIVE' ? 'green' : 'red'}>{u.status}</Badge>
+                  {!u.emailVerified && <span className="text-xs text-gray-400 ml-1">(unverified)</span>}
+                </>
+              ),
+            },
+            {
+              key: 'scansToday',
+              header: 'Scans today',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-600',
+              cell: u => u.scansToday,
+            },
+            {
+              key: 'joined',
+              header: 'Joined',
+              cellClassName: 'text-gray-500',
+              cell: u => formatDate(u.createdAt),
+            },
+            // FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version (migration 0038) were captured at
+            // signup but never shown anywhere — not here, not on the user's own account. This is the compliance-
+            // facing read path: which version, and when. Pre-migration accounts show "—" (they signed up before the
+            // checkbox existed, not an error).
+            {
+              key: 'terms',
+              header: 'Terms',
+              cellClassName: 'text-gray-500',
+              cell: u => (
+                <>
+                  {u.termsAcceptedAt ? (
+                    <span title={u.termsVersion ? `Version ${u.termsVersion}` : undefined}>
+                      {formatDate(u.termsAcceptedAt)}
+                      {u.termsVersion && <span className="text-xs text-gray-400 ml-1">({u.termsVersion})</span>}
+                    </span>
+                  ) : (
+                    <span className="text-xs text-gray-400">—</span>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'actions',
+              header: <span className="sr-only">Actions</span>,
+              cell: u => (
+                <>
+                  <div className="flex gap-2 justify-end flex-wrap">
+                    <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                      onClick={() => updateUser(u, { resetScansToday: true })}>
+                      Reset quota
+                    </Button>
+                    {u.status === 'ACTIVE' ? (
+                      <Button size="sm" variant="danger" disabled={busyId === u.id}
+                        onClick={() => updateUser(u, { status: 'BANNED' }, `Ban ${u.email}?`, true)}>
+                        Ban
                       </Button>
-                      {u.status === 'ACTIVE' ? (
-                        <Button size="sm" variant="danger" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { status: 'BANNED' }, `Ban ${u.email}?`, true)}>
-                          Ban
-                        </Button>
-                      ) : (
-                        <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { status: 'ACTIVE' })}>
-                          Unban
-                        </Button>
-                      )}
-                      {u.role === 'ADMIN' ? (
-                        <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { role: 'SEEKER' }, `Remove admin access from ${u.email}?`, true)}>
-                          Demote
-                        </Button>
-                      ) : (
-                        <Button size="sm" variant="secondary" disabled={busyId === u.id}
-                          onClick={() => updateUser(u, { role: 'ADMIN' }, `Make ${u.email} an admin?`, false)}>
-                          Promote
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    ) : (
+                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                        onClick={() => updateUser(u, { status: 'ACTIVE' })}>
+                        Unban
+                      </Button>
+                    )}
+                    {u.role === 'ADMIN' ? (
+                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                        onClick={() => updateUser(u, { role: 'SEEKER' }, `Remove admin access from ${u.email}?`, true)}>
+                        Demote
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="secondary" disabled={busyId === u.id}
+                        onClick={() => updateUser(u, { role: 'ADMIN' }, `Make ${u.email} an admin?`, false)}>
+                        Promote
+                      </Button>
+                    )}
+                  </div>
+                </>
+              ),
+            },
+          ]}
+          rows={users}
+          rowKey={u => u.id}
+        />
       )}
 
       {totalPages > 1 && (

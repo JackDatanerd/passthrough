@@ -784,8 +784,8 @@ export default function Settings() {
                       <div className="min-w-0">
                         {renameId === p.id ? (
                           <form className="flex items-center gap-2" onSubmit={e => { e.preventDefault(); handleRenameExtra(p.id) }}>
-                            <input type="text" value={renameValue} onChange={e => setRenameValue(e.target.value)} maxLength={40}
-                              aria-label="Profile name" className="rounded-md border border-gray-300 px-2 py-1 text-sm" />
+                            <Input size="sm" value={renameValue} onChange={e => setRenameValue(e.target.value)} maxLength={40}
+                              aria-label="Profile name" />
                             <Button type="submit" size="sm" loading={extraBusy}>Save</Button>
                             <Button type="button" size="sm" variant="secondary" onClick={() => setRenameId(null)}>Cancel</Button>
                           </form>

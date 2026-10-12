@@ -71,7 +71,7 @@ describe('VerifyLookup — the file lookup hands the match to the page (round 5,
     api.get.mockResolvedValue({ data: { success: true, data: { code: 'AB3XY7K2PQ', match: 'previous', kind: 'docx' } } })
     renderPage()
     const file = new File(['x'], 'Ada Resume.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })
-    fireEvent.change(screen.getByLabelText(/choose the \.docx or \.pdf you were sent/i), { target: { files: [file] } })
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [file] } })
     const landing = await screen.findByTestId('landing')
     const [path, state] = landing.textContent.split('|')
     expect(path).toBe('/v/AB3XY7K2PQ')
@@ -82,7 +82,7 @@ describe('VerifyLookup — the file lookup hands the match to the page (round 5,
   it('a 404 is still the "no match" message', async () => {
     api.get.mockRejectedValue(Object.assign(new Error('x'), { response: { status: 404 } }))
     renderPage()
-    fireEvent.change(screen.getByLabelText(/choose the \.docx or \.pdf you were sent/i), { target: { files: [new File(['x'], 'a.pdf', { type: 'application/pdf' })] } })
+    fireEvent.change(document.querySelector('input[type="file"]'), { target: { files: [new File(['x'], 'a.pdf', { type: 'application/pdf' })] } })
     await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/no passthrough verification matches that exact file/i))
   })
 })

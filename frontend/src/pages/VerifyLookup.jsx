@@ -1,6 +1,7 @@
-import { useRef, useState } from 'react'
+import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
+import FileUpload from '../components/ui/FileUpload'
 import Spinner from '../components/ui/Spinner'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
@@ -16,22 +17,20 @@ import { extractVerificationCode } from '../lib/verificationCode'
 export default function VerifyLookup() {
   usePageTitle('Check a resume')
   const navigate = useNavigate()
-  const inputRef = useRef(null)
+  const [file, setFile] = useState(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState(null)   // { text, tone: 'error' | 'muted' } | null
   const [codeText, setCodeText] = useState('')
   const [codeError, setCodeError] = useState('')
 
-  async function handleFile(e) {
-    const file = e.target.files?.[0]
-    if (!file) return
-    setBusy(true); setMessage(null)
+  // Picked OR dropped (FileUpload validates the type and the size cap before this is called; null = the file was removed).
+  async function handleFile(picked) {
+    setFile(picked)
+    setMessage(null)
+    if (!picked) return
+    setBusy(true)
     try {
-      if (file.size > MAX_CHECK_BYTES) {
-        setMessage({ text: 'That file is too large to be a resume — pick the .docx or .pdf you were sent.', tone: 'muted' })
-        return
-      }
-      const hash = await sha256Hex(file)
+      const hash = await sha256Hex(picked)
       const res = await api.get(`/verify/by-hash/${hash}`)
       // ROUND-5 AUDIT FIX (feature gap): the lookup knew WHICH of the page's files this was (current or an
       // earlier delivery) and threw it away on the way to the page, so a reader holding a superseded file
@@ -39,7 +38,7 @@ export default function VerifyLookup() {
       // The fingerprint rides along in router state (it never leaves the browser except as this request's
       // path, as before) and the page classifies it against the fingerprints it loads.
       const code = res.data.data.code
-      navigate(`/v/${encodeURIComponent(code)}`, { state: { fileCheck: { code, hash, kind: fileKindOf(file) } } })
+      navigate(`/v/${encodeURIComponent(code)}`, { state: { fileCheck: { code, hash, kind: fileKindOf(picked) } } })
     } catch (err) {
       const status = err.response?.status
       if (status === 404) setMessage({ text: "No Passthrough verification matches that exact file. It may have been edited — but re-saving, converting to PDF or printing a copy changes a file's fingerprint too. Ask the candidate for the original, or look it up by its link or code below.", tone: 'error' })
@@ -47,7 +46,6 @@ export default function VerifyLookup() {
       else setMessage({ text: "Couldn't check that file — please try again.", tone: 'muted' })
     } finally {
       setBusy(false)
-      if (inputRef.current) inputRef.current.value = ''
     }
   }
 
@@ -70,19 +68,16 @@ export default function VerifyLookup() {
             .docx or .pdf you were sent. Your browser computes its fingerprint locally — the file itself is
             never uploaded — and we take you to the verification page for it, if there is one.
           </p>
-          <div className="flex items-center gap-3 flex-wrap">
-            <input
-              ref={inputRef}
-              type="file"
-              accept=".docx,.pdf,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-              onChange={handleFile}
-              disabled={busy}
-              aria-label="Choose the .docx or .pdf you were sent"
-
-              className="text-sm text-gray-600 file:mr-3 file:py-2 file:px-3 file:rounded-lg file:border-0 file:bg-blue-50 file:text-blue-700 file:text-sm file:font-medium hover:file:bg-blue-100"
-            />
-            {busy && <Spinner size="sm" />}
-          </div>
+          <FileUpload
+            value={file}
+            onFile={handleFile}
+            disabled={busy}
+            maxMB={MAX_CHECK_BYTES / (1024 * 1024)}
+            prompt="Drop the resume you were sent here"
+            typesText="DOCX or PDF"
+            ariaLabel="Choose the .docx or .pdf you were sent"
+          />
+          {busy && <div className="mt-3"><Spinner size="sm" label="Checking the file" /></div>}
           {message && (
             <p role="status" aria-live="polite" className={`text-sm font-medium mt-4 ${message.tone === 'error' ? 'text-red-600' : 'text-gray-500'}`}>
               {message.text}

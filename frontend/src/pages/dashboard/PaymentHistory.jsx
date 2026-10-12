@@ -4,6 +4,7 @@ import api, { getErrorMessage } from '../../lib/api'
 import DashboardLayout from '../../components/layout/DashboardLayout'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Button from '../../components/ui/Button'
 import Pagination from '../../components/ui/Pagination'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -149,65 +150,78 @@ export default function PaymentHistory() {
             </p>
           </div>
         ) : (
-          <div className={`border border-gray-200 rounded-lg bg-white overflow-x-auto ${loading ? 'opacity-60' : ''}`}>
-            <table className="w-full text-sm">
-              <caption className="sr-only">Your payments</caption>
-              <thead>
-                <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                  <th scope="col" className="px-4 py-3">Date</th>
-                  <th scope="col" className="px-4 py-3">Item</th>
-                  <th scope="col" className="px-4 py-3 text-right">Amount</th>
-                  <th scope="col" className="px-4 py-3">Status</th>
-                  <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-100">
-                {payments.map(p => {
+          <DataTable
+            caption="Your payments"
+            loading={loading}
+            columns={[
+              {
+                key: 'date',
+                header: 'Date',
+                cellClassName: 'text-gray-500 whitespace-nowrap',
+                cell: p => formatDate(p.paidAt || p.createdAt),
+              },
+              {
+                key: 'item',
+                header: 'Item',
+                cellClassName: 'text-gray-700',
+                cell: p => (
+                  <>
+                    {TIER_LABEL[p.fixTier] || p.fixTier || '—'}
+                    {isFreeCredit(p) && <span className="text-xs text-gray-400 ml-1.5">(free credit)</span>}
+                  </>
+                ),
+              },
+              {
+                key: 'amount',
+                header: 'Amount',
+                className: 'text-right',
+                cellClassName: 'font-medium',
+                cell: p => (isFreeCredit(p) ? <span className="text-gray-400">Free</span> : formatCents(p.amountCents, p.currency)),
+              },
+              {
+                key: 'status',
+                header: 'Status',
+                cell: p => <Badge variant={STATUS_VARIANT[p.status] || 'gray'}>{p.status}</Badge>,
+              },
+              {
+                key: 'actions',
+                header: <span className="sr-only">Actions</span>,
+                cellClassName: 'text-right',
+                cell: p => {
                   const row = rowState[p.paystackRef] || {}
                   return (
-                    <tr key={p.id}>
-                      <td className="px-4 py-3 text-gray-500 whitespace-nowrap">{formatDate(p.paidAt || p.createdAt)}</td>
-                      <td className="px-4 py-3 text-gray-700">
-                        {TIER_LABEL[p.fixTier] || p.fixTier || '—'}
-                        {isFreeCredit(p) && <span className="text-xs text-gray-400 ml-1.5">(free credit)</span>}
-                      </td>
-                      <td className="px-4 py-3 text-right font-medium">
-                        {isFreeCredit(p) ? <span className="text-gray-400">Free</span> : formatCents(p.amountCents, p.currency)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <Badge variant={STATUS_VARIANT[p.status] || 'gray'}>{p.status}</Badge>
-                      </td>
-                      <td className="px-4 py-3 text-right">
-                        <div className="flex items-center justify-end gap-3 flex-wrap">
-                          {p.scanId && (
-                            <Link to={`/scan/${p.scanId}`} className="text-xs text-blue-600 hover:underline whitespace-nowrap">
-                              View scan →
-                            </Link>
-                          )}
-                          {p.receiptAvailable && (
-                            <Button size="sm" variant="ghost" loading={!!row.busy} disabled={!!row.busy}
-                              onClick={() => sendReceipt(p)}>
-                              Email receipt
-                            </Button>
-                          )}
-                          {p.status === 'PENDING' && (
-                            <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(p)}>
-                              Cancel checkout
-                            </Button>
-                          )}
-                        </div>
-                        {row.note && (
-                          <p role="status" className={`text-xs mt-1 ${row.noteTone === 'error' ? 'text-red-600' : 'text-emerald-700'}`}>
-                            {row.note}
-                          </p>
+                    <>
+                      <div className="flex items-center justify-end gap-3 flex-wrap">
+                        {p.scanId && (
+                          <Link to={`/scan/${p.scanId}`} className="text-xs text-blue-600 hover:underline whitespace-nowrap">
+                            View scan →
+                          </Link>
                         )}
-                      </td>
-                    </tr>
+                        {p.receiptAvailable && (
+                          <Button size="sm" variant="ghost" loading={!!row.busy} disabled={!!row.busy}
+                            onClick={() => sendReceipt(p)}>
+                            Email receipt
+                          </Button>
+                        )}
+                        {p.status === 'PENDING' && (
+                          <Button size="sm" variant="ghost" onClick={() => setConfirmCancel(p)}>
+                            Cancel checkout
+                          </Button>
+                        )}
+                      </div>
+                      {row.note && (
+                        <p role="status" className={`text-xs mt-1 ${row.noteTone === 'error' ? 'text-red-600' : 'text-emerald-700'}`}>
+                          {row.note}
+                        </p>
+                      )}
+                    </>
                   )
-                })}
-              </tbody>
-            </table>
-          </div>
+                },
+              },
+            ]}
+            rows={payments}
+            rowKey={p => p.id}
+          />
         )}
 
         <Pagination page={page} totalPages={totalPages} onChange={setPage} />

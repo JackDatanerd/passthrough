@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
+import Input from '../ui/Input'
+import Radio from '../ui/Radio'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import { formatDate } from '../../lib/utils'
 
@@ -117,14 +119,8 @@ export default function SaveProfilePrompt({ scanId, deliveredAvailable = false }
         {deliveredAvailable && (
           <fieldset className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-700">
             <legend className="sr-only">Which version to save</legend>
-            <label className="inline-flex items-center gap-1.5">
-              <input type="radio" name={`profile-version-${scanId}`} checked={version === 'original'} onChange={() => setVersion('original')} />
-              Your resume as it was
-            </label>
-            <label className="inline-flex items-center gap-1.5">
-              <input type="radio" name={`profile-version-${scanId}`} checked={version === 'delivered'} onChange={() => setVersion('delivered')} />
-              The fixed version
-            </label>
+            <Radio size="sm" label="Your resume as it was" name={`profile-version-${scanId}`} checked={version === 'original'} onChange={() => setVersion('original')} />
+            <Radio size="sm" label="The fixed version" name={`profile-version-${scanId}`} checked={version === 'delivered'} onChange={() => setVersion('delivered')} />
           </fieldset>
         )}
         {status === 'error' && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
@@ -139,9 +135,9 @@ export default function SaveProfilePrompt({ scanId, deliveredAvailable = false }
       </div>
       {extraOpen && (
         <form className="w-full flex flex-wrap items-center gap-2" onSubmit={e => { e.preventDefault(); handleSaveExtra() }}>
-          <input type="text" value={extraLabel} onChange={e => setExtraLabel(e.target.value)} maxLength={40}
+          <Input size="sm" value={extraLabel} onChange={e => setExtraLabel(e.target.value)} maxLength={40}
             placeholder="Name this profile (e.g. Product roles)" aria-label="Profile name"
-            className="flex-1 min-w-[12rem] rounded-md border border-gray-300 px-3 py-1.5 text-sm" />
+            wrapperClassName="flex-1 min-w-[12rem]" />
           <Button type="submit" size="sm" loading={status === 'saving'}>Save</Button>
           <Button type="button" variant="secondary" size="sm" onClick={() => setExtraOpen(false)}>Cancel</Button>
         </form>

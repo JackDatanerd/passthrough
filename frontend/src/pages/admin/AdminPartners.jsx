@@ -8,6 +8,7 @@ import Modal from '../../components/ui/Modal'
 import Form from '../../components/ui/Form'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Checkbox from '../../components/ui/Checkbox'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
@@ -145,10 +146,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
         <p className="text-sm text-gray-500">Creates the partner and emails them a link to enter payout details.</p>
         <Input label="Commission rate % (optional — blank uses the default)" type="number" step="0.01" value={rate}
           onChange={e => setRate(e.target.value)} placeholder="25" />
-        <label className="flex items-center gap-2 text-sm text-gray-700">
-          <input type="checkbox" checked={withCode} onChange={e => setWithCode(e.target.checked)} />
-          Also create their first referral code
-        </label>
+        <Checkbox label="Also create their first referral code" checked={withCode} onChange={e => setWithCode(e.target.checked)} />
         {withCode && (
           <div className="flex flex-col gap-3 rounded-md bg-gray-50 p-3">
             <Input label="Code" value={code} onChange={e => setCode(e.target.value)} placeholder="ANNA20" />
@@ -556,71 +554,92 @@ export default function AdminPartners() {
       ) : (
         <>
         <div className="flex items-center gap-3 flex-wrap">
-          <input type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0) }}
-            placeholder="Search name or email" aria-label="Search partners"
-            className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          <Input size="sm" type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0) }}
+            placeholder="Search name or email" aria-label="Search partners" wrapperClassName="w-64" />
           <Select size="sm" value={sortKey} onChange={e => { setSortKey(e.target.value); setPage(0) }} aria-label="Sort partners">
             {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
           <span className="text-xs text-gray-400">{filtered.length} of {partners.length}</span>
         </div>
         {filtered.length === 0 && <EmptyState>No partners match “{query}”.</EmptyState>}
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Partners</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">Partner</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3">Rate</th>
-                <th scope="col" className="px-4 py-3 text-right">Ready to pay</th>
-                <th scope="col" className="px-4 py-3 text-right">Accruing ({partners[0]?.currentCycleLabel})</th>
-                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {visible.map(p => (
-                <tr key={p.id}>
-                  <td className="px-4 py-3">
-                    <div className="font-medium text-gray-900">{p.name}</div>
-                    <div className="text-gray-400 text-xs">{p.email}</div>
-                    {p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && (
-                      <div className="text-xs text-red-500 mt-0.5" title={`Latest payout-link email: ${p.payoutLinkEmail.status}`}>
-                        Setup email {p.payoutLinkEmail.status === 'throttled' ? 'was throttled' : p.payoutLinkEmail.status === 'suppressed' ? 'was suppressed' : 'failed'} — resend or copy the link
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <Badge variant={p.status === 'ACTIVE' ? 'green' : 'gray'}>{p.status}</Badge>
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{formatRate(p.commissionRate)}</td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={p.readyToPayCents > 0 ? 'font-semibold text-amber-600' : 'text-gray-400'}>
-                      {formatCents(p.readyToPayCents || 0, p.currency)}
-                    </span>
-                    {p.readyToPayCents > 0 && !p.payoutMethod && (
-                      <div className="text-xs text-red-500 mt-0.5">No payout details yet</div>
-                    )}
-                    {p.heldCents > 0 && (
-                      <div className="text-xs text-gray-400 mt-0.5">{formatCents(p.heldCents, p.currency)} held</div>
-                    )}
-                    {p.belowMinimum && (
-                      <div className="text-xs text-amber-600 mt-0.5">{formatCents(p.carriedForwardCents, p.currency)} below minimum — carried forward</div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right text-gray-500">
-                    {formatCents(p.currentCycleAccruedCents || 0, p.currency)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <Link to={`/admin/partners/${p.id}`} className="text-blue-600 hover:underline text-xs font-medium">
-                      Manage →
-                    </Link>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Partners"
+          columns={[
+            {
+              key: 'partner',
+              header: 'Partner',
+              cell: p => (
+                <>
+                  <div className="font-medium text-gray-900">{p.name}</div>
+                  <div className="text-gray-400 text-xs">{p.email}</div>
+                  {p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && (
+                    <div className="text-xs text-red-500 mt-0.5" title={`Latest payout-link email: ${p.payoutLinkEmail.status}`}>
+                      Setup email {p.payoutLinkEmail.status === 'throttled' ? 'was throttled' : p.payoutLinkEmail.status === 'suppressed' ? 'was suppressed' : 'failed'} — resend or copy the link
+                    </div>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: p => (
+                <>
+                  <Badge variant={p.status === 'ACTIVE' ? 'green' : 'gray'}>{p.status}</Badge>
+                </>
+              ),
+            },
+            {
+              key: 'rate',
+              header: 'Rate',
+              cellClassName: 'text-gray-600',
+              cell: p => formatRate(p.commissionRate),
+            },
+            {
+              key: 'readyToPay',
+              header: 'Ready to pay',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right',
+              cell: p => (
+                <>
+                  <span className={p.readyToPayCents > 0 ? 'font-semibold text-amber-600' : 'text-gray-400'}>
+                    {formatCents(p.readyToPayCents || 0, p.currency)}
+                  </span>
+                  {p.readyToPayCents > 0 && !p.payoutMethod && (
+                    <div className="text-xs text-red-500 mt-0.5">No payout details yet</div>
+                  )}
+                  {p.heldCents > 0 && (
+                    <div className="text-xs text-gray-400 mt-0.5">{formatCents(p.heldCents, p.currency)} held</div>
+                  )}
+                  {p.belowMinimum && (
+                    <div className="text-xs text-amber-600 mt-0.5">{formatCents(p.carriedForwardCents, p.currency)} below minimum — carried forward</div>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'accruing',
+              header: <>Accruing ({partners[0]?.currentCycleLabel})</>,
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-500',
+              cell: p => formatCents(p.currentCycleAccruedCents || 0, p.currency),
+            },
+            {
+              key: 'actions',
+              header: <span className="sr-only">Actions</span>,
+              cellClassName: 'text-right',
+              cell: p => (
+                <>
+                  <Link to={`/admin/partners/${p.id}`} className="text-blue-600 hover:underline text-xs font-medium">
+                    Manage →
+                  </Link>
+                </>
+              ),
+            },
+          ]}
+          rows={visible}
+          rowKey={p => p.id}
+        />
         {pageCount > 1 && (
           <div className="flex items-center justify-between text-sm text-gray-500">
             <Button size="sm" variant="secondary" disabled={safePage === 0} onClick={() => setPage(safePage - 1)}>← Previous</Button>

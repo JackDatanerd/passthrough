@@ -4,6 +4,7 @@ import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Pagination from '../../components/ui/Pagination'
 import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -248,125 +249,155 @@ export default function AdminPayments() {
       ) : payments.length === 0 ? (
         <EmptyState>No payments found.</EmptyState>
       ) : (
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Payments</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">Reference</th>
-                <th scope="col" className="px-4 py-3">User</th>
-                <th scope="col" className="px-4 py-3 text-right">Amount</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3">Tier</th>
-                <th scope="col" className="px-4 py-3">Referral</th>
-                <th scope="col" className="px-4 py-3">Created</th>
-                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {payments.map(p => (
-                <tr key={p.id}>
-                  <td className="px-4 py-3 font-mono text-xs text-gray-500">
-                    {p.paystackRef}
-                    {!String(p.paystackRef).startsWith('credit:') && (
-                      <div><Link to={`/admin/webhooks?reference=${encodeURIComponent(p.paystackRef)}`} className="font-sans text-blue-700 hover:underline">Webhook events</Link></div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-600">{p.userEmail || '—'}</td>
-                  <td className="px-4 py-3 text-right font-medium">{formatCents(p.amountCents, p.currency)}</td>
-                  <td className="px-4 py-3">
-                    <Badge variant={badgeVariant(p.status)}>{p.status}</Badge>
-                    {/* AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
-                        (migrations 0024/0025) were captured by the webhook handler but never
-                        shown here — a REFUNDED or DISPUTED row gave no way to see when it
-                        happened or what the refund reference was. */}
-                    {p.status === 'REFUNDED' && p.refundedAt && (
-                      <div className="text-xs text-gray-400 mt-0.5">
-                        {formatDate(p.refundedAt)}{p.refundReference ? ` · ${p.refundReference}` : ''}
-                      </div>
-                    )}
-                    {/* ROUND 5: money confirmed back by Paystack on a payment that stays SUCCESS (a partial refund). */}
-                    {p.status === 'SUCCESS' && p.refundedCents > 0 && (
-                      <div className="text-xs text-amber-700 mt-0.5">
-                        Partially refunded {formatCents(p.refundedCents, p.currency)} of {formatCents(p.amountCents, p.currency)}
-                      </div>
-                    )}
-                    {p.status === 'DISPUTED' && p.disputedAt && (
-                      <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
-                    )}
-                    {/* AUDIT FIX (Section 9/10 pass): receipt_sent_at/receipt_delivered_at
-                        (migrations 0033/0036) were captured by fulfillment.service.js but never
-                        surfaced anywhere admin could see — no way to answer a "I paid but never
-                        got a receipt" ticket without querying the DB directly. receiptDeliveredAt
-                        is the one that means the email genuinely went out; receiptSentAt alone
-                        (claimed before sending) with no deliveredAt means the send was claimed but
-                        never confirmed finished — a real, actionable warning, since that column
-                        only exists on the new tracked code path.
-                        Deliberately NOT a warning when BOTH are null: sendReceiptOnce's own
-                        comment confirms receipt-sending predates this tracking (0033 added
-                        idempotency to an already-live send, not the send itself) — a payment from
-                        before that migration shipped correctly has both columns null even though
-                        its receipt really did go out via the old, untracked path. Flagging that as
-                        "No receipt sent" would be a false alarm on every pre-migration row, not a
-                        real signal. Shown as neutral, not amber, for that reason. Only shown for
-                        SUCCESS payments — a REFUNDED/DISPUTED row's own line above already covers
-                        what matters for it. */}
-                    {p.status === 'SUCCESS' && (
-                      p.receiptDeliveredAt ? (
-                        <div className="text-xs text-gray-400 mt-0.5">Receipt sent {formatDate(p.receiptDeliveredAt)}</div>
-                      ) : p.receiptSentAt ? (
-                        <div className="text-xs text-amber-600 mt-0.5">Receipt send unconfirmed ({formatDate(p.receiptSentAt)})</div>
-                      ) : (
-                        <div className="text-xs text-gray-400 mt-0.5">Receipt not tracked</div>
-                      )
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{p.fixTier || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500 font-mono text-xs">{p.referralCode || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(p.createdAt)}</td>
-                  <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                    {p.status === 'SUCCESS' && (
-                      <>
-                        <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
-                          onClick={() => reconcile(p)}>
-                          Reconcile
-                        </Button>
-                        {isRefundable(p) && (
-                          <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
-                            onClick={() => openRefund(p)}>
-                            Refund
-                          </Button>
-                        )}
-                        <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
-                          onClick={() => resolvePayment(p, 'reverse')}>
-                          Reverse
-                        </Button>
-                      </>
-                    )}
-                    {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
+        <DataTable
+          caption="Payments"
+          columns={[
+            {
+              key: 'reference',
+              header: 'Reference',
+              cellClassName: 'font-mono text-xs text-gray-500',
+              cell: p => (
+                <>
+                  {p.paystackRef}
+                  {!String(p.paystackRef).startsWith('credit:') && (
+                    <div><Link to={`/admin/webhooks?reference=${encodeURIComponent(p.paystackRef)}`} className="font-sans text-blue-700 hover:underline">Webhook events</Link></div>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'user',
+              header: 'User',
+              cellClassName: 'text-gray-600',
+              cell: p => p.userEmail || '—',
+            },
+            {
+              key: 'amount',
+              header: 'Amount',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right font-medium',
+              cell: p => formatCents(p.amountCents, p.currency),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: p => (
+                <>
+                  <Badge variant={badgeVariant(p.status)}>{p.status}</Badge>
+                  {/* AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
+                      (migrations 0024/0025) were captured by the webhook handler but never
+                      shown here — a REFUNDED or DISPUTED row gave no way to see when it
+                      happened or what the refund reference was. */}
+                  {p.status === 'REFUNDED' && p.refundedAt && (
+                    <div className="text-xs text-gray-400 mt-0.5">
+                      {formatDate(p.refundedAt)}{p.refundReference ? ` · ${p.refundReference}` : ''}
+                    </div>
+                  )}
+                  {/* ROUND 5: money confirmed back by Paystack on a payment that stays SUCCESS (a partial refund). */}
+                  {p.status === 'SUCCESS' && p.refundedCents > 0 && (
+                    <div className="text-xs text-amber-700 mt-0.5">
+                      Partially refunded {formatCents(p.refundedCents, p.currency)} of {formatCents(p.amountCents, p.currency)}
+                    </div>
+                  )}
+                  {p.status === 'DISPUTED' && p.disputedAt && (
+                    <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
+                  )}
+                  {/* AUDIT FIX (Section 9/10 pass): receipt_sent_at/receipt_delivered_at
+                      (migrations 0033/0036) were captured by fulfillment.service.js but never
+                      surfaced anywhere admin could see — no way to answer a "I paid but never
+                      got a receipt" ticket without querying the DB directly. receiptDeliveredAt
+                      is the one that means the email genuinely went out; receiptSentAt alone
+                      (claimed before sending) with no deliveredAt means the send was claimed but
+                      never confirmed finished — a real, actionable warning, since that column
+                      only exists on the new tracked code path.
+                      Deliberately NOT a warning when BOTH are null: sendReceiptOnce's own
+                      comment confirms receipt-sending predates this tracking (0033 added
+                      idempotency to an already-live send, not the send itself) — a payment from
+                      before that migration shipped correctly has both columns null even though
+                      its receipt really did go out via the old, untracked path. Flagging that as
+                      "No receipt sent" would be a false alarm on every pre-migration row, not a
+                      real signal. Shown as neutral, not amber, for that reason. Only shown for
+                      SUCCESS payments — a REFUNDED/DISPUTED row's own line above already covers
+                      what matters for it. */}
+                  {p.status === 'SUCCESS' && (
+                    p.receiptDeliveredAt ? (
+                      <div className="text-xs text-gray-400 mt-0.5">Receipt sent {formatDate(p.receiptDeliveredAt)}</div>
+                    ) : p.receiptSentAt ? (
+                      <div className="text-xs text-amber-600 mt-0.5">Receipt send unconfirmed ({formatDate(p.receiptSentAt)})</div>
+                    ) : (
+                      <div className="text-xs text-gray-400 mt-0.5">Receipt not tracked</div>
+                    )
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'tier',
+              header: 'Tier',
+              cellClassName: 'text-gray-500',
+              cell: p => p.fixTier || '—',
+            },
+            {
+              key: 'referral',
+              header: 'Referral',
+              cellClassName: 'text-gray-500 font-mono text-xs',
+              cell: p => p.referralCode || '—',
+            },
+            {
+              key: 'created',
+              header: 'Created',
+              cellClassName: 'text-gray-500',
+              cell: p => formatDate(p.createdAt),
+            },
+            {
+              key: 'actions',
+              header: <span className="sr-only">Actions</span>,
+              cellClassName: 'text-right space-x-2 whitespace-nowrap',
+              cell: p => (
+                <>
+                  {p.status === 'SUCCESS' && (
+                    <>
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
-                        onClick={() => recheck(p)}>
-                        Recheck
+                        onClick={() => reconcile(p)}>
+                        Reconcile
                       </Button>
-                    )}
-                    {p.status === 'DISPUTED' && (
-                      <>
+                      {isRefundable(p) && (
                         <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
-                          onClick={() => resolvePayment(p, 'clear-dispute')}>
-                          Clear dispute
+                          onClick={() => openRefund(p)}>
+                          Refund
                         </Button>
-                        <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
-                          onClick={() => resolvePayment(p, 'reverse')}>
-                          Reverse
-                        </Button>
-                      </>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                      )}
+                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                        onClick={() => resolvePayment(p, 'reverse')}>
+                        Reverse
+                      </Button>
+                    </>
+                  )}
+                  {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
+                    <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                      onClick={() => recheck(p)}>
+                      Recheck
+                    </Button>
+                  )}
+                  {p.status === 'DISPUTED' && (
+                    <>
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => resolvePayment(p, 'clear-dispute')}>
+                        Clear dispute
+                      </Button>
+                      <Button size="sm" variant="danger" disabled={busyRef === p.paystackRef}
+                        onClick={() => resolvePayment(p, 'reverse')}>
+                        Reverse
+                      </Button>
+                    </>
+                  )}
+                </>
+              ),
+            },
+          ]}
+          rows={payments}
+          rowKey={p => p.id}
+        />
       )}
 
       {totalPages > 1 && (

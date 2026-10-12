@@ -13,6 +13,9 @@ function skipToMain(e) {
   main.scrollIntoView?.()
 }
 
+// The page a top-level link points at, for assistive tech. Hash links (/#stories) never count: the page is Home either way.
+const here = (pathname, to) => (pathname === to || pathname.startsWith(`${to}/`) ? 'page' : undefined)
+
 export default function Navbar() {
   const { user, logout } = useAuth()
   const navigate = useNavigate()
@@ -65,7 +68,7 @@ export default function Navbar() {
           <Link to="/#hot" className="text-gray-600 hover:text-gray-900 transition-colors hidden md:block">
             Hot categories
           </Link>
-          <Link to="/pricing" className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
+          <Link to="/pricing" aria-current={here(pathname, '/pricing')} className="text-gray-600 hover:text-gray-900 transition-colors hidden sm:block">
             Pricing
           </Link>
           {/* Anchor into the employer section on the homepage */}
@@ -74,12 +77,12 @@ export default function Navbar() {
           </Link>
           {user ? (
             <>
-              <Link to="/dashboard" className="py-3 sm:py-0 text-gray-600 hover:text-gray-900 transition-colors">
+              <Link to="/dashboard" aria-current={here(pathname, '/dashboard')} className="py-3 sm:py-0 text-gray-600 hover:text-gray-900 transition-colors">
                 Dashboard
               </Link>
               {/* The admin page had no link anywhere — admins had to type the URL. */}
               {user.role === 'ADMIN' && (
-                <Link to="/admin" className="text-gray-600 hover:text-gray-900 transition-colors">
+                <Link to="/admin" aria-current={here(pathname, '/admin')} className="text-gray-600 hover:text-gray-900 transition-colors">
                   Admin
                 </Link>
               )}
@@ -111,7 +114,7 @@ export default function Navbar() {
         <div id="navbar-more" className="sm:hidden border-t border-gray-100 px-4 py-2 flex flex-col text-sm">
           <Link to="/#stories" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Stories</Link>
           <Link to="/#hot" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Hot categories</Link>
-          <Link to="/pricing" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
+          <Link to="/pricing" aria-current={here(pathname, '/pricing')} onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">Pricing</Link>
           <Link to="/#employers" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900">For employers</Link>
           {!user && <Link to="/login" onClick={() => setMenuOpen(false)} className="py-2 text-gray-700 hover:text-gray-900 min-[340px]:hidden">Sign in</Link>}
         </div>

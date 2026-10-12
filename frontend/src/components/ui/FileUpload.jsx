@@ -18,10 +18,15 @@ import { validateUpload, normalizeUpload } from '../../lib/upload'
 // `file.type` check agrees with this component's extension check.
 // `prompt` / `typesText` / `ariaLabel` are the visible and spoken copy; the defaults are the resume wording.
 // (What is actually accepted is decided by lib/upload.js — PDF and DOCX — and `accept` only filters the picker.)
+//
+// Not just for resumes: `extensions` (lower-case, no dot; default PDF + DOCX) decides what is accepted AND what the picker
+// offers (`accept` is derived from it unless given), and `validate(file)` may return an extra message to refuse a file
+// (a size cap that is not `maxMB`, say). Pair it with matching `typesText` / `prompt` / `ariaLabel` copy.
 export default function FileUpload({
-  onFile, value, accept = '.pdf,.docx', maxMB = 5, disabled = false,
+  onFile, value, extensions = ['pdf', 'docx'], accept, maxMB = 5, disabled = false, validate,
   prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel = 'Upload your resume (PDF or DOCX)',
 }) {
+  const acceptAttr = accept ?? extensions.map(e => `.${e}`).join(',')
   const inputRef = useRef(null)
   const zoneRef = useRef(null)
   const dragDepth = useRef(0)
@@ -42,7 +47,9 @@ export default function FileUpload({
     const guard = e => {
       const types = Array.from(e.dataTransfer?.types || [])
       if (!types.includes('Files')) return
-      if (zoneRef.current && zoneRef.current.contains(e.target)) return
+      // Over ANY dropzone (not just this instance's): with two mounted, each one's guard used to cancel drops over the
+      // other's zone (dropEffect 'none'), so neither accepted a file.
+      if (e.target instanceof Element && e.target.closest('[data-file-dropzone]')) return
       e.preventDefault()
       if (e.type === 'dragover' && e.dataTransfer) e.dataTransfer.dropEffect = 'none'
     }
@@ -63,7 +70,7 @@ export default function FileUpload({
     if (!fileList || fileList.length === 0) return          // picker cancelled — not an error
     if (fileList.length > 1) { setError('Please upload one file at a time.'); return }
     const f = fileList[0]
-    const problem = validateUpload(f, maxMB)
+    const problem = validateUpload(f, maxMB, extensions) || (typeof validate === 'function' ? validate(f) : null)
     if (problem) { setError(problem); return }              // previous selection stays as-is
     setError('')
     commit(normalizeUpload(f))
@@ -77,6 +84,7 @@ export default function FileUpload({
     <div>
       <div
         ref={zoneRef}
+        data-file-dropzone=""
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled || undefined}
@@ -132,7 +140,7 @@ export default function FileUpload({
         <input
           ref={inputRef}
           type="file"
-          accept={accept}
+          accept={acceptAttr}
           disabled={disabled}
           className="hidden"
           tabIndex={-1}

@@ -5,6 +5,7 @@ import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
 import Form from '../../components/ui/Form'
 import Modal from '../../components/ui/Modal'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
@@ -16,6 +17,7 @@ import { formatDate, formatNumber } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import FileUpload from '../../components/ui/FileUpload'
 import { leadRowsFromCsv, chunk } from '../../lib/leadImport'
 
 const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', ARCHIVED: 'gray' }
@@ -587,153 +589,204 @@ export default function AdminLeads() {
       ) : leads.length === 0 ? (
         <EmptyState>No leads found.</EmptyState>
       ) : (
-        <div className="border border-gray-200 rounded-lg bg-white overflow-x-auto">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Employer leads</caption>
-            <thead>
-              <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-                <th scope="col" className="px-4 py-3">
-                  <Checkbox aria-label="Select all leads on this page" checked={allSelected} onChange={toggleAll} />
-                </th>
-                <th scope="col" className="px-4 py-3">Name</th>
-                <th scope="col" className="px-4 py-3">Company</th>
-                <th scope="col" className="px-4 py-3">Email</th>
-                <th scope="col" className="px-4 py-3">Field</th>
-                <th scope="col" className="px-4 py-3">Role title</th>
-                <th scope="col" className="px-4 py-3">Source</th>
-                <th scope="col" className="px-4 py-3">Received</th>
-                <th scope="col" className="px-4 py-3">Last active</th>
-                <th scope="col" className="px-4 py-3">Status</th>
-                <th scope="col" className="px-4 py-3">Notes</th>
-                <th scope="col" className="px-4 py-3"><span className="sr-only">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {leads.map(l => (
-                <tr key={l.id}>
-                  <td className="px-4 py-3">
-                    <Checkbox aria-label={`Select ${l.email}`} checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} />
-                  </td>
-                  <td className="px-4 py-3 font-medium text-gray-900">{l.name}</td>
-                  <td className="px-4 py-3 text-gray-600">{l.company}</td>
-                  <td className="px-4 py-3 text-gray-600">
-                    <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
-                    {l.doNotContact && (
-                      <span className="block text-xs text-red-600" title="This address is on the do-not-contact list: it will not be emailed from here.">do not contact</span>
-                    )}
-                    {l.confirmedAt
-                      ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}${VIA_LABEL[l.confirmedVia] ? ` — ${VIA_LABEL[l.confirmedVia]}` : ''}`}>
-                          ✓ confirmed
-                          {VIA_LABEL[l.confirmedVia] && <span className="text-gray-400"> · {VIA_LABEL[l.confirmedVia]}</span>}
+        <DataTable
+          caption="Employer leads"
+          columns={[
+            {
+              key: 'select',
+              header: <Checkbox aria-label="Select all leads on this page" checked={allSelected} onChange={toggleAll} />,
+              cell: l => (
+                <>
+                  <Checkbox aria-label={`Select ${l.email}`} checked={selected.has(l.id)} onChange={() => toggleOne(l.id)} />
+                </>
+              ),
+            },
+            {
+              key: 'name',
+              header: 'Name',
+              cellClassName: 'font-medium text-gray-900',
+              cell: l => l.name,
+            },
+            {
+              key: 'company',
+              header: 'Company',
+              cellClassName: 'text-gray-600',
+              cell: l => l.company,
+            },
+            {
+              key: 'email',
+              header: 'Email',
+              cellClassName: 'text-gray-600',
+              cell: l => (
+                <>
+                  <a href={`mailto:${l.email}`} className="text-blue-600 hover:underline">{l.email}</a>
+                  {l.doNotContact && (
+                    <span className="block text-xs text-red-600" title="This address is on the do-not-contact list: it will not be emailed from here.">do not contact</span>
+                  )}
+                  {l.confirmedAt
+                    ? <span className="block text-xs text-green-600" title={`Confirmed ${formatDate(l.confirmedAt)}${VIA_LABEL[l.confirmedVia] ? ` — ${VIA_LABEL[l.confirmedVia]}` : ''}`}>
+                        ✓ confirmed
+                        {VIA_LABEL[l.confirmedVia] && <span className="text-gray-400"> · {VIA_LABEL[l.confirmedVia]}</span>}
+                      </span>
+                    : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
+                  {!l.confirmedAt && l.status !== 'ARCHIVED' && (l.lastAckAt
+                    ? <span className="block text-xs text-gray-400">confirmation sent {formatDate(l.lastAckAt)}</span>
+                    : <span className="block text-xs text-amber-600" title="No confirmation email has gone out to this address yet. It is retried hourly a few times; use Send confirm link to try now.">
+                        no confirmation email sent{l.ackAttempts > 0 ? ` (${l.ackAttempts} ${l.ackAttempts === 1 ? 'retry' : 'retries'} failed)` : ''}
+                      </span>)}
+                  {l.lastCandidatesNotifiedAt && (
+                    <span className="block text-xs text-gray-400" title="The last time Verified candidates were announced to this lead from here.">
+                      told about candidates {formatDate(l.lastCandidatesNotifiedAt)}
+                    </span>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'field',
+              header: 'Field',
+              cellClassName: 'text-gray-500',
+              cell: l => (
+                <>
+                  {l.roleCategory ? (
+                    <>
+                      {roleLabel(l.roleCategory)}
+                      {candidateSupply && (
+                        <span className={`ml-1 text-xs ${candidateSupply[l.roleCategory] ? 'text-green-600' : 'text-gray-400'}`}>
+                          ({candidateSupply[l.roleCategory] || 0} verified)
                         </span>
-                      : <span className="block text-xs text-amber-600" title="This address has not been confirmed as belonging to the person who entered it — don't email it as a contact yet.">unconfirmed</span>}
-                    {!l.confirmedAt && l.status !== 'ARCHIVED' && (l.lastAckAt
-                      ? <span className="block text-xs text-gray-400">confirmation sent {formatDate(l.lastAckAt)}</span>
-                      : <span className="block text-xs text-amber-600" title="No confirmation email has gone out to this address yet. It is retried hourly a few times; use Send confirm link to try now.">
-                          no confirmation email sent{l.ackAttempts > 0 ? ` (${l.ackAttempts} ${l.ackAttempts === 1 ? 'retry' : 'retries'} failed)` : ''}
-                        </span>)}
-                    {l.lastCandidatesNotifiedAt && (
-                      <span className="block text-xs text-gray-400" title="The last time Verified candidates were announced to this lead from here.">
-                        told about candidates {formatDate(l.lastCandidatesNotifiedAt)}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {l.roleCategory ? (
-                      <>
-                        {roleLabel(l.roleCategory)}
-                        {candidateSupply && (
-                          <span className={`ml-1 text-xs ${candidateSupply[l.roleCategory] ? 'text-green-600' : 'text-gray-400'}`}>
-                            ({candidateSupply[l.roleCategory] || 0} verified)
-                          </span>
-                        )}
-                      </>
-                    ) : '—'}
-                    {l.extraRoleCategories?.length > 0 && (
-                      <span className="block text-xs text-gray-400" title="Also hiring in these fields; candidate announcements reach them for each.">
-                        also: {l.extraRoleCategories.map(roleLabel).join(', ')}
-                      </span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{l.roleTitle || '—'}</td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {l.source}
-                    {l.sourceCode && (
-                      <a href={`/v/${l.sourceCode}`} target="_blank" rel="noreferrer"
-                        className="block text-xs text-blue-700 hover:text-blue-800 underline">
-                        {l.sourceCode}
-                      </a>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">
-                    {formatDate(l.createdAt)}
-                    {l.submissionCount > 1 && (
-                      <span className="block text-xs text-amber-600">resubmitted ×{l.submissionCount}</span>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-gray-500">{formatDate(l.lastSubmittedAt)}</td>
-                  <td className="px-4 py-3">
-                    <div className="flex items-center gap-2">
-                      <Badge variant={STATUS_VARIANT[l.status] || 'gray'}>{l.status}</Badge>
-                      <Select
-                        aria-label={`Status for ${l.email}`}
-                        value={l.status}
-                        disabled={busyId === l.id}
-                        onChange={e => changeStatus(l, e.target.value)}
-                        size="sm"
-                        wrapperClassName="w-fit"
-                      >
-                        {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                      </Select>
-                    </div>
-                    {l.contactedAt && (
-                      <div className="text-xs text-gray-400 mt-1">Contacted {formatDate(l.contactedAt)}</div>
-                    )}
-                    {l.status === 'ARCHIVED' && l.archivedResubmittedAt && (
-                      <div className="text-xs text-amber-600 mt-1" title="They submitted the form again after you archived them. Nothing was sent to them. Change the status to work this lead again, or archive it again to dismiss this.">
-                        came back {formatDate(l.archivedResubmittedAt)}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3">
-                    <textarea
-                      key={`${l.id}:${l.notes || ''}`}
-                      aria-label={`Notes for ${l.email}`}
-                      defaultValue={l.notes || ''}
+                      )}
+                    </>
+                  ) : '—'}
+                  {l.extraRoleCategories?.length > 0 && (
+                    <span className="block text-xs text-gray-400" title="Also hiring in these fields; candidate announcements reach them for each.">
+                      also: {l.extraRoleCategories.map(roleLabel).join(', ')}
+                    </span>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'roleTitle',
+              header: 'Role title',
+              cellClassName: 'text-gray-500',
+              cell: l => l.roleTitle || '—',
+            },
+            {
+              key: 'source',
+              header: 'Source',
+              cellClassName: 'text-gray-500',
+              cell: l => (
+                <>
+                  {l.source}
+                  {l.sourceCode && (
+                    <a href={`/v/${l.sourceCode}`} target="_blank" rel="noreferrer"
+                      className="block text-xs text-blue-700 hover:text-blue-800 underline">
+                      {l.sourceCode}
+                    </a>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'received',
+              header: 'Received',
+              cellClassName: 'text-gray-500',
+              cell: l => (
+                <>
+                  {formatDate(l.createdAt)}
+                  {l.submissionCount > 1 && (
+                    <span className="block text-xs text-amber-600">resubmitted ×{l.submissionCount}</span>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'lastActive',
+              header: 'Last active',
+              cellClassName: 'text-gray-500',
+              cell: l => formatDate(l.lastSubmittedAt),
+            },
+            {
+              key: 'status',
+              header: 'Status',
+              cell: l => (
+                <>
+                  <div className="flex items-center gap-2">
+                    <Badge variant={STATUS_VARIANT[l.status] || 'gray'}>{l.status}</Badge>
+                    <Select
+                      aria-label={`Status for ${l.email}`}
+                      value={l.status}
                       disabled={busyId === l.id}
-                      maxLength={2000}
-                      onBlur={e => saveNotes(l, e.target.value.trim())}
-                      placeholder="Add a note…"
-                      rows={1}
-                      className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs resize-y"
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    {!l.confirmedAt && l.status !== 'ARCHIVED' && (
-                      <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => requestConfirmation(l)} className="mr-2">
-                        Send confirm link
-                      </Button>
-                    )}
-                    {!l.confirmedAt && (
-                      <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setPendingMarkConfirmed(l)} className="mr-2">
-                        Mark confirmed
-                      </Button>
-                    )}
-                    <Button size="sm" variant="secondary" onClick={() => setDetailId(l.id)} className="mr-2">
-                      Details
+                      onChange={e => changeStatus(l, e.target.value)}
+                      size="sm"
+                      wrapperClassName="w-fit"
+                    >
+                      {STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </Select>
+                  </div>
+                  {l.contactedAt && (
+                    <div className="text-xs text-gray-400 mt-1">Contacted {formatDate(l.contactedAt)}</div>
+                  )}
+                  {l.status === 'ARCHIVED' && l.archivedResubmittedAt && (
+                    <div className="text-xs text-amber-600 mt-1" title="They submitted the form again after you archived them. Nothing was sent to them. Change the status to work this lead again, or archive it again to dismiss this.">
+                      came back {formatDate(l.archivedResubmittedAt)}
+                    </div>
+                  )}
+                </>
+              ),
+            },
+            {
+              key: 'notes',
+              header: 'Notes',
+              cell: l => (
+                <>
+                  <textarea
+                    key={`${l.id}:${l.notes || ''}`}
+                    aria-label={`Notes for ${l.email}`}
+                    defaultValue={l.notes || ''}
+                    disabled={busyId === l.id}
+                    maxLength={2000}
+                    onBlur={e => saveNotes(l, e.target.value.trim())}
+                    placeholder="Add a note…"
+                    rows={1}
+                    className="w-40 rounded-md border border-gray-300 px-2 py-1 text-xs resize-y"
+                  />
+                </>
+              ),
+            },
+            {
+              key: 'actions',
+              header: <span className="sr-only">Actions</span>,
+              cellClassName: 'text-right whitespace-nowrap',
+              cell: l => (
+                <>
+                  {!l.confirmedAt && l.status !== 'ARCHIVED' && (
+                    <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => requestConfirmation(l)} className="mr-2">
+                      Send confirm link
                     </Button>
-                    <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
-                      Edit
+                  )}
+                  {!l.confirmedAt && (
+                    <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setPendingMarkConfirmed(l)} className="mr-2">
+                      Mark confirmed
                     </Button>
-                    <Button size="sm" variant="danger" disabled={busyId === l.id} onClick={() => setPendingDelete(l)}>
-                      Delete
-                    </Button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                  )}
+                  <Button size="sm" variant="secondary" onClick={() => setDetailId(l.id)} className="mr-2">
+                    Details
+                  </Button>
+                  <Button size="sm" variant="secondary" disabled={busyId === l.id} onClick={() => setEditing(l)} className="mr-2">
+                    Edit
+                  </Button>
+                  <Button size="sm" variant="danger" disabled={busyId === l.id} onClick={() => setPendingDelete(l)}>
+                    Delete
+                  </Button>
+                </>
+              ),
+            },
+          ]}
+          rows={leads}
+          rowKey={l => l.id}
+        />
       )}
 
       <Pagination page={page} totalPages={totalPages} onChange={p => setParams({ page: p })} />
@@ -1047,6 +1100,8 @@ function LeadDetailModal({ id, onClose }) {
 // Pick a file, tick that these people asked to hear from you, check it (nothing is saved), then import.
 // Rows go up in batches of 200; each batch reports what it skipped and why.
 function ImportLeadsModal({ open, onClose, onDone }) {
+  const [file, setFile] = useState(null)
+  const readSeq = useRef(0)
   const [rows, setRows] = useState([])
   const [fileName, setFileName] = useState('')
   const [parseError, setParseError] = useState('')
@@ -1057,15 +1112,23 @@ function ImportLeadsModal({ open, onClose, onDone }) {
 
   useEffect(() => {
     if (!open) return
-    setRows([]); setFileName(''); setParseError(''); setAttest(false); setBusy(false); setReport(null); setError('')
+    readSeq.current++
+    setFile(null); setRows([]); setFileName(''); setParseError(''); setAttest(false); setBusy(false); setReport(null); setError('')
   }, [open])
 
-  async function onFile(e) {
-    const file = e.target.files?.[0]
-    setReport(null); setError('')
-    if (!file) return
-    setFileName(file.name)
-    const parsed = leadRowsFromCsv(await file.text())
+  // Picked or dropped (FileUpload has already checked it is a non-empty .csv; null = removed). Two things the bare
+  // <input> version got wrong: an unreadable file rejected out of an async handler with nothing shown, and a slow
+  // read of an earlier file could land AFTER a later pick and replace its rows.
+  async function onFile(picked) {
+    const mine = ++readSeq.current
+    setFile(picked); setReport(null); setError('')
+    if (!picked) { setRows([]); setFileName(''); setParseError(''); return }
+    setFileName(picked.name)
+    let text
+    try { text = await picked.text() } catch { text = null }
+    if (mine !== readSeq.current) return
+    if (text == null) { setRows([]); setParseError("Couldn't read that file. Try saving it as CSV again.") ; return }
+    const parsed = leadRowsFromCsv(text)
     setRows(parsed.rows); setParseError(parsed.error || '')
   }
 
@@ -1099,7 +1162,8 @@ function ImportLeadsModal({ open, onClose, onDone }) {
           count as confirmed and nobody is emailed. Addresses that asked to be removed, and addresses that are already
           leads, are skipped.
         </p>
-        <input type="file" accept=".csv,text/csv" onChange={onFile} disabled={busy} aria-label="CSV file" />
+        <FileUpload value={file} onFile={onFile} disabled={busy} extensions={['csv']} maxMB={5}
+          prompt="Drop the CSV file here" typesText="CSV" ariaLabel="CSV file" />
         {parseError && <p role="alert" className="text-red-600">{parseError}</p>}
         {rows.length > 0 && !parseError && <p className="text-gray-600">{fileName}: {rows.length} row{rows.length === 1 ? '' : 's'} found.</p>}
         <Checkbox label="These contacts asked to hear from Passthrough (or I am allowed to contact them about it)."

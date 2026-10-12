@@ -4,6 +4,9 @@ import api from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
+import DataTable from '../../components/ui/DataTable'
+import Input from '../../components/ui/Input'
+import Checkbox from '../../components/ui/Checkbox'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, downloadCsv } from '../../lib/utils'
 
@@ -72,36 +75,64 @@ function CodeLookup() {
   const { rows, total, loading, error } = usePagedFetch('/partners/codes', { q: debounced || undefined, limit: PAGE, offset })
   return (
     <div className="flex flex-col gap-3">
-      <input type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a referral code…" aria-label="Find a referral code"
-        className="text-sm border border-gray-300 rounded-md px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+      <Input size="sm" type="search" value={q} onChange={e => setQ(e.target.value)} placeholder="Find a referral code…" aria-label="Find a referral code"
+        wrapperClassName="w-64" />
       {loading && <Spinner />}
       {error && <p className="text-sm text-red-600">Couldn't load codes.</p>}
       {!loading && !error && rows.length === 0 && <p className="text-sm text-gray-400">No codes match.</p>}
       {rows.length > 0 && (
-        <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Referral codes</caption>
-            <thead><tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-              <th scope="col" className="px-3 py-2">Code</th><th scope="col" className="px-3 py-2">Partner</th><th scope="col" className="px-3 py-2">State</th>
-              <th scope="col" className="px-3 py-2 text-right">Clicks</th><th scope="col" className="px-3 py-2 text-right">Uses</th>
-            </tr></thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map(r => (
-                <tr key={r.id}>
-                  <td className="px-3 py-2 font-mono text-gray-900">{r.code}</td>
-                  <td className="px-3 py-2"><Link to={`/admin/partners/${r.partnerId}`} className="text-blue-600 hover:underline">{r.partnerName || 'Partner'}</Link>
-                    <div className="text-xs text-gray-400">{r.partnerEmail}</div></td>
-                  <td className="px-3 py-2">
-                    {r.active ? <Badge variant="green">Active</Badge> : <Badge variant="gray">Inactive</Badge>}
-                    {r.expiresAt && <span className="text-xs text-gray-400 ml-2">expires {formatDate(r.expiresAt)}</span>}
-                  </td>
-                  <td className="px-3 py-2 text-right text-gray-600">{r.clicks ?? 0}</td>
-                  <td className="px-3 py-2 text-right text-gray-600">{r.usesSoFar ?? 0}{r.usageLimit != null ? ` / ${r.usageLimit}` : ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Referral codes"
+          density="compact"
+          columns={[
+            {
+              key: 'code',
+              header: 'Code',
+              cellClassName: 'font-mono text-gray-900',
+              cell: r => r.code,
+            },
+            {
+              key: 'partner',
+              header: 'Partner',
+              cell: r => (
+                <>
+                  <Link to={`/admin/partners/${r.partnerId}`} className="text-blue-600 hover:underline">{r.partnerName || 'Partner'}</Link>
+                  <div className="text-xs text-gray-400">{r.partnerEmail}</div>
+                </>
+              ),
+            },
+            {
+              key: 'state',
+              header: 'State',
+              cell: r => (
+                <>
+                  {r.active ? <Badge variant="green">Active</Badge> : <Badge variant="gray">Inactive</Badge>}
+                  {r.expiresAt && <span className="text-xs text-gray-400 ml-2">expires {formatDate(r.expiresAt)}</span>}
+                </>
+              ),
+            },
+            {
+              key: 'clicks',
+              header: 'Clicks',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-600',
+              cell: r => r.clicks ?? 0,
+            },
+            {
+              key: 'uses',
+              header: 'Uses',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-600',
+              cell: r => (
+                <>
+                  {r.usesSoFar ?? 0}{r.usageLimit != null ? ` / ${r.usageLimit}` : ''}
+                </>
+              ),
+            },
+          ]}
+          rows={rows}
+          rowKey={r => r.id}
+        />
       )}
       <Pager offset={offset} total={total} count={rows.length} onPage={setOffset} />
     </div>
@@ -137,35 +168,52 @@ function PayoutsLog() {
   return (
     <div className="flex flex-col gap-3">
       <div className="flex items-center gap-4 flex-wrap text-sm">
-        <label className="flex items-center gap-2 text-gray-600">
-          <input type="checkbox" checked={includeVoided} onChange={e => { setIncludeVoided(e.target.checked); setOffset(0) }} /> Show voided
-        </label>
+        <Checkbox label="Show voided" checked={includeVoided} onChange={e => { setIncludeVoided(e.target.checked); setOffset(0) }} />
         <Button size="sm" variant="secondary" loading={exporting} onClick={exportAll}>Export CSV</Button>
       </div>
       {loading && <Spinner />}
       {error && <p className="text-sm text-red-600">Couldn't load payouts.</p>}
       {!loading && !error && rows.length === 0 && <p className="text-sm text-gray-400">No payouts recorded.</p>}
       {rows.length > 0 && (
-        <div className="overflow-x-auto border border-gray-200 rounded-lg bg-white">
-          <table className="w-full text-sm">
-            <caption className="sr-only">Partner payouts</caption>
-            <thead><tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
-              <th scope="col" className="px-3 py-2">Paid</th><th scope="col" className="px-3 py-2">Partner</th><th scope="col" className="px-3 py-2 text-right">Amount</th><th scope="col" className="px-3 py-2">Method</th>
-            </tr></thead>
-            <tbody className="divide-y divide-gray-100">
-              {rows.map(p => (
-                <tr key={p.id} className={p.voidedAt ? 'bg-gray-50 text-gray-400' : ''}>
-                  <td className="px-3 py-2">{formatDate(p.paidAt || p.createdAt)}</td>
-                  <td className="px-3 py-2"><Link to={`/admin/partners/${p.partnerId}`} className="text-blue-600 hover:underline">{p.partnerName || 'Partner'}</Link></td>
-                  <td className={`px-3 py-2 text-right ${p.voidedAt ? 'line-through' : 'font-medium text-gray-900'}`}>
-                    {formatCents(p.amountCents, p.currency)}{p.voidedAt && <Badge variant="gray" className="ml-2">Voided</Badge>}
-                  </td>
-                  <td className="px-3 py-2">{p.payoutMethod === 'BANK' ? 'Bank' : 'Mobile money'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <DataTable
+          caption="Partner payouts"
+          density="compact"
+          columns={[
+            {
+              key: 'paid',
+              header: 'Paid',
+              cell: p => formatDate(p.paidAt || p.createdAt),
+            },
+            {
+              key: 'partner',
+              header: 'Partner',
+              cell: p => (
+                <>
+                  <Link to={`/admin/partners/${p.partnerId}`} className="text-blue-600 hover:underline">{p.partnerName || 'Partner'}</Link>
+                </>
+              ),
+            },
+            {
+              key: 'amount',
+              header: 'Amount',
+              headerClassName: 'text-right',
+              cellClassName: p => `text-right ${p.voidedAt ? 'line-through' : 'font-medium text-gray-900'}`,
+              cell: p => (
+                <>
+                  {formatCents(p.amountCents, p.currency)}{p.voidedAt && <Badge variant="gray" className="ml-2">Voided</Badge>}
+                </>
+              ),
+            },
+            {
+              key: 'method',
+              header: 'Method',
+              cell: p => p.payoutMethod === 'BANK' ? 'Bank' : 'Mobile money',
+            },
+          ]}
+          rows={rows}
+          rowKey={p => p.id}
+          rowClassName={p => p.voidedAt ? 'bg-gray-50 text-gray-400' : ''}
+        />
       )}
       <Pager offset={offset} total={total} count={rows.length} onPage={setOffset} />
     </div>
