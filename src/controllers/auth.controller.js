@@ -191,6 +191,10 @@ async function passwordBreachProblem(env, password) {
 // network" would hand the bypass to anyone whose address we can't see.
 function lockoutBlocks(c, lockout, lastKnownIp) {
   if (!lockout.locked) return false
+  // Cross-cutting infra round 6: the owner's-network exemption has a budget (rateLimitCore LOCKOUT_EXEMPT_GUESSES
+  // failed guesses during one lock). Once it is spent the lock applies to that network too; only a trusted device
+  // (checked by the callers) still gets through.
+  if (lockout.exemptExhausted) return true
   const ip = clientIp(c)
   if (lastKnownIp && lastKnownIp !== 'unknown' && ip && ip !== 'unknown' && rateKeyIp(lastKnownIp) === rateKeyIp(ip)) return false
   return true
@@ -513,7 +517,7 @@ async function login(c) {
   // Building it up front, on EVERY path, makes both branches pay the same.
   await getDummyPasswordHash()
 
-  const lockout = await checkAccountLockout(c.env, email)
+  const lockout = await checkAccountLockout(c.env, email, c)
   let user
   if (lockout.locked) {
     user = await findUser()
@@ -954,7 +958,7 @@ async function changePassword(c) {
   // exists to close for login. Reusing the same email-keyed lockout here
   // means guesses against this account are counted together regardless of
   // which endpoint they came through.
-  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  const lockout = await checkAccountLockout(c.env, sessionUser.email, c)
   if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
@@ -1228,7 +1232,7 @@ async function updateEmail(c) {
 
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
-  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  const lockout = await checkAccountLockout(c.env, sessionUser.email, c)
   if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)
@@ -1469,7 +1473,7 @@ async function deleteAccount(c) {
 
   // FEATURE: same password-guessing-oracle gap as changePassword — see its
   // comment above for why this reuses the login lockout mechanism.
-  const lockout = await checkAccountLockout(c.env, sessionUser.email)
+  const lockout = await checkAccountLockout(c.env, sessionUser.email, c)
   if (await lockoutBlocksRequest(c, lockout, sessionUser.email, sessionUser.lastLoginIp)) return lockedResponse(c, lockout)
 
   const supabase = getSupabase(c.env)

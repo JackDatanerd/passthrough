@@ -115,7 +115,7 @@ async function loadByCode(c, { columns = PAGE_COLUMNS, scope = 'page' } = {}) {
   const ip = clientIp(c)
   const trusted = isTrustedPreview(c)
 
-  if (!trusted && await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, scope))
+  if (!trusted && await rateLimiter.isVerifyMissLimited(c.env, ip, undefined, scope, c))
     return { response: c.json({ success: false, message: 'Too many lookups. Please wait a while.' }, 429, { 'Retry-After': '900' }) }
 
   if (!isPlausibleCode(code))

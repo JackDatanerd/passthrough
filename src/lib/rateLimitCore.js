@@ -19,6 +19,11 @@
 const LOCKOUT_MAX_CONSECUTIVE_FAILURES = 8
 const LOCKOUT_MINUTES = 15
 const LOCKOUT_MIN_DISTINCT_IPS = 2
+// Cross-cutting infra round 6: failed guesses that may land WHILE a lock is running before the "owner's network"
+// exemption closes. The exemption exists so the owner is not locked out of their own account; it must not give anyone
+// who shares that network (a campus, an office, carrier NAT) a standing password-guessing channel. A trusted DEVICE
+// (an unguessable id) is not affected by this budget.
+const LOCKOUT_EXEMPT_GUESSES = 5
 const LOCKOUT_MAX_TRACKED_IPS = 10
 const VERIFY_MISS_WINDOW_SECONDS = 15 * 60
 // Devices a successful sign-in has been seen from (hashes of the SPA's random X-Device-Id), per account. A locked account
@@ -91,7 +96,11 @@ async function lockoutCheck(store, key, now = Date.now()) {
   let parsed
   try { parsed = JSON.parse(raw) } catch (_) { return { locked: false, retryAfterSeconds: null } }
   if (parsed.lockedUntil && parsed.lockedUntil > now) {
-    return { locked: true, retryAfterSeconds: Math.ceil((parsed.lockedUntil - now) / 1000) }
+    return {
+      locked: true,
+      retryAfterSeconds: Math.ceil((parsed.lockedUntil - now) / 1000),
+      exemptExhausted: (parsed.lockGuesses || 0) >= LOCKOUT_EXEMPT_GUESSES
+    }
   }
   return { locked: false, retryAfterSeconds: null }
 }
@@ -105,13 +114,14 @@ async function lockoutFail(store, key, ip, minDistinctIps = LOCKOUT_MIN_DISTINCT
   let ips = []
   let wasLocked = false
   let activeLockedUntil = null
+  let lockGuesses = 0
   try {
     if (raw) {
       const parsed = JSON.parse(raw)
       failCount = parsed.failCount || 0
       ips = Array.isArray(parsed.ips) ? parsed.ips : []
       wasLocked = !!(parsed.lockedUntil && parsed.lockedUntil > now)
-      if (wasLocked) activeLockedUntil = parsed.lockedUntil
+      if (wasLocked) { activeLockedUntil = parsed.lockedUntil; lockGuesses = (parsed.lockGuesses || 0) + 1 }
       // A lock that already ran its course is stale history, not an ongoing
       // attack: count from zero so the distinct-client bar must be cleared again.
       if (parsed.lockedUntil && parsed.lockedUntil <= now) { failCount = 0; ips = [] }
@@ -132,7 +142,7 @@ async function lockoutFail(store, key, ip, minDistinctIps = LOCKOUT_MIN_DISTINCT
       ? now + LOCKOUT_MINUTES * 60 * 1000
       : null
 
-  await store.put(key, JSON.stringify({ failCount, ips, lockedUntil }), {
+  await store.put(key, JSON.stringify({ failCount, ips, lockedUntil, lockGuesses }), {
     expirationTtl: Math.max(LOCKOUT_MINUTES * 60, 60)
   })
   return { justLocked: !!lockedUntil && !wasLocked }
@@ -217,5 +227,5 @@ const OPS = {
 
 module.exports = {
   consumeSlot, refundSlot, lockoutCheck, lockoutFail, lockoutClear, missRead, missRecord, trustAdd, trustCheck, trustClear, OPS,
-  LOCKOUT_MAX_CONSECUTIVE_FAILURES, LOCKOUT_MINUTES, LOCKOUT_MIN_DISTINCT_IPS, LOCKOUT_MAX_TRACKED_IPS, VERIFY_MISS_WINDOW_SECONDS,
+  LOCKOUT_MAX_CONSECUTIVE_FAILURES, LOCKOUT_MINUTES, LOCKOUT_MIN_DISTINCT_IPS, LOCKOUT_EXEMPT_GUESSES, LOCKOUT_MAX_TRACKED_IPS, VERIFY_MISS_WINDOW_SECONDS,
 }

@@ -460,10 +460,20 @@ describe('authLogin refund — a successful sign-in must not eat the shared /aut
     for (let i = 0; i < 10; i++) expect(await attempt(env, 401)).toBe(true)
     expect(await attempt(env, 401)).toBe(false)
   })
-  it('successes and failures share ONE bucket (rl:auth) with register/forgot-password/reset', async () => {
+  it('login has its OWN bucket (rl:authlogin): a login success can never refund a forgot/reset/password-check slot', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
-    for (let i = 0; i < 10; i++) await hit(rl.auth, ctx({ env, method: 'POST', path: '/api/auth/register' }))
-    expect((await hit(rl.authLogin, ctx({ env, method: 'POST', path: '/api/auth/login' }))).passed).toBe(false)
+    for (let i = 0; i < 10; i++) await hit(rl.auth, ctx({ env, method: 'POST', path: '/api/auth/forgot-password' }))
+    // the shared `auth` bucket is spent — login is unaffected, and its refunds do not touch it
+    expect((await hit(rl.authLogin, ctx({ env, method: 'POST', path: '/api/auth/login' }))).passed).toBe(true)
+    for (let i = 0; i < 5; i++) await attempt(env, 200)
+    expect(JSON.parse(env.RATE_LIMIT_KV.m.get('rl:auth:1.2.3.4')).count).toBe(10)
+    expect((await hit(rl.auth, ctx({ env, method: 'POST', path: '/api/auth/forgot-password' }))).passed).toBe(false)
+  })
+  it('register has its own bucket too (rl:authregister)', async () => {
+    const env = { RATE_LIMIT_KV: kvStore() }
+    for (let i = 0; i < 10; i++) await hit(rl.auth, ctx({ env, method: 'POST', path: '/api/auth/forgot-password' }))
+    expect((await hit(rl.authRegister, ctx({ env, method: 'POST', path: '/api/auth/register' }))).passed).toBe(true)
+    expect(env.RATE_LIMIT_KV.m.get('rl:authregister:1.2.3.4')).toBeDefined()
   })
   it('success-refunds are capped, so alternating success/failure cannot buy unlimited failed guesses', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
@@ -476,14 +486,14 @@ describe('authLogin refund — a successful sign-in must not eat the shared /aut
     // before all 40 attempts, and the recorded refund count never exceeds the cap.
     expect(blockedAt).not.toBeNull()
     expect(blockedAt).toBeLessThan(40)
-    const state = JSON.parse(env.RATE_LIMIT_KV.m.get('rl:auth:1.2.3.4'))
+    const state = JSON.parse(env.RATE_LIMIT_KV.m.get('rl:authlogin:1.2.3.4'))
     expect(state.refunds).toBeLessThanOrEqual(20)
   })
   it('a thrown error from the handler is treated as a failure, not a success — no refund', async () => {
     const env = { RATE_LIMIT_KV: kvStore() }
     const c = ctx({ env, method: 'POST', path: '/api/auth/login' })
     await expect(rl.authLogin(c, async () => { throw new Error('db down') })).rejects.toThrow('db down')
-    expect(JSON.parse(env.RATE_LIMIT_KV.m.get('rl:auth:1.2.3.4')).count).toBe(1)
+    expect(JSON.parse(env.RATE_LIMIT_KV.m.get('rl:authlogin:1.2.3.4')).count).toBe(1)
   })
 })
 

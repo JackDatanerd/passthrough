@@ -67,11 +67,19 @@ function validateEnv(env) {
     else if (/\/$/.test(fe)) warnings.push('FRONTEND_URL has a trailing slash — emailed links would contain "//"')
   }
 
+  // Cross-cutting infra round 6: this used to say error detail "is not masked" for an unset NODE_ENV — it is masked
+  // (errorHandler shows raw messages only for "development" / "test"). What a non-production value really changes:
+  // a client-supplied x-forwarded-for is trusted for the client IP (so a caller picks its own rate-limit bucket) when
+  // NODE_ENV is set to anything but "production", and raw error messages are shown for "development" / "test".
   if (env.NODE_ENV !== 'production')
-    warnings.push(`NODE_ENV is ${env.NODE_ENV ? `"${env.NODE_ENV}"` : 'not set'}, not "production" — fine for local dev, but a deployed Worker without it is treated as a non-production target (error detail is not masked, and x-forwarded-for is honoured for client IPs when NODE_ENV is set to anything other than "production")`)
+    warnings.push(`NODE_ENV is ${env.NODE_ENV ? `"${env.NODE_ENV}"` : 'not set'}, not "production" — fine for local dev, but on a deployed Worker it must be "production": any other SET value makes the Worker trust a client-supplied x-forwarded-for for rate limiting, and "development" / "test" also show raw error messages`)
 
-  if (env.RATE_LIMIT_BYPASS_IPS && env.NODE_ENV === 'production')
-    warnings.push('RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)')
+  // Cross-cutting infra round 6: DEPLOYMENT.md promises a start-up warning "in every environment"; it was only emitted
+  // in production. A bypass list switches every rate limit off for those addresses, so say so wherever it is set.
+  if (env.RATE_LIMIT_BYPASS_IPS)
+    warnings.push(env.NODE_ENV === 'production'
+      ? 'RATE_LIMIT_BYPASS_IPS is set in production — every listed IP skips ALL rate limits (testing only; `wrangler secret delete` it before real traffic)'
+      : 'RATE_LIMIT_BYPASS_IPS is set — every listed IP skips ALL rate limits (never carry it to production)')
 
   // PAYSTACK_WEBHOOK_IPS takes plain addresses (and, since round 10, `address/prefix` ranges); an unusable entry matches nothing,
   // and with the list set every webhook from an unlisted address is refused 403.

@@ -685,7 +685,7 @@ async function adminElevate(ctx) {
   const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
   const { clientIp } = require('../lib/clientIp')
   const lockKey = user.email || user.id
-  const lockout = await checkAccountLockout(ctx.env, lockKey)
+  const lockout = await checkAccountLockout(ctx.env, lockKey, ctx)
   if (lockoutBlocks(ctx, lockout, user.lastLoginIp)) return lockedResponse(ctx, lockout)
   const { data: row, error } = await supabase.from('users').select('password_hash').eq('id', user.id).maybeSingle()
   if (error) throw error

@@ -309,14 +309,16 @@ wrangler secret put RATE_LIMIT_BYPASS_IPS
 wrangler secret put TURNSTILE_SECRET_KEY
 
 # Optional. The public origin the Worker is reached at (no path), used to build
-# the one-click List-Unsubscribe URL in employer-lead acknowledgement emails.
+# the one-click List-Unsubscribe URL in employer-lead acknowledgement emails and in the interview follow-up
+# email sent to signed-in users (POST /api/outcomes/unsubscribe, which switches that email off in Settings).
 # Unset = taken from the incoming request, which is correct for the normal
 # single-hostname setup; set it only if requests reach the Worker under a
 # different hostname than the one mail clients should call back.
 # The hourly acknowledgement retry (employer leads, migration 0062) has no incoming request to
 # read it from. Without it the Worker falls back to the address of the most recent public request that
 # carried one (remembered for 60 days, only an https address under FRONTEND_URL's domain) — set this to
-# make that certain.
+# make that certain. The interview follow-up email is sent by the same hourly cron, so it relies on this too:
+# without a known origin it still goes out, just without the one-click header.
 #   https://api.passthrough.dev
 wrangler secret put API_ORIGIN
 
@@ -346,9 +348,10 @@ wrangler secret put CORS_EXTRA_ORIGINS
 
 # Other optional [vars]/secrets read by the code: SCAN_IP_DAILY_CAP (free scans per IP per day;
 # 0 disables the cap), PWNED_PASSWORDS_CHECK ("off" turns off the breached-password
-# check), RATE_LIMIT_BYPASS_IPS (comma-separated; honoured in EVERY environment, production
-# included — it switches ALL rate limits off for those IPs, and the Worker logs a warning at start-up
-# while it is set. Use it for a QA window, then delete it).
+# check), RATE_LIMIT_BYPASS_IPS (comma-separated IP addresses and/or CIDR ranges; honoured in EVERY
+# environment, production included — it switches ALL rate limits off for those IPs, and the Worker logs a
+# warning at start-up while it is set, in every environment. A bare IPv6 address matches exactly, in any
+# spelling; it is NOT widened to a /64 the way ADMIN_ALLOWED_IPS does. Use it for a QA window, then delete it).
 
 # Restrict the admin panel to known networks (comma-separated IP addresses and/or CIDR ranges —
 # "203.0.113.0/24", "2001:db8:abcd::/48"; a bare IPv6 address means its whole /64). An entry that is neither
@@ -376,6 +379,11 @@ wrangler secret put ADMIN_ALLOWED_IPS
 # also required to reverse / clear a payment, to read or rotate a partner's payout links (those hand back the
 # payout-details WRITE token), and to change a partner's email or commission rate (the email receives the new
 # payout link). Wrong passwords on POST /api/admin/elevate count on the same per-account lockout as sign-in.
+#
+# Round 6 adds the other writes a stolen admin token could abuse: setting a scan's verification status,
+# re-queueing a paid fix, dismissing a payment (webhook) event, lifting an email suppression, and the
+# employer-lead bulk import, bulk change, delete and do-not-contact add / lift. Routine moderation (stories, a
+# single lead's status) and webhook replay stay one click.
 
 # Out-of-band owner alerts. Every alert is emailed through Resend — the same provider whose outage, exhausted
 # quota or revoked key an alert may need to report. Set an https incoming-webhook URL (Slack, Discord, Teams,
@@ -627,7 +635,8 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
       placeholder date shipped in the repo — the placeholder is a real UTC
       timestamp, not an obviously-fake one, so a deploy that skips this step
       doesn't error out; it just silently ships with the promo already
-      expired (or expiring at the wrong moment) with no warning anywhere.
+      expired (or expiring at the wrong moment). The Worker warns about a passed date only while
+      `PROMO_ACTIVE="true"`; with it `false` nothing warns, because nothing is wrong.
       Set `PROMO_ACTIVE=false` instead if you don't want a promo at launch.
 
 ### Infrastructure
@@ -805,6 +814,9 @@ every limiter failed open until it recovered.
 8 failures in a row from 2+ networks lock the account for 15 minutes. The lock does not apply to the network the
 account last signed in from, nor to a browser that has signed in to it before (the SPA's `X-Device-Id`, remembered
 for 30 days, up to 5 devices) — they still reach the password check. A completed password reset clears it.
+The network exemption has a budget: after 5 failed guesses that land during one lock, the lock applies to that
+network too, so someone who shares the owner's network (a campus, an office, carrier NAT) cannot keep guessing.
+A remembered browser is not affected by that budget.
 
 ### Secret rotation
 

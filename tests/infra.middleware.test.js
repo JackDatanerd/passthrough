@@ -140,7 +140,10 @@ describe('validateEnv', () => {
   })
   it('warns loudly if the rate-limit bypass is left on in production', () => {
     expect(validateEnv({ ...good, RATE_LIMIT_BYPASS_IPS: '1.2.3.4' }).warnings.join(' ')).toContain('RATE_LIMIT_BYPASS_IPS')
-    expect(validateEnv({ ...good, RATE_LIMIT_BYPASS_IPS: '1.2.3.4', NODE_ENV: 'development' }).warnings.join(' ')).not.toContain('RATE_LIMIT_BYPASS_IPS')
+    // Infra round 6: DEPLOYMENT.md promises the warning in every environment, so it is no longer production-only.
+    const dev = validateEnv({ ...good, RATE_LIMIT_BYPASS_IPS: '1.2.3.4', NODE_ENV: 'development' }).warnings.join(' ')
+    expect(dev).toContain('RATE_LIMIT_BYPASS_IPS')
+    expect(dev).toContain('never carry it to production')
   })
   it('flags a promo that is switched on but already expired / unparseable', () => {
     expect(validateEnv({ ...good, PROMO_ACTIVE: 'true', PROMO_ENDS_AT: '2020-01-01T00:00:00Z' }).warnings.join(' ')).toContain('has passed')

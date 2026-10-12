@@ -2275,5 +2275,7 @@ module.exports = {
   adminUpdateLeadStatus, adminBulkUpdateLeads, adminDeleteLead, adminRequestConfirmation,
   adminCheckSuppression, adminAddSuppression, adminLiftSuppression, adminNotifyCandidates,
   rejoinLead, performRemoval, adminGetLead, loadLeadPreferences, saveLeadPreferences,
+  // Cross-cutting infra round 6: the interview follow-up email's unsubscribe link needs the same API-origin lookup.
+  apiOrigin, rememberApiOrigin, configuredApiOrigin,
   LEAD_STATUSES, LEAD_SOURCES
 }

@@ -16,6 +16,7 @@ const constants = require('../config/constants')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 const emailService = require('../services/email.service')
 const { parseSubmit, isAskable, nextStoryState, STORY_STATUS, OUTCOMES } = require('../lib/outcomes')
+const { signLeadToken, verifyLeadToken, leadLinkSecrets } = require('../lib/leadTokens')
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const PENDING_SHOWN = 3
@@ -167,7 +168,7 @@ async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
       .eq('id', r.id).is('outcome_prompted_at', null).select('id')
     if (cErr || !claimed || !claimed.length) continue   // another run has it
     let ok = false
-    try { ok = await emailService.sendOutcomeFollowUp(env, supabase, r.users.email, r.users.name) } catch (err) { console.error('Outcome follow-up send failed:', err.message) }
+    try { ok = await emailService.sendOutcomeFollowUp(env, supabase, r.users.email, r.users.name, { unsubscribeUrl: await followUpUnsubscribeUrl(env, r.users.email) }) } catch (err) { console.error('Outcome follow-up send failed:', err.message) }
     if (ok) { out.sent++; continue }
     out.failed++
     const { error: relErr } = await supabase.from('scans').update({ outcome_prompted_at: null }).eq('id', r.id)
@@ -176,4 +177,41 @@ async function sweepOutcomePrompts(env, supabase, nowMs = Date.now()) {
   return out
 }
 
-module.exports = { pendingOutcomes, submitOutcome, withdrawStory, sweepOutcomePrompts }
+// ── One-click unsubscribe for the follow-up email (cross-cutting infra round 6) ──────────────────────────────────
+// The interview follow-up is a recurring, non-transactional mail; it had a Settings link in the body but no
+// List-Unsubscribe header, so a mail client's own "unsubscribe" button was missing and every opt-out cost a sign-in.
+// The link is a signed token (purpose 'followup', lib/leadTokens.js) carrying the address — no account lookup to
+// guess, nothing to enumerate. A GET never changes anything (scanners and link previewers issue them): it only sends
+// the visitor to Settings, where the switch is.
+async function followUpUnsubscribeUrl(env, email) {
+  try {
+    const sign = leadLinkSecrets(env).sign
+    if (!sign) return null
+    const origin = await require('./employer-leads.controller').configuredApiOrigin(env)
+    if (!origin) return null
+    return `${origin}/api/outcomes/unsubscribe?token=${await signLeadToken(sign, 'followup', email)}`
+  } catch (err) {
+    console.error('Outcome follow-up unsubscribe link not built:', err && err.message)
+    return null   // the mail still goes, just without the header
+  }
+}
+
+// POST /api/outcomes/unsubscribe?token=…  — RFC 8058 one-click (a mail provider posts here).
+async function unsubscribeFollowUp(c) {
+  const token = c.req.query('token') || ''
+  const email = token.length >= 10 && token.length <= 700
+    ? await verifyLeadToken(leadLinkSecrets(c.env).verify, 'followup', token) : null
+  if (!email) return c.json({ success: false, message: 'This link is not valid.' }, 400)
+  const { error } = await getSupabase(c.env).from('users')
+    .update({ notify_outcome_followup: false }).eq('email', email).is('deleted_at', null)
+  if (error) throw error   // a 5xx, so the provider may retry
+  return c.json({ success: true, message: "You won't get the interview follow-up email again. You can switch it back on in Settings." })
+}
+
+// GET /api/outcomes/unsubscribe?token=…  — a mail client that only follows the URL. Does not look at the token.
+function unsubscribeFollowUpRedirect(c) {
+  const base = String((c.env && c.env.FRONTEND_URL) || '').replace(/\/+$/, '')
+  return c.redirect(`${base}/dashboard/settings`, 302)
+}
+
+module.exports = { pendingOutcomes, submitOutcome, withdrawStory, sweepOutcomePrompts, unsubscribeFollowUp, unsubscribeFollowUpRedirect, followUpUnsubscribeUrl }

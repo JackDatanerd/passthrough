@@ -23,7 +23,10 @@ router.get('/users/:id', validateUuidParam(), c.adminGetUserDetail)
 router.patch('/users/:id', admin.stepUp, validateUuidParam(), c.adminUpdateUser)
 
 router.get('/scans',    c.adminListScans)
-router.patch('/scans/:id/verification', validateUuidParam(), c.adminSetVerification)
+// Cross-cutting infra round 6: step-up (when ADMIN_STEP_UP_MINUTES is on) also guards the other writes a stolen
+// admin token could abuse — re-issuing / revoking a page, re-driving a paid fix, discarding a payment event and
+// re-enabling mail to an address that bounced or complained. Routine moderation stays one click.
+router.patch('/scans/:id/verification', admin.stepUp, validateUuidParam(), c.adminSetVerification)
 router.get('/verification-reports', c.adminListVerificationReports)
 router.patch('/verification-reports/:id', validateUuidParam(), c.adminReviewVerificationReport)
 router.get('/payments', c.adminListPayments)
@@ -32,7 +35,7 @@ router.get('/payments', c.adminListPayments)
 router.post('/verification/backfill-pdf-hashes', c.adminBackfillPdfHashes)
 
 // Manual re-run of a paid fix that failed to generate (see adminRequeueFix).
-router.post('/scans/:id/requeue-fix', validateUuidParam(), c.adminRequeueFix)
+router.post('/scans/:id/requeue-fix', admin.stepUp, validateUuidParam(), c.adminRequeueFix)
 
 // Webhook inbox (Section 8): what Paystack sent, what we did with it, and a replay
 // for anything that was HELD / FAILED / IGNORED.
@@ -40,7 +43,7 @@ router.get('/webhook-events', wh.listWebhookEvents)
 router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 router.post('/webhook-events/:id/replay', validateUuidParam(), wh.replayWebhookEvent)
-router.post('/webhook-events/:id/dismiss', validateUuidParam(), wh.dismissWebhookEvent)
+router.post('/webhook-events/:id/dismiss', admin.stepUp, validateUuidParam(), wh.dismissWebhookEvent)
 
 // Customer stories: nothing reaches the public homepage until approved here.
 router.get('/stories', stories.adminListStories)
@@ -50,7 +53,7 @@ router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)
 // Addresses we no longer send non-security mail to (permanent bounce / spam complaint).
 router.get('/email-suppressions',    c.adminCheckEmailSuppression)
-router.delete('/email-suppressions', c.adminLiftEmailSuppression)
+router.delete('/email-suppressions', admin.stepUp, c.adminLiftEmailSuppression)
 
 // Section 12 audit (feature gap): read path for admin_audit_log — see
 // adminListAuditLog's own comment.

@@ -33,7 +33,7 @@
 // `wrangler secret put`, same as every other credential-adjacent value, so it
 // never gets committed to the repo or left on accidentally in a config file.
 
-const { clientIp, rateKeyIp } = require('../lib/clientIp')
+const { clientIp, rateKeyIp, parseIpAllowList, ipInCidr } = require('../lib/clientIp')
 const { isTrustedPreview } = require('../lib/verification')
 const core = require('../lib/rateLimitCore')
 const constants = require('../config/constants')
@@ -147,10 +147,15 @@ function alertKvOutage(env, where, err, c) {
 // middleware. Currently also used by createScan's daily-scan-quota check in
 // scan.controller.js, which is a separate DB-tracked limit, not a KV one,
 // but conceptually the same "skip this during testing" toggle.
+// AUDIT FIX (cross-cutting infra round 6): it used to compare strings, so an IPv6 address written in a different
+// (but equal) spelling, or a CIDR range, never matched — while ADMIN_ALLOWED_IPS accepted both. Now the same parser.
+// A bare address stays EXACT here (the admin list's "bare IPv6 = whole /64" widening is deliberately not applied to
+// a list that switches limits off).
 function isBypassed(env, ip) {
-  const raw = env.RATE_LIMIT_BYPASS_IPS
-  if (!raw) return false
-  return raw.split(',').map(s => s.trim()).filter(Boolean).includes(ip)
+  const raw = env && env.RATE_LIMIT_BYPASS_IPS
+  if (!raw || !ip || ip === 'unknown') return false
+  if (String(raw).split(',').map(s => s.trim()).filter(Boolean).includes(ip)) return true
+  try { return parseIpAllowList(raw).valid.some(e => ipInCidr(ip, e)) } catch (_) { return false }
 }
 
 // The fixed-window / refund algorithms live in lib/rateLimitCore.js (shared with
@@ -485,30 +490,48 @@ const auth = makeLimiter({
   message: msg('Too many attempts.')
 })
 
-// POST /auth/login. Shares `auth`'s bucket (same keyPrefix, so login attempts
-// still pool with register/forgot/reset from one IP) but gives the slot back for
+// POST /auth/login. Gives the slot back for
 // a successful sign-in — see makeLimiter's `refund.on`. Before this, the 11th
 // legitimate sign-in within 15 minutes from one shared IP (an office, a campus,
 // a mobile carrier's NAT) was refused with "Too many attempts" though nobody
 // had guessed anything. Capped at 20 refunds per window: worst case for one IP
 // is 10 + 20 attempts per 15 minutes, and the per-account lockout (which counts
 // failures across every IP) still applies in full.
+// AUDIT FIX (cross-cutting infra round 6): its OWN bucket now (was `rl:auth`). A successful sign-in refunds its slot,
+// and that refund landed in the bucket forgot / reset / change-password also spend from — a person with one valid
+// account could turn 10 attempts into 30 on those routes. Per-account lockout and per-address mail caps still bound
+// each flow; only the cross-credit is gone.
 const authLogin = makeLimiter({
-  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:authlogin',
   message: msg('Too many attempts.'),
   refund: { maxRefunds: 20, on: 'success' }
 })
 
-// POST /auth/register. Same shared bucket, but a sign-up that SUCCEEDED gives its slot back, bounded tighter
-// than login's refunds. AUDIT FIX (Auth round 6, G9): register, forgot, reset and every password check shared
-// ten attempts per 15 minutes per IP and only login was refunded — on carrier-grade NAT (this app's customer
+// POST /auth/register. Own bucket (round 6 infra: was shared with `auth`), and a sign-up that SUCCEEDED gives its slot
+// back, bounded tighter than login's refunds. AUDIT FIX (Auth round 6, G9): register, forgot, reset and every
+// password check shared ten attempts per 15 minutes per IP and only login was refunded — on carrier-grade NAT (this app's customer
 // base is mobile-heavy) the eleventh person to sign up from one address was told "Too many attempts" though
 // nobody had done anything wrong. Five refunds keeps the worst case at 15 sign-ups per window per address,
 // with Turnstile and the per-recipient email limits still in front of abuse.
 const authRegister = makeLimiter({
-  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:auth',
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:authregister',
   message: msg('Too many attempts.'),
   refund: { maxRefunds: 5, on: 'success' }
+})
+
+// Cross-cutting infra round 6: the one-click unsubscribe for the interview follow-up email (POST, RFC 8058) and its GET
+// hand-off. Sized like employerLeadOptOut — mail providers post from shared IPs — the signed token is the real gate.
+const followUpOptOut = makeLimiter({
+  windowSeconds: 60 * 60, max: 600, keyPrefix: 'rl:followupoptout',
+  message: msg('Slow down.')
+})
+
+// Cross-cutting infra round 6: /api/verify is exempt from `general`, and the QR endpoints answered for any well-formed
+// code with no limit of their own. Cheap to render, but unauthenticated and unbounded.
+const verifyQr = makeLimiter({
+  windowSeconds: 15 * 60, max: 120, keyPrefix: 'rl:verifyqr',
+  message: msg('Too many requests. Please wait a few minutes.'),
+  ipBits: 48
 })
 
 const authVerify = makeLimiter({
@@ -890,13 +913,13 @@ function lockoutKey(email) {
 // holding a stolen/leaked JWT who doesn't know the real password. Sharing
 // this same email-keyed counter means guesses against one account are
 // tallied together across every endpoint that can prove its password.
-async function checkAccountLockout(env, email) {
+async function checkAccountLockout(env, email, c) {
   try {
     return await runOp(env, 'lockoutCheck', { key: lockoutKey(email) })
   } catch (err) {
     // FAIL OPEN — see the file-level comment: an outage must never become a login outage.
     console.error('login lockout check backend error — failing open:', err.message)
-    alertKvOutage(env, 'account lockout check', err)
+    alertKvOutage(env, 'account lockout check', err, c)
     return { locked: false, retryAfterSeconds: null }
   }
 }
@@ -1022,14 +1045,14 @@ const missMax = scope => (scope === 'badge' ? VERIFY_BADGE_MISS_MAX : VERIFY_MIS
 
 // true → this IP has already produced too many misses in the window.
 // Fails OPEN on any backend problem (same posture as makeLimiter).
-async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page') {
+async function isVerifyMissLimited(env, ip, now = Date.now(), scope = 'page', c) {
   if (!hasBackend(env) || isBypassed(env, ip)) return false
   try {
     const r = await runOp(env, 'missRead', { key: verifyMissKey(ip, scope), max: missMax(scope), now })
     return !!r.limited
   } catch (err) {
     console.error('Verify miss limiter read failed — failing open:', err.message)
-    alertKvOutage(env, 'verify miss limiter', err)
+    alertKvOutage(env, 'verify miss limiter', err, c)
     return false
   }
 }
@@ -1053,7 +1076,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

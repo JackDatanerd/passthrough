@@ -715,11 +715,19 @@ async function sendFixFailed(env, supabase, email, name) {
 }
 
 // Homepage evidence (migration 0070): the single follow-up question, sent by sweepOutcomePrompts.
-async function sendOutcomeFollowUp(env, supabase, email, name) {
+// Cross-cutting infra round 6: a recurring, non-transactional mail now carries a real one-click unsubscribe
+// (RFC 8058) as well as the Settings link — `unsubscribeUrl` is built by outcomes.controller (it needs the API's own
+// origin), and the mail simply goes without the header when that origin is not known.
+async function sendOutcomeFollowUp(env, supabase, email, name, { unsubscribeUrl } = {}) {
   return send(env, supabase, email, 'Did your resume lead to an interview?', 'outcome_followup', {
     NAME:         name,
     ANSWER_URL:   `${env.FRONTEND_URL}/dashboard#outcome`,
     SETTINGS_URL: `${env.FRONTEND_URL}/dashboard/settings`
+  }, {
+    headers: unsubscribeUrl ? {
+      'List-Unsubscribe':      `<${unsubscribeUrl}>`,
+      'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click'
+    } : undefined
   })
 }
 

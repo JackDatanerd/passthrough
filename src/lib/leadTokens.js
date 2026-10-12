@@ -26,7 +26,10 @@ const dec = new TextDecoder()
 // 'prefs' (round 12): the "update your details" link in the acknowledgement and candidates emails — lets the inbox
 // owner correct the field(s) and job title on their own lead. Its own purpose, so a link that can only edit those
 // can never be replayed as a confirmation, a removal or a re-join (and the reverse).
-const PURPOSES = ['confirm', 'remove', 'rejoin', 'prefs']
+// 'followup' (cross-cutting infra round 6) is not an employer-lead link at all: it is the one-click unsubscribe in the
+// interview follow-up email sent to a signed-in USER, signed the same way (same secret, same MAC scheme) so it needs
+// no new secret and a link of one purpose can never be replayed as another.
+const PURPOSES = ['confirm', 'remove', 'rejoin', 'prefs', 'followup']
 const MAX_EMAIL_LENGTH = 254   // same bound the lead form enforces
 
 function b64url(bytes) {

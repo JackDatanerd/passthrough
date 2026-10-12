@@ -46,8 +46,10 @@ router.get('/export.csv', admin, c.adminExportLeads)
 // Admin-only writes that are not keyed by an :id, registered before the /:id
 // routes so 'manual' / 'bulk' can never be read as an id.
 router.post('/manual', admin, c.adminCreateLead)
-router.post('/import', admin, c.adminImportLeads)
-router.post('/bulk',   admin, c.adminBulkUpdateLeads)
+// Cross-cutting infra round 6: bulk import / bulk change / delete / do-not-contact edits need the admin's password
+// again when ADMIN_STEP_UP_MINUTES is on (a stolen token could otherwise mass-edit or purge the lead list).
+router.post('/import', admin, admin.stepUp, c.adminImportLeads)
+router.post('/bulk',   admin, admin.stepUp, c.adminBulkUpdateLeads)
 // FEATURE GAP CLOSED (independent audit round 6, G1): tell confirmed leads in a field that now has
 // Verified candidates. Not keyed by :id, so it sits with the other fixed-path writes.
 router.post('/notify-candidates', admin, c.adminNotifyCandidates)
@@ -61,8 +63,8 @@ router.post(  '/suppressions/check', admin, c.adminCheckSuppression)
 // FEATURE GAP CLOSED (fresh audit pass, Section 5): the write side of the do-
 // not-contact list — see the controller's own comment above adminAddSuppression
 // for why check + lift alone weren't enough.
-router.post(  '/suppressions',       admin, c.adminAddSuppression)
-router.delete('/suppressions',       admin, c.adminLiftSuppression)
+router.post(  '/suppressions',       admin, admin.stepUp, c.adminAddSuppression)
+router.delete('/suppressions',       admin, admin.stepUp, c.adminLiftSuppression)
 
 // FEATURE GAP CLOSED (Section 5, fixing-time pass): lifecycle management —
 // the leads list was read-only with no way to track outreach or clear spam.
@@ -78,6 +80,6 @@ router.post(  '/:id/mark-confirmed', admin, validateUuidParam(), c.adminMarkConf
 // Round 12 (G1): one lead with its mail history and do-not-contact state. After every fixed-path GET above.
 router.get(   '/:id', admin, validateUuidParam(), c.adminGetLead)
 router.patch( '/:id', admin, validateUuidParam(), c.adminUpdateLeadStatus)
-router.delete('/:id', admin, validateUuidParam(), c.adminDeleteLead)
+router.delete('/:id', admin, admin.stepUp, validateUuidParam(), c.adminDeleteLead)
 
 module.exports = router
