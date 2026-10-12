@@ -21,7 +21,8 @@ function renderAt(path) {
   render(<RouterProvider router={router} />)
   return router
 }
-const historyCalls = () => api.get.mock.calls.filter(c => c[0] === '/scan/history')
+// The list's own requests (20 a page). The summary above the list reads the newest 100 separately.
+const historyCalls = () => api.get.mock.calls.filter(c => c[0] === '/scan/history' && c[1]?.params?.limit === 20)
 let scans
 beforeEach(() => {
   for (const m of [api.get, api.post, api.delete]) m.mockReset()

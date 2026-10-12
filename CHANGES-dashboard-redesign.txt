@@ -1,0 +1,44 @@
+DASHBOARD REDESIGN (concept v4)
+================================
+
+What changed for the person using it
+- Your scans: a "best next step" card (the scan closest to the credential, a credential-ready scan, a fix below the
+  pass line, a failed or running scan), four small facts (best score with its trend, Verified links, free scans today,
+  free fix credits), and rows that show Scanned -> Fixed -> Verified, the score on a bar with the pass and credential
+  lines, one plain sentence about where the scan stands, and the one action that matters.
+- Filter chips replace the Status dropdown: All / Needs a decision / In progress / Delivered / Didn't finish.
+- "New scan" opens the home page's own scan form in place (upload, typed background, saved profile, rescan).
+- New tab: Proof (/dashboard/proof): every Verified link with Copy link, Copy badge HTML and View as an employer,
+  plus the scans that are close to the credential.
+- "See the breakdown" on a row: the four category scores and a link to the full report.
+- Delivered fixes below the credential line say how many free retries are left (from the new fixRetryCount).
+
+Backend
+- src/lib/scanSearch.js: STATUS_GROUPS (IN_PROGRESS, NEEDS_DECISION) and STATUS_FILTERS. A chip that stands for
+  several statuses is a fixed list of the real ones, applied by applyScanFilters, so GET /scan/history and
+  DELETE /profile/scans (which both use it) keep agreeing on which scans a filter means.
+- profile.controller.js: the filtered delete accepts the same filter names (STATUS_FILTERS).
+- scan.controller.js getScanHistory: also returns fixRetryCount and verificationUrl.
+- tests/scan.history.groups.test.js
+
+Frontend
+- src/lib/scanNext.js: the rules as pure functions (what a scan needs, stages, the row message, next steps, trend).
+  In-flight statuses come from scanDisplay.js (PENDING / SCANNING / FIX_PURCHASED / FIX_GENERATING, with the
+  one-hour "stuck" rule), so a scan that is paid for and being written never offers "Fix" again.
+- Verified = code + not REVOKED + score at the credential line (same test as before).
+- src/components/dashboard/: ScoreRing, ScanRow, NextStepCard, StatsRow, BreakdownModal, CredentialCard.
+- src/pages/dashboard/Index.jsx rewritten around them; everything that protected the old page is kept: server
+  pagination and filters in the URL, debounced search, Back-button behaviour, sort, hand-picked delete, delete what the
+  filter shows (batched), live polling (max 3 per tick), spinner/failed-load handling, 404-on-delete, resend email,
+  quota line, OutcomeCard.
+- The summary (next step, stats, chip counts) reads the newest 100 scans once, separately from the page, so it does
+  not change with filters. Chip counts show only when all scans fit in those 100.
+- src/pages/dashboard/Proof.jsx, route /dashboard/proof, nav item in DashboardLayout, page title.
+- lib/quota.js: resetTimeLabel().
+- Tests: scanNext.test.js, pages/DashboardRedesign.test.jsx; existing DashboardIndex / ProfileDashboard / DashboardLayout
+  tests updated for chips and the row menu (every behaviour assertion kept).
+
+Left as it was (deliberately)
+- Buying a fix or credential, using a free retry, and downloading files still happen on the scan page (/scan/:id);
+  the dashboard buttons link there. No payment flow was duplicated.
+- No dark theme (the app has none).

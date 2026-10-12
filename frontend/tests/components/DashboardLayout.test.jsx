@@ -20,9 +20,10 @@ function renderAt(path) {
 }
 
 describe('DashboardLayout', () => {
-  it('renders all three dashboard tabs and the page content', () => {
+  it('renders all the dashboard tabs and the page content', () => {
     renderAt('/dashboard')
     expect(screen.getByText('Scans')).toBeInTheDocument()
+    expect(screen.getByText('Proof')).toBeInTheDocument()
     expect(screen.getByText('Payments')).toBeInTheDocument()
     expect(screen.getByText('Settings')).toBeInTheDocument()
     expect(screen.getByText('Page content')).toBeInTheDocument()
@@ -33,6 +34,12 @@ describe('DashboardLayout', () => {
     expect(screen.getByText('Settings')).toHaveAttribute('aria-current', 'page')
     expect(screen.getByText('Scans')).not.toHaveAttribute('aria-current')
     expect(screen.getByText('Payments')).not.toHaveAttribute('aria-current')
+  })
+
+  it('marks Proof as current on its own page, and only there', () => {
+    renderAt('/dashboard/proof')
+    expect(screen.getByText('Proof')).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByText('Scans')).not.toHaveAttribute('aria-current')
   })
 
   it('still matches with a trailing slash on the URL', () => {

@@ -30,7 +30,8 @@ function wire({ scans = [scan('a')], total, profile = { hasSavedProfile: false, 
   })
 }
 const renderAt = (path = '/dashboard') => render(<MemoryRouter initialEntries={[path]}><DashboardIndex /></MemoryRouter>)
-const historyCalls = () => api.get.mock.calls.filter(c => c[0] === '/scan/history')
+// The list's own requests (20 a page). The summary above the list reads the newest 100 separately.
+const historyCalls = () => api.get.mock.calls.filter(c => c[0] === '/scan/history' && c[1]?.params?.limit === 20)
 
 beforeEach(() => { api.get.mockReset(); api.delete.mockReset(); refreshUser.mockReset() })
 
@@ -51,24 +52,38 @@ describe('dashboard — free-scan allowance', () => {
 })
 
 describe('dashboard — filters from the URL', () => {
-  it('a hand-edited ?status=FOO is no filter at all: not sent, dropdown says All, no "clear filters" empty state', async () => {
+  it('a hand-edited ?status=FOO is no filter at all: not sent, "All" is the chip pressed, no "clear filters" empty state', async () => {
     wire(); renderAt('/dashboard?status=FOO')
     await screen.findByText('Job a')
     expect(historyCalls()[0][1].params.status).toBeUndefined()
-    expect(screen.getByLabelText('Status')).toHaveValue('')
+    expect(screen.getByRole('button', { name: /^All/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByText('No scans match your search.')).toBeNull()
   })
-  it('a real status is sent and selected', async () => {
+  it('a real status is sent and its chip is the one pressed', async () => {
     wire(); renderAt('/dashboard?status=FIX_DELIVERED')
     await screen.findByText('Job a')
     expect(historyCalls()[0][1].params.status).toBe('FIX_DELIVERED')
-    expect(screen.getByLabelText('Status')).toHaveValue('FIX_DELIVERED')
+    expect(screen.getByRole('button', { name: /^Delivered/ })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByRole('button', { name: /^All/ })).toHaveAttribute('aria-pressed', 'false')
+  })
+  it('a chip that stands for several statuses sends its group name, and clicking a chip filters and keeps the URL in step', async () => {
+    const user = userEvent.setup()
+    wire(); renderAt('/dashboard?status=IN_PROGRESS')
+    await screen.findByText('Job a')
+    expect(historyCalls()[0][1].params.status).toBe('IN_PROGRESS')
+    expect(screen.getByRole('button', { name: /^In progress/ })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: /^Needs a decision/ }))
+    await waitFor(() => expect(historyCalls().at(-1)[1].params.status).toBe('NEEDS_DECISION'))
+    await user.click(screen.getByRole('button', { name: /^All/ }))
+    await waitFor(() => expect(historyCalls().at(-1)[1].params.status).toBeUndefined())
   })
 })
 
 describe('dashboard — deleting a scan', () => {
   async function openDelete(user) {
     await screen.findByText('Job a')
-    await user.click(screen.getByRole('button', { name: /Delete Job a/ }))
+    await user.click(screen.getByRole('button', { name: 'More actions for Job a' }))
+    await user.click(screen.getByRole('menuitem', { name: /Delete Job a/ }))
     await user.click(screen.getByRole('button', { name: 'Delete scan' }))
   }
   it('a scan already deleted elsewhere (404) is not an error: the dialog closes and the list is re-read', async () => {

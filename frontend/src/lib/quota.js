@@ -16,3 +16,9 @@ export function describeQuota(quota) {
     text: `${remaining} of ${limit} free scan${limit === 1 ? '' : 's'} left today${time ? ` · resets at ${time}` : ''}`,
   }
 }
+
+// "3:00 AM" in the viewer's own clock: when the free scans come back (null when unknown).
+export function resetTimeLabel(quota) {
+  const when = new Date(quota?.resetsAt)
+  return Number.isNaN(when.getTime()) ? null : when.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}

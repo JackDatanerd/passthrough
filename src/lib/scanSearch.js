@@ -5,6 +5,16 @@
 
 const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED', 'ERROR']
 
+// Dashboard chips that stand for SEVERAL statuses. A group is nothing but a fixed list of the real
+// statuses above, so the list and the filtered delete (both go through applyScanFilters) still
+// agree on exactly which scans a chip means. Keep the lists in step with frontend/src/lib/scanNext.js.
+const STATUS_GROUPS = {
+  IN_PROGRESS: ['PENDING', 'SCANNING', 'FIX_PURCHASED', 'FIX_GENERATING'],
+  NEEDS_DECISION: ['COMPLETE_PASS', 'COMPLETE_FAIL'],
+}
+// Everything ?status= may be: one real status, or one of the group names.
+const STATUS_FILTERS = [...SCAN_STATUSES, ...Object.keys(STATUS_GROUPS)]
+
 // Everything with meaning inside a PostgREST .or() string or an ilike pattern is removed
 // (`_` stays — it only widens a match).
 const sanitizeSearch = (raw) => String(raw || '').replace(/[,()"%\\*]/g, '').trim()
@@ -32,7 +42,8 @@ function applyScanFilters(query, { search, status, ids } = {}) {
   let q = query
   if (ids && ids.length) q = q.in('id', ids)
   if (search) q = q.or(HISTORY_SEARCH(search))
-  if (status && SCAN_STATUSES.includes(status)) q = q.eq('status', status)
+  if (status && STATUS_GROUPS[status]) q = q.in('status', STATUS_GROUPS[status])
+  else if (status && SCAN_STATUSES.includes(status)) q = q.eq('status', status)
   return q
 }
 
@@ -58,4 +69,4 @@ function parseIdList(raw) {
   return { ids }
 }
 
-module.exports = { SCAN_STATUSES, SCAN_SORTS, normalizeSort, sanitizeSearch, HISTORY_SEARCH, applyScanFilters, applyScanSort, parseIdList, MAX_SELECTED_IDS }
+module.exports = { SCAN_STATUSES, STATUS_GROUPS, STATUS_FILTERS, SCAN_SORTS, normalizeSort, sanitizeSearch, HISTORY_SEARCH, applyScanFilters, applyScanSort, parseIdList, MAX_SELECTED_IDS }

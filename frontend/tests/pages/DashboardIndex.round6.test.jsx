@@ -65,7 +65,7 @@ describe('dashboard — delete the scans the filters show', () => {
     wire({ total: 2 }); renderAt('/dashboard?status=ERROR')
     await userEvent.click(await screen.findByRole('button', { name: 'Delete these 2 scans' }))
     const dlg = within(await screen.findByRole('dialog'))
-    expect(dlg.getByText(/matching status Error/i)).toBeInTheDocument()
+    expect(dlg.getByText(/matching status Didn't finish/i)).toBeInTheDocument()
     expect(dlg.getByText(/Payment records and your saved profile are kept/)).toBeInTheDocument()
     expect(api.delete).not.toHaveBeenCalled()
   })

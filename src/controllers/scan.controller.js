@@ -1762,7 +1762,7 @@ async function getScanHistory(ctx) {
   // second round trip.
   let query = supabase
     .from('scans')
-    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, keyword_score, format_score, sections_score, content_score, job_title, role_category, seniority_level, updated_at', { count: 'exact' })
+    .select('id, status, ats_score, passed, resume_original_name, input_mode, created_at, fix_purchased, fix_tier, verification_code, verification_status, fix_ats_score, fix_retry_count, verification_url, keyword_score, format_score, sections_score, content_score, job_title, role_category, seniority_level, updated_at', { count: 'exact' })
     .eq('user_id', user.id)
   // BUG FIX (audit): this comment previously claimed candidate_first_name
   // was "populated at scoring time for every scan (see runAtsScan)" — it
@@ -1793,7 +1793,7 @@ async function getScanHistory(ctx) {
     id: r.id, status: r.status, atsScore: r.ats_score, passed: r.passed,
     resumeOriginalName: r.resume_original_name, inputMode: r.input_mode, createdAt: r.created_at,
     fixPurchased: r.fix_purchased, fixTier: r.fix_tier, verificationCode: r.verification_code,
-    verificationStatus: r.verification_status, fixAtsScore: r.fix_ats_score,
+    verificationStatus: r.verification_status, fixAtsScore: r.fix_ats_score, fixRetryCount: r.fix_retry_count ?? 0, verificationUrl: r.verification_url ?? null,
     keywordScore: r.keyword_score, formatScore: r.format_score,
     sectionsScore: r.sections_score, contentScore: r.content_score,
     // Label + the deletion rule's clock (see deleteScan's in-flight window).

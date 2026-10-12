@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, createMemoryRouter, RouterProvider } from 'react-router-dom'
 import api from '../../src/lib/api'
@@ -94,8 +94,15 @@ describe('Dashboard — rescan shortcut', () => {
     const router = createMemoryRouter([{ path: '/dashboard', element: <DashboardIndex /> }], { initialEntries: ['/dashboard'] })
     render(<RouterProvider router={router} />)
     await screen.findByText('Job one')
-    const links = screen.getAllByRole('link', { name: /against another job/ })
-    expect(links).toHaveLength(1)
-    expect(links[0].getAttribute('href')).toBe('/?from=s1')
+    // The shortcut lives in each row's "more actions" menu; a failed scan's menu has no such item.
+    const user = userEvent.setup()
+    const rows = screen.getAllByTestId('scan-row')
+    const hrefs = []
+    for (const row of rows) {
+      await user.click(within(row).getByRole('button', { name: /More actions for/ }))
+      const link = within(row).queryByRole('menuitem', { name: /against another job/ })
+      hrefs.push(link ? link.getAttribute('href') : null)
+    }
+    expect(hrefs.filter(Boolean)).toEqual(['/?from=s1'])
   })
 })

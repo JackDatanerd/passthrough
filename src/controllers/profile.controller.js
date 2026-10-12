@@ -30,7 +30,7 @@ const docxService = require('../services/docx.service')
 const pdfService = require('../services/pdf.service')
 const pdfTemplate = require('../services/pdfTemplate.service')
 const { utcMidnight } = require('../lib/utcDay')
-const { SCAN_STATUSES, sanitizeSearch, applyScanFilters, parseIdList } = require('../lib/scanSearch')
+const { SCAN_STATUSES, STATUS_FILTERS, sanitizeSearch, applyScanFilters, parseIdList } = require('../lib/scanSearch')
 
 // GET /api/profile
 // FEATURE GAP CLOSED (Section 6, fixing-time pass): a saved profile used to
@@ -571,7 +571,7 @@ function purgeFilters(c) {
   const q = (k) => (c.req.query ? c.req.query(k) : undefined)
   const rawStatus = q('status'), rawSearch = q('search')
   const status = rawStatus ? String(rawStatus) : ''
-  if (status && !SCAN_STATUSES.includes(status)) return { error: 'Unknown status filter.' }
+  if (status && !STATUS_FILTERS.includes(status)) return { error: 'Unknown status filter.' }
   // `ids` = delete exactly the scans the person ticked on the dashboard. It never combines with
   // the search/status filters, so a stale filter can't widen a hand-picked delete.
   const picked = parseIdList(q('ids'))
