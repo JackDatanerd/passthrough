@@ -8,8 +8,8 @@ const router = new Hono()
 router.get(   '/',      auth, c.getProfile)
 router.get(   '/data',  auth, c.getProfileData)          // the saved resume itself, for the editor
 router.put(   '/',      auth, rl.profileEdit, c.updateProfile)           // correct the saved resume in place
-router.get(   '/download-docx', auth, rl.draftDownload, c.downloadProfileDocx)
-router.get(   '/download-pdf',  auth, rl.pdfRegen,      c.downloadProfilePdf)
+router.get(   '/download-docx', auth, rl.profileDocx,   c.downloadProfileDocx)
+router.get(   '/download-pdf',  auth, rl.profilePdf,    c.downloadProfilePdf)
 router.post(  '/extras',          auth, rl.profileEdit, c.duplicatePrimary)
 router.post(  '/extras/:id/make-main', auth, rl.profileEdit, c.promoteExtra)
 router.get(   '/extras/:id/data', auth, c.getExtraData)

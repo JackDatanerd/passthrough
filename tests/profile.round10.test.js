@@ -152,7 +152,7 @@ describe('preferences', () => {
 describe('migration 0075', () => {
   const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/0075_profile_dashboard_round10.sql'), 'utf8')
   it('records its own version last and the Worker expects it', () => {
-    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(75)   // later migrations move it on
+    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(75)
     const last = sql.trimEnd().split('\n').slice(-3).join('\n')
     expect(last).toMatch(/'version', 75/)
   })

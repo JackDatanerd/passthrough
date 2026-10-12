@@ -29,37 +29,6 @@ module.exports = {
   PROMO_PRICE_BADGE:     900,    // $9.00
   PROMO_PRICE_FIX_PLAIN: 1900,   // $19.00
 
-  // PRICE TABLE PER CURRENCY (Payments & Pricing round 12, G1). Every price above is in USD cents, but
-  // env.PAYSTACK_CURRENCY is honoured by the quote, the charge, the verify/webhook amount check and the
-  // receipt alike — so switching it to e.g. "KES" used to charge 4900 KES-cents (49.00 KES) for a $49
-  // product with every check agreeing and no alert. A currency now needs its own row here; an unlisted
-  // one makes priceForTier() throw a 503 (see unsupportedCurrencyError) instead of mis-pricing. To sell in
-  // another currency, add a row with prices in that currency's minor units (and mind Paystack's per-currency
-  // minimum), then set PAYSTACK_CURRENCY. Partner tier_prices are in the platform currency's minor units too.
-  PRICES_BY_CURRENCY: {
-    USD: {
-      standard: { FIX: 4900, BADGE: 3900, FIX_PLAIN: 3900 },
-      promo:    { FIX: 2900, BADGE: 900,  FIX_PLAIN: 1900 },
-    },
-  },
-  activeCurrency(env) {
-    return String((env && env.PAYSTACK_CURRENCY) || this.CURRENCY).trim().toUpperCase()
-  },
-  isSupportedCurrency(env) {
-    return Object.prototype.hasOwnProperty.call(this.PRICES_BY_CURRENCY, this.activeCurrency(env))
-  },
-  unsupportedCurrencyError(env) {
-    const err = new Error(`No price table for currency ${this.activeCurrency(env)} (constants.js PRICES_BY_CURRENCY)`)
-    err.code = 'UNSUPPORTED_CURRENCY'
-    err.status = 503
-    err.expose = true
-    return err
-  },
-  priceTable(env) {
-    if (!this.isSupportedCurrency(env)) throw this.unsupportedCurrencyError(env)
-    return this.PRICES_BY_CURRENCY[this.activeCurrency(env)]
-  },
-
   // Whether the promo price applies right now. This is what makes the
   // frontend countdown honest: it counts down to env.PROMO_ENDS_AT, and this
   // same check is what the backend uses to actually decide what to charge —
@@ -80,11 +49,10 @@ module.exports = {
   // having independently-maintained copies of this mapping is exactly how
   // they'd eventually drift and quote one price but charge another.
   priceForTier(fixTier, env) {
-    const t = this.priceTable(env)
-    const row = this.isPromoActive(env) ? t.promo : t.standard
-    if (fixTier === 'BADGE')     return row.BADGE
-    if (fixTier === 'FIX_PLAIN') return row.FIX_PLAIN
-    return row.FIX
+    const promo = this.isPromoActive(env)
+    if (fixTier === 'BADGE')     return promo ? this.PROMO_PRICE_BADGE     : this.PRICE_BADGE
+    if (fixTier === 'FIX_PLAIN') return promo ? this.PROMO_PRICE_FIX_PLAIN : this.PRICE_FIX_PLAIN
+    return promo ? this.PROMO_PRICE_FIX : this.PRICE_FIX
   },
 
   // The true pre-promo anchor price — never promo-adjusted, unlike
@@ -94,12 +62,10 @@ module.exports = {
   // copy of whatever priceForTier() currently returns — which made the
   // strikethrough identical to the live price, and therefore invisible,
   // for every visitor who didn't arrive with a referral code.
-  // `env` is optional: without it (or with the default currency) this is the USD table, as before.
-  standardPriceForTier(fixTier, env) {
-    const row = this.priceTable(env || {}).standard
-    if (fixTier === 'BADGE')     return row.BADGE
-    if (fixTier === 'FIX_PLAIN') return row.FIX_PLAIN
-    return row.FIX
+  standardPriceForTier(fixTier) {
+    if (fixTier === 'BADGE')     return this.PRICE_BADGE
+    if (fixTier === 'FIX_PLAIN') return this.PRICE_FIX_PLAIN
+    return this.PRICE_FIX
   },
   // AUDIT FIX (feature gap): single-source-of-truth display name per tier,
   // for the payment receipt email (email.service.js's sendPaymentReceipt) —

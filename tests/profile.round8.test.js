@@ -53,7 +53,7 @@ describe('sort', () => {
   })
   it('score_desc puts unscored scans last and keeps a total order', () => {
     const { q, o } = recorder(); applyScanSort(q, 'score_desc')
-    expect(o[0]).toEqual(['ats_score', false, false]); expect(o.at(-1)[0]).toBe('id')
+    expect(o[0]).toEqual(['display_score', false, false]); expect(o.at(-1)[0]).toBe('id')
   })
   it('oldest is ascending on both tie-breakers', () => {
     const { q, o } = recorder(); applyScanSort(q, 'oldest')

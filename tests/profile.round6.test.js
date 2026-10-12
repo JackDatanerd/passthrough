@@ -32,7 +32,7 @@ describe('lib/scanSearch — one definition of the dashboard filters', () => {
     expect(sanitizeSearch('%%')).toBe('')
   })
   it('matches file name, candidate first name and job title', () => {
-    expect(HISTORY_SEARCH('x')).toBe('resume_original_name.ilike.%x%,candidate_first_name.ilike.%x%,job_title.ilike.%x%')
+    expect(HISTORY_SEARCH('x')).toBe('resume_original_name.ilike.%x%,candidate_first_name.ilike.%x%,job_title.ilike.%x%,role_category.ilike.%x%,seniority_level.ilike.%x%')
   })
   it('applyScanFilters narrows by search and by an allowlisted status only', () => {
     const calls = []

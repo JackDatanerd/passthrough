@@ -9,10 +9,23 @@ const SCAN_STATUSES = ['PENDING', 'SCANNING', 'COMPLETE_PASS', 'COMPLETE_FAIL', 
 // (`_` stays — it only widens a match).
 const sanitizeSearch = (raw) => String(raw || '').replace(/[,()"%\\*]/g, '').trim()
 
-// What the box matches: the uploaded file's name, the candidate's first name (brain-dump /
-// saved-profile scans have no file), and the job title taken from the JD.
-const HISTORY_SEARCH = (term) =>
-  `resume_original_name.ilike.%${term}%,candidate_first_name.ilike.%${term}%,job_title.ilike.%${term}%`
+// What the box matches: everything a row shows as its heading or small print — the uploaded file's
+// name, the candidate's first name (brain-dump / saved-profile scans have no file), the job title
+// taken from the JD, the role ("Software Engineering" is stored as software_engineering, so spaces
+// become `_`, which ilike treats as any one character), the seniority ("Senior"), and the source
+// label of scans built without a file ("Built from scratch" / "From saved profile" — input_mode is
+// an enum, which ilike cannot search, so those two are matched by equality).
+const SOURCE_LABELS = [['built from scratch', 'brain_dump'], ['from saved profile', 'saved_profile']]
+const HISTORY_SEARCH = (term) => {
+  const t = String(term)
+  const parts = [
+    `resume_original_name.ilike.%${t}%`, `candidate_first_name.ilike.%${t}%`, `job_title.ilike.%${t}%`,
+    `role_category.ilike.%${t.replace(/\s+/g, '_')}%`, `seniority_level.ilike.%${t}%`,
+  ]
+  const lower = t.toLowerCase()
+  if (lower.length >= 3) for (const [label, mode] of SOURCE_LABELS) if (label.includes(lower)) parts.push(`input_mode.eq.${mode}`)
+  return parts.join(',')
+}
 
 // Narrows a scans query by an already-sanitized search term and an allowlisted status.
 function applyScanFilters(query, { search, status, ids } = {}) {
@@ -23,14 +36,15 @@ function applyScanFilters(query, { search, status, ids } = {}) {
   return q
 }
 
-// Sort choices for the dashboard list. Every order ends in created_at + id so two scans with
+// Sort choices for the dashboard list. Score orders use display_score (migration 0076) — the score
+// the row actually shows (fixed score once a fix is scored, else the original). Every order ends in created_at + id so two scans with
 // the same score (or a NULL score) keep a stable position between pages.
 const SCAN_SORTS = ['newest', 'oldest', 'score_desc', 'score_asc']
 const normalizeSort = (raw) => (SCAN_SORTS.includes(raw) ? raw : 'newest')
 function applyScanSort(query, sort) {
   const s = normalizeSort(sort)
   let q = query
-  if (s === 'score_desc' || s === 'score_asc') q = q.order('ats_score', { ascending: s === 'score_asc', nullsFirst: false })
+  if (s === 'score_desc' || s === 'score_asc') q = q.order('display_score', { ascending: s === 'score_asc', nullsFirst: false })
   return q.order('created_at', { ascending: s === 'oldest' ? true : false }).order('id', { ascending: s === 'oldest' })
 }
 

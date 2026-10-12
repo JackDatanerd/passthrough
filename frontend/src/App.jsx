@@ -1,5 +1,5 @@
-import { Suspense } from 'react'
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Suspense, useState } from 'react'
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { AuthProvider } from './context/AuthContext'
 import { useAuth } from './hooks/useAuth'
 import { getToken } from './lib/storage'
@@ -26,7 +26,6 @@ const VerifyEmail    = lazyWithRetry(() => import('./pages/VerifyEmail'))
 const ConfirmEmailChange = lazyWithRetry(() => import('./pages/ConfirmEmailChange'))
 const EmployerLeadAction = lazyWithRetry(() => import('./pages/EmployerLeadAction'))
 const EmployerLeadRejoin = lazyWithRetry(() => import('./pages/EmployerLeadRejoin'))
-const EmployerLeadPreferences = lazyWithRetry(() => import('./pages/EmployerLeadPreferences'))
 const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
 const Verify         = lazyWithRetry(() => import('./pages/Verify'))
 const VerifyLookup   = lazyWithRetry(() => import('./pages/VerifyLookup'))
@@ -90,7 +89,7 @@ function AdminRoute({ children }) {
   return children
 }
 
-// Needs to render inside BrowserRouter (useLocation requires Router
+// Needs to render inside the Router (useLocation requires Router
 // context) — that's the only reason this isn't just called from App().
 // Referral capture lives here too, for the same reason: it also needs
 // useLocation to see the current ?ref= query string on every navigation.
@@ -127,7 +126,6 @@ function RoutedApp() {
           <Route path="/employer/confirm"  element={<EmployerLeadAction mode="confirm" />} />
           <Route path="/employer/remove"   element={<EmployerLeadAction mode="remove" />} />
           <Route path="/employer/rejoin"   element={<EmployerLeadRejoin />} />
-          <Route path="/employer/preferences" element={<EmployerLeadPreferences />} />
           <Route path="/pricing"         element={<Pricing />} />
           <Route path="/terms"           element={<Terms />} />
           <Route path="/privacy"         element={<Privacy />} />
@@ -168,15 +166,27 @@ function RoutedApp() {
   )
 }
 
+// Everything the old <BrowserRouter> wrapped, as one splat route: the <Routes> tree in RoutedApp
+// keeps working unchanged underneath it. A DATA router (instead of <BrowserRouter>) is what makes
+// useBlocker available, so editors can stop an in-app navigation or Back press from silently
+// discarding unsaved work (hooks/useUnsavedChangesWarning.js).
+function AppShell() {
+  return (
+    <>
+      <RouteEffects />
+      <RoutedApp />
+      <TermsUpdateBanner />
+    </>
+  )
+}
+
 export default function App() {
+  // Created on first render (not at import) so importing this module never touches `window`.
+  const [router] = useState(() => createBrowserRouter([{ path: '*', element: <AppShell /> }]))
   return (
     <AuthProvider>
       <ToastProvider>
-        <BrowserRouter>
-          <RouteEffects />
-          <RoutedApp />
-          <TermsUpdateBanner />
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </ToastProvider>
     </AuthProvider>
   )
