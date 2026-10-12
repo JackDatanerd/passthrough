@@ -259,23 +259,11 @@ function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, key
 
     if (!refund) return next()
 
-    // AUDIT FIX (Section 9/10 pass — bug): this used to be a bare
-    // `await next()` with the refund check immediately after it. Hono only
-    // registers ONE app-level app.onError (src/index.js) — its internal
-    // compose() wraps the WHOLE middleware chain in a single try/catch at
-    // the outermost layer, so an exception thrown downstream (createScan has
-    // several plain `throw insertErr`/`throw quotaErr` DB-error paths)
-    // propagates straight up through this `await next()`, completely
-    // unguarded, before the status check below ever runs. The refund never
-    // fired for exactly the case its own comment names as the reason it
-    // exists — "a wrong file type, an oversized upload, or a server hiccup
-    // must not burn the one anonymous scan an hour" — a thrown server hiccup
-    // burned it anyway, silently, every time. A response returned via
-    // ctx.json(...) (never thrown) still hits the status check exactly as
-    // before; this only adds the previously-missing thrown-error path, then
-    // re-throws so errorHandler.js still produces the same response it
-    // always did — this change is refund bookkeeping only, never a change in
-    // what the client receives.
+    // Refund bookkeeping. NOTE (corrected, Cross-cutting infra round 7): Hono's compose() catches a
+    // downstream throw at the handler that threw and hands it to app.onError, so a thrown error does NOT
+    // propagate up through this `await next()` — upstream middleware sees `c.res.status === 500` (verified
+    // against Hono 4). The status check below therefore already covers thrown errors; the try/catch is kept
+    // only for non-Error throws, which compose() rethrows, and re-throws so errorHandler.js responds as before.
     //
     // `refund.on` (AUDIT FIX, Auth section round 1): 'failure' (the default, and
     // what anonScan uses) hands the slot back for a 4xx/5xx or a throw;
@@ -642,6 +630,21 @@ const resumeEdit = makeLimiter({
 // requests" on the download itself; a PDF regeneration (a Chromium render,
 // the most expensive of the three) could be starved by edits or vice versa.
 // Each gets its own bucket, sized to what it costs.
+// AUDIT FIX (Cross-cutting infra, round 7): cover-letter generation (a Claude call) and structure building
+// (a Claude call) shared `resumeEdit` with the resume-data and delivered-resume PATCHes — the same
+// fate-sharing this file has split apart repeatedly. Someone iterating on their delivered resume could be
+// refused a cover letter they had not asked for yet (and the reverse). Each gets its own bucket.
+const coverLetter = makeLimiter({
+  keyBy: byAccount,
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:coverletter',
+  message: msg('Too many requests. Please wait a moment.')
+})
+const resumeStructure = makeLimiter({
+  keyBy: byAccount,
+  windowSeconds: 15 * 60, max: 10, keyPrefix: 'rl:resumestructure',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 const pdfRegen = makeLimiter({
   keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:pdfregen',
@@ -1097,7 +1100,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

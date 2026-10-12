@@ -1,0 +1,11 @@
+Cross-cutting infra (section 9) round 7. Base: ff39cca. NO migration.
+
+B1 (duplicate 0076 migrations): already handled on main by the database-layer audit (known pair + numbering guard). Left as is.
+B2 src/lib/ssrfGuard.js  isPrivateIPv6 refused only compressed IPv4-embedding spellings and never ::/8: [::2], [::ffff]
+   and the uncompressed 0:0:0:0:0:ffff:7f00:1 (as a DoH answer) were allowed. Now decoded numerically; IPv4-mapped/
+   translated judged by the embedded IPv4, any other ::/8 refused.
+B3 src/middleware/rateLimiter.js + routes/scan.routes.js  cover-letter and structure (both Claude calls) shared the
+   resumeEdit bucket with the resume PATCHes. New buckets rl:coverletter, rl:resumestructure (10 / 15 min / account).
+Comment: makeLimiter refund note claimed a downstream throw skipped the status check; Hono 4 onError means it never did.
+tests: tests/crossCutting.round7.test.js (new); tests/rateLimiter.test.js historyPurge test updated 120 -> 600 (limit was raised, test was stale).
+Files: src/lib/ssrfGuard.js, src/middleware/rateLimiter.js, src/routes/scan.routes.js, tests/*, this file.

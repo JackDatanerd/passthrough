@@ -187,6 +187,20 @@ function isPrivateIPv6(hostname) {
   // definition — never a public address — so the whole /48 is refused rather than decoded.
   if (/^64:ff9b:1:/.test(h)) return true
 
+  // AUDIT FIX (Cross-cutting infra, round 7): everything above matched only the COMPRESSED spellings, and
+  // `::/8` itself was never refused — `::2`, `::ffff`, and the uncompressed `0:0:0:0:0:ffff:7f00:1` all
+  // walked through (DoH answers are not guaranteed to arrive in the form `new URL()` canonicalises to).
+  // Decode numerically: IPv4-mapped / translated / compatible forms are judged by their embedded IPv4;
+  // any other address in 0000::/8 (reserved by IETF, never a public job board) is refused outright.
+  const g2 = ipv6Groups(h)
+  if (g2 && g2[0] < 0x0100) {
+    const zeros = g2.slice(0, 5).every(n => n === 0)
+    const v4 = () => decodeEmbeddedIPv4Hex(g2[6].toString(16), g2[7].toString(16))
+    if (zeros && g2[5] === 0xffff) return isPrivateIPv4(v4())
+    if (g2[0] === 0 && g2[1] === 0 && g2[2] === 0 && g2[3] === 0 && g2[4] === 0xffff && g2[5] === 0) return isPrivateIPv4(v4())
+    return true
+  }
+
   return false
 }
 
