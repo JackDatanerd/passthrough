@@ -1,0 +1,829 @@
+// Admin visibility into everything that ISN'T partners or employer leads
+// (users, scans, payments, email logs, alert history) — the leads gap was
+// already closed elsewhere (see the NOTE further down); none of the rest
+// had any admin-facing read path before, the tables were written to and
+// never read back except via direct SQL. Every route here is mounted under
+// /api/admin with adminOnly applied at the router level (see admin.routes.js),
+// not per-function, since every single endpoint in this file is admin-only.
+//
+// Deliberately read-only except adminUpdateUser (ban/unban, role, quota
+// reset) — this file is visibility + the one piece of user moderation that
+// previously had no UI at all (role promotion in particular was documented
+// as "DB-only, intentionally"; that stays true — adminUpdateUser only ever
+// flips an EXISTING account's role/status, it can't create the first admin).
+
+const { z } = require('zod')
+const { revokeVerification, restoreVerification, revokeUserVerifications, restoreUserVerifications, REVOKE_REASON } = require('../lib/verification')
+const { getSupabase } = require('../config/supabase')
+const c = require('../config/constants')
+const cryptoLib = require('../lib/crypto')
+const { logAdminAction } = require('../lib/adminAudit')
+const { purgeBadgeCache } = require('../lib/badgeCache')
+const { computeHealth } = require('../lib/health')
+const emailSuppression = require('../lib/emailSuppression')
+const { mintElevation, stepUpMinutes } = require('../middleware/adminOnly')
+
+// Shared page-param parsing — every list endpoint here is paginated the
+// same way so the frontend can use one generic table component for all of
+// them. Capped at 100/page so a stray `?pageSize=100000` can't turn a list
+// endpoint into an accidental full-table dump.
+function pageParams(ctx, defaultSize = 25, maxSize = 100) {
+  const page     = Math.max(1, parseInt(ctx.req.query('page') || '1', 10) || 1)
+  const pageSize = Math.min(maxSize, Math.max(1, parseInt(ctx.req.query('pageSize') || String(defaultSize), 10) || defaultSize))
+  return { page, pageSize, from: (page - 1) * pageSize, to: (page - 1) * pageSize + pageSize - 1 }
+}
+
+// Strips characters that would break PostgREST's `.or()` filter-string
+// syntax (commas separate conditions, parens group them) — this is an
+// internal admin search box, not attacker-facing, but a stray comma should
+// mean "no results for that weird search", not a malformed query.
+function sanitizeSearchTerm(term) {
+  return String(term || '').trim().replace(/[,()]/g, '')
+}
+
+// Partial-refund totals per payment (payment_refunds, migration 0053 — written by the refund.processed
+// webhook, one row per refund event). `windowFrom` limits it to SUCCESS payments created since then.
+// Never throws: a missing table or an unsupported embed just means "no partial refunds known".
+async function partialRefundsInWindow(supabase, windowFrom) {
+  const byPayment = new Map()
+  try {
+    const { data, error } = await supabase.from('payment_refunds')
+      .select('payment_id, amount_cents, payments!inner(status, created_at)')
+      .eq('payments.status', 'SUCCESS').gte('payments.created_at', windowFrom)
+    if (error) throw error
+    for (const r of data || []) byPayment.set(r.payment_id, (byPayment.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+  } catch (err) { console.error('partial refund totals unavailable:', err.message) }
+  return { byPayment }
+}
+
+// GET /api/admin/health — the Worker's view of itself: bindings, database schema version vs what this
+// code expects, whether the hourly cron has run lately, config warnings. Same data the deep /healthz
+// returns to an uptime monitor.
+async function adminHealth(ctx) {
+  return ctx.json({ success: true, data: await computeHealth(ctx.env, getSupabase(ctx.env)) })
+}
+
+// GET    /api/admin/email-suppressions?email=…  is this address suppressed (permanent bounce / spam
+// DELETE /api/admin/email-suppressions?email=…  complaint), and lift it. Lifting is for the person
+// who fixed their mailbox and asked; the next complaint or hard bounce re-adds it. Addresses are
+// never listed or stored — only a hash — so both calls need the address.
+function suppressionEmailParam(ctx) {
+  const email = String(ctx.req.query('email') || '').trim().toLowerCase()
+  return email.length > 0 && email.length <= 254 && email.includes('@') ? email : null
+}
+async function adminCheckEmailSuppression(ctx) {
+  const email = suppressionEmailParam(ctx)
+  if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
+  const row = await emailSuppression.getSuppression(getSupabase(ctx.env), email)
+  return ctx.json({ success: true, data: { suppressed: !!row, reason: row ? row.reason : null, since: row ? row.created_at : null } })
+}
+async function adminLiftEmailSuppression(ctx) {
+  const email = suppressionEmailParam(ctx)
+  if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const lifted = await emailSuppression.liftSuppression(supabase, email)
+  if (lifted) await logAdminAction(ctx, supabase, 'email.suppression_lifted', 'email_suppression', await cryptoLib.sha256(email), {})
+  return ctx.json({ success: true, data: { lifted } })
+}
+
+// ── Dashboard — the roll-up numbers that didn't exist anywhere before ──────
+
+async function adminDashboardStats(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const now = new Date()
+  const startOfToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString()
+  const startOfWeek  = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString()
+  const startOfMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString()
+  const oneHourAgo   = new Date(now.getTime() - 60 * 60 * 1000).toISOString()
+  // AUDIT FIX (Admin panel re-audit): today/week/month were all sliced from
+  // ONE query that only fetched created_at >= startOfMonth — correct for
+  // "today" and "month" (both subsets of the month), but "week" is NOT
+  // always a subset: on the 1st-6th of any month, `now - 7 days` reaches
+  // back into the PREVIOUS month, and those trailing days were never
+  // fetched at all, so "Revenue this week" silently undercounted near every
+  // month boundary. Fetch from whichever boundary is earliest instead, and
+  // filter each bucket from that one superset.
+  const queryFrom = startOfWeek < startOfMonth ? startOfWeek : startOfMonth
+
+  const { data: revenueWindowPayments, error: payErr } = await supabase
+    .from('payments').select('id, amount_cents, created_at').eq('status', 'SUCCESS').gte('created_at', queryFrom)
+  if (payErr) throw payErr
+
+  const { data: pendingLedger, error: ledgerErr } = await supabase
+    .from('commission_ledger').select('commission_amount_cents').is('payout_id', null)
+  if (ledgerErr) throw ledgerErr
+
+  // Scans that flipped to ERROR recently — updated_at moves whenever status
+  // changes (see the set_updated_at trigger), so this is "recently errored",
+  // not "ever errored".
+  const { count: erroredScansCount, error: scanErr } = await supabase
+    .from('scans').select('id', { count: 'exact', head: true })
+    .eq('status', 'ERROR').gte('updated_at', startOfWeek)
+  if (scanErr) throw scanErr
+
+  // Scans the hourly cron hasn't yet caught (it only sweeps every hour and
+  // only flips things stuck > 30 min) — surfaces the gap between "actually
+  // stuck" and "the cron noticed."
+  const { count: stuckScansCount, error: stuckErr } = await supabase
+    .from('scans').select('id', { count: 'exact', head: true })
+    .in('status', ['SCANNING', 'FIX_GENERATING']).lt('updated_at', oneHourAgo)
+  if (stuckErr) throw stuckErr
+
+  // Payments left PENDING past a reasonable window — includes the
+  // "amount mismatch, held for manual review" case from payments.controller.js
+  // and webhooks.controller.js, which previously only existed as an email alert.
+  const { count: stalePendingCount, error: pendErr } = await supabase
+    .from('payments').select('id', { count: 'exact', head: true })
+    .eq('status', 'PENDING').lt('created_at', oneHourAgo)
+  if (pendErr) throw pendErr
+
+  // Webhook inbox rows a person has to look at: FAILED (Paystack's own retries run out
+  // after ~72h and nothing re-drives them after that), HELD (an amount/currency mismatch that
+  // only a human can resolve) and RECEIVED for over 15 minutes (the Worker died mid-event).
+  // Until now nothing outside the Webhooks page itself surfaced any of them.
+  const fifteenMinAgo = new Date(now.getTime() - 15 * 60 * 1000).toISOString()
+  const { count: whAttentionCount, error: whErr } = await supabase
+    .from('webhook_events').select('id', { count: 'exact', head: true }).in('status', ['FAILED', 'HELD'])
+  if (whErr) throw whErr
+  const { count: whStuckCount, error: whStuckErr } = await supabase
+    .from('webhook_events').select('id', { count: 'exact', head: true }).eq('status', 'RECEIVED').lt('received_at', fifteenMinAgo)
+  if (whStuckErr) throw whStuckErr
+
+  const { count: leadsThisWeekCount, error: leadErr } = await supabase
+    .from('employer_leads').select('id', { count: 'exact', head: true }).gte('created_at', startOfWeek)
+  if (leadErr) throw leadErr
+
+  // Leads nobody has worked yet — what actually "needs attention". The 7-day
+  // count above only says how many arrived recently: it counts leads that were
+  // already contacted or archived as spam, and a NEW lead nobody has touched
+  // silently drops out of it after a week.
+  const { count: newLeadsCount, error: newLeadErr } = await supabase
+    .from('employer_leads').select('id', { count: 'exact', head: true }).eq('status', 'NEW')
+  if (newLeadErr) throw newLeadErr
+
+  const { data: recentAlerts, error: alertErr } = await supabase
+    .from('alert_logs').select('id, subject, message, emailed, created_at')
+    .order('created_at', { ascending: false }).limit(5)
+  if (alertErr) throw alertErr
+
+  // WEBHOOKS ROUND 5 (feature gap): a PARTIAL refund leaves the payment SUCCESS (the work was delivered),
+  // so revenue summed the full amount paid while part of it had gone back. payment_refunds (0053) holds
+  // what Paystack confirmed per payment; subtract it from the bucket the sale itself belongs to.
+  // Best-effort: with the table missing, revenue is gross as before.
+  const partialRefunds = await partialRefundsInWindow(supabase, queryFrom)
+  const net = p => Math.max(0, p.amount_cents - (partialRefunds.byPayment.get(p.id) || 0))
+  const revenueMonthCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + net(p), 0)
+  const revenueWeekCents  = (revenueWindowPayments || []).filter(p => p.created_at >= startOfWeek).reduce((sum, p) => sum + net(p), 0)
+  const revenueTodayCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfToday).reduce((sum, p) => sum + net(p), 0)
+  const monthPartialRefundsCents = (revenueWindowPayments || []).filter(p => p.created_at >= startOfMonth).reduce((sum, p) => sum + Math.min(p.amount_cents, partialRefunds.byPayment.get(p.id) || 0), 0)
+  let webhookHealth = null
+  try { webhookHealth = await require('./webhooks.controller').computeWebhookHealth(supabase, { now: now.getTime() }) }
+  catch (err) { console.error('dashboard webhook health:', err.message) }
+  const totalPendingCommissionCents = (pendingLedger || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
+
+  return ctx.json({ success: true, data: {
+    revenue: { todayCents: revenueTodayCents, weekCents: revenueWeekCents, monthCents: revenueMonthCents, monthPartialRefundsCents },
+    webhookHealth,
+    totalPendingCommissionCents,
+    // Read-only status readout — constants.js/wrangler.toml stay the single
+    // source of truth for pricing by design (see constants.js's own
+    // comment); this just makes what's currently live impossible to miss,
+    // instead of requiring someone to check wrangler.toml's committed dates.
+    promo: {
+      active: c.isPromoActive(ctx.env),
+      endsAt: ctx.env.PROMO_ENDS_AT || null,
+      // Round 12: read from the active currency's table (null when PAYSTACK_CURRENCY has none — see envCheck).
+      standardCents: c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).standard } : null,
+      promoCents:    c.isSupportedCurrency(ctx.env) ? { ...c.priceTable(ctx.env).promo } : null,
+      priceTableMissing: !c.isSupportedCurrency(ctx.env)
+    },
+    openItems: {
+      erroredScansThisWeek: erroredScansCount || 0,
+      stuckScans:           stuckScansCount || 0,
+      stalePendingPayments: stalePendingCount || 0,
+      webhookEventsNeedingAttention: (whAttentionCount || 0) + (whStuckCount || 0),
+      leadsThisWeek:        leadsThisWeekCount || 0,
+      newLeads:             newLeadsCount || 0
+    },
+    recentAlerts: (recentAlerts || []).map(a => ({
+      id: a.id, subject: a.subject, message: a.message, emailed: a.emailed, createdAt: a.created_at
+    }))
+  }})
+}
+
+// ── Users ────────────────────────────────────────────────────────────────
+// Never selects password_hash, the (dropped in 0077) paystack customer/auth codes,
+// reset_token(_expiry), or email_verify_token(_expiry) — same "never touches
+// the client" discipline optionalAuth.js already applies, just enforced
+// here by simply never selecting those columns in the first place.
+
+// FIX (Section 9/10 audit, feature gap): terms_accepted_at/terms_version
+// (migration 0038) were captured at signup but surfaced nowhere in the app —
+// not the user's own session, not here. Added to both the list and detail
+// responses below so an admin can actually answer "did this account accept
+// the current Terms, and which version" — the entire reason the column is
+// versioned in the first place (see constants.js's TERMS_VERSION comment).
+const USER_LIST_FIELDS = 'id, email, name, role, status, email_verified, scans_today, scans_day_reset, created_at, terms_accepted_at, terms_version'
+
+async function adminListUsers(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const search = sanitizeSearchTerm(ctx.req.query('search'))
+  const status = ctx.req.query('status')
+  const role   = ctx.req.query('role')
+
+  let query = supabase.from('users').select(USER_LIST_FIELDS, { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (search) query = query.or(`email.ilike.%${search}%,name.ilike.%${search}%`)
+  if (status) query = query.eq('status', status)
+  if (role)   query = query.eq('role', role)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  const users = data.map(u => ({
+    id: u.id, email: u.email, name: u.name, role: u.role, status: u.status,
+    emailVerified: u.email_verified, scansToday: u.scans_today, scansDayReset: u.scans_day_reset,
+    createdAt: u.created_at,
+    termsAcceptedAt: u.terms_accepted_at, termsVersion: u.terms_version
+  }))
+  return ctx.json({ success: true, data: users, meta: { page, pageSize, total: count || 0 } })
+}
+
+async function adminGetUserDetail(ctx) {
+  const userId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: user, error } = await supabase.from('users').select(USER_LIST_FIELDS).eq('id', userId).maybeSingle()
+  if (error) throw error
+  if (!user) return ctx.json({ success: false, message: 'User not found.' }, 404)
+
+  const { data: scans, error: scanErr } = await supabase
+    .from('scans').select('id, status, ats_score, fix_purchased, fix_tier, resume_original_name, created_at')
+    .eq('user_id', userId).order('created_at', { ascending: false }).limit(20)
+  if (scanErr) throw scanErr
+
+  const { data: payments, error: payErr } = await supabase
+    .from('payments').select('id, amount_cents, currency, status, fix_tier, referral_code, created_at')
+    .eq('user_id', userId).order('created_at', { ascending: false }).limit(20)
+  if (payErr) throw payErr
+
+  return ctx.json({ success: true, data: {
+    id: user.id, email: user.email, name: user.name, role: user.role, status: user.status,
+    emailVerified: user.email_verified, scansToday: user.scans_today, scansDayReset: user.scans_day_reset,
+    createdAt: user.created_at,
+    termsAcceptedAt: user.terms_accepted_at, termsVersion: user.terms_version,
+    scans: (scans || []).map(s => ({
+      id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased,
+      fixTier: s.fix_tier, resumeOriginalName: s.resume_original_name, createdAt: s.created_at
+    })),
+    payments: (payments || []).map(p => ({
+      id: p.id, amountCents: p.amount_cents, currency: p.currency, status: p.status,
+      fixTier: p.fix_tier, referralCode: p.referral_code, createdAt: p.created_at
+    }))
+  }})
+}
+
+const updateUserSchema = z.object({
+  status:           z.enum(['ACTIVE', 'BANNED']).optional(),
+  role:             z.enum(['SEEKER', 'ADMIN']).optional(),
+  resetScansToday:  z.boolean().optional()
+}).refine(obj => Object.keys(obj).length > 0, 'At least one field is required.')
+
+async function adminUpdateUser(ctx) {
+  const userId = ctx.req.param('id')
+  const body = updateUserSchema.parse(await ctx.req.json())
+  const actingUser = ctx.get('user')
+
+  // Guardrail, not a security boundary (the DB would happily let an admin
+  // do this to themselves) — just cheap insurance against a solo admin
+  // locking themselves out of their own panel by fat-fingering their own row.
+  if (actingUser?.id === userId && (body.status === 'BANNED' || body.role === 'SEEKER')) {
+    return ctx.json({ success: false, message: "You can't ban or demote your own account from here." }, 400)
+  }
+
+  const supabase = getSupabase(ctx.env)
+
+  // FEATURE GAP CLOSED (Section 12 audit): need the OLD status/role to know
+  // whether this call actually changed anything worth logging (a no-op PATCH
+  // — resending the same status, say — shouldn't create a log entry that
+  // implies something happened). Best-effort like partners.controller.js's
+  // equivalent read: if it fails, fall through to the update exactly as
+  // before, just without a "from" value in the log entry.
+  const { data: before } = await supabase.from('users').select('status, role').eq('id', userId).maybeSingle()
+
+  const patch = {}
+  if (body.status !== undefined) patch.status = body.status
+  if (body.role !== undefined)   patch.role = body.role
+  if (body.resetScansToday) { patch.scans_today = 0; patch.scans_day_reset = new Date().toISOString() }
+
+  const { data, error } = await supabase.from('users').update(patch).eq('id', userId).select(USER_LIST_FIELDS).maybeSingle()
+  if (error) throw error
+  if (!data) return ctx.json({ success: false, message: 'User not found.' }, 404)
+
+  // FEATURE GAP CLOSED (Section 12 audit): this is this file's one
+  // moderation action (see the top-of-file comment) — banning a user,
+  // promoting/demoting a role, or resetting their scan quota — and until
+  // now it left no trace anywhere of which admin did it or when, unlike the
+  // equivalent leads-admin actions (employer-leads.controller.js) or a
+  // partner's payout/status changes (partners.controller.js). Only logged
+  // when something actually changed; a resubmitted no-op PATCH stays quiet.
+  const statusChanged = body.status !== undefined && before?.status !== data.status
+  const roleChanged   = body.role   !== undefined && before?.role   !== data.role
+  if (statusChanged || roleChanged || body.resetScansToday) {
+    await logAdminAction(ctx, supabase, 'user.update', 'user', userId, {
+      ...(statusChanged ? { statusFrom: before?.status ?? null, statusTo: data.status } : {}),
+      ...(roleChanged   ? { roleFrom: before?.role ?? null, roleTo: data.role } : {}),
+      ...(body.resetScansToday ? { scansReset: true } : {})
+    })
+  }
+
+  // ROUND-2 AUDIT FIX (feature gap, Section 7): a ban used to leave the user's
+  // public verification pages (and any downloadable resume they had exposed)
+  // live. Ban takes every ACTIVE page down under its own reason; un-ban restores
+  // exactly those. Both are idempotent — re-sending the same status repeats them,
+  // and a DB error here throws so the admin sees it and can simply retry.
+  let verification
+  if (body.status === 'BANNED')      verification = { revoked: await revokeUserVerifications(supabase, userId) }
+  else if (body.status === 'ACTIVE') verification = { restored: await restoreUserVerifications(supabase, userId) }
+  // ROUND-5 AUDIT (feature gap, Section 7): taking down (or putting back) every public page a user
+  // owns is the highest-impact thing an admin does to the verify surface, and the only trace of it
+  // was a count in this response. Counts only — no codes, no names.
+  if (verification && (verification.revoked || verification.restored)) {
+    await logAdminAction(ctx, supabase, verification.revoked ? 'user.verifications_revoked' : 'user.verifications_restored', 'user', userId, {
+      count: verification.revoked || verification.restored,
+    })
+  }
+
+  // No extra token-invalidation step needed here: optionalAuth.js re-checks
+  // status==='BANNED' and re-reads role fresh from the DB on every single
+  // request (it doesn't trust the JWT payload for either) — so a ban or a
+  // role change already takes effect on the user's very next request,
+  // before their existing 7-day JWT would otherwise expire.
+  return ctx.json({ success: true, data: {
+    id: data.id, email: data.email, name: data.name, role: data.role, status: data.status,
+    scansToday: data.scans_today, scansDayReset: data.scans_day_reset,
+    ...(verification ? { verification } : {})
+  }})
+}
+
+// ── Scans ────────────────────────────────────────────────────────────────
+
+async function adminListScans(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const status = ctx.req.query('status')
+
+  let query = supabase.from('scans')
+    // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026)
+    // was never selected here, even though 0026's own comment describes this
+    // exact endpoint as the reason the column exists — "the admin
+    // dashboard's ability to show '2 automatic attempts failed' rather than
+    // a bare status". reconcile.service.js was the only reader of it. The
+    // backing column and the reconcile-sweep logic existed; the admin-facing
+    // half of the feature didn't.
+    .select('id, status, ats_score, fix_purchased, fix_tier, fix_error_recoveries, resume_original_name, user_id, users(email), verification_code, verification_status, verification_revoked_reason, created_at, updated_at', { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (status) query = query.eq('status', status)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  const scans = data.map(s => ({
+    id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased, fixTier: s.fix_tier,
+    fixErrorRecoveries: s.fix_error_recoveries ?? 0,
+    resumeOriginalName: s.resume_original_name, userId: s.user_id, userEmail: s.users?.email || null,
+    verificationCode: s.verification_code, verificationStatus: s.verification_status,
+    verificationRevokedReason: s.verification_revoked_reason,
+    createdAt: s.created_at, updatedAt: s.updated_at
+  }))
+  return ctx.json({ success: true, data: scans, meta: { page, pageSize, total: count || 0 } })
+}
+
+// PATCH /api/admin/scans/:id/verification  { action: 'revoke' | 'restore' }
+// SECTION 7 AUDIT (feature gap): a public credential page had no off switch for
+// abuse/takedown. An admin revoke is stronger than an owner unpublish (the
+// owner cannot undo it); restore lifts ANY revocation.
+async function adminSetVerification(ctx) {
+  const { action } = z.object({ action: z.enum(['revoke', 'restore']) }).parse(await ctx.req.json())
+  const scanId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: scan, error } = await supabase.from('scans').select('id, verification_code').eq('id', scanId).maybeSingle()
+  if (error) throw error
+  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  if (!scan.verification_code) return ctx.json({ success: false, message: 'This scan has no verification page.' }, 400)
+
+  const changed = action === 'revoke'
+    ? await revokeVerification(supabase, scanId, REVOKE_REASON.ADMIN)
+    : await restoreVerification(supabase, scanId, { asAdmin: true })
+  // ROUND-5 AUDIT FIX (feature gap, Section 7): a takedown (or restore) of someone's public
+  // credential left no record of who did it or when. Logged only when the row actually changed.
+  if (changed) await logAdminAction(ctx, supabase, action === 'revoke' ? 'verification.revoke' : 'verification.restore', 'scan', scanId, {})
+  // ROUND-8: revoking a page settles the reports waiting on it. Best-effort: the revoke itself already happened.
+  if (changed && action === 'revoke') {
+    try {
+      const { error: repErr } = await supabase.from('verification_reports')
+        .update({ status: 'ACTIONED', reviewed_at: new Date().toISOString(), reviewed_by: ctx.get('user')?.id || null })
+        .eq('code', scan.verification_code).eq('status', 'OPEN')
+      if (repErr) console.error('adminSetVerification: could not close reports:', repErr.message)
+    } catch (err) { console.error('adminSetVerification: could not close reports:', err.message) }
+  }
+  return ctx.json({ success: true, data: { changed, verificationStatus: action === 'revoke' ? 'REVOKED' : 'ACTIVE' } })
+}
+
+// ── Payments ─────────────────────────────────────────────────────────────
+
+async function adminListPayments(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const status = ctx.req.query('status')
+  // Letters, digits and the punctuation a payment reference uses — nothing that could break the filter grammar.
+  const reference = String(ctx.req.query('reference') || '').trim().replace(/[^A-Za-z0-9_.:\-]/g, '').slice(0, 80)
+
+  // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
+  // (migrations 0024/0025) were never selected here. webhooks.controller.js
+  // writes them correctly on a real refund/dispute webhook, and this list
+  // already filters/displays REFUNDED and DISPUTED statuses — but an admin
+  // looking at one had no way to see when it happened or what the refund
+  // reference was, because the one place that could show it never read it.
+  //
+  // AUDIT FIX (Section 9/10 pass): same gap for receipt status. Neither this
+  // function nor paymentRowToCamel (mappers.js — also just fixed) ever
+  // selected receipt_sent_at/receipt_delivered_at (0033/0036), so there was
+  // no way anywhere in the admin panel to answer "did this customer's
+  // receipt actually get emailed" without querying the DB directly — the
+  // exact question support needs answered on a "I paid but never got a
+  // receipt" ticket. receiptDeliveredAt is the one that answers that (set
+  // only after the send genuinely succeeds — see fulfillment.service.js);
+  // receiptSentAt (claimed BEFORE sending, so two deliveries can't race) is
+  // included too so a payment with sentAt set but deliveredAt still null is
+  // visibly distinguishable as "we tried and it didn't finish," not just
+  // absent. lastReconciledAt is included for the same reason admin needs to
+  // see refund/dispute state: it answers "has the hourly sweep even looked
+  // at this payment yet" without a direct DB query.
+  let query = supabase.from('payments')
+    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, receipt_sent_at, receipt_delivered_at, last_reconciled_at, created_at', { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (status) query = query.eq('status', status)
+  if (reference) query = query.ilike('paystack_ref', `%${reference}%`)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  // WEBHOOKS ROUND 5 (feature gap): what Paystack has confirmed as refunded so far (payment_refunds, 0053).
+  // A partial refund leaves the payment SUCCESS, so without this nothing here showed that money had gone back.
+  const refundedBy = new Map()
+  try {
+    const ids = data.map(p => p.id)
+    if (ids.length) {
+      const { data: rf, error: rfErr } = await supabase.from('payment_refunds').select('payment_id, amount_cents').in('payment_id', ids)
+      if (rfErr) throw rfErr
+      for (const r of rf || []) refundedBy.set(r.payment_id, (refundedBy.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+    }
+  } catch (err) { console.error('payment refund totals unavailable:', err.message) }
+
+  const payments = data.map(p => ({
+    id: p.id, amountCents: p.amount_cents, currency: p.currency, status: p.status,
+    paystackRef: p.paystack_ref, fixTier: p.fix_tier, referralCode: p.referral_code,
+    scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
+    refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
+    receiptSentAt: p.receipt_sent_at, receiptDeliveredAt: p.receipt_delivered_at,
+    lastReconciledAt: p.last_reconciled_at,
+    refundedCents: refundedBy.get(p.id) || 0,
+    createdAt: p.created_at
+  }))
+  return ctx.json({ success: true, data: payments, meta: { page, pageSize, total: count || 0 } })
+}
+
+// NOTE: employer-lead listing is NOT duplicated here — a separate pass on
+// this repo already closed that exact gap (GET /api/employer-leads,
+// admin-gated, in employer-leads.controller.js's adminListLeads). The admin
+// panel's Leads page calls that existing endpoint directly rather than a
+// second one living here.
+
+// ── System health: email delivery log + persisted alert history ──────────
+
+async function adminListEmailLogs(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const status   = ctx.req.query('status')
+  const template = ctx.req.query('template')
+  const search   = sanitizeSearchTerm(ctx.req.query('search'))
+
+  let query = supabase.from('email_logs')
+    .select('id, to, subject, template, status, error, sent_at', { count: 'exact' })
+    .order('sent_at', { ascending: false }).range(from, to)
+  if (status)   query = query.eq('status', status)
+  if (template) query = query.eq('template', template)
+  if (search)   query = query.ilike('to', `%${search}%`)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  const logs = data.map(l => ({
+    id: l.id, to: l.to, subject: l.subject, template: l.template, status: l.status,
+    error: l.error, sentAt: l.sent_at
+  }))
+  return ctx.json({ success: true, data: logs, meta: { page, pageSize, total: count || 0 } })
+}
+
+async function adminListAlerts(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+
+  const { data, error, count } = await supabase
+    .from('alert_logs')
+    .select('id, subject, message, emailed, created_at', { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (error) throw error
+
+  const alerts = data.map(a => ({
+    id: a.id, subject: a.subject, message: a.message, emailed: a.emailed, createdAt: a.created_at
+  }))
+  return ctx.json({ success: true, data: alerts, meta: { page, pageSize, total: count || 0 } })
+}
+
+// GET /api/admin/audit-log
+//
+// FEATURE GAP CLOSED (Section 12 audit): admin_audit_log (see lib/adminAudit.js
+// and migration 0034) has been an append-only record of admin actions on
+// other people's data since the leads section was built — bulk deletes,
+// status changes, CSV exports — and every one of the newer admin actions
+// this same audit round wired up (user ban/role changes, partner status/
+// payout-link changes, payment reversals) writes into it too. But nothing
+// anywhere ever read it back: the table existed purely to be queried by
+// hand in the database. This is that read path, filterable by target_type
+// and action the same way adminListEmailLogs filters by status/template.
+async function adminListAuditLog(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const targetType = ctx.req.query('targetType')
+  const action     = ctx.req.query('action')
+
+  let query = supabase.from('admin_audit_log')
+    .select('id, action, target_type, target_id, detail, created_at, users(email)', { count: 'exact' })
+    .order('created_at', { ascending: false }).range(from, to)
+  if (targetType) query = query.eq('target_type', targetType)
+  if (action)     query = query.eq('action', action)
+
+  const { data, error, count } = await query
+  if (error) throw error
+
+  const entries = data.map(row => ({
+    id: row.id, action: row.action, targetType: row.target_type, targetId: row.target_id,
+    detail: row.detail || {}, actorEmail: row.users?.email || null, createdAt: row.created_at
+  }))
+  return ctx.json({ success: true, data: entries, meta: { page, pageSize, total: count || 0 } })
+}
+
+// GET /api/admin/claude-usage?days=30
+//
+// DATABASE AUDIT (feature gap): every Claude call has been written to claude_usage since migration 0072 (cost
+// ledger, lib/claudeUsage.js) and nothing ever read it — the one recurring cost of the product was invisible
+// short of hand-written SQL. The aggregation happens in the database (claude_usage_summary / claude_usage_totals,
+// 0077) so the response is a few dozen rows however large the ledger is.
+//
+// A dollar figure is only returned when the owner has said what a million tokens cost
+// (CLAUDE_USD_PER_MTOK_INPUT / CLAUDE_USD_PER_MTOK_OUTPUT, plain numbers in wrangler.toml [vars]): prices differ by
+// model and change, so nothing is hard-coded here — it is an estimate for trend-spotting, not an invoice.
+const CLAUDE_USAGE_MAX_DAYS = 400
+function usdEstimate(env, inputTokens, outputTokens) {
+  const raw = [env && env.CLAUDE_USD_PER_MTOK_INPUT, env && env.CLAUDE_USD_PER_MTOK_OUTPUT]
+  if (raw.some(v => v === undefined || v === null || String(v).trim() === '')) return null
+  const [pin, pout] = raw.map(Number)
+  if (!Number.isFinite(pin) || !Number.isFinite(pout) || pin < 0 || pout < 0) return null
+  return Math.round(((inputTokens * pin + outputTokens * pout) / 1e6) * 100) / 100
+}
+
+async function adminClaudeUsage(ctx) {
+  const days = Math.min(CLAUDE_USAGE_MAX_DAYS, Math.max(1, parseInt(ctx.req.query('days') || '30', 10) || 30))
+  const supabase = getSupabase(ctx.env)
+  const [summary, totals] = await Promise.all([
+    supabase.rpc('claude_usage_summary', { p_days: days }),
+    supabase.rpc('claude_usage_totals', { p_days: days }),
+  ])
+  const err = summary.error || totals.error
+  if (err) {
+    if (/could not find the function|PGRST202|42883/i.test(`${err.code || ''} ${err.message || ''}`))
+      return ctx.json({ success: false, message: 'Apply migration 0077 to see Claude usage.' }, 503)
+    throw err
+  }
+
+  const num = v => Number(v) || 0
+  const rows = Array.isArray(summary.data) ? summary.data : []
+  const t = (Array.isArray(totals.data) ? totals.data[0] : totals.data) || {}
+  const byLabelMap = new Map(), byDayMap = new Map()
+  for (const r of rows) {
+    const key = `${r.label}\u0000${r.model || ''}`
+    const l = byLabelMap.get(key) || { label: r.label, model: r.model || null, calls: 0, inputTokens: 0, outputTokens: 0 }
+    l.calls += num(r.calls); l.inputTokens += num(r.input_tokens); l.outputTokens += num(r.output_tokens)
+    byLabelMap.set(key, l)
+    const d = byDayMap.get(r.day) || { day: r.day, calls: 0, inputTokens: 0, outputTokens: 0 }
+    d.calls += num(r.calls); d.inputTokens += num(r.input_tokens); d.outputTokens += num(r.output_tokens)
+    byDayMap.set(r.day, d)
+  }
+  const withCost = o => ({ ...o, estimatedUsd: usdEstimate(ctx.env, o.inputTokens, o.outputTokens) })
+  const inputTokens = num(t.input_tokens), outputTokens = num(t.output_tokens), scans = num(t.scans)
+  return ctx.json({
+    success: true,
+    data: {
+      days,
+      totals: withCost({
+        calls: num(t.calls), inputTokens, outputTokens, scans,
+        tokensPerScan: scans ? Math.round((inputTokens + outputTokens) / scans) : null,
+      }),
+      byLabel: [...byLabelMap.values()].sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)).map(withCost),
+      byDay: [...byDayMap.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).map(withCost),
+      priced: usdEstimate(ctx.env, 1, 1) !== null,
+    },
+  })
+}
+
+// POST /api/admin/scans/:id/requeue-fix
+//
+// The manual escape hatch for a customer who PAID and whose fix failed to
+// generate. The automatic sweep (reconcile.service.js's sweepFailedFixes) gives
+// up after a fixed number of attempts so a deterministic failure can't loop
+// forever; once it has, this is the way to run the job again after the cause
+// has been dealt with. Uses the same atomic claim as the sweep — so it cannot
+// double-enqueue against it — but with no attempt cap.
+async function adminRequeueFix(ctx) {
+  const scanId = ctx.req.param('id')
+  const supabase = getSupabase(ctx.env)
+
+  const { data: scan, error } = await supabase
+    .from('scans').select('id, status, fix_purchased, fix_tier').eq('id', scanId).maybeSingle()
+  if (error) throw error
+  if (!scan) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  if (!scan.fix_purchased)
+    return ctx.json({ success: false, message: 'This scan has no purchased fix — nothing to re-run.' }, 400)
+
+  const { data: claimed, error: claimErr } = await supabase.rpc('claim_errored_fix', { p_scan_id: scanId, p_max: 1000 })
+  if (claimErr) throw claimErr
+  if (!claimed)
+    return ctx.json({ success: false,
+      message: `Only a paid scan currently in ERROR can be re-queued (this one is ${scan.status}).` }, 409)
+
+  await ctx.env.FIX_QUEUE.send({ type: scan.fix_tier === 'BADGE' ? 'generateBadge' : 'generateFix', scanId })
+  return ctx.json({ success: true, message: 'Re-queued. The customer will be emailed when it is ready.' })
+}
+
+// POST /api/admin/verification/backfill-pdf-hashes   body (optional): { after: <scan id> }
+// Pages issued before migration 0025 have a PDF on file but no fingerprint for it, so the
+// public page can only say the integrity check is "partial" (see verify.controller.js's
+// checkIntegrity). This records a fingerprint of the PDF AS IT IS IN STORAGE NOW for up to
+// BACKFILL_BATCH such pages per call — trust-on-first-use: it attests what is stored today, it
+// cannot prove the file was never touched before.
+//
+// ROUND-5 AUDIT FIX (bug, Section 7), three problems:
+//  * It always re-selected the FIRST 50 unfilled rows, in no particular order. A row whose PDF is
+//    missing from storage can never be filled, so once 50 of those existed every call looked at
+//    the same 50, filled nothing and reported `remaining: true` forever. Rows are now walked in id
+//    order with a keyset cursor (`after` in, `nextAfter` out) so a stuck row is passed over, and
+//    the ids of the ones that could not be filled are reported.
+//  * Filling a hash flips that page's integrity from "partial" to "verified" but the cached badge
+//    kept saying "scan NN/100" — purgeBadgeCache was never called here (regeneratePdf, which does the
+//    same flip for one page, has called it since an earlier round).
+//  * Nothing recorded that it ran. It is now written to the admin audit log (counts only).
+// Run it again with `after: nextAfter` until `remaining` is false.
+const BACKFILL_BATCH = 50
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+async function adminBackfillPdfHashes(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const body = await ctx.req.json().catch(() => null)
+  const after = body && typeof body === 'object' && typeof body.after === 'string' && UUID_RE.test(body.after) ? body.after : null
+
+  let q = supabase.from('scans')
+    .select('id, resume_pdf_path, verification_code')
+    .not('verification_code', 'is', null).not('resume_pdf_path', 'is', null).is('resume_pdf_hash', null)
+    .order('id', { ascending: true }).limit(BACKFILL_BATCH)
+  if (after) q = q.gt('id', after)
+  const { data: rows, error } = await q
+  if (error) throw error
+
+  let filled = 0
+  const missingScanIds = []
+  for (const r of rows || []) {
+    const obj = await ctx.env.RESUMES_BUCKET.get(r.resume_pdf_path)
+    if (!obj) { missingScanIds.push(r.id); continue }
+    const hash = await cryptoLib.sha256Bytes(await obj.arrayBuffer())
+    const { data: done, error: upErr } = await supabase.from('scans')
+      .update({ resume_pdf_hash: hash }).eq('id', r.id).is('resume_pdf_hash', null).select('id')
+    if (upErr) throw upErr
+    if ((done || []).length) {
+      filled++
+      // The page's integrity read just changed (partial -> verified): do not let a cached badge keep the old one.
+      if (r.verification_code) await purgeBadgeCache(r.verification_code)
+    }
+  }
+
+  const checked = (rows || []).length
+  const remaining = checked === BACKFILL_BATCH
+  if (checked > 0) await logAdminAction(ctx, supabase, 'verification.backfill_pdf_hashes', 'verification', null, { checked, filled, missing: missingScanIds.length })
+  return ctx.json({ success: true, data: {
+    checked, filled, missing: missingScanIds.length, missingScanIds: missingScanIds.slice(0, 50),
+    remaining, nextAfter: remaining ? rows[rows.length - 1].id : null,
+  } })
+}
+
+// POST /api/admin/elevate { password } — step-up for refunds, payouts and bans (middleware/adminOnly.js `stepUp`).
+// Cross-cutting infra round 4, G1. A wrong password answers 403 (never 401: the SPA signs a person out on any
+// 401 that carried a token). Only exists when ADMIN_STEP_UP_MINUTES > 0.
+async function adminElevate(ctx) {
+  if (!stepUpMinutes(ctx.env)) return ctx.json({ success: false, message: 'Step-up confirmation is not enabled.', code: 'STEP_UP_DISABLED' }, 404)
+  let body = null
+  try { body = await ctx.req.json() } catch { /* handled below */ }
+  const password = body && typeof body.password === 'string' ? body.password : ''
+  if (!password || password.length > 1024) return ctx.json({ success: false, message: 'Enter your password.' }, 400)
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  // CROSS-CUTTING INFRA ROUND 5 (bug): this is a live password check on an already-authenticated request — the
+  // very oracle a stolen admin bearer token would use to guess the password that unlocks refunds, payouts and bans —
+  // yet it was bounded only by the per-IP `rl.auth` bucket (rotate IPs and it never bites). changePassword /
+  // updateEmail / deleteAccount all count their failures on the account lockout; this one was missed. Same
+  // email-keyed counter, so guesses are tallied across every endpoint that can prove the password.
+  const { comparePassword, lockoutBlocks, lockedResponse } = require('./auth.controller')
+  const { checkAccountLockout, recordLoginFailure, recordLoginSuccess } = require('../middleware/rateLimiter')
+  const { clientIp } = require('../lib/clientIp')
+  const lockKey = user.email || user.id
+  const lockout = await checkAccountLockout(ctx.env, lockKey, ctx)
+  if (lockoutBlocks(ctx, lockout, user.lastLoginIp)) return lockedResponse(ctx, lockout)
+  const { data: row, error } = await supabase.from('users').select('password_hash').eq('id', user.id).maybeSingle()
+  if (error) throw error
+  if (!row || !row.password_hash || !(await comparePassword(password, row.password_hash)).ok) {
+    await recordLoginFailure(ctx.env, lockKey, clientIp(ctx), { requireDistinctIps: false })
+    await logAdminAction(ctx, supabase, 'admin.step_up_failed', 'user', user.id, {})
+    return ctx.json({ success: false, message: 'That password is not correct.', code: 'PASSWORD_INCORRECT' }, 403)
+  }
+  await recordLoginSuccess(ctx.env, lockKey)
+  const minted = await mintElevation(ctx.env, user, ctx.get('sessionId'))
+  await logAdminAction(ctx, supabase, 'admin.step_up', 'user', user.id, { minutes: stepUpMinutes(ctx.env) })
+  return ctx.json({ success: true, data: { elevationToken: minted.token, expiresInSeconds: minted.expiresInSeconds } })
+}
+
+// ── Verification reports (Verify round 8, migration 0073) ─────────────────────
+const REPORT_STATUSES = ['OPEN', 'ACTIONED', 'DISMISSED']
+
+// GET /api/admin/verification-reports?status=OPEN|ACTIONED|DISMISSED&page=&pageSize=
+// Reports a reader sent from a public verification page — OLDEST first while OPEN (Verify round 10: a
+// newest-first queue starves the oldest report behind new ones), newest first once closed — each with the CURRENT state of the
+// page it names so the admin can revoke it from the same list.
+async function adminListVerificationReports(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { page, pageSize, from, to } = pageParams(ctx)
+  const asked = String(ctx.req.query('status') || 'OPEN').toUpperCase()
+  const status = REPORT_STATUSES.includes(asked) ? asked : 'OPEN'
+  const { data, error, count } = await supabase.from('verification_reports')
+    .select('id, code, reason, details, reporter_email, status, created_at, reviewed_at', { count: 'exact' })
+    .eq('status', status).order('created_at', { ascending: status !== 'OPEN' }).range(from, to)
+  if (error) throw error
+  const rows = data || []
+  const pages = new Map()
+  const codes = [...new Set(rows.map(r => r.code))]
+  if (codes.length) {
+    const { data: scans, error: scanErr } = await supabase.from('scans')
+      .select('id, verification_code, verification_status, verification_revoked_reason').in('verification_code', codes)
+    if (scanErr) throw scanErr
+    for (const s of scans || []) pages.set(s.verification_code, s)
+  }
+  return ctx.json({ success: true, meta: { page, pageSize, total: count || 0 }, data: rows.map(r => {
+    const s = pages.get(r.code)
+    return {
+      id: r.id, code: r.code, reason: r.reason, details: r.details, reporterEmail: r.reporter_email, status: r.status,
+      createdAt: r.created_at, reviewedAt: r.reviewed_at,
+      scanId: s ? s.id : null,
+      // 'GONE' = the page was deleted since (its code is a tombstone now).
+      pageStatus: s ? s.verification_status : 'GONE',
+      pageRevokedReason: s ? s.verification_revoked_reason : null,
+    }
+  }) })
+}
+
+// PATCH /api/admin/verification-reports/:id  { status: 'ACTIONED' | 'DISMISSED' }
+async function adminReviewVerificationReport(ctx) {
+  const parsed = z.object({ status: z.enum(['ACTIONED', 'DISMISSED']) }).safeParse(await ctx.req.json().catch(() => null))
+  if (!parsed.success) return ctx.json({ success: false, message: 'status must be ACTIONED or DISMISSED.' }, 400)
+  const supabase = getSupabase(ctx.env)
+  const id = ctx.req.param('id')
+  const { data, error } = await supabase.from('verification_reports')
+    .update({ status: parsed.data.status, reviewed_at: new Date().toISOString(), reviewed_by: ctx.get('user')?.id || null })
+    .eq('id', id).select('id')
+  if (error) throw error
+  if (!data || data.length === 0) return ctx.json({ success: false, message: 'Report not found.' }, 404)
+  await logAdminAction(ctx, supabase, 'verification.report_reviewed', 'verification_report', id, { status: parsed.data.status })
+  return ctx.json({ success: true, data: { id, status: parsed.data.status } })
+}
+
+module.exports = {
+  adminElevate,
+  adminListVerificationReports, adminReviewVerificationReport,
+  adminBackfillPdfHashes,
+  adminRequeueFix,
+  adminDashboardStats,
+  adminListUsers, adminGetUserDetail, adminUpdateUser,
+  adminListScans, adminSetVerification, adminListPayments,
+  adminListEmailLogs, adminListAlerts, adminListAuditLog, adminClaudeUsage,
+  adminHealth, adminCheckEmailSuppression, adminLiftEmailSuppression
+}

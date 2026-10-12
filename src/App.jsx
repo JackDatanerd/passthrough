@@ -1,0 +1,197 @@
+import { Suspense, useState } from 'react'
+import { createBrowserRouter, RouterProvider, Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { AuthProvider } from './context/AuthContext'
+import { useAuth } from './hooks/useAuth'
+import { getToken } from './lib/storage'
+import { ToastProvider } from './components/ui/Toast'
+import Spinner from './components/ui/Spinner'
+import ErrorBoundary from './components/ErrorBoundary'
+import lazyWithRetry from './lib/lazyWithRetry'
+import useScrollToHash from './hooks/useScrollToHash'
+import usePageTitle from './hooks/usePageTitle'
+import { useReferralCapture } from './hooks/useReferralCapture'
+import TermsUpdateBanner from './components/layout/TermsUpdateBanner'
+
+// Landing + auth pages stay in the main bundle (first paint / most common entry
+// points). Everything else is split into its own chunk — the homepage used to
+// download the admin console, partner pages and the Paystack integration too.
+import Home           from './pages/Home'
+import Login          from './pages/Login'
+import Register       from './pages/Register'
+import NotFound       from './pages/NotFound'
+
+const ForgotPassword = lazyWithRetry(() => import('./pages/ForgotPassword'))
+const ResetPassword  = lazyWithRetry(() => import('./pages/ResetPassword'))
+const VerifyEmail    = lazyWithRetry(() => import('./pages/VerifyEmail'))
+const ConfirmEmailChange = lazyWithRetry(() => import('./pages/ConfirmEmailChange'))
+const EmployerLeadAction = lazyWithRetry(() => import('./pages/EmployerLeadAction'))
+const EmployerLeadRejoin = lazyWithRetry(() => import('./pages/EmployerLeadRejoin'))
+const EmployerLeadPreferences = lazyWithRetry(() => import('./pages/EmployerLeadPreferences'))
+const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
+const Verify         = lazyWithRetry(() => import('./pages/Verify'))
+const VerifyLookup   = lazyWithRetry(() => import('./pages/VerifyLookup'))
+const Pricing        = lazyWithRetry(() => import('./pages/Pricing'))
+const Terms          = lazyWithRetry(() => import('./pages/Terms'))
+const Privacy        = lazyWithRetry(() => import('./pages/Privacy'))
+const PaymentSuccess = lazyWithRetry(() => import('./pages/PaymentSuccess'))
+const DashboardIndex = lazyWithRetry(() => import('./pages/dashboard/Index'))
+const Settings       = lazyWithRetry(() => import('./pages/dashboard/Settings'))
+// FEATURE GAP CLOSED (Payments & Pricing re-audit): see PaymentHistory.jsx's
+// header comment — GET /api/payments/history had no frontend consumer at all.
+const PaymentHistory  = lazyWithRetry(() => import('./pages/dashboard/PaymentHistory'))
+const PartnerPayoutDetails = lazyWithRetry(() => import('./pages/PartnerPayoutDetails'))
+const PartnerDashboard     = lazyWithRetry(() => import('./pages/PartnerDashboard'))
+const PartnerApply         = lazyWithRetry(() => import('./pages/PartnerApply'))
+const PartnerRecover       = lazyWithRetry(() => import('./pages/PartnerRecover'))
+const PartnerTerms         = lazyWithRetry(() => import('./pages/PartnerTerms'))
+// Admin console (upstream Admin-panel work) — lazy like everything else non-landing.
+const AdminLayout        = lazyWithRetry(() => import('./pages/admin/AdminLayout'))
+const AdminDashboard     = lazyWithRetry(() => import('./pages/admin/AdminDashboard'))
+const AdminPartners      = lazyWithRetry(() => import('./pages/admin/AdminPartners'))
+const PartnerDetail      = lazyWithRetry(() => import('./pages/admin/PartnerDetail'))
+const AdminUsers         = lazyWithRetry(() => import('./pages/admin/AdminUsers'))
+const AdminScans         = lazyWithRetry(() => import('./pages/admin/AdminScans'))
+const AdminPayments      = lazyWithRetry(() => import('./pages/admin/AdminPayments'))
+const AdminWebhooks      = lazyWithRetry(() => import('./pages/admin/AdminWebhooks'))
+const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'))
+const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
+const AdminAuditLog      = lazyWithRetry(() => import('./pages/admin/AdminAuditLog'))
+const AdminClaudeUsage   = lazyWithRetry(() => import('./pages/admin/AdminClaudeUsage'))
+const AdminStories       = lazyWithRetry(() => import('./pages/admin/AdminStories'))
+
+// Sends a signed-out visitor to /login, remembering where they were headed so
+// login can return them there (Login validates ?next= via safeNext).
+function loginRedirect(location) {
+  const next = encodeURIComponent(location.pathname + location.search)
+  return <Navigate to={`/login?next=${next}`} replace />
+}
+
+// ProtectedRoute — redirects to /login if no token
+// Reads localStorage directly — no hook needed, avoids dead import (Patch 3)
+function ProtectedRoute({ children }) {
+  const token = getToken()
+  const location = useLocation()
+  if (!token) return loginRedirect(location)
+  return children
+}
+
+// AdminRoute — needs the actual user object (for role), not just a token,
+// so this one does use useAuth/AuthContext rather than a raw localStorage
+// check. AuthProvider already refreshes `user` from /auth/me on load (see
+// AuthContext.jsx), so `role` here reflects the server, not a stale cache.
+function AdminRoute({ children }) {
+  const token = getToken()
+  const { user, authLoading } = useAuth()
+  const location = useLocation()
+  if (!token) return loginRedirect(location)
+  // Don't render admin chrome before the role is actually confirmed (upstream
+  // fix: a null/not-yet-loaded `user` used to render the admin shell briefly).
+  if (authLoading) return null
+  if (!user || user.role !== 'ADMIN') return <Navigate to="/dashboard" replace />
+  return children
+}
+
+// Needs to render inside the Router (useLocation requires Router
+// context) — that's the only reason this isn't just called from App().
+// Referral capture lives here too, for the same reason: it also needs
+// useLocation to see the current ?ref= query string on every navigation.
+function RouteEffects() {
+  useScrollToHash()
+  usePageTitle()
+  useReferralCapture()
+  return null
+}
+
+// Inside the Router so it can reset itself when the route changes — one page
+// crashing must not leave the whole app stuck on the error screen.
+function RoutedApp() {
+  const { pathname } = useLocation()
+  return (
+    <ErrorBoundary resetKey={pathname}>
+      <Suspense fallback={
+        <div className="min-h-screen flex items-center justify-center bg-gray-50">
+          <Spinner size="lg" />
+        </div>
+      }>
+        <Routes>
+          {/* Public routes */}
+          <Route path="/"                element={<Home />} />
+          <Route path="/scan/:id"        element={<ScanResult />} />
+          <Route path="/v/:code"         element={<Verify />} />
+          <Route path="/check"           element={<VerifyLookup />} />
+          <Route path="/login"           element={<Login />} />
+          <Route path="/register"        element={<Register />} />
+          <Route path="/forgot-password" element={<ForgotPassword />} />
+          <Route path="/reset-password"  element={<ResetPassword />} />
+          <Route path="/verify-email"    element={<VerifyEmail />} />
+          <Route path="/confirm-email-change" element={<ConfirmEmailChange />} />
+          <Route path="/employer/confirm"  element={<EmployerLeadAction mode="confirm" />} />
+          <Route path="/employer/remove"   element={<EmployerLeadAction mode="remove" />} />
+          <Route path="/employer/rejoin"   element={<EmployerLeadRejoin />} />
+          <Route path="/employer/preferences" element={<EmployerLeadPreferences />} />
+          <Route path="/pricing"         element={<Pricing />} />
+          <Route path="/terms"           element={<Terms />} />
+          <Route path="/privacy"         element={<Privacy />} />
+          <Route path="/payment/success" element={<PaymentSuccess />} />
+          <Route path="/partner/payout-details" element={<PartnerPayoutDetails />} />
+          <Route path="/partner/dashboard"      element={<PartnerDashboard />} />
+          <Route path="/partner/apply"          element={<PartnerApply />} />
+          <Route path="/partner/recover"        element={<PartnerRecover />} />
+          <Route path="/partner/terms"          element={<PartnerTerms />} />
+
+          {/* Protected routes — redirect to /login if no token */}
+          <Route path="/dashboard"
+            element={<ProtectedRoute><DashboardIndex /></ProtectedRoute>} />
+          <Route path="/dashboard/settings"
+            element={<ProtectedRoute><Settings /></ProtectedRoute>} />
+          <Route path="/dashboard/payments"
+            element={<ProtectedRoute><PaymentHistory /></ProtectedRoute>} />
+          <Route path="/admin" element={<AdminRoute><AdminLayout /></AdminRoute>}>
+            <Route index element={<Navigate to="dashboard" replace />} />
+            <Route path="dashboard"    element={<AdminDashboard />} />
+            <Route path="partners"     element={<AdminPartners />} />
+            <Route path="partners/:id" element={<PartnerDetail />} />
+            <Route path="users"        element={<AdminUsers />} />
+            <Route path="scans"        element={<AdminScans />} />
+            <Route path="payments"     element={<AdminPayments />} />
+            <Route path="webhooks"     element={<AdminWebhooks />} />
+            <Route path="leads"        element={<AdminLeads />} />
+            <Route path="health"       element={<AdminSystemHealth />} />
+            <Route path="stories"      element={<AdminStories />} />
+            <Route path="audit-log"    element={<AdminAuditLog />} />
+            <Route path="claude-usage" element={<AdminClaudeUsage />} />
+          </Route>
+
+          {/* Catch-all: a real 404 page instead of a silent redirect home */}
+          <Route path="*" element={<NotFound />} />
+        </Routes>
+      </Suspense>
+    </ErrorBoundary>
+  )
+}
+
+// Everything the old <BrowserRouter> wrapped, as one splat route: the <Routes> tree in RoutedApp
+// keeps working unchanged underneath it. A DATA router (instead of <BrowserRouter>) is what makes
+// useBlocker available, so editors can stop an in-app navigation or Back press from silently
+// discarding unsaved work (hooks/useUnsavedChangesWarning.js).
+function AppShell() {
+  return (
+    <>
+      <RouteEffects />
+      <RoutedApp />
+      <TermsUpdateBanner />
+    </>
+  )
+}
+
+export default function App() {
+  // Created on first render (not at import) so importing this module never touches `window`.
+  const [router] = useState(() => createBrowserRouter([{ path: '*', element: <AppShell /> }]))
+  return (
+    <AuthProvider>
+      <ToastProvider>
+        <RouterProvider router={router} />
+      </ToastProvider>
+    </AuthProvider>
+  )
+}
