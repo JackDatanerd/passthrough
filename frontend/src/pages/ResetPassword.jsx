@@ -97,7 +97,12 @@ export default function ResetPassword() {
       // Best-effort — refreshUser never throws.
       if (getToken()) refreshUser()
       redirectTimer.current = setTimeout(() => navigate('/login'), 2000)
-    } catch (_) { /* error already captured by useApi */ }
+    } catch (err) {
+      // The link died after the page loaded (expired meanwhile, or used in another tab): the form can never succeed,
+      // so show the same "request a new one" screen as a link that was dead on arrival (Auth round 9, B3).
+      if (err?.response?.data?.code === 'RESET_LINK_INVALID') setTokenStatus('invalid')
+      /* otherwise the error is already captured by useApi */
+    }
   }
 
   return (

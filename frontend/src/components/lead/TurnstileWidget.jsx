@@ -4,8 +4,10 @@ import { useEffect, useRef, useState } from 'react'
 //
 // Opt-in by configuration: with no VITE_TURNSTILE_SITE_KEY this renders nothing and the
 // forms behave exactly as they did before. A deployment turns the challenge on by setting
-// that key here AND TURNSTILE_SECRET_KEY on the API (the API only demands a token when its
-// own secret is set, so enabling one side without the other is safe, just inert).
+// that key here AND TURNSTILE_SECRET_KEY on the API. Enabling only the SITE key is inert (the API
+// ignores the token). Enabling only the API SECRET is NOT inert: the API then demands a token this build
+// never sends, so every sign-up and password-reset request is refused (it answers CHALLENGE_REQUIRED and
+// logs the mismatch). Always set both.
 //
 // `resetSignal` is a counter the parent bumps after a failed submission: a Turnstile token
 // is single-use, so the next attempt needs a fresh one.

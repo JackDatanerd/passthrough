@@ -66,6 +66,19 @@ function tokenLifetimeSeconds(env, session) {
 }
 
 /**
+ * ISO timestamp before which a session's last activity means its token has already expired.
+ * AUDIT FIX (Auth round 9, B2): a token lives JWT_EXPIRES_IN_SECONDS and is only ever re-issued by a request, which
+ * also refreshes last_seen_at (at most SESSION_TOUCH_INTERVAL_MINUTES stale). So a session idle for longer than the
+ * token lifetime plus that interval can never sign in again — yet its row stays un-revoked until its 30-day absolute
+ * expiry, and the "signed-in devices" list showed it as signed in. The list hides such rows.
+ */
+function idleCutoffIso(env, nowMs = Date.now()) {
+  const base = parseInt(env && env.JWT_EXPIRES_IN_SECONDS, 10) || 604800
+  const slackMs = constants.SESSION_TOUCH_INTERVAL_MINUTES * 60 * 1000
+  return new Date(nowMs - base * 1000 - slackMs).toISOString()
+}
+
+/**
  * loadSession(supabase, sid) -> { data, error }. An id that isn't a UUID can't
  * exist, so it short-circuits to "no row" instead of a Postgres cast error.
  */
@@ -101,4 +114,4 @@ function touchSession(c, supabase, row) {
   try { c.executionCtx.waitUntil(work) } catch { /* no ExecutionContext (tests, local): the promise still runs */ }
 }
 
-module.exports = { SESSION_COLUMNS, isSessionId, createSession, tokenLifetimeSeconds, loadSession, sessionProblem, touchSession }
+module.exports = { SESSION_COLUMNS, isSessionId, createSession, tokenLifetimeSeconds, idleCutoffIso, loadSession, sessionProblem, touchSession }

@@ -236,6 +236,15 @@ function lockedResponse(c, lockout) {
 // Returns a ready 400 response when the challenge fails, else null.
 async function challengeFailure(c, token) {
   if (await verifyTurnstile(c.env, token, clientIp(c))) return null
+  // AUDIT FIX (Auth round 9, B1): the Worker demands a token whenever TURNSTILE_SECRET_KEY is set, but the SPA only renders
+  // the widget (and so only sends one) when its build has VITE_TURNSTILE_SITE_KEY. Secret set + no site key = every
+  // register / forgot-password request arrives tokenless and was answered "complete the security check" with nothing on
+  // screen to complete. A tokenless request is logged for the operator and answered honestly as unavailable.
+  if (!token && c.env && c.env.TURNSTILE_SECRET_KEY) {
+    console.error('Turnstile: TURNSTILE_SECRET_KEY is set but the request carried no token — is VITE_TURNSTILE_SITE_KEY set in the frontend build?')
+    return c.json({ success: false, code: 'CHALLENGE_REQUIRED',
+      message: 'The security check is unavailable right now. Please try again later.' }, 400)
+  }
   return c.json({ success: false, code: 'CHALLENGE_FAILED',
     message: 'Please complete the security check and try again.' }, 400)
 }
@@ -751,7 +760,8 @@ async function resetPassword(c) {
   if (error) throw error
   const user = userRowToCamel(row)
 
-  if (!user) return c.json({ success: false, message: 'Reset link invalid or expired.' }, 400)
+  // code: lets the reset page swap its form for "request a new link" (Auth round 9, B3).
+  if (!user) return c.json({ success: false, code: 'RESET_LINK_INVALID', message: 'Reset link invalid or expired.' }, 400)
 
   const emailProblem = passwordEmailProblem(newPassword, user.email)
   if (emailProblem) return c.json({ success: false, message: emailProblem }, 400)
@@ -792,7 +802,7 @@ async function resetPassword(c) {
     pending_email: null, pending_email_token: null, pending_email_expiry: null
   }).eq('id', user.id).eq('reset_token', stored).eq('token_version', user.tokenVersion).select('id').maybeSingle()
   if (swapErr) throw swapErr
-  if (!swapped) return c.json({ success: false, message: 'Reset link invalid or expired.' }, 400)
+  if (!swapped) return c.json({ success: false, code: 'RESET_LINK_INVALID', message: 'Reset link invalid or expired.' }, 400)
   await revokeAllSessions(supabase, user.id)
 
   // BUG FIX (account lockout, section audit round 2): proving control of the
@@ -1130,6 +1140,8 @@ async function listSessions(c) {
     .select(sessionsLib.SESSION_COLUMNS)
     .eq('user_id', user.id).is('revoked_at', null)
     .gt('absolute_expires_at', new Date().toISOString())
+    // AUDIT FIX (Auth round 9, B2): not sessions whose token has already expired from disuse — see idleCutoffIso.
+    .gt('last_seen_at', sessionsLib.idleCutoffIso(c.env))
     .order('last_seen_at', { ascending: false })
     .limit(constants.SESSION_MAX_ACTIVE)
   if (error) throw error

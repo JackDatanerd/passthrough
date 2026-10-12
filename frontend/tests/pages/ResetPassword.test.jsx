@@ -53,3 +53,24 @@ describe('ResetPassword — a session this browser still holds', () => {
     expect(refreshUser).not.toHaveBeenCalled()
   })
 })
+
+describe('ResetPassword — a link that dies after the page loaded (Auth round 9, B3)', () => {
+  it('swaps the form for "request a new one" when the server says the link is dead', async () => {
+    api.post.mockImplementation(async url => {
+      if (url === '/auth/reset-password/validate') return { data: { data: { valid: true } } }
+      throw Object.assign(new Error('x'), { response: { status: 400, data: { code: 'RESET_LINK_INVALID', message: 'Reset link invalid or expired.' } } })
+    })
+    renderPage(); await submit()
+    expect(await screen.findByText(/invalid, has already been used, or has expired/i)).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: /request a new one/i })).toBeInTheDocument()
+  })
+  it('keeps the form for any other 400 (a rejected password, say)', async () => {
+    api.post.mockImplementation(async url => {
+      if (url === '/auth/reset-password/validate') return { data: { data: { valid: true } } }
+      throw Object.assign(new Error('x'), { response: { status: 400, data: { message: 'That password is too common.' } } })
+    })
+    renderPage(); await submit()
+    expect(await screen.findByText('That password is too common.')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: /request a new one/i })).toBeNull()
+  })
+})

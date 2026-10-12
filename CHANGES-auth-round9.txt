@@ -1,0 +1,7 @@
+Auth round 9
+B1 Turnstile secret set without a frontend site key no longer looks like a user error: a tokenless request is logged and answered 400 CHALLENGE_REQUIRED ("security check unavailable"); the widget comment and DEPLOYMENT.md no longer claim secret-only is harmless.
+B2 "Signed-in devices" hides sessions idle longer than the token lifetime + touch interval (their token has expired; lib/sessions.js idleCutoffIso).
+B3 resetPassword's two dead-link 400s carry code RESET_LINK_INVALID; ResetPassword.jsx then swaps the form for the "request a new one" screen.
+B4 VerifyEmail (signed out, dead link) says the address may already be verified (an older link stops working once a newer one is used).
+B5 `general` limiter key is per account AND network (u:<id>@<ip bucket>) so a revoked/old token of someone else can only empty the bucket it is used from.
+Tests: auth.controller (round 9 suites), auth.round9, frontend ResetPassword / VerifyEmail.

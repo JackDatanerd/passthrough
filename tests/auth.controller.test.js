@@ -2315,3 +2315,57 @@ describe('Auth round 8 — reserved placeholder addresses cannot be taken (B5)',
     expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'deleted-ada@passthrough.dev', password: 'longenough', acceptTerms: true } }))).status).toBe(201)
   })
 })
+
+describe('Auth round 9 — Turnstile secret without a site key (B1)', () => {
+  const reg = (over = {}) => ({ name: 'Ada', email: 'a@b.com', password: 'longenough', acceptTerms: true, ...over })
+  it('register: secret set + no token is CHALLENGE_REQUIRED (unavailable), not "complete the check"', async () => {
+    t = await setup({ challengePasses: false })
+    t.c().env.TURNSTILE_SECRET_KEY = 'secret'
+    const res = await t.mod.register(t.c({ body: reg() }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('CHALLENGE_REQUIRED')
+    expect(res.body.message).not.toMatch(/complete the security check/i)
+    expect(t.db.calls).toHaveLength(0)
+  })
+  it('forgotPassword: same answer, nothing looked up or sent', async () => {
+    t = await setup({ challengePasses: false })
+    t.c().env.TURNSTILE_SECRET_KEY = 'secret'
+    const res = await t.mod.forgotPassword(t.c({ body: { email: 'user@example.com' } }))
+    expect(res.body.code).toBe('CHALLENGE_REQUIRED')
+    expect(t.state.emails).toHaveLength(0)
+  })
+  it('a token the verifier rejects is still CHALLENGE_FAILED', async () => {
+    t = await setup({ challengePasses: false })
+    t.c().env.TURNSTILE_SECRET_KEY = 'secret'
+    const res = await t.mod.register(t.c({ body: reg({ turnstileToken: 'bad' }) }))
+    expect(res.body.code).toBe('CHALLENGE_FAILED')
+  })
+})
+
+describe('Auth round 9 — signed-in devices hides sessions idle past the token lifetime (B2)', () => {
+  it('listSessions filters on last_seen_at newer than lifetime + touch interval', async () => {
+    t = await setup({ sessionId: SID, sessionRows: [] })
+    await t.mod.listSessions(t.c())
+    const q = t.state.sessionQueries[0]
+    const f = q.filters.find(x => x[0] === 'gt' && x[1] === 'last_seen_at')
+    expect(f).toBeTruthy()
+    const ageMs = Date.now() - Date.parse(f[2])
+    const expected = (604800 + 10 * 60) * 1000
+    expect(Math.abs(ageMs - expected)).toBeLessThan(5000)
+  })
+})
+
+describe('Auth round 9 — a dead reset link is flagged for the page (B3)', () => {
+  it('unknown/expired token answers 400 with code RESET_LINK_INVALID', async () => {
+    t = await setup({ userRow: null })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'bad', newPassword: 'longenough' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('RESET_LINK_INVALID')
+  })
+  it('losing the compare-and-swap race answers the same', async () => {
+    t = await setup({ casLost: true })
+    const res = await t.mod.resetPassword(t.c({ body: { token: 'raw-token', newPassword: 'longenough' } }))
+    expect(res.status).toBe(400)
+    expect(res.body.code).toBe('RESET_LINK_INVALID')
+  })
+})

@@ -310,7 +310,13 @@ async function bySignedToken(c) {
     const decoded = await jwtLib.verify(header.slice(7), c.env.JWT_SECRET)
     const id = decoded && typeof decoded.userId === 'string' ? decoded.userId : null
     if (!id || id.length > 64) return null
-    const key = `u:${id}`
+    // AUDIT FIX (Auth round 9, B5): the budget is per account AND per network. This check only proves the token was
+    // signed by us and has not expired — a token revoked by sign-out or a password change still passes it — so a
+    // per-account-only key let anyone holding an old token of someone else spend that person's whole budget from
+    // anywhere, answering the owner 429 on every device. With the network in the key, a stolen token can only empty
+    // the bucket it is itself used from. (Shared-NAT users still each have their own budget; a person on a new
+    // network simply starts a fresh one.)
+    const key = `u:${id}@${rateKeyIp(clientIp(c))}`
     if (c.set) c.set('rlSignedUserId', key)
     return key
   } catch { return null }

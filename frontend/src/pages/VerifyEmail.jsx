@@ -131,7 +131,7 @@ export default function VerifyEmail() {
               <p className="text-sm text-gray-500 mb-6">
                 {user
                   ? 'The link is invalid or has expired. We can send you a new one.'
-                  : 'The link is invalid or has expired. Sign in and request a new one from your dashboard.'}
+                  : 'The link is invalid or has expired — or your email may already be verified (an older link stops working once a newer one is used). Sign in to check, and request a new one from your dashboard if you need it.'}
               </p>
               {user ? (
                 <>

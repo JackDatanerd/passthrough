@@ -44,6 +44,12 @@ describe('VerifyEmail', () => {
     expect(screen.getAllByRole('link', { name: /sign in/i }).some(a => a.getAttribute('href') === '/login?next=%2Fdashboard')).toBe(true)
     expect(screen.queryByRole('button', { name: /new link/i })).toBeNull()
   })
+  it('signed out, a dead link also says the address may already be verified (an older link after a newer one)', async () => {
+    verifyApi.mockRejectedValue(httpErr(400, 'Verification link invalid or expired.'))
+    renderPage(null)
+    await screen.findByText('Verification failed')
+    expect(screen.getByText(/may already be verified/i)).toBeInTheDocument()
+  })
   it('a signed-in person can ask for a new link right there', async () => {
     verifyApi.mockRejectedValue(httpErr(400, 'x'))
     resendApi.mockResolvedValue({ data: { success: true } })
