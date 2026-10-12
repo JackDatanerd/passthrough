@@ -167,23 +167,45 @@ function sameEntry(a, b, keyOf) {
   if (ba.length) { const bb = new Set(bulletsOf(b)); if (ba.some(x => bb.has(x))) return true }
   return false
 }
+// How strongly two entries look like the SAME entry, used only to choose between candidates that already share a
+// name. A person who was promoted lists "Acme / Dev" and "Acme / Lead" as two entries (two degrees at one school
+// work the same way): pairing them by name alone, first come first served, matched Dev to whichever Acme the
+// rewrite listed first, so a reordered or dropped role showed a Dev -> Lead title "change" with every bullet
+// removed and re-added, and the role that was kept untouched as "removed entry".
+function affinity(a, b) {
+  let s = 0
+  const da = str(a?.dates).trim().toLowerCase(), db = str(b?.dates).trim().toLowerCase()
+  if (da && da === db) s += 4
+  const ta = str(a?.title ?? a?.degree).trim().toLowerCase(), tb = str(b?.title ?? b?.degree).trim().toLowerCase()
+  if (ta && ta === tb) s += 3
+  const desc = x => str(x?.description).trim().toLowerCase()
+  if (desc(a) && desc(a) === desc(b)) s += 2
+  const bb = new Set(bulletsOf(b))
+  s += Math.min(3, bulletsOf(a).filter(x => bb.has(x)).length)
+  return s
+}
 function pairEntries(originalList, rewrittenList, keyOf) {
   const matched = []
   const used = new Set()
-  // Pass 1: exact (normalised) name; pass 2: anything that is plainly the same entry, edited.
-  const pairOriginal = (item, test) => {
-    const idx = rewrittenList.findIndex((r, i) => !used.has(i) && test(r))
-    if (idx === -1) return false
-    used.add(idx); matched.push({ original: item, rewritten: rewrittenList[idx], idx }); return true
-  }
   const paired = new Array(originalList.length).fill(false)
-  originalList.forEach((item, n) => {
-    const k = normCompany(keyOf(item))
-    if (k) paired[n] = pairOriginal(item, r => normCompany(keyOf(r)) === k)
-  })
-  originalList.forEach((item, n) => {
-    if (!paired[n]) paired[n] = pairOriginal(item, r => sameEntry(item, r, keyOf))
-  })
+  // Each pass gathers every (original, rewritten) candidate, then assigns the strongest pairs first
+  // (ties keep list order), so one original cannot take a rewritten entry that fits another one better.
+  const pass = test => {
+    const cands = []
+    originalList.forEach((item, n) => {
+      if (paired[n]) return
+      rewrittenList.forEach((r, i) => { if (!used.has(i) && test(item, r)) cands.push({ n, i, s: affinity(item, r) }) })
+    })
+    cands.sort((x, y) => (y.s - x.s) || (x.n - y.n) || (x.i - y.i))
+    for (const { n, i } of cands) {
+      if (paired[n] || used.has(i)) continue
+      paired[n] = true; used.add(i)
+      matched.push({ original: originalList[n], rewritten: rewrittenList[i], idx: i })
+    }
+  }
+  // Pass 1: exact (normalised) name; pass 2: anything that is plainly the same entry, edited.
+  pass((item, r) => { const k = normCompany(keyOf(item)); return !!k && normCompany(keyOf(r)) === k })
+  pass((item, r) => sameEntry(item, r, keyOf))
   originalList.forEach((item, n) => { if (!paired[n]) matched.push({ original: item, rewritten: null, idx: -1 }) })
   rewrittenList.forEach((r, i) => { if (!used.has(i)) matched.push({ original: null, rewritten: r, idx: -1 }) })
   // Keep the original's order for everything that existed, then the additions.

@@ -915,13 +915,16 @@ function unsupportedSkills(orig, rewritten) {
 // prose ("one-on-one", "one of the", "no one"), and treating it as a figure made a faithful
 // rewrite look like it had invented a metric.
 const NUMBER_WORDS = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, hundred: 100, dozen: 12 }
-const MULT = { k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 }
+// `x` is a multiplier claim ("3x faster", "10x"), counted as its number: it used to be read as a digit glued to a
+// letter, so an invented "10x" was invisible to the guard on both sides. Ordinals (1st, 3rd) are deliberately NOT
+// counted: "3rd-party" / "third-party" would flag an honest rewrite.
+const MULT = { x: 1, k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 }
 // Numeric VALUES in a text: "2M", "2,000,000" and "2 million" are all 2000000. A
 // digit glued to a letter (S3, EC2, B2B, Web3) is a name, not a figure.
 function numbersIn(text) {
   const out = new Set()
   const t = String(text || '')
-  for (const m of t.matchAll(/(?<![\p{L}\p{N}.])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|bn|mm|k|m|b)?(?![\p{L}\p{N}])/giu)) {
+  for (const m of t.matchAll(/(?<![\p{L}\p{N}.])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|bn|mm|k|m|b|x)?(?![\p{L}\p{N}])/giu)) {
     const base = parseFloat(m[1].replace(/,/g, ''))
     if (!Number.isFinite(base)) continue
     // "2M" is the VALUE 2,000,000 — the bare 2 is not a separate figure.

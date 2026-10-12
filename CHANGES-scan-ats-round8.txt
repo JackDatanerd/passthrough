@@ -1,0 +1,24 @@
+Scan / ATS core - round 8 (repo at 843b878)
+
+BUGS FIXED
+B1  frontend/src/lib/resumeDiff.js  pairEntries: two entries at one employer/school (promotion, BSc+MSc) were paired by
+    name, first come first served. A dropped or reordered role showed a bogus title change with every bullet removed and
+    re-added, and the untouched role as "removed entry". Candidates are now ranked by affinity (dates, title/degree,
+    description, shared bullets) and the strongest pairs assigned first. Tests: frontend/tests/resumeDiff.sameCompany.test.js
+B2  package-lock.json  out of sync with package.json (nested esbuild 0.28 for vite missing): `npm ci` failed, so all three CI
+    jobs and any clean install failed. Regenerated; purely additive (440 lines added, none removed).
+B3  src/services/claude.service.js  numbersIn: "3x"/"10x" was read as a digit glued to a letter, so an invented multiplier
+    was invisible to the fabrication guard. Now counted (ordinals deliberately not). Tests: tests/scan.ats.round8.test.js
+
+CROSS-SECTION REGRESSIONS (commit 4746ba4, Profile & Dashboard round 11, overwrote shared files with stale copies)
+R1  src/config/constants.js  lost the per-currency price table from Payments round 12 (isSupportedCurrency, priceTable,
+    activeCurrency, PRICES_BY_CURRENCY). payments.controller, admin.controller and lib/env.js call it: checkout 500'd and
+    156 backend tests failed. Restored to the pre-4746ba4 file (which already carries EXPECTED_SCHEMA_VERSION 76).
+R2  src/middleware/rateLimiter.js  lost forgetTrustedDevices (Auth round 8); auth.controller calls it on password reset/change,
+    sign-out-everywhere, email change and account delete. Restored; profilePdf/profileDocx limiters kept.
+R3  frontend/src/App.jsx  lost the lazy import and the /employer/preferences route (Employer leads round 12). Restored; the
+    new data-router shell kept.
+    tests/regression.clobber.round8.test.js pins all three.
+
+VERIFIED
+backend 3625/3625, frontend 1347/1347, lint clean, wrangler bundle dry-run ok, frontend production build ok.

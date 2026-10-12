@@ -26,6 +26,7 @@ const VerifyEmail    = lazyWithRetry(() => import('./pages/VerifyEmail'))
 const ConfirmEmailChange = lazyWithRetry(() => import('./pages/ConfirmEmailChange'))
 const EmployerLeadAction = lazyWithRetry(() => import('./pages/EmployerLeadAction'))
 const EmployerLeadRejoin = lazyWithRetry(() => import('./pages/EmployerLeadRejoin'))
+const EmployerLeadPreferences = lazyWithRetry(() => import('./pages/EmployerLeadPreferences'))
 const ScanResult     = lazyWithRetry(() => import('./pages/ScanResult'))
 const Verify         = lazyWithRetry(() => import('./pages/Verify'))
 const VerifyLookup   = lazyWithRetry(() => import('./pages/VerifyLookup'))
@@ -126,6 +127,7 @@ function RoutedApp() {
           <Route path="/employer/confirm"  element={<EmployerLeadAction mode="confirm" />} />
           <Route path="/employer/remove"   element={<EmployerLeadAction mode="remove" />} />
           <Route path="/employer/rejoin"   element={<EmployerLeadRejoin />} />
+          <Route path="/employer/preferences" element={<EmployerLeadPreferences />} />
           <Route path="/pricing"         element={<Pricing />} />
           <Route path="/terms"           element={<Terms />} />
           <Route path="/privacy"         element={<Privacy />} />

@@ -1043,10 +1043,19 @@ async function recordVerifyMiss(env, ip, now = Date.now(), scope = 'page') {
   }
 }
 
+// AUDIT FIX (Auth round 8, B2): called after a password reset/change, sign-out-everywhere, an email change and an
+// account deletion. `keepFor` (a request context) spares the browser making the change, which stays signed in.
+async function forgetTrustedDevices(env, email, keepFor = null) {
+  try {
+    const keep = keepFor ? await deviceHash(keepFor) : null
+    await runOp(env, 'trustClear', { key: trustKey(email), keep })
+  } catch (err) { console.error('trusted device clear backend error (ignored):', err.message) }
+}
+
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, verifyRead, verifyReport, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, LOCKOUT_MINUTES,
+  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
 }
