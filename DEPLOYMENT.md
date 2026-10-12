@@ -251,6 +251,27 @@ wrangler secret put PAYSTACK_SECRET_KEY_PREVIOUS
 #   node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"
 wrangler secret put VERIFY_PREVIEW_KEY
 
+# DATABASE LAYER AUDIT (migration 0077 — apply it BEFORE deploying this Worker; /api/admin/health reports
+# a schema mismatch until you do). What it changes:
+#   * Verification tombstones are now written INSIDE the database: a BEFORE DELETE trigger on scans and the
+#     account scrub both record them in the same transaction as the delete, so a crash can no longer leave a
+#     deleted verified scan without its tombstone (the JS recordTombstones call stays as an idempotent extra).
+#   * user_sessions (sign-in IP + user-agent) rows dead for 14 days and claude_usage rows older than 400 days
+#     are purged hourly by the retention sweep, in bounded batches.
+#   * New admin page "Claude usage" (GET /api/admin/claude-usage) reads the Claude cost ledger. It shows tokens
+#     only, unless you set both rates (USD per million tokens, from your Anthropic price sheet):
+#       CLAUDE_USD_PER_MTOK_INPUT=3      CLAUDE_USD_PER_MTOK_OUTPUT=15      (examples — use your model's real rates)
+#     as plain [vars] entries in wrangler.toml. The result is an estimate for trend-spotting, not an invoice.
+#   * Dropped never-read columns: users.paystack_customer_code, users.paystack_auth_code,
+#     payments.paystack_auth_code, scans.integrity_score. Three helper functions that were still executable by
+#     anon are now locked to service_role, and new functions are no longer executable by PUBLIC by default.
+#   * system_state key `public_stats_adjust` is read by public_home_stats() and written by nothing in the app on
+#     purpose: it is the owner's manual offset added to the homepage "scans completed" counter, for scans that were
+#     already purged before the counter existed. To use it, in the SQL editor:
+#       insert into system_state (key, value) values ('public_stats_adjust', '{"offset": 1200}')
+#       on conflict (key) do update set value = excluded.value;
+#     Leave it unset otherwise.
+
 # Minimum partner payout, in cents (e.g. 2000 = $20.00). Unset or 0 = no minimum.
 # Below it, a partner's payable commission is shown as "carried forward" instead of
 # "ready to pay", and a cycle-scoped payout is refused (an ad hoc payout is the

@@ -111,13 +111,13 @@ describe('userRowToCamel / scanRowToCamel / paymentRowToCamel / leadRowToCamel',
     const mapped = userRowToCamel({
       id: 'u1', email: 'a@b.com', password_hash: 'h', role: 'USER', status: 'ACTIVE',
       email_verified: true, scans_today: 2, free_fix_credits: 1,
-      paystack_customer_code: 'CUS_1', saved_profile: { name: 'A' },
+      saved_profile: { name: 'A' },
       created_at: 't1', updated_at: 't2',
     })
     expect(mapped).toMatchObject({
       id: 'u1', email: 'a@b.com', passwordHash: 'h', role: 'USER', status: 'ACTIVE',
       emailVerified: true, scansToday: 2, freeFixCredits: 1,
-      paystackCustomerCode: 'CUS_1', savedProfile: { name: 'A' },
+      savedProfile: { name: 'A' },
     })
   })
 

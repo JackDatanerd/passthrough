@@ -10,6 +10,8 @@
 //                           admin, kept until someone remembered to delete it
 //   * never-confirmed employer leads — an address a stranger typed that nobody has ever
 //                           confirmed or touched, kept forever (fresh audit pass 2, Section 5)
+//   * user_sessions     — sign-in IP + user-agent of sessions that are long dead (Database audit, 0077)
+//   * claude_usage      — the Claude cost ledger; bounded so it cannot grow forever (0077)
 //
 // Each step is independent and never throws (one failing purge must not stop
 // the others, or the rest of the cron). All return counts for the cron's log.
@@ -37,6 +39,14 @@ const UNCONFIRMED_LEAD_RETENTION_DAYS = 90
 // A rejected partner application keeps the applicant's name, email, audience and message. They were emailed the
 // decision, and the re-apply cooldown is 30 days, so the row has done its job well before this (Section 4 round 7).
 const REJECTED_APPLICATION_RETENTION_DAYS = 90
+
+// A session revoked or past its absolute expiry this long ago is dead for good: longer than any token's lifetime,
+// so no live JWT can still point at the row (the same 7 days create_user_session already used, doubled for margin).
+const DEAD_SESSION_RETENTION_DAYS = 14
+// The Claude cost ledger holds no personal data (a scan id and token counts); 400 days keeps a full year-on-year view.
+const CLAUDE_USAGE_RETENTION_DAYS = 400
+const PURGE_RPC_BATCH = 5000
+const PURGE_RPC_MAX_ROUNDS = 5
 
 const DAY = 24 * 60 * 60 * 1000
 
@@ -193,8 +203,32 @@ async function purgeOldVerifyReports(supabase, now = Date.now()) {
   }
 }
 
+// Bounded batch deletes done in the database (0077). Each RPC removes at most `batch` rows and returns how many; a
+// backlog (first run after the migration) is drained over a few rounds, then left for the next hour.
+async function drainPurge(supabase, fn, args, batch) {
+  let deleted = 0
+  try {
+    for (let round = 0; round < PURGE_RPC_MAX_ROUNDS; round++) {
+      const { data, error } = await supabase.rpc(fn, { ...args, p_batch: batch })
+      if (error) return { deleted, error: error.message }
+      const n = Number(data) || 0
+      deleted += n
+      if (n < batch) break
+    }
+    return { deleted }
+  } catch (err) {
+    return { deleted, error: err.message }
+  }
+}
+
+// Never throws; returns a count like the other steps.
+const purgeDeadSessions = (supabase) =>
+  drainPurge(supabase, 'purge_dead_sessions', { p_days: DEAD_SESSION_RETENTION_DAYS }, PURGE_RPC_BATCH)
+const purgeOldClaudeUsage = (supabase) =>
+  drainPurge(supabase, 'purge_old_claude_usage', { p_days: CLAUDE_USAGE_RETENTION_DAYS }, PURGE_RPC_BATCH * 4)
+
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads, staleLeads, applications, reports] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
@@ -202,11 +236,13 @@ async function runRetention(env, supabase, now = Date.now()) {
     purgeStaleUnconfirmedLeads(supabase, now),
     purgeRejectedPartnerApplications(supabase, now),
     purgeOldVerifyReports(supabase, now),
+    purgeDeadSessions(supabase),
+    purgeOldClaudeUsage(supabase),
   ])
-  return { anon, logs, tokens, leads, staleLeads, applications, reports }
+  return { anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage }
 }
 
 module.exports = {
-  runRetention, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
+  runRetention, purgeDeadSessions, purgeOldClaudeUsage, DEAD_SESSION_RETENTION_DAYS, CLAUDE_USAGE_RETENTION_DAYS, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
   REJECTED_APPLICATION_RETENTION_DAYS, EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

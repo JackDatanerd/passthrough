@@ -212,7 +212,7 @@ async function adminDashboardStats(ctx) {
 }
 
 // ── Users ────────────────────────────────────────────────────────────────
-// Never selects password_hash, paystack_customer_code, paystack_auth_code,
+// Never selects password_hash, the (dropped in 0077) paystack customer/auth codes,
 // reset_token(_expiry), or email_verify_token(_expiry) — same "never touches
 // the client" discipline optionalAuth.js already applies, just enforced
 // here by simply never selecting those columns in the first place.
@@ -577,6 +577,69 @@ async function adminListAuditLog(ctx) {
   return ctx.json({ success: true, data: entries, meta: { page, pageSize, total: count || 0 } })
 }
 
+// GET /api/admin/claude-usage?days=30
+//
+// DATABASE AUDIT (feature gap): every Claude call has been written to claude_usage since migration 0072 (cost
+// ledger, lib/claudeUsage.js) and nothing ever read it — the one recurring cost of the product was invisible
+// short of hand-written SQL. The aggregation happens in the database (claude_usage_summary / claude_usage_totals,
+// 0077) so the response is a few dozen rows however large the ledger is.
+//
+// A dollar figure is only returned when the owner has said what a million tokens cost
+// (CLAUDE_USD_PER_MTOK_INPUT / CLAUDE_USD_PER_MTOK_OUTPUT, plain numbers in wrangler.toml [vars]): prices differ by
+// model and change, so nothing is hard-coded here — it is an estimate for trend-spotting, not an invoice.
+const CLAUDE_USAGE_MAX_DAYS = 400
+function usdEstimate(env, inputTokens, outputTokens) {
+  const raw = [env && env.CLAUDE_USD_PER_MTOK_INPUT, env && env.CLAUDE_USD_PER_MTOK_OUTPUT]
+  if (raw.some(v => v === undefined || v === null || String(v).trim() === '')) return null
+  const [pin, pout] = raw.map(Number)
+  if (!Number.isFinite(pin) || !Number.isFinite(pout) || pin < 0 || pout < 0) return null
+  return Math.round(((inputTokens * pin + outputTokens * pout) / 1e6) * 100) / 100
+}
+
+async function adminClaudeUsage(ctx) {
+  const days = Math.min(CLAUDE_USAGE_MAX_DAYS, Math.max(1, parseInt(ctx.req.query('days') || '30', 10) || 30))
+  const supabase = getSupabase(ctx.env)
+  const [summary, totals] = await Promise.all([
+    supabase.rpc('claude_usage_summary', { p_days: days }),
+    supabase.rpc('claude_usage_totals', { p_days: days }),
+  ])
+  const err = summary.error || totals.error
+  if (err) {
+    if (/could not find the function|PGRST202|42883/i.test(`${err.code || ''} ${err.message || ''}`))
+      return ctx.json({ success: false, message: 'Apply migration 0077 to see Claude usage.' }, 503)
+    throw err
+  }
+
+  const num = v => Number(v) || 0
+  const rows = Array.isArray(summary.data) ? summary.data : []
+  const t = (Array.isArray(totals.data) ? totals.data[0] : totals.data) || {}
+  const byLabelMap = new Map(), byDayMap = new Map()
+  for (const r of rows) {
+    const key = `${r.label}\u0000${r.model || ''}`
+    const l = byLabelMap.get(key) || { label: r.label, model: r.model || null, calls: 0, inputTokens: 0, outputTokens: 0 }
+    l.calls += num(r.calls); l.inputTokens += num(r.input_tokens); l.outputTokens += num(r.output_tokens)
+    byLabelMap.set(key, l)
+    const d = byDayMap.get(r.day) || { day: r.day, calls: 0, inputTokens: 0, outputTokens: 0 }
+    d.calls += num(r.calls); d.inputTokens += num(r.input_tokens); d.outputTokens += num(r.output_tokens)
+    byDayMap.set(r.day, d)
+  }
+  const withCost = o => ({ ...o, estimatedUsd: usdEstimate(ctx.env, o.inputTokens, o.outputTokens) })
+  const inputTokens = num(t.input_tokens), outputTokens = num(t.output_tokens), scans = num(t.scans)
+  return ctx.json({
+    success: true,
+    data: {
+      days,
+      totals: withCost({
+        calls: num(t.calls), inputTokens, outputTokens, scans,
+        tokensPerScan: scans ? Math.round((inputTokens + outputTokens) / scans) : null,
+      }),
+      byLabel: [...byLabelMap.values()].sort((a, b) => (b.inputTokens + b.outputTokens) - (a.inputTokens + a.outputTokens)).map(withCost),
+      byDay: [...byDayMap.values()].sort((a, b) => (a.day < b.day ? 1 : -1)).map(withCost),
+      priced: usdEstimate(ctx.env, 1, 1) !== null,
+    },
+  })
+}
+
 // POST /api/admin/scans/:id/requeue-fix
 //
 // The manual escape hatch for a customer who PAID and whose fix failed to
@@ -761,6 +824,6 @@ module.exports = {
   adminDashboardStats,
   adminListUsers, adminGetUserDetail, adminUpdateUser,
   adminListScans, adminSetVerification, adminListPayments,
-  adminListEmailLogs, adminListAlerts, adminListAuditLog,
+  adminListEmailLogs, adminListAlerts, adminListAuditLog, adminClaudeUsage,
   adminHealth, adminCheckEmailSuppression, adminLiftEmailSuppression
 }

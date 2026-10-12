@@ -59,4 +59,7 @@ router.delete('/email-suppressions', admin.stepUp, c.adminLiftEmailSuppression)
 // adminListAuditLog's own comment.
 router.get('/audit-log',  c.adminListAuditLog)
 
+// Database audit (0077): the Claude cost ledger, aggregated in the database.
+router.get('/claude-usage', c.adminClaudeUsage)
+
 module.exports = router

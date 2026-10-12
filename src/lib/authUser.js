@@ -28,7 +28,7 @@ const AUTH_USER_COLUMNS = [
 // Camel-cased fields that must NEVER reach c.get('user') (and so never the
 // client through getMe). Kept as data so the drift test can check it.
 const SECRET_USER_FIELDS = [
-  'passwordHash', 'paystackAuthCode', 'paystackCustomerCode',
+  'passwordHash',
   'resetToken', 'resetTokenExpiry', 'emailVerifyToken', 'emailVerifyExpiry',
   'pendingEmailToken', 'savedProfile', 'lastLoginAlertAt',
 ]

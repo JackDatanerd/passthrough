@@ -18,6 +18,7 @@ const NAV = [
   { to: '/admin/stories',   label: 'Stories' },
   { to: '/admin/health',    label: 'System Health' },
   { to: '/admin/audit-log', label: 'Audit Log' },
+  { to: '/admin/claude-usage', label: 'Claude Usage' },
 ]
 
 // A tiny always-visible strip of the numbers Jack actually checks daily —

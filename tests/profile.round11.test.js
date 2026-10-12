@@ -18,7 +18,7 @@ describe('round 11: score sort follows the displayed score', () => {
   it('display_score is the fixed score once a fix is scored, else the original (same rule as Index.jsx)', () => {
     expect(sql).toMatch(/case when fix_purchased and fix_ats_score is not null then fix_ats_score else ats_score end/)
     expect(sql.trimEnd().split('\n').slice(-3).join('\n')).toMatch(/'version', 76/)
-    expect(constants.EXPECTED_SCHEMA_VERSION).toBe(76)
+    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(76)
   })
 })
 

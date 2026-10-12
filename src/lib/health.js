@@ -107,7 +107,10 @@ const EMAIL_FAIL_MIN = 5
 async function checkEmailDelivery(supabase, nowMs = Date.now()) {
   try {
     const since = new Date(nowMs - 60 * 60 * 1000).toISOString()
-    const { data, error } = await supabase.from('email_logs').select('status').gte('created_at', since).limit(500)
+    // email_logs's timestamp column is sent_at (0001). This filtered on `created_at`, which the table has never had:
+    // PostgREST answered with a column error, the catch below turned it into "ok", and the probe could never see a
+    // Resend outage. tests/schemaColumns.test.js now checks column names in queries against the migrations.
+    const { data, error } = await supabase.from('email_logs').select('status').gte('sent_at', since).limit(500)
     if (error) throw error
     const rows = Array.isArray(data) ? data : []
     const sent = rows.filter(r => r.status === 'sent').length

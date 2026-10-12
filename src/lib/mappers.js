@@ -27,8 +27,6 @@ function userRowToCamel(row) {
     scansToday:            row.scans_today,
     freeFixCredits:        row.free_fix_credits,
     scansDayReset:         row.scans_day_reset,
-    paystackCustomerCode:  row.paystack_customer_code,
-    paystackAuthCode:      row.paystack_auth_code,
     savedProfile:          row.saved_profile,
     // false = the person turned off the "your scan finished" email (migration 0052). A row from
     // before the column existed reads as on, which is what it always was.
@@ -141,7 +139,6 @@ function scanRowToCamel(row) {
     verifiedAt:          row.verified_at,
     roleCategory:        row.role_category,
     seniorityLevel:      row.seniority_level,
-    integrityScore:      row.integrity_score,
     userId:              row.user_id,
     // sha256 of the bearer token, never the token itself (migration 0045)
     anonTokenHash:       row.anon_token,
@@ -182,7 +179,7 @@ const CLIENT_SCAN_FIELDS = [
   'contentScore', 'scanCompletedAt', 'candidateFirstName', 'jobTitle', 'fixPurchased', 'fixTier', 'fixGeneratedAt',
   'coverLetterText', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
   'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',
-  'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'integrityScore', 'userId',
+  'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'userId',
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
   'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt',
 ]
@@ -203,7 +200,6 @@ function paymentRowToCamel(row) {
     status:              row.status,
     paystackRef:         row.paystack_ref,
     paystackAccessCode:  row.paystack_access_code,
-    paystackAuthCode:    row.paystack_auth_code,
     userId:              row.user_id,
     scanId:              row.scan_id,
     // AUDIT FIX (Section 9): fix_tier (added in migration 0010, specifically

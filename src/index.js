@@ -574,6 +574,11 @@ async function retentionSweep(event, env, ctx) {
         if (r.anon.error) console.error('Retention sweep (anon):', r.anon.error)
         if (r.leads.error) console.error('Retention sweep (leads):', r.leads.error)
         if (r.staleLeads.error) console.error('Retention sweep (unconfirmed leads):', r.staleLeads.error)
+        // Database audit (0077): dead auth sessions and the Claude cost ledger are purged in the database.
+        if (r.sessions?.deleted || r.claudeUsage?.deleted)
+          console.log(`Retention sweep: ${r.sessions.deleted} dead session(s), ${r.claudeUsage.deleted} claude_usage row(s) purged`)
+        if (r.sessions?.error) console.error('Retention sweep (sessions):', r.sessions.error)
+        if (r.claudeUsage?.error) console.error('Retention sweep (claude_usage):', r.claudeUsage.error)
       } catch (err) {
         console.error('Retention sweep error:', err.message)
       }
