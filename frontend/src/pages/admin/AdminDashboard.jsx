@@ -98,7 +98,7 @@ export default function AdminDashboard() {
             (last 7 days) — payments are being settled without webhooks reaching this app. Check the webhook URL and signing key →
           </Link>
         )}
-        <div className="grid sm:grid-cols-3 lg:grid-cols-5 gap-4">
+        <div className="grid sm:grid-cols-3 lg:grid-cols-6 gap-4">
           <Link to="/admin/scans?status=ERROR" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
             <div className="text-xs text-gray-400">Errored scans (7d)</div>
             <div className={cn('text-xl font-bold', openItems.erroredScansThisWeek > 0 ? 'text-red-600' : 'text-gray-900')}>
@@ -116,6 +116,18 @@ export default function AdminDashboard() {
             <div className={cn('text-xl font-bold', openItems.stalePendingPayments > 0 ? 'text-amber-600' : 'text-gray-900')}>
               {openItems.stalePendingPayments}
             </div>
+          </Link>
+          {/* Webhooks round 13 (G1): payments held DISPUTED, and which auto-accept deadline is nearest. */}
+          <Link to="/admin/payments?status=DISPUTED" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
+            <div className="text-xs text-gray-400">Open disputes</div>
+            <div className={cn('text-xl font-bold', openItems.openDisputes > 0 ? 'text-red-600' : 'text-gray-900')}>
+              {openItems.openDisputes || 0}
+            </div>
+            {openItems.nextDisputeDueAt && (
+              <div className={cn('text-xs mt-0.5', openItems.overdueDisputes > 0 ? 'text-red-600' : 'text-amber-700')}>
+                {openItems.overdueDisputes > 0 ? `${openItems.overdueDisputes} past deadline` : `next due ${formatDate(openItems.nextDisputeDueAt)}`}
+              </div>
+            )}
           </Link>
           <Link to="/admin/webhooks?status=ATTENTION" className="border border-gray-200 rounded-lg p-4 bg-white hover:border-gray-300">
             <div className="text-xs text-gray-400">Webhook events to look at</div>

@@ -265,6 +265,49 @@ describe('adminListPayments', () => {
   })
 })
 
+describe('round 13 (G1): dispute deadline on the Payments list and the dashboard', () => {
+  const row = over => ({ id: 'p1', amount_cents: 4900, currency: 'USD', status: 'DISPUTED', paystack_ref: 'r1', fix_tier: 'FIX', referral_code: null, scan_id: 's1', user_id: 'u1', users: { email: 'a@b.com' }, disputed_at: 'd', dispute_due_at: '2026-10-14T10:00:00.000Z', created_at: 't', ...over })
+  it('lists disputeDueAt for a DISPUTED payment, and never for one that has moved on', async () => {
+    t = setup(q => (q.table === 'payments' ? { data: [row(), row({ id: 'p2', status: 'SUCCESS' })], error: null, count: 2 } : undefined))
+    const res = await t.mod.adminListPayments(t.c())
+    expect(res.body.data.map(p => p.disputeDueAt)).toEqual(['2026-10-14T10:00:00.000Z', null])
+    expect(t.db.calls.find(c => c.table === 'payments').cols).toMatch(/dispute_due_at/)
+  })
+  it('falls back to the old column list when migration 0083 is not applied', async () => {
+    let n = 0
+    t = setup(q => {
+      if (q.table !== 'payments') return undefined
+      return n++ === 0 ? { data: null, error: { code: '42703', message: 'column payments.dispute_due_at does not exist' }, count: null } : { data: [row({ dispute_due_at: undefined })], error: null, count: 1 }
+    })
+    const res = await t.mod.adminListPayments(t.c())
+    expect(res.body.data).toHaveLength(1)
+    expect(res.body.data[0].disputeDueAt).toBeNull()
+  })
+  it('the dashboard reports open disputes, the nearest deadline and how many are already past it', async () => {
+    const past = new Date(Date.now() - 3600_000).toISOString(), soon = new Date(Date.now() + 3600_000).toISOString()
+    t = setup(q => {
+      if (q.table === 'payments' && q.filters.some(f => f[0] === 'eq' && f[2] === 'DISPUTED')) {
+        if (q.selectOpts?.head) return { data: null, error: null, count: 3 }
+        return { data: [{ dispute_due_at: soon }, { dispute_due_at: past }], error: null }
+      }
+      if (q.op === 'select' && q.selectOpts?.head) return { data: null, error: null, count: 0 }
+    })
+    const res = await t.mod.adminDashboardStats(t.c())
+    expect(res.body.data.openItems).toMatchObject({ openDisputes: 3, nextDisputeDueAt: past, overdueDisputes: 1 })
+  })
+  it('without the column the count still shows and the deadline is simply absent', async () => {
+    t = setup(q => {
+      if (q.table === 'payments' && q.filters.some(f => f[0] === 'eq' && f[2] === 'DISPUTED')) {
+        if (q.selectOpts?.head) return { data: null, error: null, count: 2 }
+        return { data: null, error: { code: '42703', message: 'column payments.dispute_due_at does not exist' } }
+      }
+      if (q.op === 'select' && q.selectOpts?.head) return { data: null, error: null, count: 0 }
+    })
+    const res = await t.mod.adminDashboardStats(t.c())
+    expect(res.body.data.openItems).toMatchObject({ openDisputes: 2, nextDisputeDueAt: null, overdueDisputes: 0 })
+  })
+})
+
 describe('adminListEmailLogs', () => {
   it('filters by status, template and a search term (against the "to" column)', async () => {
     t = setup(q => (q.table === 'email_logs' ? { data: [], error: null, count: 0 } : undefined))

@@ -248,6 +248,23 @@ async function createRefund(env, reference, { amount, currency, customerNote, me
   return json
 }
 
+// GET /refund WITHOUT a transaction filter — the merchant's recent refunds across every transaction (webhooks round 13, G3: the
+// stalled-refund sweep). Unlike listRefunds above the result is NOT scoped to one payment, so callers must map each item to a
+// payment through refundItemTransaction and never sum it as if it belonged to one. `from` / `to` are dates (YYYY-MM-DD).
+async function listRecentRefunds(env, { from, to, perPage = 50, page = 1 } = {}) {
+  const qs = new URLSearchParams({ perPage: String(perPage), page: String(page) })
+  if (from) qs.set('from', from)
+  if (to) qs.set('to', to)
+  const { res, json } = await paystackRequest(
+    `https://api.paystack.co/refund?${qs.toString()}`,
+    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
+    'Paystack refund list'
+  )
+  if (!res.ok) throw new Error(json?.message || `Paystack refund list returned HTTP ${res.status}`)
+  if (!json) throw unreadable('Paystack refund list')
+  return json
+}
+
 // GET /dispute — the disputes (chargebacks) Paystack holds for this merchant, newest first. Used by
 // webhooks.controller's sweepDisputes as the backstop for a lost charge.dispute.* webhook (a dispute is
 // auto-accepted and refunded after ~16 hours, and no other path ever learns of one). `from` / `to` are
@@ -267,4 +284,4 @@ async function listDisputes(env, { from, to, perPage = 100, page = 1 } = {}) {
   return json
 }
 
-module.exports = { initializeTransaction, verifyTransaction, listRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }
+module.exports = { initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

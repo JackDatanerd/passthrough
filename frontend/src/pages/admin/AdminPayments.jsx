@@ -21,6 +21,17 @@ const PAGE_SIZE = 25
 // either state used to be indistinguishable from SUCCESS in this list.
 const STATUSES = ['PENDING', 'SUCCESS', 'FAILED', 'ABANDONED', 'REFUNDED', 'DISPUTED']
 
+// "Respond within 5h 20m" / "Deadline passed 3h ago — Paystack may have auto-accepted" for a dispute's auto-accept time.
+function disputeTimeLeft(dueAt, now = Date.now()) {
+  const due = Date.parse(dueAt)
+  if (!Number.isFinite(due)) return { overdue: false, text: '' }
+  const mins = Math.round((due - now) / 60000)
+  const span = m => { const a = Math.abs(m), h = Math.floor(a / 60), r = a % 60; return h >= 48 ? `${Math.floor(h / 24)}d` : h > 0 ? `${h}h ${r}m` : `${Math.max(1, r)}m` }
+  return mins <= 0
+    ? { overdue: true, text: `Response deadline passed ${span(mins)} ago — Paystack may have auto-accepted` }
+    : { overdue: false, text: `Respond in Paystack within ${span(mins)}` }
+}
+
 export default function AdminPayments() {
   const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
@@ -302,6 +313,11 @@ export default function AdminPayments() {
                   {p.status === 'DISPUTED' && p.disputedAt && (
                     <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
                   )}
+                  {/* Webhooks round 13 (G1): Paystack accepts an unanswered dispute (and refunds the buyer) at this time. */}
+                  {p.status === 'DISPUTED' && p.disputeDueAt && (() => {
+                    const left = disputeTimeLeft(p.disputeDueAt)
+                    return <div className={left.overdue ? 'text-xs text-red-600 mt-0.5' : 'text-xs text-amber-700 mt-0.5'}>{left.text}</div>
+                  })()}
                   {/* AUDIT FIX (Section 9/10 pass): receipt_sent_at/receipt_delivered_at
                       (migrations 0033/0036) were captured by fulfillment.service.js but never
                       surfaced anywhere admin could see — no way to answer a "I paid but never

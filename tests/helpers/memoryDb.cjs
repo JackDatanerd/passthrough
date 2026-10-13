@@ -40,6 +40,50 @@ function matches(row, filters) {
   })
 }
 
+
+// ── column projection ───────────────────────────────────────────────────────
+// PostgREST returns ONLY the columns a select() names; this double used to hand back whole rows, so a query that forgot a column the
+// code then read (webhooks round 13: sweepReversedPayments left out payments.user_id and reversePayment silently skipped the buyer
+// email; the commission and orphan sweeps left out referral_source / currency) passed every test. Projection is on by default now:
+// `world.projectColumns = false` opts a test out. Supported select grammar: `a, b`, `*`, `alias:col`, `json->>key` / `json->a->>b`
+// (optionally aliased), and embedded relations `rel(...)` / `alias:rel!inner(...)` (the seeded row carries the related object).
+const IDENT = /^[a-z_][a-z0-9_]*$/i
+const splitTop = str => {
+  const out = []; let depth = 0, cur = ''
+  for (const ch of str) {
+    if (ch === '(') depth++
+    if (ch === ')') depth--
+    if (ch === ',' && depth === 0) { out.push(cur.trim()); cur = '' } else cur += ch
+  }
+  if (cur.trim()) out.push(cur.trim())
+  return out
+}
+const jsonPath = (row, expr) => {
+  const segs = expr.split(/->>|->/).map(x => x.trim())
+  let v = row[segs[0]]
+  for (const k of segs.slice(1)) { if (v == null) return null; v = v[k] }
+  return v === undefined ? null : v
+}
+function projectRows(world, q, rows) {
+  const cols = q.cols
+  if (world.projectColumns === false || !cols || typeof cols !== 'string') return rows
+  const parts = splitTop(cols)
+  if (!parts.length || parts.includes('*')) return rows
+  return rows.map(r => {
+    const out = {}
+    for (const x of parts) {
+      let m
+      if (IDENT.test(x)) out[x] = r[x]
+      else if ((m = x.match(/^([a-z_][a-z0-9_]*):([a-z_][a-z0-9_]*)(![a-z_]+)?(\(.*\))?$/i))) out[m[1]] = r[m[2]]            // alias:col  /  alias:rel(...)
+      else if ((m = x.match(/^([a-z_][a-z0-9_]*)(![a-z_]+)?\(.*\)$/i))) out[m[1]] = r[m[1]]                                  // rel(...)
+      else if ((m = x.match(/^([a-z_][a-z0-9_]*):([a-z_][a-z0-9_]*(?:->>?[a-z0-9_]+)+)$/i))) out[m[1]] = jsonPath(r, m[2])      // alias:json->>key
+      else if ((m = x.match(/^([a-z_][a-z0-9_]*(?:->>?[a-z0-9_]+)+)$/i))) out[m[1].split(/->>?/).pop()] = jsonPath(r, m[1])    // json->>key
+      else throw new Error(`memoryDb: unsupported select expression "${x}" — extend projectRows`)
+    }
+    return out
+  })
+}
+
 function createWorld(seed = {}) {
   const t = {}
   for (const [k, rows] of Object.entries(seed)) t[k] = rows.map(r => ({ ...r }))
@@ -54,6 +98,7 @@ function createWorld(seed = {}) {
     failNext(table, op, error) { failures.push({ table, op, error }) },
     calls: [],
     touchUpdatedAt: ['scans', 'payments'],
+    projectColumns: true,
   }
 
   const resolver = q => {
@@ -68,7 +113,7 @@ function createWorld(seed = {}) {
     const rows = t[q.table]
 
     if (q.op === 'select') {
-      const hit = rows.filter(r => matches(r, q.filters)).map(r => ({ ...r }))
+      const hit = projectRows(world, q, rows.filter(r => matches(r, q.filters)).map(r => ({ ...r })))
       if (q.single) return hit.length ? { data: hit[0], error: null } : { data: null, error: { code: 'PGRST116', message: 'no rows' } }
       if (q.maybe)  return { data: hit[0] ?? null, error: null }
       return { data: hit, error: null }
@@ -87,14 +132,15 @@ function createWorld(seed = {}) {
         rows.push(row); out.push({ ...row })
       }
       if (!q.returning) return { data: null, error: null }
-      return q.single || q.maybe ? { data: out[0], error: null } : { data: out, error: null }
+      const shown = projectRows(world, q, out)
+      return q.single || q.maybe ? { data: shown[0], error: null } : { data: shown, error: null }
     }
     if (q.op === 'update') {
       const hit = rows.filter(r => matches(r, q.filters))
       // Emulates the set_updated_at trigger (0001) — fulfilment's "is the job lost?" check reads updated_at.
       hit.forEach(r => Object.assign(r, q.patch, world.touchUpdatedAt.includes(q.table) ? { updated_at: new Date().toISOString() } : {}))
       if (!q.returning) return { data: null, error: null }
-      const copies = hit.map(r => ({ ...r }))
+      const copies = projectRows(world, q, hit.map(r => ({ ...r })))
       return q.single || q.maybe ? { data: copies[0] ?? null, error: null } : { data: copies, error: null }
     }
     if (q.op === 'delete') {

@@ -308,6 +308,15 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       } catch (err) {
         console.error('Auto-refund sweep error:', err.message)
       }
+      // Webhooks round 13 (G3): refunds Paystack has parked (needs-attention / failed / long pending) and partial refunds whose webhook was lost.
+      try {
+        const r = await require('./services/reconcile.service').sweepStalledRefunds(env, getSupabase(env))
+        if (r.error) console.error('Stalled-refund sweep:', r.error)
+        else if (r.stalled.length || r.missedPartial.length)
+          console.log(`Stalled-refund sweep: ${r.stalled.length} stalled, ${r.missedPartial.length} unrecorded partial`)
+      } catch (err) {
+        console.error('Stalled-refund sweep error:', err.message)
+      }
       // Webhooks round 4 (B4): a commission whose ledger write failed after the payment settled is
       // never retried by Paystack (the webhook was answered 200) — re-run it here.
       try {

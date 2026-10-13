@@ -442,6 +442,36 @@ describe('disputes (B8-3 / G8-1)', () => {
     expect(w.t.scans[0]).toMatchObject({ verification_status: 'ACTIVE', fix_purchased: true })
     expect(w.t.commission_ledger).toHaveLength(0)
   })
+  it('round 13 (G1): stores the dispute response deadline on the payment, and a reminder with a new deadline moves it', async () => {
+    const w = paidWorld(); t = harness(w)
+    const first = new Date(Date.now() + 10 * 3600_000).toISOString(), later = new Date(Date.now() + 20 * 3600_000).toISOString()
+    await t.fire(dispute('charge.dispute.create', { due_at: first }))
+    expect(w.t.payments[0].dispute_due_at).toBe(first)
+    await t.fire(dispute('charge.dispute.remind', { due_at: later }))
+    expect(w.t.payments[0].dispute_due_at).toBe(later)
+  })
+  it('round 13 (G1): a payload with no (or a garbage) due_at stores nothing and still marks the payment DISPUTED', async () => {
+    const w = paidWorld(); t = harness(w)
+    await t.fire(dispute('charge.dispute.create', { due_at: 'soon' }))
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+    expect(w.t.payments[0].dispute_due_at).toBeUndefined()
+  })
+  it('round 13 (G1): a database without migration 0083 (no dispute_due_at column) still marks the dispute and answers 200', async () => {
+    const w = paidWorld(); t = harness(w)
+    const upd = w.db.from
+    w.db.from = table => {
+      const api = upd(table)
+      if (table !== 'payments') return api
+      const realUpdate = api.update
+      api.update = patch => 'dispute_due_at' in patch
+        ? { eq() { return this }, select() { return this }, then: r => Promise.resolve({ data: null, error: { code: '42703', message: 'column "dispute_due_at" of relation "payments" does not exist' } }).then(r) }
+        : realUpdate(patch)
+      return api
+    }
+    const res = await t.fire(dispute('charge.dispute.create', { due_at: new Date(Date.now() + 3600_000).toISOString() }))
+    expect(res.status).toBe(200)
+    expect(w.t.payments[0].status).toBe('DISPUTED')
+  })
   it('repeated reminders each alert (they are distinct events) without changing state', async () => {
     const w = paidWorld(); t = harness(w)
     await t.fire(dispute('charge.dispute.create'))

@@ -335,7 +335,10 @@ async function recordConversion(supabase, payment, env, opts = {}) {
   // { adminRetry: true }: the admin is looking at the result, so no owner alert / over-limit warning — but (round
   // 6) the PARTNER notification still goes out when this retry is the one that finally records the commission,
   // which previously left the partner never told about a sale they had earned.
-  if (env && !opts.adminRetry && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
+  // { quietFailures: true }: the hourly sweeps retry the same failing payment every run, and notifyConversionFailure has no
+  // cooldown of its own — they report failures themselves (once per payment per week) but still want the PARTNER told when
+  // a retry finally records the sale (webhooks round 13, B2).
+  if (env && !opts.adminRetry && !opts.quietFailures && !result.ok) await notifyConversionFailure(env, payment, result, 'recordConversion')
   return result
 }
 

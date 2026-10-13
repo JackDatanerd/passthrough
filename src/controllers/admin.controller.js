@@ -189,6 +189,8 @@ async function adminDashboardStats(ctx) {
   let webhookHealth = null
   try { webhookHealth = await require('./webhooks.controller').computeWebhookHealth(supabase, { now: now.getTime() }) }
   catch (err) { console.error('dashboard webhook health:', err.message) }
+  // Webhooks round 13 (G1): open disputes and the nearest auto-accept deadline. Best effort (never fails the dashboard).
+  const disputes = await require('./webhooks.controller').openDisputeSummary(supabase)
   const totalPendingCommissionCents = (pendingLedger || []).filter(inActiveCurrency).reduce((sum, l) => sum + l.commission_amount_cents, 0)
 
   return ctx.json({ success: true, data: {
@@ -216,7 +218,10 @@ async function adminDashboardStats(ctx) {
       stalePendingPayments: stalePendingCount || 0,
       webhookEventsNeedingAttention: (whAttentionCount || 0) + (whStuckCount || 0),
       leadsThisWeek:        leadsThisWeekCount || 0,
-      newLeads:             newLeadsCount || 0
+      newLeads:             newLeadsCount || 0,
+      openDisputes:         disputes.count,
+      nextDisputeDueAt:     disputes.nextDueAt,
+      overdueDisputes:      disputes.overdue
     },
     recentAlerts: (recentAlerts || []).map(a => ({
       id: a.id, subject: a.subject, message: a.message, emailed: a.emailed, createdAt: a.created_at
@@ -475,13 +480,17 @@ async function adminListPayments(ctx) {
   // absent. lastReconciledAt is included for the same reason admin needs to
   // see refund/dispute state: it answers "has the hourly sweep even looked
   // at this payment yet" without a direct DB query.
-  let query = supabase.from('payments')
-    .select('id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, receipt_sent_at, receipt_delivered_at, last_reconciled_at, created_at', { count: 'exact' })
-    .order('created_at', { ascending: false }).range(from, to)
-  if (status) query = query.eq('status', status)
-  if (reference) query = query.ilike('paystack_ref', `%${reference}%`)
-
-  const { data, error, count } = await query
+  // Webhooks round 13 (G1): dispute_due_at (migration 0083) is the deadline Paystack auto-accepts an unanswered dispute. A Worker deployed
+  // ahead of the migration retries without it rather than losing the whole list.
+  const PAYMENT_COLS = 'id, amount_cents, currency, status, paystack_ref, fix_tier, referral_code, scan_id, user_id, users(email), refunded_at, refund_reference, disputed_at, receipt_sent_at, receipt_delivered_at, last_reconciled_at, created_at'
+  const listPayments = cols => {
+    let q = supabase.from('payments').select(cols, { count: 'exact' }).order('created_at', { ascending: false }).range(from, to)
+    if (status) q = q.eq('status', status)
+    if (reference) q = q.ilike('paystack_ref', `%${reference}%`)
+    return q
+  }
+  let { data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at`)
+  if (error && (error.code === '42703' || /dispute_due_at/i.test(error.message || ''))) ({ data, error, count } = await listPayments(PAYMENT_COLS))
   if (error) throw error
 
   // WEBHOOKS ROUND 5 (feature gap): what Paystack has confirmed as refunded so far (payment_refunds, 0053).
@@ -501,6 +510,7 @@ async function adminListPayments(ctx) {
     paystackRef: p.paystack_ref, fixTier: p.fix_tier, referralCode: p.referral_code,
     scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
     refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
+    disputeDueAt: p.status === 'DISPUTED' ? (p.dispute_due_at ?? null) : null,
     receiptSentAt: p.receipt_sent_at, receiptDeliveredAt: p.receipt_delivered_at,
     lastReconciledAt: p.last_reconciled_at,
     refundedCents: refundedBy.get(p.id) || 0,

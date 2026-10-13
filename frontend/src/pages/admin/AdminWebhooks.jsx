@@ -8,6 +8,7 @@ import DataTable from '../../components/ui/DataTable'
 import Pagination from '../../components/ui/Pagination'
 import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
+import Checkbox from '../../components/ui/Checkbox'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate } from '../../lib/utils'
@@ -62,6 +63,12 @@ export default function AdminWebhooks() {
   const [dismissNote, setDismissNote] = useState('')
   // ROUND 5 (feature gap): are webhooks reaching this app at all? See webhooks.controller computeWebhookHealth.
   const [health, setHealth] = useState(null)
+  // ROUND 13 (G4): tick several rows, then Replay or Dismiss them in one go. Each row is its own request to the existing endpoints (a replay
+  // runs the full handler, so batching them in ONE Worker invocation would share one subrequest budget); the run stops at the first failure.
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulk, setBulk] = useState(null)            // 'replay' | 'dismiss' awaiting confirmation
+  const [bulkNote, setBulkNote] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const loadHealth = useCallback(async () => {
     try { setHealth((await api.get('/admin/webhook-events/health')).data.data) }
@@ -74,6 +81,8 @@ export default function AdminWebhooks() {
   // in step with the URL, and start from page 1 whenever the filters change.
   useEffect(() => { setRefDraft(referenceQ); setTypeDraft(typeQ) }, [referenceQ, typeQ])
   useEffect(() => { setPage(1) }, [status, referenceQ, typeQ, providerQ, fromQ, toQ])
+  // A selection belongs to the rows on screen: a new page, filter or reload drops ids that are no longer listed.
+  useEffect(() => { setSelected(prev => { const ids = new Set(events.map(e => e.id)); const next = new Set([...prev].filter(id => ids.has(id))); return next.size === prev.size ? prev : next }) }, [events])
 
   const begin = useLatestRequest()
 
@@ -148,6 +157,46 @@ export default function AdminWebhooks() {
     }
   }
 
+  const selectedEvents = events.filter(e => selected.has(e.id))
+  const canReplay = selectedEvents.filter(e => e.replayable)
+  const canDismiss = selectedEvents.filter(e => e.dismissable)
+  const pageSelectable = events.filter(e => e.replayable || e.dismissable)
+  const selectedOnPage = pageSelectable.filter(e => selected.has(e.id)).length
+  const allTicked = pageSelectable.length > 0 && pageSelectable.every(e => selected.has(e.id))
+  const toggleOne = id => setSelected(prev => { const n = new Set(prev); n.has(id) ? n.delete(id) : n.add(id); return n })
+  const toggleAll = () => setSelected(allTicked ? new Set() : new Set(pageSelectable.map(e => e.id)))
+
+  async function runBulk(kind) {
+    const rows = kind === 'replay' ? canReplay : canDismiss
+    setBulkBusy(true)
+    const tally = { PROCESSED: 0, IGNORED: 0, HELD: 0, FAILED: 0, dismissed: 0 }
+    let done = 0, stopped = null
+    for (const ev of rows) {
+      try {
+        if (kind === 'replay') {
+          const d = (await api.post(`/admin/webhook-events/${ev.id}/replay`)).data.data || {}
+          tally[d.status] = (tally[d.status] || 0) + 1
+        } else {
+          await api.post(`/admin/webhook-events/${ev.id}/dismiss`, { note: bulkNote.trim() || undefined })
+          tally.dismissed += 1
+        }
+        done += 1
+      } catch (err) {
+        stopped = getErrorMessage(err, `${kind === 'replay' ? 'Replay' : 'Dismiss'} failed.`)
+        break
+      }
+    }
+    const parts = kind === 'replay'
+      ? ['PROCESSED', 'IGNORED', 'HELD', 'FAILED'].filter(k => tally[k]).map(k => `${tally[k]} ${k.toLowerCase()}`)
+      : [`${tally.dismissed} dismissed`]
+    toast({
+      message: `${kind === 'replay' ? 'Replayed' : 'Dismissed'} ${done} of ${rows.length}${parts.length && kind === 'replay' ? ` (${parts.join(', ')})` : ''}${stopped ? `. Stopped: ${stopped}` : ''}`,
+      type: stopped ? 'error' : tally.HELD || tally.FAILED ? 'info' : 'success',
+    })
+    setBulkBusy(false); setBulk(null); setBulkNote(''); setSelected(new Set())
+    load(); loadHealth()
+  }
+
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
 
@@ -208,6 +257,15 @@ export default function AdminWebhooks() {
         live delivery uses; it is safe to repeat.
       </p>
 
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-3 text-sm bg-blue-50 border border-blue-200 rounded-md px-3 py-2" role="region" aria-label="Bulk actions">
+          <span className="text-blue-900">{selected.size} selected</span>
+          <Button size="sm" variant="secondary" disabled={canReplay.length === 0 || bulkBusy} onClick={() => setBulk('replay')}>Replay {canReplay.length}</Button>
+          <Button size="sm" variant="ghost" disabled={canDismiss.length === 0 || bulkBusy} onClick={() => { setBulkNote(''); setBulk('dismiss') }}>Dismiss {canDismiss.length}</Button>
+          <button type="button" className="text-xs underline text-blue-800" disabled={bulkBusy} onClick={() => setSelected(new Set())}>Clear</button>
+        </div>
+      )}
+
       {loading ? (
         <div className="flex justify-center py-16"><Spinner /></div>
       ) : events.length === 0 ? (
@@ -216,6 +274,16 @@ export default function AdminWebhooks() {
         <DataTable
           caption="Webhook events"
           columns={[
+            {
+              key: 'select',
+              header: (
+                <Checkbox aria-label="Select every event on this page that can be replayed or dismissed"
+                  checked={allTicked} indeterminate={!allTicked && selectedOnPage > 0} disabled={pageSelectable.length === 0 || bulkBusy} onChange={toggleAll} />
+              ),
+              cell: ev => (ev.replayable || ev.dismissable)
+                ? <Checkbox aria-label={`Select ${ev.eventType}${ev.reference ? ` ${ev.reference}` : ''}`} checked={selected.has(ev.id)} disabled={bulkBusy} onChange={() => toggleOne(ev.id)} />
+                : null,
+            },
             {
               key: 'received',
               header: 'Received',
@@ -314,6 +382,29 @@ export default function AdminWebhooks() {
         onCancel={() => { setDismissing(null); setDismissNote('') }}
       >
         <Input id="wh-dismiss-note" label="Note (optional)" value={dismissNote} maxLength={200} onChange={e => setDismissNote(e.target.value)}
+          placeholder="e.g. refunded in the Paystack dashboard" />
+      </ConfirmDialog>
+
+      <ConfirmDialog
+        open={bulk === 'replay'}
+        title={`Replay ${canReplay.length} event${canReplay.length === 1 ? '' : 's'}?`}
+        message="Each selected event is re-run through the webhook handlers one after another (every handler is idempotent). It stops at the first request that fails."
+        danger={false}
+        loading={bulkBusy}
+        onConfirm={() => runBulk('replay')}
+        onCancel={() => setBulk(null)}
+      />
+      <ConfirmDialog
+        open={bulk === 'dismiss'}
+        title={`Dismiss ${canDismiss.length} event${canDismiss.length === 1 ? '' : 's'}?`}
+        message="Close each selected event as IGNORED. They stop counting as needing attention and stop being re-driven and emailed about. Nothing is re-run. Use this only for events that can never succeed or that you have already dealt with by hand."
+        confirmLabel="Dismiss"
+        danger
+        loading={bulkBusy}
+        onConfirm={() => runBulk('dismiss')}
+        onCancel={() => { setBulk(null); setBulkNote('') }}
+      >
+        <Input id="wh-bulk-note" label="Note (optional, applied to each)" value={bulkNote} maxLength={200} onChange={e => setBulkNote(e.target.value)}
           placeholder="e.g. refunded in the Paystack dashboard" />
       </ConfirmDialog>
 

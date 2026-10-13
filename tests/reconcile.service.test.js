@@ -661,7 +661,7 @@ describe('sweepMissingCommissions (Webhooks round 4, B4)', () => {
       return undefined
     })
     const { mod, restore } = loadWithStubs('services/reconcile.service.js', {
-      'services/referral.service.js': { recordConversion: async (d, p, env) => { state.conversions.push({ id: p.id, env }); return conv ? conv(p) : { ok: true, recorded: true } } },
+      'services/referral.service.js': { recordConversion: async (d, p, env, opts) => { state.conversions.push({ id: p.id, env, opts }); return conv ? conv(p) : { ok: true, recorded: true } } },
       'services/email.service.js': { sendOwnerAlert: async (e, subject, message) => { state.alerts.push({ subject, message }) } },
     })
     const env = { RATE_LIMIT_KV: { get: async k => state.kv.get(k) ?? null, put: async (k, v) => { state.kv.set(k, v) } } }
@@ -688,10 +688,11 @@ describe('sweepMissingCommissions (Webhooks round 4, B4)', () => {
     expect(r.missing).toBe(0)
     expect(t.state.alerts).toHaveLength(0)
   })
-  it('does NOT pass env to recordConversion (its own alert has no cooldown and would page every hour)', async () => {
+  it('passes env WITH quietFailures to recordConversion (round 13: the partner is told, but its own no-cooldown failure alert cannot page every hour)', async () => {
     t = setupCommissions({ payments: [rp('a')] })
     await t.run()
-    expect(t.state.conversions[0].env).toBeNull()
+    expect(t.state.conversions[0].env).toBeTruthy()
+    expect(t.state.conversions[0].opts).toEqual({ quietFailures: true })
   })
   it('a persistent failure is reported ONCE, not on every hourly run', async () => {
     t = setupCommissions({ payments: [rp('a')], conv: () => ({ ok: false, reason: 'ledger-insert', error: 'connection reset' }) })

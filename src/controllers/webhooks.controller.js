@@ -665,6 +665,21 @@ function disputeDeadlineLine(d, now = Date.now()) {
   return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer.`
 }
 
+// ROUND-13 (G1): the dispute's response deadline, stored on the payment so Admin → Payments and the dashboard can show a
+// countdown (it used to exist only inside the webhook inbox and one owner email). Best effort and NEVER throws: the column comes
+// from migration 0083, and a Worker deployed ahead of it must still mark the payment DISPUTED — a failed write here is logged.
+async function recordDisputeDeadline(supabase, payment, d) {
+  try {
+    if (!payment || !d || !d.due_at) return false
+    const due = Date.parse(d.due_at)
+    if (!Number.isFinite(due)) return false
+    const { error } = await supabase.from('payments').update({ dispute_due_at: new Date(due).toISOString() })
+      .eq('id', payment.id).eq('status', 'DISPUTED')
+    if (error) { console.error('dispute deadline not stored:', error.message); return false }
+    return true
+  } catch (err) { console.error('dispute deadline not stored:', err && err.message); return false }
+}
+
 async function processDispute(c, supabase, event) {
   const payment = await fulfillment.findPaymentForEvent(supabase, event)
   const d = event.data || {}
@@ -692,6 +707,10 @@ async function processDispute(c, supabase, event) {
     if (error) throw error
     marked = !!(updated && updated.length)
   }
+  // create (just marked) and remind (a re-sent, possibly extended deadline) both carry due_at; the guarded update only
+  // touches a payment that is DISPUTED right now.
+  if ((event.event === 'charge.dispute.create' || event.event === 'charge.dispute.remind') && payment && (marked || payment.status === 'DISPUTED'))
+    await recordDisputeDeadline(supabase, payment, d)
 
   // ROUND-2 AUDIT (feature gap): dispute.resolve used to say only "no state
   // change", leaving the admin to work out which of Reverse / Clear applies. Paystack's resolutions
@@ -1420,6 +1439,27 @@ const HEALTH_WINDOW_MS = 7 * 24 * 60 * 60 * 1000
 const HEALTH_GRACE_MS = 30 * 60 * 1000
 const HEALTH_MAX_PAYMENTS = 200
 
+// ROUND-13 (G1): how many payments sit DISPUTED right now and which deadline is nearest — the dashboard card. Best effort:
+// without migration 0083 (dispute_due_at) the count still works and the deadline is simply absent. Never throws.
+async function openDisputeSummary(supabase) {
+  const out = { count: 0, nextDueAt: null, overdue: 0 }
+  try {
+    const { count, error } = await supabase.from('payments').select('id', { count: 'exact', head: true }).eq('status', 'DISPUTED')
+    if (error) throw error
+    out.count = count || 0
+    if (!out.count) return out
+    const { data, error: dueErr } = await supabase.from('payments').select('dispute_due_at')
+      .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null).order('dispute_due_at', { ascending: true }).limit(200)
+    if (dueErr) return out                       // column missing (0083 not applied): the count above is still right
+    const times = (data || []).map(r => Date.parse(r.dispute_due_at)).filter(Number.isFinite)
+    if (times.length) {
+      out.nextDueAt = new Date(Math.min(...times)).toISOString()
+      out.overdue = times.filter(t => t <= Date.now()).length
+    }
+  } catch (err) { console.error('open dispute summary:', err && err.message) }
+  return out
+}
+
 async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
   const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], unrecovered: 0, unrecoveredReferences: [], lastResendEventAt: null }
   try {
@@ -1499,8 +1539,9 @@ async function checkWebhookDelivery(env, ctx, supabase = getSupabase(env), { now
     console.error(`[CRITICAL] webhook delivery: ${problem}`)
     if (!(await alertAllowed(env, 'webhook-alert-cooldown:delivery-health', 24 * 3600))) return { alerted: false, problem }
     alert({ env, executionCtx: ctx }, 'Paystack webhooks may not be reaching this app',
-      `${problem}.\n\nThey were settled by the buyer's return visit or the hourly sweeps, so payments still work — but refunds and disputes arrive ONLY by webhook ` +
-      `(a dispute is auto-accepted by Paystack after 16 hours), so they are being missed too.\n\nCheck the webhook URL (…/api/webhooks/paystack) and the ` +
+      `${problem}.\n\nThey were settled by the buyer's return visit or the hourly sweeps, so payments still work — but refunds and disputes are announced by webhook first ` +
+      `(a dispute is auto-accepted by Paystack after 16 hours), so they are being missed too. The hourly reversal and dispute sweeps ask Paystack ` +
+      `directly and catch most of them within hours, but only for payments that sweep window still covers.\n\nCheck the webhook URL (…/api/webhooks/paystack) and the ` +
       `signing key in the Paystack dashboard, and PAYSTACK_WEBHOOK_IPS if set. Admin → Webhooks shows the same figures. Emailed at most once a day.`, 'webhook-delivery')
     return { alerted: true, problem }
   } catch (err) {
@@ -1514,4 +1555,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

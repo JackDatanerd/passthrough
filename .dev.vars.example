@@ -71,6 +71,8 @@ RESEND_API_KEY=re_...
 # Automatic refunds for duplicate / undeliverable payments ("false" = alert only).
 # AUTO_REFUND_DUPLICATES=true
 # AUTO_REFUND_UNDELIVERABLE=true
+# Paid sales the hourly refund-reconciliation sweep checks per run (default 20, max 100).
+# REVERSAL_CHECKS_PER_RUN=20
 # TESTING ONLY: IPs (comma-separated) that skip every rate limit. Delete before real traffic.
 # RATE_LIMIT_BYPASS_IPS=
 # Optional tuning (all have defaults; see DEPLOYMENT.md "Optional tuning variables").

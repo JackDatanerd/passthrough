@@ -168,7 +168,7 @@ describe('scrub_account_data', () => {
     scans: ['anon_expires_at', 'created_at', 'fix_ats_score', 'fix_credit_round', 'fix_error_recoveries', 'fix_generated_at', 'fix_job_lock_until', 'fix_purchased', 'fix_retry_count',
             'outcome_prompt_attempts', 'passed', 'outcome_prompted_at', 'resume_mime_type', 'rewrite_failed', 'role_category', 'scan_completed_at', 'scan_slot_spent_at', 'seniority_level', 'verification_downloads',
             'verification_views', 'verified_at', 'ats_score', 'content_score', 'format_score', 'keyword_score', 'sections_score', 'updated_at'],
-    payments: ['amount_cents', 'created_at', 'disputed_at', 'last_reconciled_at', 'paid_at', 'paystack_access_code', 'receipt_delivered_at', 'receipt_sent_at', 'referral_code', 'refund_claimed_at', 'refund_reference', 'refunded_at', 'currency', 'updated_at'],
+    payments: ['amount_cents', 'created_at', 'dispute_due_at', 'disputed_at', 'last_reconciled_at', 'paid_at', 'paystack_access_code', 'receipt_delivered_at', 'receipt_sent_at', 'referral_code', 'refund_claimed_at', 'refund_reference', 'refunded_at', 'currency', 'updated_at'],
   }
   const check = async (table, id, set) => {
     const left = (await retained(table, id, set)).filter(c => !['updated_at'].includes(c))

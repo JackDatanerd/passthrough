@@ -51,6 +51,19 @@ const MAX_PER_RUN         = 10
 const referralService = require('./referral.service')
 const fulfillment = require('./fulfillment.service')
 
+// Webhooks round 13 (B3): the sweeps hand a partial payments row to recordConversion, which reads referral_source (the
+// 'link' | 'typed' | 'account' attribution, migration 0079), currency and user_id off it. A narrow select silently dropped them:
+// a recovered commission lost its attribution_source and was priced in the default currency. referral_source is optional so a
+// database that has not applied 0079 yet still sweeps (the column-missing error is retried without it).
+function isMissingColumn(error, col) {
+  return !!error && (error.code === '42703' || new RegExp(col + '|column', 'i').test(error.message || ''))
+}
+async function selectPaymentsWithSource(buildQuery, cols) {
+  const first = await buildQuery(`${cols}, referral_source`)
+  if (first.error && isMissingColumn(first.error, 'referral_source')) return buildQuery(cols)
+  return first
+}
+
 function generatorFor(fixTier) {
   return fixTier === 'BADGE' ? 'generateBadge' : 'generateFix'
 }
@@ -58,16 +71,16 @@ function generatorFor(fixTier) {
 async function sweepOrphanedPayments(env, supabase, { now = Date.now(), alert = true } = {}) {
   const result = { checked: 0, orphans: 0, reenqueued: [], failed: [] }
 
-  const { data: payments, error: payErr } = await supabase
+  // referral_code_id, amount_cents, currency, user_id and referral_source are all read by recordConversion() below.
+  const { data: payments, error: payErr } = await selectPaymentsWithSource(cols => supabase
     .from('payments')
-    // referral_code_id + amount_cents added for recordConversion() below —
-    // everything else here was already selected.
-    .select('id, paystack_ref, scan_id, fix_tier, created_at, referral_code_id, referral_reservation_id, amount_cents')
+    .select(cols)
     .eq('status', 'SUCCESS')
     .gt('created_at', new Date(now - LOOKBACK_MS).toISOString())
     .lt('created_at', new Date(now - ORPHAN_MIN_AGE_MS).toISOString())
     .order('created_at', { ascending: false })
-    .limit(200)
+    .limit(200),
+    'id, paystack_ref, scan_id, fix_tier, created_at, referral_code_id, referral_reservation_id, amount_cents, currency, user_id')
   if (payErr) { result.error = payErr.message; return result }
   result.checked = payments?.length || 0
   if (!result.checked) return result
@@ -461,10 +474,22 @@ async function sweepFailedFixes(env, supabase, { now = Date.now(), alert = true 
 const REVERSAL_LOOKBACK_MS = 45 * 24 * 60 * 60 * 1000
 const REVERSAL_RECHECK_MS  = 6 * 60 * 60 * 1000
 const MAX_REVERSAL_CHECKS_PER_RUN = 20
+// Webhooks round 13 (G5): each payment costs a verify call (and a row update) per look, so 20 an hour re-checks about 120 payments
+// every 6 hours — beyond that the rotation stretches (1000 live payments -> each looked at about every 2 days, long after a dispute's
+// 16-hour auto-accept). REVERSAL_CHECKS_PER_RUN raises it for a busy shop; capped at 100 because a cron run has a subrequest budget
+// shared with the other sweeps (50 on the Workers free plan, 1000 on paid).
+const MAX_REVERSAL_CHECKS_CEILING = 100
+function reversalChecksPerRun(env) {
+  const n = Number.parseInt(env && env.REVERSAL_CHECKS_PER_RUN, 10)
+  return Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_REVERSAL_CHECKS_CEILING) : MAX_REVERSAL_CHECKS_PER_RUN
+}
 
 async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = true } = {}) {
   const result = { checked: 0, reversed: [], partial: [], failed: [] }
-  const base = 'id, paystack_ref, scan_id, status, amount_cents, currency, created_at'
+  const perRun = reversalChecksPerRun(env)
+  // user_id + fix_tier: reversePayment hands this row to notifyBuyerReversal, which skips the buyer email without a user_id
+  // (webhooks round 13, B1 — a sweep-recovered refund or lost dispute never told the buyer).
+  const base = 'id, paystack_ref, scan_id, user_id, status, amount_cents, currency, fix_tier, created_at'
   const since = new Date(now - REVERSAL_LOOKBACK_MS).toISOString()
   const stale = new Date(now - REVERSAL_RECHECK_MS).toISOString()
 
@@ -472,13 +497,13 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
   let { data: rows, error } = await supabase.from('payments').select(`${base}, last_reconciled_at`)
     .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
     .or(`last_reconciled_at.is.null,last_reconciled_at.lt.${stale}`)
-    .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(MAX_REVERSAL_CHECKS_PER_RUN)
+    .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(perRun)
   if (error && (error.code === '42703' || /last_reconciled_at|column/i.test(error.message || ''))) {
     // migration 0036 not applied: no rotation marker, so just look at the newest payments
     tracked = false
     ;({ data: rows, error } = await supabase.from('payments').select(base)
       .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
-      .order('created_at', { ascending: false }).limit(MAX_REVERSAL_CHECKS_PER_RUN))
+      .order('created_at', { ascending: false }).limit(perRun))
   }
   if (error) { result.error = error.message; return result }
 
@@ -552,21 +577,23 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
 // back ok with recorded:false and are simply re-checked until they leave the look-back window — a
 // couple of cheap lookups per run, bounded by MAX_COMMISSION_REPAIRS_PER_RUN.
 //
-// `env` is deliberately NOT passed to recordConversion: with it, a persistent failure would page the
-// owner on every hourly run (its alert has no cooldown). This sweep reports instead, once per
-// payment per week for failures, plus one summary for what it actually recovered.
+// `env` IS passed to recordConversion with { quietFailures: true } (round 13): without it the partner never got the
+// "you earned a commission" email for a sale this sweep recovered. quietFailures stops its own failure alert (no cooldown,
+// it would page the owner every hourly run); this sweep reports instead, once per payment per week for failures, plus one
+// summary for what it actually recovered.
 const COMMISSION_MIN_AGE_MS   = 15 * 60 * 1000
 const COMMISSION_LOOKBACK_MS  = 3 * 24 * 60 * 60 * 1000
 const MAX_COMMISSION_REPAIRS_PER_RUN = 20
 
 async function sweepMissingCommissions(env, supabase, { now = Date.now(), alert = true } = {}) {
   const result = { checked: 0, missing: 0, recovered: [], failed: [], error: null }
-  const { data: pays, error } = await supabase.from('payments')
-    .select('id, paystack_ref, scan_id, status, amount_cents, currency, referral_code_id, referral_reservation_id, user_id, created_at')
+  const { data: pays, error } = await selectPaymentsWithSource(cols => supabase.from('payments')
+    .select(cols)
     .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
     .lt('created_at', new Date(now - COMMISSION_MIN_AGE_MS).toISOString())
     .gt('created_at', new Date(now - COMMISSION_LOOKBACK_MS).toISOString())
-    .order('created_at', { ascending: false }).limit(200)
+    .order('created_at', { ascending: false }).limit(200),
+    'id, paystack_ref, scan_id, status, amount_cents, currency, referral_code_id, referral_reservation_id, user_id, created_at')
   if (error) { result.error = error.message; return result }
   const candidates = (pays || []).filter(p => p.referral_code_id)
   result.checked = candidates.length
@@ -581,7 +608,9 @@ async function sweepMissingCommissions(env, supabase, { now = Date.now(), alert 
 
   for (const payment of todo) {
     try {
-      const conv = await referralService.recordConversion(supabase, payment, null)
+      // env is passed (webhooks round 13, B2) so the PARTNER hears about a recovered sale and the over-limit / code-limit
+      // notices fire; quietFailures keeps the owner from being paged every hour — failures are reported once a week below.
+      const conv = await referralService.recordConversion(supabase, payment, env, { quietFailures: true })
       if (conv.ok && (conv.recorded || conv.usageRepaired)) result.recovered.push({ reference: payment.paystack_ref, scanId: payment.scan_id })
       else if (!conv.ok) result.failed.push({ reference: payment.paystack_ref, scanId: payment.scan_id, reason: conv.reason, error: conv.error })
     } catch (err) {
@@ -607,6 +636,131 @@ async function sweepMissingCommissions(env, supabase, { now = Date.now(), alert 
            ...freshFailures.map(f => `FAILING    ${f.reference}  scan ${f.scanId}  step ${f.reason}: ${f.error}`)].join('\n') +
           (freshFailures.length ? `\n\nFailures are retried hourly for 3 days and reported once. Manual retry: POST /api/payments/<reference>/reconcile (admin).` : ''))
     } catch (_) { /* alerting is best effort */ }
+  }
+  return result
+}
+
+// ── Stalled refunds and refunds this app never recorded ─────────────────────
+// Webhooks round 13 (G3). Everything refund-related here starts from a webhook or from ONE payment's own refund list. Two things
+// had no backstop at all:
+//   * a refund Paystack parked in `needs-attention` (it waits indefinitely for the customer's bank details), or that `failed`, or
+//     sat `pending`/`processing` for days. The owner was told ONCE, by the webhook (an email that can be missed), and never again;
+//     if the webhook itself was lost nobody was ever told. The customer's money is stuck either way.
+//   * a PARTIAL refund whose refund.processed webhook was lost. sweepReversedPayments only looks at transactions Paystack calls
+//     `reversed` (fully refunded), so a partial one left payment_refunds short and the dashboard revenue overstated, silently.
+// This asks Paystack for the merchant's recent refunds (one paged list for the whole account), keeps the ones that belong to THIS
+// app's payments, and tells the owner — notify-only, once per refund/payment per week, never changing any money state: what to do
+// about a stalled refund is a decision for a person with the Paystack dashboard open.
+const STALLED_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000
+const STALLED_ATTENTION_MS = 24 * 60 * 60 * 1000      // needs-attention / failed for this long
+const STALLED_INFLIGHT_MS = 72 * 60 * 60 * 1000       // pending / processing for this long
+const STALLED_PAGE_SIZE = 50
+const STALLED_MAX_PAGES = 4
+const MAX_STALLED_REPORTED = 25
+
+async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = true, list = null } = {}) {
+  const result = { checked: 0, stalled: [], missedPartial: [], error: null }
+  try {
+    if (!env.PAYSTACK_SECRET_KEY && !list) return result
+    const paystackService = require('./paystack.service')
+    const isoDay = ms => new Date(ms).toISOString().slice(0, 10)
+    const items = []
+    if (list) items.push(...((await list())?.data || []))
+    else for (let page = 1; page <= STALLED_MAX_PAGES; page++) {
+      const r = await paystackService.listRecentRefunds(env, { from: isoDay(now - STALLED_LOOKBACK_MS), to: isoDay(now + 24 * 3600 * 1000), page, perPage: STALLED_PAGE_SIZE })
+      const got = Array.isArray(r?.data) ? r.data : []
+      items.push(...got)
+      if (got.length < STALLED_PAGE_SIZE) break
+    }
+    const refs = new Map()                       // reference -> its refund items
+    for (const it of items) {
+      const { reference } = paystackService.refundItemTransaction(it)
+      if (!reference) continue                   // cannot be tied to a payment: never guess
+      if (!refs.has(reference)) refs.set(reference, [])
+      refs.get(reference).push(it)
+    }
+    if (!refs.size) return result
+
+    const known = new Map()
+    const all = [...refs.keys()]
+    for (let i = 0; i < all.length; i += 100) {
+      const { data, error } = await supabase.from('payments').select('id, paystack_ref, scan_id, status, amount_cents, currency').in('paystack_ref', all.slice(i, i + 100))
+      if (error) { result.error = error.message; return result }
+      for (const p of data || []) known.set(p.paystack_ref, p)
+    }
+    result.checked = known.size
+
+    const when = it => Date.parse(it.updated_at || it.updatedAt || it.created_at || it.createdAt || '')
+    const live = s => ['pending', 'processing', 'needs-attention', 'processed'].includes(s)
+    const processedSum = new Map()               // payment id -> Paystack's processed total in the payment's own currency
+    for (const [ref, its] of refs) {
+      const p = known.get(ref)
+      if (!p) continue
+      const statuses = its.map(it => String(it.status || '').toLowerCase())
+      for (const it of its) {
+        const status = String(it.status || '').toLowerCase()
+        const at = when(it)
+        const age = Number.isFinite(at) ? now - at : null
+        const amount = Number.isFinite(Number(it.amount)) ? Number(it.amount) : null
+        if (status === 'processed') {
+          if (amount != null && (!it.currency || it.currency === p.currency)) processedSum.set(p.id, (processedSum.get(p.id) || 0) + amount)
+          continue
+        }
+        let why = null
+        if (status === 'needs-attention' && (age == null || age >= STALLED_ATTENTION_MS)) why = 'needs-attention — Paystack is waiting for the customer\'s bank details'
+        else if (status === 'failed' && p.status !== 'REFUNDED' && age != null && age >= STALLED_ATTENTION_MS
+                 && !statuses.some((s, i) => live(s) && its[i] !== it)) why = 'failed — the money is still with the merchant and no other refund is in progress'
+        else if ((status === 'pending' || status === 'processing') && age != null && age >= STALLED_INFLIGHT_MS) why = `${status} for ${Math.floor(age / 3_600_000)}h`
+        if (why) result.stalled.push({ reference: ref, scanId: p.scan_id, refundId: it.id ?? null, status, amount, currency: it.currency || p.currency, why })
+      }
+    }
+
+    // Processed refunds Paystack knows of that payment_refunds does not (partial only — a full one is sweepReversedPayments' job).
+    const partialIds = [...processedSum].filter(([id, sum]) => {
+      const p = [...known.values()].find(x => x.id === id)
+      return p && ['SUCCESS', 'DISPUTED'].includes(p.status) && p.amount_cents > 0 && sum > 0 && sum < p.amount_cents
+    }).map(([id]) => id)
+    if (partialIds.length) {
+      const ours = new Map()
+      for (let i = 0; i < partialIds.length; i += 100) {
+        const { data, error } = await supabase.from('payment_refunds').select('payment_id, amount_cents').in('payment_id', partialIds.slice(i, i + 100))
+        if (error) throw error
+        for (const r of data || []) ours.set(r.payment_id, (ours.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+      }
+      for (const id of partialIds) {
+        const p = [...known.values()].find(x => x.id === id)
+        const theirs = processedSum.get(id), mine = ours.get(id) || 0
+        if (theirs > mine) result.missedPartial.push({ reference: p.paystack_ref, scanId: p.scan_id, paystack: theirs, recorded: mine, paid: p.amount_cents, currency: p.currency })
+      }
+    }
+
+    if (alert && (result.stalled.length || result.missedPartial.length)) {
+      const kv = env.RATE_LIMIT_KV
+      const fresh = async (key, rows) => {
+        const out = []
+        for (const r of rows) {
+          const k = `${key}:${r.reference}:${r.refundId ?? ''}:${r.status ?? ''}:${r.paystack ?? ''}`
+          try { if (kv && await kv.get(k)) continue; if (kv) await kv.put(k, '1', { expirationTtl: 7 * 24 * 3600 }) } catch (_) { /* over-alert rather than go silent */ }
+          out.push(r)
+        }
+        return out
+      }
+      const stalled = (await fresh('stalled-refund', result.stalled)).slice(0, MAX_STALLED_REPORTED)
+      const missed = (await fresh('unrecorded-partial-refund', result.missedPartial)).slice(0, MAX_STALLED_REPORTED)
+      if (stalled.length || missed.length) {
+        const emailService = require('./email.service')
+        await emailService.sendOwnerAlert(env,
+          `Refund sweep: ${stalled.length} stalled, ${missed.length} not recorded here`,
+          (stalled.length ? `Refunds that are not completing (Paystack dashboard → Refunds; for needs-attention supply the customer's bank details, or POST /refund/retry_with_customer_details/{id}):\n\n` +
+            stalled.map(s => `${s.reference}  scan ${s.scanId}  refund ${s.refundId ?? '?'}  ${s.amount ?? '?'} ${s.currency || ''}  ${s.why}`).join('\n') + '\n\n' : '') +
+          (missed.length ? `Partial refunds Paystack has PROCESSED that this app has not recorded (the refund.processed webhook was lost or failed). The payment stays SUCCESS and revenue still counts the refunded part. Redeliver the event from Paystack, or note it in Admin → Payments:\n\n` +
+            missed.map(m => `${m.reference}  scan ${m.scanId}  Paystack refunded ${m.paystack}, recorded ${m.recorded}, paid ${m.paid} ${m.currency || ''}`).join('\n') + '\n\n' : '') +
+          `Each item is reported once a week. Nothing was changed automatically.`)
+      }
+    }
+  } catch (err) {
+    result.error = err && err.message ? err.message : String(err)
+    console.error('stalled refund sweep:', result.error)
   }
   return result
 }
@@ -722,9 +876,10 @@ async function sweepFailedAutoRefunds(env, supabase, { now = Date.now(), alert =
 }
 
 module.exports = {
+  sweepStalledRefunds, STALLED_LOOKBACK_MS, STALLED_ATTENTION_MS, STALLED_INFLIGHT_MS,
   sweepFailedAutoRefunds, AUTO_REFUND_MIN_AGE_MS, AUTO_REFUND_LOOKBACK_MS, MAX_AUTO_REFUND_RETRIES, MAX_AUTO_REFUND_PER_RUN,
   sweepMissingCommissions, COMMISSION_MIN_AGE_MS, COMMISSION_LOOKBACK_MS, MAX_COMMISSION_REPAIRS_PER_RUN,
-  sweepReversedPayments, REVERSAL_LOOKBACK_MS, REVERSAL_RECHECK_MS, MAX_REVERSAL_CHECKS_PER_RUN,
+  sweepReversedPayments, REVERSAL_LOOKBACK_MS, REVERSAL_RECHECK_MS, MAX_REVERSAL_CHECKS_PER_RUN, reversalChecksPerRun,
   sweepOrphanedPayments, ORPHAN_MIN_AGE_MS, STUCK_PURCHASED_MS, MAX_PER_RUN,
   sweepStalePendingPayments, PENDING_ABANDON_AGE_MS,
   sweepPendingPayments, recheckPayment, PENDING_MIN_AGE_MS, PENDING_RECENT_MS, MAX_VERIFY_PER_RUN,

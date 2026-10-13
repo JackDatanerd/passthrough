@@ -545,7 +545,10 @@ async function notifySettlementProblem(env, result, paymentRow, source) {
 function referenceCandidates(event) {
   const d = event?.data || {}
   return [...new Set([
-    d.transaction_reference, d.transaction?.reference, d.reference,
+    d.transaction_reference, d.transaction?.reference,
+    // some refund payloads carry the reference as a bare string under `transaction` (an object on disputes)
+    typeof d.transaction === 'string' ? d.transaction : null,
+    d.reference,
   ].filter(v => typeof v === 'string' && v.length > 0))]
 }
 
