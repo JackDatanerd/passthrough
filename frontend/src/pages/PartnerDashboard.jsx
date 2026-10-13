@@ -5,8 +5,7 @@ import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime } from
 import { useCopy } from '../hooks/useCopy'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
-import Navbar from '../components/layout/Navbar'
-import Footer from '../components/layout/Footer'
+import PartnerLayout from '../components/partner/PartnerLayout'
 import EmptyState from '../components/ui/EmptyState'
 import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
 import { partnerAuth } from '../lib/partnerApi'
@@ -66,24 +65,33 @@ function TrendSection({ trend, mix, currency }) {
   const mixTotal = mix ? Object.values(mix).reduce((a, b) => a + b, 0) : 0
   if (!hasData && mixTotal === 0) return null
   return (
-    <section className="mb-8" data-testid="partner-trend">
+    <section data-testid="partner-trend">
       <h2 className="text-lg font-semibold text-gray-900 mb-3">Earnings by cycle</h2>
       {hasData && (
-        <div className="border border-gray-200 rounded-lg bg-white p-4 flex flex-col gap-2">
-          {rows.map(r => (
-            <div key={r.key} className="flex items-center gap-3 text-sm">
-              <div className="w-36 shrink-0 text-gray-600">{r.label}{r.isCurrent ? ' (so far)' : ''}</div>
-              <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden" aria-hidden="true">
-                <div className={`h-full rounded-full ${r.commissionCents < 0 ? 'bg-red-400' : 'bg-blue-500'}`}
-                  style={{ width: `${Math.round(Math.abs(r.commissionCents) / max * 100)}%` }} />
-              </div>
-              <div className="w-40 shrink-0 text-right text-gray-900">
-                {fmtCents(r.commissionCents, currency)}
-                <span className="text-gray-400"> · {r.sales} sale{r.sales === 1 ? '' : 's'}</span>
-              </div>
-            </div>
-          ))}
-          <p className="text-xs text-gray-400 mt-1">Net of refunds and adjustments, by the day each commission was recorded.</p>
+        <div className="border border-gray-200 rounded-xl bg-white p-4 sm:p-5">
+          {/* One column per cycle, oldest to newest: the taller the column, the more commission that cycle earned.
+              A cycle that ended up negative (refunds outran sales) is red. The current cycle is darker. */}
+          <ol aria-label="Earnings by cycle" className="flex items-end gap-2 sm:gap-4 h-44">
+            {rows.map(r => {
+              const height = Math.max(r.commissionCents !== 0 ? 4 : 0, Math.round(Math.abs(r.commissionCents) / max * 100))
+              return (
+                <li key={r.key} className="flex-1 min-w-0 h-full flex flex-col justify-end items-center gap-1 text-center">
+                  <span className="text-xs sm:text-sm font-semibold text-gray-900 truncate max-w-full">{fmtCents(r.commissionCents, currency)}</span>
+                  <div aria-hidden="true" className={`w-full max-w-[3.5rem] rounded-t-md ${r.commissionCents < 0 ? 'bg-red-400' : r.isCurrent ? 'bg-blue-700' : 'bg-blue-400'}`}
+                    style={{ height: `${height}%`, minHeight: height ? 4 : 0 }} />
+                </li>
+              )
+            })}
+          </ol>
+          <ul className="flex gap-2 sm:gap-4 mt-2 border-t border-gray-100 pt-2" aria-label="Cycle details">
+            {rows.map(r => (
+              <li key={r.key} className="flex-1 min-w-0 text-center text-xs text-gray-500">
+                <span className="block truncate text-gray-700">{r.label}{r.isCurrent ? ' (so far)' : ''}</span>
+                <span className="block">{r.sales} sale{r.sales === 1 ? '' : 's'}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-gray-400 mt-3">Net of refunds and adjustments, by the day each commission was recorded.</p>
         </div>
       )}
       {mixTotal > 0 && (
@@ -148,7 +156,7 @@ function CodeCard({ code, partnerActive, currency }) {
   const prices = Object.entries(code.tierPrices || {})
   const live = isCodeLive(code, partnerActive)
   return (
-    <div className="border border-gray-200 rounded-lg p-4 bg-white">
+    <div className="border border-gray-200 rounded-xl p-4 bg-white">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="font-mono text-lg font-bold text-blue-700">{code.code}</div>
         <span className={`text-xs px-2 py-0.5 rounded-full ${
@@ -257,7 +265,7 @@ function ConversionRow({ conversion, currency }) {
 // actions — those stay admin-only), mirroring CyclesTab's per-cycle shape.
 function CycleRow({ cycle, currency }) {
   return (
-    <div className="border border-gray-200 rounded-lg bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+    <div className="border border-gray-200 rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
       <div>
         <div className="font-medium text-gray-900 flex items-center gap-2">
           {cycle.label}
@@ -376,11 +384,11 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
         )}
       </div>
       {loaded.length === 0 ? (
-        <p className="text-sm text-gray-500 mb-8">
+        <p className="text-sm text-gray-500">
           No conversions yet — once someone buys through your link, it'll show up here.
         </p>
       ) : (
-        <div className="mb-8">
+        <div>
           <ul className="flex flex-col gap-2 mb-2">
             {loaded.map(cv => <ConversionRow key={cv.id} conversion={cv} currency={currency} />)}
           </ul>
@@ -487,7 +495,7 @@ function ResetLinks({ token }) {
     }
   }
   return (
-    <div className="mt-4 bg-white border border-gray-200 rounded-md px-4 py-3" data-testid="reset-links">
+    <div className="bg-white border border-gray-200 rounded-xl px-4 py-3" data-testid="reset-links">
       <p className="text-sm font-medium text-gray-900">Think your link leaked?</p>
       <p className="text-xs text-gray-500 mb-2">Reset your dashboard and payout links. The old ones stop working immediately and the new ones are emailed to the address we have on file.</p>
       {state === 'sent' ? (
@@ -522,7 +530,7 @@ function NotificationPrefs({ token, initial }) {
     } catch (_) { setState('error') }
   }
   return (
-    <div className="mt-8 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap" data-testid="notification-prefs">
+    <div className="bg-white border border-gray-200 rounded-xl px-4 py-3 flex items-center justify-between gap-3 flex-wrap" data-testid="notification-prefs">
       <div>
         <p className="text-sm font-medium text-gray-900">Email me for each sale</p>
         <p className="text-xs text-gray-500">
@@ -548,7 +556,7 @@ function TermsPrompt({ token, version, onAccepted }) {
     try { await api.post('/partners/accept-terms', {}, partnerAuth(token)); onAccepted() } catch (_) { setState('error') }
   }
   return (
-    <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" data-testid="terms-prompt">
+    <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900" data-testid="terms-prompt">
       <p>
         Please review the current <Link to="/partner/terms" className="underline font-medium">Partner Program terms</Link>
         {version ? ` (version ${version})` : ''} and accept them. Your links keep working in the meantime.
@@ -593,14 +601,21 @@ export default function PartnerDashboard() {
       .finally(() => setLoading(false))
   }, [token])
 
+  // The strip in the header: jumps to each part of the page.
+  const sections = data ? [
+    { id: 'overview', label: 'Overview' },
+    { id: 'earnings', label: 'Earnings' },
+    { id: 'codes', label: 'Codes' },
+    { id: 'payouts', label: 'Payouts' },
+    { id: 'settings', label: 'Settings' },
+  ] : []
+
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <Navbar />
-      <main className="flex-1 max-w-3xl mx-auto w-full px-4 py-10">
+    <PartnerLayout name={data?.name} sections={sections}>
         {loading ? (
           <div className="flex justify-center py-16"><Spinner /></div>
         ) : loadError ? (
-          <div className="bg-white rounded-lg border border-gray-200 p-8">
+          <div className="max-w-xl mx-auto bg-white rounded-xl border border-gray-200 p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Couldn't load your dashboard</h1>
             <p className="text-sm text-gray-600">
               Something went wrong on our side or with your connection — your link is fine.
@@ -608,7 +623,7 @@ export default function PartnerDashboard() {
             </p>
           </div>
         ) : invalid ? (
-          <div className="bg-white rounded-lg border border-gray-200 p-8">
+          <div className="max-w-xl mx-auto bg-white rounded-xl border border-gray-200 p-8">
             <h1 className="text-xl font-bold text-gray-900 mb-2">Link not valid</h1>
             <p className="text-sm text-gray-600">
               This dashboard link is invalid or has expired.{' '}
@@ -616,162 +631,180 @@ export default function PartnerDashboard() {
             </p>
           </div>
         ) : (
-          <>
-            <div className="flex items-center justify-between mb-1 flex-wrap gap-2">
-              <h1 className="text-2xl font-bold text-gray-900">
-                {data.name}'s Passthrough dashboard
-              </h1>
-              <PayoutDetailsAccess token={token} scope={data.scope} className="text-sm text-blue-600 hover:underline">
-                {data.scope === 'payout' ? 'Update payout details →' : 'Email me a payout-details link →'}
-              </PayoutDetailsAccess>
-            </div>
-            {/* AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard
-                has always returned commissionRate — the rate applied to every
-                sale below — but this page never displayed it anywhere. A
-                partner had no way to know their own rate except by manually
-                back-computing it from a commission amount against a sale price
-                they'd have to already know. */}
-            {data.commissionRate != null && (
-              <p className="text-sm text-gray-500 mb-5">
-                You earn {formatRate(data.commissionRate)} commission on every sale through your link.
-              </p>
-            )}
-            {/* Payments & Pricing round 4, G6: the same crediting terms an applicant sees. */}
-            <details className="text-sm text-gray-500 mb-5" data-testid="attribution-terms">
-              <summary className="cursor-pointer text-gray-600 hover:text-gray-800">How crediting works</summary>
-              <ul className="list-disc pl-5 mt-2 space-y-1">
-                {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
-              </ul>
-            </details>
-
-            {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
-                this is the account-level half of that fix. Without it, a
-                paused partner had no indication anywhere on their own
-                dashboard that their links had stopped working. */}
-            {!data.active && (
-              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                Your partner account is currently paused. Your links won't apply discounts or earn
-                commission until it's reactivated — contact us if you weren't expecting that.
-              </div>
-            )}
-
-            {/* Money is owed (or accruing) but we have nowhere to send it. */}
-            {!data.hasPayoutDetails && (data.stats.pendingCents > 0 || data.stats.paidCents > 0) && (
-              <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
-                We don't have your payout details yet, so we can't pay you.{' '}
-                <PayoutDetailsAccess token={token} scope={data.scope} className="underline font-medium">
-                  {data.scope === 'payout' ? 'Add them now →' : 'Email me a link to add them →'}
+          <div className="flex flex-col gap-8">
+            <div id="overview" className="scroll-mt-24 flex flex-col gap-4">
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <h1 className="text-2xl font-bold text-gray-900">
+                  {data.name}'s Passthrough dashboard
+                </h1>
+                <PayoutDetailsAccess token={token} scope={data.scope} className="text-sm text-blue-600 hover:underline">
+                  {data.scope === 'payout' ? 'Update payout details →' : 'Email me a payout-details link →'}
                 </PayoutDetailsAccess>
               </div>
-            )}
-            {/* Round 8: where payouts go (last four only) and, right after a change, that payouts are paused for a while. */}
-            {data.hasPayoutDetails && data.payoutAccount && (
-              <p className="text-sm text-gray-500 mb-5" data-testid="payout-account">
-                Payouts go to: <span className="font-medium text-gray-700">{payoutAccountLabel(data.payoutAccount)}</span>
-              </p>
-            )}
-            {data.payoutHoldUntil && (
-              <div className="mb-6 rounded-lg border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="payout-hold">
-                You changed your payout details recently, so the next payout is on hold until about{' '}
-                {formatDateTime(data.payoutHoldUntil)}. This protects you if someone else ever got hold of your link.
-              </div>
-            )}
-            {data.termsAcceptanceRequired && !termsDone && (
-              <TermsPrompt token={token} version={data.currentTermsVersion} onAccepted={() => setTermsDone(true)} />
-            )}
-            {data.belowMinimum && (
-              <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
-                Payouts start at {fmtCents(data.minPayoutCents, data.currency)}. Your {fmtCents(data.carriedForwardCents, data.currency)} carries
-                forward and will be paid once your balance reaches it.
-              </div>
-            )}
+              {/* AUDIT FIX (Section 3/4 re-audit, feature gap): getPartnerDashboard
+                  has always returned commissionRate — the rate applied to every
+                  sale below — but this page never displayed it anywhere. A
+                  partner had no way to know their own rate except by manually
+                  back-computing it from a commission amount against a sale price
+                  they'd have to already know. */}
+              {data.commissionRate != null && (
+                <p className="text-sm text-gray-500 -mt-2">
+                  You earn {formatRate(data.commissionRate)} commission on every sale through your link.
+                </p>
+              )}
+              {/* Payments & Pricing round 4, G6: the same crediting terms an applicant sees. */}
+              <details className="text-sm text-gray-500" data-testid="attribution-terms">
+                <summary className="cursor-pointer text-gray-600 hover:text-gray-800">How crediting works</summary>
+                <ul className="list-disc pl-5 mt-2 space-y-1">
+                  {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
+                </ul>
+              </details>
 
-            {/* Round 6: the figures the admin side has always had. What the next payout run will actually pay, and any
-                refund credit that will net against it, instead of making the partner add up the cycle rows below. */}
-            {data.readyToPayCents > 0 && (
-              <div className="mb-6 rounded-lg border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900" data-testid="ready-to-pay">
-                <span className="font-semibold">{fmtCents(data.readyToPayCents, data.currency)}</span> is ready to be paid in the next payout run.
-              </div>
-            )}
-            {data.creditCents > 0 && (
-              <div className="mb-6 rounded-lg border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600" data-testid="refund-credit">
-                A credit of {fmtCents(data.creditCents, data.currency)} (refunds or balance adjustments) will be taken off your next payout.
-              </div>
-            )}
+              {/* AUDIT FIX (Section 3/4 pass, bug): see isCodeLive's comment —
+                  this is the account-level half of that fix. Without it, a
+                  paused partner had no indication anywhere on their own
+                  dashboard that their links had stopped working. */}
+              {!data.active && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+                  Your partner account is currently paused. Your links won't apply discounts or earn
+                  commission until it's reactivated — contact us if you weren't expecting that.
+                </div>
+              )}
 
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
-              <StatCard label="Clicks" value={data.stats.totalClicks} />
-              <StatCard label="Conversions" value={data.stats.totalConversions} />
-              <StatCard label="Pending" value={fmtCents(data.stats.pendingCents, data.currency)} />
-              <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents, data.currency)} />
+              {/* Money is owed (or accruing) but we have nowhere to send it. */}
+              {!data.hasPayoutDetails && (data.stats.pendingCents > 0 || data.stats.paidCents > 0) && (
+                <div className="rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-900">
+                  We don't have your payout details yet, so we can't pay you.{' '}
+                  <PayoutDetailsAccess token={token} scope={data.scope} className="underline font-medium">
+                    {data.scope === 'payout' ? 'Add them now →' : 'Email me a link to add them →'}
+                  </PayoutDetailsAccess>
+                </div>
+              )}
+              {/* Round 8: where payouts go (last four only) and, right after a change, that payouts are paused for a while. */}
+              {data.hasPayoutDetails && data.payoutAccount && (
+                <p className="text-sm text-gray-500" data-testid="payout-account">
+                  Payouts go to: <span className="font-medium text-gray-700">{payoutAccountLabel(data.payoutAccount)}</span>
+                </p>
+              )}
+              {data.payoutHoldUntil && (
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="payout-hold">
+                  You changed your payout details recently, so the next payout is on hold until about{' '}
+                  {formatDateTime(data.payoutHoldUntil)}. This protects you if someone else ever got hold of your link.
+                </div>
+              )}
+              {data.termsAcceptanceRequired && !termsDone && (
+                <TermsPrompt token={token} version={data.currentTermsVersion} onAccepted={() => setTermsDone(true)} />
+              )}
+              {data.belowMinimum && (
+                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600">
+                  Payouts start at {fmtCents(data.minPayoutCents, data.currency)}. Your {fmtCents(data.carriedForwardCents, data.currency)} carries
+                  forward and will be paid once your balance reaches it.
+                </div>
+              )}
+
+              {/* Round 6: the figures the admin side has always had. What the next payout run will actually pay, and any
+                  refund credit that will net against it, instead of making the partner add up the cycle rows below. */}
+              {data.readyToPayCents > 0 && (
+                <div className="rounded-xl border border-green-200 bg-green-50 px-4 py-3 text-sm text-green-900" data-testid="ready-to-pay">
+                  <span className="font-semibold">{fmtCents(data.readyToPayCents, data.currency)}</span> is ready to be paid in the next payout run.
+                </div>
+              )}
+              {data.creditCents > 0 && (
+                <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-sm text-gray-600" data-testid="refund-credit">
+                  A credit of {fmtCents(data.creditCents, data.currency)} (refunds or balance adjustments) will be taken off your next payout.
+                </div>
+              )}
+
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+                <StatCard label="Clicks" value={data.stats.totalClicks} />
+                <StatCard label="Conversions" value={data.stats.totalConversions} />
+                <StatCard label="Pending" value={fmtCents(data.stats.pendingCents, data.currency)} />
+                <StatCard label="Paid to date" value={fmtCents(data.stats.paidCents, data.currency)} />
+              </div>
             </div>
 
-            {data.cyclesSummary?.length > 0 && (
-              <>
-                <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout cycles</h2>
-                <div className="flex flex-col gap-2 mb-8">
-                  {data.cyclesSummary.map(cycle => (
-                    <CycleRow key={cycle.key} cycle={cycle} currency={data.currency} />
-                  ))}
-                  {data.olderUnpaidCents !== 0 && (
-                    <div className="border border-gray-200 rounded-lg bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
-                      <div className="font-medium text-gray-900">Earlier cycles</div>
-                      <div className={`text-sm ${data.olderUnpaidCents > 0 ? 'font-semibold text-amber-600' : 'text-red-600'}`}>
-                        {fmtCents(data.olderUnpaidCents, data.currency)} {data.olderUnpaidCents > 0 ? '— still unpaid' : '— refund credit, nets against future commission'}
+            {/* Two columns from lg: the money on the left, what you share and your settings on the right. The right-hand
+                column comes first in the page order, so on a phone the codes (the thing to share) are above the ledger. */}
+            <div className="grid gap-8 lg:grid-cols-3 lg:items-start">
+              <div className="flex flex-col gap-8 min-w-0 lg:col-start-3 lg:row-start-1">
+                <section id="codes" className="scroll-mt-24 flex flex-col gap-3">
+                  <h2 className="text-lg font-semibold text-gray-900">Your codes</h2>
+                  {data.referralCodes.length === 0 ? (
+                    <p className="text-sm text-gray-500">
+                      No referral code yet — we'll email you as soon as one is set up.
+                    </p>
+                  ) : (
+                    <div className="flex flex-col gap-3">
+                      {data.referralCodes.map(code => (
+                        <CodeCard key={code.id} code={code} partnerActive={data.active} currency={data.currency} />
+                      ))}
+                    </div>
+                  )}
+                </section>
+
+                <section id="settings" className="scroll-mt-24 flex flex-col gap-3">
+                  <NotificationPrefs token={token} initial={data.notifyConversions} />
+                  <ResetLinks token={token} />
+                </section>
+              </div>
+
+              <div className="flex flex-col gap-8 min-w-0 lg:col-span-2 lg:col-start-1 lg:row-start-1">
+                <section id="earnings" className="scroll-mt-24 flex flex-col gap-8">
+                  {data.cyclesSummary?.length > 0 && (
+                    <div>
+                      <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout cycles</h2>
+                      <div className="flex flex-col gap-2">
+                        {data.cyclesSummary.map(cycle => (
+                          <CycleRow key={cycle.key} cycle={cycle} currency={data.currency} />
+                        ))}
+                        {data.olderUnpaidCents !== 0 && (
+                          <div className="border border-gray-200 rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
+                            <div className="font-medium text-gray-900">Earlier cycles</div>
+                            <div className={`text-sm ${data.olderUnpaidCents > 0 ? 'font-semibold text-amber-600' : 'text-red-600'}`}>
+                              {fmtCents(data.olderUnpaidCents, data.currency)} {data.olderUnpaidCents > 0 ? '— still unpaid' : '— refund credit, nets against future commission'}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
-                </div>
-              </>
-            )}
 
-            <TrendSection trend={data.trend} mix={data.attributionMix} currency={data.currency} />
+                  <TrendSection trend={data.trend} mix={data.attributionMix} currency={data.currency} />
 
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Your codes</h2>
-            {data.referralCodes.length === 0 ? (
-              <p className="text-sm text-gray-500 mb-8">
-                No referral code yet — we'll email you as soon as one is set up.
-              </p>
-            ) : (
-              <div className="flex flex-col gap-3 mb-8">
-                {data.referralCodes.map(code => (
-                  <CodeCard key={code.id} code={code} partnerActive={data.active} currency={data.currency} />
-                ))}
+                  <div>
+                    <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} />
+                  </div>
+                </section>
+
+                <section id="payouts" className="scroll-mt-24">
+                  <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
+                  {data.payouts.length === 0 ? (
+                    <EmptyState>No payouts yet.</EmptyState>
+                  ) : (
+                    <ul className="flex flex-col gap-2">
+                      {data.payouts.map(p => (
+                        <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-xl px-4 py-3">
+                          <div className="flex justify-between">
+                            <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
+                            <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
+                          </div>
+                          <div className="flex items-center gap-3 mt-0.5">
+                            {p.periodStart && <span className="text-xs text-gray-400">Sales {formatDate(p.periodStart)} – {formatDate(p.periodEnd)}</span>}
+                            <button type="button" className="text-xs text-blue-600 hover:underline"
+                              onClick={() => setStatementId(id => (id === p.id ? null : p.id))}>
+                              {statementId === p.id ? 'Hide sales' : 'Sales in this payout'}
+                            </button>
+                          </div>
+                          {statementId === p.id && <PayoutStatement token={token} payout={p} currency={p.currency || data.currency} />}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
               </div>
-            )}
-
-            <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} />
-
-            <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
-            {data.payouts.length === 0 ? (
-              <EmptyState>No payouts yet.</EmptyState>
-            ) : (
-              <ul className="flex flex-col gap-2">
-                {data.payouts.map(p => (
-                  <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3">
-                    <div className="flex justify-between">
-                      <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
-                      <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
-                    </div>
-                    <div className="flex items-center gap-3 mt-0.5">
-                      {p.periodStart && <span className="text-xs text-gray-400">Sales {formatDate(p.periodStart)} – {formatDate(p.periodEnd)}</span>}
-                      <button type="button" className="text-xs text-blue-600 hover:underline"
-                        onClick={() => setStatementId(id => (id === p.id ? null : p.id))}>
-                        {statementId === p.id ? 'Hide sales' : 'Sales in this payout'}
-                      </button>
-                    </div>
-                    {statementId === p.id && <PayoutStatement token={token} payout={p} currency={p.currency || data.currency} />}
-                  </li>
-                ))}
-              </ul>
-            )}
-
-            <NotificationPrefs token={token} initial={data.notifyConversions} />
-            <ResetLinks token={token} />
-          </>
+            </div>
+          </div>
         )}
-      </main>
-      <Footer />
-    </div>
+    </PartnerLayout>
   )
 }

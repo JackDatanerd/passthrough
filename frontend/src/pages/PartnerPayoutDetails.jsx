@@ -7,8 +7,7 @@ import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
 import Spinner from '../components/ui/Spinner'
-import Navbar from '../components/layout/Navbar'
-import Footer from '../components/layout/Footer'
+import PartnerLayout from '../components/partner/PartnerLayout'
 import { formatDateTime } from '../lib/utils'
 
 // Public page, reached via the link emailed by adminCreatePartner /
@@ -114,10 +113,9 @@ export default function PartnerPayoutDetails() {
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-gray-50">
-      <Navbar />
-      <main className="flex-1 flex items-center justify-center px-4 py-12">
-        <div className="w-full max-w-md bg-white rounded-lg border border-gray-200 shadow-sm p-8">
+    <PartnerLayout>
+      <div className="flex items-center justify-center py-4">
+        <div className="w-full max-w-md bg-white rounded-xl border border-gray-200 shadow-sm p-8">
           {loading ? (
             <div className="flex justify-center py-8"><Spinner /></div>
           ) : loadError ? (
@@ -212,8 +210,7 @@ export default function PartnerPayoutDetails() {
             </>
           )}
         </div>
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </PartnerLayout>
   )
 }

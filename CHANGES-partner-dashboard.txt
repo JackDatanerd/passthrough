@@ -1,0 +1,26 @@
+PARTNER DASHBOARD: WIDE LAYOUT, ITS OWN HEADER, A REAL CHART
+==============================================================
+
+What changed for the partner
+- Own header: the public site's header (Stories, Pricing, Log in...) is gone from the partner pages. It now shows the
+  logo (to the homepage), a "Partners" label, the partner's name with an initial, and, on the dashboard, a strip that
+  jumps to Overview / Earnings / Codes / Payouts / Settings and marks the one you are in. The header stays on screen
+  while you scroll. The payout-details page uses the same header.
+- Wide layout (up to 1150px, was 750px): from a large screen the page is two columns. Left: payout cycles, earnings by
+  cycle, conversions, payout history. Right: your codes (the link to share) and your settings (email per sale, reset
+  links). On a phone it is one column with the codes first, ahead of the ledger.
+- All the notices (paused account, add payout details, payout hold, terms, minimum payout, ready to pay, refund credit)
+  sit together under the title, in the same style and spacing.
+- Earnings by cycle is now a column chart, one column per cycle, with the amount above, the label and sales below; the
+  current cycle is darker and a negative cycle is red.
+- Cards use the same rounded corners as the applicant dashboard.
+
+Nothing else changed: every figure, label, button, endpoint and rule on the page is exactly as before (conversions,
+CSV export, payout statements, link reset, terms prompt, notification switch). No backend change, no migration.
+
+Files
+- frontend/src/components/partner/PartnerLayout.jsx (new): the header, the section strip, the main area and the footer.
+- frontend/src/pages/PartnerDashboard.jsx
+- frontend/src/pages/PartnerPayoutDetails.jsx (header only)
+- frontend/tests/partnerLayout.test.jsx (new): the header and its section strip, page structure and order, the chart.
+All existing partner tests pass unchanged.
