@@ -545,9 +545,11 @@ export default function ScanResult() {
   // G3: "is my payment done?" — the same verify call the popup and /payment/success make.
   async function handleCheckPendingPayment() {
     if (!pendingPayment || payLoading) return
-    setPayLoading(true); setPayError('')
+    setPayLoading(true); setPayError(''); setPayNotice('')
     try {
-      await api.get(`/payments/verify?reference=${encodeURIComponent(pendingPayment.reference)}`)
+      const res = await api.get(`/payments/verify?reference=${encodeURIComponent(pendingPayment.reference)}`)
+      // 202 = Paystack has not confirmed it yet. Say so, otherwise the button looks dead.
+      if (res && res.status === 202) setPayNotice('Still processing — Paystack has not confirmed this payment yet. This page updates automatically once it does.')
     } catch (err) {
       setPayError(err.response?.status === 400
         ? 'That payment has not been completed — click the button for your fix to continue it, or cancel it and choose again.'

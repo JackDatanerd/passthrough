@@ -410,7 +410,13 @@ async function processChargeSuccess(c, supabase, event) {
     return { status: 'IGNORED', note: 'unknown reference' }
   }
 
-  const mismatch = fulfillment.chargeMismatch(paymentRow, { amount: data.amount, currency: data.currency })
+  // A row that already settled (SUCCESS, or REFUNDED / DISPUTED which can only follow a SUCCESS) may have had an
+  // overpayment accepted by an admin recheck, which keeps amount_cents at the expected price. A replayed or late
+  // charge.success for it must not be re-held and re-alerted as "NOT fulfilled" (verifyPayment exempts the same way,
+  // payments rounds 10/13). A CURRENCY mismatch is never accepted, so it is still flagged.
+  const settledRow = ['SUCCESS', 'REFUNDED', 'DISPUTED'].includes(paymentRow.status)
+  let mismatch = fulfillment.chargeMismatch(paymentRow, { amount: data.amount, currency: data.currency })
+  if (mismatch && settledRow && mismatch.receivedCurrency === mismatch.expectedCurrency) mismatch = null
   if (mismatch) {
     console.error(`[CRITICAL] Webhook amount/currency mismatch on ${reference}:`, mismatch)
     alert(c, 'Payment amount/currency mismatch — NOT fulfilled',

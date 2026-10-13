@@ -243,6 +243,19 @@ describe('charge.success — fulfilment', () => {
     expect(w.t.webhook_events[0].status).toBe('HELD')
     expect(t.state.alerts.some(a => /mismatch/i.test(a.subject) && /recheck/i.test(a.message))).toBe(true)
   })
+  it('a replayed charge.success for an already-SUCCESS row with an accepted overpayment is not re-held or re-alerted', async () => {
+    const w = seed({ payments: [{ id: 'pay1', paystack_ref: 'ref-1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 'scan1', fix_tier: 'FIX', referral_code_id: null }] })
+    t = harness(w)
+    expect((await t.fire(chargeSuccess({ amount: 3100 }))).status).toBe(200)
+    expect(w.t.webhook_events[0].status).not.toBe('HELD')
+    expect(t.state.alerts.some(a => /mismatch/i.test(a.subject))).toBe(false)
+  })
+  it('still flags a CURRENCY mismatch on an already-SUCCESS row', async () => {
+    const w = seed({ payments: [{ id: 'pay1', paystack_ref: 'ref-1', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', scan_id: 'scan1', fix_tier: 'FIX', referral_code_id: null }] })
+    t = harness(w)
+    await t.fire(chargeSuccess({ currency: 'NGN' }))
+    expect(w.t.webhook_events[0].status).toBe('HELD')
+  })
   it('does NOT fulfil on a currency mismatch', async () => {
     const w = seed(); t = harness(w)
     await t.fire(chargeSuccess({ currency: 'NGN' }))
