@@ -1,0 +1,39 @@
+Partners / referral program (section 4) - round 12
+===================================================
+
+No migration. Independent audit pass from a fresh clone; every item below was found by reading the code, not from the
+earlier audit comments. Pass NOT yet clean - run another independent pass after this ships.
+
+BUGS FIXED
+ B1  EditReferralCodeModal always sent tierPrices, so changing only a code's usage limit or expiry demanded a step-up
+     and re-ran the low-price guard (an intentionally cheap code failed PRICE_TOO_LOW until re-confirmed) - against the
+     route's own "limit/expiry stays one click" rule. tierPrices (and confirmLowPrice) are now sent only when a tier
+     price actually changed.
+ B2  The 30-day attribution window could stretch. The browser pushed an older local code to the account and the server
+     stamped referred_at = now, which another device then adopted with a fresh 30 days (~60 total). The browser now
+     sends capturedAt; the server stores it (future/garbage -> now, older than 30 days -> refused as 'expired') and never
+     moves a code the account already holds backwards in time.
+ B3  A code removed while SIGNED OUT could not be cleared on the account, so the next sign-in restored it. The removal is
+     remembered and the next restore clears the account unless a newer capture exists (here or on the account).
+ B4  A code the server refused (unusable / the buyer's own) was re-posted on every session refresh. Refused codes are not
+     re-sent for the rest of the page session.
+ B5  adminSendTermsNotice re-selected partners whose mail had already failed at the head of the created_at-ordered batch,
+     so 40 permanently failing addresses would block everyone behind them. The response now returns failedIds, the admin
+     page hands them back as skipIds (uuid-validated, interpolated into one .not('id','in',...) filter) for the rest of
+     the page session, and "remaining" no longer counts just-failed partners as still to go.
+ B6  recordPayoutCore: if a later chunk of the ledger settlement failed, earlier chunks stayed claimed while the admin was
+     told the whole settlement failed. The remainder is now retried once before anything is reported, and the owner alert
+     says how many rows were already marked paid.
+ B7  PartnerDashboard "Sales in this payout" stopped silently at 2,000 rows and then showed that partial sum as "Commission
+     settled by this payout". A truncated list now shows no total and says so.
+ B8  Admin form limits exceeded the server's: void-payout reason, remove-data reason and the Edit-partner website field
+     allowed 1,000 characters, the server allows 300 (generic "Validation failed"). Limits aligned.
+
+CONSIDERED, NOT CHANGED
+ - canonicalEmail strips "+tag" on every domain. Deliberate anti-aliasing for the self-referral guard; the only cost is a
+   rare false positive on a host where "+" is a distinct mailbox. Left as is.
+
+TESTS
+ tests/partners.round12.test.js (new), plus additions to tests/partners.round8.test.js, frontend/tests/partnersRound8.test.jsx
+ and frontend/tests/partnersRound10.test.jsx. Three existing assertions were updated to the new contracts (terms-notice
+ request body / failedIds, attribution push body).

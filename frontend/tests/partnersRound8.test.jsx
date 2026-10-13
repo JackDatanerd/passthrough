@@ -140,7 +140,7 @@ describe('partners list', () => {
     api.post.mockResolvedValue({ data: { success: true, sent: 1, failed: 0, remaining: 0 } })
     fireEvent.click(await screen.findByRole('button', { name: /send terms notice \(1\)/i }))
     fireEvent.click(await screen.findByRole('button', { name: /^send notice$/i }))
-    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/terms-notice'))
+    await waitFor(() => expect(api.post).toHaveBeenCalledWith('/partners/terms-notice', { skipIds: [] }))
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expect.objectContaining({ type: 'success', message: expect.stringMatching(/sent to 1 partner/i) })))
   })
   it('has no terms-notice button when everyone is current', async () => {

@@ -80,10 +80,28 @@ function writeStored(code, source = 'link', capturedAt = Date.now()) {
 // bought on a laptop — or cleared site data, or switched in-app browsers — was never credited. For a signed-in person the
 // code is also kept on their ACCOUNT (users.referred_by_code, migration 0076). Best-effort and silent: a failed sync only
 // means the code stays browser-local, exactly as before.
-function syncToAccount(code) {
+// `capturedAt` is when THIS browser first captured the code, so the account keeps the real start of the 30-day window
+// instead of a fresh "now" (pushing an old local code used to stretch the window to ~60 days across two devices).
+// Codes the server refuses (unusable / the buyer's own) are not pushed again this page session: restoreReferralFromAccount
+// runs on every session refresh and would otherwise re-post the same refused code each time.
+const syncRefused = new Set()
+function syncToAccount(code, capturedAt) {
   if (!getToken()) return
-  api.post('/partners/attribution', { code: code || null }).catch(() => {})
+  if (code && syncRefused.has(code)) return
+  const body = { code: code || null }
+  if (code && Number.isFinite(capturedAt)) body.capturedAt = new Date(capturedAt).toISOString()
+  api.post('/partners/attribution', body)
+    .then(res => { if (code && res?.data?.data?.stored === false) syncRefused.add(code) })
+    .catch(() => {})
 }
+
+// A code removed while LOGGED OUT cannot be cleared on the account at that moment, so the account's copy would be
+// restored at the next sign-in — resurrecting a code the buyer removed on purpose. Remember when it was removed; the
+// next restore clears the account unless the account's code was captured AFTER the removal (a newer click elsewhere).
+const CLEARED_KEY = 'passthrough_referral_cleared'
+function markCleared()   { try { localStorage.setItem(CLEARED_KEY, String(Date.now())) } catch (_) {} }
+function clearedAt()     { try { const n = Number(localStorage.getItem(CLEARED_KEY)); return Number.isFinite(n) && n > 0 ? n : 0 } catch (_) { return 0 } }
+function dropClearedMark() { try { localStorage.removeItem(CLEARED_KEY) } catch (_) {} }
 
 // Codes captured synchronously (see getStoredReferralCode) whose click has not been logged
 // yet — the effect below still owes the server that click.
@@ -119,7 +137,7 @@ function trackClick(code) {
   // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
   // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
   api.post('/partners/track-click', { code })
-    .then(res => { if (res?.data?.valid === false) rejectCode(code); else syncToAccount(code) })
+    .then(res => { if (res?.data?.valid === false) rejectCode(code); else syncToAccount(code, readStoredRecord()?.code === code ? readStoredRecord().capturedAt : undefined) })
     .catch(() => {})
 }
 // The last location.search the synchronous capture looked at. It runs ONCE per distinct
@@ -202,8 +220,8 @@ export function getStoredReferralCode() {
 // the same attribution window).
 export function setStoredReferralCode(code) {
   const trimmed = (code || '').trim().toUpperCase()
-  if (trimmed) writeStored(trimmed, 'typed')
-  else storageRemove()
+  if (trimmed) { writeStored(trimmed, 'typed'); dropClearedMark() }
+  else { storageRemove(); if (!getToken()) markCleared() }
   // Removing the code on purpose must also clear it on the account, or it would be restored on the next sign-in.
   syncToAccount(trimmed)
 }
@@ -226,10 +244,18 @@ export function restoreReferralFromAccount(user) {
     const accountAt = user?.referredAt ? Date.parse(user.referredAt) : NaN
     const accountLive = !!accountCode && Number.isFinite(accountAt) && Date.now() - accountAt <= ATTRIBUTION_TTL_MS
     const local = readStoredRecord()
+    const removedAt = clearedAt()
+    if (removedAt) {
+      dropClearedMark()
+      // Removed while signed out, and neither this browser nor the account captured a code AFTER that removal:
+      // the buyer meant it gone, so clear the account's copy instead of adopting it.
+      const recaptured = !!local && local.capturedAt > removedAt
+      if (!recaptured && accountCode && !(accountLive && accountAt > removedAt)) { syncToAccount(''); return }
+    }
     if (accountLive && (!local || (local.code !== accountCode && accountAt > local.capturedAt))) {
       if (!rejectedThisSession.has(accountCode)) writeStored(accountCode, 'account', accountAt)
       return
     }
-    if (local && local.code !== accountCode) syncToAccount(local.code)
+    if (local && local.code !== accountCode) syncToAccount(local.code, local.capturedAt)
   } catch (_) { /* attribution is best-effort */ }
 }

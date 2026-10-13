@@ -34,7 +34,8 @@ describe('useReferralCapture — account attribution', () => {
     const mod = await import('../src/hooks/useReferralCapture')
     mod.restoreReferralFromAccount({ referredByCode: 'OLDER', referredAt: new Date(Date.now() - 5 * DAY).toISOString() })
     expect(mod.getStoredReferralCode()).toBe('NEWER')
-    expect(api.post).toHaveBeenCalledWith('/partners/attribution', { code: 'NEWER' })
+    // Round 12: the push carries when the browser captured it, so the account keeps the real start of the window.
+    expect(api.post).toHaveBeenCalledWith('/partners/attribution', { code: 'NEWER', capturedAt: expect.any(String) })
   })
   it('a newer account code replaces an older browser one', async () => {
     localStorage.setItem(KEY, JSON.stringify({ code: 'OLDER', capturedAt: Date.now() - 9 * DAY, source: 'link' }))
@@ -51,6 +52,43 @@ describe('useReferralCapture — account attribution', () => {
     mod.setStoredReferralCode('')
     expect(mod.getStoredReferralCode()).toBe('')
     expect(api.post).toHaveBeenLastCalledWith('/partners/attribution', { code: null })
+  })
+  it('pushing an older browser code carries its ORIGINAL capture time (the window is not restarted)', async () => {
+    localStorage.setItem('passthrough_token', 'tok')
+    const at = Date.now() - 20 * DAY
+    localStorage.setItem(KEY, JSON.stringify({ code: 'MINE', capturedAt: at, source: 'link' }))
+    const mod = await import('../src/hooks/useReferralCapture')
+    mod.restoreReferralFromAccount({})
+    expect(api.post).toHaveBeenCalledWith('/partners/attribution', { code: 'MINE', capturedAt: new Date(at).toISOString() })
+  })
+  it('a code removed while signed out is cleared on the account at the next sign-in, not adopted back', async () => {
+    const mod = await import('../src/hooks/useReferralCapture')
+    mod.setStoredReferralCode('COACH20')
+    mod.setStoredReferralCode('')                       // signed out: nothing could be sent
+    expect(api.post).not.toHaveBeenCalled()
+    localStorage.setItem('passthrough_token', 'tok')
+    mod.restoreReferralFromAccount({ referredByCode: 'COACH20', referredAt: new Date(Date.now() - 3600 * 1000).toISOString() })
+    expect(mod.getStoredReferralCode()).toBe('')
+    expect(api.post).toHaveBeenCalledWith('/partners/attribution', { code: null })
+  })
+  it('...but an account code captured AFTER that removal (a newer click elsewhere) is adopted', async () => {
+    const mod = await import('../src/hooks/useReferralCapture')
+    mod.setStoredReferralCode('COACH20')
+    mod.setStoredReferralCode('')
+    await new Promise(r => setTimeout(r, 5))
+    localStorage.setItem('passthrough_token', 'tok')
+    mod.restoreReferralFromAccount({ referredByCode: 'NEWER', referredAt: new Date().toISOString() })
+    expect(mod.getStoredReferralCode()).toBe('NEWER')
+  })
+  it('does not re-post a code the server refused on every session refresh', async () => {
+    localStorage.setItem('passthrough_token', 'tok')
+    localStorage.setItem(KEY, JSON.stringify({ code: 'MINE', capturedAt: Date.now() - 1000, source: 'link' }))
+    api.post.mockResolvedValue({ data: { data: { stored: false, reason: 'self' } } })
+    const mod = await import('../src/hooks/useReferralCapture')
+    mod.restoreReferralFromAccount({})
+    await new Promise(r => setTimeout(r, 0))
+    mod.restoreReferralFromAccount({})
+    expect(api.post).toHaveBeenCalledTimes(1)
   })
   it('signed out, nothing is sent to the account endpoint', async () => {
     const mod = await import('../src/hooks/useReferralCapture')
@@ -114,5 +152,38 @@ describe('PartnerDetail — the low-price confirmation lives in the CODE modals 
     const editPartner = src.slice(src.indexOf('function EditPartnerModal'), src.indexOf('function AdjustBalanceModal'))
     expect(editPartner).not.toMatch(/confirm-low-price/)
     expect((src.match(/data-testid="confirm-low-price"/g) || []).length).toBe(2)
+  })
+})
+
+describe('round 12 — truncated payout statement and edit-code payload', () => {
+  it('shows no total when the statement hit its row cap (a prefix is not the payout)', async () => {
+    cleanup(); vi.resetModules(); api.get.mockReset(); api.post.mockReset()
+    const base = {
+      name: 'Coach K', active: true, commissionRate: 0.2, currency: 'USD', hasPayoutDetails: true, payoutMethod: 'BANK', scope: 'dashboard',
+      stats: { totalClicks: 5, totalConversions: 1, pendingCents: 0, paidCents: 200 }, referralCodes: [],
+      payouts: [{ id: 'po1', amountCents: 200, currency: 'USD', paidAt: '2026-09-20T10:00:00Z', periodStart: '2026-09-01', periodEnd: '2026-09-15' }],
+      cyclesSummary: [], olderUnpaidCents: 0, carriedForwardCents: 0, belowMinimum: false, minPayoutCents: 0, readyToPayCents: 0, creditCents: 0,
+      conversions: [], conversionsTotal: 0,
+    }
+    let n = 0
+    const full = () => Array.from({ length: 200 }, () => ({ id: `l${n++}`, commissionAmountCents: 1, createdAt: '2026-09-02T10:00:00Z' }))
+    const { default: PartnerDashboard } = await import('../src/pages/PartnerDashboard')
+    api.get.mockImplementation(url => {
+      if (url.startsWith('/partners/dashboard')) return Promise.resolve({ data: { data: base } })
+      if (url.includes('payoutId=po1')) return Promise.resolve({ data: { data: full() } })
+      return Promise.reject(new Error(`unexpected GET ${url}`))
+    })
+    render(<MemoryRouter initialEntries={['/partner/dashboard?token=TOK']}><PartnerDashboard /></MemoryRouter>)
+    fireEvent.click(await screen.findByRole('button', { name: /sales in this payout/i }))
+    const box = await screen.findByTestId('payout-statement')
+    await waitFor(() => expect(box.textContent).toMatch(/Showing the first 2,000 sales/))
+    expect(box.textContent).not.toMatch(/Commission settled by this payout/)
+  })
+  it('the edit-code modal sends tierPrices only when a price changed (so limit/expiry edits stay one click)', async () => {
+    const fs = await import('node:fs')
+    const src = fs.readFileSync(`${process.cwd()}/frontend/src/pages/admin/PartnerDetail.jsx`, 'utf8')
+    const modal = src.slice(src.indexOf('function EditReferralCodeModal'))
+    expect(modal).toMatch(/pricesChanged \? \{ tierPrices \} : \{\}/)
+    expect(modal).not.toMatch(/\{\n\s+tierPrices,\n/)
   })
 })

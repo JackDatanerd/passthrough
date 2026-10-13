@@ -604,7 +604,13 @@ async function sweepExpiringCodes(supabase, env) {
 // Returns { stored: true, code } | { stored: false, reason } | { cleared: true }. Never throws on a bad/unknown code —
 // an attribution that cannot apply is simply not stored, the same rule isCodeUsable gives a checkout.
 const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
-async function setUserAttribution(supabase, user, rawCode) {
+// `capturedAt` (optional ISO string) is when the BROWSER first saw this code. Pushing an older local code to the account
+// used to stamp referred_at = now, so the 30-day window the partner terms promise could be extended to ~60 days (the
+// account's fresh timestamp was then adopted by the next device with a new 30 days). The window now keeps its original
+// start: a future/garbage value falls back to now, an older-than-window one is refused, and a code the account already
+// holds is never moved BACKWARDS in time by a stale push.
+const ATTRIBUTION_WINDOW_MS = 30 * 24 * 3600 * 1000
+async function setUserAttribution(supabase, user, rawCode, capturedAt) {
   if (rawCode == null || String(rawCode).trim() === '') {
     const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null }).eq('id', user.id)
     if (error) throw error
@@ -615,8 +621,22 @@ async function setUserAttribution(supabase, user, rawCode) {
   const row = await lookupCode(supabase, code)
   if (!isCodeUsable(row)) return { stored: false, reason: 'unusable' }
   if (isSelfReferral(row, user.email)) return { stored: false, reason: 'self' }
+
+  const now = Date.now()
+  let at = now
+  const parsed = capturedAt ? Date.parse(capturedAt) : NaN
+  if (Number.isFinite(parsed)) at = Math.min(now, parsed)
+  if (now - at > ATTRIBUTION_WINDOW_MS) return { stored: false, reason: 'expired' }
+
+  const { data: current, error: readErr } = await supabase.from('users')
+    .select('referred_by_code, referred_at').eq('id', user.id).maybeSingle()
+  if (readErr) throw readErr
+  const currentAt = current?.referred_at ? Date.parse(current.referred_at) : NaN
+  if (current?.referred_by_code === code && Number.isFinite(currentAt) && currentAt > at)
+    return { stored: true, code, unchanged: true }     // already held with a newer start — never move it backwards
+
   const { error } = await supabase.from('users')
-    .update({ referred_by_code: code, referred_at: new Date().toISOString() }).eq('id', user.id)
+    .update({ referred_by_code: code, referred_at: new Date(at).toISOString() }).eq('id', user.id)
   if (error) throw error
   return { stored: true, code }
 }

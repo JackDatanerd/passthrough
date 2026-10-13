@@ -221,8 +221,26 @@ describe('terms notice', () => {
   it('does not mark a partner notified when the email failed', async () => {
     t = setup({ partnersList: people.slice(0, 2), termsMailOk: to => to !== 'a@x.co' })
     const res = await t.mod.adminSendTermsNotice(ctxOf())
-    expect(res.body).toMatchObject({ sent: 1, failed: 1, remaining: 1 })
+    // Round 12: a failed partner is reported in failedIds (the admin page hands them back as skipIds) and no longer
+    // counts as "still to go" — it would otherwise be re-offered forever at the head of the batch.
+    expect(res.body).toMatchObject({ sent: 1, failed: 1, remaining: 0 })
+    expect(res.body.failedIds).toHaveLength(1)
     expect(t.st.updates).toHaveLength(1)
+  })
+})
+
+describe('terms notice — skipIds (round 12)', () => {
+  const ID = '11111111-1111-4111-8111-111111111111'
+  it('leaves already-failed partners out of the batch so they cannot starve the rest', async () => {
+    t = setup({ partnersList: [{ id: 'b', name: 'B', email: 'b@x.co', dashboard_token: 'tb' }] })
+    const res = await t.mod.adminSendTermsNotice(ctxOf({ body: { skipIds: [ID] } }))
+    expect(res.body.sent).toBe(1)
+    const sel = t.st.queries.find(q => q.table === 'partners' && q.op === 'select')
+    expect(sel.filters).toContainEqual(['not', 'id', 'in', `(${ID})`])
+  })
+  it('refuses a skipIds entry that is not a uuid (it is interpolated into a filter)', async () => {
+    t = setup({ partnersList: [] })
+    await expect(t.mod.adminSendTermsNotice(ctxOf({ body: { skipIds: ['a),id.neq.(b'] } }))).rejects.toThrow()
   })
 })
 

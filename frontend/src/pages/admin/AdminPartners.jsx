@@ -499,11 +499,15 @@ export default function AdminPartners() {
   // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
   const termsOutstanding = partners.filter(p => p.status === 'ACTIVE' && p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
   const [confirmTerms, setConfirmTerms] = useState(false)
+  const failedTermsIds = useRef(new Set())
   async function sendTermsNotice() {
     // Round 11 (bug): a failed request used to be an unhandled rejection - no message, dialog left open.
     try {
-      const res = await api.post('/partners/terms-notice')
+      // Partners whose send failed earlier in this page session are skipped, so a few permanently failing addresses
+      // cannot hold the front of the batch and block everyone behind them.
+      const res = await api.post('/partners/terms-notice', { skipIds: [...failedTermsIds.current] })
       const d = res.data
+      for (const id of d.failedIds || []) failedTermsIds.current.add(id)
       toast({ message: `Terms notice sent to ${d.sent} partner(s)${d.failed ? `, ${d.failed} failed` : ''}${d.remaining ? ` - ${d.remaining} still to go, run it again.` : '.'}`, type: d.failed ? 'error' : 'success' })
       load()
     } catch (err) {

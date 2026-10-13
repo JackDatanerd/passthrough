@@ -1302,11 +1302,20 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
     // Atomic claim: only settle rows that are STILL unpaid at the moment of
     // this write, not just at the moment of the read above. `.select()`
     // reports exactly which ones this call won.
-    const { data: claimed, error: settleErr } = await selectInChunks(part => supabase.from('commission_ledger')
+    const claimRows = ids => selectInChunks(part => supabase.from('commission_ledger')
       .update({ payout_id: payout.id })
       .in('id', part)
       .is('payout_id', null)
-      .select('id, commission_amount_cents'), ledgerIds)
+      .select('id, commission_amount_cents'), ids)
+    let { data: claimed, error: settleErr } = await claimRows(ledgerIds)
+    if (settleErr) {
+      // A later chunk can fail after earlier chunks were already claimed. Settle only what is left, once, before
+      // alarming anyone: a one-off DB blip then costs nothing, and the alert below can say exactly how far it got.
+      const got = new Set((claimed || []).map(r => r.id))
+      const retry = await claimRows(ledgerIds.filter(id => !got.has(id)))
+      claimed = [...(claimed || []), ...(retry.data || [])]
+      settleErr = retry.error
+    }
     if (settleErr) {
       // AUDIT FIX (bug): this used to be console.error only, with the
       // function still returning success:true and a payout row that CLAIMS
@@ -1329,8 +1338,8 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
         await emailService.sendOwnerAlert(ctx.env,
           'Payout recorded but commission-ledger settlement failed — books may be wrong',
           `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\namount recorded: ${payoutRow.amount_cents} cents\n` +
-          `ledger rows this payout was supposed to settle: ${ledgerIds.length}\nerror: ${settleErr.message}\n\n` +
-          `The payout row was created (real money was already sent), but marking these commission_ledger rows ` +
+          `ledger rows this payout was supposed to settle: ${ledgerIds.length} (already marked paid before the failure: ${claimed?.length || 0})\nerror: ${settleErr.message}\n\n` +
+          `The payout row was created (real money was already sent), but marking ${(claimed?.length || 0) ? 'the REMAINING' : 'these'} commission_ledger rows ` +
           `as paid failed — they still show as UNPAID and may be pulled into a future payout for this partner, ` +
           `double-counting this money. Check commission_ledger for partner_id=${partnerId} with payout_id null ` +
           `and created before this payout, and settle them by hand if this payout already covers them.`,
@@ -2708,12 +2717,15 @@ async function resetMyPartnerLinks(ctx) {
 // ── Round 10 (feature gap): remember the referral code on the signed-in ACCOUNT ─────────────────────────────────
 // body { code: string | null }. null/'' clears it (the buyer removed the code on purpose). A code that cannot apply is
 // answered { stored: false } rather than an error — the SPA simply keeps what it had.
-const attributionSchema = z.object({ code: z.string().trim().max(100).nullable().optional() })
+const attributionSchema = z.object({
+  code: z.string().trim().max(100).nullable().optional(),
+  capturedAt: z.string().datetime().optional()    // when the browser first captured the code — keeps the 30-day window honest
+})
 async function setMyReferralAttribution(ctx) {
   const user = ctx.get('user')
   const body = attributionSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
-  const out = await referralService.setUserAttribution(supabase, user, body.code ?? null)
+  const out = await referralService.setUserAttribution(supabase, user, body.code ?? null, body.capturedAt)
   return ctx.json({ success: true, data: out })
 }
 
@@ -2740,30 +2752,40 @@ async function acceptPartnerTerms(ctx) {
 // provider throttles) and resumable: terms_notified_version records who has been told, so clicking again only
 // sends to the rest and never mails anyone twice for the same version.
 const TERMS_NOTICE_BATCH = 40
+// `skipIds` (optional): partners whose send already FAILED in an earlier run of this batch session. Failed partners are not
+// marked notified, so without it they stayed at the head of the created_at-ordered batch and a run of 40 persistently
+// failing addresses (bounced / suppressed) would block everyone behind them forever. The response returns `failedIds`
+// so the admin page can hand them back; a fresh page load starts over.
+const termsNoticeSchema = z.object({ skipIds: z.array(z.string().uuid()).max(500).optional() })
 async function adminSendTermsNotice(ctx) {
   const supabase = getSupabase(ctx.env)
   const version = PARTNER_TERMS_VERSION
-  const { data, count, error } = await supabase.from('partners')
+  const body = termsNoticeSchema.parse(await ctx.req.json().catch(() => ({})))
+  const skipIds = body.skipIds || []
+  let q = supabase.from('partners')
     .select('id, name, email, dashboard_token', { count: 'exact' })
     .eq('status', 'ACTIVE')
     .or(`terms_version.is.null,terms_version.neq.${version}`)
     .or(`terms_notified_version.is.null,terms_notified_version.neq.${version}`)
-    .order('created_at', { ascending: true }).limit(TERMS_NOTICE_BATCH)
+  if (skipIds.length) q = q.not('id', 'in', `(${skipIds.join(',')})`)
+  const { data, count, error } = await q.order('created_at', { ascending: true }).limit(TERMS_NOTICE_BATCH)
   if (error) throw error
   const targets = (data || []).filter(p => !isRemovedEmail(p.email))
-  let sent = 0, failed = 0
+  let sent = 0
+  const failedIds = []
   for (const p of targets) {
     const ok = await emailService.sendPartnerTermsUpdate(ctx.env, supabase, p.email, p.name, version,
       `${ctx.env.FRONTEND_URL}/partner/terms`, `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${p.dashboard_token}`)
       .then(r => r === true || r === undefined).catch(() => false)
-    if (!ok) { failed += 1; continue }
+    if (!ok) { failedIds.push(p.id); continue }
     const { error: upErr } = await supabase.from('partners').update({ terms_notified_version: version }).eq('id', p.id)
-    if (upErr) { failed += 1; continue }
+    if (upErr) { failedIds.push(p.id); continue }
     sent += 1
   }
-  const remaining = Math.max(0, (count ?? targets.length) - sent)
+  const failed = failedIds.length
+  const remaining = Math.max(0, (count ?? targets.length) - sent - failed)
   await logAdminAction(ctx, supabase, 'partner.terms_notice_sent', 'partner', null, { version, sent, failed, remaining })
-  return ctx.json({ success: true, version, sent, failed, remaining })
+  return ctx.json({ success: true, version, sent, failed, failedIds, remaining })
 }
 
 module.exports = {

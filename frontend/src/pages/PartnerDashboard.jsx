@@ -443,17 +443,23 @@ function PayoutDetailsAccess({ token, scope, children, className }) {
 function PayoutStatement({ token, payout, currency }) {
   const [state, setState] = useState('loading')   // loading | ready | error
   const [rows, setRows] = useState([])
+  const [truncated, setTruncated] = useState(false)
   useEffect(() => {
     let alive = true
     ;(async () => {
       try {
         const all = []
+        let more = false
         for (let offset = 0; offset < 2000; offset += 200) {
           const res = await api.get(`/partners/conversions?payoutId=${encodeURIComponent(payout.id)}&limit=200&offset=${offset}`, partnerAuth(token))
-          all.push(...(res.data.data || []))
-          if ((res.data.data || []).length < 200) break
+          const page = res.data.data || []
+          all.push(...page)
+          more = page.length >= 200
+          if (!more) break
         }
-        if (alive) { setRows(all); setState('ready') }
+        // The cap keeps a huge payout from hammering the read limiter. When it is hit the list is a PREFIX, so the sum of
+        // it must not be presented as what the payout settled.
+        if (alive) { setRows(all); setTruncated(more); setState('ready') }
       } catch (_) { if (alive) setState('error') }
     })()
     return () => { alive = false }
@@ -474,7 +480,11 @@ function PayoutStatement({ token, payout, currency }) {
               </li>
             ))}
           </ul>
-          <p className="text-xs font-medium text-gray-900 mt-2 flex justify-between"><span>Commission settled by this payout</span><span>{fmtCents(total, currency)}</span></p>
+          {truncated ? (
+            <p className="text-xs text-gray-500 mt-2">Showing the first {rows.length.toLocaleString()} sales of a larger payout, so no total is shown here — the payout amount above is the full figure.</p>
+          ) : (
+            <p className="text-xs font-medium text-gray-900 mt-2 flex justify-between"><span>Commission settled by this payout</span><span>{fmtCents(total, currency)}</span></p>
+          )}
         </>
       )}
     </div>

@@ -86,7 +86,7 @@ function VoidPayoutModal({ partner, payout, onClose, onVoided }) {
           if the transfer really went out, recover it from {partner.name} separately. The commission this payout
           settled becomes owed again and will appear in their next payout.
         </p>
-        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={1000} />
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. recorded against the wrong cycle" maxLength={300} />
         <Checkbox label={`Email ${partner.name} that this record was corrected`} checked={notify} onChange={e => setNotify(e.target.checked)} />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
@@ -280,7 +280,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
             ))}
           </div>
         </div>
-        <Input label="Website / channel" value={website} maxLength={1000} onChange={e => setWebsite(e.target.value)} />
+        <Input label="Website / channel" value={website} maxLength={300} onChange={e => setWebsite(e.target.value)} />
         <Input label="Audience" value={audience} maxLength={1000} onChange={e => setAudience(e.target.value)} />
         <Textarea label="Internal notes (admin only)" rows={3} maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}
           hint="Never shown to the partner. Removed if their personal data is erased." />
@@ -651,10 +651,14 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
       return
     }
 
+    // Only send tierPrices when a price was actually edited: the server asks for a step-up and re-runs the low-price
+    // guard on any request that carries them, so an unrelated limit/expiry edit must not (the route promises one click).
+    const pricesChanged = ['FIX', 'BADGE', 'FIX_PLAIN'].some(k => (tierPrices[k] ?? null) !== (tp[k] ?? null))
+
     try {
       const res = await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
-        tierPrices,
-        ...(confirmLow ? { confirmLowPrice: true } : {}),
+        ...(pricesChanged ? { tierPrices } : {}),
+        ...(pricesChanged && confirmLow ? { confirmLowPrice: true } : {}),
         usageLimit: usageLimit ? Number(usageLimit) : null,
         // updateReferralCodeSchema's expiresAt is nullable — unlike create,
         // an explicit null here is how an admin clears an existing
@@ -1005,7 +1009,7 @@ function RemoveDataModal({ partner, onClose, onRemoved }) {
           both links stop working, their codes are switched off, and their applications are deleted. Past payouts keep their amounts and
           dates, with the account reduced to the bank or provider and last four digits, and the emails and alerts we sent about them are deleted. It is refused while any commission is still owed - settle it, or write it off with Adjust balance first.
         </p>
-        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={1000} />
+        <Input label="Reason (admin audit log)" value={reason} onChange={e => setReason(e.target.value)} placeholder="e.g. erasure request received by email" maxLength={300} />
         <Input label={`Type "${partner.name}" to confirm`} value={typed} onChange={e => setTyped(e.target.value)} />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
