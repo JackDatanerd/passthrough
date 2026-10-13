@@ -351,6 +351,8 @@ async function finishNewLead(c, supabase, row, origin) {
     if (error) console.error('employer-leads: could not drop a lead stored while its address was being removed:', error.message)
     return
   }
+  try { if (await foldIntoAliasLead(c, supabase, row, origin)) return }
+  catch (err) { console.error('employer-leads: could not fold a lead into its mailbox\'s older lead:', err.message) }
   await Promise.all([
     sendNotice(c.env, 'New employer lead', describeLead(row)),
     sendAck(c.env, row, { origin })
@@ -480,6 +482,10 @@ async function deleteLeadsForMailboxes(supabase, emails) {
 // `reason`: 'self' | 'admin' | 'complaint' | 'bounce' | 'purge' (null = unknown). A later, stronger reason
 // replaces 'self' on an existing entry — a person who removed themselves and then reported us as spam is
 // not to be offered a way back — but 'self' never weakens one.
+// Round 15: that holds for every reason, not just 'self' — ranked weakest to strongest below, a re-suppression
+// only ever strengthens the stored reason (an admin add or a later bounce no longer turns a complaint into 'admin').
+const REASON_RANK = { self: 0, purge: 1, admin: 2, bounce: 3, complaint: 4 }
+
 async function recordSuppressions(env, supabase, emails, reason = null) {
   if (!emails.length) return
   const hashes = [...new Set((await Promise.all(emails.map(e => suppressionHashes(env, e)))).flatMap(h => h.store))]
@@ -490,7 +496,11 @@ async function recordSuppressions(env, supabase, emails, reason = null) {
     ({ error } = await table().upsert(hashes.map(h => ({ email_hash: h })), opts))
   if (error) throw error
   if (reason && reason !== 'self') {
+    // Only ever strengthen: a complaint stays a complaint when an admin (or a later bounce) re-suppresses the address,
+    // so isRemovalRequest / rejoin keep treating it correctly. Unknown (null) and weaker reasons are replaced.
+    const weaker = Object.keys(REASON_RANK).filter(r => REASON_RANK[r] < (REASON_RANK[reason] ?? 0))
     const { error: upErr } = await table().update({ reason }).in('email_hash', hashes)
+      .or(['reason.is.null', ...(weaker.length ? [`reason.in.(${weaker.join(',')})`] : [])].join(','))
     if (upErr && !MISSING_COLUMN.includes(upErr.code)) console.error('employer-leads: could not record why an address is suppressed:', upErr.message)
   }
 }
@@ -514,6 +524,46 @@ async function leadExistsForMailbox(supabase, email) {
   const byKey = await supabase.from('employer_leads').select('id').eq('mailbox_key', canonicalMailbox(email)).limit(1)
   if (byKey.error) { if (MISSING_COLUMN.includes(byKey.error.code)) return false; throw byKey.error }
   return !!(byKey.data && byKey.data.length)
+}
+
+// Round 15 (G1): leads that already hold the same INBOX as each of these addresses under a DIFFERENT spelling
+// (dana+jobs@ next to dana@, d.ana@gmail.com). Only the exact address was ever compared, so the public form, a manual
+// add and an import each created a second lead for one inbox and an admin had to find and merge it afterwards.
+// Map: address -> the oldest other lead for its mailbox. A database without migration 0076 (no mailbox_key) answers
+// nothing, which is the old behaviour.
+async function findAliasLeads(supabase, emails) {
+  const out = new Map()
+  const keyOf = new Map(emails.map(e => [e, canonicalMailbox(e)]))
+  for (const group of inChunks([...new Set(keyOf.values())], HASH_LOOKUP_CHUNK)) {
+    const { data, error } = await supabase.from('employer_leads')
+      .select('id, email, name, company, mailbox_key').in('mailbox_key', group).order('created_at', { ascending: true })
+    if (error) { if (MISSING_COLUMN.includes(error.code)) return out; throw error }
+    for (const r of data || [])
+      for (const [e, k] of keyOf) if (k === r.mailbox_key && r.email !== e && !out.has(e)) out.set(e, r)
+  }
+  return out
+}
+
+// A public submission that turned out to be a second spelling of an inbox that already has a (older) lead is folded
+// into that lead like any other resubmission — counted, gap-filled, announced to the owner if it says something new —
+// and the duplicate row is dropped. Only ever into an OLDER lead, so two near-simultaneous spellings cannot each fold
+// into the other and both vanish. Returns true when the row was folded.
+async function foldIntoAliasLead(c, supabase, row, origin) {
+  const { data: own, error: ownErr } = await supabase.from('employer_leads').select('created_at').eq('email', row.email).maybeSingle()
+  if (ownErr || !own || !own.created_at) return false
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const { data: older, error } = await supabase.from('employer_leads').select('*')
+      .eq('mailbox_key', canonicalMailbox(row.email)).neq('email', row.email).lt('created_at', own.created_at)
+      .order('created_at', { ascending: true }).limit(1).maybeSingle()
+    if (error) { if (MISSING_COLUMN.includes(error.code)) return false; throw error }
+    if (!older) return false
+    if (await mergeIntoExistingLead(c, supabase, older, row, origin) === 'ok') {
+      const { error: delErr } = await supabase.from('employer_leads').delete().eq('email', row.email)
+      if (delErr) console.error('employer-leads: could not drop a lead folded into its mailbox\'s older lead:', delErr.message)
+      return true
+    }
+  }
+  return false
 }
 
 // The first email to an address that removed itself and typed itself in again: asks whether they want
@@ -633,7 +683,7 @@ async function mergeIntoExistingLead(c, supabase, existing, row, origin = null) 
   // Never confirmed and not dismissed: they may simply not have seen the first
   // email, so send it again (capped per recipient in email.service.js).
   if (!existing.confirmed_at && !archived && now.getTime() - lastAckMs > ACK_RESEND_COOLDOWN_MS)
-    sends.push(sendAck(c.env, existing, { origin }))
+    sends.push(sendAck(c.env, { ...existing, ...patch }, { origin }))   // Round 15 (B4): the merged row, so a field just filled in shows in the email
 
   // Worth a heads-up only if it's not a lead the admin dismissed and hasn't
   // already been announced recently (a hiring manager clicking twice isn't news).
@@ -1028,7 +1078,10 @@ const CSV_COLUMNS = [
   // Round 11: appended again. Per-field notification times, who vouched for the address, and what it agreed to.
   ['Candidates notified by field', r => Object.entries(r.candidates_notified_fields || {}).map(([k, v]) => `${k}: ${v}`).join('; ')],
   ['Confirmed via', r => r.confirmed_via],
-  ['Consent', r => r.consent && r.consent.kind ? `${r.consent.kind}${r.consent.at ? ' ' + r.consent.at : ''}` : '']
+  ['Consent', r => r.consent && r.consent.kind ? `${r.consent.kind}${r.consent.at ? ' ' + r.consent.at : ''}` : ''],
+  // Round 15 (G3): appended. The list API already showed both; a spreadsheet could not find leads that share an inbox
+  // (same Mailbox) or the addresses that must not be mailed. `__dnc` is set per page in adminExportLeads.
+  ['Mailbox', r => r.mailbox_key], ['Do not contact', r => (r.__dnc ? 'yes' : '')]
 ]
 const EXPORT_CHUNK = 1000
 const EXPORT_MAX_ROWS = 50_000
@@ -1074,7 +1127,13 @@ async function adminExportLeads(c) {
       filters.sort, cursor
     ).limit(want)
     if (error) throw error
-    return data || []
+    const rows = data || []
+    // Round 15 (G3): flag the addresses on the do-not-contact list (any spelling of the mailbox).
+    if (rows.length) {
+      const blocked = await suppressedAmong(c.env, supabase, rows.map(r => r.email))
+      for (const r of rows) r.__dnc = blocked.has(r.email)
+    }
+    return rows
   }
   // The first page is read before answering so a database failure is still a clean 500, not a broken file.
   let pending = await page()
@@ -1127,7 +1186,9 @@ const manualSchema = z.object({
   extraRoleCategories: z.array(z.enum(ROLE_CATEGORIES)).max(MAX_EXTRA_FIELDS).optional(),
   // An address that used its "remove me" link is refused unless the admin
   // says the person has since asked to be added (see adminCreateLead).
-  overrideRemoval: z.boolean().optional()
+  overrideRemoval: z.boolean().optional(),
+  // Round 15 (G1): add it even though another spelling of the same inbox is already a lead.
+  allowDuplicate: z.boolean().optional()
 }).refine(d => !(d.extraRoleCategories || []).length || !!d.roleCategory,
   { message: 'Pick the main field before adding other fields.', path: ['extraRoleCategories'] })
 
@@ -1154,6 +1215,14 @@ async function adminCreateLead(c) {
       success: false, code: 'REMOVAL_REQUESTED',
       message: 'This address asked to be removed and is on the do-not-contact list. Only add it again if they have since asked you to.'
     }, 409)
+
+  // Round 15 (G1): the same inbox under another spelling is already a lead — say so rather than create a second one.
+  if (!d.allowDuplicate) {
+    const alias = (await findAliasLeads(supabase, [d.email])).get(d.email)
+    if (alias)
+      return c.json({ success: false, code: 'DUPLICATE_MAILBOX', existing: { id: alias.id, email: alias.email, name: alias.name, company: alias.company },
+        message: `${alias.email} is already a lead for this same mailbox. Edit that lead instead — or add this one anyway.` }, 409)
+  }
 
   // The suppression is lifted AFTER the insert (a failed insert must not silently undo someone's
   // removal request), so the lift has to be safe to RETRY. BUG FIX (independent audit round 6,
@@ -1380,12 +1449,19 @@ async function performBulk(c, supabase, { ids, action, status, field }) {
     if (error) throw error
     // Round 12 (B1): blocking an address blocks its whole inbox — leads of the same inbox that were not ticked go too.
     let alsoRemoved = []
+    // Round 15 (B2): the rows are already gone by here, so a failure in the sweep / log purge must not skip the audit
+    // entry (the 500 used to leave destroyed data with no record). It is handed back as deferredError — the callers
+    // log what DID change, then rethrow — exactly like the status action's second write.
+    let deferredError = null
     if (suppress) {
-      alsoRemoved = (await deleteLeadsForMailboxes(supabase, emails)).filter(r => !ids.includes(r.id))
-      await purgeAddressLogs(supabase, mailboxForms([...emails, ...alsoRemoved.map(r => r.email)]))
+      try {
+        alsoRemoved = (await deleteLeadsForMailboxes(supabase, emails)).filter(r => !ids.includes(r.id))
+        await purgeAddressLogs(supabase, mailboxForms([...emails, ...alsoRemoved.map(r => r.email)]))
+      } catch (err) { deferredError = err }
     }
     return { audit: 'lead.bulk_delete', ids: [...(data || []).map(r => r.id), ...alsoRemoved.map(r => r.id)],
-      detail: suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } : {},
+      detail: suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}), ...(deferredError ? { partial: true } : {}) } : {},
+      ...(deferredError ? { deferredError } : {}),
       response: { success: true, affected: (data || []).length, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } }
   }
 
@@ -1560,11 +1636,16 @@ async function adminDeleteLead(c) {
   // Round 12 (B1): blocking an address blocks its whole inbox, so another lead of the same inbox (dana+jobs@ next
   // to dana@) goes with it — otherwise it would be left suppressed but present.
   let alsoRemoved = []
+  let tailError = null
   if (suppress) {
-    alsoRemoved = await deleteLeadsForMailboxes(supabase, [data.email])
-    await purgeAddressLogs(supabase, mailboxForms([data.email, ...alsoRemoved.map(r => r.email)]))
+    // Round 15 (B2): the lead is already deleted — a failing sweep / purge must not skip the audit entry.
+    try {
+      alsoRemoved = await deleteLeadsForMailboxes(supabase, [data.email])
+      await purgeAddressLogs(supabase, mailboxForms([data.email, ...alsoRemoved.map(r => r.email)]))
+    } catch (err) { tailError = err }
   }
-  await logAdminAction(c, supabase, 'lead.delete', 'employer_lead', id, suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) } : {})
+  await logAdminAction(c, supabase, 'lead.delete', 'employer_lead', id, suppress ? { suppressed: true, ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}), ...(tailError ? { partial: true } : {}) } : {})
+  if (tailError) throw tailError
   return c.json({ success: true, message: suppress ? 'Lead deleted and its address added to the do-not-contact list.' : 'Lead deleted.', ...(alsoRemoved.length ? { alsoRemoved: alsoRemoved.length } : {}) })
 }
 
@@ -2169,13 +2250,18 @@ const MERGE_MAX_OTHERS = 9
 const STATUS_RANK = { NEW: 0, CONTACTED: 1, CONVERTED: 2 }
 const mergeSchema = z.object({
   keepId:   z.string().regex(UUID_RE, 'Invalid lead id.'),
-  mergeIds: z.array(z.string().regex(UUID_RE, 'Invalid lead id.')).min(1).max(MERGE_MAX_OTHERS)
+  mergeIds: z.array(z.string().regex(UUID_RE, 'Invalid lead id.')).min(1).max(MERGE_MAX_OTHERS),
+  dryRun:   z.boolean().optional()   // Round 15 (G2): show what the merge would produce, change nothing
 }).refine(d => !d.mergeIds.some(i => i.toLowerCase() === d.keepId.toLowerCase()), { message: 'A lead cannot be merged into itself.' })
 
 // What the kept lead becomes once the others are folded in. Nothing is lost that a person could still want:
 // counts add up, the furthest-along status and every confirmation / contact / mail time carries over, notes are
 // joined, and every field any of them was hiring in is kept (up to the limit).
-function mergedLeadPatch(keep, others) {
+//
+// Round 15 (B3): `info` (optional) reports what the merge could NOT carry over — `notesOverflow` (the joined notes
+// are longer than the 2,000-character limit) and `droppedFields` (more hiring fields than a lead can hold) — so the
+// caller can refuse or say so instead of silently deleting the other leads' data.
+function mergedLeadPatch(keep, others, info = {}) {
   const all = [keep, ...others]
   const stamps = (k) => all.map(r => r[k]).filter(Boolean).sort()
   const patch = { updated_at: new Date().toISOString(), submission_count: all.reduce((n, r) => n + (r.submission_count || 1), 0) }
@@ -2199,12 +2285,18 @@ function mergedLeadPatch(keep, others) {
   }
   const primary = keep.role_category || others.map(o => o.role_category).find(Boolean) || null
   if (!keep.role_category && primary) patch.role_category = primary
-  const fields = [...new Set(all.flatMap(r => [r.role_category, ...(r.extra_role_categories || [])]).filter(f => f && f !== primary))].slice(0, MAX_EXTRA_FIELDS)
+  const allFields = [...new Set(all.flatMap(r => [r.role_category, ...(r.extra_role_categories || [])]).filter(f => f && f !== primary))]
+  const fields = allFields.slice(0, MAX_EXTRA_FIELDS)
+  info.droppedFields = primary ? allFields.slice(MAX_EXTRA_FIELDS) : []
   patch.extra_role_categories = primary ? fields : []
   if (!keep.role_title) { const t = others.map(o => o.role_title).find(Boolean); if (t) patch.role_title = t }
   if (!keep.source_code) { const t = others.map(o => o.source_code).find(Boolean); if (t) patch.source_code = t }
   const notes = [...new Set(all.map(r => (r.notes || '').trim()).filter(Boolean))]
-  if (notes.length > 1 || (!keep.notes && notes.length)) patch.notes = notes.join('\n---\n').slice(0, 2000)
+  if (notes.length > 1 || (!keep.notes && notes.length)) {
+    const joined = notes.join('\n---\n')
+    info.notesOverflow = joined.length > 2000
+    patch.notes = joined.slice(0, 2000)
+  }
   const told = {}
   for (const r of all) for (const [f, v] of Object.entries(r.candidates_notified_fields || {})) if (v && (!told[f] || v > told[f])) told[f] = v
   if (Object.keys(told).length) patch.candidates_notified_fields = told
@@ -2225,7 +2317,16 @@ async function adminMergeLeads(c) {
   if (others.some(o => canonicalMailbox(o.email) !== mailbox))
     return c.json({ success: false, message: 'Only leads for the same mailbox can be merged.' }, 400)
 
-  const patch = mergedLeadPatch(keep, others)
+  const info = {}
+  const patch = mergedLeadPatch(keep, others, info)
+  // Round 15 (B3): the other leads are deleted after this, so never let the 2,000-character cut throw their notes away.
+  if (info.notesOverflow)
+    return c.json({ success: false, code: 'NOTES_TOO_LONG', message: 'The notes of these leads are too long to join (2,000 characters at most). Shorten the notes of one of them, then merge again.' }, 409)
+  const droppedFields = info.droppedFields || []
+  // Round 15 (G2): a preview of exactly what the merge would write, before anything is changed or deleted.
+  if (d.dryRun)
+    return c.json({ success: true, data: { dryRun: true, id: keep.id, merged: others.length, droppedFields,
+      result: leadRowToCamel({ ...keep, ...patch }) } })
   let w = supabase.from('employer_leads').update(patch).eq('id', keep.id)
   if (keep.updated_at) w = w.eq('updated_at', keep.updated_at)
   const { data: updated, error: upErr } = await w.select('id').maybeSingle()
@@ -2233,8 +2334,8 @@ async function adminMergeLeads(c) {
   if (!updated) return c.json(LEAD_CHANGED, 409)
   const { error: delErr } = await supabase.from('employer_leads').delete().in('id', others.map(o => o.id))
   if (delErr) throw delErr
-  await logAdminAction(c, supabase, 'lead.merge', 'employer_lead', keep.id, { merged: others.map(o => o.id), fields: Object.keys(patch).filter(k => k !== 'updated_at') })
-  return c.json({ success: true, data: { id: keep.id, merged: others.length } })
+  await logAdminAction(c, supabase, 'lead.merge', 'employer_lead', keep.id, { merged: others.map(o => o.id), fields: Object.keys(patch).filter(k => k !== 'updated_at'), ...(droppedFields.length ? { droppedFields } : {}) })
+  return c.json({ success: true, data: { id: keep.id, merged: others.length, ...(droppedFields.length ? { droppedFields } : {}) } })
 }
 
 // ── Admin: bulk import ──────────────────────────────────────────────────────
@@ -2293,9 +2394,11 @@ async function adminImportLeads(c) {
   const supabase = getSupabase(c.env)
   const problems = []
   const note = (line, email, reason) => { if (problems.length < IMPORT_REPORT_MAX) problems.push({ line, email: email || null, reason }) }
-  const tally = { invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, blocked: 0, fieldIgnored: 0 }
+  // Round 15 (G1): `alias` = another spelling of an inbox that is already a lead / earlier in the file.
+  const tally = { invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, blocked: 0, alias: 0, fieldIgnored: 0 }
 
   const seen = new Set()
+  const seenMailbox = new Map()
   const valid = []
   rawRows.forEach((raw, i) => {
     const line = i + 1
@@ -2308,6 +2411,9 @@ async function adminImportLeads(c) {
     const d = r.data
     if (seen.has(d.email)) { tally.duplicateInFile++; note(line, d.email, 'Repeated in this file.'); return }
     seen.add(d.email)
+    const mailbox = canonicalMailbox(d.email)
+    if (seenMailbox.has(mailbox)) { tally.alias++; note(line, d.email, `Same mailbox as ${seenMailbox.get(mailbox)}, earlier in this file.`); return }
+    seenMailbox.set(mailbox, d.email)
     const key = fieldKey(d.field)
     const known = ROLE_CATEGORIES.includes(key)
     if (d.field && d.field.trim() && !known) { tally.fieldIgnored++; note(line, d.email, `Field "${d.field.trim()}" is not one of ours; imported without a field.`) }
@@ -2326,12 +2432,15 @@ async function adminImportLeads(c) {
   // mailed; importing it just makes a lead that fails at its first send.
   const mailBlocked = await mailBlockedAmong(supabase, emails.filter(e => !existing.has(e) && !removed.has(e)))
 
+  const aliases = await findAliasLeads(supabase, emails.filter(e => !existing.has(e) && !removed.has(e) && !mailBlocked.has(e)))
   const now = new Date().toISOString()
   const toInsert = []
   for (const v of valid) {
     if (existing.has(v.d.email)) { tally.exists++; note(v.line, v.d.email, 'Already a lead.'); continue }
     if (removed.has(v.d.email)) { tally.removed++; note(v.line, v.d.email, 'Asked to be removed — not imported.'); continue }
     if (mailBlocked.has(v.d.email)) { tally.blocked++; note(v.line, v.d.email, 'Bounced or reported our email as spam — not imported.'); continue }
+    const alias = aliases.get(v.d.email)
+    if (alias) { tally.alias++; note(v.line, v.d.email, `Same mailbox as the existing lead ${alias.email} — not imported.`); continue }
     toInsert.push({
       name: v.d.name, company: v.d.company, email: v.d.email,
       role_category: v.key, role_title: v.d.role || null, notes: v.d.notes || null,

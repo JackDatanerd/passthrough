@@ -466,12 +466,12 @@ describe('G7 — every lead records how it came to be mailable', () => {
     expect(t.state.leads).toHaveLength(1)
     expect(t.state.leads[0].consent).toBeUndefined()
   })
-  it('the CSV exports the new columns at the end', async () => {
+  it('the CSV exports the round-11 columns after the existing ones (round 15 appends two more after them)', async () => {
     t = setup({ leads: [mkLead({ confirmed_via: 'link', consent: { kind: 'form', at: '2026-01-01T00:00:00.000Z' }, candidates_notified_fields: { sales: '2026-03-01T00:00:00.000Z' } })] })
     const res = await t.mod.adminExportLeads(t.c({}))
     const [header, line] = res.raw.replace('﻿', '').split('\r\n')
-    expect(header.endsWith('"Candidates notified by field","Confirmed via","Consent"')).toBe(true)
-    expect(line.endsWith('"sales: 2026-03-01T00:00:00.000Z","link","form 2026-01-01T00:00:00.000Z"')).toBe(true)
+    expect(header.endsWith('"Candidates notified by field","Confirmed via","Consent","Mailbox","Do not contact"')).toBe(true)
+    expect(line).toContain('"sales: 2026-03-01T00:00:00.000Z","link","form 2026-01-01T00:00:00.000Z"')
   })
 })
 

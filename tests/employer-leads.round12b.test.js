@@ -65,7 +65,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
           return { error: { code: '23505', message: 'duplicate key' } }
         const made = batch.map(v => {
           state.inserts++
-          const row = { id: `gen-${++seq}`, status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
+          const row = { id: `gen-${++seq}`, mailbox_key: import_canon(v.email), status: 'NEW', submission_count: 1, created_at: new Date().toISOString(),
             last_submitted_at: new Date().toISOString(), notes: null, contacted_at: null, candidates_notified_fields: {}, ...v }
           rows.push(row)
           return row
@@ -110,7 +110,13 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
       const hs = hf ? [].concat(hf[2]) : []
       state.reasons = state.reasons || new Map()
       if (q.op === 'upsert') { [].concat(q.values).forEach(v => { if (!state.suppressed.has(v.email_hash)) state.reasons.set(v.email_hash, v.reason ?? null); state.suppressed.add(v.email_hash) }); return { data: null, error: null } }
-      if (q.op === 'update') { hs.forEach(h => { if (state.suppressed.has(h) && q.patch.reason) state.reasons.set(h, q.patch.reason) }); return { data: null, error: null } }
+      if (q.op === 'update') {
+        // Round 15 (B1): the controller only ever strengthens a reason — `.or('reason.is.null,reason.in.(weaker,...)')`.
+        const orE = (q.or || [])[0]
+        const weaker = orE ? ((/reason\.in\.\(([^)]*)\)/.exec(orE) || [])[1] || '').split(',') : null
+        hs.forEach(h => { if (state.suppressed.has(h) && q.patch.reason) { const cur = state.reasons.get(h) ?? null
+          if (!orE || cur === null || weaker.includes(cur)) state.reasons.set(h, q.patch.reason) } })
+        return { data: null, error: null } }
       // TEST FIX (fresh audit pass, Section 5): adminLiftSuppression chains
       // .select().maybeSingle() onto the delete to learn whether a row was
       // actually removed (real Postgres/Supabase returns the deleted row);
@@ -387,5 +393,137 @@ describe('B11 follow-up — the retry the lift-failed answer asks for is not ref
     const retry = await patch({ email: 'new@acme.com', overrideRemoval: true, expectedUpdatedAt: first.body.data.updatedAt })
     expect(retry.status).toBe(200)
     expect(t.state.suppressed.has(sha('new@acme.com'))).toBe(false)
+  })
+})
+
+
+// ── Employer leads, round 15 (independent audit, Section 5) ─────────────────────────────────────────
+const IDS = ['33333333-3333-4333-8333-333333333333', '44444444-4444-4444-8444-444444444444']
+const submit15 = async (body) => { const ctx = t.c({ body }); const res = await t.mod.createLead(ctx); await Promise.all(ctx._waits); return res }
+// Fails every employer_leads DELETE after the first one — the mailbox sweep that follows a delete-and-suppress.
+const failSecondDelete = () => {
+  const real = t.db.from; let deletes = 0
+  t.db.from = (table) => {
+    const api = real(table)
+    if (table !== 'employer_leads') return api
+    const del = api.delete
+    api.delete = () => {
+      if (++deletes === 1) return del()
+      const r = Promise.resolve({ data: null, error: { message: 'boom' } })
+      const a2 = { in: () => a2, eq: () => a2, select: () => a2, maybeSingle: () => r, then: (res, rej) => r.then(res, rej) }
+      return a2
+    }
+    return api
+  }
+}
+
+describe('R15 B1 — a re-suppression only ever strengthens the stored reason', () => {
+  it('an admin add does not turn a complaint into "admin"; it does replace a self-removal', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    t.state.reasons = new Map([[sha('dana@acme.com'), 'complaint']])
+    await call(t.mod.adminAddSuppression, { email: 'dana@acme.com' })
+    expect(t.state.reasons.get(sha('dana@acme.com'))).toBe('complaint')
+    t.restore()
+    t = setup({ suppressed: [sha('dana@acme.com')] })
+    t.state.reasons = new Map([[sha('dana@acme.com'), 'self']])
+    await call(t.mod.adminAddSuppression, { email: 'dana@acme.com' })
+    expect(t.state.reasons.get(sha('dana@acme.com'))).toBe('admin')
+  })
+})
+
+describe('R15 B2 — a delete-and-suppress that fails part-way still leaves an audit entry', () => {
+  it('single delete: the row is gone, the sweep throws, the audit says partial, the error still surfaces', async () => {
+    t = setup({ leads: [mk({ id: ID1 })] }); failSecondDelete()
+    await expect(call(t.mod.adminDeleteLead, undefined, { params: { id: ID1 }, query: { suppress: 'true' } })).rejects.toThrow('boom')
+    expect(t.state.leads).toHaveLength(0)
+    expect(t.state.audit.find(a => a.action === 'lead.delete')?.detail).toMatchObject({ suppressed: true, partial: true })
+  })
+  it('bulk (ids): same', async () => {
+    t = setup({ leads: [mk({ id: ID1 })] }); failSecondDelete()
+    await expect(call(t.mod.adminBulkUpdateLeads, { action: 'deleteAndSuppress', ids: [ID1] })).rejects.toThrow('boom')
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_delete')?.detail).toMatchObject({ suppressed: true, partial: true })
+  })
+})
+
+describe('R15 B3/G2 — merge never throws notes away, reports dropped fields, previews, and needs the step-up', () => {
+  const pair = (a = {}, b = {}) => [mk({ id: ID1, email: 'dana@acme.com', ...a }), mk({ id: ID2, email: 'dana+x@acme.com', ...b })]
+  it('refuses (409) when the joined notes would not fit, and changes nothing', async () => {
+    t = setup({ leads: pair({ notes: 'a'.repeat(1500) }, { notes: 'b'.repeat(1500) }) })
+    const res = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2] })
+    expect(res.status).toBe(409)
+    expect(res.body.code).toBe('NOTES_TOO_LONG')
+    expect(t.state.leads).toHaveLength(2)
+  })
+  it('says which hiring fields did not fit instead of dropping them silently', async () => {
+    t = setup({ leads: pair({ role_category: 'sales' }, { role_category: 'design', extra_role_categories: ['data_science', 'marketing', 'finance', 'operations'] }) })
+    const res = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2] })
+    expect(res.body.data.droppedFields).toHaveLength(1)
+    expect(t.state.audit.find(a => a.action === 'lead.merge').detail.droppedFields).toHaveLength(1)
+  })
+  it('dryRun previews the merged lead and deletes nothing', async () => {
+    t = setup({ leads: pair({ submission_count: 1 }, { submission_count: 3, status: 'CONTACTED' }) })
+    const res = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2], dryRun: true })
+    expect(res.body.data).toMatchObject({ dryRun: true, merged: 1, result: { submissionCount: 4, status: 'CONTACTED' } })
+    expect(t.state.leads).toHaveLength(2)
+    expect(t.state.audit.some(a => a.action === 'lead.merge')).toBe(false)
+  })
+  it('the real merge asks for the step-up; the preview does not', () => {
+    const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../src/routes/employer-leads.routes.js'), 'utf8')
+    expect(src).toMatch(/router\.post\('\/merge', admin, admin\.stepUpWhen\(b => !!b && b\.dryRun !== true\)/)
+  })
+})
+
+describe('R15 B4 — the resubmission acknowledgement carries the merged row', () => {
+  it('a field filled in by the merge is the field the email names', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com', role_category: null })] })
+    await submit15({ name: 'Dana', company: 'Acme', email: 'dana@acme.com', roleCategory: 'sales' })
+    expect(t.state.leads[0].role_category).toBe('sales')
+    expect(t.state.acks).toHaveLength(1)
+    expect(t.state.acks[0].field).toBe('Sales')
+  })
+})
+
+describe('R15 G1 — another spelling of an inbox that already has a lead', () => {
+  it('public form: folded into the older lead (counted, ack to the lead\'s own address), no second lead, no "new lead" notice', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com' })] })
+    await submit15({ name: 'Dana', company: 'Acme', email: 'dana+jobs@acme.com' })
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.leads[0]).toMatchObject({ email: 'dana@acme.com', submission_count: 2 })
+    expect(t.state.acks.map(a => a.to)).toEqual(['dana@acme.com'])
+    expect(t.state.notices.some(n => n.subject === 'New employer lead')).toBe(false)
+  })
+  it('public form: a different inbox is still a new lead', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com' })] })
+    await submit15({ name: 'Eve', company: 'Acme', email: 'eve@acme.com' })
+    expect(t.state.leads).toHaveLength(2)
+  })
+  it('manual add: 409 DUPLICATE_MAILBOX naming the lead, unless the admin says add it anyway', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com' })] })
+    const res = await call(t.mod.adminCreateLead, { name: 'Dana', company: 'Acme', email: 'dana+x@acme.com' })
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ code: 'DUPLICATE_MAILBOX', existing: { id: ID1, email: 'dana@acme.com' } })
+    expect(t.state.leads).toHaveLength(1)
+    const ok = await call(t.mod.adminCreateLead, { name: 'Dana', company: 'Acme', email: 'dana+x@acme.com', allowDuplicate: true })
+    expect(ok.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(2)
+  })
+  it('import: skips an alias of an existing lead and a second spelling inside the file, and says so', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com' })] })
+    const row = (email) => ({ name: 'N', company: 'C', email })
+    const res = await call(t.mod.adminImportLeads, { attest: true, rows: [row('dana+x@acme.com'), row('a@x.com'), row('a+1@x.com'), row('b@x.com')] })
+    expect(res.body.data).toMatchObject({ created: 2, alias: 2 })
+    expect(t.state.leads.map(l => l.email).sort()).toEqual(['a@x.com', 'b@x.com', 'dana@acme.com'])
+    expect(res.body.data.problems.map(p => p.email).sort()).toEqual(['a+1@x.com', 'dana+x@acme.com'])
+  })
+})
+
+describe('R15 G3 — the export carries the mailbox and the do-not-contact flag', () => {
+  it('appended columns; a suppressed address is flagged', async () => {
+    t = setup({ suppressed: [sha('dana@acme.com')], leads: [mk({ id: ID1, email: 'dana@acme.com' }), mk({ id: ID2, email: 'eve@acme.com' })] })
+    const res = await t.mod.adminExportLeads(t.c({}))
+    const [header, ...lines] = res.raw.replace('\uFEFF', '').split('\r\n').filter(Boolean)
+    expect(header.endsWith('"Mailbox","Do not contact"')).toBe(true)
+    expect(lines.find(l => l.includes('dana@acme.com')).endsWith('"dana@acme.com","yes"')).toBe(true)
+    expect(lines.find(l => l.includes('eve@acme.com')).endsWith('"eve@acme.com",""')).toBe(true)
   })
 })

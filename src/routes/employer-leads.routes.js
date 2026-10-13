@@ -62,7 +62,7 @@ router.post('/bulk',   admin, admin.stepUp, c.adminBulkUpdateLeads)
 // Verified candidates. Not keyed by :id, so it sits with the other fixed-path writes.
 // Mass mail from our sending domain: the real send needs the step-up, the dry run (counts + who) does not.
 router.post('/notify-candidates', admin, admin.stepUpWhen(body => !!body && body.dryRun !== true), c.adminNotifyCandidates)
-router.post('/merge', admin, c.adminMergeLeads)
+router.post('/merge', admin, admin.stepUpWhen(b => !!b && b.dryRun !== true), c.adminMergeLeads)
 
 // FEATURE GAP CLOSED (fresh audit pass, Section 5): the only way to learn an
 // address was suppressed used to be trying to re-add it via /manual and
