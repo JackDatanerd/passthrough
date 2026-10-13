@@ -1,6 +1,6 @@
 import { createContext, useState, useEffect } from 'react'
 import api, { SESSION_ENDED_EVENT, clearStepUp } from '../lib/api'
-import { signedOutElsewhereTarget } from '../lib/session'
+import { signedOutElsewhereTarget, failureScope } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
 import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
 import { restoreReferralFromAccount } from '../hooks/useReferralCapture'
@@ -185,7 +185,10 @@ export function AuthProvider({ children }) {
     const fresh = res.data.data.user
     // Signed out (or in as someone else) while this was in flight: the answer describes a session that is
     // gone, and writing it back would strand a user with no token (see the initial state above).
-    if (getToken() !== tokenAtStart) return fresh
+    // AUDIT FIX (Auth round 10): a sliding renewal (a concurrent /auth/me) or Settings' token swap replaces the token
+    // but not the SESSION. Comparing raw tokens dropped this answer then — the server had recorded the acceptance, yet
+    // the banner stayed up. Same session (same `sid`) still counts; only a different or missing one is skipped.
+    if (failureScope(tokenAtStart, getToken()) === 'stale') return fresh
     setCachedUser(fresh)
     setUser(fresh)
     return fresh

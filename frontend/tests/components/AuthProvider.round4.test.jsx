@@ -62,6 +62,21 @@ describe('AuthProvider — a cached user is only real alongside its token (B2)',
     await act(async () => { release() })
     expect(localStorage.getItem(USER)).toBeNull()
   })
+  it('acceptTerms still updates the user when only the token was renewed (same session)', async () => {
+    const mk = sid => `h.${btoa(JSON.stringify({ sid })).replace(/=+$/, '')}.s`
+    const t1 = mk('11111111-1111-1111-1111-111111111111'), t2 = t1 + 'x'
+    localStorage.setItem(TOKEN, t1)
+    localStorage.setItem(USER, JSON.stringify({ id: 'u1', email: 'a@x.co', termsCurrent: false }))
+    api.get.mockResolvedValue({ data: { data: { user: { id: 'u1', email: 'a@x.co', termsCurrent: false } } } })
+    let release
+    api.post.mockImplementation(() => new Promise(r => { release = () => r({ data: { data: { user: { id: 'u1', email: 'a@x.co', termsCurrent: true } } } }) }))
+    render(<AuthProvider><Probe /></AuthProvider>)
+    await screen.findByText('a@x.co')
+    fireEvent.click(screen.getByText('accept'))
+    localStorage.setItem(TOKEN, t2)                                    // renewed token, same sid
+    await act(async () => { release() })
+    expect(JSON.parse(localStorage.getItem(USER)).termsCurrent).toBe(true)
+  })
   it.each([['Login', <Login />, '/login'], ['Register', <Register />, '/register']])(
     '%s shows its form (no redirect loop) when a user is held but no token is',
     (_n, page, path) => {
