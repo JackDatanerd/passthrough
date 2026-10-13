@@ -529,11 +529,18 @@ export default function Settings() {
 
   return (
     <DashboardLayout>
-      <div className="flex flex-col gap-8 max-w-lg">
-        <h1 className="text-xl font-bold text-gray-900">Settings</h1>
+      <div className="flex flex-col gap-10">
+        <div>
+          <h1 className="text-xl font-bold text-gray-900">Settings</h1>
+          <p className="text-sm text-gray-600 mt-1">Your account, saved profiles and data.</p>
+        </div>
 
+        <div className="flex flex-col gap-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Account and security</p>
+          <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
+            <div className="flex flex-col gap-6 min-w-0">
         {/* Account info */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Account</h2>
           <div className="flex flex-col gap-3">
             <div>
@@ -597,8 +604,37 @@ export default function Settings() {
           </div>
         </div>
 
+        {/* Email preferences: only the "your scan finished" result email is optional. */}
+        {(notifyScanResults !== null || notifyOutcomeFollowup !== null) && (
+          <div className="bg-white rounded-xl border border-gray-200 p-6 flex flex-col gap-3">
+            <h2 className="font-semibold text-gray-900 -mb-1">Email</h2>
+            {notifyScanResults !== null && (
+              <Checkbox
+                checked={notifyScanResults}
+                disabled={prefSaving}
+                onChange={handleToggleNotify}
+                label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
+                description="The score summary after each scan."
+              />
+            )}
+            {notifyOutcomeFollowup !== null && (
+              <Checkbox
+                checked={notifyOutcomeFollowup}
+                disabled={prefSaving}
+                onChange={handleToggleFollowup}
+                label={<span className="font-medium text-gray-900">Ask me how it went after a fix</span>}
+                description="One email, a few weeks after a fixed resume is delivered, asking whether it led to an interview."
+              />
+            )}
+            <p className="text-xs text-gray-500">Security notices, receipts and your delivered fix are always sent.</p>
+            {prefError && <p role="alert" className="text-sm text-red-600 mt-2">{prefError}</p>}
+          </div>
+        )}
+
+            </div>
+            <div className="flex flex-col gap-6 min-w-0">
         {/* Change password */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-4">Change password</h2>
           <Form onSubmit={handleChangePassword} className="flex flex-col gap-3">
             <PasswordInput label="Current password" value={current}
@@ -621,7 +657,7 @@ export default function Settings() {
             sessions on other devices was as a side effect of changing the
             password — no option for "just sign out that lost/stolen phone,
             nothing else wrong". */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Sign out other sessions</h2>
           <p className="text-sm text-gray-500 mb-4">
             Signs every other device and browser out, without changing your password.
@@ -652,35 +688,14 @@ export default function Settings() {
         {/* FEATURE GAP CLOSED (Auth round 2): per-device list + sign-out */}
         <SessionsCard reloadKey={sessionsReload} />
 
-        {/* Email preferences: only the "your scan finished" result email is optional. */}
-        {(notifyScanResults !== null || notifyOutcomeFollowup !== null) && (
-          <div className="bg-white rounded-lg border border-gray-200 p-6 flex flex-col gap-3">
-            <h2 className="font-semibold text-gray-900 -mb-1">Email</h2>
-            {notifyScanResults !== null && (
-              <Checkbox
-                checked={notifyScanResults}
-                disabled={prefSaving}
-                onChange={handleToggleNotify}
-                label={<span className="font-medium text-gray-900">Email me when a scan finishes</span>}
-                description="The score summary after each scan."
-              />
-            )}
-            {notifyOutcomeFollowup !== null && (
-              <Checkbox
-                checked={notifyOutcomeFollowup}
-                disabled={prefSaving}
-                onChange={handleToggleFollowup}
-                label={<span className="font-medium text-gray-900">Ask me how it went after a fix</span>}
-                description="One email, a few weeks after a fixed resume is delivered, asking whether it led to an interview."
-              />
-            )}
-            <p className="text-xs text-gray-500">Security notices, receipts and your delivered fix are always sent.</p>
-            {prefError && <p role="alert" className="text-sm text-red-600 mt-2">{prefError}</p>}
+            </div>
           </div>
-        )}
+        </div>
 
+        <div className="flex flex-col gap-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Saved profiles</p>
         {/* Saved profile */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Saved profile</h2>
           <p className="text-sm text-gray-500 mb-4">
             Used to translate your background against a new job description in one step,
@@ -695,8 +710,8 @@ export default function Settings() {
             </div>
           ) : hasSavedProfile ? (
             <>
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div>
+            <div className="rounded-lg border border-gray-100 bg-gray-50 p-4">
+              <div className="min-w-0">
                 <p className="text-sm text-gray-600">
                   Saved {savedAt ? formatDate(savedAt) : ''}{editedAt ? `, edited ${formatDate(editedAt)}` : ''}
                   {profileSummary?.name && <> — <span className="font-medium">{profileSummary.name}</span></>}
@@ -721,7 +736,7 @@ export default function Settings() {
                   </Link>
                 )}
               </div>
-              <div className="flex flex-wrap gap-2 shrink-0">
+              <div className="mt-4 flex flex-wrap items-center gap-2 border-t border-gray-200 pt-4">
                 <Link to="/?mode=savedProfile"
                   className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
                   Scan against a new job
@@ -738,7 +753,7 @@ export default function Settings() {
                   loading={downloadingFile === 'primary:docx'} disabled={!!downloadingFile}>Download .docx</Button>
                 <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('pdf', null, profileSummary?.name)}
                   loading={downloadingFile === 'primary:pdf'} disabled={!!downloadingFile}>Download PDF</Button>
-                <Button variant="secondary" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
+                <Button variant="secondary" className="sm:ml-auto" onClick={() => { setRemoveError(''); setRemoveConfirmOpen(true) }} size="sm">
                   Remove saved profile
                 </Button>
               </div>
@@ -773,10 +788,10 @@ export default function Settings() {
               <p className="text-xs text-gray-500 mb-3">
                 Pick any of them when you scan against a new job, or use “Scan with this”. {extraProfiles.length} of {maxExtras} used — save more from a completed scan with “Keep as another profile”.
               </p>
-              <ul className="flex flex-col gap-3">
+              <ul className="grid gap-3 md:grid-cols-2">
                 {extraProfiles.map(p => (
-                  <li key={p.id} className="rounded-md border border-gray-200 px-4 py-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <li key={p.id} className={`rounded-lg border border-gray-200 px-4 py-3 min-w-0 ${editingExtraId === p.id ? 'md:col-span-2' : ''}`}>
+                    <div className="flex flex-col gap-3">
                       <div className="min-w-0">
                         {renameId === p.id ? (
                           <form className="flex items-center gap-2" onSubmit={e => { e.preventDefault(); handleRenameExtra(p.id) }}>
@@ -800,7 +815,7 @@ export default function Settings() {
                           <Link to={`/scan/${p.sourceScanId}`} className="text-xs text-blue-600 hover:underline">View source scan</Link>
                         )}
                       </div>
-                      <div className="flex flex-wrap gap-2 shrink-0">
+                      <div className="flex flex-wrap gap-2">
                         <Link to={`/?mode=savedProfile&profile=${p.id}`}
                           className="inline-flex items-center justify-center rounded-md px-3 py-1.5 text-sm font-medium bg-blue-700 hover:bg-blue-800 text-white">
                           Scan with this
@@ -827,8 +842,13 @@ export default function Settings() {
           {removeError && <p role="alert" className="text-sm text-red-600 mt-2">{removeError}</p>}
         </div>
 
+        </div>
+
+        <div className="flex flex-col gap-4">
+          <p className="text-xs font-semibold uppercase tracking-wide text-gray-500">Your data</p>
+          <div className="grid gap-6 lg:grid-cols-2 lg:items-start">
         {/* Your data */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Your data</h2>
           <p className="text-sm text-gray-500 mb-4">
             Download a copy of what we hold for your account — profile and settings, sign-in history and signed-in
@@ -860,7 +880,7 @@ export default function Settings() {
         </div>
 
         {/* Delete scan history */}
-        <div className="bg-white rounded-lg border border-gray-200 p-6">
+        <div className="bg-white rounded-xl border border-gray-200 p-6">
           <h2 className="font-semibold text-gray-900 mb-1">Scan history</h2>
           <p className="text-sm text-gray-500 mb-4">
             Delete every scan — resume text, job descriptions and rewritten documents — without closing your account.
@@ -880,8 +900,9 @@ export default function Settings() {
           )}
         </div>
 
+          </div>
         {/* Danger zone */}
-        <div className="bg-white rounded-lg border border-red-200 p-6">
+        <div className="bg-white rounded-xl border border-red-200 p-6">
           <h2 className="font-semibold text-red-800 mb-2">Danger zone</h2>
           <p className="text-sm text-gray-500 mb-4">
             Permanently delete your account and the data attached to it. This cannot be undone.
@@ -889,6 +910,7 @@ export default function Settings() {
           <Button variant="danger" onClick={() => setDeleteOpen(true)}>
             Delete account
           </Button>
+        </div>
         </div>
       </div>
 

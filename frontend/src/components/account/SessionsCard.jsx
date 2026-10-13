@@ -51,7 +51,7 @@ export default function SessionsCard({ reloadKey = 0 }) {
   }
 
   return (
-    <div className="bg-white rounded-lg border border-gray-200 p-6">
+    <div className="bg-white rounded-xl border border-gray-200 p-6">
       <h2 className="font-semibold text-gray-900 mb-1">Signed-in devices</h2>
       <p className="text-sm text-gray-500 mb-4">
         Every browser or device currently signed in to your account. Sign out any you don't recognise.

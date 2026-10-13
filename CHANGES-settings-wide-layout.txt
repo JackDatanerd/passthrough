@@ -1,0 +1,23 @@
+SETTINGS: USE THE WIDE SCREEN, AND FIX THE SAVED-PROFILE ROW
+==============================================================
+
+What changed for the person using it
+- Settings was one narrow column (about 500px) on a wide screen. It now uses the dashboard's full width and is grouped:
+    Account and security: two columns. Left: Account (name, email) and Email preferences. Right: Change password, Sign out
+      other sessions, Signed-in devices. (One column on phones and narrow windows.)
+    Saved profiles: the full width of the page.
+    Your data: Your data and Scan history side by side, then the Danger zone across the page.
+- Saved profile: the summary (saved date, name, latest role, counts, "View source scan") sits in its own panel, and the
+  actions (Scan against a new job, Edit, Copy as another profile, Download .docx, Download PDF, Remove saved profile) are
+  on a row beneath it that wraps. Before, the summary was squeezed into a thin column and the buttons ran out of the card.
+- Other profiles: cards in a two-column grid, each with its actions wrapping beneath; the one being edited spans both
+  columns so the editor has room.
+- Cards use the same rounded corners as the rest of the dashboard (also the Signed-in devices card).
+
+No text, behaviour, endpoint or data changed: only layout. Headings and labels are exactly as before.
+
+Files
+- frontend/src/pages/dashboard/Settings.jsx
+- frontend/src/components/account/SessionsCard.jsx (card corners only)
+- frontend/tests/pages/Settings.layout.test.jsx (new): no narrow column, the action row wraps and holds all six actions,
+  other profiles in a grid, the three groups and every card heading still present.
