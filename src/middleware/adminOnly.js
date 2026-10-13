@@ -35,7 +35,10 @@ function adminSessionTooOld(c, now = Date.now()) {
   const hours = raw === undefined || raw === '' ? DEFAULT_ADMIN_SESSION_MAX_HOURS : Number(raw)
   if (!Number.isFinite(hours) || hours <= 0) return false
   const created = c.get('sessionCreatedAtMs')
-  if (!Number.isFinite(created)) return false
+  // A token with no server-side session (issued when create_user_session failed at sign-in, or pre-sessions
+  // legacy) has no age we can check. It must not skip the cap: fail closed so an admin re-authenticates (or
+  // getMe upgrades the token to a real session) instead of holding an uncapped, unrevocable admin token.
+  if (!Number.isFinite(created)) return true
   return now - created > hours * 3600 * 1000
 }
 

@@ -9,7 +9,7 @@ import validateUuidParam, { UUID_RE } from '../src/middleware/validateUuidParam.
 // across those same three files (now fixed alongside this test).
 
 function fakeCtx({ user, authError } = {}) {
-  const store = { user, authError }
+  const store = { user, authError, sessionCreatedAtMs: Date.now() }
   return { get: k => store[k], json: (body, status) => ({ body, status }) }
 }
 

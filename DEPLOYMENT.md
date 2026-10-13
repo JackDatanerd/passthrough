@@ -392,6 +392,9 @@ wrangler secret put ADMIN_ALLOWED_IPS
 # created (default 24; 0 disables the cap), however often the SPA silently renews its token — then the admin
 # signs in again. Plain [vars] value.
 #   ADMIN_SESSION_MAX_HOURS = "24"
+# A token with no server-side session (issued if the session row could not be created at sign-in) has no age
+# to check, so while the cap is on an admin holding one is refused (ADMIN_SESSION_EXPIRED) and signs in again;
+# the SPA's next /api/auth/me call also upgrades such a token to a real session.
 
 # Password step-up for refunds, partner payouts (record / batch / void), partner anonymisation and user
 # status/role changes. ADMIN_STEP_UP_MINUTES = N (default 0 = off, 1-240): the admin panel then asks for the
@@ -928,3 +931,16 @@ go back to Section 2 and run everything in `supabase/migrations/`, in order.
 ---
 
 *For support: support@passthrough.dev*
+
+## Optional tuning variables
+
+All optional plain `[vars]` values (none is a secret); each has a safe default.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `SUPPORT_EMAIL` | `support@passthrough.dev` | Reply/contact address shown in transactional emails. |
+| `REFERRAL_MIN_PRICE_PCT` | `10` | A partner custom price below this % of the standard price is refused. |
+| `REFERRAL_VELOCITY_ALERT` | `10` (`0` = off) | Owner is emailed once when one referral code converts this many times in an hour. |
+| `ARCHIVED_LEAD_PURGE_SUPPRESSES` | `false` | `true` makes the archived-lead purge add each purged address to the do-not-contact list. |
+| `CLAUDE_USD_PER_MTOK_INPUT` / `CLAUDE_USD_PER_MTOK_OUTPUT` | unset | USD per million tokens; when both are set the admin cost view shows dollar estimates. |
+| `SUPABASE_TIMEOUT_MS` | `25000` | Per-request database timeout. |

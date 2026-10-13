@@ -52,7 +52,7 @@ describe('errorHandler (B2, B3)', () => {
 describe('adminOnly ADMIN_ALLOWED_IPS (G5)', () => {
   const app = () => {
     const a = new Hono()
-    a.use('*', async (c, next) => { c.set('user', { id: 'admin1', role: 'ADMIN' }); return next() })
+    a.use('*', async (c, next) => { c.set('user', { id: 'admin1', role: 'ADMIN' }); c.set('sessionCreatedAtMs', Date.now()); return next() })
     a.get('/x', adminOnly, c => c.json({ ok: true }))
     return a
   }

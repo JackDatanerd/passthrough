@@ -73,3 +73,11 @@ RESEND_API_KEY=re_...
 # AUTO_REFUND_UNDELIVERABLE=true
 # TESTING ONLY: IPs (comma-separated) that skip every rate limit. Delete before real traffic.
 # RATE_LIMIT_BYPASS_IPS=
+# Optional tuning (all have defaults; see DEPLOYMENT.md "Optional tuning variables").
+# SUPPORT_EMAIL=support@passthrough.dev
+# REFERRAL_MIN_PRICE_PCT=10
+# REFERRAL_VELOCITY_ALERT=10
+# ARCHIVED_LEAD_PURGE_SUPPRESSES=false
+# CLAUDE_USD_PER_MTOK_INPUT=
+# CLAUDE_USD_PER_MTOK_OUTPUT=
+# SUPABASE_TIMEOUT_MS=25000

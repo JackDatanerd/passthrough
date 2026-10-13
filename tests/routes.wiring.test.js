@@ -23,7 +23,7 @@ function mount(routeFile, controllerFile, extraStubs = {}) {
   })
   restore = loaded.restore
   const app = new Hono()
-  app.use('*', async (c, next) => { if (current) c.set('user', current); await next() })
+  app.use('*', async (c, next) => { if (current) { c.set('user', current); c.set('sessionCreatedAtMs', Date.now()) } await next() })
   app.route('/r', loaded.mod)
   return app
 }

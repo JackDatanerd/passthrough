@@ -55,10 +55,25 @@ describe('admin session age cap (G1)', () => {
     expect(res.status).toBe(401)
     expect(res.body.code).toBe('ADMIN_SESSION_EXPIRED')
   })
-  it('lets a young session, a token with no session, and a disabled cap through', async () => {
+  it('lets a young session and a disabled cap through', async () => {
     expect((await run(adminOnly, mk({ store: { sessionCreatedAtMs: Date.now() - 2 * H } }))).passed).toBe(true)
-    expect((await run(adminOnly, mk())).passed).toBe(true)
     expect((await run(adminOnly, mk({ env: { ADMIN_SESSION_MAX_HOURS: '0' }, store: { sessionCreatedAtMs: 1 } }))).passed).toBe(true)
+  })
+  it('FAILS CLOSED for an admin token with no server-side session (no age to check) — it cannot skip the cap', async () => {
+    const { passed, res } = await run(adminOnly, mk())
+    expect(passed).toBe(false)
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('ADMIN_SESSION_EXPIRED')
+    const nan = await run(adminOnly, mk({ store: { sessionCreatedAtMs: NaN } }))
+    expect(nan.passed).toBe(false)
+  })
+  it('a sessionless admin is let through only when the cap is disabled (ADMIN_SESSION_MAX_HOURS=0)', async () => {
+    expect((await run(adminOnly, mk({ env: { ADMIN_SESSION_MAX_HOURS: '0' } }))).passed).toBe(true)
+  })
+  it('a non-admin without a session is still just 403 ADMIN_REQUIRED (the cap is admin-only)', async () => {
+    const { passed, res } = await run(adminOnly, mk({ user: { id: 'u1', role: 'USER' } }))
+    expect(passed).toBe(false)
+    expect(res.body.code).toBe('ADMIN_REQUIRED')
   })
   it('honours a custom cap', async () => {
     expect((await run(adminOnly, mk({ env: { ADMIN_SESSION_MAX_HOURS: '2' }, store: { sessionCreatedAtMs: Date.now() - 3 * H } }))).passed).toBe(false)
