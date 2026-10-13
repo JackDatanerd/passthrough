@@ -1,0 +1,20 @@
+VERIFY — round 11 (fresh clone of a3787eb, 2026-10-13). Section 7, bugs only.
+
+BUG V-1 (security, found by this pass): the public "report this page" note — text any stranger can type — went into the
+owner alert, and the alert's chat-webhook copy (ALERT_WEBHOOK_URL) was sent RAW. A chat webhook reads raw text as markup:
+Slack <!channel> / <!here> / <@U..> ping people and <https://evil|Passthrough sign-in> renders a link with any label;
+Discord @everyone / @here / <@&role> ping and [label](url) makes a masked link; Mattermost @channel / @all ping.
+The e-mail copy was already HTML-escaped; only the webhook copy was open. One anonymous POST per page per day could
+page the whole ops channel or plant a phishing-labelled link. (Only when ALERT_WEBHOOK_URL is set.)
+  Fix: src/lib/alertWebhook.js — neutralizeChatMarkup() (zero-width space after "<", after "@" in a broadcast mention,
+  and between "]" and "(") applied to text/content/subject/message BEFORE the length cut; payload also carries
+  allowed_mentions: { parse: [] } for Discord. The fix is in postAlertWebhook, so it covers all ~43 sendOwnerAlert
+  callers, not just this one.
+
+MINOR M-1: frontend/src/lib/fileFingerprint.js extractSha256 used regex lookbehind. Safari < 16.4 cannot compile it, so
+  "Check fingerprint" threw and did nothing. Rewritten with a captured boundary character; same results (tests prove it).
+MINOR M-2: Verify.jsx printed "Below the Passthrough Verified threshold (80+)" from a frontend copy of the constant.
+  GET /api/verify/:code now returns badgeThreshold (constants.ATS_BADGE_THRESHOLD); the page uses it, constant as fallback.
+
+Tests: tests/verify.round11.test.js, frontend/tests/pages/Verify.round11.test.jsx (7 of 18 fail on the unfixed code).
+No migration. Deploy order: any.

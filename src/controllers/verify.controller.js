@@ -431,6 +431,8 @@ async function getVerification(c) {
     // 400-letter string never reaches the headline. See lib/text.js publicFirstName.
     candidateFirstName: row.verify_hide_name ? null : publicFirstName(row.candidate_first_name),
     atsScore:           verifiedScore,
+    // VERIFY ROUND 11: the bar `passed` was judged against, so the page can name it without keeping its own copy.
+    badgeThreshold:     constants.ATS_BADGE_THRESHOLD,
     passed,
     // The ONLY flag a headline may use to say "Verified".
     verified:           passed && integrityStatus === 'verified',

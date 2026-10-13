@@ -560,7 +560,7 @@ export default function Verify() {
                         ? "The integrity check couldn't complete just now — refresh in a moment to re-check."
                         : data.passed
                           ? 'Passthrough Verified status is not confirmed for this file — see Integrity below.'
-                          : `Below the Passthrough Verified threshold (${ATS_BADGE_THRESHOLD}+)`}
+                          : `Below the Passthrough Verified threshold (${Number.isFinite(data.badgeThreshold) ? data.badgeThreshold : ATS_BADGE_THRESHOLD}+)`}
                   </p>
                 </>
               )}

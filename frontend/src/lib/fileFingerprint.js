@@ -67,16 +67,20 @@ export const MAX_CHECK_BYTES = 25 * 1024 * 1024
 // between the byte pairs. Returns the lowercase hash, or null when no single SHA-256 can be found.
 export function extractSha256(text) {
   const raw = String(text || '')
-  const bare = raw.match(/(?<![a-f0-9])[a-f0-9]{64}(?![a-f0-9])/gi)
-  if (bare) {
-    const uniq = [...new Set(bare.map(h => h.toLowerCase()))]
-    return uniq.length === 1 ? uniq[0] : null     // two different hashes pasted: do not guess which one
+  // VERIFY ROUND 11 (bug): the two patterns used regex LOOKBEHIND (`(?<![a-f0-9])`). Safari before 16.4 (iOS 16.3 and
+  // older) cannot compile that, so the bundler keeps the literal as a runtime `new RegExp(...)` and "Check fingerprint"
+  // threw a SyntaxError on those devices — the button simply did nothing. The boundary is now a captured character
+  // (or the start) in front of the hash, which every engine supports; the hash still must not sit inside a longer
+  // run of hex digits (a SHA-512 pasted by mistake is rejected, not truncated).
+  const uniq = (re, clean) => {
+    const found = new Set()
+    for (const m of raw.matchAll(re)) found.add(clean(m[2]))
+    return found
   }
-  const spaced = raw.match(/(?<![a-f0-9])(?:[a-f0-9]{2}[ :]){31}[a-f0-9]{2}(?![a-f0-9])/gi)
-  if (spaced) {
-    const uniq = [...new Set(spaced.map(h => h.replace(/[ :]/g, '').toLowerCase()))]
-    return uniq.length === 1 ? uniq[0] : null
-  }
+  const bare = uniq(/(^|[^a-f0-9])([a-f0-9]{64})(?![a-f0-9])/gi, h => h.toLowerCase())
+  if (bare.size) return bare.size === 1 ? [...bare][0] : null     // two different hashes pasted: do not guess which one
+  const spaced = uniq(/(^|[^a-f0-9])((?:[a-f0-9]{2}[ :]){31}[a-f0-9]{2})(?![a-f0-9])/gi, h => h.replace(/[ :]/g, '').toLowerCase())
+  if (spaced.size) return spaced.size === 1 ? [...spaced][0] : null
   return null
 }
 
