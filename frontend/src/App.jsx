@@ -39,6 +39,7 @@ const PaymentSuccess = lazyWithRetry(() => import('./pages/PaymentSuccess'))
 const DashboardIndex = lazyWithRetry(() => import('./pages/dashboard/Index'))
 const Settings       = lazyWithRetry(() => import('./pages/dashboard/Settings'))
 const Proof          = lazyWithRetry(() => import('./pages/dashboard/Proof'))
+const MyStory        = lazyWithRetry(() => import('./pages/dashboard/MyStory'))
 // FEATURE GAP CLOSED (Payments & Pricing re-audit): see PaymentHistory.jsx's
 // header comment — GET /api/payments/history had no frontend consumer at all.
 const PaymentHistory  = lazyWithRetry(() => import('./pages/dashboard/PaymentHistory'))
@@ -149,6 +150,8 @@ function RoutedApp() {
             element={<ProtectedRoute><Settings /></ProtectedRoute>} />
           <Route path="/dashboard/proof"
             element={<ProtectedRoute><Proof /></ProtectedRoute>} />
+          <Route path="/dashboard/story"
+            element={<ProtectedRoute><MyStory /></ProtectedRoute>} />
           <Route path="/dashboard/payments"
             element={<ProtectedRoute><PaymentHistory /></ProtectedRoute>} />
           <Route path="/admin" element={<AdminRoute><AdminLayout /></AdminRoute>}>

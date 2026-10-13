@@ -20,12 +20,14 @@ const STATUS_TEXT = {
   REJECTED: "We couldn't publish this one. You can edit and resubmit it from a new answer.",
 }
 
-function StoryForm({ scanId, onDone, onCancel, interview }) {
-  const [displayName, setDisplayName] = useState('')
-  const [quote, setQuote] = useState('')
-  const [text, setText] = useState('')
-  const [showCredential, setShowCredential] = useState(false)
-  const [consent, setConsent] = useState(false)
+// Used here for a first story, and by the My Story tab (with `initial`) to edit one that already exists. An existing
+// story has already been consented to, so editing starts with the box ticked; the server still requires it.
+export function StoryForm({ scanId, onDone, onCancel, interview, initial, submitLabel = 'Submit story', cancelLabel = 'Not now' }) {
+  const [displayName, setDisplayName] = useState(initial?.displayName ?? '')
+  const [quote, setQuote] = useState(initial?.quote ?? '')
+  const [text, setText] = useState(initial?.text ?? '')
+  const [showCredential, setShowCredential] = useState(initial?.showCredential ?? false)
+  const [consent, setConsent] = useState(!!initial)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
@@ -33,8 +35,8 @@ function StoryForm({ scanId, onDone, onCancel, interview }) {
     e.preventDefault()
     setBusy(true); setError('')
     try {
-      await api.put('/outcomes', { scanId, outcome: 'INTERVIEW', ...interview, story: { consent, displayName, quote, text, showCredential } })
-      onDone('Thank you! Your story is with our team for review — it is not public until we approve it.')
+      const res = await api.put('/outcomes', { scanId, outcome: 'INTERVIEW', ...interview, story: { consent, displayName, quote, text, showCredential } })
+      onDone('Thank you! Your story is with our team for review — it is not public until we approve it.', res?.data?.data)
     } catch (err) {
       setError(getErrorMessage(err, "Couldn't submit your story."))
     } finally { setBusy(false) }
@@ -53,8 +55,8 @@ function StoryForm({ scanId, onDone, onCancel, interview }) {
         checked={consent} onChange={e => setConsent(e.target.checked)} />
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
       <div className="flex gap-2">
-        <Button type="submit" size="sm" loading={busy} disabled={!consent}>Submit story</Button>
-        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>Not now</Button>
+        <Button type="submit" size="sm" loading={busy} disabled={!consent}>{submitLabel}</Button>
+        <Button type="button" size="sm" variant="ghost" onClick={onCancel}>{cancelLabel}</Button>
       </div>
     </form>
   )
@@ -131,7 +133,9 @@ function Question({ item, onAnswered }) {
   )
 }
 
-export default function OutcomeCard() {
+// `showStories` lists the person's existing stories under the question. The My Story tab owns that list now, so the
+// dashboard pages turn it off and keep only the question.
+export default function OutcomeCard({ showStories = true }) {
   const [state, setState] = useState(null)       // { pending, stories } | null (nothing to show / failed)
   const [note, setNote] = useState('')
   const [withdrawError, setWithdrawError] = useState('')
@@ -158,7 +162,7 @@ export default function OutcomeCard() {
   }
 
   const pending = state?.pending || []
-  const stories = state?.stories || []
+  const stories = showStories ? (state?.stories || []) : []
   if (!pending.length && !stories.length && !note) return null
 
   return (

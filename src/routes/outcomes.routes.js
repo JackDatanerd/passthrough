@@ -22,6 +22,7 @@ const router = new Hono()
 router.post(  '/unsubscribe',        rl.followUpOptOut, c.unsubscribeFollowUp)
 router.get(   '/unsubscribe',        rl.followUpOptOut, c.unsubscribeFollowUpRedirect)
 router.get(   '/pending',           auth, rememberOrigin, c.pendingOutcomes)
+router.get(   '/mine',              auth,                 c.myStories)
 router.put(   '/',                  auth, rl.outcomeWrite, c.submitOutcome)
 router.delete('/:scanId/story',     auth, rl.outcomeWrite, validateUuidParam('scanId'), c.withdrawStory)
 

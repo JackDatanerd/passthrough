@@ -235,6 +235,37 @@ describe('pendingOutcomes', () => {
   })
 })
 
+describe('myStories', () => {
+  const row = (over = {}) => ({
+    scan_id: 's1', role_category: 'marketing', outcome: 'INTERVIEW', interview_count: 2, interview_after_days: 9, story_status: 'APPROVED',
+    story_display_name: 'Amara O.', story_quote: 'A headline', story_text: 'The full story.', story_show_credential: true,
+    answered_at: '2026-09-02T00:00:00Z', updated_at: '2026-09-03T00:00:00Z', ...over,
+  })
+  it('returns the caller\'s own stories in full, newest first, and only the ones that exist (not NONE)', async () => {
+    const { c, db } = outcomesSetup(() => ({ data: [row(), row({ scan_id: 's2', story_status: 'PENDING', story_show_credential: null, interview_count: null, story_display_name: null })], error: null }))
+    const res = await c.myStories(ctxFor())
+    expect(res.body.data.stories).toHaveLength(2)
+    expect(res.body.data.stories[0]).toEqual({
+      scanId: 's1', roleCategory: 'marketing', outcome: 'INTERVIEW', interviewCount: 2, interviewAfterDays: 9, status: 'APPROVED',
+      displayName: 'Amara O.', quote: 'A headline', text: 'The full story.', showCredential: true, answeredAt: '2026-09-02T00:00:00Z', updatedAt: '2026-09-03T00:00:00Z',
+    })
+    expect(res.body.data.stories[1]).toMatchObject({ interviewCount: null, displayName: null, showCredential: false })
+    const q = db.calls[0]
+    expect(q.table).toBe('scan_outcomes')
+    expect(eqValue(q, 'user_id')).toBe(USER)
+    expect(q.filters.some(f => f[0] === 'neq' && f[1] === 'story_status' && f[2] === 'NONE')).toBe(true)
+    expect(q.cols).toContain('story_text')
+  })
+  it('is an empty list, not an error, for someone who has shared nothing', async () => {
+    const { c } = outcomesSetup(() => ({ data: [], error: null }))
+    expect((await c.myStories(ctxFor())).body).toEqual({ success: true, data: { stories: [] } })
+  })
+  it('lets a database failure through to the error handler instead of answering with a partial list', async () => {
+    const { c } = outcomesSetup(() => ({ data: null, error: new Error('db down') }))
+    await expect(c.myStories(ctxFor())).rejects.toThrow('db down')
+  })
+})
+
 describe('sweepOutcomePrompts', () => {
   const NOW = Date.parse('2026-10-10T12:00:00Z')
   const user = (over = {}) => ({ email: 'a@x.y', name: 'Ann', status: 'ACTIVE', email_verified: true, deleted_at: null, notify_outcome_followup: true, ...over })

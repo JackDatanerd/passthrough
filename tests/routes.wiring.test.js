@@ -324,12 +324,13 @@ describe('homepage evidence routes', () => {
   })
   it('every outcome route needs a signed-in user', async () => {
     const a = mount('routes/outcomes.routes.js', 'controllers/outcomes.controller.js')
-    for (const [m, p] of [['GET', '/pending'], ['PUT', ''], ['DELETE', `/${ID}/story`]]) {
+    for (const [m, p] of [['GET', '/pending'], ['GET', '/mine'], ['PUT', ''], ['DELETE', `/${ID}/story`]]) {
       current = undefined
       expect((await call(a, m, p, {})).status, `${m} ${p}`).toBe(401)
     }
     current = { id: 'u1', role: 'USER' }
     expect((await call(a, 'GET', '/pending')).json.handler).toBe('pendingOutcomes')
+    expect((await call(a, 'GET', '/mine')).json.handler).toBe('myStories')
     expect((await call(a, 'PUT', '', {})).json.handler).toBe('submitOutcome')
     expect((await call(a, 'DELETE', `/${ID}/story`)).json.handler).toBe('withdrawStory')
   })

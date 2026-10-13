@@ -20,6 +20,7 @@ import StatsRow from '../../components/dashboard/StatsRow'
 import BreakdownModal from '../../components/dashboard/BreakdownModal'
 import { statusLabel } from '../../lib/utils'
 import { createPoller } from '../../lib/poller'
+import { loadNeedsDecision } from '../../lib/needsDecision'
 import { describeQuota } from '../../lib/quota'
 import { canDeleteScan, isLive, effectiveSearch } from '../../lib/scanDisplay'
 import { isAlreadyVerified } from '../../lib/resendVerification'
@@ -244,6 +245,9 @@ export default function DashboardIndex() {
     refreshUser()
   }, [])
 
+  // The "Scans" tab's count follows this list: any reload, background refresh or delete re-reads it.
+  useEffect(() => { loadNeedsDecision(user?.id, { force: true }) }, [user?.id, reloadTick, softTick])
+
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
   async function resendVerification() {
@@ -352,7 +356,7 @@ export default function DashboardIndex() {
     <DashboardLayout>
       <div className="flex flex-col gap-6">
         {/* Asks, 14 days after a fix landed, whether it led to an interview. */}
-        <OutcomeCard />
+        <OutcomeCard showStories={false} />
         <div className="flex items-start justify-between flex-wrap gap-3">
           <div>
             <h1 className="text-xl font-bold text-gray-900">Your scans</h1>

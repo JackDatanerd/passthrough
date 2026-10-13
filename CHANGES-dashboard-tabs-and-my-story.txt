@@ -1,0 +1,36 @@
+DASHBOARD: TOP TABS, ITS OWN HEADER, AND A MY STORY TAB
+=========================================================
+
+What changed for the person using it
+- The dashboard tabs are on top, as in the v4 template: Passthrough, Scans, Proof, My Story, Payments, Settings, and
+  Sign out on the right. The page content now uses the full width (the side menu is gone).
+- The "Scans" tab carries a count: how many scans are waiting for a decision (scored, no fix chosen yet). It is the same
+  number as the "Needs a decision" chip, and it is left off when nothing is waiting.
+- Signed in on the dashboard, the public-site links (Stories, Hot categories, Pricing, For employers, Dashboard) are no
+  longer in the header. The logo still goes to the homepage, and the footer is unchanged.
+- New tab: My Story (/dashboard/story). Every story the person has shared, in full: headline, text, the name shown,
+  the interview facts, whether their Verified link is shown, and where it stands (In review / Published / Not published).
+  Edit story (starts from what was written; a change to a published story sends it back to review and says so first)
+  and Take it down (asks first). The "How did it go?" question for fixes delivered 14+ days ago also shows here, since
+  answering "yes" is how a story starts. The Scans page keeps that question but no longer lists the stories.
+- Phones: the tabs drop to their own row under the logo and scroll sideways; Settings is always reachable.
+
+Backend
+- GET /api/outcomes/mine (signed in): the caller's own stories in full, newest first (max 50). Reads scan_outcomes
+  only, for the caller's user id, excluding story_status NONE. /pending is unchanged.
+- Editing and taking down use the existing PUT /api/outcomes and DELETE /api/outcomes/:scanId/story.
+- Tests: homepage.outcomes.test.js (myStories), routes.wiring.test.js (/mine needs a signed-in user).
+
+Frontend
+- components/layout/DashboardLayout.jsx: the dashboard's own header (no Navbar). Skip-to-content link kept.
+- lib/needsDecision.js: the tab count. One small request (limit 1, total only), shared by every dashboard page for a
+  minute; the Scans page forces a re-read when it reloads its list. Per signed-in user (one person never sees the
+  previous one's number). A failed request just leaves the tab plain.
+- pages/dashboard/MyStory.jsx, route /dashboard/story, page title "My Story".
+- components/account/OutcomeCard.jsx: StoryForm is exported and can start from an existing story (initial,
+  submitLabel, cancelLabel); the card takes showStories (default true, so nothing else changes).
+- Tests: components/DashboardLayout.test.jsx (rewritten), pages/MyStory.test.jsx (new).
+
+Left as it was
+- Admin pages, the scan result page and the public pages keep the public Navbar.
+- A rejected story cannot be explained here (the app stores no rejection reason); the card says it was not published.

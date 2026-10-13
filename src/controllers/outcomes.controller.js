@@ -1,6 +1,7 @@
 // "Did your fixed resume lead to an interview?" — the data behind every number on the homepage.
 //
 //   GET    /api/outcomes/pending           what to ask this person (and the state of their stories)
+//   GET    /api/outcomes/mine              this person's own stories, in full (the dashboard's My Story tab)
 //   PUT    /api/outcomes                   answer (or change the answer), optionally with a story
 //   DELETE /api/outcomes/:scanId/story     take a story back; the answer itself stays
 //
@@ -20,6 +21,7 @@ const { signLeadToken, verifyLeadToken, leadLinkSecrets } = require('../lib/lead
 
 const DAY_MS = 24 * 60 * 60 * 1000
 const PENDING_SHOWN = 3
+const MY_STORIES_SHOWN = 50
 
 const iso = (ms) => new Date(ms).toISOString()
 
@@ -62,6 +64,27 @@ async function pendingOutcomes(c) {
     pending,
     stories: (stories || []).map(r => ({ scanId: r.scan_id, status: r.story_status, displayName: r.story_display_name, quote: r.story_quote, answeredAt: r.answered_at })),
   } })
+}
+
+// GET /api/outcomes/mine
+// Every story this person has shared, with the words they wrote and where each stands. /pending only carries
+// a headline per story (it feeds the prompt on the dashboard); this is the full text, for the My Story tab, so
+// it can be read, edited and taken down. Only ever the caller's own rows. A scan that was deleted took its story
+// with it (see the trigger in 0074), so what is listed here is what still exists.
+async function myStories(c) {
+  const user = c.get('user')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('scan_outcomes')
+    .select('scan_id, role_category, outcome, interview_count, interview_after_days, story_status, story_display_name, story_quote, story_text, story_show_credential, answered_at, updated_at')
+    .eq('user_id', user.id).neq('story_status', STORY_STATUS.NONE)
+    .order('answered_at', { ascending: false }).limit(MY_STORIES_SHOWN)
+  if (error) throw error
+  return c.json({ success: true, data: { stories: (data || []).map(r => ({
+    scanId: r.scan_id, roleCategory: r.role_category || null, outcome: r.outcome,
+    interviewCount: r.interview_count ?? null, interviewAfterDays: r.interview_after_days ?? null,
+    status: r.story_status, displayName: r.story_display_name || null, quote: r.story_quote || null, text: r.story_text || null,
+    showCredential: r.story_show_credential === true, answeredAt: r.answered_at, updatedAt: r.updated_at,
+  })) } })
 }
 
 // PUT /api/outcomes
@@ -214,4 +237,4 @@ function unsubscribeFollowUpRedirect(c) {
   return c.redirect(`${base}/dashboard/settings`, 302)
 }
 
-module.exports = { pendingOutcomes, submitOutcome, withdrawStory, sweepOutcomePrompts, unsubscribeFollowUp, unsubscribeFollowUpRedirect, followUpUnsubscribeUrl }
+module.exports = { pendingOutcomes, myStories, submitOutcome, withdrawStory, sweepOutcomePrompts, unsubscribeFollowUp, unsubscribeFollowUpRedirect, followUpUnsubscribeUrl }

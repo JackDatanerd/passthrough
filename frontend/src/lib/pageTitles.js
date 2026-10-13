@@ -17,6 +17,7 @@ const ROUTES = [
   [/^\/check/, 'Check a resume'],
   [/^\/dashboard\/settings/, 'Settings'],
   [/^\/dashboard\/proof/, 'Proof'],
+  [/^\/dashboard\/story/, 'My Story'],
   [/^\/dashboard/, 'Your scans'],
   [/^\/admin/, 'Admin'],
   [/^\/partner/, 'Partner'],
