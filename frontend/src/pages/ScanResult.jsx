@@ -784,7 +784,7 @@ export default function ScanResult() {
                 </p>
               </>
             )}
-            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && !!loadBrainDumpDraft()?.text?.trim() && (
+            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && !!loadBrainDumpDraft(user?.id || null)?.text?.trim() && (
               <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
             )}
             {!scan.fixPurchased && scan.failure?.retryable !== false && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (

@@ -2,7 +2,7 @@ import { createContext, useState, useEffect } from 'react'
 import api, { SESSION_ENDED_EVENT, clearStepUp } from '../lib/api'
 import { signedOutElsewhereTarget, failureScope } from '../lib/session'
 import { getAnonScanTokens, removeAnonScanToken, clearAnonScanTokens } from '../lib/anonScans'
-import { clearBrainDumpDraft } from '../lib/brainDumpDraft'
+import { clearBrainDumpDraft, dropForeignBrainDumpDraft } from '../lib/brainDumpDraft'
 import { restoreReferralFromAccount } from '../hooks/useReferralCapture'
 import { getToken, setToken, getCachedUser, setCachedUser, storageRemove } from '../lib/storage'
 import { TOKEN_KEY, USER_KEY } from '../lib/session'
@@ -141,6 +141,7 @@ export function AuthProvider({ children }) {
   function adoptSession(token, newUser) {
     setToken(token)
     setCachedUser(newUser)
+    dropForeignBrainDumpDraft(newUser && newUser.id)
     restoreReferralFromAccount(newUser)
     setUser(newUser)
   }

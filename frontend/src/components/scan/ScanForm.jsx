@@ -57,7 +57,10 @@ export default function ScanForm() {
   const [file,          setFile         ] = useState(null)
   // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
   // see lib/brainDumpDraft.js. Dropped by ScanResult once a result exists.
-  const [draft0] = useState(() => loadBrainDumpDraft())
+  const [draft0] = useState(() => loadBrainDumpDraft(user?.id || null))
+  // Whose draft this is. Set once and never reset to null when the session ends while the form is open —
+  // otherwise the next keystroke would re-save the last person's text as an unowned draft.
+  const draftOwner = useRef(user?.id || null)
   const [brainDumpText, setBrainDumpText] = useState(() => (draft0?.text || '').slice(0, MAX_RESUME_CHARS))
   const [hasSavedProfile, setHasSavedProfile] = useState(false)
   // Additional named profiles (Settings) — '' means the primary profile.
@@ -99,8 +102,9 @@ export default function ScanForm() {
   }, [user])
 
   useEffect(() => {
-    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail })
-  }, [brainDumpText, contactName, contactEmail])
+    if (user?.id && !draftOwner.current) draftOwner.current = user.id
+    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail, owner: draftOwner.current })
+  }, [brainDumpText, contactName, contactEmail, user?.id])
 
   // Deep links from the landing page's "three ways to start" cards: /?mode=brainDump | manual.
   useEffect(() => {

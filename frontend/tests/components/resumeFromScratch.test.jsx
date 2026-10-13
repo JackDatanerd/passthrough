@@ -7,7 +7,7 @@ import api from '../../src/lib/api'
 import ResumeFieldsForm from '../../src/components/scan/ResumeFieldsForm'
 import ResumeDataEditor from '../../src/components/scan/ResumeDataEditor'
 import { manualHasContent, missingHints, EMPTY_MANUAL } from '../../src/lib/resumeForm'
-import { loadBrainDumpDraft, saveBrainDumpDraft, clearBrainDumpDraft } from '../../src/lib/brainDumpDraft'
+import { loadBrainDumpDraft, saveBrainDumpDraft, clearBrainDumpDraft, dropForeignBrainDumpDraft } from '../../src/lib/brainDumpDraft'
 
 vi.mock('../../src/lib/api', () => ({
   default: { get: vi.fn(), patch: vi.fn() },
@@ -105,5 +105,31 @@ describe('ResumeDataEditor — drafts', () => {
     render(<ResumeDataEditor scan={scan} onUpdated={vi.fn()} />)
     expect(screen.getByText(/Worth adding/i)).toBeTruthy()
     expect(screen.getByRole('button', { name: /PDF/i })).toBeTruthy()
+  })
+})
+
+describe('brain-dump draft ownership (auth round 11)', () => {
+  const KEY = 'passthrough_brain_dump_draft'
+  beforeEach(() => localStorage.removeItem(KEY))
+
+  it('an owned draft is shown to its owner only', () => {
+    saveBrainDumpDraft({ text: 'A resume', name: 'A', email: 'a@x.com', owner: 'user-a' })
+    expect(loadBrainDumpDraft('user-a')).toEqual({ text: 'A resume', name: 'A', email: 'a@x.com' })
+    expect(loadBrainDumpDraft('user-b')).toBeNull()
+    expect(loadBrainDumpDraft(null)).toBeNull()
+  })
+
+  it('an unowned (signed-out) draft is available to anyone', () => {
+    saveBrainDumpDraft({ text: 'typed signed out' })
+    expect(loadBrainDumpDraft('user-b')?.text).toBe('typed signed out')
+    expect(loadBrainDumpDraft(null)?.text).toBe('typed signed out')
+  })
+
+  it('dropForeignBrainDumpDraft removes another person\'s draft but keeps the owner\'s and unowned ones', () => {
+    saveBrainDumpDraft({ text: 'x', owner: 'user-a' })
+    dropForeignBrainDumpDraft('user-a'); expect(localStorage.getItem(KEY)).not.toBeNull()
+    dropForeignBrainDumpDraft('user-b'); expect(localStorage.getItem(KEY)).toBeNull()
+    saveBrainDumpDraft({ text: 'y' })
+    dropForeignBrainDumpDraft('user-b'); expect(localStorage.getItem(KEY)).not.toBeNull()
   })
 })

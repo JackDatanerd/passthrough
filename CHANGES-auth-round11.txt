@@ -1,0 +1,9 @@
+Auth round 11 — brain-dump draft belongs to its author
+Bug: passthrough_brain_dump_draft (resume text, name, email) was one global key. It was cleared on explicit logout
+but NOT when a session ended any other way (expiry, password change elsewhere, sign-out-others, ban), so the next
+person on the browser got the previous person's draft prefilled in ScanForm.
+Fix: drafts saved while signed in carry owner=user id and load only for that user (loadBrainDumpDraft(viewerId));
+signed-out drafts stay unowned. ScanForm keeps the owner in a ref so an expiry mid-form can't re-save the text as
+unowned. adoptSession drops a draft owned by someone else. ScanResult's "still saved" notice uses the same gate.
+Files: lib/brainDumpDraft.js, context/AuthContext.jsx, components/scan/ScanForm.jsx, pages/ScanResult.jsx,
+tests/components/resumeFromScratch.test.jsx (+3 tests).
