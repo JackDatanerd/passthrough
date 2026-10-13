@@ -7,6 +7,7 @@ import { detectFabrication, unsupportedSkills, inventedNumbers, extractJson } fr
 import { inspectStructure } from '../src/services/resume.parser.js'
 import { buildResumeHTML } from '../src/services/pdfTemplate.service.js'
 import { handleDeadLetterBatch } from '../src/services/deadletter.service.js'
+import { normalizeJobUrl } from '../src/services/jd.parser.js'
 
 let t
 afterEach(() => t?.restore())
@@ -250,7 +251,7 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     const m = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'middleware/rateLimiter.js': { isBypassed: () => false, anonScanSlotKey: () => 'rl:anonscan:test', refundAnonScanSlot: async () => {}, hitQuota: async () => true },
-      'services/jd.parser.js': { fetchJobDescriptionFromUrl: async () => { state.jdFetches++; return opts.jdFetch ?? { success: true, text: 'F'.repeat(80) } } },
+      'services/jd.parser.js': { normalizeJobUrl, fetchJobDescriptionFromUrl: async () => { state.jdFetches++; return opts.jdFetch ?? { success: true, text: 'F'.repeat(80) } } },
     })
     return { ...m, state, db }
   }
@@ -291,6 +292,13 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     expect(t.state.jdFetches).toBe(0)
     expect(t.state.inserts[0].job_description_text).toBe(validJd)
     expect(t.state.inserts[0].job_description_url).toBe('http://evil.internal')
+  })
+  it('a scheme-less link is stored (and fetched) as https:// — round 6', async () => {
+    t = setup()
+    const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionUrl: 'jobs.acme.com/eng-1', jobDescriptionText: '' } }))
+    expect(res.body.success).toBe(true)
+    expect(t.state.jdFetches).toBe(1)
+    expect(t.state.inserts[0].job_description_url).toBe('https://jobs.acme.com/eng-1')
   })
   it('the URL is still fetched when nothing usable was pasted', async () => {
     t = setup()

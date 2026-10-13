@@ -164,7 +164,7 @@ function tokenizeRaw(text) {
 // and a resume that said "Docker and Kubernetes" was then docked for "missing" them (and the
 // nonsense showed up in "Why this score"). Applied to the JD side only: the resume side stays
 // permissive (any two adjacent words), so a real compound term is still found wherever it sits.
-const PHRASE_BREAK = /[\n\r,;:|•·()[\]{}<>\\/]|\s[-\u2013\u2014]\s|[.!?](?=\s|$)/u
+const PHRASE_BREAK = /[\n\r,;:|•·()[\]{}<>\\/&+]|\s[-\u2013\u2014]\s|[.!?](?=\s|$)/u
 function tokenizeSegments(text) {
   return normalizeTechTerms(text)
     .toLowerCase()
@@ -184,7 +184,10 @@ function tokenizeSegments(text) {
 const keepToken = w => (w.length >= 3 || SHORT_KEEP.has(w)) && !/^\p{N}+$/u.test(w)
 for (const w of ['per', 'range', 'base', 'hiring', 'annual', 'annually', 'transparency', 'compensation']) STOP_WORDS.add(w)
 
+const JS_FRAMEWORKS = { node: 'Node.js', next: 'Next.js', vue: 'Vue.js', react: 'React.js', express: 'Express.js', nuxt: 'Nuxt.js', angular: 'Angular.js', ember: 'Ember.js', d3: 'D3.js', three: 'Three.js' }
 function displayKeyword(kw) {
+  const fw = /^(\w+) js$/.exec(kw)
+  if (fw && JS_FRAMEWORKS[fw[1]]) return JS_FRAMEWORKS[fw[1]]
   return kw.split(' ').map(t => CANONICAL_DISPLAY[t] || t).join(' ')
 }
 
@@ -418,8 +421,36 @@ function fitJobDescription(text, max) {
 //      a pasted posting shares dozens.
 //   3. HIDDEN TEXT. The ingest layer dropped white/tiny/off-page/"hidden" text and counted it; trying it is penalised.
 const SKILLS_HEADING_RE  = /(?:^| )(?:skills|technical skills|core competencies|competencies|expertise|technologies|tools|tech stack|competences|competencias|habilidades|aptitudes|kenntnisse|fahigkeiten|fertigkeiten)(?: |$)/
-const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
+const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|coursework|relevant coursework|activities|leadership|training|professional development|additional information|honors|honours|licenses|licences|achievements|accomplishments|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
 const foldHeading = l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim()
+// SCAN/ATS ROUND 6 (bug): the two heading regexes above match ANYWHERE in a line, so a short unpunctuated bullet such
+// as "Built internal tools" read as a Skills heading and every bullet after it became "skills-only" (measured on a real
+// generated docx: keyword 78 -> 42, total 85 -> 72, plus a false stuffing warning). A heading line is made of heading
+// vocabulary ONLY, and never starts with a bullet glyph.
+const HEADING_WORDS = new Set(`skills skill technical core competencies competency expertise technologies technology tools tech stack
+  key relevant additional selected other areas area of and & the my professional work history employment career academic background
+  experience education summary objective profile projects project personal certifications certification certificates certificate
+  awards languages language volunteer volunteering publications interests references
+  competences competencias habilidades aptitudes kenntnisse fahigkeiten fertigkeiten experiencia formacion educacion resumen perfil
+  berufserfahrung ausbildung zusammenfassung formation parcours emploi
+  proficiencies proficiency strengths qualifications highlights overview information details training honors honours licenses
+  licences achievements accomplishments development coursework activities leadership`.split(/\s+/).filter(Boolean))
+const BULLET_LEAD = /^[\u2022\u25CF\u25CB\u25E6\u25AA\u25AB\u25A0\u25A1\u25C6\u25C7\u25BA\u25B8\u25B6\u27A2\u27A4\u2794\u2713\u2714\u2013\u2014\u00B7\u2219\u2023\u2043*\-\uf0b7\uf0a7\uf076\uf0d8\uf0fc]/
+function isHeadingLine(raw, folded) {
+  if (BULLET_LEAD.test(raw)) return false
+  const words = folded.split(' ').filter(Boolean)
+  return words.length > 0 && words.every(w => HEADING_WORDS.has(w))
+}
+// The other direction is cheap to get wrong: ending the Skills zone early only makes later lines count as evidence (the
+// lenient side). So a line that LOOKS like a heading — short, Title Case or ALL CAPS, no bullet — may end it even when it
+// holds a word outside the vocabulary above ("Certifications & Licenses", "Projects & Research", "Honors & Awards").
+const TITLE_CONNECTORS = new Set(['and', '&', 'of', 'the', 'for', 'in', 'with', 'to', 'or', 'a', 'an', 'on', 'at'])
+function looksLikeTitle(raw) {
+  if (BULLET_LEAD.test(raw)) return false
+  const words = raw.split(/\s+/).filter(Boolean)
+  if (words.length === 0 || words.length > 5) return false
+  return words.every(w => TITLE_CONNECTORS.has(w.toLowerCase()) || !/\p{L}/u.test(w) || /^\p{Lu}/u.test(w))
+}
 const LINK_BLOCK_MARK = '[hyperlinks in this document]'
 function stripLinkBlock(text) {
   const i = String(text || '').indexOf(LINK_BLOCK_MARK)
@@ -433,12 +464,12 @@ function resumeEvidenceZones(text) {
   for (const line of String(text || '').split('\n')) {
     const t = line.trim()
     if (!t) continue
-    const inline = t.match(/^(?:technical\s+)?skills?\s*[:\u2013-]\s*(.+)$/i)
+    const inline = t.match(/^(?:technical\s+)?skills?\s*(?::|[\u2013\u2014]|\s-\s)\s*(.+)$/i)
     if (inline) { skills.push(inline[1]); continue }
     if (t.length <= 50 && !/[.!?]$/.test(t) && t.split(/\s+/).length <= 6) {
       const f = foldHeading(t)
-      if (SKILLS_HEADING_RE.test(f)) { zone = 'skills'; continue }
-      if (OTHER_HEADING_RE.test(f))  { zone = 'body'; continue }
+      if (isHeadingLine(t, f) && SKILLS_HEADING_RE.test(f)) { zone = 'skills'; continue }
+      if ((isHeadingLine(t, f) || looksLikeTitle(t)) && OTHER_HEADING_RE.test(f)) { zone = 'body'; continue }
     }
     if (zone === 'skills' && !(t.split(/\s+/).length >= 10 && /[.]$/.test(t))) skills.push(t)
     else if (zone !== 'header' || t.length >= 60) evidence.push(t)
@@ -463,7 +494,9 @@ const HIDDEN_TEXT_MIN = 20
 function scoreKeywords(resumeText, jdText, { hiddenTextChars = 0 } = {}) {
   const pool = extractWeightedKeywords(jdText)
   const entries = [...pool.entries()]
-  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ')), TOP_UNIGRAMS)
+  // 'js' only ever exists as the tail of a framework name ("Node.js" -> node + js); it is covered by the 'node' unigram and
+  // the 'node js' bigram, and used to cost a third keyword slot and show a bare "js" in the missing list.
+  const topUnigrams = rankPool(entries.filter(([w]) => !w.includes(' ') && w !== 'js'), TOP_UNIGRAMS)
   const topBigrams  = rankPool(entries.filter(([w]) => w.includes(' ')), TOP_BIGRAMS)
   const top25 = [...topUnigrams, ...topBigrams]
 

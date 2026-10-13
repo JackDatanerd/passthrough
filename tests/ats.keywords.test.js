@@ -169,7 +169,7 @@ describe('scan/ats round 5: aliases, title zone, quantification, bullets', () =>
   })
   it('does not turn Node.js / React.js into a bare javascript match', () => {
     const r = scoreResume(resumeWith('Node.js, React.js'), 'Engineer\nRequirements\nJavaScript, Node.js')
-    expect(r.detail.keywords.matched).toContain('node js')
+    expect(r.detail.keywords.matched).toContain('Node.js')
   })
   it('never cuts the title zone inside a word', () => {
     const t = 'Registered Nurse Riverside Hospital delivers compassionate community healthcare across the region with dedicated clinicians and volunteers. About Riverside Hospital Founded in 1950'

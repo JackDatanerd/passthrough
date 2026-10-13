@@ -156,6 +156,10 @@ function docxXmlToLines(xml, ctx = {}) {
   // copy (mc:Choice) and a VML copy (mc:Fallback) — and both contain <w:p>
   // text, so every text-box resume duplicated its content. Keep one copy.
   xml = xml.replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '')
+  // SCAN/ATS ROUND 6 (bug): a self-closed run text, `<w:t/>` or `<w:t xml:space="preserve"/>` (some generators emit
+  // these for an empty run), matched the run-text pattern below as an OPEN tag and swallowed everything up to the next
+  // `</w:t>` — raw XML ("</w:r><w:r><w:t>") ended up inside the extracted line. It carries no text; drop it.
+  xml = xml.replace(/<w:t\b[^>]*\/>/g, '')
   // `<w:p ... />` (an empty, self-closed paragraph) must not open a match that
   // swallows the NEXT paragraph's closing tag.
   const paragraphs = xml.match(/<w:p\b[^>]*?(?<!\/)>[\s\S]*?<\/w:p>/g) || []

@@ -384,7 +384,7 @@ async function createScan(ctx) {
     return {
       id: scanId,
       job_description_text: jdText,
-      job_description_url:  fields.jobDescriptionUrl || null,
+      job_description_url:  fields.jobDescriptionUrl ? jdParser.normalizeJobUrl(fields.jobDescriptionUrl) : null,
       // What the dashboard tells scans apart by. A person who rescans one resume
       // against ten job descriptions used to see ten identical rows. Derived
       // from the JD text (best effort, may be null) plus the role category and
@@ -990,9 +990,19 @@ function deliveredFileStem(resumeData) {
 }
 
 // "Jane Doe" -> "jane-doe"; nothing usable -> ''. Used only for the downloaded file's name.
+// SCAN/ATS ROUND 6 (bug): the cover-letter name was built by stripping "-resume-draft" back off draftFileStem(), which only
+// works when there IS a name ("jane-doe-resume-draft"). With no name, or a name with no Latin letters, the bare
+// "resume-draft" has no leading dash, nothing was stripped, and the letter downloaded as "resume-draft-cover-letter.docx".
+function nameSlug(resumeData) {
+  return String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+}
 function draftFileStem(resumeData) {
-  const stem = String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+  const stem = nameSlug(resumeData)
   return stem ? `${stem}-resume-draft` : 'resume-draft'
+}
+function coverLetterFileStem(resumeData) {
+  const stem = nameSlug(resumeData)
+  return stem ? `${stem}-cover-letter` : 'cover-letter'
 }
 
 async function downloadDraft(ctx) {
@@ -1346,8 +1356,7 @@ async function downloadCoverLetter(ctx) {
   if (!row.cover_letter_text) return ctx.json({ success: false, message: 'No cover letter yet.' }, 404)
   const data = row.rewritten_resume_data || row.original_resume_data
   const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name)
-  const stem = draftFileStem(data).replace(/-resume-draft$/, '')
-  ctx.header('Content-Disposition', `attachment; filename="${stem ? `${stem}-cover-letter` : 'cover-letter'}.docx"`)
+  ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(bytes)
 }
@@ -3164,7 +3173,7 @@ function ledgered(handler) {
 }
 
 // Internals exported for tests only.
-const __test = { purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
+const __test = { coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
 
 module.exports = {
   __test,

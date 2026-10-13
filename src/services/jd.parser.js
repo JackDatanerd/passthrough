@@ -334,10 +334,21 @@ function extractPageTitle(html) {
 // (atsService.fitJobDescription) so company boilerplate - not the requirements - is what gets cut.
 const MAX_FETCH_CHARS = 20000
 
-async function fetchJobDescriptionFromUrl(url) {
+// SCAN/ATS ROUND 6 (feature gap): "jobs.acme.com/engineer-123" or "www.acme.com/careers/1" — what most people copy out
+// of an address bar or an email — has no scheme, so `new URL()` threw and the scan was refused with a bare "Invalid
+// URL.". A host-shaped string with no scheme gets https://. Anything that already has a scheme is left exactly as it
+// was, so `javascript:`, `file:` and friends still reach the same validation (and the SSRF guard) as before.
+function normalizeJobUrl(raw) {
+  const t = String(raw == null ? '' : raw).trim()
+  if (!t || /^[a-z][a-z0-9+.-]*:/i.test(t) && !/^[a-z0-9.-]+:\d+(?:[/?#]|$)/i.test(t)) return t
+  return /^(?:www\.)?[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+(?::\d+)?(?:[/?#]|$)/i.test(t) ? `https://${t}` : t
+}
+
+async function fetchJobDescriptionFromUrl(rawUrl) {
+  const url = normalizeJobUrl(rawUrl)
   let parsed
   try { parsed = new URL(url) } catch (_) {
-    return { success: false, blocked: false, text: null, message: 'Invalid URL.' }
+    return { success: false, blocked: false, text: null, message: "That doesn't look like a web address. Check the link, or paste the job description instead." }
   }
   if (isBlockedHost(parsed.hostname))
     return {
@@ -448,4 +459,4 @@ async function fetchJobDescriptionFromUrl(url) {
   }
 }
 
-module.exports = { fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractJobPostingText, extractPageTitle }
+module.exports = { normalizeJobUrl, fetchJobDescriptionFromUrl, isBlockedHost, htmlToText, looksLikeListingPage, extractJobPostingText, extractPageTitle }

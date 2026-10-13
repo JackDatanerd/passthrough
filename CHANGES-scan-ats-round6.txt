@@ -1,0 +1,29 @@
+SCAN / ATS CORE — ROUND 6 (independent audit; based on upstream 560ad14)
+
+BUGS FIXED
+B1  ats.service.js resumeEvidenceZones: a short unpunctuated bullet containing "tools/skills/technologies/expertise"
+    ("Built internal tools") was read as a Skills heading; every later bullet became "skills-only", triggering a false
+    keyword-stuffing penalty and warning (real generated docx: keyword 78 -> 42, total 85 -> 72, i.e. below the 75 pass and
+    80 credential lines). Entering the Skills zone now needs a line made ONLY of heading words with no bullet lead; ending it
+    still accepts any short Title-Case/ALL-CAPS line with an "other section" word, so old recall is kept ("Tools Engineer"
+    no longer flips the zone). Inline "Skills-based hiring" no longer reads as "Skills - ...".
+B3  scan.controller.js: nameless / non-Latin-name resumes downloaded the letter as resume-draft-cover-letter.docx.
+B4  ats.service.js: "&" and "+" in a JD formed phrase keywords ("research development") that a resume saying "and" could
+    never match (same content scored keyword 63 vs 50). They now break phrases like "/" and ",".
+B5  (fixed upstream in 2cda59a while this round was in progress; this round's tests pass against that implementation.)
+B6  resume.parser.js: a self-closing <w:t/> / <w:t xml:space="preserve"/> leaked raw XML into extracted resume text.
+
+FEATURE GAPS CLOSED
+G1  claude.service.js: scoreResumeWithAI runs at temperature 0 (the 80 credential line is a hard cliff); a model that
+    rejects the parameter is retried once without it instead of losing the AI score.
+G2  generateCoverLetter retries, then fails (PLACEHOLDER_DETECTED), on "[Company Name]"-style placeholders.
+G3  jd.parser.js normalizeJobUrl: "jobs.acme.com/x" gets https://; anything with a scheme is untouched (validation and
+    SSRF guard unchanged). Stored job_description_url is the normalized form. Friendlier invalid-link message.
+G5  "Node.js" costs one keyword concept (no bare "js") and is displayed as Node.js / Next.js / ...
+
+NOT BUILT (needs a decision): G4 JS-rendered job pages via Browser Rendering (cost, abuse, per-subrequest SSRF).
+OPEN QUESTION: downloadFile still serves paid files after a refund/dispute (edits/regeneration are blocked).
+
+TESTS
+tests/scan.ats.round6.test.js (new). tests/ats.keywords.test.js: one display expectation 'node js' -> 'Node.js'.
+tests/scan.ats.closeout.test.js: jd.parser stub gains normalizeJobUrl + a stored-URL test.

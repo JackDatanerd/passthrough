@@ -79,6 +79,10 @@ async function callClaude(env, system, userMsg, maxTokens, opts = {}) {
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
     let lastError = 'Claude API error'
+    // SCAN/ATS ROUND 6: callers that need a repeatable answer (the ATS score decides a credential at a hard 80 line) pass
+    // opts.temperature. A model that rejects the parameter must not turn into "no AI score": on a 400 that names it,
+    // resend the same request once without it.
+    let sendTemperature = typeof opts.temperature === 'number'
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
       let retryAfterMs = 0
       try {
@@ -92,6 +96,7 @@ async function callClaude(env, system, userMsg, maxTokens, opts = {}) {
           body: JSON.stringify({
             model:    model(env),
             max_tokens: maxTokens,
+            ...(sendTemperature ? { temperature: opts.temperature } : {}),
             system,
             messages: [{ role: 'user', content: userMsg }]
           }),
@@ -101,6 +106,7 @@ async function callClaude(env, system, userMsg, maxTokens, opts = {}) {
         try { json = await res.json() } catch (_) { /* an HTML error page from a gateway */ }
         if (!res.ok) {
           lastError = json?.error?.message || `Claude API error (${res.status})`
+          if (res.status === 400 && sendTemperature && /temperature/i.test(lastError)) { sendTemperature = false; attempt--; continue }
           if (!RETRYABLE_STATUS.has(res.status)) throw Object.assign(new Error(lastError), { fatal: true })
           const ra = Number(res.headers?.get?.('retry-after'))
           retryAfterMs = Number.isFinite(ra) && ra > 0 ? ra * 1000 : 0
@@ -265,7 +271,7 @@ async function scoreResumeWithAI(env, resumeText, jdText, opts = {}) {
     `<resume>\n${stripPromptTags(resumeText)}\n</resume>\n\n<job_description>\n${stripPromptTags(jdText)}\n</job_description>\n` +
     'Return: {"aiScore": <integer 0-100>, "missingKeywords": [<up to 15 short strings>]}',
     800,
-    { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'score' }
+    { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'score', temperature: 0 }
   )
 }
 
@@ -980,6 +986,7 @@ async function generateCoverLetter(env, resumeData, jdText) {
   const source = { ...resumeData }
   const allowed = numbersIn(sourceText(source) + '\n' + String(jdText || ''))
   let feedback = ''
+  let lastProblem = 'FABRICATION_DETECTED'
   for (let attempt = 0; attempt < 2; attempt++) {
     const result = await callClaude(
       env,
@@ -998,10 +1005,22 @@ async function generateCoverLetter(env, resumeData, jdText) {
     const text = String(result.data || '').replace(/^```[a-z]*\n?|```$/gim, '').trim()
     if (text.length < 120) return { success: false, data: null, error: 'PARSE_FAIL' }
     const bad = [...numbersIn(text)].filter(n => !allowed.has(n))
-    if (!bad.length) return { success: true, data: text.slice(0, 4000), error: null }
-    feedback = `\n\nIMPORTANT — the previous draft used figures that are not in the resume or posting (${bad.slice(0, 5).join(', ')}). Rewrite it without any figure the resume does not contain.`
+    const holes = findPlaceholders(text)
+    if (!bad.length && !holes.length) return { success: true, data: text.slice(0, 4000), error: null }
+    lastProblem = bad.length ? 'FABRICATION_DETECTED' : 'PLACEHOLDER_DETECTED'
+    feedback = ''
+    if (bad.length) feedback += `\n\nIMPORTANT — the previous draft used figures that are not in the resume or posting (${bad.slice(0, 5).join(', ')}). Rewrite it without any figure the resume does not contain.`
+    if (holes.length) feedback += `\n\nIMPORTANT — the previous draft contained fill-in placeholders (${holes.slice(0, 4).join(', ')}). The letter is sent as written, so write it with no bracketed or templated placeholders at all: if the company name is not in the job description, refer to \"your team\" or \"the role\" instead, and sign with the candidate's name from the resume.`
   }
-  return { success: false, data: null, error: 'FABRICATION_DETECTED' }
+  return { success: false, data: null, error: lastProblem }
+}
+
+// SCAN/ATS ROUND 6 (feature gap): the prompt says "no placeholders in square brackets", but nothing checked. A posting
+// that never names the company is exactly where a model writes "[Company Name]", and the paid letter shipped with it.
+// Bracketed or templated fill-ins are caught here and the draft is retried with that said.
+function findPlaceholders(text) {
+  const found = String(text || '').match(/\[[A-Za-z][^\]\n]{0,50}\]|\{\{[^}\n]{1,50}\}\}|<(?:your|company|hiring|candidate|date|name|position|job)[^>\n]{0,40}>/gi)
+  return found ? [...new Set(found)] : []
 }
 
 async function generateBeautifulResumeHTML(env, resumeData, designTokens, verificationUrl, { verified = true } = {}) {
@@ -1323,4 +1342,4 @@ function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
   return { ok: reasons.length === 0, reasons }
 }
 
-module.exports = { groundQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
+module.exports = { findPlaceholders, groundQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
