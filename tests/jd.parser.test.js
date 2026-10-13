@@ -55,6 +55,7 @@ describe('htmlToText', () => {
   })
   it('collapses whitespace and tolerates empty/undefined input', () => {
     expect(htmlToText('  a \n\n  b\t c ')).toBe('a b c')
+    expect(htmlToText('<h2>Requirements</h2><ul><li>Python</li><li>SQL</li></ul>')).toBe('Requirements\nPython\nSQL')
     expect(htmlToText('')).toBe('')
     expect(htmlToText(undefined)).toBe('')
   })
@@ -261,5 +262,41 @@ describe('extractPageTitle / job title on the non-JSON-LD path', () => {
     mockFetch(() => html(body))
     const r = await fetchJobDescriptionFromUrl('https://jobs.example.com/de2')
     expect(r.text.split('\n')[0]).toBe('Data Engineer')
+  })
+})
+
+describe('scan/ats round 5: posting structure survives the fetch', () => {
+  const NURSE = '<h1>Registered Nurse</h1><p>Riverside Hospital delivers compassionate community healthcare across the region with dedicated clinicians and volunteers.</p><h2>About Riverside Hospital</h2><p>Founded in 1950 our hospital campus serves families through heritage programs and community outreach events.</p><h2>Requirements</h2><ul><li>Active nursing licence</li><li>Patient assessment</li><li>Medication administration</li><li>Wound care</li><li>Electronic charting</li><li>Triage experience</li></ul><h2>Benefits</h2><ul><li>Pension plan</li><li>Tuition assistance</li></ul>'
+  it('block tags become line breaks so headings stay on their own lines', () => {
+    const t = htmlToText(NURSE)
+    expect(t.split('\n')).toContain('Requirements')
+    expect(t.split('\n')).toContain('Benefits')
+    expect(t.split('\n')).toContain('Patient assessment')
+  })
+  it('a fetched posting scores like the same posting pasted with its line breaks', async () => {
+    const { scoreResume } = await import('../src/services/ats.service.js')
+    const resume = `Jane Doe\njane@x.com\n\nSummary\nRegistered nurse delivering compassionate care to patients across the community every single day of the week.\n\nExperience\n• Performed patient assessment, medication administration and wound care for 30 patients per shift\n• Led triage for the emergency unit and electronic charting for the team\n• Managed discharge planning for the hospital\n\nEducation\nBSN Nursing\n\nSkills\nTriage, wound care, charting, patient assessment, medication administration`
+    const fetchedScore = scoreResume(resume, htmlToText(NURSE)).keywordScore
+    const pastedScore = scoreResume(resume, NURSE.replace(/<\/(h\d|p|li|ul)>/g, '\n').replace(/<[^>]+>/g, '')).keywordScore
+    expect(fetchedScore).toBe(pastedScore)
+    expect(fetchedScore).toBeGreaterThanOrEqual(70)
+  })
+  it('keeps the line structure of a JSON-LD description (markup and plain text)', async () => {
+    const { extractJobPostingText } = await import('../src/services/jd.parser.js')
+    const mk = d => `<script type="application/ld+json">${JSON.stringify({ '@type': 'JobPosting', title: 'Backend Engineer', description: d })}</script>`
+    const filler = ' We build payment rails for customers across many markets.'.repeat(4)
+    const a = extractJobPostingText(mk(`<p>About the team.${filler}</p><h3>Requirements</h3><ul><li>Python</li><li>SQL</li></ul>`))
+    expect(a.split('\n')).toContain('Requirements')
+    expect(a.split('\n')).toContain('Python')
+    const b = extractJobPostingText(mk(`About the team.${filler}\nRequirements\nPython\nSQL`))
+    expect(b.split('\n')).toContain('Requirements')
+  })
+  it('does not follow a redirect that lands on a blocked host', async () => {
+    mockFetch(url => url.startsWith('https://short.example.com')
+      ? new Response(null, { status: 302, headers: { location: 'https://www.linkedin.com/jobs/view/123' } })
+      : html(JOB))
+    const r = await fetchJobDescriptionFromUrl('https://short.example.com/x')
+    expect(r.success).toBe(false)
+    expect(fetched).toEqual(['https://short.example.com/x'])
   })
 })

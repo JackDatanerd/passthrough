@@ -305,11 +305,11 @@ async function createScan(ctx) {
   if (fields.jobDescriptionUrl && jdText.length < 50) {
     const fetched = await jdParser.fetchJobDescriptionFromUrl(fields.jobDescriptionUrl)
     if (fetched.blocked) {
-      return ctx.json({ success: false, blocked: true, message: fetched.message }, 400)
+      return ctx.json({ success: false, blocked: true, code: 'JD_URL_FAILED', message: fetched.message }, 400)
     }
     if (fetched.success) jdText = fetched.text
     else if (!jdText) {
-      return ctx.json({ success: false, message: fetched.message }, 400)
+      return ctx.json({ success: false, code: 'JD_URL_FAILED', message: fetched.message }, 400)
     }
   }
 
@@ -1925,7 +1925,7 @@ async function getScanWithUser(supabase, scanId) {
 
 // How long a SCANNING row may sit untouched before another worker may take the scan over. The longest
 // legitimate run is the structuring budget (90s) plus parsing and one scoring call.
-const SCAN_TAKEOVER_SECONDS = 120
+const SCAN_TAKEOVER_SECONDS = 180   // round 5: was 120 - one legitimately slow run (parse + 90s structuring + 20s scoring) could be taken over mid-flight
 
 // The queue / waitUntil entry point. Wraps the real work so every Claude call the scan makes (the structuring pass, the
 // scoring pass, a scanned-PDF transcription) is written to the cost ledger when it finishes.
@@ -2106,7 +2106,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // row stays SCANNING, so it must throw into the handler below (which
     // marks the scan ERROR immediately) instead of the user waiting on a
     // scan that will never finish.
-    must(await supabase.from('scans').update({
+    const savedRes = await supabase.from('scans').update({
       ats_score:       finalScore,
       passed:          finalScore >= c.ATS_PASS_THRESHOLD,
       keyword_score:   ruleResult.keywordScore,
@@ -2125,7 +2125,15 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       // life of the account.
       ...(scan.inputMode === 'brain_dump' ? { raw_brain_dump_text: null } : {}),
       status: finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
-    }).eq('id', scanId), 'runAtsScan: save result')
+    }).eq('id', scanId).eq('status', 'SCANNING').select('id')
+    must(savedRes, 'runAtsScan: save result')
+    // Round 5: the write used to be unconditional. If this run had been taken over as stale (or the row was moved on by
+    // anything else) a second finisher overwrote the first's result and sent a second email. Only the run that still
+    // holds the SCANNING claim completes the scan; a late one stops here without writing or emailing.
+    if (Array.isArray(savedRes.data) && savedRes.data.length === 0) {
+      console.warn(`[runAtsScan] ${scanId}: result not saved - the scan is no longer SCANNING (finished or taken over elsewhere)`)
+      return { success: true }
+    }
 
     if (scan.userId) {
       const { data: userRow } = await supabase.from('users').select('*').eq('id', scan.userId).maybeSingle()
@@ -2596,6 +2604,24 @@ async function generateFixRun(env, supabase, scanId) {
     // to regenerate that weak-areas detail — fix_ats_score alone doesn't
     // carry enough information to build it.
     let lastFeedback = null
+    // Round 5 (G2): the FIRST run used to start from bestScore -1, so the best REWRITE was delivered even when it scored
+    // below the document the person uploaded - a paid "fix" that made things worse, with nothing to say so. The untouched
+    // original, rendered through the same ATS template and scored the same way, now sits in the running as the baseline:
+    // a rewrite replaces it only when it scores at least as well (a tie goes to the rewrite, which is tailored to the JD).
+    // If scoring the baseline itself fails the loop behaves exactly as before.
+    let baselineHeld = false
+    if (!isRetry) {
+      try {
+        const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
+        const baseScored = await scoreLikeScan(env, await resumeParser.extractText(baseBytes, DOCX_MIME), jdText, 'generateFix (baseline)')
+        bestScore = baseScored.score
+        bestDocxBytes = baseBytes
+        bestReport = deliveredReport(baseScored)
+        baselineHeld = true
+      } catch (baseErr) {
+        console.error(`[WARN] generateFix ${scanId}: baseline scoring failed, continuing without a floor:`, baseErr.message)
+      }
+    }
     // True once at least one rewrite attempt this round produced a real,
     // scoreable candidate (whether or not it beat the delivered one).
     let producedCandidate = false
@@ -2662,7 +2688,8 @@ async function generateFixRun(env, supabase, scanId) {
       const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
       producedCandidate = true
 
-      if (candidateScore.score > bestScore) {
+      if (candidateScore.score > bestScore || (baselineHeld && candidateScore.score === bestScore)) {
+        baselineHeld = false
         bestScore = candidateScore.score
         bestData = candidateData
         bestDocxBytes = candidateDocxBytes
@@ -2730,8 +2757,10 @@ async function generateFixRun(env, supabase, scanId) {
     // every time this happens, not just once retries run out — since each
     // occurrence is a real failure on Passthrough's side, not a quality
     // shortfall the retry loop exists to iterate on.
-    const rewriteFailed = bestScore < 0
-    const fallbackScored = rewriteFailed
+    // Round 5: with the baseline seeded, bestScore is >= 0 even when no rewrite was ever produced, so the failure test is
+    // "no scoreable candidate this round" (a retry that produced none already returned above).
+    const rewriteFailed = bestScore < 0 || (!isRetry && !producedCandidate)
+    const fallbackScored = (rewriteFailed && bestScore < 0)
       ? await scoreLikeScan(
           env,
           await resumeParser.extractText(await docxService.generateAtsDocx(resumeData, verificationUrl), DOCX_MIME),
@@ -2739,14 +2768,18 @@ async function generateFixRun(env, supabase, scanId) {
           'generateFix (original fallback)'
         )
       : null
-    const fixAtsScore = rewriteFailed ? fallbackScored.score : bestScore
-    const fixReport = rewriteFailed ? deliveredReport(fallbackScored) : bestReport
+    const fixAtsScore = fallbackScored ? fallbackScored.score : bestScore
+    const fixReport = fallbackScored ? deliveredReport(fallbackScored) : bestReport
 
     if (rewriteFailed && scan.userId) {
       // A total rewrite failure, not a quality shortfall — compensate every time it happens
       // rather than waiting for retries to run out. Once per round (grantFixCreditOnce), so a
       // re-run of a crashed job can't pay twice.
       await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'rewrite failure')
+    } else if (!isRetry && baselineHeld && producedCandidate && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
+      // Round 5 (G2): every rewrite scored BELOW the person's own upload and the upload itself is under the badge
+      // threshold - they are handed their original, correctly formatted, and a free credit for another go.
+      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'no rewrite beat the original')
     } else if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
       // Retries are exhausted (this was the last one allowed) and still short of the badge
       // threshold — a free credit for next time. Mutually exclusive with the branch above.

@@ -1208,7 +1208,7 @@ export default function ScanResult() {
                 agnostic signal: it's simply never populated yet for a
                 file-upload scan that hasn't had a fix generated. */}
             {user && scan.originalResumeData && (
-              <SaveProfilePrompt scanId={scan.id}
+              <SaveProfilePrompt key={scan.id} scanId={scan.id}
                 deliveredAvailable={scan.status === 'FIX_DELIVERED' && !!(scan.userEditedResumeData || scan.rewrittenResumeData)} />
             )}
 

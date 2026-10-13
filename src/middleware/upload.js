@@ -152,7 +152,7 @@ async function uploadResume(ctx, next) {
   if (fields.resumeDataJson.length > MAX_RESUME_JSON_CHARS)
     return ctx.json({ success: false, message: 'Resume data is too large.' }, 400)
   if (fields.jobDescriptionUrl.length > URL_MAX_CHARS)
-    return ctx.json({ success: false, message: 'That job link is too long.' }, 400)
+    return ctx.json({ success: false, code: 'JD_URL_FAILED', message: 'That job link is too long.' }, 400)
   if (fields.contactEmail.length > EMAIL_MAX_CHARS)
     return ctx.json({ success: false, message: 'Enter a valid email address.' }, 400)
   ctx.set('formFields', fields)

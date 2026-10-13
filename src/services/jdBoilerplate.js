@@ -86,10 +86,13 @@ const FORM_FIELD_PATTERNS = [
   /\bpowered by greenhouse\b/gi,
 ]
 
+// Round 5: collapses spaces but KEEPS line breaks - the zone splitter reads headings as lines (see jd.parser.js stripTags).
+const keepLines = t => String(t).replace(/[ \t\f\v\u00a0]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{2,}/g, '\n').trim()
+
 function stripFormFieldNoise(text) {
   let out = text
   for (const pattern of FORM_FIELD_PATTERNS) out = out.replace(pattern, ' ')
-  return out.replace(/\s+/g, ' ').trim()
+  return keepLines(out)
 }
 
 // Cross-site noise that isn't platform-specific — this runs on EVERY
@@ -127,7 +130,7 @@ const GENERIC_NOISE_PATTERNS = [
 function stripGenericNoise(text) {
   let out = text
   for (const pattern of GENERIC_NOISE_PATTERNS) out = out.replace(pattern, ' ')
-  return out.replace(/\s+/g, ' ').trim()
+  return keepLines(out)
 }
 
 /**

@@ -83,6 +83,7 @@ function stem(word) {
 const CANONICAL_DISPLAY = {
   cplusplus: 'C++', csharp: 'C#', fsharp: 'F#', dotnet: '.NET', cicd: 'CI/CD',
   objectivec: 'Objective-C', rlang: 'R', golang: 'Go', clang: 'C',
+  k8s: 'Kubernetes', ml: 'ML', postgresql: 'PostgreSQL', javascript: 'JavaScript', typescript: 'TypeScript', aws: 'AWS', gcp: 'GCP',
 }
 // Two-letter terms worth keeping as keywords. Deliberately NOT included:
 // "it", "pm", "go", "or" and friends that are ordinary English words — the
@@ -99,6 +100,19 @@ const LIST_PREV = String.raw`(^|[,;:/(|•·*\-])([ \t]*)`
 
 function normalizeTechTerms(text) {
   return decodeHtmlEntities(String(text ?? ''))
+    // Aliases people use interchangeably (round 5, G1): normalised to ONE spelling on both sides, so a resume saying
+    // "Postgres" / "k8s" / "TS" / "AWS" credits a JD asking for PostgreSQL / Kubernetes / TypeScript / Amazon Web
+    // Services (and the reverse). Before this the same skills scored keyword 40 spelled out and 20 as written by humans.
+    .replace(/\bpostgres\b/gi, ' postgresql ')
+    .replace(/\bkubernetes\b/gi, ' k8s ')
+    .replace(/\bmongo\b/gi, ' mongodb ')
+    .replace(/\brestful\b/gi, ' rest ')
+    .replace(/\bamazon\s+web\s+services\b/gi, ' aws ')
+    .replace(/\bgoogle\s+cloud(?:\s+platform)?\b/gi, ' gcp ')
+    .replace(/\bartificial\s+intelligence\b/gi, ' ai ')
+    .replace(/\bmachine\s+learning\b/gi, ' ml ')
+    .replace(/(?<![.\w])(?:ts)\b(?![.\w])/gi, ' typescript ')
+    .replace(/(?<!\b(?:node|next|vue|react|express|nuxt|angular|ember|d3|three)\.?)(?<![.\w])js\b(?![.\w])/gi, ' javascript ')
     .replace(/\bobjective[\s-]c\b/gi, ' objectivec ')
     .replace(/\b(node|next|vue|react|express|nuxt|angular|ember|d3|three)\.?js\b/gi, ' $1 js ')
     .replace(/\bc\+\+/gi, ' cplusplus ')
@@ -269,7 +283,13 @@ function splitJdZones(text) {
   if (first > 0) {
     const head = src.slice(0, first)
     const nl = head.indexOf('\n')
-    const titleEnd = Math.min(nl === -1 ? head.length : nl, 120)
+    let titleEnd = Math.min(nl === -1 ? head.length : nl, 120)
+    // Round 5 (B3): a one-line posting was cut at character 120 even inside a word ("clinicians" -> "clinici" + "ans"),
+    // minting junk keywords and a phantom phrase. Back up to the last break so words stay whole.
+    if (titleEnd < head.length && titleEnd !== nl && /\S/.test(head[titleEnd]) && /\S/.test(head[titleEnd - 1])) {
+      const back = head.slice(0, titleEnd).search(/\s\S*$/)
+      if (back > 0) titleEnd = back
+    }
     if (titleEnd > 0) zones.push({ type: 'title', text: head.slice(0, titleEnd) })
     if (head.length > titleEnd) zones.push({ type: 'intro', text: head.slice(titleEnd) })
   }
@@ -595,7 +615,8 @@ const ACTION_VERB_STEMS = new Set([...ACTION_VERBS].map(stem))
 // feeds both the style-consistency check and the content scorer.
 const BULLET_GLYPHS = '•●○◦▪▫■□◆◇►▸▶➢➤➔✓✔–—·∙‣⁃\\-\\*\\uf0b7\\uf0a7\\uf076\\uf0d8\\uf0fc'
 const BULLET_START = new RegExp(`^\\s*[${BULLET_GLYPHS}]`, 'mg')
-const BULLET_LINE  = new RegExp(`^\\s*(?:[${BULLET_GLYPHS}]|[0-9]+[.)]|[A-Za-z][.)])\\s`)
+// Round 5 (B5): an upper-case letter + period is an INITIAL ("J. Doe", "B. Tech"), not a list marker.
+const BULLET_LINE  = new RegExp(`^\\s*(?:[${BULLET_GLYPHS}]|[0-9]+[.)]|[A-Za-z]\\)|[a-z]\\.)\\s`)
 // Glyphs that are the same visual style collapse to one "type" for the
 // inconsistent-bullet check (an extractor turning • into U+F0B7 is not the
 // author mixing styles).
@@ -757,6 +778,28 @@ function looksEnglish(text) {
   return hits / words.length >= 0.05
 }
 
+// Round 5 (B4): quantification used to mean only %, $, k, m, million or thousand, so "12 engineers", "14 countries",
+// "1,200 users", "3x faster" and "3 billion requests" earned nothing while detail.content.unquantified (any digit)
+// already called those bullets quantified. Counted here: percentages, money, multipliers, magnitudes and plain counts;
+// not counted: years / date ranges, durations ("5 years"), list numbering, phone numbers and contact lines.
+const CONTACT_LINE_RE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{8,}/i
+function countQuantifiedFigures(text) {
+  let n = 0
+  for (const line of String(text || '').split('\n')) {
+    if (CONTACT_LINE_RE.test(line)) continue
+    const l = line.replace(/^\s*\d+[.)]\s+/, '')
+    for (const m of l.matchAll(/(\$\s*\d[\d,]*(?:\.\d+)?)|(?<![\w.$])(\d[\d,]*(?:\.\d+)?)(\s*(?:%|x\b|k\b|m\b|bn?\b|mm\b|million|billion|thousand)|\s+[A-Za-z]{3,})?/gi)) {
+      if (m[1]) { n++; continue }
+      const num = m[2], unit = (m[3] || '').trim().toLowerCase()
+      if (/^(?:19|20)\d{2}$/.test(num) && !unit) continue                       // a year
+      if (/^(?:years?|yrs?|months?|weeks?|days?|hours?|present|current|to|and|through|until|since|from|jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\b/.test(unit)) continue
+      if (num.replace(/\D/g, '').length >= 7) continue                          // phone / id
+      n++
+    }
+  }
+  return n
+}
+
 function scoreContent(resumeText) {
   // Symbolic bullets (•, -, *, ◦, etc.) need no trailing punctuation — the
   // bullet character followed by a space IS the complete marker. Only
@@ -811,7 +854,7 @@ function scoreContent(resumeText) {
   // Added a second alternative for $-prefixed numbers (comma/decimal-
   // tolerant) so spelled-out dollar figures count as quantification just
   // like "50%" or "50k" already did.
-  const quantifiedCount = (resumeText.match(/\d+\s*(%|\$|k\b|m\b|million|thousand)|\$\s*\d[\d,]*(\.\d+)?/gi) || []).length
+  const quantifiedCount = countQuantifiedFigures(resumeText)
   if (quantifiedCount >= 2) score = Math.min(100, score + 10)
   const wordCount = resumeText.split(/\s+/).filter(Boolean).length
   if (wordCount < 200) score = Math.max(0, score - 20)

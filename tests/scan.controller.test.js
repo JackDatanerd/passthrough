@@ -914,6 +914,7 @@ describe('createScan', () => {
     const res = await t.mod.createScan(csCtx({ fields: { brainDumpText: validBrainDump, jobDescriptionUrl: 'http://evil.internal' } }))
     expect(res.status).toBe(400)
     expect(res.body.blocked).toBe(true)
+    expect(res.body.code).toBe('JD_URL_FAILED')
   })
 
   it('400s when the brain-dump text is below the minimum length', async () => {
@@ -1328,7 +1329,8 @@ describe('generateFix', () => {
         // scoreResume runs for a given attempt, rewriteResumeContent for
         // THAT SAME attempt has already incremented rewriteCallIdx, so the
         // post-increment value is one ahead of "this attempt's" index.
-        scoreResume: () => { const idx = Math.max(0, Math.min(rewriteCallIdx - 1, (opts.scoreSequence || []).length - 1)); const r = opts.scoreSequence ? opts.scoreSequence[idx] : (opts.score ?? 90); return { score: r, detail: {} } },
+        // opts.scoreFn(n): n = 0 for the baseline (the untouched original, scored before any rewrite), then 1, 2, ... per attempt.
+        scoreResume: () => { if (opts.scoreFn) return { score: opts.scoreFn(rewriteCallIdx), detail: {} }; const idx = Math.max(0, Math.min(rewriteCallIdx - 1, (opts.scoreSequence || []).length - 1)); const r = opts.scoreSequence ? opts.scoreSequence[idx] : (opts.score ?? 90); return { score: r, detail: {} } },
         describeWeakAreas: () => ['weak area'],
       },
       'services/claude.service.js': {
@@ -1503,6 +1505,38 @@ describe('generateFix', () => {
     expect(finalUpdate.rewrite_failed).toBe(true)
     expect(finalUpdate.rewritten_resume_data).toEqual({ name: 'Jane' })  // == original, unchanged
     expect(t.state.credits).toEqual([{ p_scan_id: 's1', p_user_id: 'u1', p_round: 0 }])
+  })
+
+  // Round 5 (G2): the untouched original is the floor of the FIRST run.
+  describe('baseline floor (first run)', () => {
+    const delivered = () => t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    it('every rewrite scoring below the upload (and the upload under the badge threshold): the original is delivered, no rewrite_failed, a free credit', async () => {
+      t = setup({ scoreFn: n => n === 0 ? 60 : 50 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(delivered().rewritten_resume_data).toEqual({ name: 'Jane' })
+      expect(delivered().fix_ats_score).toBe(60)
+      expect(delivered().rewrite_failed).toBe(false)
+      expect(t.state.credits).toEqual([{ p_scan_id: 's1', p_user_id: 'u1', p_round: 0 }])
+    })
+    it('an original already at or above the threshold is kept without a credit', async () => {
+      t = setup({ scoreFn: n => n === 0 ? 90 : 50 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(delivered().rewritten_resume_data).toEqual({ name: 'Jane' })
+      expect(delivered().fix_ats_score).toBe(90)
+      expect(t.state.credits).toEqual([])
+    })
+    it('a rewrite that ties the original wins (it is tailored to the job)', async () => {
+      t = setup({ scoreFn: () => 60 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(delivered().rewritten_resume_data).toEqual({ name: 'Jane Rewritten' })
+      expect(t.state.credits).toEqual([])
+    })
+    it('a rewrite that beats the original is delivered', async () => {
+      t = setup({ scoreFn: n => n === 0 ? 60 : 85 })
+      await t.mod.generateFix(t.env, t.db, 's1')
+      expect(delivered().rewritten_resume_data).toEqual({ name: 'Jane Rewritten' })
+      expect(delivered().fix_ats_score).toBe(85)
+    })
   })
 
   it('a credit-grant failure on total rewrite failure alerts the owner but does not abort delivery', async () => {

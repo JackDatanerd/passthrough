@@ -74,3 +74,26 @@ describe('DOCX text extraction details', () => {
     expect((await extractText(await docx(x), DOCX_MIME)).split('\n')).toEqual(['After the empty one', 'Third'])
   })
 })
+
+describe('round 5: the hyperlink block survives the length cap', () => {
+  it('a long resume keeps its LinkedIn / GitHub URLs when the text is cut for structuring', async () => {
+    const { parse } = await import('../src/services/resume.parser.js')
+    const { createRequire } = await import('module')
+    const claude = createRequire(import.meta.url)('../src/services/claude.service.js')
+    const c = createRequire(import.meta.url)('../src/config/constants.js')
+    const zip = new JSZip()
+    zip.file('[Content_Types].xml', '<?xml version="1.0"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml"/></Types>')
+    const body = Array.from({ length: Math.ceil(c.MAX_RESUME_TEXT_CHARS / 60) + 40 }, (_, i) => p(`Line ${i} of a very long resume body with plenty of words`)).join('')
+    zip.file('word/document.xml', `<?xml version="1.0"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><w:body><w:p><w:hyperlink r:id="rId9"><w:r><w:t>LinkedIn</w:t></w:r></w:hyperlink></w:p>${body}</w:body></w:document>`)
+    zip.file('word/_rels/document.xml.rels', '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId9" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink" Target="https://linkedin.com/in/jane-doe" TargetMode="External"/></Relationships>')
+    const bytes = new Uint8Array(await zip.generateAsync({ type: 'arraybuffer' }))
+    const real = claude.parseResumeStructure
+    let seen = ''
+    claude.parseResumeStructure = async (_env, text) => { seen = text; return { success: true, data: { name: 'Jane' } } }
+    try {
+      await parse({}, bytes, DOCX_MIME)
+    } finally { claude.parseResumeStructure = real }
+    expect(seen.length).toBeLessThanOrEqual(c.MAX_RESUME_TEXT_CHARS)
+    expect(seen).toContain('https://linkedin.com/in/jane-doe')
+  })
+})

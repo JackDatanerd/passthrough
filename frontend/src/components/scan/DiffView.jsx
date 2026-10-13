@@ -181,7 +181,7 @@ function DiffContent({ diff, editedByUser = false }) {
         <div>
           <h4 className="text-sm font-semibold text-gray-800 mb-2">Summary</h4>
           <div className="text-sm text-gray-400 line-through mb-1">{diff.summary.before || '(none)'}</div>
-          <div className="text-sm text-gray-800">{diff.summary.after}</div>
+          <div className="text-sm text-gray-800">{diff.summary.after || <span className="text-gray-400 italic">(removed)</span>}</div>
         </div>
       )}
 

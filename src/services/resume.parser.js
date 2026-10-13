@@ -350,7 +350,16 @@ async function parse(env, bytes, mimeType) {
   // structuring step — and the paid rewrite is built from that structure, so
   // the delivered resume permanently lacked it. Uploaded files get their own,
   // larger cap.
-  const truncated = text.slice(0, c.MAX_RESUME_TEXT_CHARS)
+  // Round 5: the hyperlink block is appended at the END of the extracted text, so on a long resume the length cap cut it
+  // off first and the structured copy (the source of the paid rewrite) lost every LinkedIn / GitHub / portfolio URL.
+  // The block is kept and the body gives up the room instead.
+  const LINK_MARK = '\n\n[hyperlinks in this document]\n'
+  let truncated = text.slice(0, c.MAX_RESUME_TEXT_CHARS)
+  const linkAt = text.indexOf(LINK_MARK)
+  if (linkAt >= 0 && text.length > c.MAX_RESUME_TEXT_CHARS) {
+    const links = text.slice(linkAt, linkAt + 1500)
+    truncated = text.slice(0, Math.min(linkAt, c.MAX_RESUME_TEXT_CHARS - links.length)) + links
+  }
   const claude    = require('./claude.service')
   const result    = await claude.parseResumeStructure(env, truncated)
   if (!result.success)

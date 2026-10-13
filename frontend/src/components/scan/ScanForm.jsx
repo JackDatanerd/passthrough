@@ -233,7 +233,9 @@ export default function ScanForm() {
       // URL mode there just discarded a URL that was never actually the
       // problem. A JD-URL fetch failure is always a 400 (see createScan in
       // scan.controller.js) — only that status means the URL itself failed.
-      if (useUrl && err.response?.status === 400) setUseUrl(false)
+      // Round 5: status 400 alone also covers an empty file, a bad email and malformed form data, none of which are the
+      // URL's fault - the person lost a perfectly good link. The server now names a JD-URL failure explicitly.
+      if (useUrl && err.response?.status === 400 && err.response?.data?.code === 'JD_URL_FAILED') setUseUrl(false)
       setError(msg)
     } finally {
       setLoading(false)

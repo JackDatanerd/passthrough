@@ -75,6 +75,9 @@ async function readCappedText(res, maxBytes) {
 async function safeFetch(url, opts) {
   let current = url
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
+    // Round 5: the LinkedIn/Facebook blocklist was only applied to the URL as typed; a short link that redirected to one
+    // was fetched (and its login wall scored as a job description).
+    try { if (hop > 0 && isBlockedHost(new URL(current).hostname)) return { blocked: true, reason: 'Blocked host.' } } catch (_) {}
     const reason = await checkUrlIsSafeToFetch(current)
     if (reason) return { blocked: true, reason }
 
@@ -157,24 +160,40 @@ function stripBlocks(text, openRe, closeRe, dropUnclosed) {
   }
 }
 
-// Replaces every `<…>` tag with a space. A "<" with no later ">" cannot start
-// a tag, so the remainder is kept verbatim and the scan ends.
+// Replaces every `<…>` tag with a space - or, for a block-level tag (p, div, br, li, h1-h6, tr ...), a line break.
+// Round 5 (B1): every tag used to become a space, so a fetched posting arrived as ONE line. The zone splitter
+// (ats.service.js splitJdZones) finds "Requirements" / "Benefits" headings only as short lines of their own, so on a
+// URL-fetched posting everything after "About <Company>" was classed as boilerplate: the same nurse posting scored
+// keyword 80 pasted and 40 fetched. Block boundaries are what make headings and list items visible again.
+// A "<" with no later ">" cannot start a tag, so the remainder is kept verbatim and the scan ends.
+const BLOCK_TAGS = new Set(['p', 'div', 'br', 'li', 'ul', 'ol', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'tr', 'table',
+  'section', 'article', 'blockquote', 'dt', 'dd', 'pre', 'hr', 'main', 'form', 'fieldset', 'details', 'summary'])
+function tagBreak(tag) {
+  const m = /^<\/?\s*([a-zA-Z][a-zA-Z0-9]*)/.exec(tag)
+  return m && BLOCK_TAGS.has(m[1].toLowerCase()) ? '\n' : ' '
+}
 function stripTags(text) {
   let out = ''
   let pos = 0
   for (;;) {
     const lt = text.indexOf('<', pos)
-    if (lt === -1) return out + text.slice(pos)
+    // Raw newlines inside markup are not line breaks (HTML collapses them); only block tags are.
+    if (lt === -1) return out + text.slice(pos).replace(/\s+/g, ' ')
     const gt = text.indexOf('>', lt + 1)
-    if (gt === -1) return out + text.slice(pos)
+    if (gt === -1) return out + text.slice(pos).replace(/\s+/g, ' ')
     if (gt === lt + 1) {                 // "<>" is not a tag; keep it as text
-      out += text.slice(pos, gt + 1)
+      out += text.slice(pos, gt + 1).replace(/\s+/g, ' ')
       pos = gt + 1
       continue
     }
-    out += text.slice(pos, lt) + ' '
+    out += text.slice(pos, lt).replace(/\s+/g, ' ') + tagBreak(text.slice(lt, Math.min(gt + 1, lt + 40)))
     pos = gt + 1
   }
+}
+
+// Collapses spaces within a line and blank-line runs, keeping the line structure.
+function tidyLines(t) {
+  return String(t || '').replace(/\r\n?/g, '\n').replace(/[ \t\f\v\u00a0]+/g, ' ').replace(/ ?\n ?/g, '\n').replace(/\n{2,}/g, '\n').trim()
 }
 
 // Entities are decoded AFTER tags are stripped and BEFORE whitespace is
@@ -196,9 +215,7 @@ function htmlToText(html) {
   // the entire body that (per HTML nesting) sits after it.
   for (const tag of ['head', 'nav', 'header', 'footer', 'aside'])
     t = stripBlocks(t, new RegExp(`<${tag}(?=[\\s/>])`, 'gi'), new RegExp(`<\\/${tag}\\s*>`, 'gi'), false)
-  return decodeHtmlEntities(stripTags(t))
-    .replace(/\s+/g, ' ')
-    .trim()
+  return tidyLines(decodeHtmlEntities(stripTags(t)))
 }
 
 // ── Structured job data (schema.org JobPosting, JSON-LD) ─────────────────────
@@ -265,7 +282,9 @@ function extractJobPostingText(html) {
   const p = postings[0]
   const desc = String(p.description || '').slice(0, 30_000)
   // Some boards double-escape the markup ("&lt;p&gt;").
-  const body = htmlToText(/&lt;\/?[a-z]/i.test(desc) ? decodeHtmlEntities(desc) : desc)
+  // A plain-text description (no markup at all) keeps its own line breaks; markup gets its structure from its block tags.
+  const decodedDesc = /&lt;\/?[a-z]/i.test(desc) ? decodeHtmlEntities(desc) : desc
+  const body = htmlToText(/<[a-z!\/]/i.test(decodedDesc) ? decodedDesc : decodedDesc.replace(/\r?\n/g, '<br>'))
   const parts = [
     fieldText(p.title),
     fieldText(p.hiringOrganization) && `Company: ${fieldText(p.hiringOrganization)}`,
@@ -276,7 +295,7 @@ function extractJobPostingText(html) {
     fieldText(p.experienceRequirements) && `Experience: ${htmlToText(fieldText(p.experienceRequirements))}`,
     fieldText(p.educationRequirements) && `Education: ${htmlToText(fieldText(p.educationRequirements))}`,
   ].filter(Boolean)
-  const text = parts.join('\n').replace(/[ \t]+/g, ' ').trim()
+  const text = tidyLines(parts.join('\n'))
   return text.length >= 200 ? text : null
 }
 
@@ -296,7 +315,7 @@ function firstElementText(html, tag) {
   if (start === -1) return ''
   const close = findLiteral(html, new RegExp(`<\\/${tag}\\s*>`, 'gi'), start + 1)
   if (!close) return ''
-  return htmlToText(html.slice(start + 1, Math.min(close.index, start + 1 + 2000)))
+  return htmlToText(html.slice(start + 1, Math.min(close.index, start + 1 + 2000))).replace(/\s+/g, ' ').trim()
 }
 function extractPageTitle(html) {
   let t = html || ''

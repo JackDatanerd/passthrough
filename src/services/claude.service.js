@@ -342,10 +342,13 @@ async function extractTextFromPdf(env, bytes) {
       { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: bytesToBase64(bytes) } },
       { type: 'text', text: 'Transcribe this resume.' }
     ],
-    5000,
+    6000,
     { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'ocr' }
   )
   if (!result.success) return { success: false, text: '', error: result.error }
+  // Round 5: a transcription cut off by the token cap used to be scored, structured and (paid) delivered as if it were the
+  // whole resume. A partial read is not a read.
+  if (result.stopReason === 'max_tokens') return { success: false, text: '', error: 'RESPONSE_TRUNCATED' }
   return { success: true, text: String(result.data || '').trim() }
 }
 
@@ -1114,11 +1117,15 @@ function decodeStyleAttrEntities(v) {
     .replace(/&#(\d+);?/g, (m, n) => { const c = String.fromCodePoint(Math.min(parseInt(n, 10), 0x10ffff)); return CSS_SAFE_CHAR.test(c) ? c : m })
     .replace(/&#x([0-9a-f]+);?/gi, (m, h) => { const c = String.fromCodePoint(Math.min(parseInt(h, 16), 0x10ffff)); return CSS_SAFE_CHAR.test(c) ? c : m })
 }
+// Round 5: a CSS comment is valid between an at-keyword and its string (`@import/**/"http://..."`) and the pattern filters
+// below never matched that spelling. Comments carry nothing a static resume needs, so they are removed first (an unclosed
+// one runs to the end of its block, as in a browser) and every filter then judges the text the browser will tokenize.
+const stripCssComments = css => css.replace(/\/\*[\s\S]*?(?:\*\/|$)/g, '')
 function sanitizeGeneratedHtml(html) {
   html = html
-    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, blk => decodeCssEscapes(blk))
-    .replace(/\bstyle\s*=\s*"([^"]*)"/gi, (m, v) => `style="${decodeCssEscapes(decodeStyleAttrEntities(v))}"`)
-    .replace(/\bstyle\s*=\s*'([^']*)'/gi, (m, v) => `style='${decodeCssEscapes(decodeStyleAttrEntities(v))}'`)
+    .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, blk => stripCssComments(decodeCssEscapes(blk)))
+    .replace(/\bstyle\s*=\s*"([^"]*)"/gi, (m, v) => `style="${stripCssComments(decodeCssEscapes(decodeStyleAttrEntities(v)))}"`)
+    .replace(/\bstyle\s*=\s*'([^']*)'/gi, (m, v) => `style='${stripCssComments(decodeCssEscapes(decodeStyleAttrEntities(v)))}'`)
   let out = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<script\b[^>]*>[\s\S]*/gi, '')
@@ -1192,7 +1199,7 @@ function sanitizeGeneratedHtml(html) {
 
   // @import — same allowlist, whether written as @import url(...) or the
   // bare-string form @import "...".
-  out = out.replace(/@import\s+(?:url\(\s*['"]?([^'")]+)['"]?\s*\)|['"]([^'"]+)['"])/gi,
+  out = out.replace(/@import\s*(?:url\(\s*['"]?([^'")]+)['"]?\s*\)|['"]([^'"]+)['"])/gi,
     (full, u1, u2) => isAllowedResourceUrl(u1 || u2) ? full : ''
   )
 
@@ -1239,6 +1246,13 @@ function stringLeaves(v, out = [], depth = 0) {
   return out
 }
 
+// Section headings, credential wording and month names a designed page may legitimately add around the person's own text.
+const FIDELITY_VOCAB = `experience professional summary skills technical education certifications certificates certification projects
+  languages language awards publications volunteer volunteering contact profile core competencies achievements highlights
+  present current references interests email phone location linkedin portfolio website github passthrough verified report scan
+  credential resume curriculum vitae technologies details link links expertise career objective employment history work
+  academic additional qualifications training courses honours honors january february march april august september october
+  november december page responsible`
 function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
   const reasons = []
   try {
@@ -1261,6 +1275,26 @@ function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
     }
     if (textOf(data?.name).trim() && !has(data.name)) reasons.push('the candidate name is missing')
 
+    // Round 5 (B2): the fields below used to be unchecked, so a designed page could drop the summary, a degree, a
+    // certification, languages or awards (or a whole volunteer / project entry) and still be hash-stamped as verified.
+    if (textOf(data?.summary).trim() && wordCoverage(data.summary) < 0.7) reasons.push('the summary was dropped or reworded')
+    for (const e of listOf(data?.education)) {
+      if (textOf(e?.degree).trim() && wordCoverage(e.degree) < 0.6) reasons.push(`missing degree "${textOf(e.degree).slice(0, 40)}"`)
+    }
+    for (const cert of listOf(data?.certifications).map(textOf).filter(x => x.trim()))
+      if (!has(cert)) reasons.push(`missing certification "${cert.slice(0, 40)}"`)
+    for (const v of listOf(data?.volunteer)) {
+      if (textOf(v?.organization).trim() && !has(v.organization)) reasons.push(`missing volunteer entry "${textOf(v.organization).slice(0, 40)}"`)
+    }
+    for (const p of listOf(data?.projects)) {
+      if (textOf(p?.name).trim() && !has(p.name)) reasons.push(`missing project "${textOf(p.name).slice(0, 40)}"`)
+    }
+    for (const [key, label] of [['languages', 'languages'], ['awards', 'awards'], ['publications', 'publications']]) {
+      const items = listOf(data?.[key]).map(textOf).filter(x => x.trim())
+      const lostItems = items.filter(x => !has(x)).length
+      if (items.length && lostItems > Math.floor(items.length * 0.1)) reasons.push(`${lostItems} of ${items.length} ${label} are missing`)
+    }
+
     const bullets = []
     for (const e of listOf(data?.experience)) for (const b of listOf(e?.bullets)) if (textOf(b).trim()) bullets.push(textOf(b))
     const lost = bullets.filter(b => wordCoverage(b) < 0.7).length
@@ -1269,6 +1303,15 @@ function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
     const skills = listOf(data?.skills).map(textOf).filter(x => x.trim())
     const lostSkills = skills.filter(k => !has(k)).length
     if (skills.length && lostSkills > Math.floor(skills.length * 0.1)) reasons.push(`${lostSkills} of ${skills.length} skills are missing`)
+
+    // The other direction: wording that is NOT in the resume. A page that adds a certification, a title or a skill the
+    // person never wrote used to pass (only invented NUMBERS were caught). Words of five letters or more that appear
+    // nowhere in the data, the credential line or the usual section / layout vocabulary are counted; a few are tolerated.
+    const known = new Set()
+    const key = w => w.replace(/s$/, '').slice(0, 5)
+    for (const w of fidelityNorm(stringLeaves(data).join(' ') + ' ' + String(verificationUrl || '') + ' ' + FIDELITY_VOCAB).split(' ')) if (w.length >= 4) known.add(key(w))
+    const novel = [...new Set(fidelityNorm(visible).split(' ').filter(w => w.length >= 5))].filter(w => !known.has(key(w)))
+    if (novel.length > 3) reasons.push(`text that is not in the resume: ${novel.slice(0, 6).join(', ')}`)
 
     // No figure that is not already somewhere in the resume (contact details and dates included).
     const allowed = numbersIn(stringLeaves(data).join(' \n ') + ' ' + String(verificationUrl || ''))

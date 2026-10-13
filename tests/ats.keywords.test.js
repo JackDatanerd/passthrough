@@ -79,11 +79,11 @@ describe('keyword scoring on tech JDs (the old tokenizer made these invisible)',
   })
   it('matches C++, C#, Go, R, ML, AI, CI/CD, Node against a resume that has them', () => {
     const m = kw('Required: C++, C#, Go and R. Nice: ML, AI, CI/CD, Node.js experience.').matched
-    for (const t of ['C++', 'C#', 'Go', 'R', 'ml', 'ai', 'CI/CD', 'node']) expect(m).toContain(t)
+    for (const t of ['C++', 'C#', 'Go', 'R', 'ML', 'ai', 'CI/CD', 'node']) expect(m).toContain(t)
   })
   it('reports a MISSING skill using its real spelling', () => {
     const missing = kw('Must know Kubernetes, Terraform and F#.').missing
-    expect(missing).toContain('kubernetes')
+    expect(missing).toContain('Kubernetes')
     expect(missing).toContain('F#')
   })
   it('never surfaces internal canonical tokens or entity junk to the user', () => {
@@ -152,5 +152,38 @@ describe('extractKeywords — numeric tokens (Scan/ATS pass)', () => {
     const { detail } = scoreResume(resume, JD)
     expect(detail.keywords.missing).not.toContain('000')
     expect(detail.keywords.missing).not.toContain('2024')
+  })
+})
+
+describe('scan/ats round 5: aliases, title zone, quantification, bullets', () => {
+  const { scoreResume, splitJdZones, stem } = require('../src/services/ats.service')
+  const filler = 'Responsible for the delivery of the platform and the team that built it for the customers of the company. '
+  const resumeWith = skills => `Jane Doe\njane@x.com\n\nSummary\n${filler.repeat(3)}\n\nExperience\n- Built services with ${skills} for the customers and the team across the company\n- Led the work to deliver the platform with the team and the customers\n- Managed the delivery of the project for the team and the company\n\nEducation\nBSc Computer Science\n\nSkills\n${skills}\n`
+  const jd = 'Senior Software Engineer\nRequirements\nPostgreSQL, Kubernetes, JavaScript, TypeScript, Amazon Web Services, Google Cloud Platform, machine learning'
+
+  it('credits common aliases on both sides (Postgres/k8s/JS/TS/AWS/GCP/ML)', () => {
+    const spelled = scoreResume(resumeWith('PostgreSQL, Kubernetes, JavaScript, TypeScript, Amazon Web Services, Google Cloud Platform, machine learning'), jd)
+    const aliased = scoreResume(resumeWith('Postgres, k8s, JS, TS, AWS, GCP, ML'), jd)
+    expect(aliased.detail.keywords.matched.sort()).toEqual(spelled.detail.keywords.matched.sort())
+    for (const k of ['PostgreSQL', 'Kubernetes', 'JavaScript', 'TypeScript', 'AWS', 'GCP', 'ML']) expect(aliased.detail.keywords.matched).toContain(k)
+  })
+  it('does not turn Node.js / React.js into a bare javascript match', () => {
+    const r = scoreResume(resumeWith('Node.js, React.js'), 'Engineer\nRequirements\nJavaScript, Node.js')
+    expect(r.detail.keywords.matched).toContain('node js')
+  })
+  it('never cuts the title zone inside a word', () => {
+    const t = 'Registered Nurse Riverside Hospital delivers compassionate community healthcare across the region with dedicated clinicians and volunteers. About Riverside Hospital Founded in 1950'
+    const words = new Set(t.split(/\s+/).map(w => w.replace(/[.]/g, '')))
+    for (const z of splitJdZones(t)) for (const w of z.text.split(/\s+/).filter(Boolean)) expect(words.has(w.replace(/[.]/g, ''))).toBe(true)
+  })
+  it('counts counts, multipliers and magnitudes as quantification, not years or phone numbers', () => {
+    const q = bul => scoreResume(`Jane Doe\njane@x.com | +254 700 000000\n\nExperience\nEngineer — Acme 2019 - 2023\n${bul.map(b => '• ' + b).join('\n')}\n`, 'Engineer').detail.content.quantifiedCount
+    expect(q(['Managed a team of 12 engineers across 14 countries', 'Made the report 3x faster for 1,200 users'])).toBeGreaterThanOrEqual(4)
+    expect(q(['Worked on the platform for 5 years', 'Built things between 2019 and 2023'])).toBe(0)
+  })
+  it('does not read name initials as bullets', () => {
+    const t = `J. Doe\nA. Smith, Hiring Manager\njane@example.com\n\nExperience\nSenior Engineer — Acme Corp\nB. Tech in Computer Science from State University with honours in systems\n` + 'Led work '.repeat(40)
+    expect(scoreResume(t, 'Engineer').detail.content.unquantified.total).toBe(0)
+    expect(stem('led')).toBe('led')
   })
 })

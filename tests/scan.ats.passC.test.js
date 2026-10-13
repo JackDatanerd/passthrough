@@ -31,9 +31,9 @@ describe('ats.service', () => {
   const ats = require('../src/services/ats.service.js')
 
   it('JD bigrams never span a list separator ("Python, Kubernetes, Docker" is not a phrase)', () => {
-    const f = ats.extractKeywords('Requirements: Python, Kubernetes, Docker, CI/CD, AWS, machine learning, REST APIs.')
+    const f = ats.extractKeywords('Requirements: Python, Kubernetes, Docker, CI/CD, AWS, data pipelines, REST APIs.')
     const phrases = Object.keys(f).filter(k => k.includes(' '))
-    expect(phrases).toContain('machine learning')
+    expect(phrases).toContain('data pipelines')
     expect(phrases).toContain('rest apis')
     expect(phrases).not.toContain('python kubernetes')
     expect(phrases).not.toContain('kubernetes docker')

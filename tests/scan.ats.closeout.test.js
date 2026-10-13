@@ -355,7 +355,8 @@ describe('runAtsScan — idempotent claim and structure', () => {
     const scan = { id: 's1', input_mode: 'file', resume_path: 'k', resume_mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', job_description_text: 'JD', user_id: null, status: opts.status }
     const db = createFakeSupabase(q => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
-      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q); return { data: q.patch?.status === 'SCANNING' ? (opts.claim ?? [{ id: 's1' }]) : [{ id: 's1' }], error: null } }
+      if (q.table === 'users') state.userReads = (state.userReads || 0) + 1
+      if (q.table === 'scans' && q.op === 'update') { state.updates.push(q); return { data: q.patch?.status === 'SCANNING' ? (opts.claim ?? [{ id: 's1' }]) : q.patch?.ats_score !== undefined ? (opts.saved ?? [{ id: 's1' }]) : [{ id: 's1' }], error: null } }
     })
     const m = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
@@ -397,6 +398,14 @@ describe('runAtsScan — idempotent claim and structure', () => {
     expect(t.state.ai).toBeUndefined()
     const takeover = t.state.updates[1]
     expect(takeover.filters.some(f => f[0] === 'lt' && f[1] === 'updated_at')).toBe(true)
+  })
+  it('round 5: the result write only lands while the scan is still SCANNING; a late finisher neither writes nor emails', async () => {
+    t = setup({ saved: [] })
+    const out = await t.mod.runAtsScan(t.env, t.db, 's1')
+    expect(out).toEqual({ success: true })
+    const save = t.state.updates.find(u => u.patch?.ats_score !== undefined)
+    expect(save.filters.some(f => f[0] === 'eq' && f[1] === 'status' && f[2] === 'SCANNING')).toBe(true)
+    expect(t.state.userReads).toBeUndefined()
   })
   it('passes the raw DOCX layout facts to the scorer for file scans', async () => {
     t = setup()
