@@ -1,0 +1,13 @@
+Cross-cutting infra (section 9) round 8. Base: 8fe4bb2 (after Scan/ATS round 6, Employer leads round 15). NO migration.
+Two independent passes; both re-confirmed the same four low-severity items. Three fixed, one left as design.
+
+B1 src/services/email.service.js  htmlToPlainText printed "URL (URL)" for a link whose label is the same URL when that URL
+   contains & (the label stays &amp; while the href is decoded, so they never compared equal). Compared decoded now.
+B2 src/lib/emailSuppression.js  ALWAYS_SEND_TEMPLATES left out partner account-security mail (payout details changed, email
+   changed, link reset/recovery, payout-details request), so a partner whose address had a spam complaint recorded never
+   got the "your payout destination changed" warning or could not recover their links. Added to the always-send set.
+B3 src/index.js  scheduled(): if revert_fix_retry failed for a stuck retry round, the catch-all stuck-scan update then
+   marked that paid scan (resume already delivered) ERROR. Those ids are now excluded and left for the next hourly run.
+Left as is: owner alerts dedupe by subject for 10 minutes (deliberate flood protection; every job is still in alert_logs).
+tests: tests/crossCutting.round8.test.js (new).
+Files: src/services/email.service.js, src/lib/emailSuppression.js, src/index.js, tests/crossCutting.round8.test.js, this file.

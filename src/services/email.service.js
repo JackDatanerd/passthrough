@@ -196,7 +196,7 @@ function htmlToPlainText(html) {
   let t = html.replace(/<style>[\s\S]*?<\/style>/gi, '')
   t = t.replace(/<a\b[^>]*href="([^"]*)"[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => {
     const l = stripTags(label).trim(), h = decode(href)
-    return !l || l === h ? h : `${l} (${h})`
+    return !l || decode(l) === h ? h : `${l} (${h})`   // compare DECODED: a URL label with & arrives as &amp; and would otherwise print twice
   })
   t = t.replace(/<\/(p|h[1-6]|tr|div|table)>|<br\s*\/?>/gi, '\n')
   t = decode(stripTags(t))

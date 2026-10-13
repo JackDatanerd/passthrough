@@ -17,6 +17,10 @@ const ALWAYS_SEND_TEMPLATES = new Set([
   'email_change_confirm', 'email_changed_old_address', 'email_change_completed',
   'account_deleted', 'account_lockout_alert', 'new_login_alert',
   'payment_receipt', 'payment_reversed',
+  // Partner account security: a changed payout destination / email, and the links that are a partner's only way in.
+  'partner_payout_details_changed', 'partner_email_changed', 'partner_link_regenerated',
+  'partner_dashboard_link_regenerated', 'partner_links_recovery', 'partner_links_self_reset',
+  'partner_payout_details_request',
 ])
 
 const normalize = email => String(email || '').trim().toLowerCase()

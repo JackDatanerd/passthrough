@@ -170,9 +170,10 @@ async function scheduled(event, env, ctx) {
         // stuck-scan recovery below too — scans stayed PENDING/SCANNING and quota unrefunded until the next hour.
         // The two recoveries are independent: log and carry on (stuckRetries is null on error, the loop is a no-op).
         if (retryErr) console.error('Stuck retry recovery:', retryErr.message)
+        const revertFailedIds = []
         for (const row of stuckRetries || []) {
           const { error: revertErr } = await supabase.rpc('revert_fix_retry', { p_scan_id: row.id })
-          if (revertErr) console.error(`Stuck retry revert failed for ${row.id}:`, revertErr.message)
+          if (revertErr) { revertFailedIds.push(row.id); console.error(`Stuck retry revert failed for ${row.id}:`, revertErr.message) }
         }
         if (stuckRetries?.length > 0) console.log(`Recovered ${stuckRetries.length} stuck retry round(s) → FIX_DELIVERED`)
 
@@ -191,7 +192,9 @@ async function scheduled(event, env, ctx) {
         if (redeliveryErr) console.error('Stuck redelivery recovery:', redeliveryErr.message)
         else if (stuckRedelivery?.length > 0) console.log(`Recovered ${stuckRedelivery.length} stuck redelivery(ies) → FIX_DELIVERED`)
 
-        const { data: stuck, error: stuckErr } = await supabase
+        // Cross-cutting infra round 8 (bug): a scan whose revert_fix_retry failed above still holds a delivered resume;
+        // the catch-all below used to mark it ERROR anyway. Leave it for the next hourly run.
+        let stuckQuery = supabase
           .from('scans')
           .update({ status: 'ERROR' })
           // PENDING too: a scan whose background job died before it could even
@@ -200,6 +203,8 @@ async function scheduled(event, env, ctx) {
           // never offer to delete it.
           .in('status', ['PENDING', 'SCANNING', 'FIX_GENERATING'])
           .lt('updated_at', stuckCutoff)
+        if (revertFailedIds.length) stuckQuery = stuckQuery.not('id', 'in', `(${revertFailedIds.join(',')})`)
+        const { data: stuck, error: stuckErr } = await stuckQuery
           // '*' rather than a column list: scan_slot_spent_at (migration 0072) may not exist yet, and a select naming a
           // missing column would fail the whole sweep.
           .select('*')
