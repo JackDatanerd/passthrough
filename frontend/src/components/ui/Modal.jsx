@@ -8,8 +8,16 @@ const FOCUSABLE =
 // (display:none, inside a [hidden] subtree, collapsed) can't hold focus — counting it as the first/last
 // stop made Tab escape the dialog when the last "item" was invisible. jsdom does no layout (every
 // element reports no boxes), so the visibility test only applies where layout exists.
+// A radio group is ONE tab stop (the checked radio, or the first when none is checked) — the arrow keys move within it.
+// Counting every radio made the trap's first/last stop a radio Tab never lands on, so Tab walked out of the dialog.
+function isTabStop(el, dialog) {
+  if (el.tagName !== 'INPUT' || el.type !== 'radio' || !el.name || el.checked) return true
+  const group = [...dialog.querySelectorAll('input[type="radio"]')].filter(r => r.name === el.name && r.form === el.form && !r.disabled)
+  return !group.some(r => r.checked) && group[0] === el
+}
+
 function tabbables(dialog) {
-  const all = [...dialog.querySelectorAll(FOCUSABLE)]
+  const all = [...dialog.querySelectorAll(FOCUSABLE)].filter(el => isTabStop(el, dialog))
   if (dialog.getClientRects().length === 0) return all
   return all.filter(el => el.getClientRects().length > 0)
 }

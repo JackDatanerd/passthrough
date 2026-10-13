@@ -23,11 +23,11 @@ import { cn } from '../../lib/utils'
 export default function StatCard({ label, value, sub, size = 'lg', valueClassName = 'text-gray-900', children }) {
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white">
-      <div className="text-xs uppercase tracking-wide text-gray-400 mb-1">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-gray-500 mb-1">{label}</div>
       {children ?? (
         <div className={cn('font-bold', size === 'lg' ? 'text-2xl' : 'text-xl', valueClassName)}>{value}</div>
       )}
-      {sub && <div className="text-xs text-gray-400 mt-1">{sub}</div>}
+      {sub && <div className="text-xs text-gray-500 mt-1">{sub}</div>}
     </div>
   )
 }

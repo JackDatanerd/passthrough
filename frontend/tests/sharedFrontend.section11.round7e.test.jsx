@@ -19,7 +19,7 @@ describe('DataTable', () => {
     const ths = container.querySelectorAll('thead th'); expect(ths).toHaveLength(3)
     ths.forEach(th => expect(th.getAttribute('scope')).toBe('col'))
     expect(ths[0].className).toContain('px-4'); expect(ths[0].className).toContain('py-3')
-    expect(container.querySelector('thead tr').className).toContain('text-gray-400')
+    expect(container.querySelector('thead tr').className).toContain('text-gray-500')
     expect(container.querySelector('tbody').className).toContain('divide-y')
     expect(container.firstChild.className).toContain('overflow-x-auto')
   })

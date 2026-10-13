@@ -45,7 +45,7 @@ export default function DataTable({
       <table className="w-full text-sm">
         {caption && <caption className="sr-only">{caption}</caption>}
         <thead>
-          <tr className="text-left text-xs uppercase tracking-wide text-gray-400 border-b border-gray-200">
+          <tr className="text-left text-xs uppercase tracking-wide text-gray-500 border-b border-gray-200">
             {columns.map(col => (
               <th key={col.key} scope="col" className={cn(pad, col.className, col.headerClassName)}>{col.header}</th>
             ))}

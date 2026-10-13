@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, act } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import api from '../../src/lib/api'
@@ -78,5 +78,34 @@ describe('ScanForm — a long pasted job description is trimmed sensibly, not cu
     await user.paste('requirement '.repeat(500))   // 6000 chars > 5000
     expect(screen.getByText(/we'll trim the company intro, benefits and legal text first/)).toBeInTheDocument()
     expect(screen.queryByText(/Only the first/)).not.toBeInTheDocument()
+  })
+})
+
+// Shared frontend round 9 (G1): the upload shows progress and can be cancelled.
+describe('ScanForm — upload progress and cancel', () => {
+  it('shows progress while a file uploads, and Cancel upload aborts the request without an error', async () => {
+    const user = userEvent.setup()
+    let opts
+    api.post.mockImplementation((url, fd, o) => { opts = o; return new Promise((_, rej) => o.signal.addEventListener('abort', () => rej(Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' })))) })
+    renderForm()
+    await fillAndSubmit(user)
+    await waitFor(() => expect(opts).toBeTruthy())
+    act(() => opts.onUploadProgress({ loaded: 30, total: 100 }))
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '30')
+    await user.click(screen.getByRole('button', { name: 'Cancel upload' }))
+    expect(opts.signal.aborted).toBe(true)
+    await waitFor(() => expect(screen.queryByRole('progressbar')).toBeNull())
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+  it('at 100% the bytes are sent, so Cancel goes away and the label says the server is reading it', async () => {
+    const user = userEvent.setup()
+    let opts
+    api.post.mockImplementation((url, fd, o) => { opts = o; return new Promise(() => {}) })
+    renderForm()
+    await fillAndSubmit(user)
+    await waitFor(() => expect(opts).toBeTruthy())
+    act(() => opts.onUploadProgress({ loaded: 100, total: 100 }))
+    expect(screen.queryByRole('button', { name: 'Cancel upload' })).toBeNull()
+    expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuetext', 'Reading your resume…')
   })
 })

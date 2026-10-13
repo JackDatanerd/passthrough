@@ -7,6 +7,7 @@ import {
 } from './session'
 import { getToken, getDeviceId, storageRemove } from './storage'
 import { setFlash, FLASH_ADMIN_DENIED } from './flash'
+import { hasUnsavedWork } from './unsavedGuard'
 
 // Re-exported so pages can `import api, { getErrorMessage } from '../lib/api'`.
 export { getErrorMessage } from './errors'
@@ -56,8 +57,13 @@ api.interceptors.request.use(config => {
   // went out without the token). Everything else — the public API, the user's own routes — never carries it.
   // The replay of a request the server just refused for step-up carries it wherever the route lives, so a gated
   // route outside the known prefixes still works (one extra round trip) instead of failing for good.
-  if (stepUpToken && Date.now() < stepUpUntil && config.headers && (isStepUpUrl(config.url) || config.__stepUpTried))
+  // Which elevation this request carried (null = none): a refusal is matched against the elevation held NOW so a
+  // late refusal of an OLDER request cannot throw away a fresh one (see the step-up branch of the response side).
+  config.__elevation = null
+  if (stepUpToken && Date.now() < stepUpUntil && config.headers && (isStepUpUrl(config.url) || config.__stepUpTried)) {
     config.headers['X-Admin-Elevation'] = stepUpToken
+    config.__elevation = stepUpToken
+  }
   // Which token this request actually carried, so a late failure can be matched
   // against the session that is current when it lands (see endSession's caller).
   config.__token = token || null
@@ -81,10 +87,15 @@ api.interceptors.request.use(config => {
 // The password is asked for by whatever registered a prompt (AdminLayout's modal); the elevation token it
 // buys lives in MEMORY only (a reload asks again) and rides on every request as X-Admin-Elevation.
 let stepUpToken = null, stepUpUntil = 0, stepUpPrompt = null, stepUpPending = null
+// Why the last elevation attempt failed when it was NOT a cancel or a wrong password (account lockout, 5xx, no network).
+// The caller used to get the original "Confirm your password to continue." back — as if the prompt had never been
+// answered — so the lockout message the server sent was never shown.
+let stepUpFailure = null
 export function setStepUpPrompt(fn) { stepUpPrompt = fn }
 export function clearStepUp() { stepUpToken = null; stepUpUntil = 0 }
 async function ensureStepUp() {
   if (stepUpToken && Date.now() < stepUpUntil) return true
+  if (!stepUpPending) stepUpFailure = null
   if (!stepUpPrompt) return false
   if (!stepUpPending) {
     stepUpPending = (async () => {
@@ -101,7 +112,7 @@ async function ensureStepUp() {
           stepUpUntil = Date.now() + Math.max(0, (d.expiresInSeconds - 5)) * 1000
           return true
         } catch (e) {
-          if (e.response?.data?.code !== 'PASSWORD_INCORRECT') return false   // anything else: stop asking
+          if (e.response?.data?.code !== 'PASSWORD_INCORRECT') { stepUpFailure = e; return false }   // anything else: stop asking, and say why
           incorrect = true
         }
       }
@@ -120,6 +131,21 @@ function dropStaleAuthHeaders(config) {
     if (typeof config.headers.delete === 'function') config.headers.delete(name)
     else delete config.headers[name]
   }
+}
+
+// ── Resuming an ended session in place ──────────────────────────────────────────────────────────────
+// Registered by <SessionResumePrompt>: resolves true once the person signed in again as the SAME account (the new token
+// is already stored), false if they chose to discard their changes. Concurrent failures share one prompt.
+let sessionResumePrompt = null, sessionResumePending = null
+export function setSessionResumePrompt(fn) { sessionResumePrompt = fn }
+function resumeSession() {
+  if (!sessionResumePending) {
+    sessionResumePending = Promise.resolve()
+      .then(() => sessionResumePrompt())
+      .then(ok => { if (ok) clearStepUp(); return !!ok }, () => false)   // an elevation belongs to the session that ended
+      .finally(() => { sessionResumePending = null })
+  }
+  return sessionResumePending
 }
 
 let sessionEnding = false
@@ -183,9 +209,16 @@ api.interceptors.response.use(
     // Step-up: ask once for the password, then replay the request that was refused.
     if (status === 403 && code === 'ADMIN_STEP_UP_REQUIRED' && !config.__noStepUp && !config.__stepUpTried) {
       config.__stepUpTried = true
+      // This request went out without the elevation that is held now (it was sent before the password was accepted):
+      // its refusal says nothing about the new one. Replay it as it is instead of discarding the elevation and asking again.
+      if (stepUpToken && Date.now() < stepUpUntil && config.__elevation !== stepUpToken) {
+        dropStaleAuthHeaders(config)
+        return api.request(config)
+      }
       clearStepUp()
       if (await ensureStepUp()) { dropStaleAuthHeaders(config); return api.request(config) }
-      return Promise.reject(err)
+      // Cancelled -> the original refusal; failed for another reason (lockout, server, network) -> THAT reason.
+      return Promise.reject(stepUpFailure || err)
     }
 
     let verdict = classifyAuthFailure({ status, code, hadToken: !!config.__hadToken, url: config.url })
@@ -201,6 +234,12 @@ api.interceptors.response.use(
         // really is dead, THAT request fails as 'current' and ends it through this same interceptor.
         probeCurrentSession()
         return Promise.reject(err)
+      }
+      // An expired session while the person holds unsaved work: ask them to sign in again IN PLACE and replay this request,
+      // instead of redirecting away and discarding the draft. A banned account is never resumed.
+      if (verdict === 'expired' && !config.__resumeTried && sessionResumePrompt && hasUnsavedWork()) {
+        config.__resumeTried = true
+        if (await resumeSession()) { dropStaleAuthHeaders(config); return api.request(config) }
       }
       endSession(verdict)
     }

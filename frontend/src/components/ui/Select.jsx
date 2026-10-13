@@ -27,7 +27,7 @@ import { cn } from '../../lib/utils'
 // order rather than anything visible at the call site.
 const sizes = {
   md: 'px-3 py-2.5 text-base sm:py-2 sm:text-sm',
-  sm: 'px-2 py-1 text-xs',
+  sm: 'px-2 py-1 text-base sm:text-xs',
 }
 
 const Select = forwardRef(function Select({ label, error, hint, className, wrapperClassName, id, size = 'md', children, 'aria-describedby': extraDescribedBy, ...props }, ref) {

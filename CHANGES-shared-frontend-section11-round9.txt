@@ -1,0 +1,41 @@
+SHARED FRONTEND (section 11) — ROUND 9
+Audited at 26aee13. Scope: components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js.
+
+FEATURE GAPS CLOSED
+G1  Upload progress + cancel. New <ProgressBar>; useApi gains `progress` and an opt-in `{ progress: true }` that hands the
+    call an onUploadProgress; ScanForm shows "Uploading your resume N%" with a "Cancel upload" until the bytes are sent
+    (then "Reading your resume…"). A cancel is silent and keeps everything typed.
+G2  Resume an ended session in place. lib/unsavedGuard.js (registered by useUnsavedChangesWarning while dirty) tells
+    lib/api.js the tab holds unsaved work; on an expired session api.js asks <SessionResumePrompt> (new, mounted in App)
+    instead of redirecting. The person signs in again as the SAME account (a different account is refused), the refused request is
+    replayed with the new token, nothing typed is lost. "Discard" falls back to the old redirect. Banned accounts and tabs with
+    no unsaved work behave exactly as before. Concurrent failures share one prompt.
+G3  Offline awareness. useOnlineStatus + <OfflineBanner> (mounted in AppShell).
+
+BUGS FIXED
+B1  api.js step-up: an elevation that failed for any reason other than a wrong password (lockout 429, 5xx, no network) was
+    swallowed — the page showed the original "Confirm your password to continue." Now that reason is what the caller gets
+    (a cancelled prompt still returns the original refusal).
+B2  api.js step-up: a late ADMIN_STEP_UP_REQUIRED from a request sent BEFORE the elevation called clearStepUp() and threw
+    away the fresh one, re-prompting. Requests now record the elevation they carried; such a refusal is just replayed.
+B3  useApi: a success from a call that was already running when a failure landed cleared that failure. A success now clears
+    the error only if it started after the failure arrived.
+B4  Modal: focus trap leaked when the first/last tab stop was a radio group (only the checked radio is a tab stop). Groups
+    count as one stop. Live trigger: AdminLeads "Leads sharing an inbox" with a disabled last merge button.
+B5  Toast: a blank message drew an empty box. Blank error -> generic error text; blank non-error -> not shown.
+B6  Toast contrast: success bg-green-600 (3.3:1) -> green-700, warning bg-amber-500 (2.2:1) -> amber-700 (5.0:1).
+B7  DataTable header, StatCard label/sub: text-gray-400 (2.5:1) -> text-gray-500.
+B8  Input/Textarea/Select size="sm": 16px below the sm breakpoint (iOS Safari zooms on focus under 16px).
+B9  Pagination: Prev from an out-of-range page lands on the last real page.
+
+TESTS
+New: sharedFrontend.round9.api.test.js, sharedFrontend.round9.test.jsx, components/SessionResumePrompt.test.jsx,
+components/OfflineBanner.test.jsx, two cases appended to components/ScanForm.round3.test.jsx.
+Updated (they pinned the old classes): components/Select.test.jsx, sharedFrontend.section11.round7e.test.jsx.
+Run: all frontend tests green; `npm run lint` clean; `vite build` OK.
+
+NOT CHANGED / NOTE
+Fresh `npm ci` in BOTH root and frontend/ installs two copies of React; component tests then fail with "Cannot read
+properties of null (reading 'useRef')" (react-router resolves frontend/node_modules/react). vitest.config.mjs's
+resolve.dedupe does not reach node_modules packages Vitest leaves external; server.deps.inline + alias did not fix it either
+(tried, reverted). Workaround: delete frontend/node_modules/react and react-dom before running tests.

@@ -93,7 +93,13 @@ export function ToastProvider({ children }) {
     // `action: { label, onClick }` adds one button (Undo, Retry): it runs onClick and dismisses the toast. A toast with an
     // action is never merged into an identical one, and it stays 10s by default — long enough to reach the button.
     const show = ({ message, type = 'info', action, duration = action ? 10000 : type === 'error' ? 9000 : 4000 }) => {
-      const text = normalizeMessage(message)
+      let text = normalizeMessage(message)
+      // A blank message (an undefined server field, say) used to draw an empty coloured box — for an error, no sign that
+      // anything failed. An error says so generically; any other blank toast is not shown.
+      if (typeof text === 'string' && text.trim() === '') {
+        if (type !== 'error') return null
+        text = 'Something went wrong. Please try again.'
+      }
       const act = action && typeof action.onClick === 'function' && action.label ? { label: String(action.label), onClick: action.onClick } : null
       // The same text of the same kind already on screen (a retry loop, a double-clicked action) is
       // not stacked again: the one showing just has its countdown restarted.
@@ -126,10 +132,11 @@ export function ToastProvider({ children }) {
   }, [])
 
   const colors = {
-    success: 'bg-green-600',
+    // White text-sm needs 4.5:1: green-600 is 3.3:1 and amber-500 is 2.2:1; the -700 shades are 5.0:1.
+    success: 'bg-green-700',
     error:   'bg-red-600',
     info:    'bg-blue-600',
-    warning: 'bg-amber-500',
+    warning: 'bg-amber-700',
   }
 
   return (

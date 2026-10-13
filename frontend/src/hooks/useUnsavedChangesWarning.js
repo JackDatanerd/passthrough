@@ -1,5 +1,6 @@
 import { useContext, useEffect } from 'react'
 import { UNSAFE_DataRouterContext, useBlocker } from 'react-router-dom'
+import { markUnsaved } from '../lib/unsavedGuard'
 
 const LEAVE_MESSAGE = 'You have unsaved changes. Leave this page and discard them?'
 
@@ -30,6 +31,9 @@ export function useUnsavedChangesWarning(dirty) {
   const hasDataRouter = useContext(UNSAFE_DataRouterContext) != null
   // eslint-disable-next-line react-hooks/rules-of-hooks
   ;(hasDataRouter ? useRouteBlocker : useNoRouteBlocker)(dirty)
+
+  // Tells lib/api.js this tab holds unsaved work, so an ended session can be resumed in place rather than redirected away.
+  useEffect(() => (dirty ? markUnsaved() : undefined), [dirty])
 
   useEffect(() => {
     if (!dirty) return undefined

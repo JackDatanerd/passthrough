@@ -33,7 +33,7 @@ describe('Select', () => {
     const { rerender } = render(<Select label="X"><option>a</option></Select>)
     expect(screen.getByRole('combobox').className).toContain('px-3 py-2.5 text-base sm:py-2 sm:text-sm')
     rerender(<Select label="X" size="sm"><option>a</option></Select>)
-    expect(screen.getByRole('combobox').className).toContain('px-2 py-1 text-xs')
+    expect(screen.getByRole('combobox').className).toContain('px-2 py-1 text-base sm:text-xs')
   })
 
   it('an unrecognized size falls back to the default rather than rendering no size classes', () => {

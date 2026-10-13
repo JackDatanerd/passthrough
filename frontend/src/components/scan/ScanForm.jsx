@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import api, { getErrorMessage } from '../../lib/api'
 import { describeQuota } from '../../lib/quota'
@@ -11,6 +11,8 @@ import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
 import Alert from '../ui/Alert'
+import ProgressBar from '../ui/ProgressBar'
+import { isCancelError } from '../../lib/errors'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import { loadBrainDumpDraft, saveBrainDumpDraft } from '../../lib/brainDumpDraft'
 import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
@@ -79,6 +81,11 @@ export default function ScanForm() {
   const [jobUrl,  setJobUrl ] = useState('')
   const [jdText,  setJdText ] = useState('')
   const [loading, setLoading] = useState(false)
+  // Upload progress (0-100) and the controller that cancels it: a 5MB resume on a slow phone link takes over a minute,
+  // and the button used to spin with no sign of movement and no way out.
+  const [uploadPct, setUploadPct] = useState(null)
+  const uploadAbort = useRef(null)
+  useEffect(() => () => uploadAbort.current?.abort(), [])
   const [error,   setError  ] = useState('')
 
   // PHASE 4 — check whether this user has a saved profile, so the third
@@ -168,6 +175,9 @@ export default function ScanForm() {
 
     setError('')
     setLoading(true)
+    const controller = new AbortController()
+    uploadAbort.current = controller
+    setUploadPct(0)
     try {
       const formData = new FormData()
       if (entryMode === 'upload') {
@@ -193,7 +203,9 @@ export default function ScanForm() {
         formData.append('jobDescriptionText', jdText)
 
       const res = await api.post('/scan', formData, {
-        headers: { 'Content-Type': 'multipart/form-data' }
+        headers: { 'Content-Type': 'multipart/form-data' },
+        signal: controller.signal,
+        onUploadProgress: e => { if (e && e.total > 0) setUploadPct(Math.min(100, Math.round((e.loaded / e.total) * 100))) },
       })
       const { scanId, anonToken } = res.data.data
 
@@ -204,6 +216,8 @@ export default function ScanForm() {
 
       navigate(`/scan/${scanId}`)
     } catch (err) {
+      // The person pressed "Cancel upload": nothing failed, so nothing is shown (the form keeps everything they entered).
+      if (isCancelError(err)) { setError(''); return }
       const msg = getErrorMessage(err, 'Something went wrong. Please try again.')
       // AUDIT FIX: this only auto-switched back to paste mode when the
       // backend explicitly marked the failure `blocked: true` (LinkedIn,
@@ -223,6 +237,8 @@ export default function ScanForm() {
       setError(msg)
     } finally {
       setLoading(false)
+      setUploadPct(null)
+      uploadAbort.current = null
     }
   }
 
@@ -481,6 +497,17 @@ export default function ScanForm() {
       <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
         {submitLabel}
       </Button>
+      {loading && entryMode === 'upload' && uploadPct !== null && (
+        <div className="flex flex-col gap-1">
+          <ProgressBar value={uploadPct} label="Uploading your resume" doneLabel="Reading your resume…" />
+          {uploadPct < 100 && (
+            <button type="button" onClick={() => uploadAbort.current?.abort()}
+              className="self-start text-xs text-gray-600 underline hover:text-red-600">
+              Cancel upload
+            </button>
+          )}
+        </div>
+      )}
       {user && describeQuota(quota) && (
         <p role="status" className={`text-xs ${describeQuota(quota).exhausted ? 'text-amber-700 font-medium' : 'text-gray-500'}`}>
           {describeQuota(quota).text}

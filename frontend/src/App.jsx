@@ -11,6 +11,8 @@ import useScrollToHash from './hooks/useScrollToHash'
 import usePageTitle from './hooks/usePageTitle'
 import { useReferralCapture } from './hooks/useReferralCapture'
 import TermsUpdateBanner from './components/layout/TermsUpdateBanner'
+import SessionResumePrompt from './components/layout/SessionResumePrompt'
+import OfflineBanner from './components/layout/OfflineBanner'
 
 // Landing + auth pages stay in the main bundle (first paint / most common entry
 // points). Everything else is split into its own chunk — the homepage used to
@@ -181,8 +183,10 @@ function AppShell() {
   return (
     <>
       <RouteEffects />
+      <OfflineBanner />
       <RoutedApp />
       <TermsUpdateBanner />
+      <SessionResumePrompt />
     </>
   )
 }

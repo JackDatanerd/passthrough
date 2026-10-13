@@ -15,7 +15,7 @@ export default function Pagination({
   if (!Number.isFinite(Number(totalPages)) || totalPages <= 1) return null
   return (
     <nav aria-label={ariaLabel} className={className || 'flex items-center justify-center gap-3'}>
-      <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => onChange(page - 1)}>{prevLabel}</Button>
+      <Button size="sm" variant="secondary" disabled={page <= 1} onClick={() => onChange(Math.max(1, Math.min(page - 1, totalPages)))}>{prevLabel}</Button>
       <span aria-live="polite" className={countClassName || (compact ? 'text-xs text-gray-500' : 'text-sm text-gray-500')}>Page {page} of {totalPages}</span>
       <Button size="sm" variant="secondary" disabled={page >= totalPages} onClick={() => onChange(page + 1)}>{nextLabel}</Button>
     </nav>
