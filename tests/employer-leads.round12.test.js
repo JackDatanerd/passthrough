@@ -49,7 +49,10 @@ function setup({ leads = [], suppressed = {}, logs = [], supply = [{ role_catego
       }
       if (q.selectOpts?.head) return { count: rows.filter(match).length, error: null }
       if (q.maybe) { const r = rows.find(match); return { data: r ? { ...r } : null, error: null } }
-      const hit = rows.filter(match).sort((x, y) => x.created_at < y.created_at ? -1 : x.created_at > y.created_at ? 1 : x.id < y.id ? -1 : 1)
+      // the notify scan's keyset cursor (round 14): created_at.gt.X,and(created_at.eq.X,id.gt.Y)
+      const after = (q.or || []).map(e => /^created_at\.gt\.(.+),and\(created_at\.eq\.(.+),id\.gt\.(.+)\)$/.exec(e)).find(Boolean)
+      const keyset = (r) => !after || r.created_at > after[1] || (r.created_at === after[2] && r.id > after[3])
+      const hit = rows.filter(match).filter(keyset).sort((x, y) => x.created_at < y.created_at ? -1 : x.created_at > y.created_at ? 1 : x.id < y.id ? -1 : 1)
       return { data: hit.slice(0, q.limit || undefined).map(r => ({ ...r })), count: hit.length, error: null }
     }
     if (q.table === 'employer_lead_suppressions') {

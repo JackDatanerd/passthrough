@@ -49,7 +49,11 @@ router.get('/duplicates', admin, c.adminListDuplicates)
 
 // Admin-only writes that are not keyed by an :id, registered before the /:id
 // routes so 'manual' / 'bulk' can never be read as an id.
-router.post('/manual', admin, c.adminCreateLead)
+// Round 14 (B3): `overrideRemoval` lifts a do-not-contact entry, which DELETE /suppressions only allows after password
+// re-entry — so the two writes that can do it as a side effect (here and PATCH /:id) ask for the same step-up, and only when
+// they actually carry the override (an ordinary add or edit is unchanged).
+const overridesRemoval = (body) => !!body && body.overrideRemoval === true
+router.post('/manual', admin, admin.stepUpWhen(overridesRemoval), c.adminCreateLead)
 // Cross-cutting infra round 6: bulk import / bulk change / delete / do-not-contact edits need the admin's password
 // again when ADMIN_STEP_UP_MINUTES is on (a stolen token could otherwise mass-edit or purge the lead list).
 router.post('/import', admin, admin.stepUp, c.adminImportLeads)
@@ -85,7 +89,7 @@ router.post(  '/:id/request-confirmation', admin, validateUuidParam(), c.adminRe
 router.post(  '/:id/mark-confirmed', admin, validateUuidParam(), c.adminMarkConfirmed)
 // Round 12 (G1): one lead with its mail history and do-not-contact state. After every fixed-path GET above.
 router.get(   '/:id', admin, validateUuidParam(), c.adminGetLead)
-router.patch( '/:id', admin, validateUuidParam(), c.adminUpdateLeadStatus)
+router.patch( '/:id', admin, admin.stepUpWhen(overridesRemoval), validateUuidParam(), c.adminUpdateLeadStatus)
 router.delete('/:id', admin, admin.stepUp, validateUuidParam(), c.adminDeleteLead)
 
 module.exports = router

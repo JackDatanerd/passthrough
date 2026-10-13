@@ -2011,16 +2011,26 @@ const notifySchema = z.object({ field: z.enum(ROLE_CATEGORIES), dryRun: z.boolea
 // counted as "failed" and "still waiting" each time, and held a slot in the examine window
 // forever. The mail log knows it was told: adopt that time as the stamp, so the lead leaves the
 // queue until its 30 days are really up. Returns true when it did.
-async function adoptEarlierNotification(supabase, lead, field) {
+// Round 14 (B1): the per-recipient cap is per MAILBOX (hiring@ and hiring+eng@ are one inbox), but this looked for the earlier
+// send under the lead's own spelling only. A same-inbox duplicate lead therefore hit the cap, found no log, and was counted
+// "failed" and kept eligible on every call. The log is now searched under every spelling any lead of the mailbox uses, and
+// when the send was THROTTLED (the cap itself proves the mailbox was told) but the log row is gone, the stamp is "now" —
+// the safe side: the lead waits out at most one extra cooldown instead of failing forever.
+async function adoptEarlierNotification(supabase, lead, field, { throttled = false } = {}) {
   try {
     const since = new Date(Date.now() - NOTIFY_COOLDOWN_MS).toISOString()
+    const addresses = [lead.email]
+    const sib = await supabase.from('employer_leads').select('email').eq('mailbox_key', canonicalMailbox(lead.email)).limit(20)
+    if (!sib.error && Array.isArray(sib.data)) addresses.push(...sib.data.map(r => r.email).filter(Boolean))
     const { data, error } = await supabase.from('email_logs').select('sent_at')
-      .eq('to', lead.email).eq('template', 'employer_candidates_available').eq('subject', notifySubject(field))
+      .in('to', mailboxForms(addresses)).eq('template', 'employer_candidates_available').eq('subject', notifySubject(field))
       .eq('status', 'sent').gte('sent_at', since)
       .order('sent_at', { ascending: false }).limit(1)
-    if (error || !Array.isArray(data) || !data.length) return false
+    if (error) return false
+    let sentAt = Array.isArray(data) && data.length ? data[0].sent_at : null
+    if (!sentAt) { if (!throttled) return false; sentAt = new Date().toISOString() }
     const { error: stampErr } = await supabase.from('employer_leads')
-      .update({ candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: data[0].sent_at } }).eq('id', lead.id)
+      .update({ candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: sentAt } }).eq('id', lead.id)
     return !stampErr
   } catch (_) { return false }
 }
@@ -2055,11 +2065,11 @@ async function adminNotifyCandidates(c) {
   const seen = new Set()
   let total = 0, scanned = 0, sent = 0, failed = 0, skipped = 0, removed = 0, blockedByList = 0
   const preview = []   // the dry run names who the next send would reach (round 12)
-  let cursor = null
+  let cursor = null   // [created_at, id] of the last lead looked at (round 14, B4: created_at alone cannot step past 100 tied rows)
   const sentIds = []
   scan: while (scanned < NOTIFY_SCAN_MAX && (dryRun || sent < NOTIFY_BATCH_MAX)) {
     let q = eligible().order('created_at', { ascending: true }).order('id', { ascending: true }).limit(NOTIFY_EXAMINE_MAX)
-    if (cursor) q = q.gte('created_at', cursor)
+    if (cursor) q = q.or(`created_at.gt.${cursor[0]},and(created_at.eq.${cursor[0]},id.gt.${cursor[1]})`)
     const { data: page, error: selErr, count } = await q
     if (selErr) {
       if (MISSING_COLUMN.includes(selErr.code))
@@ -2070,7 +2080,7 @@ async function adminNotifyCandidates(c) {
     const fresh = (page || []).filter(l => !seen.has(l.id))
     if (!fresh.length) break
     for (const l of fresh) seen.add(l.id)
-    cursor = fresh[fresh.length - 1].created_at
+    { const last = fresh[fresh.length - 1]; cursor = [last.created_at, last.id] }
     scanned += fresh.length
 
     const suppressions = await suppressionsAmong(c.env, supabase, fresh.map(l => l.email))
@@ -2103,7 +2113,7 @@ async function adminNotifyCandidates(c) {
       }
       if (!ok) {
         // Bounced / complained addresses can never be reached: that is "skipped", not a failure to retry.
-        if (outcome.status === 'suppressed' || await adoptEarlierNotification(supabase, lead, field)) skipped++
+        if (outcome.status === 'suppressed' || await adoptEarlierNotification(supabase, lead, field, { throttled: outcome.status === 'throttled' })) skipped++
         else failed++
         continue
       }
@@ -2118,7 +2128,7 @@ async function adminNotifyCandidates(c) {
       const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id)
       if (stampErr) console.error('Employer-lead candidate notification sent but not recorded:', stampErr.message)
     }
-    if ((page || []).length < NOTIFY_EXAMINE_MAX) break   // a short page is the last one (the page may repeat a lead already seen)
+    if ((page || []).length < NOTIFY_EXAMINE_MAX) break   // a short page is the last one
   }
   if (dryRun) {
     const eligibleNow = Math.max(0, total - blockedByList)
@@ -2173,9 +2183,15 @@ function mergedLeadPatch(keep, others) {
   for (const k of ['last_ack_at', 'last_notice_at', 'last_candidates_notified_at']) { const v = stamps(k).pop(); if (v && v !== keep[k]) patch[k] = v }
   const firstContact = stamps('contacted_at')[0]
   if (!keep.contacted_at && firstContact) patch.contacted_at = firstContact
-  if (keep.status === 'NEW') {
-    const best = others.map(o => o.status).filter(st => STATUS_RANK[st] > 0).sort((a, b) => STATUS_RANK[b] - STATUS_RANK[a])[0]
-    if (best) { patch.status = best; if (!keep.contacted_at && !patch.contacted_at) patch.contacted_at = patch.updated_at }
+  // Round 14 (B2): the furthest-along status wins whatever the kept lead's own was (it used to apply only to a NEW keep, so a
+  // CONVERTED duplicate merged into a CONTACTED lead lost its conversion). An ARCHIVED keep ranks below everything, so an
+  // active duplicate is not silently archived by being folded into it; ARCHIVED only stays when every lead was archived.
+  const rank = (st) => (st === 'ARCHIVED' ? -1 : STATUS_RANK[st] ?? -1)
+  const best = others.map(o => o.status).filter(st => rank(st) > rank(keep.status)).sort((a, b) => rank(b) - rank(a))[0]
+  if (best) {
+    patch.status = best
+    if (keep.status === 'ARCHIVED') patch.archived_resubmitted_at = null
+    if (best !== 'NEW' && !keep.contacted_at && !patch.contacted_at) patch.contacted_at = patch.updated_at
   }
   if (!keep.confirmed_at) {
     const first = others.filter(o => o.confirmed_at).sort((a, b) => (a.confirmed_at < b.confirmed_at ? -1 : 1))[0]
