@@ -19,7 +19,7 @@ const { must } = require('../lib/db')
 
 async function handleDeadLetterBatch(batch, env, supabase, emailService) {
   for (const message of batch.messages) {
-    const { type, scanId, anonRlKey } = message.body || {}
+    const { type, scanId, anonRlKey, ipSlotKey } = message.body || {}
     try {
       if (scanId && type === 'runAtsScan') {
         // A free scan that never ran: nothing was produced, so the person gets the
@@ -27,15 +27,24 @@ async function handleDeadLetterBatch(batch, env, supabase, emailService) {
         // the counter belongs to another day) exactly as an in-pipeline failure does.
         try {
           const { data: failed } = await supabase.from('scans').update({ status: 'ERROR' })
-            .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id, user_id, created_at')
+            .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id, user_id, created_at, scan_slot_spent_at')
           for (const row of Array.isArray(failed) ? failed : []) {
+            // The slot belongs to whenever it was last spent: a retry-scan stamps scan_slot_spent_at on an old scan
+            // (the same rule refundScanSlot applies to a failure inside the pipeline).
+            const spentAt = row.scan_slot_spent_at || row.created_at
             // An anonymous scan has no daily counter — it spent the visitor's one-an-hour slot.
-            if (!row.user_id && anonRlKey && row.created_at && Date.now() - Date.parse(row.created_at) < 55 * 60 * 1000)
+            if (!row.user_id && anonRlKey && spentAt && Date.now() - Date.parse(spentAt) < 55 * 60 * 1000)
               await require('../middleware/rateLimiter').refundAnonScanSlot(env, anonRlKey)
             const startOfToday = require('../lib/utcDay').utcMidnight()
-            if (row.user_id && row.created_at && new Date(row.created_at) >= startOfToday) {
+            if (row.user_id && spentAt && new Date(spentAt) >= startOfToday) {
               const { error: refundErr } = await supabase.rpc('decrement_scan_count', { p_user_id: row.user_id })
               if (refundErr) console.error(`Dead-letter: quota refund failed for scan ${scanId}:`, refundErr.message)
+            }
+            // The per-IP daily ceiling is a shared budget the same scan spent a slot of (createScan); runAtsScan's own
+            // failure paths hand it back, and a dead-lettered scan must too or a failing queue locks a whole office out.
+            if (row.user_id && ipSlotKey && spentAt && Date.now() - Date.parse(spentAt) < 23 * 3600 * 1000) {
+              try { await require('../middleware/rateLimiter').refundQuota(env, ipSlotKey, 24 * 3600, 10) }
+              catch (err) { console.error(`Dead-letter: ip-cap refund failed for scan ${scanId}:`, err.message) }
             }
           }
         } catch (err) { console.error(`Dead-letter: could not fail scan ${scanId}:`, err.message) }
