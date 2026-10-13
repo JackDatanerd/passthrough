@@ -1575,6 +1575,23 @@ describe('round 3 — payments & pricing', () => {
     expect(t.state.inits).toBe(0)
   })
 
+  it('round 14 B1: the 409 carries outcome + needsSupport so the client never waits for a delivery that is not coming', async () => {
+    for (const [outcome, needsSupport] of [['MISMATCH', true], ['IGNORED_STATUS', true], ['UNKNOWN_REFERENCE', true],
+      ['FULFILLED', false], ['REENQUEUED', false], ['ALREADY_FULFILLED', false], ['DUPLICATE', false]]) {
+      t = load(initResolver(pendingRow()), { recheck: async () => ({ outcome }) })
+      const res = await t.mod.initializePayment(t.c())
+      expect(res.status).toBe(409)
+      expect(res.body).toMatchObject({ alreadyPaid: true, outcome, needsSupport })
+    }
+  })
+
+  it('round 14 B1: a refunded/disputed row no longer claims it is "being delivered"', async () => {
+    t = load(initResolver(pendingRow()), { recheck: async () => ({ outcome: 'IGNORED_STATUS' }) })
+    const res = await t.mod.initializePayment(t.c())
+    expect(res.body.message).not.toMatch(/actually went through|is being delivered now/)
+    expect(res.body.message).toMatch(/old-ref/)
+  })
+
   it('B2: Paystack says NOT paid → the stale row is abandoned and a fresh checkout proceeds, as before', async () => {
     t = load(initResolver(pendingRow()))
     const res = await t.mod.initializePayment(t.c())

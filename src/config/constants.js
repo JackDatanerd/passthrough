@@ -21,7 +21,7 @@ module.exports = {
   PRICE_FIX_PLAIN: 3900,    // $39.00 USD cents — rewrite only, no credential/verification link
 
   // Launch promo prices. Mapping: BADGE gets the deepest cut (cheapest tier
-  // to deliver — no Claude rewrite call, no PDF render), FIX_PLAIN a middle
+  // to deliver — no Claude rewrite call; it still renders the docx and PDF), FIX_PLAIN a middle
   // cut, FIX (the most expensive to deliver) the smallest cut. Flagging this
   // mapping explicitly in case a different assignment was intended — easy to
   // swap, just move the numbers.

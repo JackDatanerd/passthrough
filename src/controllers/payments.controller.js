@@ -60,14 +60,28 @@ function inFlightResponse(c2, what) {
     message: `An earlier payment attempt is still being processed by Paystack, so ${what}. Give it a few minutes — if it completes, your fix is delivered automatically; if not, it expires and you can try again.` }, 409)
 }
 
+// Payments & Pricing round 14 (B1): the 409 used to look identical for "delivering now" and for
+// "money received but NOT being delivered" (an amount mismatch held for a human, or a row that
+// flipped to REFUNDED/DISPUTED between the read and the recheck), so the client showed a
+// "waiting for the bank to confirm" spinner under an "email support" message. The body now carries
+// `outcome` and `needsSupport`, and the message says what is actually true for each outcome.
+const DELIVERING_OUTCOMES = new Set(['FULFILLED', 'REENQUEUED', 'ALREADY_FULFILLED', 'DUPLICATE'])
+
 function alreadyPaidResponse(c2, result, payment) {
-  return c2.json({ success: false, alreadyPaid: true,
-    message: result.outcome === 'MISMATCH'
-      ? `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email support@passthrough.dev with reference ${payment.paystack_ref} if you hear nothing.`
-      : result.outcome === 'DUPLICATE'
-        ? 'An earlier payment for this resume already went through and your resume was delivered by it. The extra payment is being refunded automatically, so there is no need to pay again.'
-        : 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.',
-    data: { paidReference: payment.paystack_ref, scanId: payment.scan_id }
+  const outcome = result.outcome
+  const needsSupport = !DELIVERING_OUTCOMES.has(outcome)
+  const ref = payment.paystack_ref
+  let message
+  if (outcome === 'MISMATCH')
+    message = `An earlier payment for this resume was received, but its amount differs from what was expected, so it is being checked by hand. You do not need to pay again — email support@passthrough.dev with reference ${ref} if you hear nothing.`
+  else if (outcome === 'DUPLICATE')
+    message = 'An earlier payment for this resume already went through and your resume was delivered by it. The extra payment is being refunded automatically, so there is no need to pay again.'
+  else if (needsSupport)
+    message = `An earlier payment for this resume was received but is not being delivered (it has been refunded or is under review). If you were not refunded, email support@passthrough.dev with reference ${ref}.`
+  else
+    message = 'An earlier payment for this resume actually went through — it is being delivered now, so there is no need to pay again.'
+  return c2.json({ success: false, alreadyPaid: true, outcome, needsSupport, message,
+    data: { paidReference: ref, scanId: payment.scan_id }
   }, 409)
 }
 

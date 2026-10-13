@@ -385,10 +385,12 @@ export default function ScanResult() {
 
   // B2 (round 3): the server found the earlier checkout had in fact been paid and is delivering it.
   // Show its message and wait for delivery exactly as after a popup success.
-  async function adoptPaidElsewhere(message) {
+  // Round 14 (B1): `needsSupport` = the money is held for a human (amount mismatch, refunded, disputed) and
+  // nothing is being delivered, so show the message and do NOT start the "confirming payment" wait.
+  async function adoptPaidElsewhere(message, needsSupport = false) {
     setStuckPayment(null); setPendingPayment(null); setPayError(message || '')
     await fetchScan()
-    if (['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
+    if (!needsSupport && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(lastStatusRef.current)) {
       awaitingPaymentRef.current = true
       awaitingDeadlineRef.current = Date.now() + 5 * 60 * 1000
       setConfirmingPayment(true)
@@ -510,7 +512,7 @@ export default function ScanResult() {
       // way out instead of the old dead-end "please cancel it" text.
       if (err.response?.data?.code === 'EMAIL_NOT_VERIFIED') setNeedsVerify(true)
       if (err.response?.status === 409 && err.response?.data?.alreadyPaid) {
-        await adoptPaidElsewhere(getErrorMessage(err, ''))
+        await adoptPaidElsewhere(getErrorMessage(err, ''), err.response?.data?.needsSupport === true)
         setPayLoading(false); setPayingTier(null)
         return
       }
@@ -532,7 +534,7 @@ export default function ScanResult() {
       setPayError('')
     } catch (err) {
       if (err.response?.status === 409 && err.response?.data?.alreadyPaid)
-        await adoptPaidElsewhere(getErrorMessage(err, ''))
+        await adoptPaidElsewhere(getErrorMessage(err, ''), err.response?.data?.needsSupport === true)
       else setPayError(getErrorMessage(err, 'Could not cancel that payment — please try again.'))
     } finally {
       setPayLoading(false)
