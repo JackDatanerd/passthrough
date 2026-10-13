@@ -861,6 +861,12 @@ describe('createScan', () => {
     const db = createFakeSupabase(q => {
       if (q.op === 'rpc' && q.name === 'increment_scan_count_if_under_limit') { state.rpcCalls.push(q); return { data: opts.quotaAllowed ?? true, error: opts.quotaErr || null } }
       if (q.op === 'rpc' && q.name === 'decrement_scan_count') { state.rpcCalls.push(q); return { data: true, error: null } }
+      if (q.op === 'rpc' && q.name === 'scrub_account_data') { state.rpcCalls.push(q); return { data: null, error: null } }
+      // Auth round 12 (B1): createScan's post-insert "is the owner still alive" lookup filters on deleted_at IS NULL.
+      if (q.table === 'users' && q.op === 'select' && q.filters.some(f => f[1] === 'deleted_at')) {
+        state.aliveChecks = (state.aliveChecks || 0) + 1
+        return opts.aliveErr ? { data: null, error: opts.aliveErr } : { data: opts.ownerGone ? null : { id: 'u1' }, error: null }
+      }
       if (q.table === 'users' && q.op === 'select') return { data: opts.savedProfileRow ?? { saved_profile: { resumeData: { name: 'Jane' } } }, error: null }
       if (q.table === 'users' && q.op === 'update') { state.userUpdates.push(q.patch); return { data: null, error: null } }
       if (q.table === 'scans' && q.op === 'insert') { state.inserts.push(q.values); return { data: null, error: opts.insertErr || null } }
@@ -944,6 +950,26 @@ describe('createScan', () => {
     expect(res.body.data.anonToken).toBe(null)
     expect(t.state.inserts[0]).toMatchObject({ user_id: 'u1', anon_token: null, input_mode: 'brain_dump' })
     expect(ctx.__waitUntilPromises).toHaveLength(1)
+  })
+
+  it('Auth round 12 (B1): an account deleted while the scan was being created is re-scrubbed, its upload removed, nothing dispatched', async () => {
+    t = setup({ ownerGone: true })
+    const file = { mimetype: 'application/pdf', bytes: new Uint8Array([1]), originalname: 'r.pdf' }
+    const ctx = csCtx({ user: { id: 'u1' }, file, fields: { jobDescriptionText: validJd } })
+    const res = await t.mod.createScan(ctx)
+    expect(res.status).toBe(401)
+    expect(res.body.code).toBe('USER_NOT_FOUND')
+    expect(t.state.rpcCalls.some(c => c.name === 'scrub_account_data' && c.args.p_user_id === 'u1')).toBe(true)
+    expect(ctx.__bucketOps.map(o => o.op)).toEqual(['put', 'delete'])
+    expect(ctx.__waitUntilPromises).toHaveLength(0)
+  })
+
+  it('Auth round 12 (B1): a failed owner lookup fails open — the stored scan still proceeds', async () => {
+    t = setup({ aliveErr: { message: 'blip' } })
+    const ctx = csCtx({ user: { id: 'u1' }, fields: { brainDumpText: validBrainDump, jobDescriptionText: validJd } })
+    const res = await t.mod.createScan(ctx)
+    expect(res.body.success).toBe(true)
+    expect(t.state.rpcCalls.some(c => c.name === 'scrub_account_data')).toBe(false)
   })
 
   it('anonymous happy path: generates an anon_token, sets an expiry, returns the token to the caller', async () => {

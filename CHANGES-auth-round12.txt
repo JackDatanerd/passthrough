@@ -1,0 +1,12 @@
+Auth round 12 — an account deleted mid-scan keeps the scan's data
+Bug (B1, low): deleteAccount's scrub only wipes scans that exist when it runs. createScan vouches for the account once (auth
+middleware), then uploads to R2 and inserts. A deletion that commits during that window left the new scan row (resume text,
+job description, R2 upload) on a deleted user, with nothing that could ever clean it; a scan inserted between deleteAccount's
+snapshot read and its scrub lost its DB data but its R2 upload stayed orphaned (the scrub had just nulled the path).
+Fix: createScan re-checks the owner (deleted_at IS NULL) right after the insert; if the account is gone it re-runs the
+idempotent scrub, removes the upload, hands the per-IP slot back and answers 401 USER_NOT_FOUND without dispatching (a lookup
+error fails open). deleteAccount records a timestamp before reading scans and, after the scrub, finds scans created since
+and removes their files by deterministic id prefix (resumes/<id>, generated/<id>-), bounded and best-effort.
+Not covered: a background job already dispatched in the same few milliseconds as the scrub (same as before).
+Files: src/controllers/scan.controller.js, src/controllers/auth.controller.js, tests/auth.controller.test.js (+2),
+tests/scan.controller.test.js (+2), tests/scan.ats.closeout.test.js (mock now answers the owner lookup).

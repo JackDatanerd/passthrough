@@ -244,6 +244,8 @@ describe('createScan — dispatch, JD precedence, rescan', () => {
     const state = { inserts: [], jdFetches: 0, runs: 0 }
     const db = createFakeSupabase(q => {
       if (q.op === 'rpc') return { data: true, error: null }
+      // Auth round 12 (B1): createScan's post-insert owner-still-alive lookup.
+      if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1' }, error: null }
       if (q.table === 'scans' && q.op === 'insert') { state.inserts.push(q.values); return { data: null, error: null } }
       if (q.table === 'scans' && q.op === 'select') return { data: 'source' in opts ? opts.source : null, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.runs++; return { data: [], error: null } }   // runAtsScan fallback: claim lost -> skips

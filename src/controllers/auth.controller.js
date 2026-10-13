@@ -1573,6 +1573,9 @@ async function deleteAccount(c) {
   // AUDIT FIX (Auth round 4, B1): read in pages. PostgREST caps one response (1000 rows by default), and
   // the scrub below nulls the paths of EVERY scan — so an account past the cap would have had its files
   // beyond the first page orphaned in R2 with nothing left that could name them.
+  // AUDIT FIX (Auth round 12, B1): taken BEFORE the read, so a scan created while the deletion is under way (its upload and
+  // insert run after the auth middleware has already passed this request's twin) can be told apart below.
+  const scanSnapshotAt = new Date().toISOString()
   const scans = []
   for (let from = 0; ; from += SCAN_PAGE) {
     const { data: page, error: scansErr } = await supabase
@@ -1618,8 +1621,24 @@ async function deleteAccount(c) {
   }
   if (sweepable.length > ACCOUNT_SWEEP_MAX_SCANS)
     console.error(`deleteAccount: ${sweepable.length - ACCOUNT_SWEEP_MAX_SCANS} scan(s) of user ${user.id} were not swept for unreferenced generated files`)
+  // AUDIT FIX (Auth round 12, B1): a scan inserted after the read above but before the scrub is wiped in the database (the
+  // scrub works by user_id) yet is not in `scans`, and the scrub just nulled the paths that could name its upload. Its R2
+  // keys are deterministic from the id, so list them by prefix. Bounded; anything created after the scrub is handled by
+  // createScan's own post-insert check.
+  const lateKeys = []
+  try {
+    const { data: late, error: lateErr } = await supabase.from('scans').select('id')
+      .eq('user_id', user.id).gte('created_at', scanSnapshotAt).limit(ACCOUNT_SWEEP_MAX_SCANS)
+    if (lateErr) throw lateErr
+    for (const s of late || []) {
+      for (const prefix of [`resumes/${s.id}`, `generated/${s.id}-`]) {
+        const { keys } = await listKeys(c.env, prefix)
+        lateKeys.push(...keys)
+      }
+    }
+  } catch (e) { console.error(`deleteAccount: late-scan sweep failed for user ${user.id}:`, e.message) }
   const { failed: orphaned } = await deleteObjects(c.env,
-    [...scans.flatMap(s => [s.resume_path, s.resume_ats_path, s.resume_pdf_path]), ...sweepKeys], `deleteAccount(${user.id})`)
+    [...scans.flatMap(s => [s.resume_path, s.resume_ats_path, s.resume_pdf_path]), ...sweepKeys, ...lateKeys], `deleteAccount(${user.id})`)
   if (orphaned.length) console.error(`deleteAccount: ${orphaned.length} R2 object(s) for user ${user.id} could not be deleted:`, orphaned.join(', '))
 
   // FEATURE (Auth section round 2): sent only after the scrub has durably

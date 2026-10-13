@@ -552,6 +552,25 @@ async function createScan(ctx) {
       throw createErr
     }
 
+    // AUDIT FIX (Auth round 12, B1): the auth middleware vouched for this account before the (slow) upload and insert. A
+    // deleteAccount that committed in between has already run its scrub, so the row just inserted would keep the resume /
+    // job description / R2 file on a deleted user, with nothing left that could ever clean it. Look again now; if the
+    // account is gone, run the (idempotent) scrub once more — it covers this scan — remove the upload, and answer as the
+    // auth middleware would. Fails open on a lookup error: the scan is already stored and the hourly sweep still ends it.
+    {
+      const { data: owner, error: ownerErr } = await supabase
+        .from('users').select('id').eq('id', user.id).is('deleted_at', null).maybeSingle()
+      if (!ownerErr && !owner) {
+        warnOnError(await supabase.rpc('scrub_account_data', { p_user_id: user.id }), 'createScan re-scrub (account deleted mid-request)')
+        await cleanupFile()
+        if (ipSlotKey) {
+          try { await rateLimiter.refundQuota(ctx.env, ipSlotKey, 24 * 3600, 10) }
+          catch (refundErr) { console.error('scan ip-cap rollback failed:', refundErr.message) }
+        }
+        return ctx.json({ success: false, message: 'Account not found', code: 'USER_NOT_FOUND' }, 401)
+      }
+    }
+
     await dispatchAtsScan(ctx, supabase, scanId, null, ipSlotKey)
     return ctx.json({ success: true, data: { scanId, anonToken: null } })
   }

@@ -97,6 +97,8 @@ async function setup(opts = {}) {
       if (q.maybe) state.claimLookupToken = eqValue(q, 'anon_token')
       if (q.maybe) return { data: 'claimScanResult' in opts ? opts.claimScanResult : null, error: null }
       // Auth round 4 (B1): deleteAccount reads scans in pages — honour .range() so a test can serve >1000 rows.
+      // Auth round 12 (B1): deleteAccount's post-scrub sweep for scans created mid-deletion filters on created_at >= snapshot.
+      if (q.filters.some(f => f[0] === 'gte' && f[1] === 'created_at')) { state.lateScanQueries = (state.lateScanQueries || 0) + 1; return { data: opts.lateScans ?? [], error: opts.lateScansError || null } }
       if (q.range) state.scanRanges = [...(state.scanRanges || []), q.range]
       return { data: q.range ? (opts.scans ?? []).slice(q.range[0], q.range[1] + 1) : (opts.scans ?? []), error: null }
     }
@@ -2091,6 +2093,23 @@ describe('deleteAccount R2 cleanup (B1)', () => {
     // a plain free scan never reached generation, so its prefix is not listed
     expect(t.state.bucketLists.sort()).toEqual(['generated/s1-', 'generated/s2-'])
     expect(t.state.bucketDeletes).toEqual(expect.arrayContaining(['generated/s1-ats-orphan.docx', 'generated/s2-beautiful-zzz.pdf', 'r/2.docx']))
+  })
+  it('Auth round 12 (B1): a scan created mid-deletion has its upload and generated files removed by id prefix', async () => {
+    t = await setup({
+      scans: [], lateScans: [{ id: 'late1' }],
+      bucketListing: { 'resumes/late1': ['resumes/late1.pdf'], 'generated/late1-': ['generated/late1-ats-v.docx'] }
+    })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(t.state.lateScanQueries).toBe(1)
+    expect(t.state.bucketDeletes).toEqual(expect.arrayContaining(['resumes/late1.pdf', 'generated/late1-ats-v.docx']))
+  })
+  it('Auth round 12 (B1): a failing late-scan lookup is logged and never blocks the deletion', async () => {
+    console.error = () => {}
+    t = await setup({ scans: [], lateScansError: { message: 'boom' } })
+    const res = await t.mod.deleteAccount(t.c({ body: { password: 'correct-password' } }))
+    expect(res.status).toBe(200)
+    expect(res.body?.success ?? true).toBeTruthy()
   })
   it('a failed listing is logged and never blocks the rest of the cleanup or the response', async () => {
     console.error = () => {}
