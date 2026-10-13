@@ -219,6 +219,15 @@ export default function Settings() {
   const [extraError, setExtraError] = useState('')
   const [removeExtraTarget, setRemoveExtraTarget] = useState(null)
   const [downloadingFile, setDownloadingFile] = useState('')   // e.g. 'primary:pdf' while a render runs
+  // Editors holding typed, unsaved edits ('main' or an additional profile's id), as the editors report them.
+  const [dirtyEditors, setDirtyEditors] = useState(() => new Set())
+  const markDirty = (key, dirty) => setDirtyEditors(prev => {
+    if (prev.has(key) === dirty) return prev
+    const next = new Set(prev); if (dirty) next.add(key); else next.delete(key)
+    return next
+  })
+  // "Make main" for this profile id is waiting for the person to agree to drop unsaved edits.
+  const [pendingMakeMain, setPendingMakeMain] = useState(null)
 
   // Save the profile as a resume document. profileId absent = the main profile.
   async function downloadProfileFile(kind, profileId, name) {
@@ -256,6 +265,12 @@ export default function Settings() {
     } catch (err) {
       setExtraError(getErrorMessage(err, 'Could not copy the profile.'))
     } finally { setExtraBusy(false) }
+  }
+
+  // Swapping closes every open editor, so unsaved typing in any of them is asked about first.
+  function requestMakeMain(id) {
+    if (dirtyEditors.size > 0) setPendingMakeMain(id)
+    else handleMakeMain(id)
   }
 
   async function handleMakeMain(id) {
@@ -303,7 +318,13 @@ export default function Settings() {
         const follow = res.data.data.preferences?.notifyOutcomeFollowup
         setNotifyOutcomeFollowup(typeof follow === 'boolean' ? follow : null)
       })
-      .catch(err => { if (!quiet) setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")) })
+      .catch(err => {
+        if (!quiet) { setProfileError(getErrorMessage(err, "Couldn't check your saved profile.")); return }
+        // The change that asked for this refresh already happened; only the picture of it is out of date. Said
+        // out loud, because the page otherwise keeps showing the old arrangement with nothing to explain it
+        // (and a second click on the same button then fails against a profile that has moved).
+        setExtraError("That went through, but we couldn't refresh this page. Reload it to see the latest.")
+      })
       .finally(() => { if (!quiet) setProfileLoading(false) })
   }
 
@@ -769,7 +790,7 @@ export default function Settings() {
               </div>
             )}
             {editingProfile && (
-              <SavedProfileEditor onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingProfile(false)} />
+              <SavedProfileEditor onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingProfile(false)} onDirtyChange={d => markDirty('main', d)} />
             )}
             </>
           ) : extraProfiles.length === 0 ? (
@@ -821,7 +842,7 @@ export default function Settings() {
                           Scan with this
                         </Link>
                         {editingExtraId !== p.id && <Button variant="secondary" size="sm" onClick={() => setEditingExtraId(p.id)}>Edit</Button>}
-                        <Button variant="secondary" size="sm" onClick={() => handleMakeMain(p.id)} disabled={extraBusy}>Make main</Button>
+                        <Button variant="secondary" size="sm" onClick={() => requestMakeMain(p.id)} disabled={extraBusy}>Make main</Button>
                         <Button variant="secondary" size="sm" onClick={() => { setRenameId(p.id); setRenameValue(p.label) }}>Rename</Button>
                         <Button variant="secondary" size="sm" onClick={() => downloadProfileFile('docx', p.id, p.summary?.name || p.label)}
                           loading={downloadingFile === `${p.id}:docx`} disabled={!!downloadingFile}>.docx</Button>
@@ -831,7 +852,7 @@ export default function Settings() {
                       </div>
                     </div>
                     {editingExtraId === p.id && (
-                      <SavedProfileEditor profileId={p.id} onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingExtraId(null)} />
+                      <SavedProfileEditor profileId={p.id} onSaved={() => loadProfile({ quiet: true })} onClose={() => setEditingExtraId(null)} onDirtyChange={d => markDirty(p.id, d)} />
                     )}
                   </li>
                 ))}
@@ -937,9 +958,20 @@ export default function Settings() {
       />
 
       <ConfirmDialog
+        open={!!pendingMakeMain}
+        title="Discard your unsaved edits?"
+        message="You have edits to a saved profile that are not saved. Making another profile your main one closes the editor, and they will be lost."
+        confirmLabel="Discard and switch"
+        cancelLabel="Keep editing"
+        onConfirm={() => { const id = pendingMakeMain; setPendingMakeMain(null); return handleMakeMain(id) }}
+        onCancel={() => setPendingMakeMain(null)}
+      />
+
+      <ConfirmDialog
         open={restoreOpen}
         title="Restore the earlier version?"
-        message="Your saved profile goes back to the version it replaced. What you have now is kept as the earlier version, so you can switch back."
+        message={'Your saved profile goes back to the version it replaced. What you have now is kept as the earlier version, so you can switch back.' +
+          (dirtyEditors.has('main') ? '\n\nYou also have unsaved edits in the open editor. Restoring closes it and they will be lost.' : '')}
         confirmLabel="Restore"
         loading={restoring}
         onConfirm={handleRestorePrevious}

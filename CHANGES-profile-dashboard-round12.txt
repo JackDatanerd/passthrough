@@ -1,0 +1,25 @@
+Profile & Dashboard — round 12 (bugs only)
+
+B1 (Medium) frontend/src/lib/scanNext.js, NextStepCard.jsx
+   nextSteps() skipped scans whose delivered fix scored under the pass mark with a
+   free retry left, and scans that look stuck, so the dashboard said "All caught up"
+   while action was needed. Added `retry` and `stuck` steps (and card bodies).
+B2 (Low) src/controllers/profile.controller.js
+   Saved-profile labels were cut with slice(), splitting emoji / leaving lone
+   surrogates. Lone halves are stripped and a cut pair is dropped (also in uniqueLabel).
+B3 (Low) profile.controller.js updateExtra
+   A malformed/oversized `version` was silently treated as "no version", skipping
+   the stale-edit check. Now rejected with 400.
+B4 (Low) Settings.jsx, SavedProfileEditor.jsx
+   "Make main" and "Restore previous" discarded unsaved editor drafts silently.
+   Editors report dirty state; Make main asks first, Restore warns.
+B5 (Low) Settings.jsx
+   A failed quiet refresh after a successful action left stale UI with no notice.
+   Now shows "That went through, but we couldn't refresh this page."
+B6 (Low) frontend/src/lib/needsDecision.js
+   Shared in-flight request ignored the owner and dropped a forced refresh issued
+   during a load, leaving the Scans tab badge stale or another user's count.
+Cross-cutting: package-lock.json was out of sync after @electric-sql/pglite was added,
+   so `npm ci` failed. Regenerated (additive only).
+
+Tests: tests/profile.round12.test.js and five frontend *.round12.test files.

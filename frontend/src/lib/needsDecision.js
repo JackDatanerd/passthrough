@@ -12,6 +12,9 @@ let owner = null
 let count = null
 let loadedAt = 0
 let inflight = null
+// Whose request `inflight` is, and whether someone asked for a fresher answer while it was out.
+let inflightOwner = null
+let rerun = false
 const listeners = new Set()
 const emit = () => listeners.forEach(l => l())
 
@@ -24,9 +27,18 @@ function adopt(userId) {
 export function loadNeedsDecision(userId, { force = false } = {}) {
   if (!userId) return Promise.resolve()
   adopt(userId)
-  if (inflight) return inflight
+  // Only this person's own request is shared. Another person's (sign out, sign in as someone else while it is
+  // still out) answers for them, and its result is thrown away on arrival, so reusing it left the new person
+  // with no number at all.
+  if (inflight && inflightOwner === userId) {
+    // A request already out may have been read before whatever made the caller ask again (a scan was just
+    // deleted): a forced refresh queues one more for when it lands — one, however many ask.
+    if (force) rerun = true
+    return inflight
+  }
   if (!force && count !== null && Date.now() - loadedAt < FRESH_MS) return Promise.resolve()
   const mine = userId
+  rerun = false
   // An async function, so that even a request that throws before returning a promise ends up in the catch below.
   const run = (async () => {
     try {
@@ -40,9 +52,13 @@ export function loadNeedsDecision(userId, { force = false } = {}) {
       // a tab badge is an extra: never an error, never blocks the page
     }
   })()
-  inflight = run
+  inflight = run; inflightOwner = mine
   // Cleared once it settles (and only if it is still the current one), also when the request failed before it began.
-  run.then(() => { if (inflight === run) inflight = null })
+  run.then(() => {
+    if (inflight !== run) return
+    inflight = null; inflightOwner = null
+    if (rerun) { rerun = false; loadNeedsDecision(owner, { force: true }) }
+  })
   return run
 }
 
@@ -57,4 +73,4 @@ export function useNeedsDecisionCount(userId) {
 }
 
 // For tests.
-export function resetNeedsDecision() { owner = null; count = null; loadedAt = 0; inflight = null; emit() }
+export function resetNeedsDecision() { owner = null; count = null; loadedAt = 0; inflight = null; inflightOwner = null; rerun = false; emit() }

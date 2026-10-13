@@ -69,9 +69,20 @@ function pickLatestTitle(experience) {
 
 const MAX_EXTRA_PROFILES = 4
 const MAX_LABEL_CHARS = 40
+// A UTF-16 half that has lost its partner (a high surrogate not followed by a low one, or a low one not preceded
+// by a high one). It is not text: JSON carries it as a bare \udXXX escape that a database may refuse or replace.
+const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g
+// `slice(0, max)` counts UTF-16 units, so a cut that lands between the two halves of an emoji kept half of it.
+// The limit stays in units (the SPA's maxLength and the stored names are measured the same way); a cut that
+// would split a pair drops the whole character instead.
+function cutLabel(s, max) {
+  const cut = s.slice(0, max)
+  // The input has had stray halves removed already, so a high surrogate left at the end is a pair cut in two.
+  return /[\uD800-\uDBFF]$/.test(cut) ? cut.slice(0, -1) : cut
+}
 function normalizeLabel(raw) {
   if (typeof raw !== 'string') return ''
-  return raw.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, MAX_LABEL_CHARS)
+  return cutLabel(raw.replace(LONE_SURROGATE, '').replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim(), MAX_LABEL_CHARS).trimEnd()
 }
 // Labels are how the scan form tells additional profiles apart, so two may not read the same
 // (case-insensitively). A saved-from-scan label that collides gets " (2)", " (3)"… appended.
@@ -81,7 +92,7 @@ function uniqueLabel(base, takenLabels) {
   if (!taken.has(labelKey(base))) return base
   for (let n = 2; n < 100; n++) {
     const suffix = ` (${n})`
-    const cand = base.slice(0, MAX_LABEL_CHARS - suffix.length).trimEnd() + suffix
+    const cand = cutLabel(base, MAX_LABEL_CHARS - suffix.length).trimEnd() + suffix
     if (!taken.has(labelKey(cand))) return cand
   }
   return base
@@ -764,7 +775,11 @@ async function updateExtra(c) {
   }
   if (resume === null && label === null) return c.json({ success: false, message: 'Nothing to update.' }, 400)
   const rawVersion = body.version ?? body.expectedVersion
-  const expected = typeof rawVersion === 'string' && rawVersion ? rawVersion : null
+  // PUT /api/profile refuses a version that is not a short string; this one used to read a number or object as
+  // "no version" and write over whatever was there.
+  if (rawVersion !== undefined && (typeof rawVersion !== 'string' || rawVersion.length > 100))
+    return c.json({ success: false, message: 'Invalid version.' }, 400)
+  const expected = rawVersion ? rawVersion : null
   if (expected && Number.isNaN(Date.parse(expected))) return c.json({ success: false, message: 'Invalid version.' }, 400)
 
   if (label !== null) {

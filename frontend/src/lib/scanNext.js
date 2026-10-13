@@ -120,7 +120,10 @@ export function scanMessage(scan, now = Date.now()) {
 
 // ── Best next step ────────────────────────────────────────────────────────────
 // Ordered [{ kind, scan }]: already credential-ready first, then the scans closest to the credential,
-// then the best of the ones below the pass line, then anything that failed or is still running.
+// then a delivered fix that is still below the pass line but has free retries left (a free move beats paying
+// again), then the best of the ones below the pass line, then anything that failed, went quiet for over an
+// hour (`stuck`) or is still running. Every scan whose row asks the person to act has a place here — a list
+// with none of them is genuinely "all caught up".
 // (Interview follow-ups are not in here: <OutcomeCard> owns that question and its 14-day timing.)
 export function nextSteps(scans, now = Date.now()) {
   const byNewest = (a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || 0
@@ -132,12 +135,20 @@ export function nextSteps(scans, now = Date.now()) {
     .filter(s => ['fix', 'retryfix'].includes(needOf.get(s.id)) && displayScore(s) >= ATS_PASS_THRESHOLD && displayScore(s) < ATS_BADGE_THRESHOLD)
     .sort((a, b) => pointsTo(a, ATS_BADGE_THRESHOLD) - pointsTo(b, ATS_BADGE_THRESHOLD) || byNewest(a, b))
     .slice(0, 2).forEach(scan => out.push({ kind: 'close', scan }))
+  // 'retryfix' is only ever a delivered fix with a score, so the score test below cannot meet a null. Between the
+  // pass line and the credential line the scan is already a 'close' step above.
+  const retry = scans
+    .filter(s => needOf.get(s.id) === 'retryfix' && displayScore(s) < ATS_PASS_THRESHOLD)
+    .sort((a, b) => displayScore(b) - displayScore(a) || byNewest(a, b))[0]
+  if (retry) out.push({ kind: 'retry', scan: retry })
   const low = scans
     .filter(s => needOf.get(s.id) === 'fix' && displayScore(s) != null && displayScore(s) < ATS_PASS_THRESHOLD)
     .sort((a, b) => displayScore(b) - displayScore(a) || byNewest(a, b))[0]
   if (low) out.push({ kind: 'fix', scan: low })
   const err = scans.filter(s => needOf.get(s.id) === 'error').sort(byNewest)[0]
   if (err) out.push({ kind: 'error', scan: err })
+  const stuck = scans.filter(s => needOf.get(s.id) === 'stuck').sort(byNewest)[0]
+  if (stuck) out.push({ kind: 'stuck', scan: stuck })
   const busy = scans.filter(s => needOf.get(s.id) === 'wait').sort(byNewest)[0]
   if (busy) out.push({ kind: 'busy', scan: busy })
   return out

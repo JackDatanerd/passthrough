@@ -7,7 +7,7 @@ import { displayScore, pointsTo, retriesLeft } from '../../lib/scanNext'
 import { barColor } from './ScoreRing'
 
 const pl = n => `${n} point${n === 1 ? '' : 's'}`
-const ALSO = { cred: 'is ready for a credential', close: 'is close to a credential', fix: 'is below the pass line', error: "didn't finish", busy: 'is in progress' }
+const ALSO = { cred: 'is ready for a credential', close: 'is close to a credential', retry: 'has a free retry left', fix: 'is below the pass line', error: "didn't finish", stuck: 'looks stuck', busy: 'is in progress' }
 
 function Meter({ n }) {
   return (
@@ -57,6 +57,20 @@ export default function NextStepCard({ steps, hasScans, credits = 0, prices = {}
         <Button variant="secondary" onClick={() => onBreakdown(scan)}>See the breakdown</Button>
         <span className="text-xs text-gray-500">Every fix includes free retries. If it still misses, you get a free fix credit.</span>
       </div>
+    </>)
+  } else if (kind === 'retry') {
+    const left = retriesLeft(scan)
+    body = (<>
+      <h2 className="text-lg font-semibold text-gray-900">{name} scored {n} after the fix. A free retry is waiting.</h2>
+      <p className="text-sm text-gray-600">A retry rewrites it again, aiming at what is still missing. {left} free {left === 1 ? 'retry' : 'retries'} left.</p>
+      <Meter n={n} />
+      <div className="flex gap-2 flex-wrap"><ButtonLink to={to}>Use a free retry</ButtonLink><Button variant="secondary" onClick={() => onBreakdown(scan)}>See the breakdown</Button></div>
+    </>)
+  } else if (kind === 'stuck') {
+    body = (<>
+      <h2 className="text-lg font-semibold text-gray-900">{name} looks stuck</h2>
+      <p className="text-sm text-gray-600">It has not moved for over an hour. Open it to check, or delete it from the list and scan again.</p>
+      <div className="flex gap-2"><ButtonLink to={to}>Open it</ButtonLink></div>
     </>)
   } else if (kind === 'fix') {
     body = (<>

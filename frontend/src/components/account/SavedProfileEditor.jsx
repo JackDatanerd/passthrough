@@ -20,8 +20,10 @@ import { useUnsavedChangesWarning } from '../../hooks/useUnsavedChangesWarning'
 // Leaving with unsaved changes (closing the tab, Cancel, navigating away) asks first.
 //
 // Rendered only while the person is editing; `onSaved` lets Settings refresh its summary and
-// `onClose` returns it to the read-only view.
-export default function SavedProfileEditor({ onSaved, onClose, profileId = null }) {
+// `onClose` returns it to the read-only view. `onDirtyChange(true|false)` tells the page whether there are typed,
+// unsaved edits (false again once the editor is gone), so an action that would close the editor from outside
+// — making another profile the main one, restoring an earlier version — can ask first instead of dropping them.
+export default function SavedProfileEditor({ onSaved, onClose, onDirtyChange, profileId = null }) {
   // profileId = one of the additional profiles; absent = the primary saved profile.
   const dataUrl = profileId ? `/profile/extras/${profileId}/data` : '/profile/data'
   const saveUrl = profileId ? `/profile/extras/${profileId}` : '/profile'
@@ -38,6 +40,8 @@ export default function SavedProfileEditor({ onSaved, onClose, profileId = null 
   const dirty = draft !== null && baseline.current !== null && JSON.stringify(draft) !== baseline.current
 
   useUnsavedChangesWarning(dirty)
+  // The cleanup also runs when the editor unmounts, which is what clears the flag for a closed editor.
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     let cancelled = false
