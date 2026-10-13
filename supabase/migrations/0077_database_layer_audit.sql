@@ -323,7 +323,7 @@ grant  execute on function claude_usage_totals(int)           to service_role;
 --   scrub_outcome_story_on_scan_delete()  (0074, trigger function)
 -- None can read or change data when called directly, so this closes a hole that was open but empty — and makes
 -- the promise true: the GLOBAL default (no IN SCHEMA) is now revoked for the role that runs the migrations.
--- tests/migrations.pglite.test.js applies every migration to a real Postgres and fails if any function in
+-- tests/migrations.pglite.test.js (added in 0082 - it did not exist when this was written) applies every migration to a real Postgres and fails if any function in
 -- `public` is executable by anon / authenticated / PUBLIC.
 alter default privileges revoke execute on functions from public;
 

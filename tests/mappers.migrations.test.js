@@ -24,7 +24,9 @@ const DELIBERATELY_UNMAPPED = {
   // display_score (0076): generated ORDER BY key for the dashboard score sort; the row already exposes atsScore / fixAtsScore it is derived from.
   scans: ['outcome_prompted_at', 'outcome_prompt_attempts', 'display_score'],
   // Both partner bearer tokens are secrets: payout_details_token (write) and dashboard_token (read-only, migration 0055).
-  partners: ['payout_details_token', 'dashboard_token'],
+  // previous_emails (0080): the addresses a partner used to have, kept ONLY so erasure can reach the mail history sent to them — personal data the
+  // admin/partner API never needs (partners.controller.js reads it directly for the erasure).
+  partners: ['payout_details_token', 'dashboard_token', 'previous_emails'],
 }
 
 function columnsFromMigrations() {

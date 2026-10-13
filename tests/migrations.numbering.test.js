@@ -9,16 +9,20 @@ import constants from '../src/config/constants.js'
 const dir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'supabase', 'migrations')
 const files = fs.readdirSync(dir).filter(f => f.endsWith('.sql')).sort()
 const num = f => parseInt(f.slice(0, 4), 10)
-const KNOWN_DUPLICATES = new Set([76]) // 0076_employer_leads_round12 + 0076_profile_dashboard_round11 (both already applied; renaming would break path references)
 
 describe('migrations', () => {
   it('every file is NNNN_name.sql', () => { for (const f of files) expect(f).toMatch(/^\d{4}_[a-z0-9_]+\.sql$/) })
-  it('numbers are contiguous and unique, apart from the known 0076 pair', () => {
-    const seen = new Map()
-    for (const f of files) seen.set(num(f), (seen.get(num(f)) || 0) + 1)
-    for (const [n, c] of seen) if (c > 1) expect(KNOWN_DUPLICATES.has(n), `duplicate migration number ${n}`).toBe(true)
-    const nums = [...seen.keys()]
+  it('numbers are contiguous and unique (two files once shared 0076; `supabase db push` keys its history on the number)', () => {
+    const nums = files.map(num)
+    expect(new Set(nums).size, `duplicate migration number among ${nums.join(',')}`).toBe(nums.length)
     for (let i = 1; i < nums.length; i++) expect(nums[i], `gap after ${nums[i - 1]}`).toBe(nums[i - 1] + 1)
+  })
+  it('every migration from 0082 on records ITSELF in the applied_migrations ledger (schema_version alone cannot see a skipped one)', () => {
+    for (const f of files.filter(f => num(f) >= 82)) {
+      const sql = fs.readFileSync(path.join(dir, f), 'utf8').replace(/--.*$/gm, '')
+      const name = f.replace(/\.sql$/, '')
+      expect(sql, f).toMatch(new RegExp(`insert into applied_migrations[\\s\\S]{0,80}\\(\\s*${num(f)}\\s*,\\s*'${name}'\\s*\\)`, 'i'))
+    }
   })
   it('EXPECTED_SCHEMA_VERSION equals the newest migration number', () => {
     expect(constants.EXPECTED_SCHEMA_VERSION).toBe(num(files[files.length - 1]))

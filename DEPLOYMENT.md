@@ -272,6 +272,22 @@ wrangler secret put VERIFY_PREVIEW_KEY
 #       on conflict (key) do update set value = excluded.value;
 #     Leave it unset otherwise.
 
+# DATABASE LAYER ROUND 2 (migrations 0080, 0081, 0082 — apply all three, in order, BEFORE deploying this Worker, then bump
+# EXPECTED_SCHEMA_VERSION to 82 in src/config/constants.js). /api/admin/health stays red until the ledger below is complete.
+#   * 0081 is the old second 0076 (profile display_score), renumbered: two files shared 0076, which `supabase db push`
+#     (history keyed on the number) cannot hold. Its SQL is unchanged and idempotent, so a database that already ran it as
+#     0076 loses nothing by running it again. 0080 gained the schema_version line it shipped without.
+#   * 0082 revokes ALL table and sequence privileges from the anon and authenticated roles (RLS was the only barrier before) and
+#     makes that the default for every future table. The Worker uses service_role, which is untouched. CHECK on the live project:
+#       select count(*) from information_schema.role_table_grants where table_schema='public' and grantee in ('anon','authenticated');   -- 0
+#     If you ever deliberately expose a table to a browser client, grant it explicitly in that table's own migration.
+#   * 0082 also adds three foreign-key indexes, clears users.referred_by_code / referred_at on account deletion, keeps the original
+#     deletion time when the scrub runs twice, and makes lead_mailbox_key trim all whitespace like the JS does.
+#   * New table applied_migrations: from 0082 every migration records itself in it, and the health check fails (naming the file) when
+#     any version from 0082 up to the expected one is missing — schema_version alone cannot see a skipped migration.
+#   * tests/migrations.pglite.test.js applies every migration to a real Postgres (PGlite, no server) and checks RLS, grants, search_path
+#     pinning, foreign-key indexes, the account scrub's column coverage and SQL/JS mailbox-key parity. It runs in `npm run test:worker`.
+
 # Minimum partner payout, in cents (e.g. 2000 = $20.00). Unset or 0 = no minimum.
 # Below it, a partner's payable commission is shown as "carried forward" instead of
 # "ready to pay", and a cycle-scoped payout is refused (an ad hoc payout is the

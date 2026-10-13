@@ -1,0 +1,20 @@
+Database layer (section 10) round 2. Base: 066c9e8. Migrations 0080 (patched), 0081 (renumbered), 0082 (new).
+
+G1 tests/migrations.pglite.test.js (new): every migration applied, in order, to a real Postgres (PGlite) with Supabase's roles and
+   default privileges; asserts RLS on every table, no anon/authenticated privilege on any table/sequence/function, search_path pinned,
+   every FK indexed, scrub_account_data column coverage (fills every column of users/scans/payments, scrubs, compares to an explicit
+   keep-list), SQL/JS mailbox-key parity. The 0077 comment promised this file; it never existed. Adds devDependency @electric-sql/pglite.
+G2 0082: revoke all on tables/sequences from anon, authenticated + default privileges for future ones (RLS was the only barrier).
+G3 0081: second 0076 renumbered (supabase db push cannot hold duplicate numbers). 0082: applied_migrations ledger; src/lib/health.js
+   checkSchema fails, naming the file, when a version from 82 to the expected one is missing. migrations.numbering.test.js requires
+   every migration from 0082 on to record itself.
+B1 0082: indexes on payments.referral_reservation_id, commission_ledger.payout_id, commission_ledger.referral_code_id (partial, not null).
+B2 0082: scrub_account_data (10th definition) also clears users.referred_by_code / referred_at (0079 added them without touching it).
+B3 0077: comment pointed at the missing test; now says it was added in 0082.
+B4 0082: lead_mailbox_key trims every whitespace character JS trim() does (btrim only trimmed spaces); stored keys recomputed.
+N1 0082: scrub keeps the original deleted_at on a re-run (coalesce); token_version still bumps.
+X1 (cross-section, from partners round 11) 0080 shipped without its schema_version insert, and partnerRowToCamel/mapper test did not account
+   for partners.previous_emails: tests/crossCutting.round1, migrations.numbering and mappers.migrations were RED at 066c9e8. 0080 now
+   records version 80; previous_emails is listed in DELIBERATELY_UNMAPPED (old addresses kept only for erasure; never part of an API shape).
+Not changed: src/config/constants.js (apply: sed -i 's/EXPECTED_SCHEMA_VERSION: [0-9]*/EXPECTED_SCHEMA_VERSION: 82/' src/config/constants.js).
+Known, unchanged: SQL lower() and JS toLowerCase() differ for some non-ASCII letters (e.g. dotted capital I); parity is asserted for ASCII + whitespace.

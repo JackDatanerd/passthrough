@@ -7,7 +7,7 @@ const { HISTORY_SEARCH, applyScanSort } = require('../src/lib/scanSearch')
 const constants = require('../src/config/constants')
 const rl = require('../src/middleware/rateLimiter')
 const routes = fs.readFileSync(path.join(__dirname, '../src/routes/profile.routes.js'), 'utf8')
-const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/0076_profile_dashboard_round11.sql'), 'utf8')
+const sql = fs.readFileSync(path.join(__dirname, '../supabase/migrations/0081_profile_dashboard_round11.sql'), 'utf8')
 
 describe('round 11: score sort follows the displayed score', () => {
   it('orders by display_score, not ats_score', () => {
@@ -17,8 +17,8 @@ describe('round 11: score sort follows the displayed score', () => {
   })
   it('display_score is the fixed score once a fix is scored, else the original (same rule as Index.jsx)', () => {
     expect(sql).toMatch(/case when fix_purchased and fix_ats_score is not null then fix_ats_score else ats_score end/)
-    expect(sql.trimEnd().split('\n').slice(-3).join('\n')).toMatch(/'version', 76/)
-    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(76)
+    expect(sql.trimEnd().split('\n').slice(-3).join('\n')).toMatch(/'version', 81/)
+    expect(constants.EXPECTED_SCHEMA_VERSION).toBeGreaterThanOrEqual(81)
   })
 })
 

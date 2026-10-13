@@ -191,6 +191,7 @@ describe('lib/health (G3)', () => {
     RATE_LIMIT_DO: okDo, RATE_LIMIT_KV: okKv, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {} }
   const dbWith = ({ version = constants.EXPECTED_SCHEMA_VERSION, heartbeatAt = '2026-10-08T11:30:00Z', error = null } = {}) =>
     createFakeSupabase(q => {
+      if (q.table === 'applied_migrations') return { data: Array.from({ length: Math.max(0, (version ?? 0) - 81) }, (_, i) => ({ version: 82 + i })), error: null }
       if (q.table !== 'system_state' || q.op !== 'select') return undefined
       if (error) return { data: null, error: { message: error } }
       const key = eqValue(q, 'key')

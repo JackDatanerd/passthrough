@@ -11,6 +11,9 @@ const c = require('../config/constants')
 const { validateEnv } = require('./env')
 
 const SCHEMA_KEY = 'schema_version'
+// applied_migrations (migration 0082) records one row per migration from this version on. schema_version is a single
+// integer, so a skipped migration is invisible once a later one has been applied; the ledger is what notices.
+const LEDGER_FROM_VERSION = 82
 const HEARTBEAT_KEY = 'cron_heartbeat'
 // First time anything asked after the cron. A heartbeat that has NEVER been written is only "normal for the
 // first hour" — without a starting point, a trigger that was never registered looked healthy forever.
@@ -45,6 +48,19 @@ async function recordCronHeartbeat(supabase, now = new Date()) {
 // failure: a 503 from the deep health check, and an owner email claiming the schema was "behind the
 // deployed code" when it was the other way round. Only a database BEHIND the code (or unreadable) is a
 // problem; ahead is reported as a note.
+async function missingFromLedger(supabase, expected) {
+  try {
+    const { data, error } = await supabase.from('applied_migrations').select('version').gte('version', LEDGER_FROM_VERSION)
+    if (error) throw error
+    const have = new Set((data || []).map(r => Number(r.version)))
+    const versions = []
+    for (let v = LEDGER_FROM_VERSION; v <= expected; v++) if (!have.has(v)) versions.push(v)
+    return { versions }
+  } catch (err) {
+    return { versions: [], error: err.message }
+  }
+}
+
 async function checkSchema(supabase) {
   const expected = c.EXPECTED_SCHEMA_VERSION
   try {
@@ -54,6 +70,16 @@ async function checkSchema(supabase) {
       return { expected, actual, ok: false, ahead: false, detail: 'schema_version not recorded — apply migration 0059 and every one after it' }
     if (actual < expected)
       return { expected, actual, ok: false, ahead: false, detail: `the database is at migration ${actual} but this code expects ${expected} — apply every migration above ${actual}, in order` }
+    // The ledger says which migrations actually ran. Only versions this code expects are required (a database AHEAD of
+    // the code legitimately holds more), and only from the version the ledger started at.
+    if (expected >= LEDGER_FROM_VERSION) {
+      const missing = await missingFromLedger(supabase, expected)
+      if (missing.error)
+        return { expected, actual, ok: false, ahead: false, detail: `could not read applied_migrations (${missing.error}) — apply migration 0082 and every one after it, in order` }
+      if (missing.versions.length)
+        return { expected, actual, ok: false, ahead: false, missing: missing.versions,
+          detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — it was skipped; apply it (every migration is safe to re-run)` }
+    }
     if (actual > expected)
       return { expected, actual, ok: true, ahead: true, detail: `the database is at migration ${actual}, ahead of this code (${expected}) — expected between applying a migration and deploying, or after a rollback` }
     return { expected, actual, ok: true, ahead: false, detail: null }
@@ -197,4 +223,4 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   }
 }
 
-module.exports = { computeHealth, checkRateLimiter, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }
+module.exports = { computeHealth, checkRateLimiter, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, LEDGER_FROM_VERSION, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

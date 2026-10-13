@@ -1,3 +1,7 @@
+-- Renumbered from 0076 (database round 2): two files shared 0076, which the numeric-prefix migration history of `supabase db push`
+-- cannot hold, and the single schema_version integer could not tell that one of them was missing. The SQL below is unchanged
+-- and idempotent, so a database that already applied it as 0076 loses nothing by running it again.
+--
 -- Profile & Dashboard round 11.
 --
 -- The dashboard list shows a scan's score as the FIXED score once a fix is purchased and scored
@@ -15,5 +19,5 @@ create index if not exists idx_scans_user_display_score
 
 -- Always the LAST statement of a migration: records how far this database has been migrated.
 insert into system_state (key, value)
-values ('schema_version', jsonb_build_object('version', 76, 'applied_at', now()))
+values ('schema_version', jsonb_build_object('version', 81, 'applied_at', now()))
 on conflict (key) do update set value = excluded.value, updated_at = now();

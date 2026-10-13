@@ -83,7 +83,13 @@ describe('health: schema version ahead of the code is a note, not a failure (B2)
   const E = constants.EXPECTED_SCHEMA_VERSION
   const stateDb = (rows = {}) => ({
     rows,
-    from() {
+    from(table) {
+      // applied_migrations (0082): a complete ledger from 82 up to whatever the database reports, unless a test says otherwise.
+      if (table === 'applied_migrations') {
+        const top = rows.schema_version ? rows.schema_version.version : 0
+        const ledger = rows.__ledger || Array.from({ length: Math.max(0, top - 81) }, (_, i) => ({ version: 82 + i }))
+        return { select: () => ({ gte: async () => ({ data: ledger, error: null }) }) }
+      }
       const q = { _k: null }
       q.select = () => q
       q.eq = (_c, k) => { q._k = k; return q }
