@@ -95,15 +95,17 @@ describe('adjustments — the ledger entry', () => {
     expect(t.st.inserts).toHaveLength(0)
   })
 
-  it('404s an unknown partner and 409s a removed one', async () => {
+  it('404s an unknown partner; a removed partner can only be WRITTEN OFF (round 11)', async () => {
     t = setup({ partner: null })
     expect((await t.mod.adminAdjustLedger(ctxOf({ body: { amountCents: 100, reason: 'bonus here' } }))).status).toBe(404)
     t.restore()
     t = setup({ partner: { ...PARTNER, email: 'partner-p1@removed.invalid' } })
-    const res = await t.mod.adminAdjustLedger(ctxOf({ body: { amountCents: 100, reason: 'bonus here' } }))
-    expect([409]).toContain(res.status)
-    expect(res.body.code).toBe('PARTNER_REMOVED')
-    expect(t.st.inserts).toHaveLength(0)
+    const res = await t.mod.adminAdjustLedger(ctxOf({ body: { amountCents: -100, reason: 'Anna Smith owed this, call 0712' } }))
+    expect(res.status).toBe(200)
+    expect(t.st.inserts).toHaveLength(1)
+    // The reason typed about a removed person is not kept, and nobody is emailed at the placeholder address.
+    expect(JSON.stringify(t.st.inserts[0])).not.toContain('Anna')
+    expect(res.body.emailed).toBe(false)
   })
 
   it('notify:false records silently; a failed email still records the row and reports emailed:false', async () => {

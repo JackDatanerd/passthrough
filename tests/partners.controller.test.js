@@ -21,6 +21,7 @@ function setup(opts = {}) {
     'services/email.service.js': {
       sendPartnerPayoutDetailsRequest: async () => { state.emailSent.push('resend'); return opts.emailOk ?? true },
       sendPartnerLinkRegenerated:      async () => { state.emailSent.push('regenerate'); return opts.emailOk ?? true },
+      sendPartnerDashboardLinkRegenerated: async () => true,
     },
   })
   const env = { FRONTEND_URL: 'https://passthrough.dev' }
@@ -509,6 +510,7 @@ describe('adminUpdatePartner', () => {
         sendPartnerStatusChanged: async (...a) => state.notifications.push({ type: 'statusChanged', to: a[2], status: a[4] }),
         sendOwnerAlert:           async (...a) => state.notifications.push({ type: 'ownerAlert', subject: a[1] }),
         sendPartnerLinkRegenerated: async (...a) => state.notifications.push({ type: 'linkRotated', to: a[2], url: a[4] }),
+        sendPartnerDashboardLinkRegenerated: async (...a) => state.notifications.push({ type: 'dashLinkRotated', to: a[2], url: a[4] }),
         sendPartnerRateChanged:     async (...a) => state.notifications.push({ type: 'rateChanged', to: a[2], from: a[4], toRate: a[5] }),
       },
     })
@@ -1155,7 +1157,7 @@ describe('partner admin actions — audit trail', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': {
         sendPartnerEmailChanged: ok, sendPartnerStatusChanged: ok, sendOwnerAlert: ok,
-        sendPartnerLinkRegenerated: ok, sendPayoutSent: ok,
+        sendPartnerLinkRegenerated: ok, sendPartnerDashboardLinkRegenerated: ok, sendPayoutSent: ok,
       },
     })
     const c = (over = {}) => ({

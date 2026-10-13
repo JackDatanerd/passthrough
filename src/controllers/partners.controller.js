@@ -370,7 +370,7 @@ async function adminUpdatePartner(ctx) {
   // Section 4 round 7 (bug): this read's error was dropped, so a failed read let an email change through with
   // `before` empty — no token rotation, no partner/owner alert, no audit entry. The three safeguards all hang
   // off `before`, so a failed read now fails the request (the admin retries) instead of skipping them.
-  const { data: before, error: beforeErr } = await supabase.from('partners').select('email, status, commission_rate').eq('id', partnerId).maybeSingle()
+  const { data: before, error: beforeErr } = await supabase.from('partners').select('email, status, commission_rate, previous_emails').eq('id', partnerId).maybeSingle()
   if (beforeErr) throw beforeErr
   if (!before) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   // A partner whose data was removed stays removed: re-activating the row or giving it a real address would
@@ -406,7 +406,14 @@ async function adminUpdatePartner(ctx) {
   // (The new casing is still written.)
   const emailChanging = body.email !== undefined && !!before?.email && body.email.toLowerCase() !== before.email.toLowerCase()
   const rotatedToken  = emailChanging ? cryptoLib.randomToken(32) : null
-  if (rotatedToken) { patch.payout_details_token = rotatedToken; patch.dashboard_token = cryptoLib.randomToken(32) }
+  const rotatedDashToken = emailChanging ? cryptoLib.randomToken(32) : null
+  if (rotatedToken) { patch.payout_details_token = rotatedToken; patch.dashboard_token = rotatedDashToken }
+  // Round 11 (bug): erasure could only clean the CURRENT address from the mail history. Keep the ones a partner
+  // used to have (lower-cased, de-duplicated) so adminAnonymizePartner can clean them too; cleared on erasure.
+  if (emailChanging) {
+    const prev = Array.isArray(before.previous_emails) ? before.previous_emails : []
+    patch.previous_emails = [...new Set([...prev, before.email].map(e => String(e)))].slice(-20)
+  }
   const rateChanging = body.commissionRate !== undefined && before?.commission_rate != null &&
     Number(before.commission_rate) !== body.commissionRate
 
@@ -427,6 +434,9 @@ async function adminUpdatePartner(ctx) {
   if (rotatedToken) {
     await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, data.email, data.name,
       `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${rotatedToken}`).catch(() => {})
+    // Round 11 (gap): the dashboard link was rotated too, but only the payout link reached the new address.
+    await emailService.sendPartnerDashboardLinkRegenerated(ctx.env, supabase, data.email, data.name,
+      `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${rotatedDashToken}`).catch(() => {})
   }
   if (rateChanging) {
     await emailService.sendPartnerRateChanged(ctx.env, supabase, data.email, data.name,
@@ -534,21 +544,9 @@ async function latestPayoutLinkEmailStatus(supabase, emails) {
   return out
 }
 
-async function adminListPartners(ctx) {
-  const supabase = getSupabase(ctx.env)
-  // SECTION 4 ROUND 4 (scale): this used to embed EVERY partner's full payout history,
-  // code list and complete commission ledger into one query on every page load — cost
-  // grew with total platform history. The list view only needs the UNPAID ledger rows
-  // (pending / ready / held / current-cycle figures), so that is all it reads now, paged
-  // so PostgREST's row cap can't silently truncate it. Payout history, codes and
-  // per-code stats live behind adminGetPartner. (netConversions moved there too: it needs
-  // paid rows, and no list column shows it.)
-  const { data, error } = await supabase
-    .from('partners')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (error) throw error
-
+// Every UNPAID ledger row, grouped by partner (paged so PostgREST's row cap can't truncate it). Shared by the
+// admin list and the payout-due reminder so both judge "ready to pay" from the same rows.
+async function loadUnpaidLedgerByPartner(supabase) {
   const ledgerByPartner = new Map()
   const PAGE = 1000
   for (let from = 0; ; from += PAGE) {
@@ -566,6 +564,68 @@ async function adminListPartners(ctx) {
     }
     if (!rows || rows.length < PAGE) break
   }
+  return ledgerByPartner
+}
+
+// Section 4 round 11 (feature gap): cycles close on the 1st and 16th (UTC) and nothing told the owner a payout run
+// was due - it relied on remembering to open the admin panel. Once per closed cycle (hourly sweep, KV-guarded) the
+// owner gets ONE alert: how many partners are ready, the total, and how much is still held or lacks payout details.
+// No names or addresses in the message (the alert history is erased partner-by-partner on removal).
+async function sweepPayoutDue(env, supabase) {
+  const out = { sent: false, ready: 0, readyCents: 0 }
+  try {
+    // Without the KV the once-per-cycle marker cannot be kept and the hourly sweep would alert every hour: stay quiet.
+    if (!env || !env.OWNER_ALERT_EMAIL || !env.RATE_LIMIT_KV) return out
+    const closed = recentCycles(2)[1]
+    const key = `partner-payout-due:${closed.key}`
+    if (await referralService.keySeen(env, key)) return out
+    const { data: partners, error } = await supabase.from('partners').select('id, email, payout_method').eq('status', 'ACTIVE')
+    if (error) throw error
+    const live = (partners || []).filter(p => !isRemovedEmail(p.email))
+    const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
+    const holdDays = holdDaysFor(env), minPayout = minPayoutFor(env)
+    let ready = 0, readyCents = 0, noDetails = 0, noDetailsCents = 0, heldCents = 0
+    for (const p of live) {
+      const ledger = ledgerByPartner.get(p.id) || []
+      const r = payoutReadiness(ledger, holdDays, minPayout)
+      heldCents += Math.max(0, heldCentsOf(ledger, holdDays))
+      if (r.readyToPayCents <= 0) continue
+      if (!p.payout_method) { noDetails++; noDetailsCents += r.readyToPayCents; continue }
+      ready++; readyCents += r.readyToPayCents
+    }
+    out.ready = ready; out.readyCents = readyCents
+    if (ready > 0 || noDetails > 0) {
+      const cur = c.activeCurrency(env)
+      const alertResult = await emailService.sendOwnerAlert(env, `Partner payouts are ready to run (${closed.label})`,
+        `Cycle ${closed.label} has closed.\n` +
+        `ready to pay: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur}\n` +
+        (noDetails ? `ready but no payout details yet: ${noDetails} partner(s), ${(noDetailsCents / 100).toFixed(2)} ${cur}\n` : '') +
+        (heldCents ? `still held (hold window / open dispute): ${(heldCents / 100).toFixed(2)} ${cur}\n` : '') +
+        `Open Admin -> Partners -> Run payouts.`, { dedupeKey: closed.key })
+      out.sent = alertResult !== false
+      if (!out.sent) return out            // not marked: the next hourly sweep tries again
+    }
+    await referralService.keyMark(env, key, 20 * 24 * 3600)
+  } catch (err) { console.error('sweepPayoutDue:', err.message) }
+  return out
+}
+
+async function adminListPartners(ctx) {
+  const supabase = getSupabase(ctx.env)
+  // SECTION 4 ROUND 4 (scale): this used to embed EVERY partner's full payout history,
+  // code list and complete commission ledger into one query on every page load — cost
+  // grew with total platform history. The list view only needs the UNPAID ledger rows
+  // (pending / ready / held / current-cycle figures), so that is all it reads now, paged
+  // so PostgREST's row cap can't silently truncate it. Payout history, codes and
+  // per-code stats live behind adminGetPartner. (netConversions moved there too: it needs
+  // paid rows, and no list column shows it.)
+  const { data, error } = await supabase
+    .from('partners')
+    .select('*')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+
+  const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
 
   const holdDays = holdDaysFor(ctx.env)
   const awaitingSetup = data.filter(r => !r.payout_method && r.email && !isRemovedEmail(r.email)).map(r => r.email)
@@ -1649,6 +1709,34 @@ function conversionRowOf(row, codeTextById) {
   }
 }
 
+// Section 4 round 11 (feature gaps): the dashboard had totals and three cycle rows but no sense of direction, and no
+// idea HOW buyers reached the code. Both are derived from the ledger the dashboard already loads.
+// Net commission and sales per cycle for the last `count` cycles (oldest first): sums include reversals and
+// adjustments (they are signed), sales count real sales only (no reversals, no adjustments).
+function buildCycleTrend(ledgerRows, count = 6) {
+  const cycles = recentCycles(count).reverse()
+  const byKey = new Map(cycles.map(cy => [cy.key, { key: cy.key, label: cy.label, isCurrent: cy.isCurrent, commissionCents: 0, sales: 0 }]))
+  for (const l of ledgerRows || []) {
+    const b = byKey.get(cycleKey(l.created_at))
+    if (!b) continue
+    b.commissionCents += l.commission_amount_cents
+    if (l.kind !== 'ADJUSTMENT' && !l.reverses_ledger_id) b.sales += 1
+  }
+  return cycles.map(cy => byKey.get(cy.key))
+}
+// How net sales reached the code: shared link, typed by hand, restored from the account. Refunded sales are
+// excluded (same "net" rule as netConversionCount); rows from before attribution was recorded count as unknown.
+function buildAttributionMix(ledgerRows) {
+  const rows = ledgerRows || []
+  const reversed = new Set(rows.filter(l => l.reverses_ledger_id).map(l => l.reverses_ledger_id))
+  const out = { link: 0, typed: 0, account: 0, unknown: 0 }
+  for (const l of rows) {
+    if (l.kind === 'ADJUSTMENT' || l.reverses_ledger_id || reversed.has(l.id)) continue
+    out[['link', 'typed', 'account'].includes(l.attribution_source) ? l.attribution_source : 'unknown'] += 1
+  }
+  return out
+}
+
 async function getPartnerDashboard(ctx) {
   noStore(ctx)
   const token = partnerTokenOf(ctx)
@@ -1666,7 +1754,7 @@ async function getPartnerDashboard(ctx) {
     .select(`
       name, commission_rate, status, payout_method, payout_details, payout_details_submitted_at, terms_version, notify_conversions,
       referral_codes(id, partner_id, code, tier_prices, active, usage_limit, uses_so_far, clicks, expires_at, created_at),
-      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, created_at, payments(status)),
+      commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, created_at, payments(status)),
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, settled_commission_cents, period_start, period_end, paid_at, created_at, voided_at)
     `)
     .eq(column, token)
@@ -1770,6 +1858,8 @@ async function getPartnerDashboard(ctx) {
     readyToPayCents:     readiness.readyToPayCents,
     creditCents:         readiness.creditCents,
     conversions,
+    trend:          buildCycleTrend(ledger, 6),
+    attributionMix: buildAttributionMix(ledger),
     // So the frontend can say "showing the most recent 50 of 214" instead of
     // silently looking complete when it isn't.
     conversionsTotal: ledger.length,
@@ -2079,6 +2169,10 @@ async function adminApproveApplication(ctx) {
   // Check the code is free BEFORE claiming the application, so a duplicate code is a
   // clean 400 rather than a half-finished approval.
   const firstCode = body.referralCode ? body.referralCode.code.trim().toUpperCase() : null
+  // Section 4 round 11 (bug): the first code made here skipped the price guardrails every other code path has
+  // (adminCreateReferralCode / adminUpdateReferralCode). Judge it BEFORE anything is claimed, so a refusal is clean.
+  const approveGuard = body.referralCode ? priceGuardrails(ctx.env, body.referralCode.tierPrices) : { tooLow: [], noDiscount: [] }
+  if (approveGuard.tooLow.length && !body.referralCode.confirmLowPrice) return lowPriceResponse(ctx, approveGuard)
   if (firstCode) {
     const { data: taken, error: takenErr } = await supabase.from('referral_codes').select('id').eq('code', firstCode).limit(1)
     if (takenErr) throw takenErr
@@ -2146,7 +2240,7 @@ async function adminApproveApplication(ctx) {
     }
   }
   await logAdminAction(ctx, supabase, 'partner.application_approved', 'partner_application', appId, { partnerId: made.data.id, commissionRate: made.data.commission_rate })
-  return ctx.json({ success: true, data: partnerRowToCamel(made.data), codeCreated, codeError, emailed: made.emailed, ...(made.payoutUrl ? { payoutUrl: made.payoutUrl } : {}) })
+  return ctx.json({ success: true, data: partnerRowToCamel(made.data), codeCreated, codeError, ...(guardWarnings(approveGuard).length ? { warnings: guardWarnings(approveGuard) } : {}), emailed: made.emailed, ...(made.payoutUrl ? { payoutUrl: made.payoutUrl } : {}) })
 }
 
 const rejectApplicationSchema = z.object({ reason: z.string().trim().max(500).optional() })
@@ -2420,11 +2514,18 @@ async function adminAnonymizePartner(ctx) {
   const body = anonymizePartnerSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
 
-  const { data: partner, error: pErr } = await supabase.from('partners').select('id, email').eq('id', partnerId).maybeSingle()
+  const { data: partner, error: pErr } = await supabase.from('partners').select('id, email, previous_emails').eq('id', partnerId).maybeSingle()
   if (pErr) throw pErr
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
+  const alreadyRemoved = isRemovedEmail(partner.email)
+  // Every address this partner ever had (round 11, bug: only the CURRENT one used to be cleaned from the mail history).
+  const allEmails = [...(alreadyRemoved ? [] : [partner.email]), ...(Array.isArray(partner.previous_emails) ? partner.previous_emails : [])].filter(Boolean)
 
-  const owed = await sumPaged(() => supabase.from('commission_ledger')
+  // Round 11: the balance guard exists to stop the details being wiped before the money is settled. On a record
+  // that is ALREADY wiped that reason is gone, and keeping the guard made a late refund credit (or an in-flight sale)
+  // a dead end - re-running the removal could not finish its leftover steps. Settle such a balance with a
+  // write-off adjustment (now allowed on removed partners); it no longer blocks the cleanup.
+  const owed = alreadyRemoved ? 0 : await sumPaged(() => supabase.from('commission_ledger')
     .select('id, commission_amount_cents').eq('partner_id', partnerId).is('payout_id', null), 'commission_amount_cents')
   if (owed !== 0)
     return ctx.json({ success: false, code: 'COMMISSION_OWED',
@@ -2432,13 +2533,11 @@ async function adminAnonymizePartner(ctx) {
         ? `This partner is still owed ${owed} cents of commission. Record the payout (or void and re-record it), or write the balance off with a ledger adjustment, before removing their data.`
         : `This partner has an unsettled refund credit of ${-owed} cents. Settle it, or write it off with a ledger adjustment, before removing their data.` }, 409)
 
-  const alreadyRemoved = isRemovedEmail(partner.email)
-
   // 1. Applications (approved ones point at the partner; earlier/rejected ones are found by the address).
   const { error: appErr1 } = await supabase.from('partner_applications').delete().eq('partner_id', partnerId)
   if (appErr1) throw appErr1
-  if (!alreadyRemoved) {
-    const exact = String(partner.email).replace(/[\\%_]/g, '\\$&')
+  for (const addr of allEmails) {
+    const exact = String(addr).replace(/[\\%_]/g, '\\$&')
     const { error: appErr2 } = await supabase.from('partner_applications').delete().ilike('email', exact)
     if (appErr2) throw appErr2
   }
@@ -2450,7 +2549,7 @@ async function adminAnonymizePartner(ctx) {
   // Section 4 round 9 (bug): the owed-check above and the code switch-off in step 2 are two separate moments; a
   // checkout that had already resolved the code could convert in between and leave fresh commission on a partner
   // we are about to wipe. Codes are off now, so look once more before anything irreversible happens.
-  const owedAfter = await sumPaged(() => supabase.from('commission_ledger')
+  const owedAfter = alreadyRemoved ? 0 : await sumPaged(() => supabase.from('commission_ledger')
     .select('id, commission_amount_cents').eq('partner_id', partnerId).is('payout_id', null), 'commission_amount_cents')
   if (owedAfter !== 0)
     return ctx.json({ success: false, code: 'COMMISSION_OWED',
@@ -2474,6 +2573,7 @@ async function adminAnonymizePartner(ctx) {
     payout_method: null, payout_details: null, payout_details_submitted_at: null,
     website: null, audience: null, notify_conversions: false, internal_notes: null,
     payout_details_token: cryptoLib.randomToken(32), dashboard_token: cryptoLib.randomToken(32),
+    previous_emails: [],
     updated_at: new Date().toISOString()
   }).eq('id', partnerId)
   if (rowErr) throw rowErr
@@ -2489,14 +2589,14 @@ async function adminAnonymizePartner(ctx) {
   // 180-day retention sweep. The sibling erasure flows (deleteAccount, employer-lead removal) purge email_logs;
   // this one did not. BEST EFFORT and the LAST step: the erasure above is what a person is owed, and a failed
   // purge only means the rows age out with the sweep, exactly as before.
-  const logs = alreadyRemoved
-    ? { emailLogs: 0, alertLogs: 0, ok: true }
-    : await purgePartnerLogs(supabase, { partnerId, emails: [partner.email] })
+  const logs = allEmails.length || !alreadyRemoved
+    ? await purgePartnerLogs(supabase, { partnerId, emails: allEmails })
+    : { emailLogs: 0, alertLogs: 0, ok: true }
 
   await logAdminAction(ctx, supabase, 'partner.anonymized', 'partner', partnerId,
     { reason: body.reason, alreadyRemoved, payoutsMasked: (payouts || []).length, logsPurged: logs.ok, emailLogsPurged: logs.emailLogs, alertLogsPurged: logs.alertLogs })
   return ctx.json({ success: true, alreadyRemoved, payoutsMasked: (payouts || []).length, logsPurged: logs.ok,
-    message: alreadyRemoved ? 'Already removed \u2014 checked and finished any leftover steps.' : 'Partner data removed.' })
+    message: alreadyRemoved ? 'Already removed \u2014 checked and finished any leftover steps. (A leftover balance on a removed record is cleared with a write-off adjustment.)' : 'Partner data removed.' })
 }
 
 // ── Round 8 (feature gap): manual ledger adjustments ───────────────────────
@@ -2525,20 +2625,24 @@ async function adminAdjustLedger(ctx) {
     .from('partners').select('id, name, email, dashboard_token').eq('id', partnerId).maybeSingle()
   if (pErr) throw pErr
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
-  if (isRemovedEmail(partner.email))
-    return ctx.json({ success: false, code: 'PARTNER_REMOVED', message: "This partner's personal data was removed, so their ledger can't be adjusted." }, 409)
+  // Section 4 round 11 (bug): a removed partner could not be adjusted, yet a late refund reversal or an in-flight
+  // checkout can still leave a non-zero balance on the wiped record, and every other way out of it (a payout
+  // needs details, the anonymize check needs zero) was closed too. An adjustment on a removed partner is allowed
+  // as a WRITE-OFF: no email (the address is a placeholder), and the reason is stored generically because the
+  // erasure already promised no free text about this person remains.
+  const removed = isRemovedEmail(partner.email)
 
   const currency = c.activeCurrency(ctx.env)
   const actor = ctx.get && ctx.get('user')
   const { data: row, error } = await supabase.from('commission_ledger').insert({
     partner_id: partnerId, kind: 'ADJUSTMENT', gross_amount_cents: 0, commission_rate: 0,
-    commission_amount_cents: body.amountCents, currency, adjustment_reason: body.reason,
+    commission_amount_cents: body.amountCents, currency, adjustment_reason: removed ? 'Adjustment (details removed)' : body.reason,
     created_by: actor?.id || null
   }).select('*').single()
   if (error) throw error
 
   let emailed = false
-  if (body.notify !== false) {
+  if (body.notify !== false && !removed) {
     const dashboardUrl = `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
     emailed = await emailService.sendPartnerBalanceAdjusted(ctx.env, supabase, partner.email, partner.name,
       body.amountCents, currency, body.reason, dashboardUrl).then(ok => ok === true || ok === undefined).catch(() => false)
@@ -2546,7 +2650,7 @@ async function adminAdjustLedger(ctx) {
 
   // Amount and ledger id only - the reason lives on the row, where erasure scrubs it.
   await logAdminAction(ctx, supabase, 'partner.ledger_adjusted', 'partner', partnerId,
-    { ledgerId: row.id, amountCents: body.amountCents, currency, emailed })
+    { ledgerId: row.id, amountCents: body.amountCents, currency, emailed, ...(removed ? { removedPartnerWriteOff: true } : {}) })
   return ctx.json({ success: true, data: commissionLedgerRowToCamel(row), emailed })
 }
 
@@ -2663,7 +2767,7 @@ async function adminSendTermsNotice(ctx) {
 }
 
 module.exports = {
-  buildCyclesSummary,
+  buildCyclesSummary, buildCycleTrend, buildAttributionMix, sweepPayoutDue,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,

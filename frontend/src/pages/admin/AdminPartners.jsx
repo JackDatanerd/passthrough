@@ -105,6 +105,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
   const [fix, setFix] = useState('')
   const [badge, setBadge] = useState('')
   const [plain, setPlain] = useState('')
+  const [confirmLow, setConfirmLow] = useState(false)
   const { loading: saving, error, execute } = useApi()
 
   async function handleApprove() {
@@ -122,7 +123,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
       }
       if (code.trim().length < 2) return fail('Enter a code (at least 2 characters).')
       if (Object.keys(tierPrices).length === 0) return fail('Give at least one tier a price for the code.')
-      body.referralCode = { code: code.trim(), tierPrices }
+      body.referralCode = { code: code.trim(), tierPrices, ...(confirmLow ? { confirmLowPrice: true } : {}) }
     }
     try {
       const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
@@ -135,6 +136,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
         ? `${app.name} approved, but: ${data.codeError} Add the code from their page.`
         : `${app.name} approved — payout-details link sent${data.codeCreated ? ` and code ${data.codeCreated.code} created` : ''}.`,
       type: data.codeError ? 'warning' : 'success' })
+      for (const w of data.warnings || []) toast({ message: w, type: 'warning' })
       onDone()
       onClose()
     } catch (_) { /* captured by useApi */ }
@@ -159,6 +161,12 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
           </div>
         )}
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        {/* Round 11: the first code is held to the same price guardrail as every other code. */}
+        {error && /far below/.test(error) && (
+          <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2" data-testid="confirm-low-price">
+            <Checkbox label="Yes, these prices are intentional — tick this, then submit again." checked={confirmLow} onChange={e => setConfirmLow(e.target.checked)} />
+          </div>
+        )}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
           <Button type="submit" loading={saving}>Approve</Button>
@@ -434,6 +442,19 @@ function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
   )
 }
 
+// Round 11 (gap): the list could only be searched and sorted. These are the states an admin actually hunts for.
+const isRemovedPartner = p => String(p.email || '').endsWith('@removed.invalid')
+export const PARTNER_FILTERS = {
+  all:        { label: 'All partners',                 test: () => true },
+  active:     { label: 'Active',                       test: p => p.status === 'ACTIVE' && !isRemovedPartner(p) },
+  paused:     { label: 'Paused',                       test: p => p.status !== 'ACTIVE' && !isRemovedPartner(p) },
+  ready:      { label: 'Ready to pay',                 test: p => (p.readyToPayCents || 0) > 0 },
+  noDetails:  { label: 'No payout details yet',        test: p => !p.payoutMethod && !isRemovedPartner(p) },
+  terms:      { label: 'Terms not accepted',           test: p => p.status === 'ACTIVE' && p.termsCurrent === false && !isRemovedPartner(p) },
+  mailFailed: { label: 'Setup mail problem',         test: p => !!p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && !p.payoutMethod },
+  removed:    { label: 'Removed (erased)',             test: isRemovedPartner },
+}
+
 export default function AdminPartners() {
   const toast = useToast()
   const [partners, setPartners] = useState([])
@@ -443,6 +464,7 @@ export default function AdminPartners() {
   const [holdHours, setHoldHours] = useState(48)
   const [query, setQuery] = useState('')
   const [sortKey, setSortKey] = useState('newest')
+  const [filterKey, setFilterKey] = useState('all')
   const [page, setPage] = useState(0)
 
   async function load() {
@@ -462,6 +484,7 @@ export default function AdminPartners() {
 
   const needle = query.trim().toLowerCase()
   const filtered = partners
+    .filter(p => PARTNER_FILTERS[filterKey].test(p))
     .filter(p => !needle || p.name.toLowerCase().includes(needle) || p.email.toLowerCase().includes(needle))
     .sort(SORTS[sortKey].cmp)
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE))
@@ -477,11 +500,17 @@ export default function AdminPartners() {
   const termsOutstanding = partners.filter(p => p.status === 'ACTIVE' && p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
   const [confirmTerms, setConfirmTerms] = useState(false)
   async function sendTermsNotice() {
-    const res = await api.post('/partners/terms-notice')
-    const d = res.data
-    toast({ message: `Terms notice sent to ${d.sent} partner(s)${d.failed ? `, ${d.failed} failed` : ''}${d.remaining ? ` - ${d.remaining} still to go, run it again.` : '.'}`, type: d.failed ? 'error' : 'success' })
-    setConfirmTerms(false)
-    load()
+    // Round 11 (bug): a failed request used to be an unhandled rejection - no message, dialog left open.
+    try {
+      const res = await api.post('/partners/terms-notice')
+      const d = res.data
+      toast({ message: `Terms notice sent to ${d.sent} partner(s)${d.failed ? `, ${d.failed} failed` : ''}${d.remaining ? ` - ${d.remaining} still to go, run it again.` : '.'}`, type: d.failed ? 'error' : 'success' })
+      load()
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || 'The terms notice could not be sent. Try again.', type: 'error' })
+    } finally {
+      setConfirmTerms(false)
+    }
   }
   const totalAccruing   = partners.reduce((sum, p) => sum + (p.currentCycleAccruedCents || 0), 0)
 
@@ -556,12 +585,15 @@ export default function AdminPartners() {
         <div className="flex items-center gap-3 flex-wrap">
           <Input size="sm" type="search" value={query} onChange={e => { setQuery(e.target.value); setPage(0) }}
             placeholder="Search name or email" aria-label="Search partners" wrapperClassName="w-64" />
+          <Select size="sm" value={filterKey} onChange={e => { setFilterKey(e.target.value); setPage(0) }} aria-label="Filter partners">
+            {Object.entries(PARTNER_FILTERS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+          </Select>
           <Select size="sm" value={sortKey} onChange={e => { setSortKey(e.target.value); setPage(0) }} aria-label="Sort partners">
             {Object.entries(SORTS).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
           </Select>
           <span className="text-xs text-gray-400">{filtered.length} of {partners.length}</span>
         </div>
-        {filtered.length === 0 && <EmptyState>No partners match “{query}”.</EmptyState>}
+        {filtered.length === 0 && <EmptyState>No partners match{query ? ` “${query}”` : ' this filter'}.</EmptyState>}
         <DataTable
           caption="Partners"
           columns={[

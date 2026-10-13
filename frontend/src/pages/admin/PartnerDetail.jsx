@@ -304,7 +304,8 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
   const [direction, setDirection] = useState(pending > 0 ? 'deduct' : 'add')
   const [amount, setAmount] = useState(pending !== 0 ? String(Math.abs(pending) / 100) : '')
   const [reason, setReason] = useState('')
-  const [notify, setNotify] = useState(true)
+  const removed = String(partner.email || '').endsWith('@removed.invalid')
+  const [notify, setNotify] = useState(!removed)
   // Round 10: a PARTIAL refund reverses nothing automatically (the ledger reverses whole sales), so the admin claws back the
   // commission on the refunded part by hand — and used to do the multiplication themselves. rate x refunded amount, rounded the
   // way the ledger rounds a commission.
@@ -333,7 +334,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
     if (reason.trim().length < 3) return fail('Say why - the partner sees this reason.')
     try {
       const data = await execute(() => api.post(`/partners/${partner.id}/adjustments`, {
-        amountCents: direction === 'deduct' ? -cents : cents, reason: reason.trim(), notify
+        amountCents: direction === 'deduct' ? -cents : cents, reason: reason.trim(), notify: removed ? false : notify
       }), { fallback: 'Failed to record the adjustment.' })
       toast({ message: data.emailed ? 'Adjustment recorded; partner emailed.' : 'Adjustment recorded.', type: 'success' })
       onAdjusted()
@@ -373,7 +374,9 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
         </div>
         <Textarea label="Reason (the partner sees this)" rows={3} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
           placeholder="e.g. Self-referral through a second account" />
-        <Checkbox label="Email the partner about this adjustment" checked={notify} onChange={e => setNotify(e.target.checked)} />
+        {removed
+          ? <p className="text-xs text-gray-500">This partner's data was removed: the entry is recorded as a write-off, the reason is not kept and nobody is emailed.</p>
+          : <Checkbox label="Email the partner about this adjustment" checked={notify} onChange={e => setNotify(e.target.checked)} />}
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
           <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
@@ -1179,8 +1182,10 @@ export default function PartnerDetail() {
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>
-        {!String(partner.email || '').endsWith('@removed.invalid') && (
-          <Button size="sm" variant="secondary" onClick={() => setShowAdjust(true)}>Adjust balance…</Button>
+        {(!String(partner.email || '').endsWith('@removed.invalid') || (partner.pendingCommissionCents || 0) !== 0) && (
+          <Button size="sm" variant="secondary" onClick={() => setShowAdjust(true)}>
+            {String(partner.email || '').endsWith('@removed.invalid') ? 'Write off balance…' : 'Adjust balance…'}
+          </Button>
         )}
         {!String(partner.email || '').endsWith('@removed.invalid') && (
           <Button size="sm" variant="secondary" onClick={() => setShowRemove(true)}>Remove personal data…</Button>

@@ -28,16 +28,24 @@ const fmtCents = formatCents
 // this page is served from the same domain the link should point at. This
 // is the one thing that was missing entirely before: a code alone isn't
 // shareable, a URL is.
+// Round 11 (gap): the share link only ever pointed at the home page. useReferralCapture runs on every route, so a link to
+// the pricing page captures the code the same way and lands the visitor closer to a purchase.
+const SHARE_PAGES = [['', 'Home page'], ['pricing', 'Pricing page']]
 function ShareLink({ code }) {
   const { copied, copy: copyText } = useCopy(2000)
-  const url = `${window.location.origin}/?ref=${encodeURIComponent(code)}`
+  const [page, setPage] = useState('')
+  const url = `${window.location.origin}/${page}?ref=${encodeURIComponent(code)}`
 
   async function copy() {
     await copyText(url)
   }
 
   return (
-    <div className="flex items-center gap-2 mt-2">
+    <div className="flex items-center gap-2 mt-2 flex-wrap">
+      <select value={page} onChange={e => setPage(e.target.value)} aria-label="Page the link opens"
+        className="text-sm text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5">
+        {SHARE_PAGES.map(([value, label]) => <option key={value || 'home'} value={value}>{label}</option>)}
+      </select>
       <input readOnly value={url}
         onFocus={e => e.target.select()}
         className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
@@ -46,6 +54,45 @@ function ShareLink({ code }) {
         {copied ? 'Copied ✓' : 'Copy link'}
       </button>
     </div>
+  )
+}
+
+// Round 11 (gap): direction at a glance - net commission per cycle for the last six cycles, and how buyers reached the code.
+const MIX_LABELS = { link: 'Shared link', typed: 'Typed the code', account: 'Remembered on their account', unknown: 'Earlier sales (not recorded)' }
+function TrendSection({ trend, mix, currency }) {
+  const rows = Array.isArray(trend) ? trend : []
+  const hasData = rows.some(r => r.commissionCents !== 0 || r.sales > 0)
+  const max = Math.max(1, ...rows.map(r => Math.abs(r.commissionCents)))
+  const mixTotal = mix ? Object.values(mix).reduce((a, b) => a + b, 0) : 0
+  if (!hasData && mixTotal === 0) return null
+  return (
+    <section className="mb-8" data-testid="partner-trend">
+      <h2 className="text-lg font-semibold text-gray-900 mb-3">Earnings by cycle</h2>
+      {hasData && (
+        <div className="border border-gray-200 rounded-lg bg-white p-4 flex flex-col gap-2">
+          {rows.map(r => (
+            <div key={r.key} className="flex items-center gap-3 text-sm">
+              <div className="w-36 shrink-0 text-gray-600">{r.label}{r.isCurrent ? ' (so far)' : ''}</div>
+              <div className="flex-1 h-2.5 bg-gray-100 rounded-full overflow-hidden" aria-hidden="true">
+                <div className={`h-full rounded-full ${r.commissionCents < 0 ? 'bg-red-400' : 'bg-blue-500'}`}
+                  style={{ width: `${Math.round(Math.abs(r.commissionCents) / max * 100)}%` }} />
+              </div>
+              <div className="w-40 shrink-0 text-right text-gray-900">
+                {fmtCents(r.commissionCents, currency)}
+                <span className="text-gray-400"> · {r.sales} sale{r.sales === 1 ? '' : 's'}</span>
+              </div>
+            </div>
+          ))}
+          <p className="text-xs text-gray-400 mt-1">Net of refunds and adjustments, by the day each commission was recorded.</p>
+        </div>
+      )}
+      {mixTotal > 0 && (
+        <div className="mt-3 text-sm text-gray-600" data-testid="partner-attribution-mix">
+          <span className="font-medium text-gray-900">How buyers reached your code: </span>
+          {Object.entries(mix).filter(([, n]) => n > 0).map(([k, n]) => `${MIX_LABELS[k]} ${n}`).join(' · ')}
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -677,6 +724,8 @@ export default function PartnerDashboard() {
                 </div>
               </>
             )}
+
+            <TrendSection trend={data.trend} mix={data.attributionMix} currency={data.currency} />
 
             <h2 className="text-lg font-semibold text-gray-900 mb-3">Your codes</h2>
             {data.referralCodes.length === 0 ? (

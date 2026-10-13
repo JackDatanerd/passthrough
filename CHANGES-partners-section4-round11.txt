@@ -1,0 +1,38 @@
+Partners / referral program (section 4) - round 11
+===================================================
+
+Run supabase/migrations/0080_partners_section4_round11.sql BEFORE deploying (adds partners.previous_emails).
+
+BUGS FIXED
+ B1  A removed (erased) partner could be left with a balance nothing could clear: a late refund reversal or an
+     in-flight sale lands on the wiped record, adjustments were refused (PARTNER_REMOVED), payouts need details, and
+     re-running the removal stopped on the balance. Now: adjustments are allowed on a removed partner as a write-off
+     (no email, reason stored generically); the removal's balance guard only applies before the data is wiped, so a
+     re-run always finishes its leftover steps. UI: "Write off balance..." on a removed partner with a balance.
+ B2  adminApproveApplication created the first referral code without the price guardrails every other code path has.
+     Now judged BEFORE the application is claimed; confirmLowPrice honoured; "not below standard" warnings returned.
+     Approve modal shows the confirm checkbox.
+ B3  Erasure only cleaned the CURRENT address from email_logs/alert_logs/partner_applications. partners.previous_emails
+     now remembers earlier addresses (set on admin email change) and the erasure cleans all of them, then clears the list.
+     Addresses changed before this migration cannot be recovered; they age out with the retention sweep.
+ B4  sweepExpiringCodes wrote its once-per-code key BEFORE sending and ignored failure (a failed mail was never retried
+     but counted as notified) and used an unordered .limit(50) (codes past the first 50 starved). Key is written only
+     after the mail is accepted; the sweep pages through the whole window, soonest first; failures are reported.
+ B5  "Send terms notice" had no error handling (unhandled rejection, dialog left open). Now an error toast.
+ B6  The "code reached its limit" notice was deduped 30 days per code; the key now includes the limit.
+
+FEATURE GAPS CLOSED
+ G1  One owner alert per closed payout cycle: partners ready to pay, total, ready-but-no-details, still held. No names.
+     Hourly sweep, KV-guarded (never sends without RATE_LIMIT_KV or OWNER_ALERT_EMAIL; retried if the alert fails).
+ G2  An admin email change now also emails the rotated DASHBOARD link to the new address (only the payout link was sent).
+ G3  (partial) Partner share box: choose Home or Pricing page. Dashboard shows how net sales reached the code
+     (shared link / typed / remembered on account). Per-channel sub-IDs NOT built (needs checkout + ledger changes).
+ G4  Dashboard "Earnings by cycle": net commission and sales for the last 6 cycles.
+ G5  Admin partner list: status filter (active, paused, ready to pay, no details, terms outstanding, setup mail problem, removed).
+
+FILES
+ src/controllers/partners.controller.js, src/services/referral.service.js, src/services/reconcile.service.js,
+ supabase/migrations/0080_partners_section4_round11.sql,
+ frontend/src/pages/PartnerDashboard.jsx, frontend/src/pages/admin/AdminPartners.jsx, frontend/src/pages/admin/PartnerDetail.jsx
+ tests: tests/partners.round11.test.js (new), frontend/tests/partnersRound11.test.jsx (new), and 4 existing backend tests
+ updated for intended behaviour changes (round8 removed-partner adjust, round10 expiry sweep, controller mocks).

@@ -35,6 +35,8 @@ function load(handler, emailStubs = {}) {
   return t.mod
 }
 
+let expiringOk = true
+const opts_expiringOk = () => expiringOk
 describe('price guardrails on referral codes', () => {
   const run = async (body, env) => {
     const inserts = []
@@ -231,7 +233,7 @@ describe('referral notices', () => {
       'services/email.service.js': {
         sendOwnerAlert: async (...a) => { sent.push(['owner', a[1]]) },
         sendPartnerCodeLimitReached: async (...a) => { sent.push(['limit', a[4]]) },
-        sendPartnerCodeExpiring: async (...a) => { sent.push(['expiring', a[4]]) },
+        sendPartnerCodeExpiring: async (...a) => { sent.push(['expiring', a[4]]); return opts_expiringOk() },
       },
     })
     const db = createFakeSupabase(q => {
@@ -277,6 +279,18 @@ describe('referral notices', () => {
     const b = setup({ expiring: [row('2026-10-17T00:00:00Z')] }, kv)
     await b.svc.sweepExpiringCodes(b.db, b.env)
     expect(b.sent.filter(s => s[0] === 'expiring')).toHaveLength(1)
+  })
+  it('round 11: a failed send is not marked as sent (retried next sweep) and is reported as failed', async () => {
+    const kv = new Map()
+    const row = { id: 'c1', code: 'K20', expires_at: '2026-10-15T00:00:00Z', partners: { name: 'K', email: 'k@x.co', status: 'ACTIVE' } }
+    expiringOk = false
+    const a = setup({ expiring: [row] }, kv)
+    const r1 = await a.svc.sweepExpiringCodes(a.db, a.env)
+    expect(r1).toMatchObject({ notified: 0, failed: 1 })
+    expiringOk = true
+    const r2 = await a.svc.sweepExpiringCodes(a.db, a.env)
+    expect(r2).toMatchObject({ notified: 1, failed: 0 })
+    expect(a.sent.filter(s => s[0] === 'expiring')).toHaveLength(2)
   })
   it('a paused partner is not told', async () => {
     const a = setup({ expiring: [{ id: 'c9', code: 'P1', expires_at: '2026-10-15T00:00:00Z', partners: { name: 'K', email: 'k@x.co', status: 'PAUSED' } }] })

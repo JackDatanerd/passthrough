@@ -549,7 +549,7 @@ async function afterConversionNotices(supabase, env, codeRow, partner) {
     const { data: code } = await supabase.from('referral_codes')
       .select('code, usage_limit, uses_so_far').eq('id', codeRow.id).maybeSingle()
     if (code && code.usage_limit != null && code.uses_so_far >= code.usage_limit && partner?.email
-        && await onceKey(env, `referral-limit-partner:${codeRow.id}`, 30 * 24 * 3600)) {
+        && await onceKey(env, `referral-limit-partner:${codeRow.id}:${code.usage_limit}`, 30 * 24 * 3600)) {
       const emailService = require('./email.service')
       await emailService.sendPartnerCodeLimitReached(env, supabase, partner.email, partner.name, code.code, code.usage_limit)
     }
@@ -560,22 +560,41 @@ async function afterConversionNotices(supabase, env, codeRow, partner) {
 
 // Round 10: partners hear their code is about to expire (the hourly sweep calls this). Once per code, 7 days ahead.
 const EXPIRY_NOTICE_DAYS = 7
+// Section 4 round 11 (bug): the once-per-code key used to be written BEFORE the send and the send's result was
+// ignored, so a throttled/failed mail was never retried (and still counted as notified), and the unordered
+// `.limit(50)` re-read the same first 50 rows every hour, starving any code beyond them. The key is now written
+// only after the mail was accepted, and the sweep pages through every code inside the window, soonest first.
+async function keySeen(env, key) {
+  const kv = env && env.RATE_LIMIT_KV
+  return !!(kv && await kv.get(key))
+}
+async function keyMark(env, key, ttlSeconds) {
+  const kv = env && env.RATE_LIMIT_KV
+  if (kv) await kv.put(key, '1', { expirationTtl: ttlSeconds })
+}
+const EXPIRY_SWEEP_PAGE = 100, EXPIRY_SWEEP_MAX_PAGES = 10
 async function sweepExpiringCodes(supabase, env) {
-  const out = { notified: 0 }
+  const out = { notified: 0, failed: 0 }
   try {
     const now = new Date(), horizon = new Date(Date.now() + EXPIRY_NOTICE_DAYS * 86400000)
-    const { data, error } = await supabase.from('referral_codes')
-      .select('id, code, expires_at, partners(name, email, status)')
-      .eq('active', true).gt('expires_at', now.toISOString()).lte('expires_at', horizon.toISOString()).limit(50)
-    if (error) { console.error('sweepExpiringCodes:', error.message); return out }
     const emailService = require('./email.service')
-    for (const row of data || []) {
-      const p = row.partners
-      if (!p?.email || p.status !== 'ACTIVE') continue
-      // The key carries the expiry date, so extending a code re-arms its notice.
-      if (!(await onceKey(env, `referral-expiry-notice:${row.id}:${String(row.expires_at).slice(0, 10)}`, 30 * 24 * 3600))) continue
-      await emailService.sendPartnerCodeExpiring(env, supabase, p.email, p.name, row.code, row.expires_at).catch(() => {})
-      out.notified++
+    for (let page = 0; page < EXPIRY_SWEEP_MAX_PAGES; page += 1) {
+      const { data, error } = await supabase.from('referral_codes')
+        .select('id, code, expires_at, partners(name, email, status)')
+        .eq('active', true).gt('expires_at', now.toISOString()).lte('expires_at', horizon.toISOString())
+        .order('expires_at', { ascending: true }).order('id', { ascending: true })
+        .range(page * EXPIRY_SWEEP_PAGE, (page + 1) * EXPIRY_SWEEP_PAGE - 1)
+      if (error) { console.error('sweepExpiringCodes:', error.message); return out }
+      for (const row of data || []) {
+        const p = row.partners
+        if (!p?.email || p.status !== 'ACTIVE') continue
+        // The key carries the expiry date, so extending a code re-arms its notice.
+        const key = `referral-expiry-notice:${row.id}:${String(row.expires_at).slice(0, 10)}`
+        if (await keySeen(env, key)) continue
+        const ok = await emailService.sendPartnerCodeExpiring(env, supabase, p.email, p.name, row.code, row.expires_at).catch(() => false)
+        if (ok === true) { await keyMark(env, key, 30 * 24 * 3600); out.notified++ } else out.failed++
+      }
+      if (!data || data.length < EXPIRY_SWEEP_PAGE) break
     }
   } catch (err) { console.error('sweepExpiringCodes unexpected:', err.message) }
   return out
@@ -653,7 +672,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
 }
 
 module.exports = {
-  canonicalEmail,
+  canonicalEmail, keySeen, keyMark,
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable, lookupCode,
   setUserAttribution, sweepExpiringCodes, afterConversionNotices, isSelfReferral,

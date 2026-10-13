@@ -207,6 +207,8 @@ async function sweepStalePendingPayments(env, supabase, { now = Date.now() } = {
   await referralService.pruneReferralCodeReservations(supabase, { now })
   // Round 10: partners hear (once) that a code expires within a week. Same hourly cadence, never throws.
   try { await referralService.sweepExpiringCodes?.(supabase, env) } catch (_) {}
+  // Round 11: one owner alert per closed payout cycle ("N partners are ready to be paid"). Never throws.
+  try { await require('../controllers/partners.controller').sweepPayoutDue(env, supabase) } catch (_) {}
 
   result.checked = stale?.length || 0
   if (!result.checked) return result
