@@ -3,6 +3,7 @@ import ScanForm from '../scan/ScanForm'
 import { AuthContext } from '../../context/AuthContext'
 import { formatScanCount } from '../../lib/homeFormat'
 import { ATS_NAMES } from '../../lib/homeContent'
+import TypedText from './TypedText'
 
 const FACES = [['A', 'bg-blue-600'], ['D', 'bg-teal-600'], ['P', 'bg-purple-600'], ['J', 'bg-rose-600'], ['M', 'bg-amber-600']]
 
@@ -22,17 +23,28 @@ export default function HomeHero({ data, badgeThreshold }) {
     : ['No account needed', 'Full breakdown free', 'Pay only if you want the fix']
 
   return (
-    <section className="bg-gradient-to-b from-blue-50 to-white border-b border-gray-100">
-      <div className="max-w-5xl mx-auto px-4 pt-8 sm:pt-10 pb-10 grid lg:grid-cols-[1.05fr_.95fr] lg:grid-rows-[auto_1fr] gap-x-10 gap-y-6 items-start">
+    <section className="relative overflow-hidden bg-paper bg-[radial-gradient(900px_420px_at_85%_-10%,#E8EEFF,transparent_70%)] border-b border-gray-100">
+      {/* soft dot grid behind the hero, fading out downwards; decorative only */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 opacity-55"
+        style={{
+          backgroundImage: 'radial-gradient(#C5CDE0 1px, transparent 1.2px)',
+          backgroundSize: '22px 22px',
+          WebkitMaskImage: 'linear-gradient(180deg,#000,transparent 85%)',
+          maskImage: 'linear-gradient(180deg,#000,transparent 85%)',
+        }}
+      />
+      <div className="relative max-w-[1180px] mx-auto px-4 sm:px-6 pt-8 sm:pt-12 pb-10 grid lg:grid-cols-[1.05fr_.95fr] lg:grid-rows-[auto_1fr] gap-x-10 gap-y-6 items-start">
         <div className="min-w-0 lg:col-start-1 lg:row-start-1">
           {scans && (
             <div className="inline-flex items-center gap-1.5 bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full mb-4">
               <span aria-hidden="true">★</span> {scans} resumes scanned
             </div>
           )}
-          <h1 className="text-[34px] sm:text-5xl font-extrabold text-gray-900 leading-[1.1] tracking-tight mb-3 sm:mb-4">
+          <h1 className="font-display text-[clamp(2.1rem,4.6vw,3.4rem)] font-extrabold text-ink leading-[1.06] tracking-[-0.03em] mb-3 sm:mb-4">
             Get past the robot.<br />
-            <span className="text-blue-700">Get the interview.</span>
+            <TypedText text="Get the interview." className="text-blue-700" />
           </h1>
           <p className="text-base sm:text-lg text-gray-600 max-w-xl">
             Most ATS tools hand you a score and walk away. Passthrough shows exactly why you&apos;re being

@@ -74,7 +74,7 @@ export default function BeforeAfter() {
   const { before, after } = BEFORE_AFTER
   return (
     <section id="proof" className="py-16">
-      <div className="max-w-5xl mx-auto px-4">
+      <div className="max-w-[1180px] mx-auto px-4 sm:px-6">
         <div className="text-center max-w-2xl mx-auto mb-8">
           <p className="text-xs font-bold uppercase tracking-wider text-blue-700 mb-2">Before &amp; after</p>
           <h2 className="text-3xl font-bold text-gray-900 mb-3">Same person. Same experience. Different result.</h2>

@@ -1,13 +1,1 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
-  <rect width="32" height="32" rx="6" fill="#1E40AF"/>
-  <text
-    x="16"
-    y="23"
-    font-family="system-ui, -apple-system, sans-serif"
-    font-size="22"
-    font-weight="700"
-    text-anchor="middle"
-    fill="#ffffff"
-    letter-spacing="-0.5"
-  >P</text>
-</svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32"><rect width="32" height="32" rx="7" fill="#1E40AF"/><path d="M11 6.5v6M11 19.5v6M21 6.5v6M21 19.5v6" stroke="#fff" stroke-width="3.3" stroke-linecap="round" fill="none"/><path d="M4.5 16h22.5m-5.5-5.5 5.5 5.5-5.5 5.5" stroke="#FFE27A" stroke-width="3.3" stroke-linecap="round" stroke-linejoin="round" fill="none"/></svg>

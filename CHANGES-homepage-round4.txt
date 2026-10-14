@@ -1,0 +1,55 @@
+HOMEPAGE round 4 — layout, navbar, logo mark, typed headline line
+=================================================================
+
+Source of the changes: the passthrough-homepage-proof.html prototype (wider layout, sticky navbar with better buttons,
+a logo mark) applied to the REAL homepage. The live headline copy, every live number (useHomeData / /api/pricing), the full
+scan card and every section below the hero are unchanged.
+
+NAVBAR (components/layout/Navbar.jsx)
+- Sticky (top-0, z-50) with a blurred paper background, 64px tall, on every page that renders it.
+- Logo mark + wordmark; six section links in homepage order: Proof, The receipt, Stories, Hot categories, Pricing, For employers
+  (Pricing still goes to the /pricing route; the rest are /#anchors that already exist on the homepage).
+- The bar's one button is now "Scan free" -> /#scan-form (it was "Get started" -> /register). Registration is still one click
+  away from Sign in and from the scan result.
+- From lg up everything is in the bar (links, Sign in, or Dashboard / Admin / Sign out). Below lg the links and the
+  account entries move into the "More" menu (#navbar-more, same Escape / outside-tap / focus-return behaviour as before).
+  Signed-in users on a phone now reach Dashboard and Sign out through More (they used to sit in the bar).
+- Skip link, aria-current on the current page, useSignOut, admin link: unchanged.
+- index.css: html { scroll-padding-top: 5rem } so /#pricing, /#scan-form etc. stop BELOW the sticky bar.
+- Phones narrower than 360px get a slightly smaller logo/padding so nothing overflows at 320px.
+
+LOGO (components/layout/LogoMark.jsx, public/favicon.svg and the icon set)
+- New mark: two filter bars, each with a gap, and an arrow passing through. Same drawing as inline SVG in the navbar and as
+  favicon.svg (heavier strokes for 16px), favicon.ico (16/32/48), apple-touch-icon.png, icon-192/512.png (full-bleed, mark
+  scaled inside the maskable safe zone) and og-image.png (mark beside the wordmark; same card as before).
+- The old favicon was a plain white "P" on blue; the navbar had no mark at all.
+
+HERO + LAYOUT (components/home/*, Home.jsx, Footer.jsx)
+- Container widened from max-w-5xl (1024px) to 1180px, with sm:px-6, on the homepage sections, the hero, the navbar and the
+  footer so their edges line up. (DashboardLayout and the other pages keep their own widths.)
+- Hero: paper background, soft blue radial glow, fading dot grid; headline in Bricolage Grotesque (fluid size, 2.1rem floor
+  = the old 34px phone size).
+- "Get the interview." keeps the original blue and now types itself out once (components/home/TypedText.jsx):
+    * the full sentence is always real text (sr-only); the animated copy is aria-hidden
+    * letters keep their space (opacity), so nothing reflows
+    * skipped for prefers-reduced-motion, and plays once per browser session (sessionStorage 'pt:hero-typed')
+    * caret follows the last letter, blinks three times after the line finishes, then fades
+
+FONT
+- Bricolage Grotesque, latin subset, variable weight, SELF-HOSTED (src/assets/fonts, SIL OFL licence included; @font-face in
+  index.css; tailwind `font-display`). The CSP (public/_headers) allows font-src 'self' and no Google Fonts host, so a
+  Google Fonts <link> would have been blocked in production. No new npm dependency, package-lock.json unchanged.
+- Used only for the wordmark and the hero headline.
+
+TESTS
+- tests/components/Navbar.test.jsx: Get started -> Scan free; new tests for sticky bar + logo mark, the Scan free target, the six links
+  in order, and the signed-in More menu (incl. Sign out calling logout()).
+- tests/homepage.round2.test.jsx: navbar entries / More menu contents updated to the six links.
+- tests/homepage.mobile.test.jsx: navbar-on-phones tests rewritten for the lg breakpoint; headline test asserts the fluid clamp.
+- tests/components/TypedText.test.jsx (new): real-text/aria-hidden split, typing + caret lifecycle, reduced motion, once per
+  session, blocked storage, timers cleared on unmount.
+- Full frontend suite: 190 files green.
+
+NOT CHANGED (on purpose)
+- The empty area under the hero's left column (the live scan card is taller than the copy column). Not part of the agreed
+  amendments; flagged separately.

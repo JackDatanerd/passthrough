@@ -22,10 +22,10 @@ function renderNavbar(authValue) {
 }
 
 describe('Navbar', () => {
-  it('shows Sign in / Get started when logged out, and no Dashboard/Admin links', () => {
+  it('shows Sign in / Scan free when logged out, and no Dashboard/Admin links', () => {
     renderNavbar({ user: null, logout: () => {} })
     expect(screen.getByText('Sign in')).toBeInTheDocument()
-    expect(screen.getByText('Get started')).toBeInTheDocument()
+    expect(screen.getByText('Scan free')).toBeInTheDocument()
     expect(screen.queryByText('Dashboard')).toBeNull()
     expect(screen.queryByText('Admin')).toBeNull()
   })
@@ -48,5 +48,43 @@ describe('Navbar', () => {
     renderNavbar({ user: { role: 'USER' }, logout })
     await user.click(screen.getByText('Sign out'))
     expect(logout).toHaveBeenCalledTimes(1)
+  })
+
+  it('the bar is sticky (it stays under the thumb/cursor while the page scrolls) and leads with the logo mark', () => {
+    renderNavbar({ user: null, logout: () => {} })
+    const bar = screen.getByRole('navigation', { name: 'Main' })
+    expect(bar.className).toMatch(/\bsticky\b/)
+    expect(bar.className).toMatch(/\btop-0\b/)
+    const home = screen.getByRole('link', { name: 'Passthrough' })
+    expect(home).toHaveAttribute('href', '/')
+    expect(home.querySelector('svg[aria-hidden="true"]')).not.toBeNull()
+  })
+
+  it('the one button is the scan: "Scan free" jumps to the homepage scan card, for signed-out and signed-in alike', () => {
+    for (const user of [null, { role: 'USER' }]) {
+      const { unmount } = renderNavbar({ user, logout: () => {} })
+      expect(screen.getByRole('link', { name: 'Scan free' })).toHaveAttribute('href', '/#scan-form')
+      unmount()
+    }
+  })
+
+  it('has the six section links, in homepage order', () => {
+    renderNavbar({ user: null, logout: () => {} })
+    const bar = screen.getByRole('navigation', { name: 'Main' })
+    const links = [...bar.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')])
+    const wanted = [['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Stories', '/#stories'], ['Hot categories', '/#hot'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
+    expect(links.filter(l => wanted.some(w => w[0] === l[0]))).toEqual(wanted)
+  })
+
+  it('on a small screen a signed-in user reaches Dashboard, Admin and Sign out through More, and Sign out there calls logout()', async () => {
+    const user = userEvent.setup()
+    const logout = vi.fn()
+    renderNavbar({ user: { role: 'ADMIN' }, logout })
+    await user.click(screen.getByRole('button', { name: 'More' }))
+    const menu = document.getElementById('navbar-more')
+    expect([...menu.querySelectorAll('a,button')].map(e => e.textContent)).toEqual(['Proof', 'The receipt', 'Stories', 'Hot categories', 'Pricing', 'For employers', 'Dashboard', 'Admin', 'Sign out'])
+    await user.click([...menu.querySelectorAll('button')].find(b => b.textContent === 'Sign out'))
+    expect(logout).toHaveBeenCalledTimes(1)
+    expect(document.getElementById('navbar-more')).toBeNull()
   })
 })

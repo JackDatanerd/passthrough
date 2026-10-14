@@ -303,11 +303,11 @@ describe('faq', () => {
 
 describe('navbar entries', () => {
   const renderNav = (user = null) => render(<MemoryRouter><AuthContext.Provider value={{ user, logout() {} }}><Navbar /></AuthContext.Provider></MemoryRouter>)
-  it('lists Stories, Hot categories, Pricing, For employers — in the order they appear on the page', () => {
+  it('lists Proof, The receipt, Stories, Hot categories, Pricing, For employers — in the order they appear on the page', () => {
     renderNav()
     const bar = screen.getAllByRole('navigation')[0]
     const links = within(bar).getAllByRole('link').map(a => [a.textContent, a.getAttribute('href')])
-    const wanted = [['Stories', '/#stories'], ['Hot categories', '/#hot'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
+    const wanted = [['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Stories', '/#stories'], ['Hot categories', '/#hot'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
     expect(links.filter(l => wanted.some(w => w[0] === l[0]))).toEqual(wanted)
   })
   it('no longer has "Check a resume" in the bar or the mobile menu (it lives in the footer, the receipt and the employer section)', () => {
@@ -316,7 +316,7 @@ describe('navbar entries', () => {
     expect(screen.queryByText('Check a resume')).toBeNull()
     const menu = document.getElementById('navbar-more')
     // "Sign in" joins the menu for signed-out visitors (on the very narrowest phones it has no room in the bar)
-    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['Stories', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
+    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['Proof', 'The receipt', 'Stories', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
   })
   it('the check link is still one click away from the employer section and the receipt', async () => {
     renderHome(); await ready()

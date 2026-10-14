@@ -49,7 +49,7 @@ export default function Home() {
         <HomeHero data={data} badgeThreshold={badgeThreshold} />
 
         <div className="border-b border-gray-100 bg-gray-50 py-4">
-          <div className="max-w-5xl mx-auto px-4 flex flex-wrap items-center justify-center gap-x-6 gap-y-1.5 text-sm text-gray-500">
+          <div className="max-w-[1180px] mx-auto px-4 sm:px-6 flex flex-wrap items-center justify-center gap-x-6 gap-y-1.5 text-sm text-gray-500">
             <span className="font-semibold text-gray-700">Scored the way employers actually filter:</span>
             {ATS_NAMES.map(n => <span key={n} className="font-bold text-gray-600">{n}</span>)}
           </div>

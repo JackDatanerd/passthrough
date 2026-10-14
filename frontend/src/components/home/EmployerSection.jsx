@@ -4,7 +4,7 @@ import EmployerLeadForm from '../lead/EmployerLeadForm'
 export default function EmployerSection() {
   return (
     <section id="employers" className="py-16 scroll-mt-4">
-      <div className="max-w-5xl mx-auto px-4 grid lg:grid-cols-2 gap-10 items-start">
+      <div className="max-w-[1180px] mx-auto px-4 sm:px-6 grid lg:grid-cols-2 gap-10 items-start">
         <div>
           <div className="inline-block bg-green-100 text-green-800 text-xs font-semibold px-3 py-1 rounded-full mb-3.5">For employers &amp; hiring managers</div>
           <h2 className="text-3xl font-bold text-gray-900 mb-4">Verified once. Trusted everywhere.</h2>

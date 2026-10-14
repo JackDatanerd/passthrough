@@ -7,7 +7,7 @@ const STEPS = [
 export default function HowItWorks() {
   return (
     <section id="how" className="py-16">
-      <div className="max-w-5xl mx-auto px-4">
+      <div className="max-w-[1180px] mx-auto px-4 sm:px-6">
         <div className="text-center max-w-2xl mx-auto mb-9">
           <p className="text-xs font-bold uppercase tracking-wider text-blue-700 mb-2">How it works</p>
           <h2 className="text-3xl font-bold text-gray-900">See it free. Pay only when you want it fixed.</h2>

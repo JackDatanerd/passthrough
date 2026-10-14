@@ -19,7 +19,7 @@ export default function StatsBand({ data, badgeThreshold }) {
 
   return (
     <section ref={ref} aria-label="Passthrough by the numbers" className="bg-blue-900 text-white py-11">
-      <div className="max-w-5xl mx-auto px-4">
+      <div className="max-w-[1180px] mx-auto px-4 sm:px-6">
         <div className="grid grid-cols-2 md:grid-cols-4 gap-x-5 gap-y-8 text-center">
           {count && <CountStat value={count.value} suffix={count.plus ? '+' : ''} label="resumes scanned" active={shown} />}
           {rate.pct != null && <CountStat value={rate.pct} suffix="%" label="of applicants report an interview*" active={shown} />}

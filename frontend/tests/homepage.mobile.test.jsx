@@ -74,34 +74,35 @@ describe('hero order: the scan card must be on the first phone screen', () => {
   })
   it('the headline steps down on phones so it does not eat the first screen', async () => {
     renderHome(); await ready()
-    expect(screen.getByRole('heading', { level: 1 }).className).toMatch(/text-\[34px\].*sm:text-5xl/)
+    // fluid now: clamp(2.1rem, 4.6vw, 3.4rem) — the floor (2.1rem = 33.6px) is the old 34px phone size, and it only grows with the viewport
+    expect(screen.getByRole('heading', { level: 1 }).className).toMatch(/text-\[clamp\(2\.1rem,4\.6vw,3\.4rem\)\]/)
   })
 })
 
 describe('navbar fits 320–360px phones', () => {
   const renderNav = (user = null) => render(<MemoryRouter><AuthContext.Provider value={{ user, logout() {} }}><Navbar /></AuthContext.Provider></MemoryRouter>)
-  it('Pricing leaves the bar below sm for everyone, Sign in leaves it below 340px — both stay reachable in "More"', () => {
+  it('the section links and Sign in leave the bar below lg for everyone — they stay reachable in \"More\"', () => {
     renderNav()
     const bar = screen.getAllByRole('navigation')[0]
-    expect(within(bar).getAllByText('Pricing')[0].className).toMatch(/hidden sm:block/)
-    const signIn = within(bar).getAllByText('Sign in')[0]
-    expect(signIn.className).toMatch(/hidden min-\[340px\]:block/)
+    expect(within(bar).getAllByText('Pricing')[0].parentElement.className).toMatch(/hidden lg:flex/)
+    expect(within(bar).getAllByText('Sign in')[0].className).toMatch(/hidden lg:block/)
     fireEvent.click(screen.getByRole('button', { name: /More/ }))
     const menu = document.getElementById('navbar-more')
     expect(within(menu).getByText('Pricing')).toBeInTheDocument()
-    expect(within(menu).getByText('Sign in').className).toMatch(/min-\[340px\]:hidden/)
+    expect(within(menu).getByText('Sign in')).toBeInTheDocument()
+    expect(menu.className).toMatch(/lg:hidden/)
   })
-  it('a signed-in user never gets a "Sign in" row', () => {
+  it('a signed-in user never gets a \"Sign in\" row', () => {
     renderNav({ id: 'u1', role: 'USER', emailVerified: true })
     fireEvent.click(screen.getByRole('button', { name: /More/ }))
     expect(within(document.getElementById('navbar-more')).queryByText('Sign in')).toBeNull()
   })
-  it('bar items keep a thumb-sized hit area on phones (padding, not a wider gap)', () => {
+  it('bar items keep a thumb-sized hit area on phones (padding, not a wider gap), and the one button never wraps', () => {
     renderNav()
     const bar = screen.getAllByRole('navigation')[0]
-    expect(within(bar).getAllByText('Sign in')[0].className).toMatch(/py-3/)
     expect(screen.getByRole('button', { name: /More/ }).className).toMatch(/py-3/)
-    expect(within(bar).getByText('Get started').className).toMatch(/whitespace-nowrap|py-2/)
+    expect(within(bar).getByText('Scan free').className).toMatch(/py-2\.5/)
+    expect(within(bar).getByText('Scan free').parentElement.className).toMatch(/whitespace-nowrap/)
   })
 })
 

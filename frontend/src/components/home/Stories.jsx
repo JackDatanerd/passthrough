@@ -80,7 +80,7 @@ export default function Stories({ stories, badgeThreshold }) {
   const allLinked = list.every(s => !!s.credentialCode)
   return (
     <section id="stories" className="bg-gray-50 border-y border-gray-100 py-16">
-      <div className="max-w-5xl mx-auto px-4">
+      <div className="max-w-[1180px] mx-auto px-4 sm:px-6">
         <div className="text-center max-w-2xl mx-auto mb-9">
           <p className="text-xs font-bold uppercase tracking-wider text-blue-700 mb-2">Real applicants</p>
           <h2 className="text-3xl font-bold text-gray-900 mb-3">The day the replies started coming</h2>
