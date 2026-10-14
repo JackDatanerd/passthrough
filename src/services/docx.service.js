@@ -165,10 +165,15 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
           style: 'ListParagraph',
           children: [new TextRun({ text: `•  ${p.description}`, font: 'Calibri', size: 22 })]
         }))
-      if (p.link)
+      if (p.link) {
+        // A project link is a link where it plainly is one (same rule as the contact line), not grey text to retype.
+        const projectHref = hrefFor(p.link)
         children.push(new Paragraph({
-          children: [new TextRun({ text: p.link, font: 'Calibri', size: 20, color: '666666' })]
+          children: [projectHref
+            ? new ExternalHyperlink({ link: projectHref, children: [linkRun(p.link, 20)] })
+            : new TextRun({ text: p.link, font: 'Calibri', size: 20, color: '666666' })]
         }))
+      }
       children.push(new Paragraph({ text: '' }))
     }
   }

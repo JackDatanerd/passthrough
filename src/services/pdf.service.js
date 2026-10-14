@@ -103,10 +103,11 @@ async function generateResumePDF(env, html, { launchRetryDelaysMs } = {}) {
         throw err
       }
     } finally {
-      await page.close()
+      // Closing is cleanup: a close that throws must not replace a PDF that already rendered (or the real render error).
+      await Promise.resolve().then(() => page.close()).catch(err => console.error('pdf: page.close failed:', err?.message))
     }
   } finally {
-    await browser.close()
+    await Promise.resolve().then(() => browser.close()).catch(err => console.error('pdf: browser.close failed:', err?.message))
   }
 }
 

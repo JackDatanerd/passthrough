@@ -1,7 +1,7 @@
 import Button from '../ui/Button'
 import PromoCountdown from '../ui/PromoCountdown'
 import { usePricing, fmtPrice } from '../../hooks/usePricing'
-import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
+import { ATS_BADGE_THRESHOLD, ATS_PASS_THRESHOLD, MAX_FIX_RETRIES } from '../../lib/scoreThresholds'
 import { ReferralCodeEntry, PricingFailedNotice } from '../ui/ReferralCodeEntry'
 
 // A typical professional resume writer's fee, in cents (USD only - see showWriterCompare). Used as the
@@ -176,7 +176,7 @@ export default function FixBanner({
     return (
       <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 sm:p-6">
         <p className="text-lg font-semibold text-blue-900">
-          {score < 75
+          {(scan.passed ?? score >= ATS_PASS_THRESHOLD) === false
             ? 'Your resume is being rejected by ATS filters'
             : 'Boost your score and unlock Verified status'}
         </p>

@@ -111,7 +111,10 @@ function normalizeTechTerms(text) {
     .replace(/\bgoogle\s+cloud(?:\s+platform)?\b/gi, ' gcp ')
     .replace(/\bartificial\s+intelligence\b/gi, ' ai ')
     .replace(/\bmachine\s+learning\b/gi, ' ml ')
-    .replace(/(?<![.\w])(?:ts)\b(?![.\w])/gi, ' typescript ')
+    // "React js" / "Node JS" (a space, not a dot) is the framework, not React plus JavaScript: the rule below cannot see
+    // across the space, so it is written the way it is written everywhere else. "TS/SCI" is a security clearance.
+    .replace(/\b(node|next|vue|react|express|nuxt|angular|ember|d3|three)[ \t]+js\b/gi, '$1.js')
+    .replace(/(?<![.\w])(?:ts)\b(?![.\w]|\/sci\b)/gi, ' typescript ')
     .replace(/(?<!\b(?:node|next|vue|react|express|nuxt|angular|ember|d3|three)\.?)(?<![.\w])js\b(?![.\w])/gi, ' javascript ')
     .replace(/\bobjective[\s-]c\b/gi, ' objectivec ')
     .replace(/\b(node|next|vue|react|express|nuxt|angular|ember|d3|three)\.?js\b/gi, ' $1 js ')
@@ -183,6 +186,35 @@ function tokenizeSegments(text) {
 // and "k8s" are unaffected), along with pay-line boilerplate words.
 const keepToken = w => (w.length >= 3 || SHORT_KEEP.has(w)) && !/^\p{N}+$/u.test(w)
 for (const w of ['per', 'range', 'base', 'hiring', 'annual', 'annually', 'transparency', 'compensation']) STOP_WORDS.add(w)
+// SCAN/ATS ROUND 9 (gap, verified): the stop list was English only, but the resume side already recognises Spanish,
+// French, German and Portuguese. For a posting in one of those languages the "keywords" were its function words —
+// `con`, `para`, `los`, `pour`, `und` — and the posting's own boilerplate (`requisitos`, `ofrecemos`), so an unrelated
+// resume in the same language scored 24 on Keywords by "matching" them, and the missing list read "con python".
+// These are function words and posting boilerplate of Spanish, French, Portuguese, German, Italian and Swahili (the
+// languages of this product's markets). Words that are also English vocabulary or a tech term (mit, plus, par, come,
+// base, data) are deliberately not here.
+const NON_ENGLISH_STOP = `
+  los las del con para por una uno unos unas que como pero mas sus nuestro nuestra nuestros nuestras tus son ser esta este estos estas
+  ese esa cada otros otras donde cuando sera tendra sobre entre sin desde hasta tambien muy esto eso ellos ellas usted ustedes
+  requisitos responsabilidades funciones ofrecemos buscamos puesto empresa equipo experiencia conocimientos capacidad trabajo personas
+  oferta vacante candidato candidatos incorporacion
+  nosotros nosotras quieran quiera quieres tener tiene tienen busca buscan ofrece ofrecen formar parte
+  les des une pour dans sur avec sans est sont qui nous vous votre vos nos notre aux ces ses cette ainsi aussi mais donc chez vers leur
+  leurs etre avoir faire exigences missions profil poste entreprise equipe connaissances offre rejoindre recherchons
+  dos das nas nos uma com mais seu sua seus suas sao esta tambem muito sem ate vaga equipa conhecimentos oferecemos procuramos
+  della delle degli nel nella gli che piu sono essere anche suoi nostro nostra tra fra dei alla alle agli dal dalla requisiti
+  competenze offriamo cerchiamo
+  und der die das den dem ein eine einen einer nicht von zum zur bei sich sind wird werden sie wir ihr auf aus nach wie oder auch
+  fur als bieten aufgaben anforderungen erfahrung kenntnisse unternehmen stelle suchen
+  kwa kama pia hii huu hiyo huo yetu wetu yako wako ambayo ambao ambaye kuwa kwamba lakini sana hadi kutoka katika wao yeye sisi wewe mimi
+  pamoja baada kabla wakati kila hapa mahitaji majukumu nafasi kampuni uzoefu ujuzi
+`
+for (const w of NON_ENGLISH_STOP.split(/\s+/).filter(Boolean)) STOP_WORDS.add(w)
+// Accented spellings of the same words ("más", "será", "über", "für", "équipe") are the same word to a reader; fold them
+// out so a posting typed with accents is filtered like one typed without.
+const foldAccents = w => w.normalize('NFD').replace(/\p{M}+/gu, '')
+STOP_WORDS.add('über')     // not folded: "uber" is also a company name
+const isStop = w => STOP_WORDS.has(w) || (/[^\x00-\x7f]/.test(w) && STOP_WORDS.has(foldAccents(w)))
 
 const JS_FRAMEWORKS = { node: 'Node.js', next: 'Next.js', vue: 'Vue.js', react: 'React.js', express: 'Express.js', nuxt: 'Nuxt.js', angular: 'Angular.js', ember: 'Ember.js', d3: 'D3.js', three: 'Three.js' }
 function displayKeyword(kw) {
@@ -199,13 +231,13 @@ function extractKeywords(text) {
   const freq = {}
   for (const seg of tokenizeSegments(text)) {
     for (const w of seg) {
-      if (keepToken(w) && !STOP_WORDS.has(w)) freq[w] = (freq[w] || 0) + 1
+      if (keepToken(w) && !isStop(w)) freq[w] = (freq[w] || 0) + 1
     }
   }
   for (const seg of tokenizeSegments(text)) {
     for (let i = 0; i < seg.length - 1; i++) {
       const a = seg[i], b = seg[i + 1]
-      if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+      if (keepToken(a) && keepToken(b) && !isStop(a) && !isStop(b)) {
         const phrase = `${a} ${b}`
         freq[phrase] = (freq[phrase] || 0) + 1
       }
@@ -347,11 +379,11 @@ function extractWeightedKeywords(text) {
     const zw = ZONE_WEIGHT[z.type] ?? 1
     for (const seg of tokenizeSegments(z.text)) {
       for (const w of seg) {
-        if (keepToken(w) && !STOP_WORDS.has(w)) bump(w, zw * (1 + techBonus(w, caps)))
+        if (keepToken(w) && !isStop(w)) bump(w, zw * (1 + techBonus(w, caps)))
       }
       for (let i = 0; i < seg.length - 1; i++) {
         const a = seg[i], b = seg[i + 1]
-        if (keepToken(a) && keepToken(b) && !STOP_WORDS.has(a) && !STOP_WORDS.has(b)) {
+        if (keepToken(a) && keepToken(b) && !isStop(a) && !isStop(b)) {
           bump(`${a} ${b}`, zw * (1 + Math.max(techBonus(a, caps), techBonus(b, caps)) * 0.5))
         }
       }
@@ -421,7 +453,7 @@ function fitJobDescription(text, max) {
 //      a pasted posting shares dozens.
 //   3. HIDDEN TEXT. The ingest layer dropped white/tiny/off-page/"hidden" text and counted it; trying it is penalised.
 const SKILLS_HEADING_RE  = /(?:^| )(?:skills|technical skills|core competencies|competencies|expertise|technologies|tools|tech stack|competences|competencias|habilidades|aptitudes|kenntnisse|fahigkeiten|fertigkeiten)(?: |$)/
-const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|coursework|relevant coursework|activities|leadership|training|professional development|additional information|honors|honours|licenses|licences|achievements|accomplishments|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
+const OTHER_HEADING_RE   = /(?:^| )(?:experience|work history|employment history|employment|career history|professional background|internships?|professional experience|education|academic background|summary|professional summary|objective|profile|projects|personal projects|certifications?|certificates|awards|languages|volunteer(?:ing)?|publications|interests|references|coursework|relevant coursework|activities|leadership|training|professional development|additional information|honors|honours|licenses|licences|achievements|accomplishments|experiencia|formacion|educacion|resumen|perfil|berufserfahrung|ausbildung|zusammenfassung|formation|parcours professionnel|emploi)(?: |$)/
 const foldHeading = l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase().replace(/[^a-z& ]+/g, ' ').replace(/\s+/g, ' ').trim()
 // SCAN/ATS ROUND 6 (bug): the two heading regexes above match ANYWHERE in a line, so a short unpunctuated bullet such
 // as "Built internal tools" read as a Skills heading and every bullet after it became "skills-only" (measured on a real
@@ -429,6 +461,7 @@ const foldHeading = l => l.normalize('NFD').replace(/\p{M}+/gu, '').toLowerCase(
 // vocabulary ONLY, and never starts with a bullet glyph.
 const HEADING_WORDS = new Set(`skills skill technical core competencies competency expertise technologies technology tools tech stack
   key relevant additional selected other areas area of and & the my professional work history employment career academic background
+  internship internships
   experience education summary objective profile projects project personal certifications certification certificates certificate
   awards languages language volunteer volunteering publications interests references
   competences competencias habilidades aptitudes kenntnisse fahigkeiten fertigkeiten experiencia formacion educacion resumen perfil
@@ -726,7 +759,7 @@ function scoreSections(resumeText) {
   const required = [
     // English first, then the common section words of French / Spanish / Portuguese / German
     // resumes (diacritics are folded away before matching, so "Expérience" is "experience").
-    { name: 'Experience', patterns: ['experience','work history','employment history','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois'] },
+    { name: 'Experience', patterns: ['experience','work history','employment history','employment','career history','professional background','internship','internships','experiencia','experiencias','berufserfahrung','erfahrung','parcours professionnel','emploi','emplois'] },
     { name: 'Education',  patterns: ['education','academic background','formation','formations','formacion','educacion','formacao','educacao','ausbildung','bildung','studium','parcours academique'] },
     { name: 'Skills',     patterns: ['skills','technical skills','core competencies','expertise','competences','competencias','habilidades','aptitudes','kenntnisse','fahigkeiten','fertigkeiten'] },
     { name: 'Contact',    patterns: null },
@@ -935,21 +968,40 @@ const ROLE_SIGNALS = {
 const ROLE_REGEXES = Object.fromEntries(Object.entries(ROLE_SIGNALS).map(([cat, kws]) => [
   cat, kws.map(k => new RegExp(`\\b${k}${/^[a-z]+$/.test(k) && k.length <= 3 ? '\\b' : ''}`, 'g')),
 ]))
+// A phrase says more than a word it contains: "data engineer" outranks the bare "engineer" it also holds.
+const ROLE_WEIGHTS = Object.fromEntries(Object.entries(ROLE_SIGNALS).map(([cat, kws]) => [cat, kws.map(k => 10 + 2 * (k.split(' ').length - 1))]))
+// SCAN/ATS ROUND 9 (bug, verified): the "title" was the first 200 characters of the posting, which for most postings is
+// the title AND the company's opening paragraph. "Customer Success Manager — Acme builds software for engineers…" and
+// "Technical Recruiter — hire engineers and developers…" were both filed as software_engineering, and "Data Engineer"
+// tied with software_engineering (both matched in the title) and lost to it on list order. The title is now the first
+// line (plus the next when the first is only a label); a category named in the title wins; the body alone must clear a
+// higher bar, so an intro that merely mentions engineers no longer decides the role.
+const TITLE_LABEL = /^(?:job (?:title|description|posting|opening)|position|role|vacancy|we(?:'re| are) hiring|hiring|now hiring|opening)\s*:?\s*$/
+function jobTitleOf(lower) {
+  const lines = lower.split('\n').map(l => l.trim()).filter(Boolean)
+  if (!lines.length) return ''
+  let title = lines[0]
+  if (TITLE_LABEL.test(title) && lines[1]) title = lines[1]
+  return title.slice(0, 120)
+}
+const ROLE_BODY_MIN = 5
 function detectRoleCategory(jdText) {
   const lower = String(jdText || '').toLowerCase()
-  const title = lower.trim().slice(0, 200)
-  let best = 'other', bestScore = 0
+  const title = jobTitleOf(lower)
+  let bestTitle = 'other', bestTitleScore = 0, bestBody = 'other', bestBodyScore = 0
   for (const [cat, regexes] of Object.entries(ROLE_REGEXES)) {
-    let score = 0
-    for (const re of regexes) {
+    let inTitle = 0, inBody = 0
+    regexes.forEach((re, i) => {
       re.lastIndex = 0
-      if (re.test(title)) score += 10
+      if (re.test(title)) inTitle += ROLE_WEIGHTS[cat][i]
       re.lastIndex = 0
-      score += Math.min((lower.match(re) || []).length, 2)
-    }
-    if (score > bestScore) { best = cat; bestScore = score }
+      inBody += Math.min((lower.match(re) || []).length, 2)
+    })
+    if (inTitle > bestTitleScore || (inTitle > 0 && inTitle === bestTitleScore && inBody > bestBodyScore)) { bestTitle = cat; bestTitleScore = inTitle; bestBody = cat; bestBodyScore = inBody }
+    else if (!bestTitleScore && inBody > bestBodyScore) { bestBody = cat; bestBodyScore = inBody }
   }
-  return bestScore >= 2 ? best : 'other'
+  if (bestTitleScore > 0) return bestTitle
+  return bestBodyScore >= ROLE_BODY_MIN ? bestBody : 'other'
 }
 
 // AUDIT FIX (Auth/Scan round): the old detector (a) never matched "Sr."/"Jr."

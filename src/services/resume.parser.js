@@ -93,6 +93,60 @@ function readEntryCapped(entry, maxBytes) {
 // which is what actually needs to reach the ATS scorer and Claude.
 // Turns one WordprocessingML part (document/header/footer XML) into text lines.
 // ── SCAN/ATS ROUND 4: what a .docx hides from <w:t> ─────────────────────────────────────────────────
+// SCAN/ATS ROUND 9 (bug, verified): the extraction below uses lazy `[\s\S]*?` block patterns and `[^>]*` tag patterns on
+// the raw XML of an UPLOADED file. A lazy pattern whose closing tag never arrives is retried from every later opener,
+// and `[^>]*` runs to the end of the text for every `<` that never closes: a 1.3 KB .docx holding 32,000 unclosed tags
+// cost 8 s of CPU, and the cost grows with the square of the count (the 8 MB cap allows tens of minutes), reachable
+// without an account. The patterns are left as they are; instead every XML part is normalised ONCE, in a single linear
+// pass, into a form in which they cannot go quadratic: a `<` that does not start a tag is dropped, and the block tags
+// the patterns pair up (paragraph, run, text, run properties, hyperlink, numbering, fallback copy) are made strictly
+// well-nested — an opener that never closes, and a closer that never opened, are removed. A well-formed Word file is
+// returned unchanged.
+const NESTED_TAGS = new Set(['w:p', 'w:r', 'w:t', 'w:rPr', 'w:hyperlink', 'w:numPr', 'mc:Fallback'])
+function sanitizeDocxXml(xml) {
+  const text = String(xml || '')
+  const chunks = []
+  const stack = []                       // { name, idx } of the open block tags
+  const open = new Map()                 // name -> how many of it are on the stack
+  let pos = 0
+  let nextGt = 0, nextLt = text.indexOf('<')
+  let i = nextLt
+  while (i !== -1) {
+    if (nextGt !== -1 && nextGt <= i) nextGt = text.indexOf('>', i + 1)
+    nextLt = text.indexOf('<', i + 1)
+    const g = nextGt
+    if (g === -1 || (nextLt !== -1 && nextLt < g)) {           // a `<` that does not begin a tag
+      chunks.push(text.slice(pos, i)); pos = i + 1; i = nextLt; continue
+    }
+    const c1 = text.charCodeAt(i + 1)
+    if (c1 === 47) {                                            // </name>
+      const name = text.slice(i + 2, g).trim().split(/\s/)[0]
+      if (NESTED_TAGS.has(name)) {
+        if ((open.get(name) || 0) > 0) {
+          for (;;) {
+            const top = stack.pop()
+            open.set(top.name, open.get(top.name) - 1)
+            if (top.name === name) break
+            chunks[top.idx] = ''                                // opened inside, never closed
+          }
+        } else { chunks.push(text.slice(pos, i)); pos = g + 1 } // closer without an opener
+      }
+    } else if (c1 !== 33 && c1 !== 63 && text.charCodeAt(g - 1) !== 47) {   // <name ...> (not <!..>, <?..>, <name/>)
+      const m = /^<([^\s/>]+)/.exec(text.slice(i, Math.min(g + 1, i + 80)))
+      if (m && NESTED_TAGS.has(m[1])) {
+        chunks.push(text.slice(pos, i))
+        stack.push({ name: m[1], idx: chunks.push(text.slice(i, g + 1)) - 1 })
+        open.set(m[1], (open.get(m[1]) || 0) + 1)
+        pos = g + 1
+      }
+    }
+    i = nextLt
+  }
+  for (const top of stack) chunks[top.idx] = ''
+  chunks.push(text.slice(pos))
+  return chunks.join('')
+}
+
 // Hidden text. Word's "Hidden" font effect, near-white text and sub-3pt text are all invisible on the page and all
 // readable by the extractor, so pasting the job description in white used to lift the keyword score for free.
 // Those runs are now dropped from the text and COUNTED (stats.hiddenChars) so the scorer can say so.
@@ -237,7 +291,7 @@ async function extractDocxParts(bytes) {
   const docXml = zip.file('word/document.xml')
   if (!docXml) throw new Error('word/document.xml not found — not a valid .docx file')
   // Capped streaming inflate — see the ZIP-BOMB DEFENCE comment above.
-  const xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
+  const xml = sanitizeDocxXml(new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES)))
   const stats = { hiddenChars: 0 }
   const darkBg = docHasDarkBackground(xml)
   const body = docxXmlToLines(xml, { links: await readRels(zip, 'word/document.xml'), stats, darkBg }).filter(Boolean)
@@ -246,7 +300,7 @@ async function extractDocxParts(bytes) {
     const out = []
     for (const entry of (zip.file(re) || []).slice(0, 6)) {
       try {
-        const partXml = new TextDecoder('utf-8').decode(await readEntryCapped(entry, MAX_DOCX_XML_BYTES))
+        const partXml = sanitizeDocxXml(new TextDecoder('utf-8').decode(await readEntryCapped(entry, MAX_DOCX_XML_BYTES)))
         out.push(...docxXmlToLines(partXml, { links: await readRels(zip, entry.name), stats, darkBg }).filter(Boolean))
       } catch (_) { /* a broken header part must never fail the whole extraction */ }
     }
@@ -270,7 +324,7 @@ async function inspectDocxStructure(bytes) {
     const zip = await JSZip.loadAsync(bytes)
     const docXml = zip.file('word/document.xml')
     if (!docXml) return null
-    let xml = new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES))
+    let xml = sanitizeDocxXml(new TextDecoder('utf-8').decode(await readEntryCapped(docXml, MAX_DOCX_XML_BYTES)))
     // Text boxes and pictures are written twice (mc:Choice + mc:Fallback copy).
     xml = xml.replace(/<mc:Fallback>[\s\S]*?<\/mc:Fallback>/g, '')
     const count = re => (xml.match(re) || []).length
@@ -511,4 +565,4 @@ function serializeResumeData(resumeData) {
   return lines.join('\n')
 }
 
-module.exports = { extractText, extractDocxParts, analyzeUpload, inspectStructure, parse, structureBrainDump, serializeResumeData }
+module.exports = { sanitizeDocxXml, extractText, extractDocxParts, analyzeUpload, inspectStructure, parse, structureBrainDump, serializeResumeData }

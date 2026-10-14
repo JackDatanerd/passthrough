@@ -105,7 +105,8 @@ function stripFormFieldNoise(text) {
 // text (see the file-level comment above for why that's a deliberate
 // trade-off, not an oversight).
 const GENERIC_NOISE_PATTERNS = [
-  /\bsimilar jobs?\b/gi,
+  /\bsimilar jobs\b/gi,                  // the widget heading (often flattened into a sentence by text extraction)
+  /^[ \t]*similar job[ \t]*$/gim,        // singular only as a heading of its own: "similar job functions" is prose
   /\brelated jobs?\b/gi,
   /\byou (?:might|may) also like\b/gi,
   /\bmore jobs? (?:like this|from this employer)\b/gi,

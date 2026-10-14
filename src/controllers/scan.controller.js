@@ -601,7 +601,12 @@ async function createScan(ctx) {
 // GET /api/scan/status/:id
 async function getScanStatus(ctx) {
   const supabase = getSupabase(ctx.env)
-  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  // SCAN/ATS ROUND 9 (performance): the page polls this every few seconds for the whole life of a scan or a fix, and
+  // `select('*')` read the entire row each time — the resume text, the job description, the structured data and the full
+  // report, up to ~100 KB. Only the columns the ownership check and the response use are read.
+  const { data: row, error } = await supabase.from('scans')
+    .select('id, status, user_id, anon_token, anon_expires_at, ats_score, passed, keyword_score, format_score, sections_score, content_score')
+    .eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
   if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
@@ -2233,6 +2238,14 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       if (!flipErr && Array.isArray(flipped) && flipped.length === 0) failedIt = false
     } catch (_) {}
     // An unexpected throw mid-pipeline is our fault, not the person's.
+    // SCAN/ATS ROUND 9: when the failure WAS the read of the scan row (a transient database error), scanForRefund is still
+    // null and the slot was never handed back although the scan is now ERROR. One more read, so the refund can run.
+    if (failedIt && !scanForRefund) {
+      try {
+        const { data: again } = await supabase.from('scans').select('*').eq('id', scanId).maybeSingle()
+        if (again) scanForRefund = scanRowToCamel(again)
+      } catch (_) { /* the database is still unreachable: nothing more can be done from here */ }
+    }
     if (failedIt) {
       try { await refundScanSlot(env, supabase, scanForRefund, 'runAtsScan: quota refund (unexpected error)', anonRlKey, ipSlotKey) } catch (_) {}
     }
