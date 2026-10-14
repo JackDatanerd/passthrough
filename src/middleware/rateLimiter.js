@@ -346,13 +346,15 @@ const general = makeLimiter({
   skip: c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c) || isLeadOptOutRequest(c)
 })
 
-// The employer-lead opt-out endpoints (see `employerLeadOptOut`): they have their own limiter, and
-// this generic 100-per-15-min per-IP bucket would otherwise still apply to the shared IPs
-// mailbox providers unsubscribe from.
+// The one-click opt-out endpoints (employer leads: see `employerLeadOptOut`; the interview follow-up email:
+// see `followUpOptOut`): they have their own limiters, and this generic 100-per-15-min per-IP bucket would
+// otherwise still apply to the shared IPs mailbox providers unsubscribe from (RFC 8058 POSTs and the GET
+// hand-off). AUDIT FIX (cross-cutting infra round 9): /api/outcomes/unsubscribe was missing from this list, so
+// its own 600-per-hour limiter was never the binding one.
 function isLeadOptOutRequest(c) {
   const p = c.req.path.replace(/\/+$/, '')
-  return (c.req.method === 'POST' && (p === '/api/employer-leads/remove' || p === '/api/employer-leads/unsubscribe'))
-    || (c.req.method === 'GET' && p === '/api/employer-leads/unsubscribe')
+  return (c.req.method === 'POST' && (p === '/api/employer-leads/remove' || p === '/api/employer-leads/unsubscribe' || p === '/api/outcomes/unsubscribe'))
+    || (c.req.method === 'GET' && (p === '/api/employer-leads/unsubscribe' || p === '/api/outcomes/unsubscribe'))
 }
 
 // Scan-status polling: the SPA polls GET /api/scan/:id every ~2.5s while a

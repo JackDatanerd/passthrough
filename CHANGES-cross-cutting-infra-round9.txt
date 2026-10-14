@@ -1,0 +1,15 @@
+Cross-cutting infra, round 9 (bugs only; independent audit of section 9)
+
+1. DEPLOYMENT.md (bug): the Profile & Dashboard round 13 commit overwrote parts of the Webhooks round 13 text. Restored:
+   - the "WEBHOOKS ROUND 13 (migration 0083 ...)" apply-before-deploy note (payments.dispute_due_at),
+   - the REVERSAL_CHECKS_PER_RUN description (still read by reconcile.service.js),
+   - the Resend webhook event list: email.failed and email.suppressed (the controller records them and pages the owner;
+     an operator following the doc subscribed only to bounced / complained and never got those alerts).
+2. middleware/rateLimiter.js (bug): POST/GET /api/outcomes/unsubscribe (the interview follow-up's RFC 8058 one-click
+   opt-out) was not exempt from the generic 100-per-15-min per-IP `general` limiter, unlike the employer-lead opt-outs, so
+   its own followUpOptOut limiter (sized for shared mail-provider IPs) was never the binding one. Now exempt.
+3. Duplicate migration number 0083 (profile / webhooks): already renumbered upstream to 0084 before this round; nothing
+   to change here. tests/migrations.numbering and migrations.pglite are green again.
+
+Tests: tests/crossCutting.round9.test.js (opt-out exemption incl. negative cases; DEPLOYMENT.md must list every Resend
+event the controller records, REVERSAL_CHECKS_PER_RUN, and a note for migrations 0083/0084).

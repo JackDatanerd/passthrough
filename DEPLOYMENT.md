@@ -288,6 +288,12 @@ wrangler secret put VERIFY_PREVIEW_KEY
 #   * tests/migrations.pglite.test.js applies every migration to a real Postgres (PGlite, no server) and checks RLS, grants, search_path
 #     pinning, foreign-key indexes, the account scrub's column coverage and SQL/JS mailbox-key parity. It runs in `npm run test:worker`.
 
+# WEBHOOKS ROUND 13 (migration 0083 — apply BEFORE deploying this Worker). Adds payments.dispute_due_at (when Paystack auto-accepts an
+# unanswered dispute), shown on Admin -> Payments and as the "Open disputes" card on the dashboard. The Worker degrades gracefully if it
+# runs before the migration: disputes are still marked and the list still loads, only the deadline is missing. New hourly sweep: refunds
+# Paystack has parked (needs-attention / failed / long pending) and partial refunds whose webhook was lost are emailed to the owner once
+# a week each (notify-only). Admin -> Webhooks gained multi-select Replay / Dismiss.
+
 # PROFILE & DASHBOARD ROUND 13 (migration 0084 — apply BEFORE deploying this Worker; EXPECTED_SCHEMA_VERSION is now 84).
 #   * 0084 replaces add_saved_profile (new optional p_edited_at) and set_saved_profile_resume / update_saved_profile (an unchanged
 #     resume no longer stamps the "edited" marker). Idempotent. The previous Worker keeps working against it. New route:
@@ -391,6 +397,10 @@ wrangler secret put CORS_EXTRA_ORIGINS
 #   (a plain [vars] entry in wrangler.toml is fine for this one)
 # SUPABASE_TIMEOUT_MS = "25000"
 
+# REVERSAL_CHECKS_PER_RUN (default 20, max 100): how many paid sales the hourly refund-reconciliation sweep asks Paystack about
+# per run. 20 an hour re-checks about 120 payments every 6 hours; with more live payments than that, raise it (each check costs one
+# subrequest, shared with the other sweeps in the same cron run: 50 on the Workers free plan, 1000 on paid).
+#
 # Other optional [vars]/secrets read by the code: SCAN_IP_DAILY_CAP (free scans per IP per day;
 # 0 disables the cap), PWNED_PASSWORDS_CHECK ("off" turns off the breached-password
 # check), RATE_LIMIT_BYPASS_IPS (comma-separated IP addresses and/or CIDR ranges; honoured in EVERY
@@ -636,7 +646,9 @@ mail to that address — the endpoint below does that automatically (hash record
 mail history cleared; same result as the person clicking Remove).
 
 1. In Resend: **Webhooks → Add endpoint**, URL `https://<your-api-domain>/api/webhooks/resend`,
-   events **`email.bounced`** and **`email.complained`** (other events are acknowledged and ignored).
+   events **`email.bounced`**, **`email.complained`**, **`email.failed`** and **`email.suppressed`** (other events are
+   acknowledged and ignored; `email.failed` and `email.suppressed` page the owner, since a send that never left means mail
+   to that address, possibly a registered account, is not being delivered).
    Also tick **`email.delivered`**: any verified event stamps "last Resend event" on Admin → Webhooks, which is the
    only way to notice an endpoint that was never registered, was paused, or points at the wrong URL (bounces and
    complaints are rare, so on their own silence proves nothing).
