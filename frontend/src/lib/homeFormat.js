@@ -34,3 +34,11 @@ export const initialOf = (name) => (String(name || '').trim().match(/\p{L}|\p{N}
 
 // Story body text -> paragraphs (blank-line separated; single newlines kept as part of a paragraph).
 export const paragraphs = (text) => String(text || '').split(/\n{2,}/).map(p => p.trim()).filter(Boolean)
+
+// Score -> colours, one definition for every score bar on the homepage (the hero's example card and the Before/After
+// section), so the same number can never be green in one place and amber in the other.
+export const scoreTone = v => (v >= 80
+  ? { bar: 'bg-green-500', text: 'text-green-700' }
+  : v >= 60
+    ? { bar: 'bg-amber-400', text: 'text-amber-700' }
+    : { bar: 'bg-red-500', text: 'text-red-700' })

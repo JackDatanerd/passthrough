@@ -48,13 +48,14 @@ export default function Settings() {
   // on dashboard/Index.jsx. Same request/refresh pattern as that one.
   const [resending, setResending] = useState(false)
   const [resentOk,  setResentOk ] = useState(false)
+  const [everResent, setEverResent] = useState(false)
   const [resendError, setResendError] = useState('')
 
   async function handleResendVerification() {
     setResending(true); setResendError('')
     try {
       await api.post('/auth/resend-verification')
-      setResentOk(true)
+      setResentOk(true); setEverResent(true)
       refreshUser()
     } catch (err) {
       setResendError(getErrorMessage(err, 'Could not resend verification email.'))
@@ -64,6 +65,13 @@ export default function Settings() {
       setResending(false)
     }
   }
+
+  // "Sent!" is shown for a moment, then the button comes back so a lost email can be asked for again.
+  useEffect(() => {
+    if (!resentOk) return undefined
+    const t = setTimeout(() => setResentOk(false), 30000)
+    return () => clearTimeout(t)
+  }, [resentOk])
 
   useEffect(() => {
     if (user?.name && !nameDirty) setName(user.name)
@@ -585,7 +593,7 @@ export default function Settings() {
                     <span className="text-xs text-green-700 bg-green-100 px-3 py-1.5 rounded-md">Sent!</span>
                   ) : (
                     <Button size="sm" variant="secondary" onClick={handleResendVerification} loading={resending}>
-                      Resend verification email
+                      {everResent ? 'Resend again' : 'Resend verification email'}
                     </Button>
                   )}
                   {resendError && <p role="alert" className="text-sm text-red-600">{resendError}</p>}
@@ -957,7 +965,8 @@ export default function Settings() {
       <ConfirmDialog
         open={!!removeExtraTarget}
         title="Remove profile"
-        message={removeExtraTarget ? `Remove “${removeExtraTarget.label}”? You can save it again from a completed scan.` : ''}
+        message={removeExtraTarget ? `Remove “${removeExtraTarget.label}”? You can save it again from a completed scan.` +
+          (dirtyEditors.has(removeExtraTarget.id) ? '\n\nYou also have unsaved edits to it in the open editor. They will be lost.' : '') : ''}
         confirmLabel="Remove"
         loading={extraBusy}
         onConfirm={handleRemoveExtra}
@@ -988,7 +997,8 @@ export default function Settings() {
       <ConfirmDialog
         open={removeConfirmOpen}
         title="Remove saved profile"
-        message="Remove your saved profile and its earlier version? You'll need to save it again from a completed scan to reuse it for a rescan. Your other profiles are not affected."
+        message={"Remove your saved profile and its earlier version? You'll need to save it again from a completed scan to reuse it for a rescan. Your other profiles are not affected." +
+          (dirtyEditors.has('main') ? '\n\nYou also have unsaved edits in the open editor. Removing closes it and they will be lost.' : '')}
         confirmLabel="Remove"
         loading={removing}
         onConfirm={handleRemoveProfile}

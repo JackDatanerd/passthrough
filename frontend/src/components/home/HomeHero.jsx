@@ -4,6 +4,7 @@ import { AuthContext } from '../../context/AuthContext'
 import { formatScanCount } from '../../lib/homeFormat'
 import { ATS_NAMES } from '../../lib/homeContent'
 import TypedText from './TypedText'
+import HeroExample from './HeroExample'
 
 const FACES = [['A', 'bg-blue-600'], ['D', 'bg-teal-600'], ['P', 'bg-purple-600'], ['J', 'bg-rose-600'], ['M', 'bg-amber-600']]
 
@@ -56,10 +57,11 @@ export default function HomeHero({ data, badgeThreshold }) {
           </p>
         </div>
 
-        <div id="scan-form" className="min-w-0 scroll-mt-4 bg-white rounded-xl border border-gray-200 shadow-lg p-4 sm:p-6 lg:col-start-2 lg:row-start-1 lg:row-span-2">
+        <div id="scan-form" className="min-w-0 scroll-mt-4 bg-white rounded-xl border border-gray-200 shadow-lg p-4 sm:p-6 flex flex-col lg:self-stretch lg:col-start-2 lg:row-start-1 lg:row-span-2">
           <h2 className="text-base font-semibold text-gray-900 mb-4">Scan your resume — free, about 30 seconds</h2>
           <ScanForm />
-          <ul className="mt-4 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-gray-500">
+          {/* mt-auto: when the left column is the taller one the card stretches to meet it, and the ticks sit at the card's foot */}
+          <ul className="mt-auto pt-4 flex flex-wrap justify-center gap-x-4 gap-y-1 text-xs text-gray-500">
             {ticks.map(t => <li key={t}><span className="text-green-600 font-bold" aria-hidden="true">✓ </span>{t}</li>)}
           </ul>
         </div>
@@ -86,6 +88,7 @@ export default function HomeHero({ data, badgeThreshold }) {
               </div>
             ))}
           </dl>
+          <HeroExample />
         </div>
       </div>
     </section>

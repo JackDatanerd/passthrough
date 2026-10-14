@@ -1,0 +1,39 @@
+HOMEPAGE round 5 — simpler navbar with a Stories dropdown, "what a scan shows you" card in the hero
+===============================================================================================
+
+Follow-up to round 4, from the approved v2 mockup.
+
+NAVBAR (components/layout/Navbar.jsx)
+- The bar is now four entries instead of six: How it works, Stories (dropdown), Pricing, For employers.
+- "Stories" is a disclosure dropdown (lg and up) holding the sections that used to crowd the bar:
+  Applicant stories (/#stories), Proof (/#proof), The receipt (/#receipt), Hot categories (/#hot).
+  * a <button> with aria-expanded / aria-controls="navbar-stories" (a short list of ordinary links, not an ARIA "menu")
+  * click to open; closes on Escape (focus returns to the button), on a press outside, when Tab moves focus out of it,
+    on choosing an item, and on any navigation
+- Below lg the "More" menu lists the same group flat, under a "Stories" label (no nested dropdown on a phone):
+  How it works / STORIES: Applicant stories, Proof, The receipt, Hot categories / Pricing / For employers / account links.
+- Unchanged from round 4: sticky bar, logo mark, "Scan free" button, account entries, skip link, aria-current, <360px sizing.
+
+HERO (components/home/HeroExample.jsx, HomeHero.jsx)
+- New compact card under the key-facts row, "What a scan shows you": the 52 -> 91 before/after, the four score bars per side
+  and the keywords the resume was missing, with a link down to the full Before/After section (#proof).
+  It reads BEFORE_AFTER from lib/homeContent.js (the same illustration the full section uses), is labelled "Illustrative
+  example" like that section, and gives screen readers "Before: score 52 out of 100" / "After: score 91 out of 100".
+- Fills the empty block that used to sit under the hero copy. On phones it comes after the scan card (DOM order is still
+  pitch -> scan card -> proof), so the form stays on the first screen.
+- The scan card now stretches to the left column's height from lg up (lg:self-stretch, flex column, tick list at its foot), so
+  the two columns end flush whatever fonts the visitor has. Nothing inside the form changed.
+
+SHARED
+- lib/homeFormat.js: scoreTone(v) — the green/amber/red thresholds (>=80 / >=60 / below), now used by both the hero card and
+  BeforeAfter.jsx so a score can never be a different colour in the two places.
+
+TESTS
+- components/Navbar.test.jsx: bar entries, dropdown contents and aria, Escape + focus return, press-outside, item click, Tab-out,
+  flat phone menu, signed-in menu order.
+- homepage.round2.test.jsx: navbar entries + More menu updated; the keyword-chip check is scoped to #proof (the hero card shows
+  the missing keywords once more).
+- home.page.test.jsx: the avatar-strip assertion is scoped to the avatars (the proof block now also holds the card's chips).
+- components/HeroExample.test.jsx (new): same numbers as BEFORE_AFTER, "Illustrative example" label, before/after for assistive
+  tech, keywords + link to #proof, shared score colours.
+- Full frontend suite: 190 files green.

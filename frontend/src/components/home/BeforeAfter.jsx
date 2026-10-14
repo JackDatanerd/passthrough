@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import useReveal, { useCountUp } from '../../hooks/useReveal'
 import { BEFORE_AFTER, ROBOT_READ } from '../../lib/homeContent'
+import { scoreTone } from '../../lib/homeFormat'
 
 const R = 40
 const C = 2 * Math.PI * R
-const tone = (v) => (v >= 80 ? { bar: 'bg-green-500', text: 'text-green-700' } : v >= 60 ? { bar: 'bg-amber-400', text: 'text-amber-700' } : { bar: 'bg-red-500', text: 'text-red-700' })
+const tone = scoreTone
 
 function Panel({ title, badge, badgeClass, data, good, active, className, read }) {
   const n = useCountUp(data.score, active)

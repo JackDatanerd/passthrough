@@ -72,7 +72,10 @@ describe('before / after', () => {
     expect(screen.getByText('What the robot reads now')).toBeInTheDocument()
     expect(screen.getByText('✕ not found')).toBeInTheDocument()
     expect(screen.getByText('✓ 4 roles, in order')).toBeInTheDocument()
-    expect(screen.getAllByText('stakeholder management')).toHaveLength(2)   // the keyword chips survived the rewrite
+    // the keyword chips survived the rewrite: one per panel in the Before/After section...
+    expect(within(document.getElementById('proof')).getAllByText('stakeholder management')).toHaveLength(2)
+    // ...and the hero's compact example card shows the missing ones once more (it links down to this section)
+    expect(screen.getAllByText('stakeholder management')).toHaveLength(3)
   })
 })
 
@@ -303,12 +306,15 @@ describe('faq', () => {
 
 describe('navbar entries', () => {
   const renderNav = (user = null) => render(<MemoryRouter><AuthContext.Provider value={{ user, logout() {} }}><Navbar /></AuthContext.Provider></MemoryRouter>)
-  it('lists Proof, The receipt, Stories, Hot categories, Pricing, For employers — in the order they appear on the page', () => {
+  it('lists How it works, Stories (a dropdown), Pricing, For employers — the proof-style sections sit inside Stories', () => {
     renderNav()
     const bar = screen.getAllByRole('navigation')[0]
     const links = within(bar).getAllByRole('link').map(a => [a.textContent, a.getAttribute('href')])
-    const wanted = [['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Stories', '/#stories'], ['Hot categories', '/#hot'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
+    const wanted = [['How it works', '/#how'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
     expect(links.filter(l => wanted.some(w => w[0] === l[0]))).toEqual(wanted)
+    fireEvent.click(within(bar).getByRole('button', { name: 'Stories' }))
+    const items = within(document.getElementById('navbar-stories')).getAllByRole('link').map(a => [a.textContent, a.getAttribute('href')])
+    expect(items).toEqual([['Applicant stories', '/#stories'], ['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Hot categories', '/#hot']])
   })
   it('no longer has "Check a resume" in the bar or the mobile menu (it lives in the footer, the receipt and the employer section)', () => {
     renderNav()
@@ -316,7 +322,7 @@ describe('navbar entries', () => {
     expect(screen.queryByText('Check a resume')).toBeNull()
     const menu = document.getElementById('navbar-more')
     // "Sign in" joins the menu for signed-out visitors (on the very narrowest phones it has no room in the bar)
-    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['Proof', 'The receipt', 'Stories', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
+    expect(within(menu).getAllByRole('link').map(a => a.textContent)).toEqual(['How it works', 'Applicant stories', 'Proof', 'The receipt', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
   })
   it('the check link is still one click away from the employer section and the receipt', async () => {
     renderHome(); await ready()

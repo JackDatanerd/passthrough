@@ -74,7 +74,8 @@ describe('structure', () => {
     renderHome()
     await ready()
     const row = screen.getByText(/Built for Workday, Greenhouse, iCIMS, Taleo, Lever & SuccessFactors/).parentElement
-    const faces = [...row.parentElement.querySelectorAll('span.rounded-full')].map(n => n.textContent)
+    // the avatar strip only (the proof block also holds the example card, whose keyword chips are rounded-full too)
+    const faces = [...row.parentElement.querySelector('div[aria-hidden="true"]').querySelectorAll('span.rounded-full')].map(n => n.textContent)
     expect(faces).toEqual(['A', 'D', 'P', 'J', 'M'])
     expect(row.querySelector('span[aria-hidden="true"]').textContent).toBe('★★★★★')
     expect(row.parentElement.querySelector('div[aria-hidden="true"]')).toBeTruthy()   // decorative: hidden from screen readers

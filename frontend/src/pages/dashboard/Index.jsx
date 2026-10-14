@@ -65,6 +65,7 @@ export default function DashboardIndex() {
   const [loading,  setLoading ] = useState(true)
   const [resending, setResending] = useState(false)
   const [resentOk, setResentOk] = useState(false)
+  const [everResent, setEverResent] = useState(false)
   const [resendError, setResendError] = useState('')
   const [pendingDelete, setPendingDelete] = useState(null)   // scan awaiting confirmation
   const [deleting, setDeleting] = useState(false)
@@ -250,11 +251,18 @@ export default function DashboardIndex() {
 
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 
+  // "Sent!" is shown for a moment, then the button comes back so a lost email can be asked for again.
+  useEffect(() => {
+    if (!resentOk) return undefined
+    const t = setTimeout(() => setResentOk(false), 30000)
+    return () => clearTimeout(t)
+  }, [resentOk])
+
   async function resendVerification() {
     setResending(true); setResendError('')
     try {
       await api.post('/auth/resend-verification')
-      setResentOk(true)
+      setResentOk(true); setEverResent(true)
       refreshUser()
     } catch (err) {
       setResendError(getErrorMessage(err, 'Could not resend the verification email.'))
@@ -377,7 +385,7 @@ export default function DashboardIndex() {
             ) : (
               <div className="flex flex-col items-start sm:items-end gap-1">
                 <Button size="sm" variant="secondary" onClick={resendVerification} loading={resending}>
-                  Resend email
+                  {everResent ? 'Resend again' : 'Resend email'}
                 </Button>
                 {resendError && <p role="alert" className="text-xs text-red-600">{resendError}</p>}
               </div>

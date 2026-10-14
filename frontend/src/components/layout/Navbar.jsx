@@ -18,23 +18,22 @@ function skipToMain(e) {
 // The page a top-level link points at, for assistive tech. Hash links (/#stories) never count: the page is Home either way.
 const here = (pathname, to) => (pathname === to || pathname.startsWith(`${to}/`) ? 'page' : undefined)
 
-// Top-level links, in the order the homepage itself runs (the proof, the receipt, stories, hot fields, pricing, employers).
-// Hash links all point at "/" so they work from any page; /pricing is its own route.
-const LINKS = [
-  ['/#proof', 'Proof'],
-  ['/#receipt', 'The receipt'],
-  ['/#stories', 'Stories'],
-  ['/#hot', 'Hot categories'],
-  ['/pricing', 'Pricing'],
-  ['/#employers', 'For employers'],
-]
+// Top-level bar: four plain entries. "Stories" is a dropdown that holds the proof-style sections (the example, the receipt,
+// the hot fields) so the bar itself stays short next to the one button. Hash links all point at "/" so they work from any
+// page; /pricing is its own route.
+const HOW = ['/#how', 'How it works']
+const STORIES = {
+  label: 'Stories',
+  items: [['/#stories', 'Applicant stories'], ['/#proof', 'Proof'], ['/#receipt', 'The receipt'], ['/#hot', 'Hot categories']],
+}
+const AFTER = [['/pricing', 'Pricing'], ['/#employers', 'For employers']]
 const linkCls = 'text-ink-2 hover:text-ink transition-colors'
 
 export default function Navbar() {
   const { user } = useAuth()
   const handleLogout = useSignOut()
   const { pathname, hash } = useLocation()
-  // Below lg the six links (and Sign in / Dashboard / Sign out) do not fit next to the logo and the Scan free button,
+  // Below lg the links (and Sign in / Dashboard / Sign out) do not fit next to the logo and the Scan free button,
   // so they live in this menu; from lg up they are all in the bar.
   const [menuOpen, setMenuOpen] = useState(false)
   useEffect(() => { setMenuOpen(false) }, [pathname, hash])
@@ -51,6 +50,21 @@ export default function Navbar() {
     return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer) }
   }, [menuOpen])
 
+  // The Stories dropdown (lg+). A disclosure, not an ARIA "menu": a button that shows a short list of ordinary links.
+  // Closes on Escape (focus goes back to the button), on a press outside, on Tab leaving it, and on any navigation.
+  const [storiesOpen, setStoriesOpen] = useState(false)
+  useEffect(() => { setStoriesOpen(false) }, [pathname, hash])
+  const storiesRef = useRef(null)
+  const storiesBtn = useRef(null)
+  useEffect(() => {
+    if (!storiesOpen) return undefined
+    const onKey = e => { if (e.key === 'Escape') { setStoriesOpen(false); storiesBtn.current?.focus() } }
+    const onPointer = e => { if (storiesRef.current && !storiesRef.current.contains(e.target)) setStoriesOpen(false) }
+    document.addEventListener('keydown', onKey)
+    document.addEventListener('pointerdown', onPointer)
+    return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer) }
+  }, [storiesOpen])
+
   return (
     <nav ref={navRef} aria-label="Main" className="sticky top-0 z-50 bg-paper/90 backdrop-blur-md border-b border-gray-200">
       <a
@@ -66,7 +80,32 @@ export default function Navbar() {
           Passthrough
         </Link>
         <div className="hidden lg:flex items-center gap-6 text-[15px] font-semibold whitespace-nowrap">
-          {LINKS.map(([to, label]) => (
+          <Link to={HOW[0]} className={linkCls}>{HOW[1]}</Link>
+          <div
+            ref={storiesRef}
+            className="relative"
+            onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setStoriesOpen(false) }}
+          >
+            <button
+              ref={storiesBtn}
+              type="button"
+              onClick={() => setStoriesOpen(o => !o)}
+              aria-expanded={storiesOpen}
+              aria-controls="navbar-stories"
+              className={`inline-flex items-center gap-1 ${linkCls}`}
+            >
+              {STORIES.label}
+              <svg viewBox="0 0 20 20" aria-hidden="true" focusable="false" className={`w-4 h-4 transition-transform ${storiesOpen ? 'rotate-180' : ''}`} fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m5 8 5 5 5-5" /></svg>
+            </button>
+            {storiesOpen && (
+              <div id="navbar-stories" className="absolute left-1/2 -translate-x-1/2 top-full mt-3 w-56 rounded-xl border border-gray-200 bg-white shadow-lg py-1.5 flex flex-col">
+                {STORIES.items.map(([to, label]) => (
+                  <Link key={to} to={to} onClick={() => setStoriesOpen(false)} className="px-4 py-2 text-ink-2 hover:bg-gray-50 hover:text-ink">{label}</Link>
+                ))}
+              </div>
+            )}
+          </div>
+          {AFTER.map(([to, label]) => (
             <Link key={to} to={to} aria-current={here(pathname, to)} className={linkCls}>{label}</Link>
           ))}
         </div>
@@ -112,7 +151,15 @@ export default function Navbar() {
       </div>
       {menuOpen && (
         <div id="navbar-more" className="lg:hidden border-t border-gray-200 px-4 sm:px-6 py-2 flex flex-col text-[15px] font-semibold">
-          {LINKS.map(([to, label]) => (
+          <Link to={HOW[0]} onClick={() => setMenuOpen(false)} className="py-2.5 text-ink-2 hover:text-ink">{HOW[1]}</Link>
+          {/* No nested dropdown on a phone: the group is just listed, under a label. */}
+          <div role="group" aria-labelledby="navbar-stories-label" className="flex flex-col">
+            <span id="navbar-stories-label" className="pt-2.5 pb-0.5 text-xs font-semibold uppercase tracking-wide text-gray-500">{STORIES.label}</span>
+            {STORIES.items.map(([to, label]) => (
+              <Link key={to} to={to} onClick={() => setMenuOpen(false)} className="py-2.5 pl-3 text-ink-2 hover:text-ink">{label}</Link>
+            ))}
+          </div>
+          {AFTER.map(([to, label]) => (
             <Link key={to} to={to} aria-current={here(pathname, to)} onClick={() => setMenuOpen(false)} className="py-2.5 text-ink-2 hover:text-ink">{label}</Link>
           ))}
           {user ? (

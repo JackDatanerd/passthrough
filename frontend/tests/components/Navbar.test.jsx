@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import userEvent from '@testing-library/user-event'
 import { AuthContext } from '../../src/context/AuthContext'
@@ -68,12 +68,64 @@ describe('Navbar', () => {
     }
   })
 
-  it('has the six section links, in homepage order', () => {
+  it('the bar has four entries — How it works, a Stories dropdown, Pricing, For employers', () => {
     renderNavbar({ user: null, logout: () => {} })
     const bar = screen.getByRole('navigation', { name: 'Main' })
     const links = [...bar.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')])
-    const wanted = [['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Stories', '/#stories'], ['Hot categories', '/#hot'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
+    const wanted = [['How it works', '/#how'], ['Pricing', '/pricing'], ['For employers', '/#employers']]
     expect(links.filter(l => wanted.some(w => w[0] === l[0]))).toEqual(wanted)
+    const stories = screen.getByRole('button', { name: 'Stories' })
+    expect(stories).toHaveAttribute('aria-expanded', 'false')
+    expect(stories).toHaveAttribute('aria-controls', 'navbar-stories')
+    // the proof-style sections are NOT in the bar any more — they live in the dropdown
+    for (const gone of ['Proof', 'The receipt', 'Hot categories', 'Applicant stories']) expect(screen.queryByText(gone)).toBeNull()
+  })
+
+  it('the Stories dropdown opens on click and holds Applicant stories, Proof, The receipt and Hot categories', async () => {
+    const user = userEvent.setup()
+    renderNavbar({ user: null, logout: () => {} })
+    await user.click(screen.getByRole('button', { name: 'Stories' }))
+    expect(screen.getByRole('button', { name: 'Stories' })).toHaveAttribute('aria-expanded', 'true')
+    const panel = document.getElementById('navbar-stories')
+    expect([...panel.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')])).toEqual([
+      ['Applicant stories', '/#stories'], ['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Hot categories', '/#hot'],
+    ])
+  })
+
+  it('Escape closes the dropdown and hands focus back to its button; a press outside closes it too', async () => {
+    const user = userEvent.setup()
+    renderNavbar({ user: null, logout: () => {} })
+    const btn = screen.getByRole('button', { name: 'Stories' })
+    await user.click(btn)
+    expect(document.getElementById('navbar-stories')).not.toBeNull()
+    await user.keyboard('{Escape}')
+    expect(document.getElementById('navbar-stories')).toBeNull()
+    expect(btn).toHaveFocus()
+    await user.click(btn)
+    await user.click(document.body)
+    expect(document.getElementById('navbar-stories')).toBeNull()
+  })
+
+  it('choosing an item closes the dropdown, and tabbing out of it closes it', async () => {
+    const user = userEvent.setup()
+    renderNavbar({ user: null, logout: () => {} })
+    await user.click(screen.getByRole('button', { name: 'Stories' }))
+    await user.click(within(document.getElementById('navbar-stories')).getByText('Proof'))
+    expect(document.getElementById('navbar-stories')).toBeNull()
+    await user.click(screen.getByRole('button', { name: 'Stories' }))
+    expect(document.getElementById('navbar-stories')).not.toBeNull()
+    // Tab through the four items and one more: focus leaves the dropdown, so it closes
+    await user.tab(); await user.tab(); await user.tab(); await user.tab(); await user.tab()
+    expect(document.getElementById('navbar-stories')).toBeNull()
+  })
+
+  it('in the phone menu the same group is listed flat under a "Stories" label (no nested dropdown)', async () => {
+    const user = userEvent.setup()
+    renderNavbar({ user: null, logout: () => {} })
+    await user.click(screen.getByRole('button', { name: 'More' }))
+    const menu = document.getElementById('navbar-more')
+    expect([...menu.querySelectorAll('a')].map(a => a.textContent)).toEqual(['How it works', 'Applicant stories', 'Proof', 'The receipt', 'Hot categories', 'Pricing', 'For employers', 'Sign in'])
+    expect(within(menu).getByRole('group', { name: 'Stories' })).toBeInTheDocument()
   })
 
   it('on a small screen a signed-in user reaches Dashboard, Admin and Sign out through More, and Sign out there calls logout()', async () => {
@@ -82,7 +134,7 @@ describe('Navbar', () => {
     renderNavbar({ user: { role: 'ADMIN' }, logout })
     await user.click(screen.getByRole('button', { name: 'More' }))
     const menu = document.getElementById('navbar-more')
-    expect([...menu.querySelectorAll('a,button')].map(e => e.textContent)).toEqual(['Proof', 'The receipt', 'Stories', 'Hot categories', 'Pricing', 'For employers', 'Dashboard', 'Admin', 'Sign out'])
+    expect([...menu.querySelectorAll('a,button')].map(e => e.textContent)).toEqual(['How it works', 'Applicant stories', 'Proof', 'The receipt', 'Hot categories', 'Pricing', 'For employers', 'Dashboard', 'Admin', 'Sign out'])
     await user.click([...menu.querySelectorAll('button')].find(b => b.textContent === 'Sign out'))
     expect(logout).toHaveBeenCalledTimes(1)
     expect(document.getElementById('navbar-more')).toBeNull()

@@ -1,0 +1,11 @@
+Profile & Dashboard (Section 6), round 15 — frontend only, no migration.
+
+1. Resend verification email (dashboard/Index.jsx banner, dashboard/Settings.jsx Account card): after a
+   successful resend the button was replaced by "Sent!" for the life of the page, so a lost email could
+   not be asked for again without a reload. "Sent!" now shows for 30 seconds, then the button returns as
+   "Resend again".
+2. Settings.jsx: "Remove saved profile" and removing an additional profile closed an open editor and dropped
+   typed, unsaved edits without a word (Make main and Restore already warn). Both confirmation dialogs now
+   say so when that editor holds unsaved edits.
+
+Tests: frontend/tests/pages/Settings.round15.test.jsx. Full frontend page suite: 447 passed; vite build OK.
