@@ -33,7 +33,7 @@ export default function StatsRow({ best, trend, verifiedCount, quota, credits, p
   const time = hasQuota ? resetTimeLabel(quota) : null
   return (
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-      <Card label="Best score" note={best != null && trend.length > 1 ? `+${best - trend[0]} since your first scan${partial ? ' (latest 100 scans)' : ''}` : 'out of 100'}>
+      <Card label="Best score" note={best != null && trend.length > 1 && best > trend[0] ? `+${best - trend[0]} since your first scan${partial ? ' (latest 100 scans)' : ''}` : 'out of 100'}>
         {best ?? '–'}<Spark points={trend} />
       </Card>
       <Card label="Verified links" note={<>{partial && <span>In your latest 100 scans · </span>}<Link to="/dashboard/proof" className="text-blue-700 hover:text-blue-900">Open Proof</Link></>}>{verifiedCount}</Card>

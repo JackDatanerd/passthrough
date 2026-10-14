@@ -1889,11 +1889,20 @@ async function deleteScan(ctx) {
   // round 8 now refunds such a payment automatically; closing the checkout here means they are never charged at all.
   await fulfillmentService.abandonPendingForScan(supabase, id)
 
+  // The in-flight rule is repeated on the delete itself, as DELETE /profile/scans does for a batch: a scan that started work
+  // (or a fix that was bought) between the read above and this write is left alone instead of deleted under its job.
   let delQuery = supabase.from('scans').delete().eq('id', id)
+    .or(`status.not.in.(${SCAN_IN_FLIGHT_STATUSES.join(',')}),updated_at.lte.${since}`)
   delQuery = accountOwner ? delQuery.eq('user_id', user.id) : delQuery.is('user_id', null)
   const { data: removed, error: delErr } = await delQuery.select('id').maybeSingle()
   if (delErr) throw delErr
-  if (!removed) return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  if (!removed) {
+    // Nothing deleted: either the scan is already gone (404) or it started work since the check above (409).
+    const { data: still, error: stillErr } = await supabase.from('scans').select('id').eq('id', id).maybeSingle()
+    if (stillErr) throw stillErr
+    if (still) return ctx.json({ success: false, message: 'This scan is still being processed. Try again in a few minutes.' }, 409)
+    return ctx.json({ success: false, message: 'Scan not found.' }, 404)
+  }
 
   // The page it published (if any) now says "removed" instead of "not found".
   await recordTombstones(supabase, [row])

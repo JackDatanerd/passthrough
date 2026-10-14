@@ -843,7 +843,7 @@ async function duplicatePrimary(c) {
     normalizeLabel(`${roleName(saved.roleCategory) || 'Main profile'} copy`) || 'Main profile copy'
   const added = await addProfileUniquely(supabase, user.id, wanted,
     { p_resume: saved.resumeData, p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null,
-      // The copy holds the same hand corrections, so it carries the same "edited" marker (0083): without it, making
+      // The copy holds the same hand corrections, so it carries the same "edited" marker (0084): without it, making
       // the copy the main profile let a later save from a scan replace those corrections without asking.
       p_edited_at: saved.editedAt || null })
   if (!added.id) return c.json({ success: false, code: 'PROFILE_LIMIT',

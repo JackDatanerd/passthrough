@@ -1,0 +1,8 @@
+Profile & Dashboard (Section 6), round 14. Built on ff2de0a.
+
+(The duplicate-0083 migration number was fixed upstream in ff2de0a; this round only adds a regression test for it.)
+B1 (Low-Med) scan.controller.js deleteScan: the final DELETE now repeats the in-flight rule (as DELETE /profile/scans does); a scan
+   that started work after the check is a 409, not deleted under its job.
+B2 (Cosmetic) StatsRow.jsx: no "+0 since your first scan" when nothing improved.
+Also: profile.controller.js comment says 0084.
+Tests: tests/profile.round14.test.js, frontend/tests/components/StatsRow.round14.test.jsx.
