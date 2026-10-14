@@ -24,7 +24,7 @@ const QUOTA = { limit: 3, used: 1, remaining: 2, resetsAt: '2026-10-06T00:00:00.
 
 function wire({ scans = [scan('a')], total, profile = { hasSavedProfile: false, quota: QUOTA } } = {}) {
   api.get.mockImplementation(async url => {
-    if (url === '/profile') { if (profile instanceof Error) throw profile; return { data: { data: profile } } }
+    if (url === '/profile/quota') { if (profile instanceof Error) throw profile; return { data: { data: profile } } }
     if (url === '/scan/history') return { data: { data: { scans, total: total ?? scans.length } } }
     throw new Error('unexpected ' + url)
   })

@@ -30,7 +30,7 @@ afterEach(() => vi.useRealTimers())
 describe('search box — a keystroke typed as the debounce commits is not lost', () => {
   it('keeps "ab" when "b" arrives before the router re-render of the committed "a"', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
     const router = renderAt('/dashboard')
     const box = await screen.findByPlaceholderText(/Search by job/)
     await act(async () => { fireEvent.change(box, { target: { value: 'a' } }) })
@@ -43,7 +43,7 @@ describe('search box — a keystroke typed as the debounce commits is not lost',
     expect(router.state.location.search).toBe('?search=ab')   // and "ab" itself is committed in turn
   })
   it('still follows the URL when it changes from outside the box (Back / a link)', async () => {
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
     const router = renderAt('/dashboard?search=zzz')
     const box = await screen.findByPlaceholderText(/Search by job/)
     expect(box.value).toBe('zzz')
@@ -56,14 +56,14 @@ describe('search box — a keystroke typed as the debounce commits is not lost',
 
 describe('a search the server would ignore is not a filter', () => {
   it('a box holding only spaces / filter punctuation: no "Delete these N", and no search is sent', async () => {
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a'), scan('b')], total: 2 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a'), scan('b')], total: 2 } } })
     renderAt('/dashboard?search=%2C%20')
     await screen.findByText('Job a')
     expect(screen.queryByRole('button', { name: /Delete these/ })).toBeNull()
     expect(historyCalls().every(c => c[1].params.search === undefined)).toBe(true)
   })
   it('a real term with stray punctuation is sent (and purged) the way the server reads it', async () => {
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [scan('a')], total: 1 } } })
     api.delete.mockResolvedValue({ data: { data: { deleted: 1, remaining: 0 } } })
     renderAt('/dashboard?search=p%28m%29')
     expect(historyCalls().length).toBeGreaterThan(0)
@@ -82,7 +82,7 @@ describe('the list spinner always clears', () => {
     const live = scan('live', { status: 'SCANNING', updatedAt: new Date().toISOString() })
     let historyN = 0
     api.get.mockImplementation(async (url, cfg) => {
-      if (url === '/profile') return { data: { data: { hasSavedProfile: false } } }
+      if (url === '/profile/quota') return { data: { data: { hasSavedProfile: false } } }
       if (url === '/outcomes/pending') return { data: { data: { pending: [], stories: [] } } }      // the outcome card's own request — not a history page
       if (url.startsWith('/scan/status/')) return { data: { data: { status: 'COMPLETE_PASS' } } }   // the live scan finished
       historyN++
@@ -105,7 +105,7 @@ describe('live polling stays under the status endpoint budget', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true })
     const now = new Date().toISOString()
     const scans = ['a', 'b', 'c', 'd', 'e'].map(id => scan(id, { status: 'SCANNING', updatedAt: now }))
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } }
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } }
       : url.startsWith('/scan/status/') ? { data: { data: { status: 'SCANNING' } } }
       : { data: { data: { scans, total: 5 } } })
     renderAt('/dashboard')
@@ -120,7 +120,7 @@ describe('live polling stays under the status endpoint budget', () => {
 describe('"Already verified." re-syncs the account', () => {
   it('resend answering 400 Already verified refreshes the cached user', async () => {
     mockUser = { emailVerified: false, freeFixCredits: 0 }
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [], total: 0 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [], total: 0 } } })
     api.post.mockRejectedValue({ response: { status: 400, data: { message: 'Already verified.' } } })
     renderAt('/dashboard')
     await waitFor(() => expect(refreshUser).toHaveBeenCalled())
@@ -131,7 +131,7 @@ describe('"Already verified." re-syncs the account', () => {
   })
   it('any other failure does not', async () => {
     mockUser = { emailVerified: false, freeFixCredits: 0 }
-    api.get.mockImplementation(async url => url === '/profile' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [], total: 0 } } })
+    api.get.mockImplementation(async url => url === '/profile/quota' ? { data: { data: { hasSavedProfile: false } } } : { data: { data: { scans: [], total: 0 } } })
     api.post.mockRejectedValue({ response: { status: 429, data: { message: 'Slow down.' } } })
     renderAt('/dashboard')
     await waitFor(() => expect(refreshUser).toHaveBeenCalled())

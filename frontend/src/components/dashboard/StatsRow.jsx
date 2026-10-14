@@ -26,7 +26,7 @@ function Spark({ points }) {
   )
 }
 
-// Four small facts. Best score / credentials come from the newest scans (see Index.jsx), the allowance from /profile.
+// Four small facts. Best score / credentials come from the newest scans (see Index.jsx), the allowance from /profile/quota.
 export default function StatsRow({ best, trend, verifiedCount, quota, credits, partial }) {
   const hasQuota = quota && Number.isFinite(quota.limit) && Number.isFinite(quota.remaining)
   const left = hasQuota ? Math.max(0, Math.min(quota.limit, quota.remaining)) : 0
@@ -36,7 +36,7 @@ export default function StatsRow({ best, trend, verifiedCount, quota, credits, p
       <Card label="Best score" note={best != null && trend.length > 1 ? `+${best - trend[0]} since your first scan${partial ? ' (latest 100 scans)' : ''}` : 'out of 100'}>
         {best ?? '–'}<Spark points={trend} />
       </Card>
-      <Card label="Verified links" note={<Link to="/dashboard/proof" className="text-blue-700 hover:text-blue-900">Open Proof</Link>}>{verifiedCount}</Card>
+      <Card label="Verified links" note={<>{partial && <span>In your latest 100 scans · </span>}<Link to="/dashboard/proof" className="text-blue-700 hover:text-blue-900">Open Proof</Link></>}>{verifiedCount}</Card>
       {hasQuota && (
         <Card label="Free scans today" note={time ? `${left ? 'Resets' : 'Back'} at ${time}` : undefined}>
           {left} <span className="text-sm font-semibold text-gray-400">of {quota.limit}</span>

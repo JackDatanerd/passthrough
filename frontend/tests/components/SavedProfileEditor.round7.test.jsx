@@ -21,17 +21,17 @@ describe('SavedProfileEditor — version-checked saves', () => {
     api.get.mockResolvedValue({ data: { data: { resumeData: V1, version: 'S1|' } } })
     api.put.mockResolvedValue({ data: { success: true } })
     render(<SavedProfileEditor onSaved={vi.fn()} onClose={vi.fn()} />)
-    await screen.findByLabelText('Name')
+    await user.type(await screen.findByLabelText('Name'), ' Jr')     // round 13: a save with nothing changed writes nothing
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(api.put).toHaveBeenCalled())
-    expect(api.put.mock.calls[0][1]).toMatchObject({ resumeData: V1, version: 'S1|' })
+    expect(api.put.mock.calls[0][1]).toMatchObject({ resumeData: { ...V1, name: 'Jane Doe Jr' }, version: 'S1|' })
   })
   it('an older server that sends no version still works (no version is sent)', async () => {
     const user = userEvent.setup()
     api.get.mockResolvedValue({ data: { data: { resumeData: V1 } } })
     api.put.mockResolvedValue({ data: { success: true } })
     render(<SavedProfileEditor onSaved={vi.fn()} onClose={vi.fn()} />)
-    await screen.findByLabelText('Name')
+    await user.type(await screen.findByLabelText('Name'), ' Jr')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(api.put).toHaveBeenCalled())
     expect('version' in api.put.mock.calls[0][1]).toBe(false)
@@ -51,6 +51,7 @@ describe('SavedProfileEditor — version-checked saves', () => {
     await user.click(screen.getByRole('button', { name: /Load the current profile/ }))
     expect(await screen.findByLabelText('Name')).toHaveValue('New Scan Person')    // the profile as it is NOW; the stale edit is gone
     expect(screen.queryByText(/changed since you opened it/)).toBeNull()
+    await user.type(screen.getByLabelText('Name'), '!')                            // round 13: nothing typed, nothing written
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(onClose).toHaveBeenCalled())
     expect(api.put.mock.calls[1][1].version).toBe('S2|')
@@ -60,7 +61,7 @@ describe('SavedProfileEditor — version-checked saves', () => {
     api.get.mockResolvedValue({ data: { data: { resumeData: V1, version: 'S1|' } } })
     api.put.mockRejectedValue({ response: { status: 500, data: { message: 'Server hiccup.' } } })
     render(<SavedProfileEditor onSaved={vi.fn()} onClose={vi.fn()} />)
-    await screen.findByLabelText('Name')
+    await user.type(await screen.findByLabelText('Name'), ' Jr')
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     expect(await screen.findByText('Server hiccup.')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save changes' })).toBeEnabled()

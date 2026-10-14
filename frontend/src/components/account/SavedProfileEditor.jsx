@@ -63,6 +63,9 @@ export default function SavedProfileEditor({ onSaved, onClose, onDirtyChange, pr
   }
 
   async function handleSave(overrideVersion) {
+    // Nothing was changed: there is nothing to write, and a write would only move the version and mark the profile
+    // as hand-edited (and a profile that changed elsewhere would answer a no-change save with a conflict).
+    if (!dirty && typeof overrideVersion !== 'string') { onClose?.(); return }
     setSaving(true); setSaveError('')
     const sendVersion = typeof overrideVersion === 'string' ? overrideVersion : version
     try {

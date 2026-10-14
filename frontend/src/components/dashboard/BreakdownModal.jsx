@@ -13,6 +13,9 @@ export default function BreakdownModal({ scan, now, onClose }) {
   if (!scan) return null
   const msg = scanMessage(scan, now)
   const cats = CATEGORIES.filter(([, key]) => scan[key] != null)
+  // The four category scores are written when the scan runs, so once a fix has been scored they describe the
+  // original resume while the ring above shows the fixed one.
+  const fixedScored = !!scan.fixPurchased && scan.fixAtsScore != null
   return (
     <Modal open onClose={onClose} title={scanHeading(scan)}>
       <div className="flex flex-col gap-4">
@@ -23,7 +26,8 @@ export default function BreakdownModal({ scan, now, onClose }) {
         <p className="text-sm text-gray-700"><b className="font-semibold">{msg.label}.</b> {msg.text}</p>
         {cats.length > 0 ? (
           <div>
-            <h3 className="text-sm font-semibold text-gray-900 mb-2">What the software sees</h3>
+            <h3 className="text-sm font-semibold text-gray-900 mb-2">{fixedScored ? 'What the software saw in your original resume' : 'What the software sees'}</h3>
+            {fixedScored && <p className="text-xs text-gray-500 mb-2">These are the scores from before your fix ({scan.atsScore}/100). The score above is for the fixed resume.</p>}
             <div className="flex flex-col gap-2">
               {cats.map(([label, key]) => (
                 <div key={key} className="grid grid-cols-[6rem_1fr_2rem] items-center gap-2 text-sm">

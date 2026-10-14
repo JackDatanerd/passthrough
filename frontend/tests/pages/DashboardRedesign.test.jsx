@@ -28,7 +28,7 @@ const QUOTA = { limit: 3, used: 1, remaining: 2, resetsAt: '2026-10-13T00:00:00.
 
 function wire({ scans, overview = scans, profile = { quota: QUOTA }, total } = {}) {
   api.get.mockImplementation(async (url, cfg) => {
-    if (url === '/profile') return { data: { data: profile } }
+    if (url === '/profile/quota') return { data: { data: profile } }
     if (url === '/scan/history') {
       const list = cfg?.params?.limit === 100 ? overview : scans
       return { data: { data: { scans: list, total: cfg?.params?.limit === 100 ? overview.length : (total ?? scans.length) } } }
@@ -121,7 +121,7 @@ describe('stats and the summary', () => {
     expect(await screen.findByRole('button', { name: /^Didn't finish\s*1$/ })).toBeInTheDocument()
     unmount()
     api.get.mockImplementation(async (url, cfg) => {
-      if (url === '/profile') return { data: { data: {} } }
+      if (url === '/profile/quota') return { data: { data: {} } }
       return { data: { data: { scans: [scan('a')], total: cfg?.params?.limit === 100 ? 250 : 250 } } }
     })
     renderIndex()

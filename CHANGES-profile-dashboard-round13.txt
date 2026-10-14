@@ -1,0 +1,39 @@
+Profile & Dashboard — round 13 (bugs only)
+
+Apply migration 0083 BEFORE deploying the Worker (EXPECTED_SCHEMA_VERSION is now 83). The previous Worker keeps working
+against it: the one new parameter has a default.
+
+B1 (Medium) supabase/migrations/0083, profile.controller.js duplicatePrimary
+   "Copy as another profile" copied the resume but not the hand-edit marker, so the copy looked untouched. Make that copy
+   the main profile and a later save from a scan replaced the hand corrections WITHOUT the PROFILE_EDITED confirmation.
+   add_saved_profile takes p_edited_at (default NULL, which is what saving from a scan passes); the copy passes the
+   main profile's editedAt. Checked on a real Postgres (PGlite): copy -> make main -> save from a scan now asks.
+B2 (Low-Med) 0083 set_saved_profile_resume / update_saved_profile, SavedProfileEditor.jsx
+   Saving a resume identical to the stored one (open the editor, press Save) stamped the marker: the profile read
+   "edited <date>" and the next save from a scan asked a confirmation nobody had earned. An unchanged resume now leaves
+   the marker, the profile, the earlier version and the version token alone (the version check still runs, so a stale
+   editor still gets its conflict). The editor also skips the request when nothing was typed.
+B3 (Low-Med) BreakdownModal.jsx
+   The four category bars are written when the scan runs, so after a fix was scored they described the ORIGINAL resume
+   under a ring showing the FIXED score. The heading now says "What the software saw in your original resume", with
+   the original score, once a fix is scored.
+B4 (Low) StatsRow.jsx
+   "Verified links" counts the newest 100 scans only, and only the Best-score card said so. It does now.
+B5 (Low) Settings.jsx
+   "Delete my scan history" left the Scans tab's count stale (the shared store is fresh for 60 s and only the dashboard
+   forced a reload). Settings now forces one when the purge ends, also when it fails part-way.
+B6 (Low) profile.controller.js updateExtra
+   A version Date.parse accepts but Postgres cannot cast ('Oct 13 2026 10:00 GMT+0200') reached the database and came
+   back as a 500. The version must now be an ISO / PostgREST timestamp, else 400 "Invalid version.".
+B8 (Low, performance) profile.controller.js getQuota, profile.routes.js, Index.jsx
+   The dashboard called GET /profile on every visit just for the free-scan counter; that endpoint also reads the saved
+   resume, the version it replaced and every additional profile's resume (up to ~100 KB each) to build summaries. New
+   GET /api/profile/quota reads the two counter columns only; the dashboard uses it. (Settings and the scan form still
+   need the summaries and keep GET /profile.)
+
+Already closed by round 12 and re-checked here: B7 (emoji cut by the label limit), the non-string version on
+PUT /profile/extras/:id, and the stale in-flight request in the Scans tab's count store.
+
+Tests: tests/profile.round13.test.js, tests/profile.round13.pglite.test.js (real Postgres; fails without 0083),
+frontend/tests/components/ProfileDashboard.round13.test.jsx, frontend/tests/pages/ProfileDashboard.round13.test.jsx.
+Five dashboard test files now mock the quota at /profile/quota instead of /profile.

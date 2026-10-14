@@ -6,6 +6,7 @@ const c    = require('../controllers/profile.controller')
 const router = new Hono()
 
 router.get(   '/',      auth, c.getProfile)
+router.get(   '/quota', auth, c.getQuota)                // just the free-scan allowance, for the dashboard
 router.get(   '/data',  auth, c.getProfileData)          // the saved resume itself, for the editor
 router.put(   '/',      auth, rl.profileEdit, c.updateProfile)           // correct the saved resume in place
 router.get(   '/download-docx', auth, rl.profileDocx,   c.downloadProfileDocx)

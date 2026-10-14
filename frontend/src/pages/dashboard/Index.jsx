@@ -237,7 +237,7 @@ export default function DashboardIndex() {
   }, [scans, overview])
 
   useEffect(() => {
-    api.get('/profile')
+    api.get('/profile/quota')   // just the counter: /profile also reads every saved resume
       .then(res => setQuota(res.data.data.quota || null))
       .catch(() => {})
     // Re-sync cached user state (emailVerified in particular) every time the dashboard is visited, not just on

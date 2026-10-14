@@ -27,7 +27,7 @@ let scans
 beforeEach(() => {
   for (const m of [api.get, api.post, api.delete]) m.mockReset()
   scans = [scan('a'), scan('b'), live('c')]
-  api.get.mockImplementation(async url => url === '/profile'
+  api.get.mockImplementation(async url => url === '/profile/quota'
     ? { data: { data: { hasSavedProfile: false } } }
     : { data: { data: { scans, total: scans.length } } })
 })

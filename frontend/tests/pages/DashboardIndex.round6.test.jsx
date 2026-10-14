@@ -19,7 +19,7 @@ const scan = (id, over = {}) => ({ id, status: 'ERROR', atsScore: null, createdA
 
 function wire({ scans = [scan('a'), scan('b')], total } = {}) {
   api.get.mockImplementation(async url => {
-    if (url === '/profile') return { data: { data: { hasSavedProfile: false } } }
+    if (url === '/profile/quota') return { data: { data: { hasSavedProfile: false } } }
     if (url === '/scan/history') return { data: { data: { scans, total: total ?? scans.length } } }
     throw new Error('unexpected ' + url)
   })

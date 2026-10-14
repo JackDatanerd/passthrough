@@ -182,10 +182,25 @@ function scanQuota(row, now = new Date()) {
   return { limit, used: Math.min(used, limit), remaining: Math.max(0, limit - used), resetsAt: new Date(midnight + 86_400_000).toISOString() }
 }
 
+// GET /api/profile/quota — only the free-scan allowance. The dashboard reads it on every visit; getProfile above
+// also reads the saved resume, the version it replaced and every additional profile's resume (up to ~100 KB each)
+// to build summaries, which a number for a counter does not need.
+async function getQuota(c) {
+  const user = c.get('user')
+  const supabase = getSupabase(c.env)
+  const { data, error } = await supabase.from('users').select('scans_today, scans_day_reset').eq('id', user.id).single()
+  if (error) throw error
+  return c.json({ success: true, data: { quota: scanQuota(data) } })
+}
+
 // The saved profile's version: which save and which hand edit it is at. The editor sends back the
 // one it loaded, and PUT /api/profile writes only if the stored profile still has it (see
 // set_saved_profile_resume, 0060) — a draft made from an older profile cannot overwrite a newer one.
 // Built from the stored strings verbatim so it equals what the SQL compares against.
+// An additional profile's version is a timestamp as the API sent it: PostgREST's `2026-10-13T18:20:25.55+00:00`
+// or an ISO `…Z`. Anything else cannot be the version this server handed out.
+const VERSION_STAMP_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,6})?(?:Z|[+-]\d{2}(?::?\d{2})?)$/
+const isVersionStamp = (v) => typeof v === 'string' && VERSION_STAMP_RE.test(v) && !Number.isNaN(Date.parse(v))
 const profileVersion = (saved) => `${saved?.savedAt ?? ''}|${saved?.editedAt ?? ''}`
 
 // GET /api/profile/data — the saved resume itself, for the editor only. getProfile deliberately
@@ -780,7 +795,9 @@ async function updateExtra(c) {
   if (rawVersion !== undefined && (typeof rawVersion !== 'string' || rawVersion.length > 100))
     return c.json({ success: false, message: 'Invalid version.' }, 400)
   const expected = rawVersion ? rawVersion : null
-  if (expected && Number.isNaN(Date.parse(expected))) return c.json({ success: false, message: 'Invalid version.' }, 400)
+  // The version is compared in the database as a timestamp, so it has to be one the database can read: Date.parse
+  // also accepts forms ('Oct 13 2026 10:00 GMT+0200') that fail the cast there and came back as a 500.
+  if (expected && !isVersionStamp(expected)) return c.json({ success: false, message: 'Invalid version.' }, 400)
 
   if (label !== null) {
     const others = await extraLabels(supabase, user.id, id)
@@ -825,7 +842,10 @@ async function duplicatePrimary(c) {
   const wanted = normalizeLabel(body && typeof body === 'object' ? body.label : '') ||
     normalizeLabel(`${roleName(saved.roleCategory) || 'Main profile'} copy`) || 'Main profile copy'
   const added = await addProfileUniquely(supabase, user.id, wanted,
-    { p_resume: saved.resumeData, p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null })
+    { p_resume: saved.resumeData, p_role_category: saved.roleCategory || null, p_source_scan_id: saved.sourceScanId || null,
+      // The copy holds the same hand corrections, so it carries the same "edited" marker (0083): without it, making
+      // the copy the main profile let a later save from a scan replace those corrections without asking.
+      p_edited_at: saved.editedAt || null })
   if (!added.id) return c.json({ success: false, code: 'PROFILE_LIMIT',
     message: `You can keep up to ${MAX_EXTRA_PROFILES} additional profiles. Remove one first.` }, 409)
   return c.json({ success: true, message: 'Profile copied.', data: { id: added.id, label: added.label } })
@@ -844,4 +864,4 @@ async function promoteExtra(c) {
   return c.json({ success: true, message: 'That profile is now your main one.' })
 }
 
-module.exports = { restorePreviousProfile, duplicatePrimary, promoteExtra, getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }
+module.exports = { getQuota, restorePreviousProfile, duplicatePrimary, promoteExtra, getExtraData, updateExtra, deleteExtra, downloadProfileDocx, downloadProfilePdf, getProfile, getProfileData, updateProfile, updatePreferences, saveProfile, deleteProfile, deleteScanHistory, exportMyData, scanQuota }

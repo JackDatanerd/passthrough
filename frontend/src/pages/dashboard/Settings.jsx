@@ -13,6 +13,7 @@ import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import { formatDate, formatDateTime, saveBlobResponse } from '../../lib/utils'
 import { exportFileName, exportPartsFrom, exportCursorFrom } from '../../lib/dataExport'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
+import { loadNeedsDecision } from '../../lib/needsDecision'
 import { passwordProblem } from '../../lib/passwordRules'
 import { roleLabel } from '../../lib/roleCategories'
 import SessionsCard from '../../components/account/SessionsCard'
@@ -406,6 +407,7 @@ export default function Settings() {
     } finally {
       setPurging(false); setPurgeOpen(false)
       loadProfile({ quiet: true })   // the saved profile's "view source scan" link may have just been cleared
+      loadNeedsDecision(user?.id, { force: true })   // the Scans tab's count: what was deleted may have been waiting
     }
   }
 

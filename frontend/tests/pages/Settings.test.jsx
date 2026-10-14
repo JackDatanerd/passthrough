@@ -149,6 +149,7 @@ describe('Settings — saved profile', () => {
     expect(await screen.findByLabelText('Skills (comma-separated)')).toHaveValue('SQL')
     const profileReads = () => api.get.mock.calls.filter(c => c[0] === '/profile').length
     const before = profileReads()
+    await user.type(screen.getByLabelText('Skills (comma-separated)'), ', Go')   // round 13: a save with nothing changed writes nothing
     await user.click(screen.getByRole('button', { name: 'Save changes' }))
     await waitFor(() => expect(screen.queryByLabelText('Skills (comma-separated)')).toBeNull())
     expect(profileReads()).toBeGreaterThan(before)
