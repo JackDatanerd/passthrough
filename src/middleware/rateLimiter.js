@@ -752,6 +752,15 @@ const statsRead = makeLimiter({
 
 // Answering "did it lead to an interview?" or editing a story. Per ACCOUNT (the routes are behind `auth`):
 // generous for a person correcting an answer, hopeless for scripted stuffing of the published numbers.
+// POST /api/client-errors — the SPA reporting a crash in a visitor's browser (public; see the controller). One visitor's page
+// can only crash so many ways in a sitting, and the client sends at most a handful per page load: 10 per 10 minutes per IP
+// is generous for that and hopeless for a script. Its own bucket, so a flood of reports can never fate-share with anything
+// a real person is trying to do from the same address.
+const clientError = makeLimiter({
+  windowSeconds: 10 * 60, max: 10, keyPrefix: 'rl:clienterror',
+  message: msg('Too many reports.')
+})
+
 const outcomeWrite = makeLimiter({
   windowSeconds: 60 * 60, max: 30, keyPrefix: 'rl:outcome',
   keyBy: byAccount,
@@ -1106,7 +1115,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

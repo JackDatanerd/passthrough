@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import Footer from './Footer'
 import { cn } from '../../lib/utils'
 import Alert from '../ui/Alert'
 import { useAuth } from '../../hooks/useAuth'
+import useSignOut from '../../hooks/useSignOut'
 import { useNeedsDecisionCount } from '../../lib/needsDecision'
 import { consumeFlash, peekFlash, flashMessage } from '../../lib/flash'
 
@@ -43,19 +44,14 @@ function skipToMain(e) {
 
 export default function DashboardLayout({ children }) {
   const { pathname } = useLocation()
-  const navigate = useNavigate()
-  const { user, logout } = useAuth()
+  const { user } = useAuth()
+  const handleLogout = useSignOut()
   const waiting = useNeedsDecisionCount(user?.id)
   // A one-shot notice left by a redirect (a non-admin bounced off /admin): read on first render, cleared
   // by the effect below so it shows once (read-then-clear is split because a render-phase consume is not
   // StrictMode-safe — see peekFlash).
   const [notice] = useState(() => flashMessage(peekFlash()))
   useEffect(() => { consumeFlash() }, [])
-
-  function handleLogout() {
-    logout()
-    navigate('/')
-  }
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">

@@ -103,7 +103,11 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
   // unmounted and focus was never handed back to the trigger.
   const triggerRef = useRef(null)
   const wasOpen = useRef(false)
-  if (open && !wasOpen.current) { wasOpen.current = true; triggerRef.current = typeof document !== 'undefined' ? document.activeElement : null }
+  // Which place this dialog takes in the stack of open ones. Taken in RENDER order, which is parent-before-child: effects run
+  // child-first, so an id taken in the effect put a dialog mounted INSIDE another one (same render) underneath its own parent —
+  // Escape and Tab then went to the parent while the child was the one on screen.
+  const stackId = useRef(0)
+  if (open && !wasOpen.current) { wasOpen.current = true; stackId.current = ++nextModalId; triggerRef.current = typeof document !== 'undefined' ? document.activeElement : null }
   else if (!open && wasOpen.current) wasOpen.current = false
 
   useEffect(() => {
@@ -112,8 +116,9 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
     const previouslyFocused = triggerRef.current
     lockScroll()
 
-    const id = ++nextModalId
-    modalStack.push(id)
+    const id = stackId.current
+    // Kept in id order, not in the order the effects happened to run (see stackId).
+    modalStack = [...modalStack, id].sort((a, b) => a - b)
 
     const marked = dialog.querySelector('[data-autofocus]')
     // React has already honoured an `autoFocus` inside the dialog by now; the person who wrote it chose that element,
@@ -125,7 +130,8 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       marked ||
       dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])') ||
       dialog.querySelector(FOCUSABLE) || dialog
-    if (!alreadyInside) initial.focus()
+    // Only the dialog on top takes focus: a parent whose effect runs after its child's must not pull focus out from under it.
+    if (!alreadyInside && modalStack[modalStack.length - 1] === id) initial.focus()
 
     function onKeyDown(e) {
       // Only the topmost Modal (the last one pushed, i.e. still on screen

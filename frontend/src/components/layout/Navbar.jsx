@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { Link, useLocation } from 'react-router-dom'
 import { useAuth } from '../../hooks/useAuth'
+import useSignOut from '../../hooks/useSignOut'
 
 // Moves keyboard focus past the nav into the page's <main> (every page that renders this Navbar
 // has one). Without it a keyboard user tabs through the nav links on every single page.
@@ -17,8 +18,8 @@ function skipToMain(e) {
 const here = (pathname, to) => (pathname === to || pathname.startsWith(`${to}/`) ? 'page' : undefined)
 
 export default function Navbar() {
-  const { user, logout } = useAuth()
-  const navigate = useNavigate()
+  const { user } = useAuth()
+  const handleLogout = useSignOut()
   const { pathname, hash } = useLocation()
   // Phones hide "Pricing" (signed in) and "For employers" (everyone) to keep the row on one line;
   // this menu is how they are reached without scrolling to the footer.
@@ -36,11 +37,6 @@ export default function Navbar() {
     document.addEventListener('pointerdown', onPointer)
     return () => { document.removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', onPointer) }
   }, [menuOpen])
-
-  function handleLogout() {
-    logout()
-    navigate('/')
-  }
 
   return (
     <nav ref={navRef} aria-label="Main" className="bg-white border-b border-gray-200">

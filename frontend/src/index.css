@@ -1,3 +1,10 @@
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Elements that are only ever focused by the app itself — <main> after a page change (components/layout/RouteAnnouncer),
+   an anchor target (hooks/useScrollToHash), the skip links — carry tabindex="-1". They are not controls: a focus ring
+   around a whole page section after every navigation is noise, not a cue. Real controls keep their own rings. */
+@layer base {
+  [tabindex="-1"]:focus { outline: none; }
+}

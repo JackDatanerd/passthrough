@@ -387,3 +387,13 @@ describe('payments routes — step-up on money-moving admin actions', () => {
     expect((await post(a, `/${REF}/recheck`, { acceptAmountMismatch: false }, ON)).json.handler).toBe('recheckPayment')
   })
 })
+
+describe('client-errors route', () => {
+  const app = () => mount('routes/client-errors.routes.js', 'controllers/client-errors.controller.js')
+  it('is a public POST (a crash on the sign-in page has no session) and nothing else', async () => {
+    const a = app()
+    expect(await call(a, 'POST', '', { message: 'x' })).toEqual({ status: 200, json: { handler: 'reportClientError' } })
+    expect((await call(a, 'GET', '')).status).toBe(404)
+    expect((await call(a, 'DELETE', '')).status).toBe(404)
+  })
+})

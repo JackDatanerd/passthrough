@@ -1,4 +1,5 @@
 import { Component } from 'react'
+import { reportClientError } from '../lib/reportError'
 
 // The app had no error boundary: any exception thrown while rendering (an
 // unexpected API shape, a bad regex on user text, a missing field) unmounted the
@@ -15,6 +16,8 @@ export default class ErrorBoundary extends Component {
 
   componentDidCatch(error, info) {
     console.error('Render error:', error, info?.componentStack)
+    // Tell the owner (see lib/reportError.js). Never throws, and never reports the same error twice in a page load.
+    reportClientError('render', error, { componentStack: info?.componentStack })
   }
 
   componentDidUpdate(prevProps) {

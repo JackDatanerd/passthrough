@@ -14,6 +14,7 @@ import { formatDate, formatDateTime, saveBlobResponse } from '../../lib/utils'
 import { exportFileName, exportPartsFrom, exportCursorFrom } from '../../lib/dataExport'
 import { purgeScans, partialDeleteNote } from '../../lib/purgeScans'
 import { loadNeedsDecision } from '../../lib/needsDecision'
+import { allowNextLeave } from '../../lib/unsavedGuard'
 import { passwordProblem } from '../../lib/passwordRules'
 import { roleLabel } from '../../lib/roleCategories'
 import SessionsCard from '../../components/account/SessionsCard'
@@ -542,6 +543,10 @@ export default function Settings() {
     setDeleteLoading(true); setDeleteError('')
     try {
       await api.delete('/auth/account', { data: { password: deletePass } })
+      // The account is gone and the person confirmed that with their password: there is nothing left to "save", so an
+      // unsaved-changes prompt (which used to appear AFTER the deletion, with "Stay" leaving a spinning dialog on a dead
+      // account) must not stand in the way of leaving.
+      allowNextLeave()
       logout()
       navigate('/')
     } catch (err) {

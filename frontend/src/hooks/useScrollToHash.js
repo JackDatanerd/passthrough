@@ -35,6 +35,11 @@ export default function useScrollToHash() {
       const el = document.getElementById(id)
       if (el) {
         el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+        // The browser moves focus to a fragment's target (the next Tab continues from there); scrollIntoView alone did not, so a
+        // keyboard user who followed "For employers" tabbed on from the link's old position. A non-control target needs a
+        // tabindex to take focus.
+        if (!el.hasAttribute('tabindex') && !/^(A|BUTTON|INPUT|SELECT|TEXTAREA)$/.test(el.tagName)) el.setAttribute('tabindex', '-1')
+        el.focus({ preventScroll: true })
       } else if (attempt < 10) {
         // Element not mounted yet (route just changed) — retry briefly
         // rather than give up after one tick.

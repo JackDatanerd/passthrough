@@ -1,0 +1,41 @@
+SHARED FRONTEND (section 11) — round 10
+Base: 0fa2f88. Independent audit pass of components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js.
+
+BUG
+  Sign-out ran BEFORE the "unsaved changes" prompt, so answering "Stay" left the person signed out.
+  Navbar and DashboardLayout did `logout(); navigate('/')`. logout() clears the token, cached user, brain-dump draft and the
+  unclaimed anonymous-scan tokens at once; only then did navigate('/') reach the editor's route blocker and ask "discard?".
+  "Stay" left the page open on a dead session — every later save a 401, and SessionResumePrompt could not help (the request
+  carries no token). Settings' account deletion had the same order, and its dialog stayed in its loading state after "Stay".
+  Fix: lib/unsavedGuard.js gains confirmDiscardUnsaved() / allowNextLeave() / leaveAllowed(); new hooks/useSignOut.js asks FIRST
+  and only then signs out; the route blocker (hooks/useUnsavedChangesWarning.js) skips the navigation the person already agreed
+  to. Settings' deletion calls allowNextLeave() (the account is gone; there is nothing left to save).
+  Also: Modal took its place in the open-dialog stack in an EFFECT (child-first), so a dialog mounted inside another in the same
+  render sat under its own parent — Escape/Tab went to the parent and the parent took focus. The id is now taken in render
+  order, the stack is kept sorted, and only the top dialog takes initial focus. (No call site nests that way today; found while
+  tracing the sign-out fix through the same guard.)
+
+FEATURE GAPS CLOSED
+  1. Frontend crashes reached nobody. ErrorBoundary only console.error'd. New: lib/reportError.js (ErrorBoundary, window "error",
+     "unhandledrejection"; chunk-load failures classified) -> POST /api/client-errors (src/routes/client-errors.routes.js,
+     src/controllers/client-errors.controller.js, src/lib/clientError.js) -> sendOwnerAlert / alert_logs (visible in System health).
+     Public endpoint, built to be harmless: own rate bucket rl:clienterror (10 / 10 min / IP), 16 KB body cap, every field clipped
+     and scrubbed (tokens, emails, ids, query strings; page path normalised), one alert per distinct error per day, a global
+     ceiling of 10 alerts / hour, no mail at all without a quota backend. The client sends no token / cookie / device id, never
+     the query string, at most 5 reports a page load, nothing for cancelled requests, axios failures, extension code, offline.
+  2. SPA page changes moved no focus and announced nothing. New components/layout/RouteAnnouncer.jsx (mounted in App.jsx): after a
+     change of path, focus goes to <main> and the new title is announced in a polite live region; skips the first load, same-page
+     query/hash changes, a field the page focused itself, and open dialogs; waits for lazily loaded pages. useScrollToHash now
+     also focuses the fragment target, as a browser does. index.css: [tabindex="-1"]:focus has no ring (app-only focus targets).
+
+TESTS (new)
+  frontend/tests/signOutGuard.section11.round10.test.jsx    frontend/tests/reportError.section11.round10.test.jsx
+  frontend/tests/routeAnnouncer.section11.round10.test.jsx  tests/clientError.lib.test.js
+  tests/client-errors.controller.test.js                    tests/routes.wiring.test.js (client-errors route)
+
+DEPLOY NOTES
+  No migration, no new env var. rl:clienterror / rl:clienterr:* keys use the existing rate-limit backend.
+  Found, NOT fixed (outside this section, present on HEAD 0fa2f88 before this round): two migrations are numbered 0083
+  (0083_profile_dashboard_round13.sql and 0083_webhooks_round13.sql) — tests/migrations.numbering.test.js and
+  tests/migrations.pglite.test.js fail on it, and `supabase db push` keys its history on the number. Also
+  tests/employer-leads.controller.test.js "flags truncation exactly when more rows exist than the cap" times out at 5s on HEAD.

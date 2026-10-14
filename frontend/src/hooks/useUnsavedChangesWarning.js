@@ -1,8 +1,6 @@
 import { useContext, useEffect } from 'react'
 import { UNSAFE_DataRouterContext, useBlocker } from 'react-router-dom'
-import { markUnsaved } from '../lib/unsavedGuard'
-
-const LEAVE_MESSAGE = 'You have unsaved changes. Leave this page and discard them?'
+import { markUnsaved, leaveAllowed, LEAVE_MESSAGE } from '../lib/unsavedGuard'
 
 // Two protections while `dirty` is true, for the editors that hold long hand-typed drafts (the saved
 // profile, a scan's resume data, a PAID delivered resume):
@@ -17,7 +15,9 @@ const LEAVE_MESSAGE = 'You have unsaved changes. Leave this page and discard the
 // below always runs the same hooks in the same order.
 function useRouteBlocker(dirty) {
   const blocker = useBlocker(({ currentLocation, nextLocation }) =>
-    dirty && currentLocation.pathname !== nextLocation.pathname)
+    // leaveAllowed(): the person already answered "discard?" for this very navigation (sign out asks before it clears the
+    // session — see confirmDiscardUnsaved), so asking again would be a second prompt, or a "Stay" after the damage is done.
+    dirty && !leaveAllowed() && currentLocation.pathname !== nextLocation.pathname)
   useEffect(() => {
     if (blocker.state !== 'blocked') return
     if (window.confirm(LEAVE_MESSAGE)) blocker.proceed()
