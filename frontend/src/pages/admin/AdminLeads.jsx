@@ -945,10 +945,13 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
   // asked to be added.
   // REMOVAL_LIFT_FAILED: the edit was saved but lifting the old block failed — the same button retries it.
   const [needsOverride, setNeedsOverride] = useState(false)
+  // Round 16: 409 DUPLICATE_MAILBOX — another spelling of this inbox is already a lead. The server's message names it;
+  // this is the "add / use it anyway" answer it promises.
+  const [needsDuplicate, setNeedsDuplicate] = useState(false)
 
   useEffect(() => {
     if (!open) return
-    setError(''); setNeedsOverride(false); savedVersion.current = null
+    setError(''); setNeedsOverride(false); setNeedsDuplicate(false); savedVersion.current = null
     setForm(mode === 'edit' && lead
       ? { name: lead.name, company: lead.company, email: lead.email, roleCategory: lead.roleCategory || '', roleTitle: lead.roleTitle || '', notes: '', extras: lead.extraRoleCategories || [] }
       : { name: '', company: '', email: '', roleCategory: '', roleTitle: '', notes: '', extras: [] })
@@ -956,10 +959,10 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
 
   const set = (k) => (e) => setForm(f => ({ ...f, [k]: e.target.value }))
 
-  async function submit({ override = false } = {}) {
+  async function submit({ override = false, allowDuplicate = false } = {}) {
     if (!form.name.trim() || !form.company.trim() || !form.email.trim())
       return setError('Name, company and email are required.')
-    setSaving(true); setError('')
+    setSaving(true); setError(''); setNeedsDuplicate(false)
     try {
       if (mode === 'add') {
         const extras = form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : []
@@ -967,7 +970,8 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           name: form.name, company: form.company, email: form.email,
           roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null, notes: form.notes || null,
           ...(extras.length ? { extraRoleCategories: extras } : {}),
-          ...(override ? { overrideRemoval: true } : {})
+          ...(override ? { overrideRemoval: true } : {}),
+          ...(allowDuplicate ? { allowDuplicate: true } : {})
         })
       } else {
         const emailChanged = form.email.trim().toLowerCase() !== lead.email
@@ -979,7 +983,8 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           roleCategory: form.roleCategory || null, roleTitle: form.roleTitle || null,
           extraRoleCategories: form.roleCategory ? form.extras.filter(k => k !== form.roleCategory) : [],
           ...(emailChanged || override ? { email: form.email.trim() } : {}),
-          ...(override ? { overrideRemoval: true } : {})
+          ...(override ? { overrideRemoval: true } : {}),
+          ...(allowDuplicate ? { allowDuplicate: true } : {})
         })
         return onSaved(res.data)
       }
@@ -988,6 +993,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
       // The edit saved but the block could not be lifted: remember the saved version so the retry is not refused.
       if (err.response?.data?.code === 'REMOVAL_LIFT_FAILED' && err.response.data.data?.updatedAt) savedVersion.current = err.response.data.data.updatedAt
       setNeedsOverride(['REMOVAL_REQUESTED', 'REMOVAL_LIFT_FAILED'].includes(err.response?.data?.code) ? err.response.data.code : false)
+      setNeedsDuplicate(err.response?.data?.code === 'DUPLICATE_MAILBOX')
       setError(getErrorMessage(err, 'Could not save the lead.'))
     } finally {
       setSaving(false)
@@ -1025,6 +1031,11 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         {needsOverride && (
           <Button variant="danger" onClick={() => submit({ override: true })} disabled={saving}>
             {needsOverride === 'REMOVAL_LIFT_FAILED' ? 'Try lifting the block again' : "They've asked me to add them — add anyway"}
+          </Button>
+        )}
+        {needsDuplicate && (
+          <Button variant="secondary" onClick={() => submit({ allowDuplicate: true })} disabled={saving}>
+            {mode === 'add' ? 'Add it anyway' : 'Use this address anyway'}
           </Button>
         )}
         <div className="flex justify-end gap-2">
@@ -1124,12 +1135,15 @@ function DuplicatesModal({ open, onClose, onMerged }) {
   const [error, setError] = useState('')
   const [keep, setKeep] = useState({})         // mailbox -> id of the lead to keep (default: the oldest)
   const [busyBox, setBusyBox] = useState(null)
+  // Round 16: a merge is irreversible, so the first click asks the server what it WOULD produce (dryRun) and shows it,
+  // including any hiring fields that do not fit; the second click merges.
+  const [preview, setPreview] = useState(null)   // { mailbox, keepId, data }
 
   const load = useCallback(async () => {
     setError('')
     try {
       const res = await api.get('/employer-leads/duplicates')
-      setGroups(res.data.data || []); setTruncated(!!res.data.meta?.truncated); setKeep({})
+      setGroups(res.data.data || []); setTruncated(!!res.data.meta?.truncated); setKeep({}); setPreview(null)
     } catch (err) {
       setGroups([]); setError(getErrorMessage(err, 'Could not load the duplicates.'))
     }
@@ -1138,10 +1152,19 @@ function DuplicatesModal({ open, onClose, onMerged }) {
 
   async function merge(g) {
     const keepId = keep[g.mailbox] || g.leads[0].id
+    const body = { keepId, mergeIds: g.leads.filter(l => l.id !== keepId).map(l => l.id) }
+    const confirmed = preview && preview.mailbox === g.mailbox && preview.keepId === keepId
     setBusyBox(g.mailbox)
     try {
-      await api.post('/employer-leads/merge', { keepId, mergeIds: g.leads.filter(l => l.id !== keepId).map(l => l.id) })
-      toast({ message: 'Leads merged.', type: 'success' })
+      if (!confirmed) {
+        const res = await api.post('/employer-leads/merge', { ...body, dryRun: true })
+        setPreview({ mailbox: g.mailbox, keepId, data: res.data.data })
+        return
+      }
+      const res = await api.post('/employer-leads/merge', body)
+      const dropped = res.data?.data?.droppedFields || []
+      toast({ message: dropped.length ? `Leads merged. ${dropped.length} hiring field${dropped.length === 1 ? '' : 's'} did not fit and ${dropped.length === 1 ? 'was' : 'were'} dropped: ${dropped.map(roleLabel).join(', ')}.` : 'Leads merged.', type: 'success' })
+      setPreview(null)
       await load()
       onMerged && onMerged()
     } catch (err) {
@@ -1172,16 +1195,31 @@ function DuplicatesModal({ open, onClose, onMerged }) {
                     <Radio
                       name={`keep-${g.mailbox}`}
                       checked={chosen === l.id}
-                      onChange={() => setKeep(k => ({ ...k, [g.mailbox]: l.id }))}
+                      onChange={() => { setKeep(k => ({ ...k, [g.mailbox]: l.id })); setPreview(null) }}
                       label={l.email}
                       description={`${l.name}, ${l.company} · ${l.status}${l.roleCategory ? ` · ${roleLabel(l.roleCategory)}` : ''} · ${l.confirmedAt ? 'confirmed' : 'unconfirmed'} · ${l.submissionCount} submission${l.submissionCount === 1 ? '' : 's'} · added ${formatDate(l.createdAt)}`}
                     />
                   </li>
                 ))}
               </ul>
+              {preview && preview.mailbox === g.mailbox && preview.keepId === chosen && (
+                <div className="mt-2 rounded-md bg-gray-50 px-3 py-2 text-gray-700" data-testid="merge-preview">
+                  <p className="font-medium">The merged lead would be:</p>
+                  <p>
+                    {preview.data.result.roleCategory ? roleLabel(preview.data.result.roleCategory) : 'Uncategorised'}
+                    {(preview.data.result.extraRoleCategories || []).length > 0 && ` + ${preview.data.result.extraRoleCategories.map(roleLabel).join(', ')}`}
+                    {' · '}{preview.data.result.status} · {preview.data.result.confirmedAt ? 'confirmed' : 'unconfirmed'} · {preview.data.result.submissionCount} submissions
+                  </p>
+                  {(preview.data.droppedFields || []).length > 0 && (
+                    <p className="text-amber-700">A lead holds at most 5 fields, so these would be lost: {preview.data.droppedFields.map(roleLabel).join(', ')}.</p>
+                  )}
+                </div>
+              )}
               <div className="mt-2 flex justify-end">
                 <Button size="sm" disabled={tooMany || !!busyBox} loading={busyBox === g.mailbox} onClick={() => merge(g)}>
-                  {tooMany ? 'Too many to merge at once' : `Keep the selected, merge ${g.leads.length - 1} other${g.leads.length === 2 ? '' : 's'}`}
+                  {tooMany ? 'Too many to merge at once'
+                    : preview && preview.mailbox === g.mailbox && preview.keepId === chosen ? `Confirm: merge ${g.leads.length - 1} other${g.leads.length === 2 ? '' : 's'} into the selected`
+                    : `Preview: keep the selected, merge ${g.leads.length - 1} other${g.leads.length === 2 ? '' : 's'}`}
                 </Button>
               </div>
             </div>
@@ -1232,7 +1270,7 @@ function ImportLeadsModal({ open, onClose, onDone }) {
 
   async function run(dryRun) {
     setBusy(true); setError('')
-    const total = { created: 0, wouldCreate: 0, invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, blocked: 0, fieldIgnored: 0, problems: [] }
+    const total = { created: 0, wouldCreate: 0, invalid: 0, duplicateInFile: 0, exists: 0, removed: 0, blocked: 0, alias: 0, fieldIgnored: 0, problems: [] }
     try {
       // Repeats are taken out HERE: the server judges one batch at a time, so an address repeated across two
       // batches was counted as "would import" twice by the check and created once by the real run (round 12).
@@ -1243,7 +1281,7 @@ function ImportLeadsModal({ open, onClose, onDone }) {
       for (const batch of chunk(send)) {
         const res = await api.post('/employer-leads/import', { rows: batch, attest: true, dryRun })
         const d = res.data.data
-        for (const k of ['created', 'wouldCreate', 'invalid', 'duplicateInFile', 'exists', 'removed', 'blocked', 'fieldIgnored']) total[k] += d[k] || 0
+        for (const k of ['created', 'wouldCreate', 'invalid', 'duplicateInFile', 'exists', 'removed', 'blocked', 'alias', 'fieldIgnored']) total[k] += d[k] || 0
         total.problems.push(...d.problems.map(p => ({ ...p, line: p.line ? (lineOf[offset + p.line - 1] || p.line) : p.line })))
         offset += batch.length
       }
@@ -1256,7 +1294,7 @@ function ImportLeadsModal({ open, onClose, onDone }) {
     }
   }
 
-  const skipped = report ? report.invalid + report.duplicateInFile + report.exists + report.removed + (report.blocked || 0) : 0
+  const skipped = report ? report.invalid + report.duplicateInFile + report.exists + report.removed + (report.blocked || 0) + (report.alias || 0) : 0
   return (
     <Modal open={open} onClose={onClose} title="Import leads from CSV" dismissible={!busy}>
       <div className="flex flex-col gap-3 text-sm">
@@ -1278,6 +1316,7 @@ function ImportLeadsModal({ open, onClose, onDone }) {
               {[report.invalid && `${report.invalid} invalid`, report.duplicateInFile && `${report.duplicateInFile} repeated in the file`,
                 report.exists && `${report.exists} already leads`, report.removed && `${report.removed} asked to be removed`,
                 report.blocked && `${report.blocked} bounced or reported our email as spam`,
+                report.alias && `${report.alias} another spelling of an inbox that is already a lead (or earlier in the file)`,
                 report.fieldIgnored && `${report.fieldIgnored} with an unknown field (imported without one)`].filter(Boolean).join(' · ') || 'No problems found.'}
             </p>
             {report.problems.length > 0 && (

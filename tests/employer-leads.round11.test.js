@@ -529,7 +529,7 @@ describe('retention records the reason', () => {
     const upserts = []
     let failFirst = true
     const db = createFakeSupabase(q => {
-      if (q.table === 'employer_leads') return { data: [{ id: '1', email: 'Dana+x@gmail.com' }], error: null }
+      if (q.table === 'employer_leads') return q.op === 'delete' ? { data: [{ id: '1', email: 'Dana+x@gmail.com' }], error: null } : { data: [], error: null }
       if (q.table === 'employer_lead_suppressions') { upserts.push(q.values); if (failFirst) { failFirst = false; return { error: { code: '42703', message: 'no reason' } } } return { data: null, error: null } }
       return { data: null, error: null }
     })

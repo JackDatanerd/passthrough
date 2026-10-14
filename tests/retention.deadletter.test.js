@@ -95,7 +95,8 @@ describe('purgeArchivedLeads', () => {
 describe('purgeArchivedLeads — suppress option', () => {
   const resolver = (state) => (q) => {
     state.ops.push(`${q.table}:${q.op}`)
-    if (q.table === 'employer_leads') return { data: [{ id: 'l1', email: 'a@x.com' }, { id: 'l2', email: 'a@x.com' }, { id: 'l3', email: 'b@x.com' }], error: null }
+    // The delete answers with the purged rows; the later look for leads still standing in those inboxes (round 16) finds none.
+    if (q.table === 'employer_leads') return q.op === 'delete' ? { data: [{ id: 'l1', email: 'a@x.com' }, { id: 'l2', email: 'a@x.com' }, { id: 'l3', email: 'b@x.com' }], error: null } : { data: state.standing || [], error: state.standingErr || null }
     if (q.table === 'employer_lead_suppressions') { state.hashes = q.values; return { data: null, error: state.supErr || null } }
     if (q.table === 'email_logs') { state.logFilters = q.filters; return { data: null, error: null } }
   }
@@ -116,6 +117,35 @@ describe('purgeArchivedLeads — suppress option', () => {
     expect(JSON.stringify(state.hashes)).not.toContain('@')
     expect(state.logFilters.find(f => f[1] === 'to')[2].sort()).toEqual(['a@x.com', 'b@x.com'])
     expect(state.logFilters.find(f => f[1] === 'template')[2]).toEqual(['employer_lead_ack', 'employer_candidates_available', 'employer_lead_rejoin'])
+  })
+  // Round 16 (B2): blocking an address blocks its whole inbox — an inbox that still has a lead is not blocked by the purge.
+  it('does not block an inbox where another spelling is still a lead (it would be unmailable and its resubmissions dropped)', async () => {
+    const state = { ops: [], standing: [{ email: 'a+jobs@x.com', mailbox_key: 'a@x.com' }] }
+    const db = createFakeSupabase(resolver(state))
+    const r = await purgeArchivedLeads(db, NOW, { suppress: true })
+    expect(r).toEqual({ deleted: 3, suppressed: 1 })
+    expect(state.hashes).toHaveLength(1)
+    expect(state.logFilters.find(f => f[1] === 'to')[2].sort()).toEqual(['b@x.com'])
+  })
+  it('every inbox still has a lead: nothing is recorded or cleared at all', async () => {
+    const state = { ops: [], standing: [{ email: 'a@x.com', mailbox_key: 'a@x.com' }, { email: 'b@x.com', mailbox_key: 'b@x.com' }] }
+    const db = createFakeSupabase(resolver(state))
+    expect(await purgeArchivedLeads(db, NOW, { suppress: true })).toEqual({ deleted: 3 })
+    expect(state.ops).not.toContain('employer_lead_suppressions:upsert')
+    expect(state.ops).not.toContain('email_logs:delete')
+  })
+  it('a database without migration 0076 falls back to comparing the typed addresses', async () => {
+    const state = { ops: [] }
+    let first = true
+    const db = createFakeSupabase(q => {
+      if (q.table === 'employer_leads' && q.op === 'select') {
+        if (first) { first = false; return { data: null, error: { code: '42703', message: 'no mailbox_key' } } }
+        return { data: [{ email: 'b@x.com' }], error: null }
+      }
+      return resolver(state)(q)
+    })
+    const r = await purgeArchivedLeads(db, NOW, { suppress: true })
+    expect(r).toEqual({ deleted: 3, suppressed: 1 })
   })
   it('reports (does not throw) when the list write fails, and leaves the mail history alone', async () => {
     const state = { ops: [], supErr: { message: 'nope' } }

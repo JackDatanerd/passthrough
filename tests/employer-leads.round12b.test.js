@@ -527,3 +527,120 @@ describe('R15 G3 — the export carries the mailbox and the do-not-contact flag'
     expect(lines.find(l => l.includes('eve@acme.com')).endsWith('"eve@acme.com",""')).toBe(true)
   })
 })
+
+
+// ── Round 16 ─────────────────────────────────────────────────────────────────────────────────────────
+const uid16 = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
+
+describe('R16 G3 — editing an address onto an inbox that already has a lead', () => {
+  const two = () => [mk({ id: ID1, email: 'dana@acme.com' }), mk({ id: ID2, email: 'eve@acme.com' })]
+  it('409 DUPLICATE_MAILBOX naming the other lead; nothing is written', async () => {
+    t = setup({ leads: two() })
+    const res = await call(t.mod.adminUpdateLeadStatus, { email: 'dana+x@acme.com' }, { params: { id: ID2 } })
+    expect(res.status).toBe(409)
+    expect(res.body).toMatchObject({ code: 'DUPLICATE_MAILBOX', existing: { id: ID1, email: 'dana@acme.com' } })
+    expect(t.state.leads.find(l => l.id === ID2).email).toBe('eve@acme.com')
+  })
+  it('allowDuplicate goes ahead (and is not recorded as an edited field)', async () => {
+    t = setup({ leads: two() })
+    const res = await call(t.mod.adminUpdateLeadStatus, { email: 'dana+x@acme.com', allowDuplicate: true }, { params: { id: ID2 } })
+    expect(res.body.success).toBe(true)
+    expect(t.state.leads.find(l => l.id === ID2).email).toBe('dana+x@acme.com')
+    expect(t.state.audit.find(a => a.action === 'lead.update').detail.fields).toEqual(['email'])
+  })
+  it('a lead is never a duplicate of itself (adding a +tag to its own address)', async () => {
+    t = setup({ leads: two() })
+    const res = await call(t.mod.adminUpdateLeadStatus, { email: 'dana+jobs@acme.com' }, { params: { id: ID1 } })
+    expect(res.body.success).toBe(true)
+  })
+})
+
+describe('R16 G4 — a lead changing its own details through the link is recorded and announced', () => {
+  const save = async (body) => { const token = await tokenFor('prefs', 'dana@acme.com'); const ctx = t.c({ body: { token, ...body } }); const r = await t.mod.saveLeadPreferences(ctx); await Promise.all(ctx._waits); return r }
+  it('a changed field writes an audit entry (names only) and tells the owner', async () => {
+    t = setup({ leads: [mk({ id: ID1, role_category: 'sales' })] })
+    const res = await save({ field: 'marketing', extraFields: ['sales'] })
+    expect(res.body.status).toBe('saved')
+    expect(t.state.audit.find(a => a.action === 'lead.preferences_changed').detail).toEqual({ fields: ['field', 'other fields'] })
+    expect(t.state.notices.map(n => n.subject)).toEqual(['Employer lead updated their details'])
+  })
+  it('saving the same values changes nothing and says nothing', async () => {
+    t = setup({ leads: [mk({ id: ID1, role_category: 'sales', extra_role_categories: ['design'] })] })
+    await save({ field: 'sales', extraFields: ['design'] })
+    expect(t.state.audit).toHaveLength(0)
+    expect(t.state.notices).toHaveLength(0)
+  })
+  it('an archived lead is audited but the owner is not bothered', async () => {
+    t = setup({ leads: [mk({ id: ID1, status: 'ARCHIVED' })] })
+    await save({ field: 'design' })
+    expect(t.state.audit).toHaveLength(1)
+    expect(t.state.notices).toHaveLength(0)
+  })
+})
+
+describe('R16 B3 — a notification is never stamped onto an address that was not mailed', () => {
+  it('the lead\'s email was edited while the batch was sending: the new address stays un-notified', async () => {
+    t = setup({ supply, leads: [mk({ id: ID1, email: 'dana@acme.com', confirmed_at: '2026-01-02T00:00:00.000Z' })],
+      candidateMailResult: () => { t.state.leads[0] = { ...t.state.leads[0], email: 'dana.new@acme.com', candidates_notified_fields: {} }; return true } })   // replaced, not mutated: the fake hands the controller the live row
+    const res = await call(t.mod.adminNotifyCandidates, { field: 'sales' })
+    expect(res.body.data.sent).toBe(1)
+    expect(t.state.leads[0].candidates_notified_fields).toEqual({})
+    expect(t.state.leads[0].status).toBe('NEW')
+  })
+  it('the normal case still stamps and moves the lead to CONTACTED', async () => {
+    t = setup({ supply, leads: [mk({ id: ID1, confirmed_at: '2026-01-02T00:00:00.000Z' })] })
+    await call(t.mod.adminNotifyCandidates, { field: 'sales' })
+    expect(t.state.leads[0].candidates_notified_fields.sales).toBeTruthy()
+    expect(t.state.leads[0].status).toBe('CONTACTED')
+  })
+})
+
+describe('R16 B4 — a filter-wide action that stops part-way says so and is audited as partial', () => {
+  it('a failed contacted-stamp in chunk 1 of 2: PARTIAL 500, partial audit entry, the rest not touched', async () => {
+    const leads = Array.from({ length: 150 }, (_, i) => mk({ id: uid16(i + 1), email: `l${i}@x.com`, confirmed_at: '2026-01-02T00:00:00.000Z' }))
+    t = setup({ leads, failContactStamp: true })
+    const res = await call(t.mod.adminBulkUpdateLeads, { action: 'setStatus', status: 'CONTACTED', filter: { status: 'NEW' }, expected: 150 })
+    expect(res.status).toBe(500)
+    expect(res.body).toMatchObject({ code: 'PARTIAL', affected: 100, matched: 150 })
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_status').detail).toMatchObject({ partial: true, filtered: true })
+    expect(t.state.leads.filter(l => l.status === 'CONTACTED')).toHaveLength(100)
+  })
+  it('a stamp failure in the LAST chunk is still a plain error (nothing was left undone)', async () => {
+    const leads = Array.from({ length: 5 }, (_, i) => mk({ id: uid16(i + 1), email: `l${i}@x.com` }))
+    t = setup({ leads, failContactStamp: true })
+    await expect(call(t.mod.adminBulkUpdateLeads, { action: 'setStatus', status: 'CONTACTED', filter: { status: 'NEW' }, expected: 5 })).rejects.toBeTruthy()
+    expect(t.state.audit.find(a => a.action === 'lead.bulk_status').detail.partial).toBeUndefined()
+  })
+})
+
+describe('R16 B5 — the loser of a confirm race still learns whether a field is needed', () => {
+  it('already + needsField', async () => {
+    t = setup({ leads: [mk({ id: ID1, role_category: null })] })
+    const real = t.db.from
+    t.db.from = (table) => { const api = real(table)
+      if (table === 'employer_leads') { const upd = api.update; api.update = (p) => { t.state.leads.forEach(l => { l.confirmed_at = '2026-02-02T00:00:00.000Z' }); return upd(p) } }
+      return api }
+    const token = await tokenFor('confirm', 'dana@acme.com')
+    const res = await call(t.mod.confirmLead, { token })
+    expect(res.body).toMatchObject({ status: 'already', needsField: true })
+  })
+})
+
+describe('R16 B6 — merging keeps the earliest first-seen date and a consent record', () => {
+  it('the kept (newer) lead takes the older lead\'s created_at and consent', async () => {
+    const keep = mk({ id: ID1, email: 'dana+b@acme.com', created_at: '2026-03-01T00:00:00.000Z', consent: null })
+    const other = mk({ id: ID2, email: 'dana@acme.com', created_at: '2026-01-01T00:00:00.000Z', consent: { kind: 'form', v: 1 } })
+    t = setup({ leads: [keep, other] })
+    const res = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2], dryRun: true })
+    expect(res.body.data.result).toMatchObject({ createdAt: '2026-01-01T00:00:00.000Z', consent: { kind: 'form', v: 1 } })
+    const done = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2] })
+    expect(done.body.success).toBe(true)
+    expect(t.state.leads).toHaveLength(1)
+    expect(t.state.leads[0].created_at).toBe('2026-01-01T00:00:00.000Z')
+  })
+  it('a kept lead that is already the oldest keeps its date and its own consent', async () => {
+    t = setup({ leads: [mk({ id: ID1, email: 'dana@acme.com', consent: { kind: 'manual' } }), mk({ id: ID2, email: 'dana+b@acme.com', created_at: '2026-03-01T00:00:00.000Z', consent: { kind: 'form' } })] })
+    const res = await call(t.mod.adminMergeLeads, { keepId: ID1, mergeIds: [ID2], dryRun: true })
+    expect(res.body.data.result).toMatchObject({ createdAt: '2026-01-01T00:00:00.000Z', consent: { kind: 'manual' } })
+  })
+})

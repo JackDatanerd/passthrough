@@ -1277,8 +1277,11 @@ const updateSchema = z.object({
   // Round 12: the lead's `updatedAt` as the admin last saw it. A save from a stale screen used to overwrite whatever
   // the lead (a resubmission adding a field, the confirm page setting one) or another admin had changed since —
   // the edit form always sends every field. With this it is refused (409 LEAD_CHANGED) and nothing is written.
-  expectedUpdatedAt: z.string().max(64).optional()
-}).refine(d => Object.entries(d).some(([k, v]) => k !== 'overrideRemoval' && k !== 'expectedUpdatedAt' && v !== undefined), { message: 'Nothing to update.' })
+  expectedUpdatedAt: z.string().max(64).optional(),
+  // Round 16 (G3): move the lead to an address even though another spelling of that inbox is already a lead (the same
+  // choice manual add offers).
+  allowDuplicate: z.boolean().optional()
+}).refine(d => Object.entries(d).some(([k, v]) => k !== 'overrideRemoval' && k !== 'expectedUpdatedAt' && k !== 'allowDuplicate' && v !== undefined), { message: 'Nothing to update.' })
 const LEAD_CHANGED = { success: false, code: 'LEAD_CHANGED', message: 'This lead changed since you opened it (it may have been resubmitted or edited). Reload it and try again.' }
 
 // PATCH /api/employer-leads/:id — admin only. Any subset of the fields.
@@ -1335,6 +1338,18 @@ async function adminUpdateLeadStatus(c) {
         message: 'That address asked to be removed and is on the do-not-contact list. Only use it if they have since asked you to.'
       }, 409)
   }
+  // Round 16 (G3): the other write paths (public form, manual add, import) refuse to start a second lead for an inbox that
+  // already has one; fixing a typo onto such an address used to create exactly that pair with no warning.
+  if (emailChanged && !d.allowDuplicate) {
+    const sib = await supabase.from('employer_leads').select('id, email, name, company')
+      .eq('mailbox_key', canonicalMailbox(d.email)).neq('id', id).order('created_at', { ascending: true }).limit(1)
+    if (sib.error) { if (!MISSING_COLUMN.includes(sib.error.code)) throw sib.error }
+    else if (sib.data && sib.data.length) {
+      const o = sib.data[0]
+      return c.json({ success: false, code: 'DUPLICATE_MAILBOX', existing: { id: o.id, email: o.email, name: o.name, company: o.company },
+        message: `${o.email} is already a lead for this same mailbox. Edit or merge that lead instead — or use this address anyway.` }, 409)
+    }
+  }
   if (emailChanged) {
     // A new address is a new person to ask — including what they agreed to. BUG FIX (round 12, B6): the old
     // consent record (the form the PREVIOUS address was typed into, and when) used to stay on the row and was
@@ -1369,7 +1384,7 @@ async function adminUpdateLeadStatus(c) {
     } catch (err) {
       console.error('employer-leads: the lead was saved but its do-not-contact entry could not be lifted:', err.message)
       await logAdminAction(c, supabase, 'lead.update', 'employer_lead', id, {
-        fields: Object.keys(d).filter(k => d[k] !== undefined && k !== 'overrideRemoval' && k !== 'expectedUpdatedAt'), ...(emailChanged ? { emailChanged: true } : {}), liftFailed: true
+        fields: Object.keys(d).filter(k => d[k] !== undefined && k !== 'overrideRemoval' && k !== 'expectedUpdatedAt' && k !== 'allowDuplicate'), ...(emailChanged ? { emailChanged: true } : {}), liftFailed: true
       })
       // `data` (round 12): the saved row, so the admin screen has its new updatedAt for the retry (the version check
       // would otherwise refuse the very retry this response asks for).
@@ -1380,7 +1395,7 @@ async function adminUpdateLeadStatus(c) {
   }
   // Field NAMES and the status transition only — never the values typed.
   await logAdminAction(c, supabase, 'lead.update', 'employer_lead', id, {
-    fields: Object.keys(d).filter(k => d[k] !== undefined && k !== 'overrideRemoval' && k !== 'expectedUpdatedAt'),
+    fields: Object.keys(d).filter(k => d[k] !== undefined && k !== 'overrideRemoval' && k !== 'expectedUpdatedAt' && k !== 'allowDuplicate'),
     ...(d.status !== undefined ? { status: d.status } : {}),
     ...(emailChanged ? { emailChanged: true } : {}),
     ...(liftAfterSave ? { liftedRemoval: true } : {})
@@ -1574,6 +1589,7 @@ async function adminBulkUpdateLeads(c) {
     // 500 with no idea how many leads had been deleted. The audit entry is now written for whatever DID change, and
     // the answer says how far the action got.
     let failure = null
+    let stoppedEarly = false   // Round 16 (B4): a chunk reported a deferred error and the chunks after it never ran
     try {
       for (let i = 0; i < resolved.ids.length; i += BULK_MAX) {
         const r = await performBulk(c, supabase, { ids: resolved.ids.slice(i, i + BULK_MAX), action, status, field })
@@ -1582,13 +1598,13 @@ async function adminBulkUpdateLeads(c) {
         done.push(...r.ids)
         audit = r.audit
         detail = { ...detail, ...r.detail }
-        if (r.deferredError) { deferredError = r.deferredError; break }
+        if (r.deferredError) { deferredError = r.deferredError; stoppedEarly = i + BULK_MAX < resolved.ids.length; break }
       }
     } catch (err) { failure = err }
     if (alsoRemoved) detail.alsoRemoved = alsoRemoved
     if (done.length || !failure)
       await logAdminAction(c, supabase, audit || 'lead.bulk_status', 'employer_lead', null, {
-        ids: done, ...detail, filtered: true, matched: resolved.total, ...(failure ? { partial: true } : {}),
+        ids: done, ...detail, filtered: true, matched: resolved.total, ...(failure || stoppedEarly ? { partial: true } : {}),
         filter: Object.fromEntries(Object.entries(filters).filter(([k, v]) => v && k !== 'search' && !(k === 'sort' && v === 'created'))),
         searched: !!filters.search
       })
@@ -1598,7 +1614,12 @@ async function adminBulkUpdateLeads(c) {
       return c.json({ success: false, code: 'PARTIAL', affected, matched: resolved.total,
         message: `Stopped after changing ${affected} of ${resolved.total} leads because of a server error. Reload the list and repeat the action to finish.` }, 500)
     }
-    if (deferredError) throw deferredError
+    if (deferredError) {
+      console.error('employer-leads: a filter-wide bulk action stopped part-way:', deferredError.message)
+      if (!stoppedEarly) throw deferredError
+      return c.json({ success: false, code: 'PARTIAL', affected, matched: resolved.total,
+        message: `Stopped after changing ${affected} of ${resolved.total} leads because of a server error. Reload the list and repeat the action to finish.` }, 500)
+    }
     return c.json({ success: true, affected, matched: resolved.total, ...(alsoRemoved ? { alsoRemoved } : {}) })
   }
 
@@ -1685,7 +1706,8 @@ async function confirmLead(c) {
     supabase, { confirmed_at: now, confirmed_via: 'link', updated_at: now },
     q => q.eq('id', lead.id).is('confirmed_at', null).select('id').maybeSingle())
   if (updErr) throw updErr
-  if (!updated) return c.json({ success: true, status: 'already', message: 'This address is already confirmed.' })
+  // Round 16 (B5): the loser of a double-click still has to tell the page whether to ask for the field.
+  if (!updated) return c.json({ success: true, status: 'already', needsField: !lead.role_category, message: 'This address is already confirmed.' })
   // BUG FIX (fresh audit pass, Section 5 re-pass): notifyOwner used to fire
   // unconditionally here — including for a lead the admin already ARCHIVED
   // (dismissed as spam / not interested). mergeIntoExistingLead already
@@ -1819,11 +1841,27 @@ async function saveLeadPreferences(c) {
   if (extras.length > MAX_EXTRA_FIELDS)
     return c.json({ success: false, message: `Choose at most ${MAX_EXTRA_FIELDS} other fields.` }, 400)
   const supabase = getSupabase(c.env)
-  const { data: updated, error } = await supabase.from('employer_leads')
-    .update({ role_category: d.field, extra_role_categories: extras, role_title: d.roleTitle || null, updated_at: new Date().toISOString() })
-    .eq('email', email).select('id').maybeSingle()
+  const notFound = () => c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  // Round 16 (G4): read first, so a change the person made through the link can be reported (these edits used to leave no
+  // trace at all, while a resubmission with different details tells the owner).
+  const { data: before, error: selErr } = await supabase.from('employer_leads').select('*').eq('email', email).maybeSingle()
+  if (selErr) throw selErr
+  if (!before) return notFound()
+  const patch = { role_category: d.field, extra_role_categories: extras, role_title: d.roleTitle || null, updated_at: new Date().toISOString() }
+  const { data: updated, error } = await supabase.from('employer_leads').update(patch).eq('email', email).select('id').maybeSingle()
   if (error) throw error
-  if (!updated) return c.json({ success: true, status: 'not_found', message: 'We no longer have a request for this address.' })
+  if (!updated) return notFound()
+  const sameSet = (a, b) => a.length === b.length && a.every(x => b.includes(x))
+  const changed = []
+  if ((before.role_category || null) !== d.field) changed.push('field')
+  if (!sameSet(Array.isArray(before.extra_role_categories) ? before.extra_role_categories : [], extras)) changed.push('other fields')
+  if ((before.role_title || null) !== (d.roleTitle || null)) changed.push('role')
+  if (changed.length) {
+    await logAdminAction(c, supabase, 'lead.preferences_changed', 'employer_lead', before.id, { fields: changed })
+    if (before.status !== 'ARCHIVED')
+      await notifyOwner(c, 'Employer lead updated their details',
+        `${describeLead({ ...before, ...patch })}\n\nThey changed (through the link in our email): ${changed.join(', ')}.`)
+  }
   return c.json({ success: true, status: 'saved', message: "Saved. We'll use these the next time there are Verified candidates for you." })
 }
 
@@ -2111,7 +2149,9 @@ async function adoptEarlierNotification(supabase, lead, field, { throttled = fal
     let sentAt = Array.isArray(data) && data.length ? data[0].sent_at : null
     if (!sentAt) { if (!throttled) return false; sentAt = new Date().toISOString() }
     const { error: stampErr } = await supabase.from('employer_leads')
-      .update({ candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: sentAt } }).eq('id', lead.id)
+      .update({ candidates_notified_fields: { ...(lead.candidates_notified_fields || {}), [field]: sentAt } })
+      // Round 16 (B3): only while the lead still has the address that was mailed (an edit resets the notice history).
+      .eq('id', lead.id).eq('email', lead.email)
     return !stampErr
   } catch (_) { return false }
 }
@@ -2206,7 +2246,10 @@ async function adminNotifyCandidates(c) {
       }
       if (lead.status === 'NEW') patch.status = 'CONTACTED'
       if (!lead.contacted_at) patch.contacted_at = stamp
-      const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id)
+      // Round 16 (B3): guarded by the address that was mailed. If an admin changed the lead's email while this batch was
+      // sending, the edit reset the notice history for the NEW address — stamping it "told" would silence an address that
+      // never received anything.
+      const { error: stampErr } = await supabase.from('employer_leads').update(patch).eq('id', lead.id).eq('email', lead.email)
       if (stampErr) console.error('Employer-lead candidate notification sent but not recorded:', stampErr.message)
     }
     if ((page || []).length < NOTIFY_EXAMINE_MAX) break   // a short page is the last one
@@ -2266,6 +2309,15 @@ function mergedLeadPatch(keep, others, info = {}) {
   const stamps = (k) => all.map(r => r[k]).filter(Boolean).sort()
   const patch = { updated_at: new Date().toISOString(), submission_count: all.reduce((n, r) => n + (r.submission_count || 1), 0) }
   const lastSub = stamps('last_submitted_at').pop(); if (lastSub) patch.last_submitted_at = lastSub
+  // Round 16 (B6): the lead's first appearance is the earliest of them ("First received" in the export, the purge clock,
+  // and the older-lead rule for same-inbox folding all read it), and a consent record is not lost because the kept lead
+  // predates them.
+  const firstSeen = stamps('created_at')[0]
+  if (firstSeen && keep.created_at && firstSeen < keep.created_at) patch.created_at = firstSeen
+  if (!keep.consent) {
+    const withConsent = all.filter(r => r.consent).sort((a, b) => ((a.created_at || '') < (b.created_at || '') ? -1 : 1))[0]
+    if (withConsent) patch.consent = withConsent.consent
+  }
   for (const k of ['last_ack_at', 'last_notice_at', 'last_candidates_notified_at']) { const v = stamps(k).pop(); if (v && v !== keep[k]) patch[k] = v }
   const firstContact = stamps('contacted_at')[0]
   if (!keep.contacted_at && firstContact) patch.contacted_at = firstContact

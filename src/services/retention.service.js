@@ -140,7 +140,22 @@ async function purgeArchivedLeads(supabase, now = Date.now(), { suppress = false
     if (error) return { deleted: 0, error: error.message }
     const out = { deleted: data?.length || 0 }
     if (suppress && data?.length) {
-      const emails = [...new Set(data.map(r => r.email).filter(Boolean))]
+      let emails = [...new Set(data.map(r => r.email).filter(Boolean))]
+      // Round 16 (B2): blocking an address blocks its whole INBOX. A different spelling of the same inbox that is
+      // still a lead (dana@ next to the purged dana+x@) used to be left standing and silently unmailable — never
+      // notified, its resubmissions dropped. An inbox that still has a lead is simply not blocked here; the purged
+      // row is gone either way, and the admin's own delete-and-block paths remain the way to block a whole inbox.
+      const keys = [...new Set(emails.map(canonicalMailbox))]
+      const live = new Set()
+      const byKey = await supabase.from('employer_leads').select('email, mailbox_key').in('mailbox_key', keys)
+      if (!byKey.error) for (const r of byKey.data || []) live.add(r.mailbox_key)
+      else if (['42703', 'PGRST204'].includes(byKey.error.code)) {
+        // Database without migration 0076: compare the typed forms instead.
+        const byForm = await supabase.from('employer_leads').select('email').in('email', mailboxForms(emails))
+        if (!byForm.error) for (const r of byForm.data || []) live.add(canonicalMailbox(r.email))
+      }
+      if (live.size) emails = emails.filter(e => !live.has(canonicalMailbox(e)))
+      if (!emails.length) return out
       // Round 11: keyed hashes (SUPPRESSION_HASH_KEY) for the address and its mailbox form, with the reason
       // recorded; falls back to hash-only rows when migration 0068 has not run.
       const hashes = [...new Set((await Promise.all(emails.map(e => suppressionHashes(env, e)))).flatMap(h => h.store))]
