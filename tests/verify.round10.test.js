@@ -103,7 +103,8 @@ describe('B4: the download digest headers are readable by the SPA', () => {
 
 describe('admin report queue (source-level, like round 8)', () => {
   it('the server lists OPEN reports oldest first and closed ones newest first', () => {
-    expect(read('../src/controllers/admin.controller.js')).toContain("ascending: status !== 'OPEN'")
+    // Round 12: the original expression here was inverted (OPEN newest-first); behaviour is asserted in verify.round12.test.js.
+    expect(read('../src/controllers/admin.controller.js')).toContain("ascending: status === 'OPEN'")
   })
   it('the panel refills after a review and stays visible while reports remain beyond the page', () => {
     const src = read('../frontend/src/pages/admin/VerificationReports.jsx')

@@ -4,7 +4,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-// Profile & Dashboard (Section 6), round 13 — migration 0083 against a REAL Postgres (PGlite), because the thing
+// Profile & Dashboard (Section 6), round 13 — migration 0084 against a REAL Postgres (PGlite), because the thing
 // being fixed is what the SQL functions do, which a faked database cannot say.
 //   B1: add_saved_profile took no edit marker, so "Copy as another profile" produced an unedited-looking copy; made
 //       main, a later save from a scan replaced the hand corrections without the PROFILE_EDITED confirmation.
@@ -37,7 +37,7 @@ beforeAll(async () => {
 }, 180000)
 afterAll(async () => { await db?.close() })
 
-describe('migration 0083 applies', () => {
+describe('migration 0084 applies', () => {
   it('cleanly, with the rest', () => { expect(failures).toEqual([]) })
   it('leaves exactly one add_saved_profile (two overloads would make a named-argument call ambiguous)', async () => {
     expect(await q(`select 1 from pg_proc where proname = 'add_saved_profile'`)).toHaveLength(1)

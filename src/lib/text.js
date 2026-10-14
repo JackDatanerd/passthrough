@@ -59,13 +59,30 @@ function cleanNotes(input) {
 //    "Pastor", "Md Rahman"), so they are only a title when written as an abbreviation ("Eng.", "Hon.").
 const HONORIFICS_ANY = new Set([
   'mr', 'mrs', 'ms', 'miss', 'mx', 'mister', 'madam', 'madame', 'mme', 'mlle', 'herr', 'frau', 'sra', 'srta',
-  'dr', 'prof', 'professor', 'engr', 'cpa', 'cfa', 'pmp', 'mba', 'phd', 'esq',
+  'dr', 'prof', 'professor', 'engr', 'cpa', 'cfa', 'pmp', 'phd', 'esq',
 ])
+// VERIFY ROUND 12 (bug): 'mba' sat in the list above, so "Mba Chukwuemeka" printed "Chukwuemeka" — Mba is also a real
+// surname / given name (Igbo, Gabonese). A credential is written in capitals ("MBA Grace"), a name is not, so this one
+// only counts as a title when the token is all capitals.
+const HONORIFICS_CAPS_ONLY = new Set(['mba'])
 const HONORIFICS_DOTTED = new Set(['eng', 'ing', 'er', 'hon', 'rev', 'revd', 'fr', 'sr', 'capt', 'col', 'maj', 'gen', 'lt'])
 const isHonorific = tok => {
-  const key = String(tok).toLowerCase().replace(/[.,]+/g, '')
+  const bare = String(tok).replace(/[.,]+/g, '')
+  const key = bare.toLowerCase()
+  if (HONORIFICS_CAPS_ONLY.has(key)) return bare === bare.toUpperCase()
   return HONORIFICS_ANY.has(key) || (HONORIFICS_DOTTED.has(key) && /\.,?$/.test(tok))
 }
+
+// VERIFY ROUND 12 (bug): "Surname, First" was only recognised when the comma sat in the FIRST word, so a leading title
+// ("Dr. Doe, John" -> "Doe") or a surname with particles ("van der Berg, Jan" -> "van") printed the wrong word under
+// "Passthrough Verified". A comma after a short run of lower-case-style particles + one word is now read as surname-first.
+// What follows the comma decides it: a credential or suffix ("John Smith, PhD", "Kimani, Jr.") means the comma only
+// separated a trailing qualification, so the name stays as written.
+const NAME_PARTICLES = new Set(['van', 'von', 'der', 'den', 'de', 'del', 'della', 'di', 'da', 'dos', 'das', 'du', 'la', 'le', 'el', 'al', 'bin', 'ibn', 'ter', 'ten', 'op', 'het', 'st'])
+const NAME_QUALIFIERS = new Set(['phd', 'md', 'mba', 'cpa', 'cfa', 'pmp', 'esq', 'jr', 'sr', 'ii', 'iii', 'iv', 'dds', 'rn', 'cissp', 'cisa', 'msc', 'bsc', 'mphil', 'llb', 'llm', 'dvm'])
+const MAX_SURNAME_PARTICLES = 3
+const qualifierKey = tok => String(tok).toLowerCase().replace(/\./g, '').replace(/[^a-z].*$/, '')
+const particleKey = tok => String(tok).toLowerCase().replace(/\./g, '')
 
 // "JOHN" / "O'BRIEN" -> "John" / "O'Brien". Only a token that is ALL capitals (three or more letters) is
 // touched, so "McDonald", "DeShawn" and "J." are left exactly as written.
@@ -85,17 +102,28 @@ function softenAllCaps(tok) {
 function firstNameOf(input) {
   // A parsed resume can hand back anything (an object stringifies to letters): only text counts.
   if (typeof input !== 'string') return null
-  let text = cleanName(input)
-  const firstWord = text.split(' ')[0] || ''
-  const comma = firstWord.indexOf(',')
-  if (comma !== -1) {
-    text = text.slice(text.indexOf(',') + 1).trim()
-    if (!text) return null
-  }
-  const tokens = text.split(' ').filter(Boolean)
+  const tokens = cleanName(input).split(' ').filter(Boolean)
   let i = 0
   while (i < tokens.length && isHonorific(tokens[i])) i++
-  const first = (tokens[i] || '').replace(/,+$/, '')
+  const rest = tokens.slice(i)
+
+  // Surname-first: [particle…] Surname,[ ]First …  (the comma may also touch the next word: "Smith,John").
+  for (let k = 0; k < rest.length && k <= MAX_SURNAME_PARTICLES; k++) {
+    const comma = rest[k].indexOf(',')
+    if (comma === -1) {
+      if (NAME_PARTICLES.has(particleKey(rest[k]))) continue
+      break
+    }
+    const tail = [rest[k].slice(comma + 1), ...rest.slice(k + 1)].join(' ').split(' ').filter(Boolean)
+    if (!tail.length) return null                                  // a stored surname-first leftover ("Doe,")
+    if (NAME_QUALIFIERS.has(qualifierKey(tail[0]))) break         // "John, PhD": a qualification, not a given name
+    let j = 0
+    while (j < tail.length && isHonorific(tail[j])) j++
+    const given = (tail[j] || '').replace(/,+$/, '')
+    return hasSubstance(given) ? softenAllCaps(given) : null
+  }
+
+  const first = (rest[0] || '').replace(/,+$/, '')
   return hasSubstance(first) ? softenAllCaps(first) : null
 }
 

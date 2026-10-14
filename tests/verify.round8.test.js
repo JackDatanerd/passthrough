@@ -152,8 +152,7 @@ describe('admin: list, review and revoke-settles-reports', () => {
     expect(Object.keys(byId).sort()).toEqual(['r1', 'r2'])
     expect(byId.r1).toMatchObject({ scanId: 'scan1', pageStatus: 'ACTIVE', reason: 'FAKE' })
     expect(byId.r2).toMatchObject({ scanId: null, pageStatus: 'GONE', reporterEmail: 'a@b.co' })
-    const src = fs.readFileSync(new URL('../src/controllers/admin.controller.js', import.meta.url), 'utf8')
-    expect(src).toMatch(/from\('verification_reports'\)[\s\S]{0,300}\.order\('created_at', \{ ascending: status !== 'OPEN' \}\)/)
+    // Ordering is asserted behaviourally in verify.round12.test.js (this double does not sort).
   })
   it('filters by status and treats an unknown status as OPEN', async () => {
     t = adminHarness()

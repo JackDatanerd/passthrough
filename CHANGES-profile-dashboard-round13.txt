@@ -1,14 +1,14 @@
 Profile & Dashboard — round 13 (bugs only)
 
-Apply migration 0083 BEFORE deploying the Worker (EXPECTED_SCHEMA_VERSION is now 83). The previous Worker keeps working
+Apply migration 0084 BEFORE deploying the Worker (EXPECTED_SCHEMA_VERSION is now 84; it was first numbered 0083, which collided with 0083_webhooks_round13 — see CHANGES-verify-round12.txt). The previous Worker keeps working
 against it: the one new parameter has a default.
 
-B1 (Medium) supabase/migrations/0083, profile.controller.js duplicatePrimary
+B1 (Medium) supabase/migrations/0084, profile.controller.js duplicatePrimary
    "Copy as another profile" copied the resume but not the hand-edit marker, so the copy looked untouched. Make that copy
    the main profile and a later save from a scan replaced the hand corrections WITHOUT the PROFILE_EDITED confirmation.
    add_saved_profile takes p_edited_at (default NULL, which is what saving from a scan passes); the copy passes the
    main profile's editedAt. Checked on a real Postgres (PGlite): copy -> make main -> save from a scan now asks.
-B2 (Low-Med) 0083 set_saved_profile_resume / update_saved_profile, SavedProfileEditor.jsx
+B2 (Low-Med) 0084 set_saved_profile_resume / update_saved_profile, SavedProfileEditor.jsx
    Saving a resume identical to the stored one (open the editor, press Save) stamped the marker: the profile read
    "edited <date>" and the next save from a scan asked a confirmation nobody had earned. An unchanged resume now leaves
    the marker, the profile, the earlier version and the version token alone (the version check still runs, so a stale
@@ -34,6 +34,6 @@ B8 (Low, performance) profile.controller.js getQuota, profile.routes.js, Index.j
 Already closed by round 12 and re-checked here: B7 (emoji cut by the label limit), the non-string version on
 PUT /profile/extras/:id, and the stale in-flight request in the Scans tab's count store.
 
-Tests: tests/profile.round13.test.js, tests/profile.round13.pglite.test.js (real Postgres; fails without 0083),
+Tests: tests/profile.round13.test.js, tests/profile.round13.pglite.test.js (real Postgres; fails without 0084),
 frontend/tests/components/ProfileDashboard.round13.test.jsx, frontend/tests/pages/ProfileDashboard.round13.test.jsx.
 Five dashboard test files now mock the quota at /profile/quota instead of /profile.

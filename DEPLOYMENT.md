@@ -288,8 +288,8 @@ wrangler secret put VERIFY_PREVIEW_KEY
 #   * tests/migrations.pglite.test.js applies every migration to a real Postgres (PGlite, no server) and checks RLS, grants, search_path
 #     pinning, foreign-key indexes, the account scrub's column coverage and SQL/JS mailbox-key parity. It runs in `npm run test:worker`.
 
-# PROFILE & DASHBOARD ROUND 13 (migration 0083 — apply BEFORE deploying this Worker; EXPECTED_SCHEMA_VERSION is now 83).
-#   * 0083 replaces add_saved_profile (new optional p_edited_at) and set_saved_profile_resume / update_saved_profile (an unchanged
+# PROFILE & DASHBOARD ROUND 13 (migration 0084 — apply BEFORE deploying this Worker; EXPECTED_SCHEMA_VERSION is now 84).
+#   * 0084 replaces add_saved_profile (new optional p_edited_at) and set_saved_profile_resume / update_saved_profile (an unchanged
 #     resume no longer stamps the "edited" marker). Idempotent. The previous Worker keeps working against it. New route:
 #     GET /api/profile/quota (the dashboard's free-scan counter, without reading the saved resumes).
 

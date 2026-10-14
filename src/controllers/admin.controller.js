@@ -800,7 +800,12 @@ async function adminListVerificationReports(ctx) {
   const status = REPORT_STATUSES.includes(asked) ? asked : 'OPEN'
   const { data, error, count } = await supabase.from('verification_reports')
     .select('id, code, reason, details, reporter_email, status, created_at, reviewed_at', { count: 'exact' })
-    .eq('status', status).order('created_at', { ascending: status !== 'OPEN' }).range(from, to)
+    .eq('status', status)
+    // VERIFY ROUND 12 (bug): this read `ascending: status !== 'OPEN'`, i.e. OPEN newest-first and closed oldest-first - the
+    // reverse of what round 10 intended and of what the panel says ("Showing the oldest N"). With more than a page of open
+    // reports the oldest were the ones starved. OPEN is worked oldest-first (a queue); closed history reads newest-first.
+    // `id` breaks ties so two reports with the same timestamp cannot swap places between pages.
+    .order('created_at', { ascending: status === 'OPEN' }).order('id', { ascending: status === 'OPEN' }).range(from, to)
   if (error) throw error
   const rows = data || []
   const pages = new Map()

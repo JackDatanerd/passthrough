@@ -1,0 +1,42 @@
+Verify (Section 7) — round 12 (fresh independent pass)
+
+APPLY: run supabase/migrations/0084_profile_dashboard_round13.sql (see C1: it is the Profile & Dashboard migration, renumbered
+from 0083; it is idempotent, so re-running it where the old 0083 copy already ran is safe). EXPECTED_SCHEMA_VERSION is now 84.
+Then deploy the code, and run the one-off name backfill ONCE (see B2) so pages issued before this fix
+are corrected too:
+  SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node scripts/backfill-candidate-names.cjs           (dry run: lists changes)
+  SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=... node scripts/backfill-candidate-names.cjs --apply   (writes them)
+Safe to re-run; only rows whose derived name differs are touched.
+
+BUGS
+B1 (medium) admin.controller.js adminListVerificationReports: the queue sorted `ascending: status !== 'OPEN'`, i.e. OPEN
+   reports NEWEST first and closed ones oldest first — the reverse of round 10's intent and of the panel's own
+   "Showing the oldest N" line. With more than one page of open reports the oldest ones were the ones starved. Now OPEN is
+   oldest first, closed newest first, with `id` as a tie-break so equal timestamps cannot swap places between pages.
+   Tests: the two round-8/round-10 assertions only matched the buggy SOURCE TEXT (the shared in-memory double does not
+   sort), which is why this survived; they are replaced by verify.round12.test.js, which runs against a stub that really
+   sorts and fails (3/3) against the old expression.
+B2 (low-medium) lib/text.js firstNameOf: "Surname, First" was only recognised when the comma sat in the FIRST word, so
+   "Dr. Doe, John" printed "Doe" and "van der Berg, Jan" / "De La Cruz, Maria" printed "van" / "De" under
+   "Passthrough Verified", in the link-preview title and on the dashboard. A comma after up to three name particles + one
+   word is now read as surname-first (after any leading title); a credential/suffix after the comma ("John Smith, PhD",
+   "Kimani, Jr.", "Njeri Kamau, CPA(K)") or a job title ("Jane Doe, Senior Engineer") keeps the name as written. "John, PhD"
+   used to hide the name entirely and now reads "John". Also: "Mba" is a real surname/given name (Igbo, Gabonese) and no
+   longer counts as a credential unless written in capitals ("MBA Grace" still skips the title).
+   The wrong token was STORED at write time (candidate_first_name), so fixing the parser cannot repair existing pages:
+   scripts/backfill-candidate-names.cjs re-derives it from the resume data (user-edited, else rewritten, else original).
+
+CROSS-SECTION (traced, fixed here because every other session left it)
+C1 (medium) supabase/migrations: two files were numbered 0083 (0083_webhooks_round13.sql, Oct 13, and
+   0083_profile_dashboard_round13.sql, Oct 14 — two sessions each took "the next number"). Both end with
+   `insert into applied_migrations (version, name) values (83, ...) on conflict (version) do nothing`, so whichever ran second
+   never registered itself and left the ledger and system_state.schema_version describing only the first; `supabase db push`
+   keys its history on the number and rejects the pair; and tests/migrations.numbering + migrations.pglite failed on HEAD
+   (the Section 11 round-10 notes record this as "found, NOT fixed"). The NEWER file is renumbered 0084 (ledger row 84, schema
+   version 84, EXPECTED_SCHEMA_VERSION 84), with DEPLOYMENT.md, CHANGES-profile-dashboard-round13.txt and the Profile pglite
+   test's labels updated. The old file must be removed from git: `git rm supabase/migrations/0083_profile_dashboard_round13.sql`
+   (tar cannot delete it). Verified against real Postgres (PGlite): all 84 migrations apply in order and the ledger has a row
+   for 83 and for 84.
+
+NOT CHANGED (low, noted): extractSha256 on the page rejects a pasted hash that contains non-breaking or zero-width
+characters (copying through chat apps / rich text); and a file dropped outside the check card navigates the tab away.

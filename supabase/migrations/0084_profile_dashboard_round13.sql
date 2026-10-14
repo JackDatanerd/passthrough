@@ -110,9 +110,9 @@ revoke execute on function update_saved_profile(uuid, uuid, jsonb, text, timesta
 grant  execute on function update_saved_profile(uuid, uuid, jsonb, text, timestamptz, timestamptz) to service_role;
 
 -- Always the LAST statements of a migration: the ledger row, then how far this database has been migrated.
-insert into applied_migrations (version, name) values (83, '0083_profile_dashboard_round13')
+insert into applied_migrations (version, name) values (84, '0084_profile_dashboard_round13')
 on conflict (version) do nothing;
 
 insert into system_state (key, value)
-values ('schema_version', jsonb_build_object('version', 83, 'applied_at', now()))
+values ('schema_version', jsonb_build_object('version', 84, 'applied_at', now()))
 on conflict (key) do update set value = excluded.value, updated_at = now();
