@@ -656,7 +656,12 @@ async function notifyConversionFailure(env, payment, result, source) {
       `referral_code_id: ${payment?.referral_code_id}\namount_cents: ${payment?.amount_cents}\n` +
       `step: ${result?.reason}\nerror: ${result?.error}\ncommission recorded: ${result?.recorded ? 'yes' : 'NO'}\n\n` +
       `The customer's fix is unaffected. To retry the ledger write (safe to repeat), call:\n\n` +
-      `  POST /api/payments/${payment?.paystack_ref}/reconcile  (admin-only)`
+      `  POST /api/payments/${payment?.paystack_ref}/reconcile  (admin-only)`,
+      // Section 4 round 13 (bug): sendOwnerAlert collapses alerts with the same subject for 10 minutes, and this subject is
+      // constant, so a second, unrelated payment failing inside that window (a DB blip hits several at once) was swallowed
+      // and the owner only learned about the first. Keyed per payment + step: a repeat of the SAME failure is still
+      // collapsed, a different payment or a different step is reported.
+      { dedupeKey: `${payment?.id || payment?.paystack_ref || 'unknown'}:${result?.reason || 'unknown'}` }
     )
   } catch (_) {}
 }

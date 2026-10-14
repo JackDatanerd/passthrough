@@ -156,6 +156,23 @@ function attachCodeStats(camelCodes, ledgerRows, rawCodes) {
     return { ...rc, stats: { ...st, conversionRate: rate } }
   })
 }
+// Section 4 round 13 (feature gap): the funnel stopped at "clicks" and "sales", so a partner whose link was being visited and
+// whose visitors were registering, but not yet buying, saw no sign of it. The middle step is how many accounts are CURRENTLY
+// attributed to the code (users.referred_by_code, migration 0079): aggregate counts only, never who. Head-only counts per
+// code (a partner has a handful of codes); a failed count leaves `signups` null so the page omits the step instead of showing 0.
+async function attachSignupCounts(supabase, codes) {
+  return Promise.all((codes || []).map(async rc => {
+    try {
+      const { count, error } = await supabase.from('users')
+        .select('id', { count: 'exact', head: true }).eq('referred_by_code', rc.code)
+      if (error) throw error
+      return { ...rc, signups: count ?? 0 }
+    } catch (err) {
+      console.error('attachSignupCounts:', err.message)
+      return { ...rc, signups: null }
+    }
+  }))
+}
 const sameInstant = (a, b) => (a == null && b == null) || (a != null && b != null && Date.parse(a) === Date.parse(b))
 // Unpaid commission that is actually payable now: not in the running cycle
 // and not held.
@@ -236,9 +253,16 @@ function buildCyclesSummary(ledgerRows, count, holdDays = 0) {
 // column itself is left in place (not this file's to drop), just no
 // longer written here.
 
+// Section 4 round 13 (bug): `<anything>@removed.invalid` is the placeholder an anonymized partner row is rewritten to
+// (adminAnonymizePartner). Nothing stopped an application, an admin-created partner or an email edit from using it, which
+// made a LIVE partner indistinguishable from an erased one: every send to it is silently suppressed (email.service) and
+// every token endpoint answers "invalid link". Same rule signup already applies (auth.controller signupEmailSchema).
+const partnerEmailSchema = z.string().trim().email().max(320)
+  .refine(e => !isRemovedEmail(e), { message: 'That email address can\u2019t be used.' })
+
 const createPartnerSchema = z.object({
   name:  z.string().trim().min(1).max(200),
-  email: z.string().trim().email().max(320),
+  email: partnerEmailSchema,
   // Round 4: a rate could only be set by a second PATCH after creation.
   commissionRate: z.number().min(0).max(1).optional()
 })
@@ -342,7 +366,7 @@ async function adminCreatePartner(ctx) {
 
 const updatePartnerSchema = z.object({
   name:           z.string().trim().min(1).max(200).optional(),
-  email:          z.string().trim().email().max(320).optional(),
+  email:          partnerEmailSchema.optional(),
   status:         z.enum(['ACTIVE', 'PAUSED']).optional(),
   // Fraction, not a percentage integer — 0.25 = 25%, matching 0012's
   // commission_rate comment. Bounded 0-1 here at the API boundary; the
@@ -711,7 +735,7 @@ async function adminGetPartner(ctx) {
   // Code text per ledger row (for the Conversions tab) + per-code performance.
   const codeTextById = new Map((row.referral_codes || []).map(cd => [cd.id, cd.code]))
   camel.commissionLedger = camel.commissionLedger.map(l => ({ ...l, code: codeTextById.get(l.referralCodeId) || null }))
-  camel.referralCodes = attachCodeStats(camel.referralCodes, ledger, row.referral_codes)
+  camel.referralCodes = await attachSignupCounts(supabase, attachCodeStats(camel.referralCodes, ledger, row.referral_codes))
   // AUDIT FIX (Section 3/4 pass, bug): see the matching fix in
   // adminListPartners above — same currency-drift gap, same fix.
   camel.currency = c.activeCurrency(ctx.env)
@@ -731,11 +755,25 @@ async function adminGetPartner(ctx) {
 async function adminResendPayoutLink(ctx) {
   const partnerId = ctx.req.param('id')
   const supabase = getSupabase(ctx.env)
+  // Section 4 round 13 (feature gap): `scope` 'dashboard' re-sends the read-only dashboard link (the one every conversion
+  // email carries); admins could only ever re-send the payout-details link. Default stays 'payout'.
+  const resendBody = typeof ctx.req.json === 'function' ? await ctx.req.json().catch(() => null) : null
+  const resendScope = resendBody && resendBody.scope === 'dashboard' ? 'dashboard' : 'payout'
   const { data: partner, error } = await supabase
-    .from('partners').select('name, email, payout_details_token').eq('id', partnerId).maybeSingle()
+    .from('partners').select('name, email, payout_details_token, dashboard_token').eq('id', partnerId).maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
+
+  if (resendScope === 'dashboard') {
+    if (!partner.dashboard_token) return ctx.json({ success: false, message: 'This partner has no dashboard link yet — regenerate it first.' }, 409)
+    const dashboardUrl = `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
+    const sentDash = await emailService.sendPartnerLinksRecovery(ctx.env, supabase, partner.email, partner.name, dashboardUrl)
+    await logAdminAction(ctx, supabase, 'partner.dashboard_link_resent', 'partner', partnerId, { emailed: sentDash })
+    return ctx.json({ success: sentDash,
+      message: sentDash ? 'Dashboard link re-sent.' : 'Email not sent — it failed or hit this partner\'s 4-per-hour limit. Check logs, or copy the link instead.',
+      ...(sentDash ? {} : { dashboardUrl }) })
+  }
 
   const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
   const sent = await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl)
@@ -1845,7 +1883,7 @@ async function getPartnerDashboard(ctx) {
     currency:       c.activeCurrency(ctx.env),
     // Per-code conversions + conversion rate (clicks -> sales), net of refunds.
     // partnerId is an internal id with no partner-facing purpose — dropped here (round 5).
-    referralCodes:  attachCodeStats(codes.map(referralCodeRowToCamel), ledger, codes).map(({ partnerId, ...rc }) => ({
+    referralCodes:  (await attachSignupCounts(supabase, attachCodeStats(codes.map(referralCodeRowToCamel), ledger, codes))).map(({ partnerId, ...rc }) => ({
       ...rc, stats: { conversions: rc.stats.conversions, conversionRate: rc.stats.conversionRate }
     })),
     notifyConversions: partner.notify_conversions !== false,
@@ -2044,7 +2082,7 @@ const PARTNER_TERMS_VERSION = '2026-10'
 
 const applicationSchema = z.object({
   name:     z.string().trim().min(1).max(200),
-  email:    z.string().trim().email().max(320),
+  email:    partnerEmailSchema,
   audience: z.string().trim().max(1000).optional(),
   website:  z.string().trim().max(300).optional(),
   message:  z.string().trim().max(2000).optional(),

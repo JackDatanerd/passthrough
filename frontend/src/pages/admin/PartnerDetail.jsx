@@ -742,7 +742,7 @@ function ReferralCodesTab({ partner, onChanged }) {
               <div>
                 <span className="font-mono font-medium">{code.code}</span>
                 <span className="text-gray-400 text-xs ml-2">
-                  {code.clicks || 0} clicks · {code.usesSoFar || 0} used{code.usageLimit ? ` / ${code.usageLimit}` : ''}
+                  {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'}` : ''} · {code.usesSoFar || 0} used{code.usageLimit ? ` / ${code.usageLimit}` : ''}
                 </span>
                 <div className="text-xs text-gray-400 mt-0.5">
                   {['FIX', 'BADGE', 'FIX_PLAIN'].filter(t => code.tierPrices?.[t] != null).map(t =>
@@ -1057,9 +1057,9 @@ export default function PartnerDetail() {
   useEffect(() => { load() }, [id])
   const reload = () => load(true)
 
-  async function resendLink() {
+  async function resendLink(scope = 'payout') {
     try {
-      const res = await api.post(`/partners/${id}/resend-link`)
+      const res = await api.post(`/partners/${id}/resend-link`, scope === 'dashboard' ? { scope } : undefined)
       // AUDIT FIX (feature gap): email is still the primary channel, but it
       // was the ONLY one — if Resend bounces, spam-filters it, or the
       // address on file is stale, there was no way to get the partner
@@ -1067,10 +1067,11 @@ export default function PartnerDetail() {
       // the URL; copy it to the clipboard as a fallback so it's on hand to
       // hand off manually (support chat, a different email, etc.) even
       // when the send itself failed.
-      const copied = res.data.payoutUrl ? await copyToClipboard(res.data.payoutUrl) : false
+      const fallbackUrl = res.data.payoutUrl || res.data.dashboardUrl
+      const copied = fallbackUrl ? await copyToClipboard(fallbackUrl) : false
       toast({
         message: res.data.success
-          ? `Payout link re-sent to ${partner.name}.`
+          ? `${scope === 'dashboard' ? 'Dashboard' : 'Payout'} link re-sent to ${partner.name}.`
           : `${res.data.message || 'Email not sent.'}${copied ? ' Link copied to your clipboard instead.' : ''}`,
         type: res.data.success ? 'success' : 'warning'
       })
@@ -1182,7 +1183,8 @@ export default function PartnerDetail() {
       )}
 
       <div className="flex gap-2 flex-wrap">
-        <Button size="sm" variant="secondary" onClick={resendLink}>Resend payout-details link</Button>
+        <Button size="sm" variant="secondary" onClick={() => resendLink('payout')}>Resend payout-details link</Button>
+        <Button size="sm" variant="secondary" onClick={() => resendLink('dashboard')}>Resend dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>

@@ -312,8 +312,15 @@ const isPayable = p => (p.readyToPayCents || 0) > 0 && p.payoutMethod && !p.mixe
 // One row per partner that is actually payable right now and has somewhere to send it — the
 // sheet an admin works through for a payout run. Clamped/zero/no-details partners are left out
 // (their figures are on the page); details come straight from the list payload.
-function exportPayoutRun(partners) {
-  const payable = partners.filter(isPayable)
+// Section 4 round 13 (bug): the CSV listed every payable partner with their CURRENT bank details and no hold check, so a
+// partner whose payout details changed inside the hold window (the takeover tripwire) appeared in the run sheet with the new
+// destination, ready to be paid by hand, while the in-app run correctly held them back. Held partners are now left out of the
+// sheet and counted, so the toast can say so; they are paid from the in-app run after the admin confirms with the partner.
+const isHeld = (p, holdHours) => holdHours > 0 && withinHours(p.payoutDetailsSubmittedAt, holdHours)
+function exportPayoutRun(partners, holdHours = 0) {
+  const all = partners.filter(isPayable)
+  const payable = all.filter(p => !isHeld(p, holdHours))
+  const heldBack = all.length - payable.length
   const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted']]
   for (const p of payable) {
     const d = p.payoutDetails || {}
@@ -324,7 +331,7 @@ function exportPayoutRun(partners) {
     ])
   }
   downloadCsv(`payout-run-${new Date().toISOString().slice(0, 10)}.csv`, rows)
-  return payable.length
+  return { exported: payable.length, heldBack }
 }
 
 // Section 4 round 6 (feature gap): "Export payout run" produced a CSV to pay from, but each payout then had to be
@@ -337,7 +344,7 @@ const RUN_CHUNK = 25   // the server's per-request cap
 function PayoutRunModal({ partners, holdHours, onClose, onDone }) {
   const toast = useToast()
   const rows = partners.filter(isPayable)
-  const held = p => holdHours > 0 && withinHours(p.payoutDetailsSubmittedAt, holdHours)
+  const held = p => isHeld(p, holdHours)
   // A partner whose details changed inside the hold window starts unselected; ticking them requires the confirmation.
   const [selected, setSelected] = useState(() => new Set(rows.filter(p => !held(p)).map(p => p.id)))
   const [confirmed, setConfirmed] = useState(() => new Set())
@@ -524,7 +531,10 @@ export default function AdminPartners() {
         <h1 className="text-2xl font-bold text-gray-900">Partners</h1>
         <div className="flex gap-2">
           <Button variant="secondary" disabled={payableCount === 0}
-            onClick={() => toast({ message: `Exported ${exportPayoutRun(partners)} payable partner(s).`, type: 'success' })}>
+            onClick={() => {
+              const { exported, heldBack } = exportPayoutRun(partners, holdHours)
+              toast({ message: `Exported ${exported} payable partner(s).` + (heldBack ? ` ${heldBack} left out: payout details changed inside the ${holdHours}-hour hold.` : ''), type: heldBack ? 'warning' : 'success' })
+            }}>
             Export payout run
           </Button>
           <Button variant="secondary" disabled={payableCount === 0} onClick={() => setShowRun(true)}>

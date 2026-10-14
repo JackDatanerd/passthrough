@@ -174,7 +174,7 @@ function CodeCard({ code, partnerActive, currency }) {
         {prices.map(([tier, cents]) => `${TIER_LABEL[tier] || tier}: ${fmtCents(cents, currency)}`).join(' · ')}
       </div>
       <div className="text-sm text-gray-500 mt-1">
-        {code.clicks || 0} clicks · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
+        {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'}` : ''} · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
         {code.stats?.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks bought`}
       </div>

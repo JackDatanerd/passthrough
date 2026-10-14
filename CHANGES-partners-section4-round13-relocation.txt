@@ -1,0 +1,13 @@
+Partners section 4 round 13 — relocation fix
+Commit 8155927 added every round-13 file at a wrong path (the fixes tar had no top-level wrapper dir), so the
+real files under src/ and frontend/src/ never received the round-13 changes and its tests never ran.
+
+Round-13 versions now at their real paths (each was verified to be the pre-round-13 file + the round-13 edits only):
+  src/controllers/auth.controller.js, src/controllers/partners.controller.js, src/services/referral.service.js
+  frontend/src/hooks/useReferralCapture.js, frontend/src/pages/PartnerDashboard.jsx, Register.jsx,
+  frontend/src/pages/admin/AdminPartners.jsx, PartnerDetail.jsx
+Tests moved where vitest collects them:
+  tests/partners.round13.test.js, frontend/tests/adminPartners.round13.test.jsx, frontend/tests/useReferralCapture.round13.test.jsx
+
+Stray copies to delete (git rm, see apply steps): controllers/, services/, src/hooks/, src/pages/ (repo root),
+partners.round13.test.js (repo root), tests/adminPartners.round13.test.jsx, tests/useReferralCapture.round13.test.jsx

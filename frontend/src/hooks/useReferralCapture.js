@@ -28,6 +28,7 @@ const ATTRIBUTION_TTL_MS = ATTRIBUTION_WINDOW_DAYS * 24 * 60 * 60 * 1000
 // browsers / private modes), in which case readStored() always returns null and every route
 // change that still carries ?ref= would look like a "new" code and fire another click.
 const trackedThisSession = new Set()
+const refreshSyncedThisSession = new Set()
 
 // localStorage can throw (blocked storage in some in-app browsers / private
 // modes). A ?ref= landing must never crash the app — attribution just won't
@@ -203,9 +204,22 @@ export function useReferralCapture() {
     if ((previous !== code || pendingClicks.has(code)) && !trackedThisSession.has(code)) {
       trackedThisSession.add(code)
       trackClick(code)
+    } else if (previous === code && !refreshSyncedThisSession.has(code)) {
+      // Section 4 round 13 (bug): a repeat ?ref= visit slid the BROWSER's 30-day window forward (writeStored above) but never
+      // told the account, so on another device (or after clearing site data) the account's older referred_at expired first.
+      // Once per page session, push the refreshed start to the account (a no-op when signed out).
+      refreshSyncedThisSession.add(code)
+      syncToAccount(code, readStoredRecord()?.capturedAt)
     }
     pendingClicks.delete(code)
   }, [location.search])
+}
+
+// Section 4 round 13: when this browser captured the stored code (ISO string), so registration can pass the REAL start of
+// the attribution window to the server instead of the server stamping "now". '' when there is none.
+export function getStoredReferralCapturedAt() {
+  const rec = readStoredRecord()
+  return rec && Number.isFinite(rec.capturedAt) ? new Date(rec.capturedAt).toISOString() : ''
 }
 
 export function getStoredReferralCode() {
