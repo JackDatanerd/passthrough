@@ -1404,11 +1404,12 @@ describe('refundPayment (admin) — round 2', () => {
 
 // Payments & Pricing pass 1 (G4): in-app receipt resend.
 describe('resendPaymentReceipt', () => {
-  function setup({ payment, resendResult } = {}) {
+  function setup({ payment, resendResult, duplicate = false } = {}) {
     const db = createFakeSupabase(q => (q.table === 'payments' && q.op === 'select' ? { data: payment, error: null } : undefined))
     const { mod, restore } = loadWithStubs('controllers/payments.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'services/fulfillment.service.js': { resendReceipt: async () => resendResult ?? { sent: true, reason: null, email: 'a@b.c' } },
+      'services/fulfillment.service.js': { resendReceipt: async () => resendResult ?? { sent: true, reason: null, email: 'a@b.c' },
+        isDuplicateOfOtherPayment: async () => duplicate },
     })
     const c = (ref = 'ref1') => ({
       env: {}, get: k => (k === 'user' ? { id: 'u1' } : undefined),
@@ -1433,6 +1434,10 @@ describe('resendPaymentReceipt', () => {
     t = setup({ payment: p({ amount_cents: 0, paystack_ref: 'credit:s1:1' }) })
     expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(400)
     t = setup({ payment: p({ status: 'PENDING' }) })
+    expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(400)
+  })
+  it('Payments round 14: refuses a DUPLICATE (another payment owns the scan) — it delivered nothing', async () => {
+    t = setup({ payment: p(), duplicate: true })
     expect((await t.mod.resendPaymentReceipt(t.c())).status).toBe(400)
   })
   it('503s with a clear message when the account has no email on file', async () => {

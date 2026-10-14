@@ -196,7 +196,11 @@ async function settlePayment(env, supabase, paymentRow, { authCode = null, sourc
   // push the email out of the request (waitUntil) — Paystack asks webhook
   // handlers to acknowledge quickly, and the mail provider's retries can take
   // ~30s in the worst case.
-  if (won || finishedJob) {
+  // PAYMENTS & PRICING ROUND 14 (bug): this ran for EVERY outcome, so a DUPLICATE (a second payment for a scan
+  // another payment already delivered) or a payment with nothing to deliver (SCAN_MISSING / NO_SCAN /
+  // ACCOUNT_DELETED) mailed "Receipt — thanks for your purchase … Item: Full fix" for a charge that bought
+  // nothing and is being refunded, followed by the refund notice. Receipts belong to purchases that delivered.
+  if (settledOk && (won || finishedJob)) {
     const task = sendReceiptOnce(env, supabase, row, { legacyOk: won })
     if (typeof defer === 'function') defer(task)
     else await task
@@ -273,6 +277,18 @@ async function runDuplicateAutoRefund(env, supabase, row, ownerPaymentId, source
 // between the claim and the send used to lose the receipt permanently (the claim only released
 // on a thrown error). A claim with no delivery mark after 10 minutes is retried by
 // recoverLostReceipts below. Best-effort: with the column missing this is a no-op.
+// True when the payment's scan exists and was claimed by a DIFFERENT payment — i.e. this one is a duplicate
+// that delivered nothing (and is refunded or being refunded). A scan with no recorded owner (legacy rows), a
+// deleted scan or no scan at all is NOT treated as a duplicate: those may be real purchases. Fails open (false).
+async function isDuplicateOfOtherPayment(supabase, payment) {
+  if (!payment || !payment.scan_id) return false
+  try {
+    const { data, error } = await supabase.from('scans').select('fix_payment_id').eq('id', payment.scan_id).maybeSingle()
+    if (error || !data) return false
+    return !!data.fix_payment_id && data.fix_payment_id !== payment.id
+  } catch (_) { return false }
+}
+
 async function markReceiptDelivered(supabase, id) {
   try { await supabase.from('payments').update({ receipt_delivered_at: new Date().toISOString() }).eq('id', id) } catch (_) { /* best effort */ }
 }
@@ -339,7 +355,7 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
   const result = { checked: 0, resent: 0, failed: 0, error: null }
   try {
     const { data: rows, error } = await supabase.from('payments')
-      .select('id, user_id, fix_tier, amount_cents, currency, paystack_ref, created_at, paid_at, receipt_sent_at')
+      .select('id, user_id, scan_id, fix_tier, amount_cents, currency, paystack_ref, created_at, paid_at, receipt_sent_at')
       .eq('status', 'SUCCESS').is('receipt_delivered_at', null).not('receipt_sent_at', 'is', null)
       .lt('receipt_sent_at', new Date(now - 10 * 60 * 1000).toISOString())
       .gt('created_at', new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString())
@@ -352,6 +368,9 @@ async function recoverLostReceipts(env, supabase, { now = Date.now(), limit = 10
         .update({ receipt_sent_at: new Date(now).toISOString() })
         .eq('id', row.id).eq('receipt_sent_at', row.receipt_sent_at).is('receipt_delivered_at', null).select('id')
       if (claimErr || !claimed || !claimed.length) continue
+      // PAYMENTS & PRICING ROUND 14 (bug): rows claimed before the settlePayment gate above existed include
+      // duplicates (another payment owns the scan). Never retry a receipt for one — close it out instead.
+      if (await isDuplicateOfOtherPayment(supabase, row)) { await markReceiptDelivered(supabase, row.id); continue }
       const { data: buyer } = await supabase.from('users').select('email, name').eq('id', row.user_id).maybeSingle()
       if (!buyer?.email) { await markReceiptDelivered(supabase, row.id); continue }
       try {
@@ -718,7 +737,7 @@ async function clearDispute(supabase, payment) {
 module.exports = {
   REVIVABLE_STATUSES, REENQUEUE_AFTER_MS,
   generatorFor, chargeMismatch,
-  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, resendReceipt, abandonPendingForScan, abandonPendingForScans, abandonPendingForUser,
+  fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, isDuplicateOfOtherPayment, resendReceipt, abandonPendingForScan, abandonPendingForScans, abandonPendingForUser,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
   refundUnsettledPayment, clearDispute, notifyBuyerReversal,
 }

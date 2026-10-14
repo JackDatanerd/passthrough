@@ -1089,7 +1089,7 @@ async function resendPaymentReceipt(c2) {
   if (error) throw error
   if (!payment || payment.user_id !== user.id)
     return c2.json({ success: false, message: 'Payment not found.' }, 404)
-  if (!isReceiptable(payment))
+  if (!isReceiptable(payment) || await fulfillmentService.isDuplicateOfOtherPayment(supabase, payment))
     return c2.json({ success: false, message: 'A receipt is only available for a completed, paid purchase.' }, 400)
 
   const r = await fulfillmentService.resendReceipt(c2.env, supabase, payment)
@@ -1181,12 +1181,26 @@ async function getPaymentHistory(c2) {
   // which tier (FIX/BADGE/FIX_PLAIN) each past purchase actually was —
   // despite that column existing specifically so downstream consumers
   // could trust it (see migration 0010's comment).
+  // PAYMENTS & PRICING ROUND 14 (bug): a refunded-or-refunding DUPLICATE is SUCCESS with money charged, so it
+  // advertised a receipt for a purchase that delivered nothing. One lookup for the page: scans another payment owns.
+  const dupIds = new Set()
+  const settledScanIds = [...new Set(rows.filter(isReceiptable).map(r => r.scan_id).filter(Boolean))]
+  if (settledScanIds.length) {
+    const { data: owners, error: ownersErr } = await supabase.from('scans').select('id, fix_payment_id').in('id', settledScanIds)
+    if (!ownersErr) {
+      const ownerByScan = new Map((owners || []).map(o => [o.id, o.fix_payment_id]))
+      for (const r of rows) {
+        const owner = r.scan_id ? ownerByScan.get(r.scan_id) : null
+        if (isReceiptable(r) && owner && owner !== r.id) dupIds.add(r.id)
+      }
+    }   // a failed lookup just leaves the receipt link on (the resend endpoint re-checks)
+  }
   const payments = rows.map(r => ({
     id: r.id, amountCents: r.amount_cents, currency: r.currency, status: r.status,
     paystackRef: r.paystack_ref, createdAt: r.created_at, scanId: r.scan_id, fixTier: r.fix_tier,
     // When the money settled (null until it does, and for rows from before migration 0064 it equals createdAt).
     paidAt: r.paid_at || null,
-    receiptAvailable: isReceiptable(r),
+    receiptAvailable: isReceiptable(r) && !dupIds.has(r.id),
   }))
 
   return c2.json({ success: true, data: { payments, total: count ?? payments.length, page, pageSize } })
