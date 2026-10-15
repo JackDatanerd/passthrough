@@ -1614,11 +1614,35 @@ describe('generateFix', () => {
     expect(finalUpdate.resume_pdf_hash).toBe(null)
   })
 
-  // SECTION 7 AUDIT (bug, fresh pass): a retry that already has a WORKING PDF from an
-  // earlier round must not lose it just because THIS round's re-render happens to fail —
-  // same "a retry only repoints the row on success" invariant the crash-path (priorDelivery)
-  // branch already protects, extended to a PDF failure that doesn't throw.
-  it('a PDF re-render failure on a RETRY preserves the previously-delivered PDF instead of wiping it', async () => {
+  // SECTION 7 AUDIT (bug, fresh pass) + VERIFY AUDIT: a retry that already has a WORKING PDF
+  // must not lose it when THIS round's re-render fails AND the retry kept the previous
+  // round's content (every new attempt scored worse, so the carried-forward result stands) -
+  // that old PDF still matches what is delivered.
+  it('a PDF re-render failure on a RETRY that kept the previous content preserves the delivered PDF', async () => {
+    t = setup({
+      scan: {
+        id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
+        job_description_text: 'JD', fix_tier: 'FIX', fix_retry_count: 1, role_category: null, fix_ats_score: 90,
+        resume_ats_path: 'old-ats-key', resume_pdf_path: 'old-pdf-key',
+        resume_hash: 'olddocxhash', resume_pdf_hash: 'oldpdfhash',
+      },
+      scoreFn: () => 50,
+      htmlResult: { success: true, data: '<html></html>' },
+      pdfImpl: async () => { throw new Error('pdf boom') },
+    })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res.success).toBe(true)
+    const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
+    expect(finalUpdate.resume_pdf_path).toBe('old-pdf-key')
+    expect(finalUpdate.resume_pdf_hash).toBe('oldpdfhash')
+    // The still-referenced old PDF object must survive in R2 too.
+    expect(t.state.r2Deletes).not.toContain('old-pdf-key')
+  })
+
+  // VERIFY AUDIT FIX (bug): when the retry's NEW rewrite won, an old PDF drawn from the OLD
+  // content must NOT stay beside it - the public page would vouch for the wrong file and
+  // regeneratePdf (which refuses while a PDF path exists) could never refresh it.
+  it('a PDF re-render failure on a RETRY whose new rewrite won clears the stale PDF (and deletes it) so it can be regenerated', async () => {
     t = setup({
       scan: {
         id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' },
@@ -1632,10 +1656,9 @@ describe('generateFix', () => {
     const res = await t.mod.generateFix(t.env, t.db, 's1')
     expect(res.success).toBe(true)
     const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
-    expect(finalUpdate.resume_pdf_path).toBe('old-pdf-key')
-    expect(finalUpdate.resume_pdf_hash).toBe('oldpdfhash')
-    // The still-referenced old PDF object must survive in R2 too.
-    expect(t.state.r2Deletes).not.toContain('old-pdf-key')
+    expect(finalUpdate.resume_pdf_path).toBe(null)
+    expect(finalUpdate.resume_pdf_hash).toBe(null)
+    expect(t.state.r2Deletes).toContain('old-pdf-key')
   })
 
   it('the final DB write failing throws into the top-level catch (ERROR + sendFixFailed)', async () => {

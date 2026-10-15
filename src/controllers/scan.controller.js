@@ -2881,8 +2881,20 @@ async function generateFixRun(env, supabase, scanId) {
     // silently destroying a candidate's already-delivered PDF because a LATER retry's
     // PDF render happened to fail, even though the retry's DOCX succeeded. A failed
     // re-render now simply leaves whatever PDF was already on the row untouched.
-    const finalPdfKey  = pdfKey || scan.resumePdfPath || null
-    const finalPdfHash = pdfKey ? pdfHash : (scan.resumePdfHash || null)
+    //
+    // VERIFY AUDIT FIX (bug): that carry-over is only honest when the content did NOT
+    // change. A retry whose new attempt won (bestDocxBytes set) delivers a different
+    // rewrite with a different score; keeping the old round's PDF beside it made the
+    // public page vouch ("Verified 84", file check "current, unmodified") for a PDF
+    // drawn from the OLD content, and regeneratePdf refuses while a PDF path exists, so
+    // the stale file could never be refreshed. In that case the PDF pointer is cleared
+    // (deleteSuperseded then removes the old object): the page reads DOCX-only, which is
+    // true, and regeneratePdf can backfill a matching PDF. Carry the old PDF forward only
+    // when the retry kept the previous round's content (bestDocxBytes null).
+    const carriedForward = isRetry && !bestDocxBytes
+    const keepPriorPdf   = !pdfKey && carriedForward
+    const finalPdfKey  = pdfKey || (keepPriorPdf ? scan.resumePdfPath : null) || null
+    const finalPdfHash = pdfKey ? pdfHash : (keepPriorPdf ? (scan.resumePdfHash || null) : null)
 
     const { error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
