@@ -25,7 +25,7 @@ function createFakeSupabase(resolver = () => undefined) {
       insert(values) { q.op = 'insert'; q.values = values; return api },
       update(patch) { q.op = 'update'; q.patch = patch; return api },
       delete() { q.op = 'delete'; return api },
-      upsert(values) { q.op = 'upsert'; q.values = values; return api },
+      upsert(values, opts) { q.op = 'upsert'; q.values = values; q.onConflict = opts && opts.onConflict; return api },
       order(col, opts) { q.orders.push([col, opts]); return api },
       // range/or/limit are recorded (q.range / q.or / q.limit) so tests can
       // assert on them, or a bespoke resolver can apply them; before, all

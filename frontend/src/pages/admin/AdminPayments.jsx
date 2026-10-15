@@ -48,6 +48,10 @@ export default function AdminPayments() {
   const [pendingAction, setPendingAction] = useState(null)
   const [refundDialog, setRefundDialog] = useState(null)   // { payment, amount, note, error } | null
   const [refunding, setRefunding] = useState(false)
+  // Webhooks round 14: answer a dispute (evidence) and a payment's webhook history.
+  const [evidenceDialog, setEvidenceDialog] = useState(null)   // { payment, phone, details, error } | null
+  const [sendingEvidence, setSendingEvidence] = useState(false)
+  const [timeline, setTimeline] = useState(null)               // { payment, loading, events, error } | null
 
   const begin = useLatestRequest()
 
@@ -219,8 +223,50 @@ export default function AdminPayments() {
     }
   }
 
+  // Webhooks round 14 (G2): the two dispute answers Paystack's API allows from here. Accepting refunds the buyer (Paystack does it);
+  // the payment itself flips to REFUNDED when Paystack's resolve webhook arrives, so the list is only reloaded.
+  function acceptDispute(payment) {
+    setPendingAction({ type: 'accept-dispute', payment, danger: true,
+      confirmMsg: `Accept the dispute on ${payment.paystackRef}? Paystack refunds the buyer ${formatCents(payment.amountCents, payment.currency)} and you cannot contest it afterwards.` })
+  }
+  async function runAcceptDispute(payment) {
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/accept`, {})
+      toast({ message: res.data.message || 'Dispute accepted.', type: 'success' })
+      load()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Failed to accept the dispute.'), type: 'error' })
+    } finally { setBusyRef(null) }
+    setPendingAction(null)
+  }
+  async function runSendEvidence() {
+    const { payment, phone, details } = evidenceDialog
+    if (!/^[+0-9][0-9 ()-]{5,}$/.test(phone.trim())) { setEvidenceDialog(d => ({ ...d, error: "Enter the buyer's phone number — Paystack requires one." })); return }
+    setSendingEvidence(true)
+    try {
+      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/evidence`, {
+        customerPhone: phone.trim(), serviceDetails: details.trim() || undefined,
+      })
+      toast({ message: res.data.message || 'Evidence sent.', type: 'success' })
+      setEvidenceDialog(null)
+    } catch (err) {
+      setEvidenceDialog(d => d && ({ ...d, error: getErrorMessage(err, 'Failed to send the evidence.') }))
+    } finally { setSendingEvidence(false) }
+  }
+  async function openTimeline(payment) {
+    setTimeline({ payment, loading: true, events: [], error: '' })
+    try {
+      const res = await api.get(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/webhook-events`)
+      setTimeline({ payment, loading: false, events: res.data.data || [], error: '' })
+    } catch (err) {
+      setTimeline({ payment, loading: false, events: [], error: getErrorMessage(err, 'Could not load the webhook history.') })
+    }
+  }
+
   async function confirmPendingAction() {
     const action = pendingAction
+    if (action.type === 'accept-dispute') return runAcceptDispute(action.payment)
     if (action.type === 'reconcile') return runReconcile(action.payment)
     if (action.type === 'recheck') return runRecheck(action.payment)
     if (action.type === 'recheck-mismatch') return runRecheck(action.payment, true)
@@ -389,6 +435,9 @@ export default function AdminPayments() {
                       </Button>
                     </>
                   )}
+                  {!String(p.paystackRef || '').startsWith('credit:') && (
+                    <Button size="sm" variant="secondary" onClick={() => openTimeline(p)}>History</Button>
+                  )}
                   {['PENDING', 'ABANDONED', 'FAILED'].includes(p.status) && (
                     <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                       onClick={() => recheck(p)}>
@@ -397,6 +446,14 @@ export default function AdminPayments() {
                   )}
                   {p.status === 'DISPUTED' && (
                     <>
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', error: '' })}>
+                        Send evidence
+                      </Button>
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => acceptDispute(p)}>
+                        Accept dispute
+                      </Button>
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'clear-dispute')}>
                         Clear dispute
@@ -448,6 +505,59 @@ export default function AdminPayments() {
               <Button variant="secondary" size="sm" onClick={() => setRefundDialog(null)} disabled={refunding}>Cancel</Button>
               <Button variant="danger" size="sm" onClick={runRefund} loading={refunding}>Queue refund</Button>
             </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!evidenceDialog} onClose={() => setEvidenceDialog(null)} title="Send dispute evidence" dismissible={!sendingEvidence}>
+        {evidenceDialog && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-gray-600">
+              Sends the buyer's name and email (from their account), the order details and a service description to Paystack for{' '}
+              <span className="font-mono text-xs">{evidenceDialog.payment.paystackRef}</span>. It does not close the dispute.
+            </p>
+            <Input label="Buyer's phone number (required by Paystack)" inputMode="tel" maxLength={40}
+              value={evidenceDialog.phone} disabled={sendingEvidence}
+              onChange={e => setEvidenceDialog(d => ({ ...d, phone: e.target.value, error: '' }))} />
+            <label className="text-sm text-gray-700 flex flex-col gap-1">
+              Service description (optional — written from the order if blank)
+              <textarea className="border border-gray-300 rounded-md p-2 text-sm" rows={4} maxLength={1500}
+                value={evidenceDialog.details} disabled={sendingEvidence}
+                onChange={e => setEvidenceDialog(d => ({ ...d, details: e.target.value }))} />
+            </label>
+            {evidenceDialog.error && <p role="alert" className="text-sm text-red-600">{evidenceDialog.error}</p>}
+            <div className="mt-2 flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setEvidenceDialog(null)} disabled={sendingEvidence}>Cancel</Button>
+              <Button size="sm" onClick={runSendEvidence} loading={sendingEvidence}>Send evidence</Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <Modal open={!!timeline} onClose={() => setTimeline(null)} title="Webhook history">
+        {timeline && (
+          <div className="flex flex-col gap-3">
+            <p className="text-sm text-gray-600 font-mono break-all">{timeline.payment.paystackRef}</p>
+            {timeline.loading ? <Spinner /> : timeline.error ? (
+              <p role="alert" className="text-sm text-red-600">{timeline.error}</p>
+            ) : timeline.events.length === 0 ? (
+              <p className="text-sm text-gray-500">No webhook has been recorded for this payment (older ones are pruned after 90 days).</p>
+            ) : (
+              <ol className="flex flex-col gap-2">
+                {timeline.events.map(ev => (
+                  <li key={ev.id} className="text-sm border border-gray-200 rounded-md p-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-xs">{ev.eventType}</span>
+                      <Badge variant={{ PROCESSED: 'green', RECEIVED: 'amber', IGNORED: 'gray', HELD: 'amber', FAILED: 'red' }[ev.status] || 'gray'}>{ev.status}</Badge>
+                      <span className="text-xs text-gray-400">{formatDate(ev.receivedAt)}</span>
+                      {ev.processingMs != null && <span className="text-xs text-gray-400">{ev.processingMs} ms</span>}
+                      {ev.attempts > 1 && <span className="text-xs text-gray-400">{ev.attempts} attempts</span>}
+                    </div>
+                    {(ev.error || ev.note) && <div className={`text-xs mt-1 ${ev.error ? 'text-red-600' : 'text-gray-500'}`}>{ev.error || ev.note}</div>}
+                  </li>
+                ))}
+              </ol>
+            )}
           </div>
         )}
       </Modal>

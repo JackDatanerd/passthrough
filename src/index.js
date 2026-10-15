@@ -343,14 +343,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
       // Round 6 (G3): payloads stored for event types no handler acts on, before they stopped being kept.
       try { await require('./controllers/webhooks.controller').scrubUnactionablePayloads(getSupabase(env)) } catch (_) { /* best effort */ }
       // webhook_events is an audit log, not an archive.
-      try {
-        const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString()
-        // Round 11 (B2): supabase-js returns { error } rather than throwing, so a failing prune used to be invisible.
-        const { error: pruneErr } = await getSupabase(env).from('webhook_events').delete().lt('received_at', cutoff).in('status', ['PROCESSED', 'IGNORED'])
-        if (pruneErr) console.error('webhook_events prune error:', pruneErr.message)
-      } catch (err) {
-        console.error('webhook_events prune error:', err.message)
-      }
+      // Webhooks round 14 (B2/B5): per-provider / per-type retention (Resend payload scrub, dispute + refund keys kept longer).
+      try { await require('./controllers/webhooks.controller').pruneWebhookEvents(getSupabase(env)) } catch (err) { console.error('webhook_events prune error:', err.message) }
     })()
   )
 }

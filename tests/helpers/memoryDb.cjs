@@ -10,6 +10,12 @@
 //   world.unique.webhook_events = [['provider','event_key']]            // uniqueness rules
 const { createFakeSupabase } = require('./fakeSupabase.cjs')
 
+// LIKE / ILIKE as PostgREST takes them: `%` and `*` are wildcards (`*` because `%` needs URL-encoding), `_` is one character.
+// Webhooks round 14: this double used to IGNORE like/ilike and compare `.not(col, 'like', pat)` to the pattern text, so every
+// retention / scrub query built on them "matched" nothing in tests and passed whatever it deleted.
+const likeRe = (pat, ci) => new RegExp('^' + String(pat).replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/[%*]/g, '.*').replace(/_/g, '.') + '$', ci ? 'i' : '')
+const likeHit = (v, pat, ci) => typeof v === 'string' && likeRe(pat, ci).test(v)
+
 function matches(row, filters) {
   return filters.every(([op, col, val, val2]) => {
     const v = row[col]
@@ -18,8 +24,13 @@ function matches(row, filters) {
       case 'neq': return v !== val
       case 'in':  return val.includes(v)
       case 'is':  return val === null ? (v === null || v === undefined) : v === val
+      case 'like':  return likeHit(v, val, false)
+      case 'ilike': return likeHit(v, val, true)
       // .not(col, op, val) is stored as ['not', col, op, val]
-      case 'not': return val === 'is' && val2 === null ? (v !== null && v !== undefined) : v !== val2
+      case 'not':
+        if (val === 'like')  return !likeHit(v, val2, false)
+        if (val === 'ilike') return !likeHit(v, val2, true)
+        return val === 'is' && val2 === null ? (v !== null && v !== undefined) : v !== val2
       // jsonb array containment: every wanted object appears (as a subset) in the column's array
       case 'contains': {
         // ROUND-5: this double used to accept a JS array here, which is NOT what the real client does —
@@ -143,10 +154,21 @@ function createWorld(seed = {}) {
       const copies = projectRows(world, q, hit.map(r => ({ ...r })))
       return q.single || q.maybe ? { data: copies[0] ?? null, error: null } : { data: copies, error: null }
     }
-    if (q.op === 'delete') {
-      const keep = rows.filter(r => !matches(r, q.filters))
-      t[q.table] = keep
+    if (q.op === 'upsert') {
+      // INSERT ... ON CONFLICT (cols) DO UPDATE — conflict columns from onConflict, else the table's first unique rule.
+      const cols = q.onConflict ? String(q.onConflict).split(',').map(x => x.trim()) : (unique[q.table] || [])[0]
+      for (const v of Array.isArray(q.values) ? q.values : [q.values]) {
+        const hit = cols && rows.find(r => cols.every(cn => r[cn] === v[cn]))
+        if (hit) Object.assign(hit, v)
+        else rows.push({ id: `${q.table}-${++n}`, created_at: new Date().toISOString(), ...v })
+      }
       return { data: null, error: null }
+    }
+    if (q.op === 'delete') {
+      const gone = rows.filter(r => matches(r, q.filters))
+      t[q.table] = rows.filter(r => !matches(r, q.filters))
+      // .delete()...select('id') returns what was removed, as PostgREST does.
+      return { data: q.returning ? projectRows(world, q, gone.map(r => ({ ...r }))) : null, error: null }
     }
     return undefined
   }

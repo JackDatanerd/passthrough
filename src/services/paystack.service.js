@@ -284,4 +284,32 @@ async function listDisputes(env, { from, to, perPage = 100, page = 1 } = {}) {
   return json
 }
 
-module.exports = { initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }
+// Webhooks round 14 (G2): answering a dispute from the app.
+//   POST /dispute/:id/evidence  { customer_email, customer_name, customer_phone, service_details, delivery_address?, delivery_date? }
+//   PUT  /dispute/:id/resolve   { resolution: 'merchant-accepted' | 'declined', message, refund_amount, uploaded_filename?, evidence? }
+// Only ACCEPT is offered ('declined' needs an uploaded file, which this app does not hold). Both throw with `.paystackRejected`
+// for a 4xx the caller should show as-is (the dispute is closed, the id is wrong, a field is missing), and a plain Error for
+// anything else (network, 5xx, 401/403/429), so the admin sees whether trying again makes sense.
+async function disputeCall(env, method, path, body, label) {
+  const { res, json } = await paystackRequest(`https://api.paystack.co/dispute/${encodeURIComponent(path)}`, {
+    method,
+    headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  }, label)
+  if (!res.ok || (json && json.status === false)) {
+    const err = new Error(json?.message || `${label} returned HTTP ${res.status}`)
+    err.httpStatus = res.status
+    err.paystackRejected = res.status >= 400 && res.status < 500 && ![401, 403, 429].includes(res.status)
+    throw err
+  }
+  if (!json) throw unreadable(label)
+  return json
+}
+function addDisputeEvidence(env, disputeId, fields) {
+  return disputeCall(env, 'POST', `${disputeId}/evidence`, fields, 'Paystack dispute evidence')
+}
+function acceptDispute(env, disputeId, { message, refundAmount }) {
+  return disputeCall(env, 'PUT', `${disputeId}/resolve`, { resolution: 'merchant-accepted', message, refund_amount: refundAmount }, 'Paystack dispute accept')
+}
+
+module.exports = { addDisputeEvidence, acceptDispute, initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

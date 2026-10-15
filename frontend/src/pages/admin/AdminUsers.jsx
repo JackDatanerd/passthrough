@@ -3,6 +3,7 @@ import api, { getErrorMessage } from '../../lib/api'
 import Button from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import Select from '../../components/ui/Select'
+import Checkbox from '../../components/ui/Checkbox'
 import Badge from '../../components/ui/Badge'
 import Spinner from '../../components/ui/Spinner'
 import DataTable from '../../components/ui/DataTable'
@@ -26,6 +27,7 @@ export default function AdminUsers() {
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
+  const [bouncedOnly, setBouncedOnly] = useState(false)   // Webhooks round 14 (G1)
 
   const begin = useLatestRequest()
 
@@ -34,7 +36,7 @@ export default function AdminUsers() {
     setLoading(true)
     try {
       const res = await api.get('/admin/users', {
-        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined }
+        params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, bounced: bouncedOnly ? '1' : undefined }
       })
       if (!isCurrent()) return
       setUsers(res.data.data)
@@ -45,7 +47,7 @@ export default function AdminUsers() {
     } finally {
       if (isCurrent()) setLoading(false)
     }
-  }, [page, search, status])
+  }, [page, search, status, bouncedOnly])
 
   useEffect(() => { load() }, [load])
 
@@ -93,6 +95,8 @@ export default function AdminUsers() {
           <option value="ACTIVE">Active</option>
           <option value="BANNED">Banned</option>
         </Select>
+        <Checkbox label="Email undeliverable" checked={bouncedOnly} wrapperClassName="pb-2"
+          onChange={e => { setPage(1); setBouncedOnly(e.target.checked) }} />
       </div>
 
       {loading ? (
@@ -129,6 +133,7 @@ export default function AdminUsers() {
                 <>
                   <Badge variant={u.status === 'ACTIVE' ? 'green' : 'red'}>{u.status}</Badge>
                   {!u.emailVerified && <span className="text-xs text-gray-400 ml-1">(unverified)</span>}
+                  {u.emailBounce && <Badge variant="amber">{u.emailBounce.type === 'complaint' ? 'spam complaint' : u.emailBounce.type === 'suppressed' ? 'email suppressed' : 'email bounces'}</Badge>}
                 </>
               ),
             },

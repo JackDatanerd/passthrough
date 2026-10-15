@@ -126,9 +126,10 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     }
     if (q.table === 'email_suppressions') {
       state.mailBlocks = state.mailBlocks || new Map()
-      const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
-      if (q.op === 'delete') { const had = state.mailBlocks.has(h); state.mailBlocks.delete(h); return { data: had ? [{ email_hash: h }] : [], error: null } }
-      return { data: state.mailBlocks.get(h) || null, error: null }
+      const f = q.filters.find(x => x[1] === 'email_hash')
+      const hs = f?.[0] === 'in' ? f[2] : [f?.[2]]   // round 14: lookups are `in (every hash form)`
+      if (q.op === 'delete') { const gone = hs.filter(h => state.mailBlocks.has(h)); gone.forEach(h => state.mailBlocks.delete(h)); return { data: gone.map(h => ({ email_hash: h })), error: null } }
+      return { data: hs.filter(h => state.mailBlocks.has(h)).map(h => ({ email_hash: h, ...state.mailBlocks.get(h) })), error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') {

@@ -56,7 +56,12 @@ function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employe
       if (q.op === 'upsert' && failMailSuppression) return { data: null, error: { code: '42P01', message: 'relation "email_suppressions" does not exist' } }
       if (q.op === 'upsert') state.mailSuppressed.push(q.values); return { data: null, error: null }
     }
-    if (q.table === 'users') { const e = q.filters.find(f => f[1] === 'email')?.[2]; const u = state.users.find(x => x.email === e); return { data: u ? { id: u.id } : null, error: null } }
+    if (q.table === 'users') {
+      const e = q.filters.find(f => f[1] === 'email')?.[2]; const us = state.users.filter(x => x.email === e)
+      if (q.op === 'update') { us.forEach(u => Object.assign(u, q.patch)); return { data: us.map(u => ({ id: u.id })), error: null } }   // round 14: the account flag
+      if (!q.maybe) return { data: us.map(u => ({ id: u.id })), error: null }
+      return { data: us[0] ? { id: us[0].id } : null, error: null }
+    }
     if (q.table === 'email_logs') {
       if (q.op === 'select') { const to = q.filters.find(f => f[1] === 'to')?.[2]; return { data: state.employerMail.includes(to) ? [{ template: 'employer_lead_ack' }] : [], error: null } }
       state.logPurges.push(Object.fromEntries(q.filters.map(f => [f[1], f[2]]))); return { data: null, error: null }
@@ -356,6 +361,18 @@ describe('round 7 — the Resend inbox (G1), failure visibility (G2), raw-byte v
     const a = t.state.alerts.find(x => /registered account/i.test(x.subject))
     expect(a).toBeTruthy()
     expect(a.message).not.toContain('buyer@x.co')
+  })
+  it('round 14 G1: the affected account is NAMED (id, never the address) in the alert and the inbox note, and flagged', async () => {
+    const env = { RESEND_WEBHOOK_SECRET: SECRET, RATE_LIMIT_KV: kv() }
+    t = setup({ users: [{ id: 'u1', email: 'buyer@x.co' }], envExtra: env })
+    await t.call(bounce('Permanent', ['buyer@x.co']), { envOver: env })
+    const alert = t.state.alerts.find(x => /registered account/i.test(x.subject))
+    expect(alert.message).toContain('u1')
+    expect(alert.message).not.toContain('buyer@x.co')
+    expect(t.state.events[0].note).toMatch(/account\(s\): u1/)
+    expect(t.state.events[0].note).not.toContain('buyer@x.co')
+    expect(t.state.users[0]).toMatchObject({ email_bounce_type: 'bounce' })
+    expect(t.state.users[0].email_bounced_at).toBeTruthy()
   })
   it('G2: a bounce of a non-account address does not send the account alert', async () => {
     const env = { RESEND_WEBHOOK_SECRET: SECRET, RATE_LIMIT_KV: kv() }

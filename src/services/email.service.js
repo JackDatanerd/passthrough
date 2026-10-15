@@ -253,7 +253,7 @@ async function send(env, supabase, to, subject, template, vars, opts = {}) {
   // An address that permanently bounces or reported us as spam (Resend webhook) gets no further
   // non-security mail — checked BEFORE the throttle so it does not spend a slot either. Security and
   // payment templates are exempt (lib/emailSuppression.js says why).
-  if (supabase && await isSuppressedFor(supabase, to, template)) {
+  if (supabase && await isSuppressedFor(supabase, to, template, env)) {
     status = 'suppressed'
     error  = 'address suppressed (permanent bounce or spam complaint)'
   } else if (!opts.slotReserved && !(await recipientAllowed(env, to, quotaKey))) {

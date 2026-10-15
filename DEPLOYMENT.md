@@ -977,3 +977,14 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 | `ARCHIVED_LEAD_PURGE_SUPPRESSES` | `false` | `true` makes the archived-lead purge add each purged address to the do-not-contact list. |
 | `CLAUDE_USD_PER_MTOK_INPUT` / `CLAUDE_USD_PER_MTOK_OUTPUT` | unset | USD per million tokens; when both are set the admin cost view shows dollar estimates. |
 | `SUPABASE_TIMEOUT_MS` | `25000` | Per-request database timeout. |
+
+# WEBHOOKS ROUND 14 (migration 0086 — apply BEFORE deploying this Worker; every change is an added nullable column, so the old Worker keeps
+# working against it, and this Worker degrades gracefully if it runs first). Adds payments.reversal_notice_sent_at (the claim that sends the
+# buyer's "payment reversed" email exactly once), payments.dispute_id, users.email_bounced_at / email_bounce_type and webhook_events.processing_ms.
+#   * Admin -> Payments: "Send evidence" and "Accept dispute" on a DISPUTED payment (Paystack dispute API), and "History" (that payment's webhook events).
+#   * Admin -> Users: "Email undeliverable" tag and filter; the dashboard tells an affected person their address bounces.
+#   * Admin -> Webhooks: a "Took" column; a handler run of 20 s or more emails the owner (max 5/hour) because Paystack redelivers slow webhooks.
+#   * SET SUPPRESSION_HASH_KEY if you have not (wrangler secret put SUPPRESSION_HASH_KEY): the bounce / complaint list now uses the same keyed hash as
+#     the employer do-not-contact list. Without a key it behaves as before (plain hash) but now also matches +tag / Gmail-dot aliases. Existing rows
+#     keep working and are re-keyed the next time that address is looked up.
+#   * Retention: Resend payloads (addresses) are cleared after 7 days and Resend rows deleted after 90; dispute / refund inbox rows are kept 400 days.

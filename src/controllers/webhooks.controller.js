@@ -236,6 +236,9 @@ function minimalDisputeEvent(ev) {
     const tx = {}
     for (const k of DISPUTE_TX_KEEP) if (isScalar(d.transaction[k])) tx[k] = d.transaction[k]
     data.transaction = tx
+  } else if (typeof d.transaction === 'string' && d.transaction) {
+    // a bare reference string (referenceCandidates reads it) — the same value, so nothing is lost by normalising a live event
+    data.transaction = d.transaction
   }
   return { event: ev.event, data }
 }
@@ -340,8 +343,13 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload, 
 }
 
 // Postgres 42703 = undefined_column; PostgREST 'PGRST204' = column not in its schema cache.
+// ROUND-14: the message test used to include a bare `schema cache`, which also matches PostgREST's TRANSIENT
+// "Could not query the database for the schema cache. Retrying." (PGRST002) — a reload in progress was read as a missing
+// column and the status write took the legacy shape (the outcome note written into `error`). Only a column that is named as
+// missing counts; PGRST204 is its code.
 function isColumnMissing(err) {
-  return err?.code === '42703' || err?.code === 'PGRST204' || /column .* (does not exist|of relation)|schema cache/i.test(err?.message || '')
+  if (err?.code === 'PGRST002') return false
+  return err?.code === '42703' || err?.code === 'PGRST204' || /column .* (does not exist|of relation)|could not find the '[^']+' column/i.test(err?.message || '')
 }
 
 // ROUND-3 AUDIT FIX (bug): outcome notes used to be stored in `error`, which the admin table
@@ -352,14 +360,20 @@ function isColumnMissing(err) {
 // SECTION 8 (round 8, B1): returns true only when the status write LANDED (false: no inbox row, or the write
 // failed — which is logged, never thrown). Resend callers use it to decide whether the recipient-bearing
 // payload may be cleared: clearing it after a lost status write strands a RECEIVED row nothing can re-run.
-async function markEvent(supabase, inbox, status, note) {
+async function markEvent(supabase, inbox, status, note, { ms = null } = {}) {
   if (!inbox?.id) return false
   const base = { status, processed_at: new Date().toISOString() }
+  // Round 14 (G3): handler duration; migration 0086 — dropped on the legacy retry below if the column is not there yet.
+  const timed = Number.isFinite(ms) ? { ...base, processing_ms: Math.max(0, Math.round(ms)) } : base
   const patch = status === 'FAILED'
-    ? { ...base, error: note || null, note: null }
-    : { ...base, error: null, note: note || null }
+    ? { ...timed, error: note || null, note: null }
+    : { ...timed, error: null, note: note || null }
   try {
-    const { error } = await supabase.from('webhook_events').update(patch).eq('id', inbox.id)
+    let { error } = await supabase.from('webhook_events').update(patch).eq('id', inbox.id)
+    if (error && isColumnMissing(error) && 'processing_ms' in patch) {
+      const { processing_ms, ...slim } = patch   // 0086 not applied yet: keep the status write (and 0036's note) without the timing
+      ;({ error } = await supabase.from('webhook_events').update(slim).eq('id', inbox.id))
+    }
     if (error && isColumnMissing(error)) {
       const { error: legacyErr } = await supabase.from('webhook_events').update({ ...base, error: note || null }).eq('id', inbox.id)
       if (legacyErr) { console.error('webhook_events status update failed:', legacyErr.message); return false }
@@ -662,7 +676,7 @@ function disputeDeadlineLine(d, now = Date.now()) {
   const when = new Date(due).toISOString()
   if (hours <= 0) return `\nResponse deadline: ${when} — ALREADY PASSED; Paystack may have auto-accepted this dispute.`
   const left = hours < 1 ? `${Math.max(1, Math.round(hours * 60))} minute(s)` : `about ${Math.round(hours)} hour(s)`
-  return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer.`
+  return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer. (Admin → Payments can send evidence or accept it.)`
 }
 
 // ROUND-13 (G1): the dispute's response deadline, stored on the payment so Admin → Payments and the dashboard can show a
@@ -678,6 +692,18 @@ async function recordDisputeDeadline(supabase, payment, d) {
     if (error) { console.error('dispute deadline not stored:', error.message); return false }
     return true
   } catch (err) { console.error('dispute deadline not stored:', err && err.message); return false }
+}
+
+// Round 14 (G2): Paystack's dispute id, kept on the payment for the admin Accept / Submit-evidence actions. Best effort, never throws
+// (column from migration 0086).
+async function recordDisputeId(supabase, payment, d) {
+  try {
+    const id = d && (typeof d.id === 'string' || typeof d.id === 'number') ? String(d.id).trim() : ''
+    if (!payment || !id || id.length > 64 || payment.dispute_id === id) return false
+    const { error } = await supabase.from('payments').update({ dispute_id: id }).eq('id', payment.id).eq('status', 'DISPUTED')
+    if (error) { if (!isColumnMissing(error)) console.error('dispute id not stored:', error.message); return false }
+    return true
+  } catch (err) { console.error('dispute id not stored:', err && err.message); return false }
 }
 
 async function processDispute(c, supabase, event) {
@@ -710,7 +736,7 @@ async function processDispute(c, supabase, event) {
   // create (just marked) and remind (a re-sent, possibly extended deadline) both carry due_at; the guarded update only
   // touches a payment that is DISPUTED right now.
   if ((event.event === 'charge.dispute.create' || event.event === 'charge.dispute.remind') && payment && (marked || payment.status === 'DISPUTED'))
-    await recordDisputeDeadline(supabase, payment, d)
+    { await recordDisputeDeadline(supabase, payment, d); await recordDisputeId(supabase, payment, d) }
 
   // ROUND-2 AUDIT (feature gap): dispute.resolve used to say only "no state
   // change", leaving the admin to work out which of Reverse / Clear applies. Paystack's resolutions
@@ -770,7 +796,7 @@ async function processDispute(c, supabase, event) {
     } else
       detail = `Resolution "${d.resolution || 'unknown'}" is not one this app recognises. ${current}. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won).`
   } else if (event.event === 'charge.dispute.remind') {
-    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard.${disputeDeadlineLine(d)}`
+    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard, or from Admin → Payments (Send evidence / Accept dispute).${disputeDeadlineLine(d)}`
   } else if (event.event !== 'charge.dispute.create') {
     detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
   } else if (marked) {
@@ -795,7 +821,10 @@ async function processEvent(c, supabase, event, eventId) {
   const type = event.event
   if (type === 'charge.success') return processChargeSuccess(c, supabase, event)
   if (type.startsWith('refund.')) return processRefund(c, supabase, event, eventId)
-  if (type.startsWith('charge.dispute')) return processDispute(c, supabase, event)
+  // ROUND-14: a LIVE dispute event used to reach the handler raw while Replay and the sweep (which read the stored / API-listed
+  // item) went through minimalDisputeEvent, so the two spellings of the deadline (`due_at` / `dueAt`) were honoured on one path
+  // and not the other. Every path now reads the same normalised shape.
+  if (type.startsWith('charge.dispute')) return processDispute(c, supabase, minimalDisputeEvent(event))
   return { status: 'IGNORED', note: type }
 }
 
@@ -910,11 +939,12 @@ async function handlePaystack(c) {
   }
 
   let outcome
+  const startedAt = Date.now()
   try {
     outcome = await processEvent(c, supabase, event, inbox.id)
   } catch (err) {
     console.error(`[CRITICAL] webhook ${event.event} (${reference}) failed:`, err.message)
-    await markEvent(supabase, inbox, 'FAILED', err.message)
+    await markEvent(supabase, inbox, 'FAILED', err.message, { ms: Date.now() - startedAt })
     // First failure pages once; the redeliveries Paystack sends next don't.
     if (!inbox.attempts || inbox.attempts <= 1)
       alert(c, 'Webhook processing failed — Paystack will retry',
@@ -924,7 +954,19 @@ async function handlePaystack(c) {
     return c.text('Processing error', 500)
   }
 
-  await markEvent(supabase, inbox, outcome.status, outcome.note)
+  const tookMs = Date.now() - startedAt
+  await markEvent(supabase, inbox, outcome.status, outcome.note, { ms: tookMs })
+  // Round 14 (G3): the work is done BEFORE the 200, so an event that nears Paystack's delivery timeout is redelivered (and re-runs
+  // its Paystack calls). Say so while it is still only slow.
+  if (tookMs >= SLOW_EVENT_MS) {
+    console.error(`[WARN] webhook ${event.event} (${reference}) took ${tookMs} ms`)
+    if (await alertAllowedFor(c.env, 'slow-event', event.event, { globalMax: 5, ttlSeconds: 6 * 3600 }))
+      alert(c, 'Paystack webhook handler is slow',
+        `event: ${event.event}\nreference: ${reference || '(none)'}\ntook: ${Math.round(tookMs / 1000)}s\n\n` +
+        `The handler finishes its work before answering 200, and Paystack gives up on a delivery after a timeout (30 s in test mode), then redelivers — ` +
+        `each redelivery repeats the Paystack calls. This is usually Paystack (or Supabase) being slow; see Admin → Webhooks → Duration. At most 5 of these are emailed per hour, one per event type per 6 hours.`,
+        `slow:${event.event}`)
+  }
   return c.text('OK', 200)
 }
 
@@ -942,6 +984,8 @@ const REPLAYABLE = ['RECEIVED', 'IGNORED', 'HELD', 'FAILED']
 const DISMISSABLE = ['RECEIVED', 'HELD', 'FAILED']
 // A RECEIVED row this old was not merely in flight: the Worker died mid-event.
 const STUCK_RECEIVED_MS = 15 * 60 * 1000
+// Round 14 (G3): a handler run this long is close to Paystack's delivery timeout.
+const SLOW_EVENT_MS = 20 * 1000
 
 function isStuckReceived(receivedAt, now = Date.now()) {
   const t = Date.parse(receivedAt)
@@ -951,7 +995,8 @@ function isStuckReceived(receivedAt, now = Date.now()) {
 // has_event / has_type: whether a payload exists to replay (its top-level key — `event` for Paystack, `type` for
 // Resend) without shipping the payload itself in a list.
 const LIST_COLS_BASE = 'id, provider, event_type, event_key, reference, status, attempts, error, received_at, processed_at, has_event:payload->>event, has_type:payload->>type'
-const LIST_COLS_FULL = `${LIST_COLS_BASE}, note, replayed_by, replayed_at`
+const LIST_COLS_NOTE = `${LIST_COLS_BASE}, note, replayed_by, replayed_at`
+const LIST_COLS_FULL = `${LIST_COLS_NOTE}, processing_ms`
 
 // GET /api/admin/webhook-events?status=&reference=&type=&page=&pageSize=
 //   status=ATTENTION → FAILED + HELD + RECEIVED-for-over-15-minutes (what needs a person)
@@ -969,7 +1014,13 @@ async function listWebhookEvents(c) {
   const type = clean(c.req.query('type'))
   const providerQ = c.req.query('provider')
   // ROUND-11 (G5): optional received-date window (YYYY-MM-DD, inclusive, UTC). Anything else is ignored.
-  const dayOf = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) && !Number.isNaN(Date.parse(`${v}T00:00:00Z`)) ? String(v) : null
+  // Round 14 (B4): Date.parse rolls 2026-02-31 over to 3 March, so a non-date used to reach Postgres (500) or shift `to` a day. It must round-trip.
+  const dayOf = v => {
+    const t = String(v || '')
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(t)) return null
+    const ms = Date.parse(`${t}T00:00:00Z`)
+    return Number.isFinite(ms) && new Date(ms).toISOString().slice(0, 10) === t ? t : null
+  }
   const fromDay = dayOf(c.req.query('from'))
   const toDay = dayOf(c.req.query('to'))
 
@@ -987,13 +1038,14 @@ async function listWebhookEvents(c) {
     return q
   }
   let { data, error, count } = await build(LIST_COLS_FULL)
+  if (error && isColumnMissing(error)) ({ data, error, count } = await build(LIST_COLS_NOTE))   // 0086 not applied yet
   if (error && isColumnMissing(error)) ({ data, error, count } = await build(LIST_COLS_BASE))   // 0036 not applied yet
   // ROUND-10 (B3): a page beyond the data is PostgREST's 416 / PGRST103 — an empty page (the UI clamps back), not a 500.
   if (error && (error.code === 'PGRST103' || /range not satisfiable/i.test(error.message || ''))) { data = []; error = null; count = 0 }
   if (error) throw error
   return c.json({ success: true, data: (data || []).map(r => ({
     id: r.id, provider: r.provider || 'paystack', eventType: r.event_type, eventKey: r.event_key, reference: r.reference, status: r.status,
-    attempts: r.attempts,
+    attempts: r.attempts, processingMs: Number.isFinite(r.processing_ms) ? r.processing_ms : null,
     // `error` is a real failure (FAILED rows) and nothing else. Outcome notes are `note` now; rows
     // written before migration 0036 still carry theirs in `error`, so those are surfaced as notes.
     error: r.status === 'FAILED' ? (r.error || null) : null,
@@ -1001,7 +1053,8 @@ async function listWebhookEvents(c) {
     receivedAt: r.received_at, processedAt: r.processed_at,
     replayedBy: r.replayed_by || null, replayedAt: r.replayed_at || null,
     // ROUND-7 (B2): Replay only when there is a payload to re-run (non-actionable events keep none).
-    replayable: REPLAYABLE.includes(r.status) && !!(r.has_event || r.has_type || r.payload),
+    // ROUND-14 (B6): a RECEIVED row is only replayable once stuck — replaying one still being worked on ran it twice at once.
+    replayable: REPLAYABLE.includes(r.status) && (r.status !== 'RECEIVED' || isStuckReceived(r.received_at)) && !!(r.has_event || r.has_type || r.payload),
     // ROUND-11 (G2): a row that is waiting on a person (or a Worker that died) and may never succeed can be closed by hand.
     // ROUND-12 (G3): a RECEIVED row is only dismissable once it is stuck (the same 15 minutes the dashboard counts it after);
     // a fresh one is a delivery still being worked on.
@@ -1063,9 +1116,11 @@ async function runStoredEvent(c, supabase, row, { by = null, redrive = false } =
 async function replayWebhookEvent(c) {
   const supabase = getSupabase(c.env)
   const { data: row, error } = await supabase.from('webhook_events')
-    .select('id, provider, status, attempts, payload, event_type, reference').eq('id', c.req.param('id')).maybeSingle()
+    .select('id, provider, status, attempts, payload, event_type, reference, received_at').eq('id', c.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row) return c.json({ success: false, message: 'Event not found.' }, 404)
+  if (row.status === 'RECEIVED' && !isStuckReceived(row.received_at))
+    return c.json({ success: false, message: 'This event was received moments ago and is still being processed — only a RECEIVED event stuck for over 15 minutes can be replayed.' }, 409)
   if (!REPLAYABLE.includes(row.status))
     return c.json({ success: false, message: `This event is ${row.status} — it already did its work; nothing to replay.` }, 409)
   if (!storedKind(row))
@@ -1140,6 +1195,143 @@ async function scrubUnactionablePayloads(supabase) {
     console.error('webhook payload scrub error:', err.message)
     return false
   }
+}
+
+// Round 14 (B2/B5): retention. `webhook_events` was pruned by one rule — PROCESSED/IGNORED after 90 days — which (a) never touched a
+// Resend row that ended FAILED (its payload holds recipient addresses, kept for ever) and (b) deleted the dispute / refund rows
+// that disputeResolutionSeen and the refund dedupe lean on, so a replayed old charge.dispute.create could re-mark a settled sale.
+//   · Resend payloads (addresses): nulled after 7 days whatever the status — the row (type, note, user ids) stays.
+//   · Resend rows: deleted after 90 days whatever the status.
+//   · Other PROCESSED / IGNORED rows: 90 days, except dispute / refund rows: 400 days (past any chargeback window).
+// Returns the error messages (empty = clean). Never throws.
+const PRUNE_DAY = 24 * 3600 * 1000
+async function pruneWebhookEvents(supabase, { now = Date.now() } = {}) {
+  const errors = []
+  const iso = days => new Date(now - days * PRUNE_DAY).toISOString()
+  const run = async (label, q) => {
+    try { const { error } = await q; if (error) { errors.push(`${label}: ${error.message}`); console.error(`webhook_events prune (${label}) error:`, error.message) } }
+    catch (err) { errors.push(`${label}: ${err.message}`); console.error(`webhook_events prune (${label}) error:`, err.message) }
+  }
+  const t = () => supabase.from('webhook_events')
+  await run('resend payload scrub', t().update({ payload: null }).eq('provider', 'resend').not('payload', 'is', null).lt('received_at', iso(7)))
+  await run('resend rows', t().delete().eq('provider', 'resend').lt('received_at', iso(90)))
+  await run('events', t().delete().lt('received_at', iso(90)).in('status', ['PROCESSED', 'IGNORED'])
+    .not('event_type', 'like', 'charge.dispute%').not('event_type', 'like', 'refund.%'))
+  await run('dispute/refund events', t().delete().lt('received_at', iso(400)).in('status', ['PROCESSED', 'IGNORED']))
+  return errors
+}
+
+// ── Round 14 (G2): answer a dispute from Admin → Payments ────────────────────────────────────────────────────────────
+// Every dispute alert used to say "respond in the Paystack dashboard" against an auto-accept deadline of about 16 hours. These
+// are the two actions that can be taken from here. Neither changes the payment itself: Paystack's own charge.dispute.resolve
+// webhook (or the dispute sweep) does that through the existing handler, so the sale is reversed / restored in exactly one place.
+async function loadDisputedPayment(c, supabase) {
+  const reference = c.req.param('reference')
+  const { data: payment, error } = await supabase.from('payments')
+    .select('id, paystack_ref, status, user_id, scan_id, fix_tier, amount_cents, currency, paid_at, created_at, disputed_at, dispute_id')
+    .eq('paystack_ref', reference).maybeSingle()
+  if (error) throw error
+  if (!payment) return { fail: c.json({ success: false, message: 'Payment not found.' }, 404) }
+  if (payment.status !== 'DISPUTED')
+    return { fail: c.json({ success: false, message: `Payment is ${payment.status} — only a DISPUTED payment has a dispute to answer.` }, 409) }
+  return { payment }
+}
+
+// The id Paystack gave the dispute: stored when the webhook was processed (0086); a payment disputed before that is looked up in
+// Paystack's own list. Returns null when it cannot be found.
+async function resolveDisputeId(env, supabase, payment) {
+  if (payment.dispute_id) return payment.dispute_id
+  const day = ms => new Date(ms).toISOString().slice(0, 10)
+  const since = Date.parse(payment.disputed_at || payment.paid_at || payment.created_at)
+  const from = Number.isFinite(since) ? day(since - 2 * 24 * 3600 * 1000) : undefined
+  for (let page = 1; page <= 3; page++) {
+    const json = await paystackService.listDisputes(env, { from, to: day(Date.now() + 24 * 3600 * 1000), perPage: 100, page })
+    const items = Array.isArray(json?.data) ? json.data : []
+    const hit = items.find(d => d && (d.transaction?.reference === payment.paystack_ref || d.transaction_reference === payment.paystack_ref))
+    if (hit && hit.id != null) {
+      await recordDisputeId(supabase, payment, { id: hit.id })
+      return String(hit.id)
+    }
+    if (items.length < 100) break
+  }
+  return null
+}
+
+const NOT_FOUND_ID = { success: false, message: 'Paystack\'s id for this dispute is not known yet and was not found in Paystack\'s dispute list. Use the Paystack dashboard for this one.' }
+const paystackFailure = (c, err) => err && err.paystackRejected
+  ? c.json({ success: false, message: `Paystack refused it: ${err.message}` }, 422)
+  : c.json({ success: false, message: `Could not reach Paystack (${err && err.message}) — nothing was changed; try again.` }, 502)
+
+// POST /api/admin/payments/:reference/dispute/accept  { note? } — give in: the buyer is refunded by Paystack.
+async function acceptPaymentDispute(c) {
+  const supabase = getSupabase(c.env)
+  let body = {}
+  try { body = await c.req.json() } catch (_) { body = {} }
+  const note = typeof body?.note === 'string' ? body.note.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200) : ''
+  const { payment, fail } = await loadDisputedPayment(c, supabase)
+  if (fail) return fail
+  let disputeId
+  try { disputeId = await resolveDisputeId(c.env, supabase, payment) } catch (err) { return paystackFailure(c, err) }
+  if (!disputeId) return c.json(NOT_FOUND_ID, 404)
+  try {
+    await paystackService.acceptDispute(c.env, disputeId, { message: note || 'Dispute accepted by the merchant', refundAmount: payment.amount_cents })
+  } catch (err) { return paystackFailure(c, err) }
+  await logAdminAction(c, supabase, 'payment.dispute_accept', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note })
+  return c.json({ success: true, message: 'Dispute accepted with Paystack. The buyer is refunded by Paystack; this payment is marked REFUNDED (commission reversed, credential revoked) when Paystack confirms — usually within minutes.' })
+}
+
+// POST /api/admin/payments/:reference/dispute/evidence  { customerPhone, serviceDetails?, deliveryAddress? }
+// Name and email come from the buyer's account; the service description is built from the order unless the admin writes one.
+async function submitDisputeEvidence(c) {
+  const supabase = getSupabase(c.env)
+  let body = {}
+  try { body = await c.req.json() } catch (_) { body = {} }
+  const clip = (v, n) => typeof v === 'string' ? v.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, n) : ''
+  const phone = clip(body?.customerPhone, 40)
+  if (!/^[+0-9][0-9 ()\-]{5,}$/.test(phone)) return c.json({ success: false, message: 'Enter the buyer\'s phone number (Paystack requires one with the evidence).' }, 400)
+  const { payment, fail } = await loadDisputedPayment(c, supabase)
+  if (fail) return fail
+  const { data: user, error: userErr } = payment.user_id
+    ? await supabase.from('users').select('email, name').eq('id', payment.user_id).maybeSingle() : { data: null, error: null }
+  if (userErr) throw userErr
+  if (!user || !user.email) return c.json({ success: false, message: 'The buyer\'s account no longer exists — respond in the Paystack dashboard.' }, 409)
+  let disputeId
+  try { disputeId = await resolveDisputeId(c.env, supabase, payment) } catch (err) { return paystackFailure(c, err) }
+  if (!disputeId) return c.json(NOT_FOUND_ID, 404)
+
+  const when = (payment.paid_at || payment.created_at || '').slice(0, 10)
+  const details = clip(body?.serviceDetails, 1500) ||
+    `Digital service delivered online: a resume fix${payment.fix_tier ? ` (${payment.fix_tier} tier)` : ''} generated for the buyer's own uploaded resume (scan ${payment.scan_id || 'n/a'}), ` +
+    `paid on ${when || 'n/a'} under Paystack reference ${payment.paystack_ref}. The result is available to the signed-in account holder for download, ` +
+    `and the work is verifiable on the app's public verification page.`
+  const fields = {
+    customer_email: user.email, customer_name: clip(user.name, 120) || user.email, customer_phone: phone, service_details: details,
+  }
+  if (/^\d{4}-\d{2}-\d{2}$/.test(when)) fields.delivery_date = when
+  const addr = clip(body?.deliveryAddress, 300)
+  if (addr) fields.delivery_address = addr
+  try { await paystackService.addDisputeEvidence(c.env, disputeId, fields) } catch (err) { return paystackFailure(c, err) }
+  await logAdminAction(c, supabase, 'payment.dispute_evidence', 'payment', payment.id, { reference: payment.paystack_ref, customText: !!clip(body?.serviceDetails, 1) })
+  return c.json({ success: true, message: 'Evidence sent to Paystack. It does not close the dispute — watch for the resolution (Paystack\'s auto-accept deadline still applies).' })
+}
+
+// GET /api/admin/payments/:reference/webhook-events — every inbox row for this payment, oldest first (support used to search the
+// Webhooks page by reference). Includes how long each took (G3).
+async function getPaymentTimeline(c) {
+  const supabase = getSupabase(c.env)
+  const reference = String(c.req.param('reference') || '').slice(0, 120)
+  const cols = 'id, event_type, status, attempts, note, error, received_at, processed_at'
+  const run = fields => supabase.from('webhook_events').select(fields).eq('reference', reference).eq('provider', 'paystack')
+    .order('received_at', { ascending: true }).limit(100)
+  let { data, error } = await run(`${cols}, processing_ms`)
+  if (error && isColumnMissing(error)) ({ data, error } = await run(cols))
+  if (error && isColumnMissing(error)) ({ data, error } = await run('id, event_type, status, attempts, error, received_at, processed_at'))
+  if (error) throw error
+  return c.json({ success: true, data: (data || []).map(r => ({
+    id: r.id, eventType: r.event_type, status: r.status, attempts: r.attempts,
+    note: r.status === 'FAILED' ? null : (r.note || r.error || null), error: r.status === 'FAILED' ? (r.error || null) : null,
+    receivedAt: r.received_at, processedAt: r.processed_at, processingMs: Number.isFinite(r.processing_ms) ? r.processing_ms : null,
+  })) })
 }
 
 // ── dead-letter handling (hourly cron, see index.js) ─────────────────────────
@@ -1555,4 +1747,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { acceptPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

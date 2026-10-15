@@ -636,7 +636,15 @@ async function getMe(c) {
       if (nowSec + lifetime - tokenExp > TOKEN_MIN_EXTENSION_SECONDS) token = await issueJWT(c.env, identity, session)
     }
   }
-  return c.json({ success: true, data: { user, ...(token ? { token } : {}) } })
+  // Webhooks round 14 (G1): when the mail provider told us this account's address bounces / complained, say so — security mail
+  // still goes there and will not arrive. Its own best-effort query rather than AUTH_USER_COLUMNS: that list is read on EVERY
+  // authenticated request and must not grow. A missing column (0086 not applied) or any error just means "no notice".
+  let emailBounce = null
+  try {
+    const { data } = await getSupabase(c.env).from('users').select('email_bounced_at, email_bounce_type').eq('id', user.id).maybeSingle()
+    if (data && data.email_bounced_at) emailBounce = { type: data.email_bounce_type || 'bounce', at: data.email_bounced_at }
+  } catch (_) { /* no notice */ }
+  return c.json({ success: true, data: { user: { ...user, emailBounce }, ...(token ? { token } : {}) } })
 }
 
 // AUDIT FIX (Auth round 6, B5): the unknown-email branch of forgotPassword reserved a slot under a fresh
@@ -1471,6 +1479,8 @@ async function confirmEmailChange(c) {
   }
   if (!updatedRow) return c.json({ success: false, message: 'Confirmation link invalid or expired.' }, 400)
   const updated = userRowToCamel(updatedRow)
+  // Webhooks round 14 (G1): the bounce / complaint flag belonged to the OLD address. Best effort; ignores a missing column (0086).
+  await require('../lib/emailSuppression').clearAccountBounce(supabase, { userId: user.id })
 
   // token_version moved, so every session is dead: mark the rows, then start a
   // fresh session for the browser that confirmed.

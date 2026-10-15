@@ -64,8 +64,9 @@ function setup({ leads = [], suppressed = {}, logs = [], supply = [{ role_catego
       return { data: hs.filter(h => state.reasons.has(h)).map(h => ({ email_hash: h, reason: state.reasons.get(h), created_at: '2026-01-01T00:00:00.000Z' })), error: null }
     }
     if (q.table === 'email_suppressions') {
-      const h = q.filters.find(f => f[1] === 'email_hash')?.[2]
-      return { data: mailBlocks[h] || null, error: null }
+      const f = q.filters.find(x => x[1] === 'email_hash')
+      const hs = f?.[0] === 'in' ? f[2] : [f?.[2]]   // round 14: lookups are `in (every hash form)`
+      return { data: hs.filter(h => mailBlocks[h]).map(h => ({ email_hash: h, ...mailBlocks[h] })), error: null }
     }
     if (q.table === 'admin_audit_log') { state.audit.push(q.values); return { data: null, error: null } }
     if (q.table === 'email_logs') {

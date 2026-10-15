@@ -74,15 +74,15 @@ function suppressionEmailParam(ctx) {
 async function adminCheckEmailSuppression(ctx) {
   const email = suppressionEmailParam(ctx)
   if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
-  const row = await emailSuppression.getSuppression(getSupabase(ctx.env), email)
+  const row = await emailSuppression.getSuppression(getSupabase(ctx.env), email, ctx.env)
   return ctx.json({ success: true, data: { suppressed: !!row, reason: row ? row.reason : null, since: row ? row.created_at : null } })
 }
 async function adminLiftEmailSuppression(ctx) {
   const email = suppressionEmailParam(ctx)
   if (!email) return ctx.json({ success: false, message: 'Pass ?email=<address>.' }, 400)
   const supabase = getSupabase(ctx.env)
-  const lifted = await emailSuppression.liftSuppression(supabase, email)
-  if (lifted) await logAdminAction(ctx, supabase, 'email.suppression_lifted', 'email_suppression', await cryptoLib.sha256(email), {})
+  const lifted = await emailSuppression.liftSuppression(supabase, email, ctx.env)
+  if (lifted) await logAdminAction(ctx, supabase, 'email.suppression_lifted', 'email_suppression', (await require('../lib/mailbox').suppressionHashes(ctx.env, email)).store[0], {})
   return ctx.json({ success: true, data: { lifted } })
 }
 
@@ -243,6 +243,9 @@ async function adminDashboardStats(ctx) {
 // versioned in the first place (see constants.js's TERMS_VERSION comment).
 const USER_LIST_FIELDS = 'id, email, name, role, status, email_verified, scans_today, scans_day_reset, created_at, terms_accepted_at, terms_version'
 
+const USER_BOUNCE_FIELDS = ', email_bounced_at, email_bounce_type'   // migration 0086; dropped on the retry when it is not applied
+const bounceOf = u => u.email_bounced_at ? { type: u.email_bounce_type || 'bounce', at: u.email_bounced_at } : null
+
 async function adminListUsers(ctx) {
   const supabase = getSupabase(ctx.env)
   const { page, pageSize, from, to } = pageParams(ctx)
@@ -250,20 +253,26 @@ async function adminListUsers(ctx) {
   const status = ctx.req.query('status')
   const role   = ctx.req.query('role')
 
-  let query = supabase.from('users').select(USER_LIST_FIELDS, { count: 'exact' })
-    .order('created_at', { ascending: false }).range(from, to)
-  if (search) query = query.or(`email.ilike.%${search}%,name.ilike.%${search}%`)
-  if (status) query = query.eq('status', status)
-  if (role)   query = query.eq('role', role)
-
-  const { data, error, count } = await query
+  const bouncedOnly = ctx.req.query('bounced') === '1'
+  const build = fields => {
+    let query = supabase.from('users').select(fields, { count: 'exact' })
+      .order('created_at', { ascending: false }).range(from, to)
+    if (search) query = query.or(`email.ilike.%${search}%,name.ilike.%${search}%`)
+    if (status) query = query.eq('status', status)
+    if (role)   query = query.eq('role', role)
+    if (bouncedOnly) query = query.not('email_bounced_at', 'is', null)   // Webhooks round 14 (G1)
+    return query
+  }
+  let { data, error, count } = await build(USER_LIST_FIELDS + USER_BOUNCE_FIELDS)
+  if (error && !bouncedOnly && (error.code === '42703' || error.code === 'PGRST204')) ({ data, error, count } = await build(USER_LIST_FIELDS))
   if (error) throw error
 
   const users = data.map(u => ({
     id: u.id, email: u.email, name: u.name, role: u.role, status: u.status,
     emailVerified: u.email_verified, scansToday: u.scans_today, scansDayReset: u.scans_day_reset,
     createdAt: u.created_at,
-    termsAcceptedAt: u.terms_accepted_at, termsVersion: u.terms_version
+    termsAcceptedAt: u.terms_accepted_at, termsVersion: u.terms_version,
+    emailBounce: bounceOf(u)
   }))
   return ctx.json({ success: true, data: users, meta: { page, pageSize, total: count || 0 } })
 }
@@ -272,7 +281,8 @@ async function adminGetUserDetail(ctx) {
   const userId = ctx.req.param('id')
   const supabase = getSupabase(ctx.env)
 
-  const { data: user, error } = await supabase.from('users').select(USER_LIST_FIELDS).eq('id', userId).maybeSingle()
+  let { data: user, error } = await supabase.from('users').select(USER_LIST_FIELDS + USER_BOUNCE_FIELDS).eq('id', userId).maybeSingle()
+  if (error && (error.code === '42703' || error.code === 'PGRST204')) ({ data: user, error } = await supabase.from('users').select(USER_LIST_FIELDS).eq('id', userId).maybeSingle())
   if (error) throw error
   if (!user) return ctx.json({ success: false, message: 'User not found.' }, 404)
 
@@ -291,6 +301,7 @@ async function adminGetUserDetail(ctx) {
     emailVerified: user.email_verified, scansToday: user.scans_today, scansDayReset: user.scans_day_reset,
     createdAt: user.created_at,
     termsAcceptedAt: user.terms_accepted_at, termsVersion: user.terms_version,
+    emailBounce: bounceOf(user),
     scans: (scans || []).map(s => ({
       id: s.id, status: s.status, atsScore: s.ats_score, fixPurchased: s.fix_purchased,
       fixTier: s.fix_tier, resumeOriginalName: s.resume_original_name, createdAt: s.created_at

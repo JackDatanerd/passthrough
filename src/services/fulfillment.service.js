@@ -671,8 +671,15 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
   // WEBHOOKS ROUND 5 (feature gap): tell the buyer. Only the call that actually moved the payment to
   // REFUNDED sends it (a redelivery or a second path finds `transitioned` false), so it goes out once.
   // Live paths pass `env`; `defer` (the webhook's waitUntil) keeps the send out of the request.
-  if (env && transitioned) {
-    const task = notifyBuyerReversal(env, supabase, payment, { reason, revoked, duplicate })
+  //
+  // WEBHOOKS ROUND 14 (bug): "only the call that moved the payment" was the wrong gate. The status flip comes FIRST in this
+  // function; if the commission or credential step after it threw, the webhook answered 500, Paystack redelivered, and the
+  // retry found the payment already REFUNDED (`transitioned` false) — so the buyer was never told, by anybody, ever. The
+  // once-only guarantee is now a claim of its own (payments.reversal_notice_sent_at, migration 0086), taken for a payment
+  // that IS REFUNDED whichever call gets there first, and handed back if the send fails. Before 0085 it falls back to the
+  // old gate.
+  if (env) {
+    const task = sendBuyerReversalOnce(env, supabase, payment, { reason, revoked, duplicate, transitioned })
     if (typeof defer === 'function') defer(task)
     else await task
   }
@@ -682,17 +689,58 @@ async function reversePayment(supabase, payment, { reason, refundReference = nul
 // Best-effort, never throws. A free-credit redemption ($0 / `credit:` reference) charged nothing and
 // has nothing to reverse from the buyer's side, so it never gets one.
 async function notifyBuyerReversal(env, supabase, payment, { reason, revoked, duplicate = false }) {
+  return (await buyerReversalOutcome(env, supabase, payment, { reason, revoked, duplicate })) === 'sent'
+}
+
+// 'sent' | 'skipped' (nothing will ever be sent to this buyer: no account, no address, a free credit) | 'failed' (the mail
+// provider refused or throttled it — worth trying again). Never throws.
+async function buyerReversalOutcome(env, supabase, payment, { reason, revoked, duplicate = false }) {
   try {
-    if (!payment.user_id || !(payment.amount_cents > 0) || String(payment.paystack_ref || '').startsWith('credit:')) return false
+    if (!payment.user_id || !(payment.amount_cents > 0) || String(payment.paystack_ref || '').startsWith('credit:')) return 'skipped'
     const { data: buyer } = await supabase.from('users').select('email, name').eq('id', payment.user_id).maybeSingle()
-    if (!buyer?.email) return false
+    if (!buyer?.email) return 'skipped'
     const sent = await require('./email.service').sendPaymentReversed(env, supabase, buyer.email, buyer.name, {
       amountCents: payment.amount_cents, currency: payment.currency, reference: payment.paystack_ref,
       reason, verificationRevoked: !!revoked, duplicate: !!duplicate,
     })
-    return sent !== false
+    return sent !== false ? 'sent' : 'failed'
   } catch (err) {
     console.error('reversePayment buyer notice:', err && err.message)
+    return 'failed'
+  }
+}
+
+// The buyer's reversal notice, exactly once per refunded payment. See reversePayment for why this is a claim and not "the call
+// that flipped the status". Never throws.
+//   claim    UPDATE ... SET reversal_notice_sent_at WHERE status = 'REFUNDED' AND reversal_notice_sent_at IS NULL
+//   send     only by the caller whose claim landed
+//   failure  a send the provider refused releases the claim (compare-and-set on the stamp it took), so the next path that
+//            re-runs this reversal tries again; 'skipped' keeps it (nothing will ever be sendable)
+// Column missing (migration 0086 not applied): behaves as before — only the call that moved the payment sends.
+async function sendBuyerReversalOnce(env, supabase, payment, { reason, revoked, duplicate = false, transitioned = false }) {
+  try {
+    const stamp = new Date().toISOString()
+    const { data: claimed, error } = await supabase.from('payments')
+      .update({ reversal_notice_sent_at: stamp })
+      .eq('id', payment.id).eq('status', 'REFUNDED').is('reversal_notice_sent_at', null).select('id')
+    if (error) {
+      if (error.code === '42703' || error.code === 'PGRST204' || /reversal_notice_sent_at/i.test(error.message || '')) {
+        if (!transitioned) return false
+        return await notifyBuyerReversal(env, supabase, payment, { reason, revoked, duplicate })
+      }
+      console.error('reversal notice claim failed:', error.message)
+      return false
+    }
+    if (!claimed || !claimed.length) return false      // already told (or the payment is not REFUNDED)
+    const outcome = await buyerReversalOutcome(env, supabase, payment, { reason, revoked, duplicate })
+    if (outcome === 'failed') {
+      const { error: relErr } = await supabase.from('payments')
+        .update({ reversal_notice_sent_at: null }).eq('id', payment.id).eq('reversal_notice_sent_at', stamp)
+      if (relErr) console.error('reversal notice claim could not be released:', relErr.message)
+    }
+    return outcome === 'sent'
+  } catch (err) {
+    console.error('reversal notice error:', err && err.message)
     return false
   }
 }
@@ -739,5 +787,5 @@ module.exports = {
   generatorFor, chargeMismatch,
   fulfillPayment, settlePayment, notifySettlementProblem, recoverLostReceipts, isDuplicateOfOtherPayment, resendReceipt, abandonPendingForScan, abandonPendingForScans, abandonPendingForUser,
   referenceCandidates, findPaymentForEvent, reverseCommission, reversePayment,
-  refundUnsettledPayment, clearDispute, notifyBuyerReversal,
+  refundUnsettledPayment, clearDispute, notifyBuyerReversal, sendBuyerReversalOnce,
 }

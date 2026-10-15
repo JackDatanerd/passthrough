@@ -23,7 +23,7 @@ const { suppressionHashes } = require('../lib/mailbox')
 const { logAdminAction } = require('../lib/adminAudit')
 const { performRemoval, EMPLOYER_MAIL_TEMPLATES } = require('./employer-leads.controller')
 const inbox = require('./webhooks.controller')
-const { recordSuppression } = require('../lib/emailSuppression')
+const { recordSuppression, flagAccountBounce } = require('../lib/emailSuppression')
 const emailService = require('../services/email.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
@@ -91,6 +91,12 @@ function minimalResendEvent(event) {
 }
 
 // Does a registered account use this address? Visibility only (G2): never throws, never changes the outcome.
+async function accountIdsFor(supabase, email) {
+  try {
+    const { data, error } = await supabase.from('users').select('id').eq('email', email)
+    return error ? [] : (data || []).map(r => r.id)
+  } catch (_) { return [] }
+}
 async function accountUsesAddress(supabase, email) {
   try {
     const { data, error } = await supabase.from('users').select('id').eq('email', email).maybeSingle()
@@ -120,19 +126,31 @@ async function processResendEvent(c, supabase, event) {
 
   // G2: an address that cannot be reached is worth knowing about when it belongs to an ACCOUNT — verification,
   // reset, sign-in and receipt mail still goes out to it (suppression exempts them) and will keep failing.
-  let accounts = 0
-  if (complaint || permanentBounce || type === 'email.failed' || type === 'email.suppressed')
-    for (const email of recipients) if (await accountUsesAddress(supabase, email)) accounts++
+  // Round 14 (G1): the accounts are now NAMED — their ids go in the alert and the inbox note (ids are not personal data; the
+  // payload with the address is cleared once the event finishes, so this is the only trace of "which account"), the user row is
+  // flagged (users.email_bounced_at, migration 0086) so the SPA can tell the person and Admin → Users can list them.
+  // `email.failed` is a send failure, not a verdict on the address, so it names the accounts but does not flag them.
+  const accountIds = []
+  if (complaint || permanentBounce || type === 'email.failed' || type === 'email.suppressed') {
+    const flagType = complaint ? 'complaint' : permanentBounce ? 'bounce' : type === 'email.suppressed' ? 'suppressed' : null
+    for (const email of recipients) {
+      if (flagType) accountIds.push(...await flagAccountBounce(supabase, email, flagType))
+      else if (await accountUsesAddress(supabase, email)) accountIds.push(...await accountIdsFor(supabase, email))
+    }
+  }
+  const accounts = accountIds.length
+  const accountNote = accounts ? ` — ${accounts} account(s): ${accountIds.slice(0, 5).join(', ')}${accounts > 5 ? ', …' : ''}` : ''
   if (accounts > 0)
     await alertOnce(c, 'resend-account-undeliverable', 'Mail to a registered account address is not being delivered',
-      `${accounts} recipient(s) of a ${type} event belong to registered accounts. Security and payment mail (verification, password reset, receipts) is still ` +
-      `sent to them and will fail or be refused. See Admin → Webhooks (provider: resend) for the event. Further events in the next 30 minutes are logged but not emailed.`)
+      `${accounts} registered account(s) are affected by a ${type} event: ${accountIds.slice(0, 10).join(', ')}${accounts > 10 ? ', …' : ''}.\n` +
+      `Security and payment mail (verification, password reset, receipts) is still sent to them and will fail or be refused. ` +
+      `Their dashboard now shows a "we can't reach your email" notice and Admin → Users tags them. Further events in the next 30 minutes are logged but not emailed.`)
 
   if (type === 'email.failed' || type === 'email.suppressed') {
     await alertOnce(c, `resend-${type}`, `Resend ${type}`,
       `Resend reported ${type} for ${recipients.length} recipient(s)${d.failed?.reason ? `: ${String(d.failed.reason).slice(0, 200)}` : ''}.\n` +
       `If this keeps happening, check the sending domain and the Resend dashboard. Further events in the next 30 minutes are logged but not emailed.`)
-    return { status: 'PROCESSED', note: `${type} — alerted`, removed: 0 }
+    return { status: 'PROCESSED', note: `${type} — alerted${accountNote}`, removed: 0 }
   }
   if (!complaint && !permanentBounce) return { status: 'IGNORED', note: type === 'email.bounced' ? 'transient bounce' : String(type), removed: 0 }
   if (!recipients.length) return { status: 'IGNORED', note: 'no usable recipient', removed: 0 }
@@ -148,7 +166,7 @@ async function processResendEvent(c, supabase, event) {
     // blip (or migration 0059 missing) answered 200 and the address kept being mailed with nothing to retry it.
     // The employer handling below still runs when it fails (it is what an opt-out is owed, and it must not wait on
     // a missing table); the failure is raised after the loop so the delivery is retried.
-    if (!(await recordSuppression(supabase, email, complaint ? 'complaint' : 'bounce'))) suppressionFailed = true
+    if (!(await recordSuppression(supabase, email, complaint ? 'complaint' : 'bounce', c.env))) suppressionFailed = true
 
     // ROUND-7 (B5): the employer do-not-contact removal (lead row, employer mail history, lead suppression hash,
     // 'lead.auto_suppressed' audit entry) is for addresses that ARE an employer lead — or, for a complaint, ones we
@@ -172,7 +190,7 @@ async function processResendEvent(c, supabase, event) {
     })
   }
   if (suppressionFailed) throw new Error('email suppression write failed')
-  return { status: 'PROCESSED', note: removed ? `suppressed; ${removed} lead(s) removed` : 'suppressed', removed }
+  return { status: 'PROCESSED', note: `${removed ? `suppressed; ${removed} lead(s) removed` : 'suppressed'}${accountNote}`, removed }
 }
 
 async function handleResend(c) {

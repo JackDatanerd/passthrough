@@ -333,6 +333,15 @@ export default function AdminWebhooks() {
               cell: ev => ev.attempts,
             },
             {
+              key: 'duration',
+              header: 'Took',
+              headerClassName: 'text-right',
+              cellClassName: 'text-right text-gray-500 whitespace-nowrap',
+              // Webhooks round 14 (G3): Paystack redelivers a webhook that takes too long to answer (the work is done before the 200).
+              cell: ev => ev.processingMs == null ? '—'
+                : <span className={ev.processingMs >= 20000 ? 'text-red-600 font-medium' : ''}>{ev.processingMs >= 1000 ? `${(ev.processingMs / 1000).toFixed(1)} s` : `${ev.processingMs} ms`}</span>,
+            },
+            {
               key: 'actions',
               header: <span className="sr-only">Actions</span>,
               cellClassName: 'text-right whitespace-nowrap',

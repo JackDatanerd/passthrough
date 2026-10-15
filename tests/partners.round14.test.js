@@ -71,6 +71,6 @@ describe('B7 — migration 0085', () => {
   it('adds a partial index on users.referred_by_code, records itself, and EXPECTED_SCHEMA_VERSION follows', () => {
     expect(sql).toMatch(/create index if not exists idx_users_referred_by_code\s+on users \(referred_by_code\)\s+where referred_by_code is not null/)
     expect(sql).toMatch(/insert into applied_migrations \(version, name\) values \(85, '0085_partners_section4_round14'\)/)
-    expect(read('src/config/constants.js')).toMatch(/EXPECTED_SCHEMA_VERSION:\s*85/)
+    expect(read('src/config/constants.js')).toMatch(/EXPECTED_SCHEMA_VERSION:\s*(8[5-9]|9\d)/)
   })
 })

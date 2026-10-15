@@ -1,0 +1,37 @@
+WEBHOOKS (SECTION 8) — INDEPENDENT AUDIT, ROUND 14
+Migration 0086, EXPECTED_SCHEMA_VERSION 86. Apply the migration BEFORE deploying.
+
+FEATURE GAPS CLOSED
+G1  Bounce / complaint visibility. The Resend handler now NAMES the affected account(s): ids (not addresses) go in the owner alert and in the
+    inbox note, which outlives the payload. users.email_bounced_at / email_bounce_type flag the account (complaint, permanent bounce, suppressed
+    send); /auth/me returns `emailBounce` (its own best-effort query — AUTH_USER_COLUMNS is untouched); the dashboard shows a "we can't reach your
+    email" notice; Admin -> Users shows a tag and an "Email undeliverable" filter. Cleared when the address is changed, or an admin lifts the suppression.
+G2  Disputes can be answered from the app. POST /admin/payments/:reference/dispute/accept and /dispute/evidence (step-up, audited), using Paystack's
+    POST /dispute/:id/evidence and PUT /dispute/:id/resolve. payments.dispute_id is stored when a dispute webhook is processed; a payment disputed
+    before that is looked up in Paystack's dispute list. Neither action edits the payment: Paystack's resolve webhook / the sweep does, through the
+    existing handler. "Decline" is not offered (Paystack needs an uploaded file). Dispute alerts now mention the new buttons.
+G3  Processing time + per-payment history. webhook_events.processing_ms; "Took" column in Admin -> Webhooks; a handler run >= 20 s logs and emails the
+    owner (global max 5/hour, one per event type per 6 hours); GET /admin/payments/:reference/webhook-events and a "History" button on each payment.
+
+BUGS FIXED
+B1  (crosses into Payments/fulfilment) The buyer's reversal email went only to the call that moved the payment to REFUNDED; if a later step threw, the
+    retry never sent it. Now a claim on payments.reversal_notice_sent_at (compare-and-set), released if the provider refuses the send; existing REFUNDED
+    rows are stamped by the migration so old events replayed later do not mail late. Falls back to the old rule before the migration.
+B2  Resend payloads of rows that never finished (FAILED after the re-drives) kept recipient addresses for ever. Cleared after 7 days; rows deleted at 90.
+B3  (crosses into Employer Leads / Admin / email.service) email_suppressions used an unsalted SHA-256 of the typed address. Now lib/mailbox's
+    suppressionHashes: keyed HMAC when SUPPRESSION_HASH_KEY is set, canonical mailbox (+tag, Gmail dots), lookups cover every form incl. legacy rows,
+    legacy rows re-keyed on first hit, lifts remove every form. Callers updated (send(), webhook, admin lift/check, lead import / rejoin / lookup).
+B4  GET /admin/webhook-events?from=2026-02-31 returned 500 and `to` shifted a day: dates must round-trip.
+B5  The 90-day prune deleted the dispute / refund rows disputeResolutionSeen relies on. Those are now kept 400 days (pruneWebhookEvents, replaces the
+    inline prune in index.js).
+B6  Replay was offered (and accepted) for a RECEIVED row still being worked on; now only once stuck > 15 min (list flag + 409). Live dispute events are
+    normalised like swept ones (camelCase dueAt, bare-string transaction).
+Smaller: trailing-slash webhook URLs no longer 404; isColumnMissing no longer treats PGRST002 (schema cache) as a missing column.
+
+TESTS
+tests/webhooks.round14.test.js (29), a Resend G1 case, frontend/tests/pages/Webhooks.round14.test.jsx (6) and DashboardIndex.round14.test.jsx (3).
+Test doubles: memoryDb now implements like/ilike/not-like, delete().select() and upsert (the missing like support hid retention-query bugs);
+fakeSupabase records upsert onConflict. Three older tests whose hand-written fakes returned one row for a hash lookup now return the `in (...)` shape;
+partners.round14 no longer pins EXPECTED_SCHEMA_VERSION to exactly 85; mappers.migrations lists the new bookkeeping columns as unmapped.
+Known, pre-existing: tests/employer-leads.controller.test.js "flags truncation exactly…" exceeds vitest's 5 s timeout in slow environments (fails the
+same way on the untouched repo).

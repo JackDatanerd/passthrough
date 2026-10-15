@@ -19,13 +19,15 @@ const TABLE_TO_MAPPER = {
 // Columns a mapper must NOT surface: single-use secrets/tokens. Anything else missing is a bug.
 const DELIBERATELY_UNMAPPED = {
   // saved_profile_prev (0075): the one-step-back resume snapshot — a full resume payload the profile endpoints read directly, never part of the user object every request carries.
-  users: ['email_change_done_token', 'saved_profile_prev'],
+  users: ['email_change_done_token', 'saved_profile_prev', 'email_bounced_at', 'email_bounce_type'],   // 0086: surfaced as `emailBounce` by getMe and the admin user endpoints, never by the mapper
   // Homepage outcomes (0070): follow-up email bookkeeping only the hourly sweep reads — never part of a scan the API returns.
   // display_score (0076): generated ORDER BY key for the dashboard score sort; the row already exposes atsScore / fixAtsScore it is derived from.
   scans: ['outcome_prompted_at', 'outcome_prompt_attempts', 'display_score'],
   // Both partner bearer tokens are secrets: payout_details_token (write) and dashboard_token (read-only, migration 0055).
   // previous_emails (0080): the addresses a partner used to have, kept ONLY so erasure can reach the mail history sent to them — personal data the
   // admin/partner API never needs (partners.controller.js reads it directly for the erasure).
+  // 0086: reversal_notice_sent_at is the claim that makes the buyer's reversal email go out once; dispute_id is Paystack's id, read only by the admin dispute actions.
+  payments: ['reversal_notice_sent_at', 'dispute_id'],
   partners: ['payout_details_token', 'dashboard_token', 'previous_emails'],
 }
 

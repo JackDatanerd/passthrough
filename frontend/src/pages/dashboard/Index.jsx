@@ -382,6 +382,20 @@ export default function DashboardIndex() {
           <Button onClick={openComposer} aria-expanded={composerOpen} aria-controls="new-scan-panel">New scan</Button>
         </div>
 
+        {/* Webhooks round 14 (G1): the mail provider reported this address as bouncing / a spam complaint. Security mail still goes
+            there and will not arrive, so say so (cleared when the address is changed). */}
+        {user?.emailBounce && (
+          <div role="status" data-testid="email-bounce-banner" className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
+            <p className="text-sm font-medium text-amber-900">We can't reach your email address</p>
+            <p className="text-xs text-amber-700 mt-0.5">
+              {user.emailBounce.type === 'complaint'
+                ? 'A message to this address was reported as spam, so we have stopped sending optional email to it.'
+                : 'Messages to this address are being returned.'}{' '}
+              Sign-in codes, password resets and receipts may not arrive. <a className="underline" href="/dashboard/settings">Update your email in Settings</a>.
+            </p>
+          </div>
+        )}
+
         {/* Email verification banner */}
         {user && !user.emailVerified && (
           <div className="bg-amber-50 border border-amber-200 rounded-lg px-4 py-3 flex flex-col sm:flex-row items-start sm:items-center gap-3">

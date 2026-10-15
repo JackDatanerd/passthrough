@@ -1023,7 +1023,7 @@ async function adminGetLead(c) {
   if (!lead) return c.json({ success: false, message: 'Lead not found.' }, 404)
 
   const suppressions = await findSuppressions(c.env, supabase, lead.email)
-  const mail = await emailSuppression.getSuppression(supabase, lead.email)
+  const mail = await emailSuppression.getSuppression(supabase, lead.email, c.env)
 
   const forms = mailboxForms([lead.email])
   let emails = []
@@ -1786,7 +1786,7 @@ async function rejoinLead(c) {
 
   if (suppressions.length && !isRejoinable(suppressions)) return unavailable()
   // The global bounce / complaint block: an address that cannot receive mail is not "joined".
-  if (await emailSuppression.getSuppression(supabase, email)) return unavailable()
+  if (await emailSuppression.getSuppression(supabase, email, c.env)) return unavailable()
 
   const now = new Date().toISOString()
   const row = {
@@ -1968,7 +1968,7 @@ async function adminCheckSuppression(c) {
   // admin UI can warn before "add to do-not-contact" deletes it (that action removes
   // the lead along with recording the suppression).
   const leadExists = await leadExistsForMailbox(supabase, email)
-  const mail = await emailSuppression.getSuppression(supabase, email)
+  const mail = await emailSuppression.getSuppression(supabase, email, c.env)
   return c.json({ success: true, data: {
     suppressed: rows.length > 0, since, reason, leadExists,
     mailSuppression: mail ? { reason: mail.reason, since: mail.created_at } : null
@@ -2023,7 +2023,7 @@ async function adminLiftSuppression(c) {
   const listLifted = await liftListSuppression(c.env, supabase, email)
   // Round 11 (G3): the bounce / complaint block can be lifted from here too, but only when asked — it
   // exists because the provider said the address cannot (or must not) be mailed.
-  const mailLifted = includeMailSuppression ? await emailSuppression.liftSuppression(supabase, email) : false
+  const mailLifted = includeMailSuppression ? await emailSuppression.liftSuppression(supabase, email, c.env) : false
   if (!listLifted && !mailLifted) return c.json({ success: false, message: 'That address is not on the do-not-contact list.' }, 404)
   // target_id is the hash, not the address — the audit trail may record
   // WHICH suppression was lifted without ever holding the address itself.
@@ -2428,17 +2428,8 @@ const HASH_LOOKUP_CHUNK = 50
 
 // The global bounce / spam-complaint list (email_suppressions), checked in groups. Fails open like every other
 // reader of that list: a database hiccup must not stop an import.
-async function mailBlockedAmong(supabase, emails) {
-  const hit = new Set()
-  if (!emails.length) return hit
-  const byHash = new Map()
-  for (const e of emails) byHash.set(await sha256(String(e).trim().toLowerCase()), e)
-  for (const group of inChunks([...byHash.keys()], HASH_LOOKUP_CHUNK)) {
-    const { data, error } = await supabase.from('email_suppressions').select('email_hash').in('email_hash', group)
-    if (error) { console.error('employer-leads: could not read the bounce list during an import:', error.message); return hit }
-    for (const r of data || []) if (byHash.has(r.email_hash)) hit.add(byHash.get(r.email_hash))
-  }
-  return hit
+async function mailBlockedAmong(env, supabase, emails) {
+  return emailSuppression.suppressedAmong(supabase, emails.map(e => String(e).trim().toLowerCase()), env, HASH_LOOKUP_CHUNK)
 }
 
 async function adminImportLeads(c) {
@@ -2482,7 +2473,7 @@ async function adminImportLeads(c) {
   const removed = await suppressedAmong(c.env, supabase, emails.filter(e => !existing.has(e)))
   // Round 12: an address the mail provider reported as bouncing / complaining (email_suppressions) can never be
   // mailed; importing it just makes a lead that fails at its first send.
-  const mailBlocked = await mailBlockedAmong(supabase, emails.filter(e => !existing.has(e) && !removed.has(e)))
+  const mailBlocked = await mailBlockedAmong(c.env, supabase, emails.filter(e => !existing.has(e) && !removed.has(e)))
 
   const aliases = await findAliasLeads(supabase, emails.filter(e => !existing.has(e) && !removed.has(e) && !mailBlocked.has(e)))
   const now = new Date().toISOString()

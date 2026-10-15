@@ -249,7 +249,7 @@ describe('send() honours the suppression list (G4)', () => {
     const sent = []
     const db = createFakeSupabase(q => {
       if (q.table === 'email_suppressions' && q.op === 'select')
-        return lookupError ? { data: null, error: { message: 'down' } } : { data: suppressed ? { reason: 'bounce', created_at: 't' } : null, error: null }
+        return lookupError ? { data: null, error: { message: 'down' } } : { data: suppressed ? [{ email_hash: 'h', reason: 'bounce', created_at: 't' }] : [], error: null }   // round 14: `in (every hash form)` returns rows
       return undefined
     })
     const { mod, restore } = loadWithStubs('services/email.service.js', {
@@ -289,7 +289,9 @@ describe('send() honours the suppression list (G4)', () => {
     expect(up.values).toMatchObject({ reason: 'complaint' })
     expect(up.values.email_hash).toBe(await require('../src/lib/crypto.js').sha256('dead@example.com'))
     expect(await sup.liftSuppression(db, 'DEAD@example.com')).toBe(true)
-    expect(eqValue(db.calls.find(q => q.op === 'delete'), 'email_hash')).toBe(up.values.email_hash)
+    // round 14: lifting removes every hash form of the address (typed, canonical, keyed / legacy), so it is an `in`, and includes the stored one
+    const del = db.calls.find(q => q.op === 'delete' && q.table === 'email_suppressions')
+    expect(del.filters.find(f => f[0] === 'in' && f[1] === 'email_hash')[2]).toContain(up.values.email_hash)
   })
 })
 

@@ -46,6 +46,10 @@ router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 // /payments/:ref/resolve and /refund put behind step-up — so it needs the same password confirmation.
 router.post('/webhook-events/:id/replay', admin.stepUp, validateUuidParam(), wh.replayWebhookEvent)
 router.post('/webhook-events/:id/dismiss', admin.stepUp, validateUuidParam(), wh.dismissWebhookEvent)
+// Webhooks round 14: answer a dispute from Admin → Payments (accept = Paystack refunds the buyer), and a payment's own webhook history.
+router.post('/payments/:reference/dispute/accept', admin.stepUp, wh.acceptPaymentDispute)
+router.post('/payments/:reference/dispute/evidence', admin.stepUp, wh.submitDisputeEvidence)
+router.get('/payments/:reference/webhook-events', wh.getPaymentTimeline)
 
 // Customer stories: nothing reaches the public homepage until approved here.
 router.get('/stories', stories.adminListStories)
