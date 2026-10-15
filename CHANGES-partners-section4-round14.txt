@@ -1,0 +1,17 @@
+Partners section 4 round 14 (audit on head f4fbec1)
+
+Round 13's relocation (90106c3) already closed: commission-failure alert dedupe, payout-run CSV hold check, repeat-visit account sync,
+sign-up counts, dashboard-link resend, removed.invalid email guard. Re-checked and NOT bugs: partner email case duplicates
+(idx_partners_email_lower_unique + escaped ilike), attribution TTL refresh on a repeat ?ref= visit.
+
+B6  src/services/referral.service.js  afterConversionNotices: the "code reached its limit" mail wrote its once-key BEFORE sending and
+    ignored the result, so a failed/throttled send meant the partner was never told and the key blocked retries for 30 days.
+    Now marked only after the mail is accepted (same rule as the expiry sweep); the next conversion retries.
+B5  src/services/referral.service.js + src/controllers/auth.controller.js  setUserAttribution now returns the stored start
+    (referredAt); register's response used "now" instead of the browser's capture time it had just stored.
+B7  supabase/migrations/0085_partners_section4_round14.sql  partial index on users(referred_by_code): round 13's per-code sign-up count
+    scanned the whole users table on every partner dashboard / admin partner load.
+    EXPECTED_SCHEMA_VERSION 84 -> 85 (src/config/constants.js).
+
+Tests: tests/partners.round14.test.js (new); partners.round10/round12 assertions now allow the extra referredAt field.
+APPLY: run migration 0085 (index only, safe, non-blocking enough for a partial index) before or with the deploy; health check expects 85.

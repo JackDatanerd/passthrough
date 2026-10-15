@@ -552,9 +552,14 @@ async function afterConversionNotices(supabase, env, codeRow, partner) {
     const { data: code } = await supabase.from('referral_codes')
       .select('code, usage_limit, uses_so_far').eq('id', codeRow.id).maybeSingle()
     if (code && code.usage_limit != null && code.uses_so_far >= code.usage_limit && partner?.email
-        && await onceKey(env, `referral-limit-partner:${codeRow.id}:${code.usage_limit}`, 30 * 24 * 3600)) {
+        && !(await keySeen(env, `referral-limit-partner:${codeRow.id}:${code.usage_limit}`))) {
       const emailService = require('./email.service')
-      await emailService.sendPartnerCodeLimitReached(env, supabase, partner.email, partner.name, code.code, code.usage_limit)
+      // Section 4 round 14 (bug): the once-per-limit key used to be written BEFORE this send and the result ignored, so a
+      // throttled/failed mail meant the partner was never told their code had stopped working (and the key blocked any
+      // retry for 30 days). Same rule as the expiry sweep: mark only once the mail was accepted, so the next conversion
+      // on the (already full) code tries again.
+      const ok = await emailService.sendPartnerCodeLimitReached(env, supabase, partner.email, partner.name, code.code, code.usage_limit).catch(() => false)
+      if (ok === true) await keyMark(env, `referral-limit-partner:${codeRow.id}:${code.usage_limit}`, 30 * 24 * 3600)
     }
   } catch (err) {
     console.error('afterConversionNotices:', err.message)
@@ -636,12 +641,12 @@ async function setUserAttribution(supabase, user, rawCode, capturedAt) {
   if (readErr) throw readErr
   const currentAt = current?.referred_at ? Date.parse(current.referred_at) : NaN
   if (current?.referred_by_code === code && Number.isFinite(currentAt) && currentAt > at)
-    return { stored: true, code, unchanged: true }     // already held with a newer start — never move it backwards
+    return { stored: true, code, unchanged: true, referredAt: current.referred_at }     // already held with a newer start — never move it backwards
 
   const { error } = await supabase.from('users')
     .update({ referred_by_code: code, referred_at: new Date(at).toISOString() }).eq('id', user.id)
   if (error) throw error
-  return { stored: true, code }
+  return { stored: true, code, referredAt: new Date(at).toISOString() }
 }
 
 // Owner alert for a conversion that could not be (fully) recorded. Lazy

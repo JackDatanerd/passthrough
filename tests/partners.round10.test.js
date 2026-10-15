@@ -182,7 +182,7 @@ describe('referral attribution kept on the account', () => {
   it('stores a usable code with a timestamp', async () => {
     const { svc, db, updates } = setup(GOOD)
     const out = await svc.setUserAttribution(db, { id: 'u1', email: 'buyer@x.co' }, ' k20 ')
-    expect(out).toEqual({ stored: true, code: 'K20' })
+    expect(out).toMatchObject({ stored: true, code: 'K20' })
     expect(updates[0].referred_by_code).toBe('K20'); expect(updates[0].referred_at).toBeTruthy()
   })
   it('does not store an unknown/inactive code, a malformed one, or the partner\'s own address', async () => {
@@ -232,7 +232,7 @@ describe('referral notices', () => {
     t = loadWithStubs('services/referral.service.js', {
       'services/email.service.js': {
         sendOwnerAlert: async (...a) => { sent.push(['owner', a[1]]) },
-        sendPartnerCodeLimitReached: async (...a) => { sent.push(['limit', a[4]]) },
+        sendPartnerCodeLimitReached: async (...a) => { sent.push(['limit', a[4]]); return true },
         sendPartnerCodeExpiring: async (...a) => { sent.push(['expiring', a[4]]); return opts_expiringOk() },
       },
     })

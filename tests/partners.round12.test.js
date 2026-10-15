@@ -27,7 +27,7 @@ describe('setUserAttribution keeps the original capture time', () => {
     const { svc, db, updates } = setup()
     const at = new Date(Date.now() - 20 * DAY).toISOString()
     const out = await svc.setUserAttribution(db, USER, 'K20', at)
-    expect(out).toEqual({ stored: true, code: 'K20' })
+    expect(out).toMatchObject({ stored: true, code: 'K20', referredAt: at })
     expect(updates[0].referred_at).toBe(at)
   })
   it('falls back to now for a missing, garbage or future capture time', async () => {
@@ -48,7 +48,7 @@ describe('setUserAttribution keeps the original capture time', () => {
     const newer = new Date(Date.now() - 2 * DAY).toISOString()
     const { svc, db, updates } = setup({ referred_by_code: 'K20', referred_at: newer })
     const out = await svc.setUserAttribution(db, USER, 'K20', new Date(Date.now() - 20 * DAY).toISOString())
-    expect(out).toEqual({ stored: true, code: 'K20', unchanged: true })
+    expect(out).toMatchObject({ stored: true, code: 'K20', unchanged: true })
     expect(updates).toHaveLength(0)
   })
   it('a fresher click on the same code still refreshes the window', async () => {

@@ -484,7 +484,7 @@ async function register(c) {
   if (referralCode) {
     try {
       const out = await require('../services/referral.service').setUserAttribution(supabase, { id: user.id, email: user.email }, referralCode, referralCapturedAt || undefined)
-      if (out.stored) { user.referredByCode = out.code; user.referredAt = new Date().toISOString() }
+      if (out.stored) { user.referredByCode = out.code; user.referredAt = out.referredAt || new Date().toISOString() }   // the STORED start (the browser's capture time), not "now"
     } catch (e) { console.error('register referral attribution (ignored):', e.message) }
   }
 
