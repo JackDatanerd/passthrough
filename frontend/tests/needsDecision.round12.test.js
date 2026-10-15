@@ -57,3 +57,29 @@ describe('the Scans tab count', () => {
     expect(result.current).toBeNull()
   })
 })
+
+// Profile & Dashboard B2: the Scans page's first-mount forced refresh queued a second identical request behind the tab
+// strip's own first load.
+describe('coalesced forced refresh (cold dashboard load)', () => {
+  it('a coalesced force joins the request already out: one request, and nothing queued behind it', async () => {
+    const first = deferred()
+    api.get.mockReturnValueOnce(first.promise).mockResolvedValue(total(9))
+    const { result } = renderHook(() => useNeedsDecisionCount('u1'))   // the tab strip's own first load
+    loadNeedsDecision('u1', { force: true, coalesce: true })            // the Scans page, first render
+    first.resolve(total(3))
+    await waitFor(() => expect(result.current).toBe(3))
+    await new Promise(r => setTimeout(r, 30))
+    expect(api.get).toHaveBeenCalledTimes(1)
+  })
+  it('a coalesced force with nothing out still fetches (warm cache is not trusted), and a later plain force still queues a re-read', async () => {
+    api.get.mockResolvedValue(total(1))
+    await loadNeedsDecision('u1')
+    await loadNeedsDecision('u1', { force: true, coalesce: true })
+    expect(api.get).toHaveBeenCalledTimes(2)
+    const slow = deferred()
+    api.get.mockReset(); api.get.mockReturnValueOnce(slow.promise).mockResolvedValue(total(5))
+    const p = loadNeedsDecision('u1', { force: true }); loadNeedsDecision('u1', { force: true })
+    slow.resolve(total(2)); await p
+    await waitFor(() => expect(api.get).toHaveBeenCalledTimes(2))
+  })
+})

@@ -237,7 +237,7 @@ const byAccount = (c) => { const id = c.get && c.get('user')?.id; return id ? `u
 // bucket keys on — see rateKeyIp.
 function makeLimiter({ windowSeconds, max, keyPrefix, message, skip, refund, keyBy, ipBits = 64 }) {
   return async (c, next) => {
-    if (skip && skip(c)) return next()
+    if (skip && await skip(c)) return next()
 
     const ip = clientIp(c)
     if (isBypassed(c.env, ip)) return next()
@@ -343,8 +343,22 @@ const general = makeLimiter({
   // (GitHub camo, LinkedIn) fetching every embedded badge, and office NATs full
   // of hiring managers. The miss-limiter comment below promised those were never
   // punished for each other's lookups; this bucket quietly did exactly that.
-  skip: c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c) || isLeadOptOutRequest(c)
+  //
+  // AUDIT FIX (Profile & Dashboard, B1): DELETE /api/profile/scans is skipped too (for a signed-in caller only). "Delete my
+  // whole history" is a loop of 25-scan batches, and every batch was ALSO counted here, so this 100-per-15-min bucket
+  // ended any purge after ~100 batches (2,500 scans) with a 429 — the purpose-built `historyPurge` budget (600/hour per
+  // account) was never the binding one, and the dashboard's "Delete all" stalled part-way on a large history.
+  skip: async c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c) || isLeadOptOutRequest(c) || await isHistoryPurgeRequest(c)
 })
+
+// The history purge loop. Skipped on `general` only when a token THIS Worker signed names the account (the same cheap
+// HMAC check `general` keys on): an anonymous or forged-token caller stays on the per-IP bucket, so the exemption cannot
+// be used to hammer the route unauthenticated. The route's own `historyPurge` limiter (per account) still applies.
+async function isHistoryPurgeRequest(c) {
+  if (c.req.method !== 'DELETE' || c.req.path.replace(/\/+$/, '') !== '/api/profile/scans') return false
+  const key = await bySignedToken(c)
+  return typeof key === 'string' && key.startsWith('u:')
+}
 
 // The one-click opt-out endpoints (employer leads: see `employerLeadOptOut`; the interview follow-up email:
 // see `followUpOptOut`): they have their own limiters, and this generic 100-per-15-min per-IP bucket would
@@ -746,7 +760,8 @@ const profileEdit = makeLimiter({
 // per ACCOUNT and sized for a large history being cleared in one sitting, a few times at most.
 const historyPurge = makeLimiter({
   // 600 batches of 25 = 15,000 scans in a sitting (the client loop allows 400 batches); 120 stopped an account of
-  // more than ~3,000 scans part-way through its own purge.
+  // more than ~3,000 scans part-way through its own purge. This only holds because `general` skips the purge route
+  // (isHistoryPurgeRequest): counted there too, its 100-per-15-min bucket ended a purge after ~2,500 scans.
   windowSeconds: 60 * 60, max: 600, keyPrefix: 'rl:historypurge',
   keyBy: byAccount,
   message: msg('Too many delete requests. Please try again later.')
@@ -1127,7 +1142,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
-  isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
+  isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
 }

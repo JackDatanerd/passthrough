@@ -24,7 +24,10 @@ function adopt(userId) {
   emit()
 }
 
-export function loadNeedsDecision(userId, { force = false } = {}) {
+// `coalesce` (with `force`): refresh, but a request already out for this person IS the refresh — no second one is queued.
+// For a caller that only just mounted (the Scans page on first render, behind the tab strip's own first load), whose "ask
+// again" is not prompted by anything that happened after that request began.
+export function loadNeedsDecision(userId, { force = false, coalesce = false } = {}) {
   if (!userId) return Promise.resolve()
   adopt(userId)
   // Only this person's own request is shared. Another person's (sign out, sign in as someone else while it is
@@ -33,7 +36,7 @@ export function loadNeedsDecision(userId, { force = false } = {}) {
   if (inflight && inflightOwner === userId) {
     // A request already out may have been read before whatever made the caller ask again (a scan was just
     // deleted): a forced refresh queues one more for when it lands — one, however many ask.
-    if (force) rerun = true
+    if (force && !coalesce) rerun = true
     return inflight
   }
   if (!force && count !== null && Date.now() - loadedAt < FRESH_MS) return Promise.resolve()

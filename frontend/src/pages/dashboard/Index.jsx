@@ -247,7 +247,15 @@ export default function DashboardIndex() {
   }, [])
 
   // The "Scans" tab's count follows this list: any reload, background refresh or delete re-reads it.
-  useEffect(() => { loadNeedsDecision(user?.id, { force: true }) }, [user?.id, reloadTick, softTick])
+  // AUDIT FIX (Profile & Dashboard, B2): on first mount the tab strip (DashboardLayout, a child, so its effect runs first)
+  // has already asked for the count; forcing here queued a SECOND identical request on every cold dashboard load.
+  // The first run joins what is already out; later ticks (a reload, a background refresh, a delete) force as before.
+  const needsFirstRun = useRef(true)
+  useEffect(() => {
+    const first = needsFirstRun.current
+    needsFirstRun.current = false
+    loadNeedsDecision(user?.id, { force: true, coalesce: first })
+  }, [user?.id, reloadTick, softTick])
 
   const totalPages = Math.max(Math.ceil(total / SCANS_PER_PAGE), 1)
 

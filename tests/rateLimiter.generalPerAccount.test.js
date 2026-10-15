@@ -40,3 +40,31 @@ describe('general limiter — per account for signed-in traffic', () => {
     expect(last).toBe(429)   // a forger cannot pick a fresh bucket per request
   })
 })
+
+// Profile & Dashboard B1: "delete my whole history" is a loop of 25-scan DELETE /api/profile/scans batches. Every batch
+// was also counted on `general` (100 per 15 min), so a purge died after ~100 batches (2,500 scans) with a 429 even
+// though the route has its own, larger `historyPurge` budget.
+describe('general limiter — the history purge loop', () => {
+  const del = (env, o = {}) => { const c = mk(env, o); c.req.method = 'DELETE'; c.req.path = o.path || '/api/profile/scans'; return c }
+  it('a signed-in account is not stopped by `general` partway through a purge', async () => {
+    const env = { RATE_LIMIT_KV: kvStore(), JWT_SECRET: SECRET, NODE_ENV: 'production' }
+    const t = await jwtLib.sign({ userId: 'purger', tokenVersion: 0 }, SECRET, 600)
+    let blocked = 0
+    for (let i = 0; i < 160; i++) if (await hit(del(env, { token: t })) === 429) blocked++
+    expect(blocked).toBe(0)
+    expect(await hit(del(env, { token: t, path: '/api/profile/scans/' }))).toBe(200)
+  })
+  it('the exemption does not leak: other methods/paths and unauthenticated callers stay capped', async () => {
+    const env = { RATE_LIMIT_KV: kvStore(), JWT_SECRET: SECRET, NODE_ENV: 'production' }
+    const t = await jwtLib.sign({ userId: 'purger2', tokenVersion: 0 }, SECRET, 600)
+    let last
+    for (let i = 0; i < 101; i++) last = await hit(mk(env, { token: t, path: '/api/profile/scans' }))   // GET
+    expect(last).toBe(429)
+    const env2 = { RATE_LIMIT_KV: kvStore(), JWT_SECRET: SECRET, NODE_ENV: 'production' }
+    for (let i = 0; i < 101; i++) last = await hit(del(env2, {}))                                   // no token
+    expect(last).toBe(429)
+    const env3 = { RATE_LIMIT_KV: kvStore(), JWT_SECRET: SECRET, NODE_ENV: 'production' }
+    for (let i = 0; i < 101; i++) last = await hit(del(env3, { token: t, path: '/api/profile/extras/1' }))
+    expect(last).toBe(429)
+  })
+})
