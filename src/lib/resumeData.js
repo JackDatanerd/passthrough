@@ -107,7 +107,10 @@ function stripNul(v) {
   if (Array.isArray(v)) return v.map(stripNul)
   if (v && typeof v === 'object') {
     const out = {}
-    for (const [k, val] of Object.entries(v)) out[stripNul(k)] = stripNul(val)
+    // Own data properties only: `out['__proto__'] = val` would set out's PROTOTYPE (cross-cutting infra round 12), letting a
+    // client-supplied "__proto__" key feed inherited fields to the schema parse.
+    for (const [k, val] of Object.entries(v))
+      Object.defineProperty(out, stripNul(k), { value: stripNul(val), writable: true, enumerable: true, configurable: true })
     return out
   }
   return v

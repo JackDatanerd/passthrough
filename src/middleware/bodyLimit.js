@@ -53,8 +53,13 @@ function stripNul(v, depth = 0) {
   for (const k of Object.keys(v)) {
     const nv = stripNul(v[k], depth + 1)
     const nk = k.includes('\u0000') ? k.replace(/\u0000/g, '') : k
-    if (nk !== k) delete v[k]
-    v[nk] = nv
+    if (nk === k) { v[k] = nv; continue }
+    // Cross-cutting infra round 12 (bug): `v[nk] = nv` with nk === '__proto__' (e.g. the key "__pro\u0000to__") is not a property
+    // write once the own key is gone — it runs Object.prototype's setter and makes nv the PROTOTYPE of the parsed body, so
+    // attacker-chosen fields read as body.x without being own keys (invisible to Object.keys / hasOwnProperty checks).
+    // Always define an own data property instead.
+    delete v[k]
+    Object.defineProperty(v, nk, { value: nv, writable: true, enumerable: true, configurable: true })
   }
   return v
 }

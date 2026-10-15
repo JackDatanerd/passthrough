@@ -272,8 +272,8 @@ wrangler secret put VERIFY_PREVIEW_KEY
 #       on conflict (key) do update set value = excluded.value;
 #     Leave it unset otherwise.
 
-# DATABASE LAYER ROUND 2 (migrations 0080, 0081, 0082 — apply all three, in order, BEFORE deploying this Worker, then bump
-# EXPECTED_SCHEMA_VERSION to 82 in src/config/constants.js). /api/admin/health stays red until the ledger below is complete.
+# DATABASE LAYER ROUND 2 (migrations 0080, 0081, 0082 — apply all three, in order, BEFORE deploying this Worker; the matching
+# EXPECTED_SCHEMA_VERSION bump ships in the code, never by hand). /api/admin/health stays red until the ledger below is complete.
 #   * 0081 is the old second 0076 (profile display_score), renumbered: two files shared 0076, which `supabase db push`
 #     (history keyed on the number) cannot hold. Its SQL is unchanged and idempotent, so a database that already ran it as
 #     0076 loses nothing by running it again. 0080 gained the schema_version line it shipped without.
@@ -455,7 +455,7 @@ wrangler secret put ALERT_WEBHOOK_URL
 wrangler secret put HEALTH_CHECK_KEY
 ```
 
-**Numeric settings are plain numbers, no units (cross-cutting infra round 11).** `ADMIN_SESSION_MAX_HOURS`, `ADMIN_STEP_UP_MINUTES`, `JWT_EXPIRES_IN_SECONDS` (60-31536000), `SUPABASE_TIMEOUT_MS` (1000-120000) and `RATE_LIMIT_DO_TIMEOUT_MS` (1-30000) must be whole numbers: `"24"`, not `"24h"`; `"604800"`, not `"7d"`. A malformed value is no longer read as a prefix (`"7d"` used to mean 7 seconds): the built-in default applies, a malformed `ADMIN_STEP_UP_MINUTES` keeps step-up ON at 10 minutes, a malformed `ADMIN_SESSION_MAX_HOURS` keeps the 24-hour cap, and a `[CONFIG] warning` names the variable at start-up. Only an explicit `"0"` disables the admin session cap or step-up.
+**Numeric settings are plain numbers, no units (cross-cutting infra round 11).** `ADMIN_SESSION_MAX_HOURS`, `ADMIN_STEP_UP_MINUTES`, `JWT_EXPIRES_IN_SECONDS` (60-31536000), `SUPABASE_TIMEOUT_MS` (1000-120000), `RATE_LIMIT_DO_TIMEOUT_MS` (1-30000), `SCAN_IP_DAILY_CAP` (0-100000; 0 = off), `COMMISSION_HOLD_DAYS` (0-365) and `REVERSAL_CHECKS_PER_RUN` (1-100) must be whole numbers (`ADMIN_SESSION_MAX_HOURS` may be fractional): `"24"`, not `"24h"`; `"604800"`, not `"7d"`. A malformed value is no longer read as a prefix (`"7d"` used to mean 7 seconds): the built-in default applies, a malformed `ADMIN_STEP_UP_MINUTES` keeps step-up ON at 10 minutes, a malformed `ADMIN_SESSION_MAX_HOURS` keeps the 24-hour cap, and a `[CONFIG] warning` names the variable at start-up. Only an explicit `"0"` disables the admin session cap or step-up.
 
 ### `wrangler.toml` reference: `[vars]` and bindings
 
@@ -463,7 +463,7 @@ Plain (non-secret) `[vars]` the code reads, beyond the ones used elsewhere in th
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `PAYSTACK_CURRENCY` | `USD` | The currency label sent to Paystack and shown on quotes, receipts and payouts. **There is no conversion:** the price constants in `src/config/constants.js` are minor units (cents) and are charged as that many minor units of whatever currency is set here. Change it only if your Paystack account is enabled for that currency *and* you have revised the constants to match. |
+| `PAYSTACK_CURRENCY` | `USD` | The currency sent to Paystack and shown on quotes, receipts and payouts. **There is no conversion:** every currency needs its own price table in `src/config/constants.js` (`PRICES_BY_CURRENCY`, amounts in that currency's minor units, mind Paystack's per-currency minimum). A currency with no table makes pricing and checkout answer **503** (and the start-up check warns) rather than charge a USD figure in the wrong currency. To sell in another currency: add its row, set this variable, and enable the currency on your Paystack account. |
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-6` | The model used for resume scoring and rewriting. Changing it changes cost, latency and rewrite quality — re-run the pre-launch verification (Section 8) afterwards. |
 | `JWT_EXPIRES_IN_SECONDS` | `604800` (7 days) | Lifetime of one session token. A token is also capped by its session's absolute lifetime (30 days, `SESSION_ABSOLUTE_LIFETIME_DAYS`). Shortening it signs people out sooner; it never extends a session past that cap. |
 
@@ -980,6 +980,12 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 | `CLAUDE_USD_PER_MTOK_INPUT` / `CLAUDE_USD_PER_MTOK_OUTPUT` | unset | USD per million tokens; when both are set the admin cost view shows dollar estimates. |
 | `SUPABASE_TIMEOUT_MS` | `25000` | Per-request database timeout. |
 
+
+## Release notes: migrations 0086 and later
+
+Operator notes for the newest migrations. Apply each migration before deploying the Worker that needs it.
+
+```text
 # WEBHOOKS ROUND 14 (migration 0086 — apply BEFORE deploying this Worker; every change is an added nullable column, so the old Worker keeps
 # working against it, and this Worker degrades gracefully if it runs first). Adds payments.reversal_notice_sent_at (the claim that sends the
 # buyer's "payment reversed" email exactly once), payments.dispute_id, users.email_bounced_at / email_bounce_type and webhook_events.processing_ms.
@@ -1004,3 +1010,4 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 #   * saved-profile RPCs refuse NULL / non-object input (they used to blank the saved profile); admin_audit_log is append-only (UPDATE/DELETE
 #     are refused; deleting an admin user still nulls actor_id); referral codes must be upper-case (the migration upper-cases existing ones and
 #     stops with a message if two codes differ only by case — resolve those by hand first); deleting a scan clears the profile pointers to it.
+```
