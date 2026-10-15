@@ -154,6 +154,7 @@ const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
 const { logAdminAction } = require('../lib/adminAudit')
 const { parseCidr, ipInCidr } = require('../lib/clientIp')
+const { buildProofPdf } = require('../lib/proofPdf')
 
 // Real Paystack events are a few KB. Anything near this is not one.
 const MAX_BODY_BYTES = 256 * 1024
@@ -676,7 +677,7 @@ function disputeDeadlineLine(d, now = Date.now()) {
   const when = new Date(due).toISOString()
   if (hours <= 0) return `\nResponse deadline: ${when} — ALREADY PASSED; Paystack may have auto-accepted this dispute.`
   const left = hours < 1 ? `${Math.max(1, Math.round(hours * 60))} minute(s)` : `about ${Math.round(hours)} hour(s)`
-  return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer. (Admin → Payments can send evidence or accept it.)`
+  return `\nRespond in the Paystack dashboard by ${when} (${left} left) — after that Paystack accepts the dispute and refunds the customer. (Admin → Payments can send evidence, contest it with a proof of delivery, or accept it.)`
 }
 
 // ROUND-13 (G1): the dispute's response deadline, stored on the payment so Admin → Payments and the dashboard can show a
@@ -796,7 +797,7 @@ async function processDispute(c, supabase, event) {
     } else
       detail = `Resolution "${d.resolution || 'unknown'}" is not one this app recognises. ${current}. Check the outcome in Paystack, then use Admin → Payments → Reverse (lost) or Clear dispute (won).`
   } else if (event.event === 'charge.dispute.remind') {
-    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard, or from Admin → Payments (Send evidence / Accept dispute).${disputeDeadlineLine(d)}`
+    detail = `Reminder: this dispute is still unresolved (Paystack auto-accepts and refunds the customer after 16 hours). ${current}. Respond in the Paystack dashboard, or from Admin → Payments (Send evidence / Contest dispute / Accept dispute).${disputeDeadlineLine(d)}`
   } else if (event.event !== 'charge.dispute.create') {
     detail = `No state change for this event type; the dispute is tracked from charge.dispute.create.`
   } else if (marked) {
@@ -1086,13 +1087,31 @@ function storedKind(row) {
   return typeof k === 'string' ? k : null
 }
 
+// Update a webhook_events row only if it is still exactly as the caller read it (status + attempts). Tolerates the optional
+// columns of later migrations being absent. { ok: true } when this caller won the row; { ok: false } when someone else moved it.
+async function claimEvent(supabase, row, patch, optional = []) {
+  const run = p => supabase.from('webhook_events').update(p).eq('id', row.id).eq('status', row.status).eq('attempts', row.attempts || 1).select('id')
+  let { data, error } = await run(patch)
+  if (error && isColumnMissing(error) && optional.some(k => k in patch)) {
+    const slim = { ...patch }
+    for (const k of optional) delete slim[k]
+    ;({ data, error } = await run(slim))
+  }
+  if (error) { console.error('webhook_events claim failed:', error.message); return { ok: false, error } }
+  return { ok: !!(data && data.length) }
+}
+
 async function runStoredEvent(c, supabase, row, { by = null, redrive = false } = {}) {
   const attempts = (row.attempts || 1) + 1
   const inbox = { id: row.id, attempts }
   const patch = { status: 'RECEIVED', attempts }
   if (by) { patch.replayed_by = by; patch.replayed_at = new Date().toISOString() }
   if (redrive) patch.redrives = (row.redrives || 0) + 1
-  await updateEvent(supabase, row.id, patch, ['replayed_by', 'replayed_at', 'redrives'])
+  // Webhooks round 15 (B3): claim the row before running it. The update only matches while the row still has the status and
+  // delivery count this caller read, so of two simultaneous runs (two admins, an admin and the hourly re-drive, a replay and a
+  // live redelivery that bumped the count) only one proceeds. Dismiss already worked this way; replay and re-drive did not.
+  const claim = await claimEvent(supabase, row, patch, ['replayed_by', 'replayed_at', 'redrives'])
+  if (!claim.ok) return claim.error ? { ok: false, error: claim.error } : { ok: false, skipped: true }
   try {
     const resend = row.provider === 'resend' ? require('./resend-webhook.controller') : null
     const outcome = resend
@@ -1128,6 +1147,7 @@ async function replayWebhookEvent(c) {
 
   const actor = c.get ? c.get('user') : null
   const r = await runStoredEvent(c, supabase, row, { by: actor?.id || null })
+  if (r.skipped) return c.json({ success: false, message: 'This event changed while you were looking at it (someone else, or the automatic re-drive, is already running it) — reload and check its status.' }, 409)
   // ROUND-6 (G1): a replay can reverse a sale, close a payment, or clear a dispute — the same class of action
   // payments.controller audits. `replayed_by` on the row is overwritten by the next replay and pruned with it.
   await logAdminAction(c, supabase, 'webhook.replay', 'webhook_event', row.id, {
@@ -1213,7 +1233,9 @@ async function pruneWebhookEvents(supabase, { now = Date.now() } = {}) {
     catch (err) { errors.push(`${label}: ${err.message}`); console.error(`webhook_events prune (${label}) error:`, err.message) }
   }
   const t = () => supabase.from('webhook_events')
-  await run('resend payload scrub', t().update({ payload: null }).eq('provider', 'resend').not('payload', 'is', null).lt('received_at', iso(7)))
+  // Webhooks round 15 (B5): only rows that finished. A FAILED / stuck-RECEIVED row keeps its (minimal) payload until the 90-day delete so the
+  // re-drive and Replay can still finish it — scrubbing it at 7 days left an unsuppressed address stuck in "needs attention" with nothing to re-run.
+  await run('resend payload scrub', t().update({ payload: null }).eq('provider', 'resend').in('status', ['PROCESSED', 'IGNORED', 'HELD']).not('payload', 'is', null).lt('received_at', iso(7)))
   await run('resend rows', t().delete().eq('provider', 'resend').lt('received_at', iso(90)))
   await run('events', t().delete().lt('received_at', iso(90)).in('status', ['PROCESSED', 'IGNORED'])
     .not('event_type', 'like', 'charge.dispute%').not('event_type', 'like', 'refund.%'))
@@ -1239,8 +1261,14 @@ async function loadDisputedPayment(c, supabase) {
 
 // The id Paystack gave the dispute: stored when the webhook was processed (0086); a payment disputed before that is looked up in
 // Paystack's own list. Returns null when it cannot be found.
-async function resolveDisputeId(env, supabase, payment) {
-  if (payment.dispute_id) return payment.dispute_id
+// Webhooks round 15: returns { id, claimed } — Paystack's dispute id and the amount the dispute is for (null when unknown).
+// `withAmount` makes a stored id cost one GET so an accept can refund what was actually disputed (round 15, B2).
+async function resolveDispute(env, supabase, payment, { withAmount = false } = {}) {
+  if (payment.dispute_id) {
+    if (!withAmount) return { id: payment.dispute_id, claimed: null }
+    const json = await paystackService.fetchDispute(env, payment.dispute_id)
+    return { id: payment.dispute_id, claimed: json?.data?.refund_amount ?? null }
+  }
   const day = ms => new Date(ms).toISOString().slice(0, 10)
   const since = Date.parse(payment.disputed_at || payment.paid_at || payment.created_at)
   const from = Number.isFinite(since) ? day(since - 2 * 24 * 3600 * 1000) : undefined
@@ -1250,11 +1278,17 @@ async function resolveDisputeId(env, supabase, payment) {
     const hit = items.find(d => d && (d.transaction?.reference === payment.paystack_ref || d.transaction_reference === payment.paystack_ref))
     if (hit && hit.id != null) {
       await recordDisputeId(supabase, payment, { id: hit.id })
-      return String(hit.id)
+      return { id: String(hit.id), claimed: hit.refund_amount ?? null }
     }
     if (items.length < 100) break
   }
-  return null
+  return { id: null, claimed: null }
+}
+
+// What an accept refunds: the amount the dispute is for, never more than was paid; the whole payment when Paystack states none.
+function disputedAmountFor(payment, claimed) {
+  const n = Number(claimed)
+  return Number.isFinite(n) && n > 0 ? Math.min(Math.round(n), payment.amount_cents) : payment.amount_cents
 }
 
 const NOT_FOUND_ID = { success: false, message: 'Paystack\'s id for this dispute is not known yet and was not found in Paystack\'s dispute list. Use the Paystack dashboard for this one.' }
@@ -1270,14 +1304,21 @@ async function acceptPaymentDispute(c) {
   const note = typeof body?.note === 'string' ? body.note.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200) : ''
   const { payment, fail } = await loadDisputedPayment(c, supabase)
   if (fail) return fail
-  let disputeId
-  try { disputeId = await resolveDisputeId(c.env, supabase, payment) } catch (err) { return paystackFailure(c, err) }
+  let disputeId, refundAmount
+  try {
+    const r = await resolveDispute(c.env, supabase, payment, { withAmount: true })
+    disputeId = r.id
+    refundAmount = disputedAmountFor(payment, r.claimed)
+  } catch (err) { return paystackFailure(c, err) }
   if (!disputeId) return c.json(NOT_FOUND_ID, 404)
   try {
-    await paystackService.acceptDispute(c.env, disputeId, { message: note || 'Dispute accepted by the merchant', refundAmount: payment.amount_cents })
+    await paystackService.acceptDispute(c.env, disputeId, { message: note || 'Dispute accepted by the merchant', refundAmount })
   } catch (err) { return paystackFailure(c, err) }
-  await logAdminAction(c, supabase, 'payment.dispute_accept', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note })
-  return c.json({ success: true, message: 'Dispute accepted with Paystack. The buyer is refunded by Paystack; this payment is marked REFUNDED (commission reversed, credential revoked) when Paystack confirms — usually within minutes.' })
+  const partial = refundAmount < payment.amount_cents
+  await logAdminAction(c, supabase, 'payment.dispute_accept', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note, refundAmount, partial })
+  return c.json({ success: true, message: partial
+    ? `Dispute accepted with Paystack for ${refundAmount} of the ${payment.amount_cents} paid. Only that part is refunded, so the payment is NOT reversed automatically — decide in Admin → Payments (Reverse if the whole sale should come back).`
+    : 'Dispute accepted with Paystack. The buyer is refunded by Paystack; this payment is marked REFUNDED (commission reversed, credential revoked) when Paystack confirms — usually within minutes.' })
 }
 
 // POST /api/admin/payments/:reference/dispute/evidence  { customerPhone, serviceDetails?, deliveryAddress? }
@@ -1296,7 +1337,7 @@ async function submitDisputeEvidence(c) {
   if (userErr) throw userErr
   if (!user || !user.email) return c.json({ success: false, message: 'The buyer\'s account no longer exists — respond in the Paystack dashboard.' }, 409)
   let disputeId
-  try { disputeId = await resolveDisputeId(c.env, supabase, payment) } catch (err) { return paystackFailure(c, err) }
+  try { disputeId = (await resolveDispute(c.env, supabase, payment)).id } catch (err) { return paystackFailure(c, err) }
   if (!disputeId) return c.json(NOT_FOUND_ID, 404)
 
   const when = (payment.paid_at || payment.created_at || '').slice(0, 10)
@@ -1313,6 +1354,61 @@ async function submitDisputeEvidence(c) {
   try { await paystackService.addDisputeEvidence(c.env, disputeId, fields) } catch (err) { return paystackFailure(c, err) }
   await logAdminAction(c, supabase, 'payment.dispute_evidence', 'payment', payment.id, { reference: payment.paystack_ref, customText: !!clip(body?.serviceDetails, 1) })
   return c.json({ success: true, message: 'Evidence sent to Paystack. It does not close the dispute — watch for the resolution (Paystack\'s auto-accept deadline still applies).' })
+}
+
+// Webhooks round 15 (G1): contest a dispute. Builds a one-page proof of delivery, uploads it through Paystack's signed URL and
+// resolves the dispute as `declined`. Only offered when this payment's own fix was actually delivered — otherwise there is nothing
+// to prove and the honest answer is to accept. The payment is not touched here: Paystack's resolve webhook moves it (won → back to
+// SUCCESS, lost → reversed), exactly as for an accept.
+async function contestPaymentDispute(c) {
+  const supabase = getSupabase(c.env)
+  let body = {}
+  try { body = await c.req.json() } catch (_) { body = {} }
+  const note = typeof body?.note === 'string' ? body.note.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200) : ''
+  const { payment, fail } = await loadDisputedPayment(c, supabase)
+  if (fail) return fail
+  if (!payment.scan_id) return c.json({ success: false, message: 'This payment has no scan, so there is no delivered work to prove — accept the dispute instead.' }, 409)
+  const { data: scan, error: scanErr } = await supabase.from('scans')
+    .select('id, status, fix_payment_id, fix_tier, verification_code, verification_status').eq('id', payment.scan_id).maybeSingle()
+  if (scanErr) throw scanErr
+  if (!scan || scan.fix_payment_id !== payment.id || scan.status !== 'FIX_DELIVERED')
+    return c.json({ success: false, message: 'The work for this payment was not delivered (or another payment owns it) — there is nothing to prove. Accept the dispute instead.' }, 409)
+  const { data: user, error: userErr } = payment.user_id
+    ? await supabase.from('users').select('email').eq('id', payment.user_id).maybeSingle() : { data: null, error: null }
+  if (userErr) throw userErr
+
+  let dispute
+  try { dispute = await resolveDispute(c.env, supabase, payment) } catch (err) { return paystackFailure(c, err) }
+  if (!dispute.id) return c.json(NOT_FOUND_ID, 404)
+
+  const money = `${(payment.amount_cents / 100).toFixed(2)} ${payment.currency || ''}`.trim()
+  const lines = [
+    `Merchant: Passthrough (${String(c.env.FRONTEND_URL || '').replace(/^https?:\/\//, '')})`,
+    `Paystack reference: ${payment.paystack_ref}`,
+    `Amount: ${money}`,
+    `Paid on: ${(payment.paid_at || payment.created_at || '').slice(0, 10) || 'n/a'}`,
+    ...(user && user.email ? [`Buyer account: ${user.email}`] : []),
+    '',
+    `Service: a rewritten resume (${scan.fix_tier || payment.fix_tier || 'FIX'} tier) generated from the buyer's own uploaded resume. It is a digital service delivered online; there is nothing to ship.`,
+    `Delivery: completed. The result is available for download to the signed-in buyer account (scan ${scan.id}).`,
+    ...(scan.verification_code && scan.verification_status === 'ACTIVE' && c.env.FRONTEND_URL
+      ? [`Public verification page for the delivered work: ${c.env.FRONTEND_URL}/v/${scan.verification_code}`] : []),
+    ...(note ? ['', `Merchant note: ${note}`] : []),
+    '',
+    `Generated ${new Date().toISOString()}.`,
+  ]
+  const bytes = buildProofPdf({ title: 'Proof of service delivery', lines })
+  const fileName = `proof-${String(payment.paystack_ref).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 60) || 'payment'}.pdf`
+  try {
+    const up = await paystackService.getDisputeUploadUrl(c.env, dispute.id, fileName)
+    await paystackService.uploadDisputeProof(up.signedUrl, bytes, 'application/pdf')
+    await paystackService.declineDispute(c.env, dispute.id, {
+      message: note || 'The digital service was delivered to the buyer. Proof of delivery attached.',
+      refundAmount: payment.amount_cents, uploadedFilename: up.fileName,
+    })
+  } catch (err) { return paystackFailure(c, err) }
+  await logAdminAction(c, supabase, 'payment.dispute_contest', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note })
+  return c.json({ success: true, message: 'Dispute contested with Paystack, with a proof of delivery attached. The payment stays DISPUTED until Paystack reports the outcome (won → back to SUCCESS, lost → refunded and reversed automatically).' })
 }
 
 // GET /api/admin/payments/:reference/webhook-events — every inbox row for this payment, oldest first (support used to search the
@@ -1448,9 +1544,10 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
   for (const row of rows || []) {
     if (ran >= REDRIVE_PER_RUN) break
     if (!storedKind(row)) continue
+    const r = await runStoredEvent(c, supabase, row, { redrive: useRedrives })
+    if (r.skipped) continue                     // another run (admin replay, live redelivery) has the row — not ours to count
     ran++
     result.redriven.push(row.id)
-    const r = await runStoredEvent(c, supabase, row, { redrive: useRedrives })
     // ROUND-11 (B3): only PROCESSED is a recovery — a re-run that ends IGNORED (payment still missing…) or HELD did no work.
     if (r.ok && r.outcome.status === 'PROCESSED') result.recovered.push({ id: row.id, event: row.event_type, reference: row.reference, status: r.outcome.status })
   }
@@ -1742,9 +1839,28 @@ async function checkWebhookDelivery(env, ctx, supabase = getSupabase(env), { now
   }
 }
 
+// Webhooks round 15 (G2): PAYSTACK_SECRET_KEY_PREVIOUS keeps verifying webhooks for as long as it is set, and nothing said so once
+// the old key's retries had drained — a retired (possibly leaked) key kept signing valid refund / dispute events for ever.
+// Hourly sweep: while it is set, tell the owner once a week to remove it. Never throws.
+async function checkRetiredSecret(env, ctx) {
+  try {
+    const prev = env.PAYSTACK_SECRET_KEY_PREVIOUS
+    if (!prev || prev === env.PAYSTACK_SECRET_KEY) return { alerted: false }
+    if (!(await alertAllowed(env, 'webhook-alert-cooldown:previous-secret-set', 7 * 24 * 3600))) return { alerted: false }
+    alert({ env, executionCtx: ctx }, 'PAYSTACK_SECRET_KEY_PREVIOUS is still set',
+      'The Worker still accepts webhooks signed with the previous Paystack key. That is only meant for the ~72 hours after a key rotation, ' +
+      'while Paystack finishes retrying events signed with the old key. If the rotation was more than a few days ago, remove it: ' +
+      'wrangler secret delete PAYSTACK_SECRET_KEY_PREVIOUS. Emailed at most once a week while it stays set.', 'previous-secret-set')
+    return { alerted: true }
+  } catch (err) {
+    console.error('retired secret check error:', err && err.message)
+    return { alerted: false }
+  }
+}
+
 // GET /api/admin/webhook-events/health
 async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { acceptPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

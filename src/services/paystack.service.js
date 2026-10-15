@@ -287,14 +287,18 @@ async function listDisputes(env, { from, to, perPage = 100, page = 1 } = {}) {
 // Webhooks round 14 (G2): answering a dispute from the app.
 //   POST /dispute/:id/evidence  { customer_email, customer_name, customer_phone, service_details, delivery_address?, delivery_date? }
 //   PUT  /dispute/:id/resolve   { resolution: 'merchant-accepted' | 'declined', message, refund_amount, uploaded_filename?, evidence? }
-// Only ACCEPT is offered ('declined' needs an uploaded file, which this app does not hold). Both throw with `.paystackRejected`
+// Round 15: 'declined' (contesting) is offered too — it needs a proof file, which the controller generates and uploads. All throw with `.paystackRejected`
 // for a 4xx the caller should show as-is (the dispute is closed, the id is wrong, a field is missing), and a plain Error for
 // anything else (network, 5xx, 401/403/429), so the admin sees whether trying again makes sense.
-async function disputeCall(env, method, path, body, label) {
-  const { res, json } = await paystackRequest(`https://api.paystack.co/dispute/${encodeURIComponent(path)}`, {
+async function disputeCall(env, method, disputeId, sub, body, label) {
+  // Webhooks round 15 (B1): the id and the action are separate path segments. They used to be joined
+  // first and then encoded together, which turned the slash into %2F (…/dispute/1234%2Fresolve) — a path
+  // Paystack does not route, so accepting a dispute and sending evidence could never succeed.
+  const path = `${encodeURIComponent(String(disputeId))}${sub ? `/${sub}` : ''}`
+  const { res, json } = await paystackRequest(`https://api.paystack.co/dispute/${path}`, {
     method,
     headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    ...(body === undefined ? {} : { body: JSON.stringify(body) })
   }, label)
   if (!res.ok || (json && json.status === false)) {
     const err = new Error(json?.message || `${label} returned HTTP ${res.status}`)
@@ -306,10 +310,52 @@ async function disputeCall(env, method, path, body, label) {
   return json
 }
 function addDisputeEvidence(env, disputeId, fields) {
-  return disputeCall(env, 'POST', `${disputeId}/evidence`, fields, 'Paystack dispute evidence')
+  return disputeCall(env, 'POST', disputeId, 'evidence', fields, 'Paystack dispute evidence')
 }
 function acceptDispute(env, disputeId, { message, refundAmount }) {
-  return disputeCall(env, 'PUT', `${disputeId}/resolve`, { resolution: 'merchant-accepted', message, refund_amount: refundAmount }, 'Paystack dispute accept')
+  return disputeCall(env, 'PUT', disputeId, 'resolve', { resolution: 'merchant-accepted', message, refund_amount: refundAmount }, 'Paystack dispute accept')
+}
+// Webhooks round 15 (B2): one dispute, so an accept can refund what was actually disputed.
+function fetchDispute(env, disputeId) {
+  return disputeCall(env, 'GET', disputeId, '', undefined, 'Paystack dispute fetch')
+}
+// Webhooks round 15 (G1): contesting a dispute. Paystack hands out a signed URL for the proof file, the file is PUT to it,
+// and the dispute is then resolved as `declined` quoting the stored file name.
+async function getDisputeUploadUrl(env, disputeId, fileName) {
+  const { res, json } = await paystackRequest(
+    `https://api.paystack.co/dispute/${encodeURIComponent(String(disputeId))}/upload_url?upload_filename=${encodeURIComponent(fileName)}`,
+    { headers: { 'Authorization': `Bearer ${env.PAYSTACK_SECRET_KEY}` } },
+    'Paystack dispute upload url')
+  if (!res.ok || (json && json.status === false)) {
+    const err = new Error(json?.message || `Paystack dispute upload url returned HTTP ${res.status}`)
+    err.httpStatus = res.status
+    err.paystackRejected = res.status >= 400 && res.status < 500 && ![401, 403, 429].includes(res.status)
+    throw err
+  }
+  const d = json && json.data
+  if (!d || typeof d.signedUrl !== 'string' || !/^https:\/\//.test(d.signedUrl)) throw unreadable('Paystack dispute upload url')
+  const stored = [d.fileName, d.filename, d.file_name].find(v => typeof v === 'string' && v)   // Paystack names the stored file; fall back to ours only if it does not say
+  return { signedUrl: d.signedUrl, fileName: stored || fileName }
+}
+async function uploadDisputeProof(signedUrl, bytes, contentType = 'application/pdf') {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), PAYSTACK_TIMEOUT_MS)
+  try {
+    const res = await fetch(signedUrl, { method: 'PUT', headers: { 'Content-Type': contentType }, body: bytes, signal: controller.signal })
+    if (!res.ok) {
+      const err = new Error(`Uploading the proof file returned HTTP ${res.status}`)
+      err.httpStatus = res.status
+      err.paystackRejected = res.status >= 400 && res.status < 500 && res.status !== 429
+      throw err
+    }
+  } catch (err) {
+    if (err && err.name === 'AbortError') throw new Error(`Uploading the proof file timed out after ${PAYSTACK_TIMEOUT_MS / 1000}s`)
+    throw err
+  } finally { clearTimeout(timeout) }
+}
+function declineDispute(env, disputeId, { message, refundAmount, uploadedFilename }) {
+  return disputeCall(env, 'PUT', disputeId, 'resolve',
+    { resolution: 'declined', message, refund_amount: refundAmount, uploaded_filename: uploadedFilename }, 'Paystack dispute decline')
 }
 
-module.exports = { addDisputeEvidence, acceptDispute, initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }
+module.exports = { addDisputeEvidence, acceptDispute, fetchDispute, getDisputeUploadUrl, uploadDisputeProof, declineDispute, initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

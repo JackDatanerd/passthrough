@@ -63,13 +63,15 @@ describe('B2 + B5: retention', () => {
     const errors = await mod.pruneWebhookEvents(world.db, { now: NOW })
     return { errors, ids: world.t.webhook_events.map(r => r.id), world }
   }
-  it('clears a FAILED Resend payload after 7 days but keeps the row; deletes it after 90', async () => {
+  it('round 15 B5: clears a FINISHED Resend payload after 7 days but keeps an unfinished (FAILED) one so it can still be re-driven; deletes rows after 90', async () => {
     const { ids, world } = await run([
-      row('r-old', { provider: 'resend', status: 'FAILED', received_at: daysAgo(8), payload: { type: 'email.bounced', data: { to: ['a@b.co'] } } }),
+      row('r-old', { provider: 'resend', status: 'PROCESSED', received_at: daysAgo(8), payload: { type: 'email.bounced', data: { to: ['a@b.co'] } } }),
+      row('r-failed', { provider: 'resend', status: 'FAILED', received_at: daysAgo(8), payload: { type: 'email.bounced', data: { to: ['a@b.co'] } } }),
       row('r-new', { provider: 'resend', status: 'FAILED', received_at: daysAgo(2), payload: { type: 'email.bounced', data: { to: ['a@b.co'] } } }),
       row('r-gone', { provider: 'resend', status: 'FAILED', received_at: daysAgo(91), payload: null }),
     ])
-    expect(ids.sort()).toEqual(['r-new', 'r-old'])
+    expect(ids.sort()).toEqual(['r-failed', 'r-new', 'r-old'])
+    expect(world.t.webhook_events.find(r => r.id === 'r-failed').payload).not.toBeNull()
     expect(world.t.webhook_events.find(r => r.id === 'r-old').payload).toBeNull()
     expect(world.t.webhook_events.find(r => r.id === 'r-new').payload).not.toBeNull()
   })
@@ -163,6 +165,7 @@ describe('G2: answering a dispute from the app', () => {
       acceptDispute: async (env, id, o) => { calls.push(['accept', id, o]); return { status: true } },
       addDisputeEvidence: async (env, id, f) => { calls.push(['evidence', id, f]); return { status: true } },
       listDisputes: async () => ({ data: [] }),
+      fetchDispute: async () => ({ data: { refund_amount: null } }),
       ...paystack,
     }
     return { world, calls, ...load(world, { 'services/paystack.service.js': stub }) }

@@ -159,7 +159,7 @@ function createWorld(seed = {}) {
       const cols = q.onConflict ? String(q.onConflict).split(',').map(x => x.trim()) : (unique[q.table] || [])[0]
       for (const v of Array.isArray(q.values) ? q.values : [q.values]) {
         const hit = cols && rows.find(r => cols.every(cn => r[cn] === v[cn]))
-        if (hit) Object.assign(hit, v)
+        if (hit) { if (!q.ignoreDuplicates) Object.assign(hit, v) }   // ON CONFLICT DO NOTHING when ignoreDuplicates
         else rows.push({ id: `${q.table}-${++n}`, created_at: new Date().toISOString(), ...v })
       }
       return { data: null, error: null }

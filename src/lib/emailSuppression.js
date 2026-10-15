@@ -33,8 +33,11 @@ const isMissingColumn = err => !!err && (err.code === '42703' || err.code === 'P
 async function recordSuppression(supabase, email, reason, env) {
   try {
     const { store } = await suppressionHashes(env, email)
+    // Webhooks round 15 (B4): a spam complaint is the stronger reason and must survive a later hard bounce for the same address
+    // (the employer-lead removal already works this way). A bounce is written only if nothing is recorded yet; a complaint always wins.
+    const isComplaint = reason === 'complaint'
     const { error } = await supabase.from('email_suppressions')
-      .upsert({ email_hash: store[0], reason: reason === 'complaint' ? 'complaint' : 'bounce' }, { onConflict: 'email_hash' })
+      .upsert({ email_hash: store[0], reason: isComplaint ? 'complaint' : 'bounce' }, isComplaint ? { onConflict: 'email_hash' } : { onConflict: 'email_hash', ignoreDuplicates: true })
     if (error) throw error
     return true
   } catch (err) {
@@ -110,9 +113,17 @@ async function flagAccountBounce(supabase, email, type) {
     const addr = normalizeAddr(email)
     if (!addr) return []
     const kind = type === 'complaint' || type === 'suppressed' ? type : 'bounce'
-    let { data, error } = await supabase.from('users')
-      .update({ email_bounced_at: new Date().toISOString(), email_bounce_type: kind }).eq('email', addr).select('id')
+    // Webhooks round 15 (B4): an account already flagged for a complaint keeps that flag when a bounce / suppression follows.
+    let { data: found, error } = await supabase.from('users').select('id, email_bounce_type').eq('email', addr)
+    let data = found
     if (error && isMissingColumn(error)) ({ data, error } = await supabase.from('users').select('id').eq('email', addr))
+    else if (!error) {
+      const ids = (found || []).filter(r => kind === 'complaint' || r.email_bounce_type !== 'complaint').map(r => r.id)
+      if (ids.length) {
+        const upd = await supabase.from('users').update({ email_bounced_at: new Date().toISOString(), email_bounce_type: kind }).in('id', ids)
+        if (upd.error && !isMissingColumn(upd.error)) error = upd.error
+      }
+    }
     if (error) { console.error('account bounce flag failed:', error.message); return [] }
     return (data || []).map(r => r.id)
   } catch (err) { console.error('account bounce flag failed:', err && err.message); return [] }

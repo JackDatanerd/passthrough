@@ -57,9 +57,10 @@ function setup({ leads = [], suppressed = [], envExtra = {}, users = [], employe
       if (q.op === 'upsert') state.mailSuppressed.push(q.values); return { data: null, error: null }
     }
     if (q.table === 'users') {
-      const e = q.filters.find(f => f[1] === 'email')?.[2]; const us = state.users.filter(x => x.email === e)
+      const e = q.filters.find(f => f[1] === 'email')?.[2]; const idf = q.filters.find(f => f[1] === 'id')
+      const us = idf ? state.users.filter(x => [].concat(idf[2]).includes(x.id)) : state.users.filter(x => x.email === e)
       if (q.op === 'update') { us.forEach(u => Object.assign(u, q.patch)); return { data: us.map(u => ({ id: u.id })), error: null } }   // round 14: the account flag
-      if (!q.maybe) return { data: us.map(u => ({ id: u.id })), error: null }
+      if (!q.maybe) return { data: us.map(u => ({ id: u.id, email_bounce_type: u.email_bounce_type })), error: null }
       return { data: us[0] ? { id: us[0].id } : null, error: null }
     }
     if (q.table === 'email_logs') {

@@ -1,0 +1,33 @@
+WEBHOOKS (SECTION 8) — INDEPENDENT AUDIT, ROUND 15
+No migration. No new environment variables.
+
+FEATURE GAPS CLOSED
+G1  A dispute can be CONTESTED from the app. POST /admin/payments/:reference/dispute/contest (step-up, audited) builds a one-page proof of delivery
+    (lib/proofPdf.js, dependency-free, no browser session), uploads it through Paystack's signed URL (GET /dispute/:id/upload_url, PUT to the signed
+    URL) and resolves the dispute as `declined` with the stored file name. Refused (409) unless THIS payment's own fix was delivered (scan
+    FIX_DELIVERED and fix_payment_id = the payment) — otherwise there is nothing to prove. The payment is not edited here: Paystack's resolve webhook /
+    the sweep moves it exactly as for an accept (won -> back to SUCCESS, lost -> reversed). "Contest dispute" button in Admin -> Payments.
+G2  PAYSTACK_SECRET_KEY_PREVIOUS no longer stays accepted unnoticed. While it is set (and differs from the current key) the hourly sweep emails the
+    owner once a week to remove it (wrangler secret delete PAYSTACK_SECRET_KEY_PREVIOUS).
+
+BUGS FIXED
+B1  (crosses into services/paystack.service.js) Every dispute API call was sent to .../dispute/<id>%2Fresolve and .../dispute/<id>%2Fevidence: the id
+    and the action were joined and then URL-encoded together, so the slash became %2F. Accept dispute and Send evidence (round 14) could never reach
+    Paystack's routes. The id is now encoded on its own and the action appended; a hostile id cannot add path segments. The existing tests stubbed the
+    whole service, so none saw the URL — tests/webhooks.round15.test.js exercises the real service against a stubbed fetch.
+B2  Accept dispute always refunded the whole payment. It now reads the dispute (GET /dispute/:id, or the list entry when the id had to be looked up) and
+    refunds what was disputed, never more than was paid. A partial accept is audited and the message says the payment is NOT reversed automatically
+    (Paystack's resolve webhook already treats a partial accept that way). If the dispute cannot be read, nothing is accepted (502).
+B3  Replay and the hourly re-drive took a row without checking nobody else had it: two admins, an admin and the re-drive, or a replay and a live
+    redelivery could run one event twice (duplicate alerts, duplicate Paystack calls; money state was already idempotent). The row is now claimed with
+    an update that only matches the status + delivery count that were read (claimEvent); the loser gets 409 (replay) or is skipped (re-drive).
+B4  A later hard bounce overwrote an earlier spam complaint — in email_suppressions.reason and in users.email_bounce_type. A complaint now always wins
+    (a bounce is written only when nothing is recorded; the account flag keeps 'complaint'); a complaint still replaces a bounce.
+B5  A Resend row that never finished (FAILED / stuck RECEIVED) lost its payload at 7 days, so the re-drive and Replay could no longer run it and it sat
+    in "Needs attention" until the 90-day delete — the address never suppressed. The 7-day scrub now covers only finished rows (PROCESSED / IGNORED /
+    HELD). Unfinished rows keep their minimal payload (recipient addresses, bounce type) until the existing 90-day delete, or until Dismiss / a
+    successful run clears it. (Round 14 B2 cleared them at 7 days; this trades up to 83 more days of retention for recoverability.)
+
+TESTS
+tests/webhooks.round15.test.js, frontend/tests/pages/Webhooks.round15.test.jsx. Test doubles: upsert `ignoreDuplicates` honoured (fakeSupabase /
+memoryDb); the Resend test's users double resolves `.in('id')`. Round 14 tests updated for B2 (fetchDispute stub) and B5.

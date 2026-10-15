@@ -229,6 +229,22 @@ export default function AdminPayments() {
     setPendingAction({ type: 'accept-dispute', payment, danger: true,
       confirmMsg: `Accept the dispute on ${payment.paystackRef}? Paystack refunds the buyer ${formatCents(payment.amountCents, payment.currency)} and you cannot contest it afterwards.` })
   }
+  // Webhooks round 15 (G1): contest with a generated proof of delivery (server refuses when nothing was delivered).
+  function contestDispute(payment) {
+    setPendingAction({ type: 'contest-dispute', payment, danger: false,
+      confirmMsg: `Contest the dispute on ${payment.paystackRef}? A proof of delivery is generated and sent to Paystack. The payment stays DISPUTED until Paystack reports the outcome; if the bank rules against you, the sale is reversed automatically.` })
+  }
+  async function runContestDispute(payment) {
+    setBusyRef(payment.paystackRef)
+    try {
+      const res = await api.post(`/admin/payments/${encodeURIComponent(payment.paystackRef)}/dispute/contest`, {})
+      toast({ message: res.data.message || 'Dispute contested.', type: 'success' })
+      load()
+    } catch (err) {
+      toast({ message: getErrorMessage(err, 'Failed to contest the dispute.'), type: 'error' })
+    } finally { setBusyRef(null) }
+    setPendingAction(null)
+  }
   async function runAcceptDispute(payment) {
     setBusyRef(payment.paystackRef)
     try {
@@ -267,6 +283,7 @@ export default function AdminPayments() {
   async function confirmPendingAction() {
     const action = pendingAction
     if (action.type === 'accept-dispute') return runAcceptDispute(action.payment)
+    if (action.type === 'contest-dispute') return runContestDispute(action.payment)
     if (action.type === 'reconcile') return runReconcile(action.payment)
     if (action.type === 'recheck') return runRecheck(action.payment)
     if (action.type === 'recheck-mismatch') return runRecheck(action.payment, true)
@@ -449,6 +466,10 @@ export default function AdminPayments() {
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', error: '' })}>
                         Send evidence
+                      </Button>
+                      <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
+                        onClick={() => contestDispute(p)}>
+                        Contest dispute
                       </Button>
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => acceptDispute(p)}>

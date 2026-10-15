@@ -49,6 +49,8 @@ router.post('/webhook-events/:id/dismiss', admin.stepUp, validateUuidParam(), wh
 // Webhooks round 14: answer a dispute from Admin → Payments (accept = Paystack refunds the buyer), and a payment's own webhook history.
 router.post('/payments/:reference/dispute/accept', admin.stepUp, wh.acceptPaymentDispute)
 router.post('/payments/:reference/dispute/evidence', admin.stepUp, wh.submitDisputeEvidence)
+// Webhooks round 15: contest it with a generated proof of delivery.
+router.post('/payments/:reference/dispute/contest', admin.stepUp, wh.contestPaymentDispute)
 router.get('/payments/:reference/webhook-events', wh.getPaymentTimeline)
 
 // Customer stories: nothing reaches the public homepage until approved here.
