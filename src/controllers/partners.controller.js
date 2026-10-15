@@ -602,8 +602,14 @@ async function sweepPayoutDue(env, supabase) {
     if (!env || !env.OWNER_ALERT_EMAIL || !env.RATE_LIMIT_KV) return out
     const closed = recentCycles(2)[1]
     const key = `partner-payout-due:${closed.key}`
+    // Round 15 (bug): the marker used to be written even when nothing was ready yet. With COMMISSION_HOLD_DAYS > 0 the
+    // closed cycle's commission only becomes payable days later, so the one alert per cycle never fired. A "nothing ready"
+    // sweep now leaves only a short re-check marker (keeps the hourly cost down); only a sent alert closes the cycle.
+    const checkedKey = `partner-payout-due-checked:${closed.key}`
     if (await referralService.keySeen(env, key)) return out
-    const { data: partners, error } = await supabase.from('partners').select('id, email, payout_method').eq('status', 'ACTIVE')
+    if (await referralService.keySeen(env, checkedKey)) return out
+    // Round 15 (bug): PAUSED partners were left out, but the terms (§7) say commission earned before a pause is still paid.
+    const { data: partners, error } = await supabase.from('partners').select('id, email, payout_method')
     if (error) throw error
     const live = (partners || []).filter(p => !isRemovedEmail(p.email))
     const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
@@ -628,8 +634,10 @@ async function sweepPayoutDue(env, supabase) {
         `Open Admin -> Partners -> Run payouts.`, { dedupeKey: closed.key })
       out.sent = alertResult !== false
       if (!out.sent) return out            // not marked: the next hourly sweep tries again
+      await referralService.keyMark(env, key, 20 * 24 * 3600)
+    } else {
+      await referralService.keyMark(env, checkedKey, 6 * 3600)
     }
-    await referralService.keyMark(env, key, 20 * 24 * 3600)
   } catch (err) { console.error('sweepPayoutDue:', err.message) }
   return out
 }
@@ -1177,7 +1185,9 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
 
   let ledgerQuery = supabase.from('commission_ledger').select('id, commission_amount_cents, reverses_ledger_id, kind, currency, created_at, payments(status)')
     .eq('partner_id', partnerId).is('payout_id', null)
-  if (body.periodStart) ledgerQuery = ledgerQuery.gte('created_at', body.periodStart).lte('created_at', body.periodEnd)
+  // Round 15 (bug): `lte(periodEnd)` with periodEnd = 23:59:59.999 left out a row stamped inside the last millisecond (timestamptz
+  // keeps microseconds) although cycleKey() files it in this cycle. An exclusive bound one millisecond later is exact.
+  if (body.periodStart) ledgerQuery = ledgerQuery.gte('created_at', body.periodStart).lt('created_at', new Date(Date.parse(body.periodEnd) + 1).toISOString())
   else if (opts.scope === 'ready') ledgerQuery = ledgerQuery.lt('created_at', recentCycles(1)[0].start)
   // Refund-window hold (COMMISSION_HOLD_DAYS): young commission rows stay
   // unpaid; reversal rows always settle.
@@ -2592,6 +2602,22 @@ async function adminAnonymizePartner(ctx) {
   // 2. Codes stop applying (a removed partner must not keep earning).
   const { error: codeErr } = await supabase.from('referral_codes').update({ active: false }).eq('partner_id', partnerId)
   if (codeErr) throw codeErr
+
+  // Round 15 (gap): the code TEXT outlived the erasure, and a code is often a name (ANNA20). Each code is renamed to a
+  // neutral placeholder; accounts attributed to it forget the string and the payments' snapshot of it is rewritten. Per code,
+  // in that order, so a failure part-way leaves the original text in place for the retry to find.
+  const { data: ownCodes, error: ownCodesErr } = await supabase.from('referral_codes').select('id, code').eq('partner_id', partnerId)
+  if (ownCodesErr) throw ownCodesErr
+  for (const rc of ownCodes || []) {
+    if (/^REMOVED-[0-9A-F]{8}$/.test(rc.code)) continue
+    const placeholder = `REMOVED-${String(rc.id).replace(/-/g, '').slice(0, 8).toUpperCase()}`
+    const { error: uErr } = await supabase.from('users').update({ referred_by_code: null, referred_at: null }).eq('referred_by_code', rc.code)
+    if (uErr) throw uErr
+    const { error: pErr2 } = await supabase.from('payments').update({ referral_code: placeholder }).eq('referral_code_id', rc.id)
+    if (pErr2) throw pErr2
+    const { error: rnErr } = await supabase.from('referral_codes').update({ code: placeholder }).eq('id', rc.id)
+    if (rnErr) throw rnErr
+  }
 
   // Section 4 round 9 (bug): the owed-check above and the code switch-off in step 2 are two separate moments; a
   // checkout that had already resolved the code could convert in between and leave fresh commission on a partner

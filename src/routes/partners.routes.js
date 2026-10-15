@@ -19,9 +19,10 @@ router.get( '/payout-details', rl.partnerRead,  c.getPartnerByToken)
 router.post('/payout-details', rl.partnerWrite, c.submitPayoutDetails)
 router.get( '/dashboard',      rl.partnerRead,  c.getPartnerDashboard)
 // Round 6: every conversion, paged (the dashboard itself only carries the latest 50).
+// Round 15: the "sales in this payout" statement pages through here too (up to 10 requests), so it uses the same roomier bucket.
 // Round 10: the CSV export (?export=1) pages through this route up to 50 times; it has its own bucket so exporting a
 // long history cannot spend the dashboard's read budget.
-router.get( '/conversions',    (ctx, next) => (ctx.req.query('export') === '1' ? rl.partnerExport : rl.partnerRead)(ctx, next), c.getPartnerConversions)
+router.get( '/conversions',    (ctx, next) => (ctx.req.query('export') === '1' || ctx.req.query('payoutId') ? rl.partnerExport : rl.partnerRead)(ctx, next), c.getPartnerConversions)
 router.post('/request-payout-link', rl.partnerLinkRequest, c.requestPayoutLink)
 // Round 7: "I lost my link" — mails the read-only dashboard link to the address on file (own limiter bucket).
 router.post('/recover-links', rl.partnerRecover, c.recoverPartnerLinks)
@@ -40,7 +41,7 @@ router.post('/accept-terms',  rl.partnerPrefs, c.acceptPartnerTerms)
 router.post('/track-click', rl.click, c.trackClick)
 
 // Public — "become a partner" application (rate-limited like the other public writes).
-router.get( '/program', rl.partnerRead, c.getProgramTerms)
+router.get( '/program', rl.partnerProgram, c.getProgramTerms)
 router.post('/apply', rl.partnerApply, c.applyAsPartner)
 
 // Admin — application review. Registered BEFORE the '/:id' routes below so

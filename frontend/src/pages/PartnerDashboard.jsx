@@ -320,6 +320,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   const [loadingMore, setLoadingMore] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
   const seen = new Set(initial.map(c => c.id))
   const loaded = [...initial, ...extra.filter(c => !seen.has(c.id))]
@@ -344,14 +345,17 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
   }
 
   async function exportCsv() {
-    setExporting(true); setError('')
+    setExporting(true); setError(''); setNotice('')
     try {
       const rows = []
+      let complete = false
       for (let page = 0; page < CSV_MAX_PAGES; page++) {
         const out = await fetchPage(page * CSV_PAGE, CSV_PAGE, true)
         rows.push(...(out.data || []))
-        if ((out.data || []).length < CSV_PAGE) break
+        if ((out.data || []).length < CSV_PAGE) { complete = true; break }
       }
+      // Round 15 (gap): hitting the page cap used to stop silently, so a long history produced a CSV that looked complete.
+      if (!complete) setNotice(`The CSV holds your ${rows.length.toLocaleString()} most recent entries — older ones are not included.`)
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
       downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
         ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency'],
@@ -406,6 +410,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
           {error && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
         </div>
       )}
+      {notice && <p role="status" className="text-xs text-amber-700 mt-1" data-testid="csv-truncated">{notice}</p>}
     </>
   )
 }

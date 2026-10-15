@@ -642,6 +642,10 @@ async function setUserAttribution(supabase, user, rawCode, capturedAt) {
   const currentAt = current?.referred_at ? Date.parse(current.referred_at) : NaN
   if (current?.referred_by_code === code && Number.isFinite(currentAt) && currentAt > at)
     return { stored: true, code, unchanged: true, referredAt: current.referred_at }     // already held with a newer start — never move it backwards
+  // Round 15 (bug): a DIFFERENT code already held with a newer start also wins ("most recent click is credited", partner
+  // terms §3). Only the browser guarded this; a stale device or a direct call could push an older code over a newer one.
+  if (current?.referred_by_code && current.referred_by_code !== code && Number.isFinite(currentAt) && currentAt > at)
+    return { stored: false, reason: 'older' }
 
   const { error } = await supabase.from('users')
     .update({ referred_by_code: code, referred_at: new Date(at).toISOString() }).eq('id', user.id)

@@ -1,0 +1,22 @@
+Partners / referral program, Section 4 round 15
+
+Backend
+- sweepPayoutDue: PAUSED partners are included (terms s7: earned commission is still paid). A sweep that finds nothing ready
+  leaves only a 6-hour re-check marker; only a SENT alert closes the cycle, so commission that becomes payable later in the
+  cycle (COMMISSION_HOLD_DAYS > 0) still triggers the reminder.
+- adminAnonymizePartner: referral code text is erased. Per code: users.referred_by_code cleared, payments.referral_code
+  rewritten, code renamed to REMOVED-<id8>. Partner row is still changed last (retry-safe).
+- setUserAttribution: a DIFFERENT code already held with a newer start is not displaced by an older push ({stored:false, reason:'older'}).
+- recordPayoutCore: cycle-scoped payouts use created_at < periodEnd + 1ms (was <= periodEnd 23:59:59.999, which missed
+  microsecond-stamped rows in the final millisecond).
+- Rate limits: GET /partners/program has its own bucket (partnerProgram); /partners/conversions?payoutId= uses partnerExport.
+
+Frontend
+- PartnerDashboard: CSV export that reaches the 5,000-row cap now says so.
+- PartnerApply: success copy no longer claims a confirmation email was sent (several silent paths send none).
+
+Tests: tests/partners.round15.test.js, frontend/tests/partnerDashboard.round15.test.jsx; updated partners.round6 (route wiring)
+and PartnerApply (copy).
+
+Deferred: dashboard / admin detail still read a partner's whole ledger (needs an aggregate RPC + paged ledger endpoint).
+Not changed: resetMyPartnerLinks provider-accepted-but-reported-failed edge case (theoretical).

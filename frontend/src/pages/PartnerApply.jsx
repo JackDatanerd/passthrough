@@ -72,7 +72,7 @@ export default function PartnerApply() {
             <div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Application received ✓</h1>
               <p className="text-sm text-gray-600">
-                Thanks, {name.trim()} — we've emailed a confirmation to {email.trim()}, and we'll email you again once we've reviewed it.
+                Thanks, {name.trim()} — we'll email {email.trim()} once we've reviewed your application. An acknowledgment may arrive first; if you were recently declined or already have a partner account, we won't send one.
               </p>
             </div>
           ) : (

@@ -69,7 +69,7 @@ describe('PartnerApply — program terms (round 6)', () => {
     renderIt()
     await fill()
     await submit()
-    expect(await screen.findByText(/emailed a confirmation to ann@x\.co/i)).toBeInTheDocument()
+    expect(await screen.findByText(/we'll email ann@x\.co once we've reviewed/i)).toBeInTheDocument()
   })
 })
 

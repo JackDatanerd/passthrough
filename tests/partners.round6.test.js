@@ -396,7 +396,7 @@ describe('route + limiter wiring', () => {
   it('new endpoints are registered: admin batch, partner conversions, public program terms', () => {
     expect(routes).toMatch(/post\(\s*'\/payouts\/batch',\s*admin, admin\.stepUp, c\.adminRecordPayoutBatch/)
     expect(routes).toMatch(/get\(\s*'\/conversions',[^\n]*rl\.partnerRead[^\n]*c\.getPartnerConversions/)   // round 10: the CSV export picks rl.partnerExport
-    expect(routes).toMatch(/get\(\s*'\/program',\s*rl\.partnerRead,\s*c\.getProgramTerms/)
+    expect(routes).toMatch(/get\(\s*'\/program',\s*rl\.partnerProgram,\s*c\.getProgramTerms/)
     // literal paths must come before the '/:id' routes so they are never parsed as an id
     expect(routes.indexOf("'/payouts/batch'")).toBeLessThan(routes.indexOf("'/:id',"))
     expect(routes.indexOf("'/conversions'")).toBeLessThan(routes.indexOf("'/:id',"))

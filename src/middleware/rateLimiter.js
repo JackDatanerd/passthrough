@@ -883,6 +883,12 @@ const referralAttribution = makeLimiter({
   keyBy: byAccount,
   message: msg('Too many requests. Please wait a moment.')
 })
+// Round 15 (bug): the public terms page (GET /api/partners/program) shared `partnerRead` with the dashboard, so a busy shared
+// IP reading the terms could throttle a partner out of their own dashboard. Its own, roomier bucket.
+const partnerProgram = makeLimiter({
+  windowSeconds: 5 * 60, max: 60, keyPrefix: 'rl:partnerprogram',
+  message: msg('Too many requests. Please wait a moment.')
+})
 const partnerWrite = makeLimiter({
   windowSeconds: 15 * 60, max: 5, keyPrefix: 'rl:partnerwrite',
   message: msg('Too many attempts. Please wait a few minutes.')
@@ -1140,7 +1146,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 
 module.exports = {
   general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
-  partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
+  partnerRead, partnerProgram, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
   clientIp, rateKeyIp, anonScanSlotKey, refundAnonScanSlot, hitQuota, tryHitQuota, refundQuota, consumeSlot, refundSlot, runOp, backendName, doTimeoutMs, DEFAULT_DO_TIMEOUT_MS
