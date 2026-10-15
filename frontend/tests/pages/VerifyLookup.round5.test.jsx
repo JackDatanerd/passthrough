@@ -60,9 +60,11 @@ describe('VerifyLookup — look up by link or code (round 5, G2)', () => {
     expect(screen.queryByRole('alert')).toBeNull()
   })
 
-  it('both file inputs are labelled for screen readers', () => {
+  it('the file dropzone is named by its on-screen text and described for screen readers', () => {
     renderPage()
-    expect(screen.getByLabelText(/choose the \.docx or \.pdf you were sent/i)).toBeInTheDocument()
+    // Named from what is shown (WCAG 2.5.3 — see sharedFrontend.section11.reaudit); the page's extra wording is its description.
+    const zone = screen.getByRole('button', { name: /drop the resume you were sent here/i })
+    expect(zone).toHaveAccessibleDescription(/choose the \.docx or \.pdf you were sent/i)
   })
 })
 

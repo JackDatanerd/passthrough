@@ -23,12 +23,12 @@ describe('Button', () => {
     expect(onClick).not.toHaveBeenCalled()
   })
 
-  it('loading also disables the button and marks it aria-busy, even without an explicit disabled', async () => {
+  it('loading blocks the button and marks it aria-busy, even without an explicit disabled (it stays focusable — see sharedFrontend.section11.reaudit)', async () => {
     const user = userEvent.setup()
     const onClick = vi.fn()
     render(<Button onClick={onClick} loading>Save</Button>)
     const btn = screen.getByRole('button', { name: 'Save' })
-    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
     expect(btn).toHaveAttribute('aria-busy', 'true')
     await user.click(btn)
     expect(onClick).not.toHaveBeenCalled()

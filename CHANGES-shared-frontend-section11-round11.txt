@@ -1,0 +1,31 @@
+SHARED FRONTEND (section 11) — round 11 (fresh independent re-audit; base HEAD 38be878)
+
+Found by reading every file in components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js, then confirmed in a real
+Chromium (Playwright + axe-core) against the real app / a component sandbox. api.js, utils.js, useApi.js: no defects found.
+
+BUG B1 — hooks/useScrollToHash.js: a link to the hash the URL ALREADY carries did nothing. The hash effect depended on [hash, pathname]
+  only, so "Scan free" (after scrolling away from #scan-form), "Proof", the footer's "For employers" went dead on the second click
+  (a plain <a href="#x"> re-scrolls every time; React Router's <Link> intercepts it). Now depends on location.key as well. A navigation
+  that only changes the query string while keeping the hash (pagination/filters on a page opened at #codes) is deliberately skipped.
+  Verified: real homepage, scrolled to the bottom, re-click -> back at the form (y=17); before: stayed at the bottom.
+
+BUG B2 — components/ui/Button.jsx: `loading` set the native `disabled` attribute, so the focused button lost focus to <body> the moment
+  a request started and never got it back (every async button in the app; ConfirmDialog's Confirm after a failed confirm too).
+  Now `loading` = aria-disabled + aria-busy, still focusable; clicks (and the Enter-key submit of the form, which arrives as a click
+  on a submit button) are swallowed in the component, so double-submit protection is unchanged. An explicit `disabled` is untouched.
+  Verified in Chromium: focus stays on the Save button through the whole save; a second press while loading does nothing.
+
+BUG B3 — components/ui/FileUpload.jsx: the dropzone's aria-label REPLACED its visible text ("Upload your resume (PDF or DOCX)" over
+  "Drop your resume here or browse…"; "Press to replace" over "Click to replace") — WCAG 2.5.3 Label in Name, axe serious
+  (label-content-name-mismatch). The zone now has no aria-label: a role="button" is named from its content, i.e. exactly what is on
+  screen. The optional `ariaLabel` prop is kept as extra context, exposed via aria-describedby. axe: 0 violations.
+
+FEATURE GAP G1 — new components/ui/ToggleChip.jsx: the selectable filter pill was hand-rolled in 6+ places; AdminLeads' status filter
+  (5+ buttons) had no type, no aria-pressed and no focus ring (selected state by colour alone). ToggleChip = type="button" +
+  aria-pressed + focus ring, tones 'blue' (dashboard) / 'dark' (admin), sizes 'md' / 'sm'. Adopted in pages/admin/AdminLeads.jsx
+  (now in a role="group" "Filter leads") and pages/dashboard/Index.jsx. ScanForm's entry-mode switch and the homepage pickers
+  already expose aria-pressed and keep their own marketing styling.
+
+TESTS: frontend/tests/sharedFrontend.section11.reaudit.test.jsx (new, 17 tests). Two older assertions that pinned the old behaviour
+  (`toBeDisabled()` on a loading Button; the dropzone aria-label) were updated: tests/components/Button.test.jsx,
+  tests/components/SharedComponents.round2.test.jsx, tests/pages/VerifyLookup.round5.test.jsx.

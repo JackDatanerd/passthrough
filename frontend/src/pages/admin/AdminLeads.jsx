@@ -19,6 +19,7 @@ import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
 import Radio from '../../components/ui/Radio'
 import FileUpload from '../../components/ui/FileUpload'
+import ToggleChip from '../../components/ui/ToggleChip'
 import { leadRowsFromCsv, chunk, spreadRepeats } from '../../lib/leadImport'
 
 const STATUS_VARIANT = { NEW: 'blue', CONTACTED: 'amber', CONVERTED: 'green', ARCHIVED: 'gray' }
@@ -462,8 +463,6 @@ export default function AdminLeads() {
     setAllMatching(false)
     setSelected(prev => { const next = new Set(prev); next.has(id) ? next.delete(id) : next.add(id); return next })
   }
-  const chip = (active) =>
-    `text-xs px-3 py-1.5 rounded-full border ${active ? 'bg-gray-900 text-white border-gray-900' : 'border-gray-300 text-gray-600'}`
 
   return (
     <div className="flex flex-col gap-6">
@@ -487,25 +486,25 @@ export default function AdminLeads() {
         </div>
       </div>
 
-      <div className="flex gap-2 flex-wrap">
-        <button onClick={() => setParams({ status: '' })} className={chip(!status)}>All ({allCount})</button>
-        <button onClick={() => setParams({ status: 'OPEN' })} className={chip(status === 'OPEN')}>Open ({counts.OPEN ?? 0})</button>
+      <div role="group" aria-label="Filter leads" className="flex gap-2 flex-wrap">
+        <ToggleChip tone="dark" size="sm" pressed={!status} onClick={() => setParams({ status: '' })}>All ({allCount})</ToggleChip>
+        <ToggleChip tone="dark" size="sm" pressed={status === 'OPEN'} onClick={() => setParams({ status: 'OPEN' })}>Open ({counts.OPEN ?? 0})</ToggleChip>
         {STATUSES.map(s => (
-          <button key={s} onClick={() => setParams({ status: s })} className={chip(status === s)}>
+          <ToggleChip key={s} tone="dark" size="sm" pressed={status === s} onClick={() => setParams({ status: s })}>
             {s} ({counts[s] ?? 0})
-          </button>
+          </ToggleChip>
         ))}
         {(neverEmailed > 0 || ack) && (
-          <button onClick={() => setParams({ ack: ack ? '' : 'never' })} className={chip(!!ack)}
+          <ToggleChip tone="dark" size="sm" pressed={!!ack} onClick={() => setParams({ ack: ack ? '' : 'never' })}
             title="Unconfirmed leads that have not been sent a confirmation email yet (the hourly retry keeps trying; you can also send one by hand).">
             Never emailed ({neverEmailed})
-          </button>
+          </ToggleChip>
         )}
         {(reengagedCount > 0 || reengaged) && (
-          <button onClick={() => setParams({ reengaged: reengaged ? '' : 'yes' })} className={chip(!!reengaged)}
+          <ToggleChip tone="dark" size="sm" pressed={!!reengaged} onClick={() => setParams({ reengaged: reengaged ? '' : 'yes' })}
             title="Archived leads that submitted the form again. They stay archived until you change their status.">
             Came back while archived ({reengagedCount})
-          </button>
+          </ToggleChip>
         )}
       </div>
 

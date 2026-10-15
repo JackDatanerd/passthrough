@@ -19,6 +19,7 @@ import NextStepCard from '../../components/dashboard/NextStepCard'
 import StatsRow from '../../components/dashboard/StatsRow'
 import BreakdownModal from '../../components/dashboard/BreakdownModal'
 import { statusLabel } from '../../lib/utils'
+import ToggleChip from '../../components/ui/ToggleChip'
 import { createPoller } from '../../lib/poller'
 import { loadNeedsDecision } from '../../lib/needsDecision'
 import { describeQuota } from '../../lib/quota'
@@ -439,10 +440,9 @@ export default function DashboardIndex() {
               {CHIPS.map(c => {
                 const active = c.key === status
                 return (
-                  <button key={c.key || 'all'} type="button" aria-pressed={active} onClick={() => setStatus(c.key)}
-                    className={`rounded-full border px-3 py-1 text-sm font-medium transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 ${active ? 'bg-blue-700 border-blue-700 text-white' : 'bg-white border-gray-300 text-gray-700 hover:bg-gray-50'}`}>
+                  <ToggleChip key={c.key || 'all'} pressed={active} onClick={() => setStatus(c.key)}>
                     {c.label}{showCounts && <span className="ml-1.5 opacity-70">{chipCount(ov, c.key)}</span>}
-                  </button>
+                  </ToggleChip>
                 )
               })}
             </div>

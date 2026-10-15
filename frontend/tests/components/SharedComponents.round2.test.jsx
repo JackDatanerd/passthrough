@@ -112,10 +112,10 @@ describe('Spinner / Button loading', () => {
     expect(svg).not.toHaveAttribute('role')
     expect(svg.getAttribute('class')).not.toMatch(/text-blue-600/)
   })
-  it('a loading Button shows one hidden spinner, is busy and disabled — not a second "status"', () => {
+  it('a loading Button shows one hidden spinner, is busy and aria-disabled (still focusable) — not a second "status"', () => {
     render(<Button loading>Save</Button>)
     const btn = screen.getByRole('button', { name: 'Save' })
-    expect(btn).toBeDisabled()
+    expect(btn).toHaveAttribute('aria-disabled', 'true')
     expect(btn).toHaveAttribute('aria-busy', 'true')
     expect(btn.querySelector('svg')).toHaveAttribute('aria-hidden', 'true')
     expect(screen.queryByRole('status')).toBeNull()

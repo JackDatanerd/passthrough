@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { validateUpload, normalizeUpload } from '../../lib/upload'
 
@@ -16,7 +16,14 @@ import { validateUpload, normalizeUpload } from '../../lib/upload'
 // are rejected; the drag highlight no longer flickers over child elements; and
 // the file's MIME type is normalised to match its extension so the API's
 // `file.type` check agrees with this component's extension check.
-// `prompt` / `typesText` / `ariaLabel` are the visible and spoken copy; the defaults are the resume wording.
+// `prompt` / `typesText` are the visible copy and ARE the spoken name (a role="button" is named from its content);
+// `ariaLabel` is OPTIONAL extra spoken context, read as the control's description; the defaults are the resume wording.
+//
+// SHARED FRONTEND (section 11 re-audit, bug): the dropzone's aria-label used to REPLACE its visible text ("Upload your resume (PDF or
+// DOCX)" over a visible "Drop your resume here or browse…", and "Press to replace" over a visible "Click to replace"). A person
+// driving the page by voice ("click Drop your resume here") named a control that did not carry that name (WCAG 2.5.3, Label in
+// Name; axe: label-content-name-mismatch, serious). There is no aria-label on the zone any more: it is named from what is on screen,
+// and any extra context goes in aria-describedby.
 // (What is actually accepted is decided by lib/upload.js — PDF and DOCX — and `accept` only filters the picker.)
 //
 // Not just for resumes: `extensions` (lower-case, no dot; default PDF + DOCX) decides what is accepted AND what the picker
@@ -24,9 +31,10 @@ import { validateUpload, normalizeUpload } from '../../lib/upload'
 // (a size cap that is not `maxMB`, say). Pair it with matching `typesText` / `prompt` / `ariaLabel` copy.
 export default function FileUpload({
   onFile, value, extensions = ['pdf', 'docx'], accept, maxMB = 5, disabled = false, validate,
-  prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel = 'Upload your resume (PDF or DOCX)',
+  prompt = 'Drop your resume here', typesText = 'PDF or DOCX', ariaLabel,
 }) {
   const acceptAttr = accept ?? extensions.map(e => `.${e}`).join(',')
+  const descId = useId()
   const inputRef = useRef(null)
   const zoneRef = useRef(null)
   const dragDepth = useRef(0)
@@ -82,13 +90,14 @@ export default function FileUpload({
 
   return (
     <div>
+      {ariaLabel && <span id={descId} className="sr-only">{ariaLabel}</span>}
       <div
         ref={zoneRef}
         data-file-dropzone=""
         role="button"
         tabIndex={disabled ? -1 : 0}
         aria-disabled={disabled || undefined}
-        aria-label={file ? `Selected file ${file.name}. Press to replace.` : ariaLabel}
+        aria-describedby={ariaLabel ? descId : undefined}
         // input.click() bubbles back up to this div; ignore it rather than lean on the
         // browser's re-entrancy guard to stop a second picker request.
         onClick={e => { if (e.target === inputRef.current) return; openPicker() }}

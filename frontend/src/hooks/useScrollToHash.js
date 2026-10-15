@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useLocation, useNavigationType } from 'react-router-dom'
 
 // Two jobs, both things BrowserRouter does not do on its own:
@@ -13,9 +13,16 @@ import { useLocation, useNavigationType } from 'react-router-dom'
 //    scroll. The small delay + rAF retry is needed because on first navigation
 //    to "/" from another route, the target page's content (and therefore the
 //    element with that id) may not be mounted yet in the same tick this runs.
+//
+// SHARED FRONTEND (section 11 re-audit, bug): the hash effect only depended on `hash` and `pathname`, so a link to the hash the
+// URL ALREADY carries (the navbar's "Scan free" after scrolling away from #scan-form, "Proof", the footer's "For employers")
+// changed neither, the effect never ran, and the click did nothing — a plain <a href="#x"> re-scrolls every time. React Router
+// gives every navigation a fresh `location.key`, so that is part of the dependency now. A navigation that only changes the query
+// string while keeping the hash (pagination, filters on a page opened at #codes) is NOT a request to scroll and is skipped.
 export default function useScrollToHash() {
-  const { hash, pathname } = useLocation()
+  const { hash, pathname, search, key } = useLocation()
   const navType = useNavigationType()
+  const lastHashNav = useRef(null)
 
   useEffect(() => {
     if (hash || navType === 'POP') return
@@ -23,7 +30,11 @@ export default function useScrollToHash() {
   }, [pathname])   // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    if (!hash) return
+    if (!hash) { lastHashNav.current = null; return }
+    const url = `${pathname}${search}${hash}`
+    const last = lastHashNav.current
+    lastHashNav.current = { pathname, hash, url }
+    if (last && last.pathname === pathname && last.hash === hash && last.url !== url) return
     // A malformed escape ("/#%", "/#100%") makes decodeURIComponent throw, and this effect sits OUTSIDE the route-level
     // error boundary — one bad link took the whole app down. Fall back to the raw text.
     let id = hash.slice(1)
@@ -49,5 +60,5 @@ export default function useScrollToHash() {
     requestAnimationFrame(() => tryScroll())
 
     return () => { cancelled = true }
-  }, [hash, pathname])
+  }, [hash, pathname, search, key])
 }
