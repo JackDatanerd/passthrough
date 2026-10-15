@@ -123,7 +123,8 @@ async function uploadResume(ctx, next) {
     // 12,000-character box arrives as 12,000 + one extra character per line. Every cap below
     // and in the controller counts characters, so the extra CRs silently cut the END off a long
     // background or job posting that the form said fit. LF-only before anything is measured.
-    return v.replace(/\r\n?/g, '\n').slice(0, cap)
+    // NUL can't be stored in Postgres text/jsonb (it would surface as a 500), so drop it at the door.
+    return v.replace(/\u0000/g, '').replace(/\r\n?/g, '\n').slice(0, cap)
   }
 
   const fields = {

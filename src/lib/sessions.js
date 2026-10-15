@@ -59,7 +59,7 @@ async function createSession(c, supabase, userId) {
  * capped so it never outlives the session's absolute expiry.
  */
 function tokenLifetimeSeconds(env, session) {
-  const base = parseInt(env.JWT_EXPIRES_IN_SECONDS, 10) || 604800 // 7 days default
+  const base = require('./numEnv').numEnv(env.JWT_EXPIRES_IN_SECONDS, 604800, { min: 60, max: 31536000 }) // 7 days default
   if (!session || !Number.isFinite(session.expiresAtMs)) return base
   const untilAbsolute = Math.floor((session.expiresAtMs - Date.now()) / 1000)
   return Math.max(1, Math.min(base, untilAbsolute))
@@ -73,7 +73,7 @@ function tokenLifetimeSeconds(env, session) {
  * expiry, and the "signed-in devices" list showed it as signed in. The list hides such rows.
  */
 function idleCutoffIso(env, nowMs = Date.now()) {
-  const base = parseInt(env && env.JWT_EXPIRES_IN_SECONDS, 10) || 604800
+  const base = require('./numEnv').numEnv(env && env.JWT_EXPIRES_IN_SECONDS, 604800, { min: 60, max: 31536000 })
   const slackMs = constants.SESSION_TOUCH_INTERVAL_MINUTES * 60 * 1000
   return new Date(nowMs - base * 1000 - slackMs).toISOString()
 }

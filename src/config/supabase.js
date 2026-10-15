@@ -41,7 +41,7 @@ function timeoutFetch(ms = DEFAULT_TIMEOUT_MS, baseFetch = (...a) => fetch(...a)
 }
 
 function getSupabase(env) {
-  const ms = parseInt(env.SUPABASE_TIMEOUT_MS, 10)
+  const ms = require('../lib/numEnv').numEnv(env.SUPABASE_TIMEOUT_MS, 0, { min: 1000, max: 120000 })
   return createClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
     global: { fetch: timeoutFetch(ms > 0 ? ms : DEFAULT_TIMEOUT_MS) }

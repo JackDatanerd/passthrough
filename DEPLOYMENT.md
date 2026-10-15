@@ -455,6 +455,8 @@ wrangler secret put ALERT_WEBHOOK_URL
 wrangler secret put HEALTH_CHECK_KEY
 ```
 
+**Numeric settings are plain numbers, no units (cross-cutting infra round 11).** `ADMIN_SESSION_MAX_HOURS`, `ADMIN_STEP_UP_MINUTES`, `JWT_EXPIRES_IN_SECONDS` (60-31536000), `SUPABASE_TIMEOUT_MS` (1000-120000) and `RATE_LIMIT_DO_TIMEOUT_MS` (1-30000) must be whole numbers: `"24"`, not `"24h"`; `"604800"`, not `"7d"`. A malformed value is no longer read as a prefix (`"7d"` used to mean 7 seconds): the built-in default applies, a malformed `ADMIN_STEP_UP_MINUTES` keeps step-up ON at 10 minutes, a malformed `ADMIN_SESSION_MAX_HOURS` keeps the 24-hour cap, and a `[CONFIG] warning` names the variable at start-up. Only an explicit `"0"` disables the admin session cap or step-up.
+
 ### `wrangler.toml` reference: `[vars]` and bindings
 
 Plain (non-secret) `[vars]` the code reads, beyond the ones used elsewhere in this guide:

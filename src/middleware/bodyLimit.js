@@ -44,6 +44,21 @@ function isMultipartRoute(c, routes) {
   return routes.some(r => r.method === method && r.path === path)
 }
 
+// Postgres rejects NUL in text and jsonb; strip it from every parsed JSON string (keys too) so a stray
+// \u0000 can never reach an insert as a 500.
+function stripNul(v, depth = 0) {
+  if (typeof v === 'string') return v.includes('\u0000') ? v.replace(/\u0000/g, '') : v
+  if (depth > 64 || v === null || typeof v !== 'object') return v
+  if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = stripNul(v[i], depth + 1); return v }
+  for (const k of Object.keys(v)) {
+    const nv = stripNul(v[k], depth + 1)
+    const nk = k.includes('\u0000') ? k.replace(/\u0000/g, '') : k
+    if (nk !== k) delete v[k]
+    v[nk] = nv
+  }
+  return v
+}
+
 function bodyLimit(maxBytes = MAX_JSON_BYTES, { multipartRoutes = MULTIPART_ROUTES } = {}) {
   return async (c, next) => {
     // Tag a malformed-JSON failure as the CLIENT's mistake. errorHandler turns exactly these into
@@ -52,7 +67,7 @@ function bodyLimit(maxBytes = MAX_JSON_BYTES, { multipartRoutes = MULTIPART_ROUT
     if (typeof c.req.json === 'function') {
       const readJson = c.req.json.bind(c.req)
       c.req.json = async () => {
-        try { return await readJson() }
+        try { return stripNul(await readJson()) }
         catch (err) { if (err instanceof SyntaxError) err.clientBody = true; throw err }
       }
     }
@@ -89,5 +104,6 @@ function bodyLimit(maxBytes = MAX_JSON_BYTES, { multipartRoutes = MULTIPART_ROUT
 }
 
 module.exports = bodyLimit
+module.exports.stripNul = stripNul
 module.exports.MAX_JSON_BYTES = MAX_JSON_BYTES
 module.exports.MULTIPART_ROUTES = MULTIPART_ROUTES

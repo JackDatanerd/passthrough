@@ -59,8 +59,7 @@ function hasBackend(env) { return !!(env && (env.RATE_LIMIT_DO || env.RATE_LIMIT
 // request let through). RATE_LIMIT_DO_TIMEOUT_MS overrides it.
 const DEFAULT_DO_TIMEOUT_MS = 3000
 function doTimeoutMs(env) {
-  const n = parseInt(env && env.RATE_LIMIT_DO_TIMEOUT_MS, 10)
-  return n > 0 ? n : DEFAULT_DO_TIMEOUT_MS
+  return require('../lib/numEnv').numEnv(env && env.RATE_LIMIT_DO_TIMEOUT_MS, DEFAULT_DO_TIMEOUT_MS, { min: 1, max: 30000 })
 }
 
 async function runOp(env, op, args) {

@@ -32,8 +32,9 @@ function adminIpAllowed(env, ip) {
 const DEFAULT_ADMIN_SESSION_MAX_HOURS = 24
 function adminSessionTooOld(c, now = Date.now()) {
   const raw = c.env && c.env.ADMIN_SESSION_MAX_HOURS
-  const hours = raw === undefined || raw === '' ? DEFAULT_ADMIN_SESSION_MAX_HOURS : Number(raw)
-  if (!Number.isFinite(hours) || hours <= 0) return false
+  // A malformed value ("24h") keeps the DEFAULT cap on; only an explicit 0 disables it.
+  const hours = require('../lib/numEnv').numEnv(raw, DEFAULT_ADMIN_SESSION_MAX_HOURS, { min: 0, max: 8760, integer: false })
+  if (hours <= 0) return false
   const created = c.get('sessionCreatedAtMs')
   // A token with no server-side session (issued when create_user_session failed at sign-in, or pre-sessions
   // legacy) has no age we can check. It must not skip the cap: fail closed so an admin re-authenticates (or
@@ -48,9 +49,13 @@ function adminSessionTooOld(c, now = Date.now()) {
 // this user and this session, valid for that many minutes) and the SPA sends it as `X-Admin-Elevation`. A
 // stolen bearer token alone can then read, but cannot refund, record a payout or ban.
 const ELEVATION_PURPOSE = 'admin-elevation'
+const DEFAULT_STEP_UP_MINUTES_WHEN_MALFORMED = 10
 function stepUpMinutes(env) {
-  const n = Number(env && env.ADMIN_STEP_UP_MINUTES)
-  return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 240) : 0
+  const r = require('../lib/numEnv').parseNumEnv(env && env.ADMIN_STEP_UP_MINUTES, { min: 0, integer: false })
+  if (r.unset) return 0
+  // A malformed value ("10m") must not silently switch the guard off: it stays ON at the default.
+  if (!r.ok) return DEFAULT_STEP_UP_MINUTES_WHEN_MALFORMED
+  return r.value > 0 ? Math.min(Math.floor(r.value), 240) : 0
 }
 async function mintElevation(env, user, sessionId) {
   const mins = stepUpMinutes(env)

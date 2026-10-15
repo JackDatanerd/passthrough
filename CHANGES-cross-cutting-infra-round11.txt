@@ -1,0 +1,12 @@
+Cross-cutting infra, round 11 (bugs only; independent audit of section 9)
+
+1. Malformed numeric config silently broke or disabled protections (bug). New lib/numEnv.js (whole-string decimal, ranged).
+   - JWT_EXPIRES_IN_SECONDS "7d" was parseInt -> 7-second tokens (lib/sessions.js, 2 sites).
+   - ADMIN_SESSION_MAX_HOURS "24h" and ADMIN_STEP_UP_MINUTES "10m" silently turned the admin age cap / password step-up OFF
+     (middleware/adminOnly.js). Malformed now keeps the default cap on / step-up on at 10 min; only explicit 0 disables.
+   - SUPABASE_TIMEOUT_MS "25s" -> 25 ms and RATE_LIMIT_DO_TIMEOUT_MS "3s" -> 3 ms (config/supabase.js, rateLimiter.js): default used.
+   - lib/env.js validateEnv now warns for every malformed value. DEPLOYMENT.md documents "plain numbers, no units".
+2. NUL (\u0000) in user text became a 500 (bug): Postgres rejects it in text/jsonb. Stripped in upload.js multipart text fields and
+   in every parsed JSON body (bodyLimit.js wrapper, keys too); errorHandler maps the NUL codes 22021 / 22P05 to 400 (other class-22 codes such as an invalid uuid stay masked 500, per round 3).
+
+Tests: tests/crossCutting.round11.test.js

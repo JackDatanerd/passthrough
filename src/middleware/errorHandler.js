@@ -53,6 +53,13 @@ function errorHandler(err, ctx) {
 
   // Hono's own HTTPException (thrown by its built-in helpers/validators) knows
   // how to render itself with the right status and headers.
+  // 22021 / 22P05: a NUL character in the request's own text (Postgres cannot store it) — a client mistake, not a server fault.
+  if (typeof err.code === 'string' && (err.code === '22021' || err.code === '22P05') && err.expose !== true) {
+    const rayId = ctx.req && typeof ctx.req.header === 'function' ? ctx.req.header('cf-ray') : undefined
+    console.error(`Data exception ${err.code} answered 400${rayId ? ` [${rayId}]` : ''}:`, redactPgDetails(err.message))
+    return ctx.json({ success: false, message: 'Some of the text you entered contains characters or values we cannot store. Please check it and try again.' }, 400)
+  }
+
   if (typeof err.getResponse === 'function') return err.getResponse()
 
   // A request body that isn't valid JSON: bodyLimit.js wraps c.req.json() and tags the

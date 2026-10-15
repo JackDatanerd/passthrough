@@ -120,6 +120,18 @@ function validateEnv(env) {
     else if (ends <= Date.now()) warnings.push(`PROMO_ACTIVE is "true" but PROMO_ENDS_AT (${env.PROMO_ENDS_AT}) has passed — standard pricing applies; set PROMO_ACTIVE="false" or extend the date`)
   }
 
+  {
+    const { parseNumEnv, NUMERIC_ENV } = require('./numEnv')
+    for (const [k, range] of Object.entries(NUMERIC_ENV)) {
+      const r = parseNumEnv(env[k], { ...range, integer: k !== 'ADMIN_SESSION_MAX_HOURS' })
+      if (r.ok || r.unset) continue
+      const effect = k === 'ADMIN_STEP_UP_MINUTES' ? 'password step-up stays ON at 10 minutes'
+        : k === 'ADMIN_SESSION_MAX_HOURS' ? 'the default 24-hour admin session cap applies'
+        : 'the built-in default is used'
+      warnings.push(`${k} is "${env[k]}" — it must be a plain number between ${range.min} and ${range.max} (no units like "h", "m", "s", "d"); ${effect}`)
+    }
+  }
+
   return { fatal, warnings }
 }
 
