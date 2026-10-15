@@ -37,7 +37,7 @@ function setup(o = {}) {
     if (q.table === 'partners' && q.op === 'select') {
       if (o.partnersList) return { data: o.partnersList, count: o.partnersList.length, error: null }
       const eq = q.filters.find(f => f[0] === 'eq' && /token/.test(f[1]))
-      if (eq) return { data: eq[2] === 'dtok' && eq[1] === 'dashboard_token' ? partner : (eq[2] === 'ptok' && eq[1] === 'payout_details_token' ? partner : null), error: null }
+      if (eq) return { data: eq[2] === 'dtok' && eq[1] === 'dashboard_token' ? partner : (eq[1] === 'payout_token_hash' && eq[2] === require('node:crypto').createHash('sha256').update('ptok').digest('hex') ? partner : null), error: null }
       return { data: partner, error: null }
     }
     if (q.table === 'partners' && q.op === 'update') { st.updates.push({ patch: q.patch, filters: q.filters }); return { data: o.updated ?? { ...partner, ...q.patch }, error: o.partnerUpdateError || null } }

@@ -36,6 +36,7 @@ function setup(o = {}) {
   const byId = o.partnersById || null
   const db = createFakeSupabase(q => {
     st.queries.push(q)
+    if (q.op === 'rpc' && q.name === 'record_payout_settlement' && !o.rpc) return undefined
     if (q.op === 'rpc') { st.rpcs.push(q); return o.rpc ? o.rpc(q) : { data: null, error: null } }
     if (q.table === 'admin_audit_log' && q.op === 'insert') { st.audits.push(q.values); return { data: null, error: null } }
     if (q.table === 'partners' && q.op === 'select') {

@@ -81,4 +81,5 @@ grant  execute on function release_referral_code_usage_for_ledger(uuid) to servi
 -- Always the LAST statement of a migration: records how far this database has been migrated.
 insert into system_state (key, value)
 values ('schema_version', jsonb_build_object('version', 71, 'applied_at', now()))
-on conflict (key) do update set value = excluded.value, updated_at = now();
+on conflict (key) do update set value = excluded.value, updated_at = now()
+  where coalesce((system_state.value ->> 'version')::int, 0) < 71;   -- never move the version BACKWARDS (a re-run of an older file)

@@ -27,6 +27,7 @@ drop index if exists idx_payments_paystack_ref;
 -- payout-details submission, email change) has left updated_at frozen at
 -- the row's original creation time. set_updated_at() already exists from
 -- 0001; this just wires it up for the one table that was missing it.
+drop trigger if exists trg_partners_updated_at on partners;
 create trigger trg_partners_updated_at
   before update on partners
   for each row execute function set_updated_at();

@@ -1085,7 +1085,7 @@ export default function PartnerDetail() {
   // partner payload), audit-logged server-side, and copied straight to the clipboard.
   async function copyLink(which) {
     try {
-      const res = await api.get(`/partners/${id}/links`)
+      const res = await api.get(`/partners/${id}/links${which === 'dashboard' ? '?scope=dashboard' : ''}`)
       const url = which === 'dashboard' ? res.data.data.dashboardUrl : res.data.data.payoutUrl
       const ok = await copyToClipboard(url)
       toast({ message: ok ? `${which === 'dashboard' ? 'Dashboard' : 'Payout-details'} link copied.` : 'Could not copy — your browser blocked clipboard access.', type: ok ? 'success' : 'warning' })

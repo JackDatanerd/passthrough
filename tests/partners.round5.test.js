@@ -36,6 +36,13 @@ function setup(o = {}) {
   }
   const db = createFakeSupabase(q => {
     st.queries.push(q)
+    if (q.op === 'rpc' && q.name === 'void_payout') {
+      st.voidRpc = q.args
+      if (o.voidNull) return { data: null, error: null }
+      if (o.releaseError) return { data: null, error: { message: 'boom' } }
+      const cur = o.payout === undefined ? { voided_at: null } : o.payout
+      return { data: { already_voided: !!(cur && cur.voided_at), released: (o.released ?? [1, 2]).length }, error: null }
+    }
     if (q.table === 'admin_audit_log' && q.op === 'insert') { st.audits.push(q.values); return { data: null, error: null } }
     if (q.table === 'partners' && q.op === 'select') {
       if (o.partnerByToken) {
@@ -155,9 +162,8 @@ describe('G1 — void a payout', () => {
     t = setup()
     const res = await t.mod.adminVoidPayout(vctx({ reason: 'Wrong cycle' }))
     expect(res.body).toMatchObject({ success: true, alreadyVoided: false, releasedCount: 2 })
-    expect(t.st.updates.some(u => u && u.voided_at && u.void_reason === 'Wrong cycle')).toBe(true)
-    const rel = t.st.queries.find(q => q.table === 'commission_ledger' && q.op === 'update')
-    expect(rel.patch).toEqual({ payout_id: null })
+    // one transactional RPC (0087): marks it void AND releases the ledger rows
+    expect(t.st.voidRpc).toEqual({ p_payout_id: 'po1', p_partner_id: 'p1', p_reason: 'Wrong cycle' })
     expect(t.st.audits[0]).toMatchObject({ action: 'partner.payout_voided', target_id: 'po1' })
     expect(t.st.emails).toHaveLength(1)
   })
@@ -169,18 +175,21 @@ describe('G1 — void a payout', () => {
     t = setup({ payout: { id: 'po1', partner_id: 'p1', amount_cents: 5000, currency: 'USD', voided_at: '2026-09-02T00:00:00Z' } })
     const res = await t.mod.adminVoidPayout(vctx({ reason: 'again' }))
     expect(res.body.alreadyVoided).toBe(true)
-    expect(t.st.queries.some(q => q.table === 'commission_ledger' && q.op === 'update')).toBe(true)
+    expect(t.st.voidRpc).toBeTruthy()   // the release is re-run
     expect(t.st.audits).toHaveLength(0); expect(t.st.emails).toHaveLength(0)
   })
   it('404s for a payout that is not this partner\'s', async () => {
     t = setup({ payout: null })
     expect((await t.mod.adminVoidPayout(vctx({ reason: 'x y z' }))).status).toBe(404)
   })
-  it('says so (500) when the release fails, so the admin retries instead of assuming success', async () => {
+  it('surfaces a failed void as an error (the RPC is one transaction: nothing was voided, nothing to clean up)', async () => {
     t = setup({ releaseError: true })
-    const res = await t.mod.adminVoidPayout(vctx({ reason: 'x y z' }))
-    expect(res.status).toBe(500)
-    expect(res.body.message).toMatch(/Void" again/)
+    await expect(t.mod.adminVoidPayout(vctx({ reason: 'x y z' }))).rejects.toMatchObject({ message: 'boom' })
+    expect(t.st.audits).toHaveLength(0); expect(t.st.emails).toHaveLength(0)
+  })
+  it('404s when the RPC finds no such payout (deleted between the read and the void)', async () => {
+    t = setup({ voidNull: true })
+    expect((await t.mod.adminVoidPayout(vctx({ reason: 'x y z' }))).status).toBe(404)
   })
 })
 
@@ -196,11 +205,11 @@ describe('G3 — link rotation scope and token transport', () => {
   it('scope "both" rotates and emails both; the default stays payout-only', async () => {
     t = setup()
     const both = await t.mod.adminRegeneratePayoutLink(ctxOf({ body: { scope: 'both' } }))
-    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['dashboard_token', 'payout_details_token'])
+    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['dashboard_token', 'payout_details_token', 'payout_token_hash'])
     expect(both.body.payoutUrl && both.body.dashboardUrl).toBeTruthy()
     t.restore(); t = setup()
     await t.mod.adminRegeneratePayoutLink(ctxOf())
-    expect(Object.keys(t.st.updates[0])).toEqual(['payout_details_token'])
+    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['payout_details_token', 'payout_token_hash'])
   })
   it('the dashboard reads the token from X-Partner-Token (no query string), drops partnerId and hides voided payouts', async () => {
     const row = {

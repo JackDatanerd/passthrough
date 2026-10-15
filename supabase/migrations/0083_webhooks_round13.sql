@@ -21,4 +21,5 @@ on conflict (version) do nothing;
 
 insert into system_state (key, value)
 values ('schema_version', jsonb_build_object('version', 83, 'applied_at', now()))
-on conflict (key) do update set value = excluded.value, updated_at = now();
+on conflict (key) do update set value = excluded.value, updated_at = now()
+  where coalesce((system_state.value ->> 'version')::int, 0) < 83;   -- never move the version BACKWARDS (a re-run of an older file)

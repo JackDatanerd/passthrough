@@ -60,9 +60,9 @@ describe('setUserAttribution keeps the original capture time', () => {
   })
 })
 
-// ── a ledger-settlement chunk failure is retried before anyone is alarmed ──────────────────────────────────────────
-describe('recordPayoutCore — settlement retry', () => {
-  const PARTNER = { id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', dashboard_token: 'dtok', payout_details_token: 'ptok',
+// ── settlement is ONE transactional RPC (migration 0087), so there is no partial state to retry or compensate ──────────
+describe('recordPayoutCore — atomic settlement RPC', () => {
+  const PARTNER = { id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', dashboard_token: 'dtok', payout_token_hash: 'x',
     commission_rate: 0.1, payout_method: 'BANK', payout_details: { bankName: 'B', accountName: 'N', accountNumber: '1234567890' },
     payout_details_submitted_at: '2020-01-01T00:00:00.000Z', currency: 'USD' }
   const ctxOf = body => ({
@@ -71,37 +71,40 @@ describe('recordPayoutCore — settlement retry', () => {
     req: { param: () => 'p1', query: () => undefined, json: async () => body, header: () => undefined },
     header: () => {}, json: (b, status = 200) => ({ body: b, status }), executionCtx: { waitUntil: () => {} },
   })
-  function run(updateResults) {
-    const alerts = []
-    let n = 0
+  function run(rpcResult) {
+    const alerts = [], rpcs = [], writes = []
     const db = createFakeSupabase(q => {
+      if (q.op === 'rpc') { rpcs.push(q); return rpcResult(q) }
       if (q.table === 'partners' && q.op === 'select') return { data: PARTNER, error: null }
       if (q.table === 'commission_ledger' && q.op === 'select')
         return { data: [{ id: 'l1', commission_amount_cents: 500, reverses_ledger_id: null, kind: 'SALE', payments: { status: 'SUCCESS' }, created_at: '2020-01-02T00:00:00.000Z' },
                         { id: 'l2', commission_amount_cents: 500, reverses_ledger_id: null, kind: 'SALE', payments: { status: 'SUCCESS' }, created_at: '2020-01-03T00:00:00.000Z' }], error: null }
-      if (q.table === 'payouts' && q.op === 'insert') return { data: { id: 'po1', ...q.values }, error: null }
-      if (q.table === 'commission_ledger' && q.op === 'update') return updateResults[Math.min(n++, updateResults.length - 1)](q)
+      if (q.op === 'insert' || q.op === 'update' || q.op === 'delete') writes.push(q)
       return undefined
     })
     t = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendOwnerAlert: async (...a) => { alerts.push(a) }, sendPayoutSent: async () => true },
     })
-    return { alerts, call: () => t.mod.adminRecordPayout(ctxOf({ amountCents: 1000 })) }
+    return { alerts, rpcs, writes, call: () => t.mod.adminRecordPayout(ctxOf({ amountCents: 1000 })) }
   }
-  const ok = q => ({ data: (q.filters.find(f => f[0] === 'in') || [])[2].map(id => ({ id, commission_amount_cents: 500 })), error: null })
-  const boom = () => ({ data: null, error: { message: 'db blip' } })
+  const won = q => ({ data: { payout: { id: 'po1', ...q.args.p_payout }, requested: 2, claimed: 2, claimed_cents: 1000, discarded: false }, error: null })
 
-  it('a one-off failure is retried and the books end up settled with no alert', async () => {
-    const { alerts, call } = run([boom, ok])
+  it('records the payout and claims the ledger rows in a single RPC call, with no client-side writes', async () => {
+    const { alerts, rpcs, writes, call } = run(won)
     const res = await call()
+    expect(res.body.success).toBe(true)
     expect(res.body.ledgerSettlementFailed).toBeFalsy()
+    expect(rpcs.map(r => r.name)).toEqual(['record_payout_settlement'])
+    expect(rpcs[0].args.p_ledger_ids).toEqual(['l1', 'l2'])
+    expect(rpcs[0].args.p_partner_id).toBe('p1')
+    expect(writes.filter(w => ['payouts', 'commission_ledger'].includes(w.table))).toHaveLength(0)
     expect(alerts).toHaveLength(0)
   })
-  it('a persistent failure still raises the alert', async () => {
-    const { alerts, call } = run([boom, boom])
-    const res = await call()
-    expect(res.body.ledgerSettlementFailed).toBe(true)
-    expect(alerts).toHaveLength(1)
+  it('an RPC failure leaves nothing behind (it rolled back) and is not swallowed', async () => {
+    const { alerts, writes, call } = run(() => ({ data: null, error: { message: 'db blip' } }))
+    await expect(call()).rejects.toMatchObject({ message: 'db blip' })
+    expect(writes.filter(w => ['payouts', 'commission_ledger'].includes(w.table))).toHaveLength(0)
+    expect(alerts).toHaveLength(0)
   })
 })

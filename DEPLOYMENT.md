@@ -990,3 +990,17 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 #     the employer do-not-contact list. Without a key it behaves as before (plain hash) but now also matches +tag / Gmail-dot aliases. Existing rows
 #     keep working and are re-keyed the next time that address is looked up.
 #   * Retention: Resend payloads (addresses) are cleared after 7 days and Resend rows deleted after 90; dispute / refund inbox rows are kept 400 days.
+
+# DATABASE LAYER ROUND 3 (migration 0087 — apply BEFORE deploying this Worker; the Worker needs it: it calls the new payout RPCs and reads/writes
+# partners.payout_token_hash, so deploying first makes payout recording and every partner link fail until 0087 is applied).
+#   * record_payout_settlement / void_payout: recording and voiding a payout are each ONE transaction now (the old insert + claim + compensation
+#     sequence could leave a payout whose commission was still "owed"). Service-role only.
+#   * Payout links are stored hashed (partners.payout_token_hash, backfilled from the old raw tokens; payout_details_token is nulled).
+#     Links already emailed keep working. Because a hash cannot be turned back into a link, "Resend payout link", the admin "copy payout link" button
+#     and the partner's "email me my payout link" now ISSUE A NEW token (the previous payout link stops working). Copying the DASHBOARD link
+#     does not rotate anything.
+#   * schema_version is stamped monotonically: re-running any migration from 0082 on never moves it backwards. Re-run a range in order, not a
+#     single old file by itself: an old file also re-creates the function bodies it defines.
+#   * saved-profile RPCs refuse NULL / non-object input (they used to blank the saved profile); admin_audit_log is append-only (UPDATE/DELETE
+#     are refused; deleting an admin user still nulls actor_id); referral codes must be upper-case (the migration upper-cases existing ones and
+#     stops with a message if two codes differ only by case — resolve those by hand first); deleting a scan clears the profile pointers to it.

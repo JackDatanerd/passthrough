@@ -305,7 +305,7 @@ function partnerRowToCamel(row) {
   if (!row) return row
   // Both partner bearer tokens (payout_details_token = write, dashboard_token = read-only)
   // are secrets and never leave through this mapper.
-  const { payout_details_token, dashboard_token, ...rest } = row
+  const { payout_details_token, payout_token_hash, dashboard_token, ...rest } = row
   return {
     id:                        rest.id,
     name:                      rest.name,

@@ -24,7 +24,7 @@ const ctxOf = (over = {}) => ({
   executionCtx: { waitUntil: () => {} },
 })
 
-const PARTNER = { id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', dashboard_token: 'dtok', payout_details_token: 'ptok', commission_rate: 0.1 }
+const PARTNER = { id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', dashboard_token: 'dtok', payout_token_hash: require('node:crypto').createHash('sha256').update('ptok').digest('hex'), commission_rate: 0.1 }
 
 function load(handler, emailStubs = {}) {
   const db = createFakeSupabase(handler)
@@ -150,7 +150,8 @@ describe('partner self-serve link reset', () => {
     expect(JSON.stringify(res.body)).not.toMatch(/token=/)
     expect(updates).toHaveLength(1)
     expect(updates[0].patch.dashboard_token).toBeTruthy()
-    expect(updates[0].patch.payout_details_token).toBeTruthy()
+    expect(updates[0].patch.payout_token_hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(updates[0].patch.payout_details_token).toBeNull()
     expect(updates[0].filters.some(f => f[0] === 'eq' && f[1] === 'dashboard_token' && f[2] === 'dtok')).toBe(true)   // guarded on the presented token
   })
   it('undoes the swap when the email cannot be sent (nobody is locked out)', async () => {
@@ -158,7 +159,7 @@ describe('partner self-serve link reset', () => {
     const res = await mod.resetMyPartnerLinks(ctxOf({ headers: { 'x-partner-token': 'dtok' } }))
     expect(res.status).toBe(502)
     expect(updates).toHaveLength(2)
-    expect(updates[1].patch).toEqual({ dashboard_token: 'dtok', payout_details_token: 'ptok' })
+    expect(updates[1].patch).toEqual({ dashboard_token: 'dtok', payout_token_hash: require('node:crypto').createHash('sha256').update('ptok').digest('hex') })
   })
   it('an unknown token is a plain 404', async () => {
     const { mod } = setup(true)
@@ -222,7 +223,7 @@ describe('wiring', () => {
     const src = read('src/controllers/partners.controller.js')
     expect(src).not.toMatch(/^\s*\.in\('id', ledgerIds\)/m)
     expect(src).not.toMatch(/\.in\('reverses_ledger_id', originalIds\)\s*$/m)
-    expect((src.match(/selectInChunks\(/g) || []).length).toBeGreaterThanOrEqual(4)   // definition + 3 call sites
+    expect((src.match(/selectInChunks\(/g) || []).length).toBeGreaterThanOrEqual(2)   // definition + the remaining call sites (the claim itself is one RPC now)
   })
 })
 

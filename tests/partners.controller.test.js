@@ -10,10 +10,10 @@ import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 // existing "never expose the token" invariant everywhere else untouched.
 
 function setup(opts = {}) {
-  const state = { emailSent: [] }
+  const state = { emailSent: [], patches: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'partners' && q.op === 'select') return { data: opts.partner ?? null, error: null }
-    if (q.table === 'partners' && q.op === 'update')  return { data: opts.partner ?? null, error: null }
+    if (q.table === 'partners' && q.op === 'update')  { state.patches.push(q.patch); return { data: opts.partner ?? null, error: null } }
     return undefined
   })
   const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
@@ -46,10 +46,12 @@ describe('adminResendPayoutLink', () => {
   })
 
   it('still returns payoutUrl even when the email send itself fails', async () => {
-    t = setup({ partner: { name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok123' }, emailOk: false })
+    t = setup({ partner: { name: 'Coach K', email: 'k@x.co' }, emailOk: false })
     const res = await t.mod.adminResendPayoutLink(t.c())
     expect(res.body.success).toBe(false)
-    expect(res.body.payoutUrl).toBe('https://passthrough.dev/partner/payout-details?token=tok123')
+    // The stored token is a hash, so a resend mints a NEW token (0087) and returns that link as the fallback.
+    expect(res.body.payoutUrl).toMatch(/^https:\/\/passthrough\.dev\/partner\/payout-details\?token=[0-9a-f]{20,}$/)
+    expect(t.state.patches.some(p => /^[0-9a-f]{64}$/.test(p.payout_token_hash) && p.payout_details_token === null)).toBe(true)
   })
 
   it('404s with no payoutUrl at all when the partner does not exist', async () => {
@@ -419,7 +421,7 @@ describe('adminCreatePartner', () => {
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async (...a) => { state.emailed.push(a); if (opts.emailThrows) throw new Error('mail down') } },
-      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
     const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c, db }
@@ -429,7 +431,7 @@ describe('adminCreatePartner', () => {
     t = setupCreate()
     const res = await t.mod.adminCreatePartner(t.c)
     expect(res.body.success).toBe(true)
-    expect(t.state.inserted).toMatchObject({ name: 'Coach K', email: 'k@x.co', payout_details_token: 'tok-fixed' })
+    expect(t.state.inserted).toMatchObject({ name: 'Coach K', email: 'k@x.co', payout_details_token: null, payout_token_hash: 'h:tok-fixed' })
     expect(res.body.data.payoutDetailsToken).toBeUndefined()
     expect(JSON.stringify(res.body.data)).not.toContain('tok-fixed')
   })
@@ -461,7 +463,7 @@ describe('adminCreatePartner', () => {
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
-      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
     const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreatePartner(c)
@@ -486,7 +488,7 @@ describe('adminCreatePartner', () => {
     const { mod, restore } = loadWithStubs('controllers/partners.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
-      'lib/crypto.js': { randomToken: () => 'tok-fixed' },
+      'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
     const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     await mod.adminCreatePartner(c)
@@ -545,18 +547,21 @@ describe('adminUpdatePartner', () => {
   it('rotates the payout token when the email changes and sends the fresh link to the NEW address only', async () => {
     t = setupUpdate({ before: { email: 'old@x.co' }, updated: { id: 'p1', email: 'new@x.co', name: 'X' } })
     await t.mod.adminUpdatePartner(t.c({ body: { email: 'new@x.co' } }))
-    expect(typeof t.state.patch.payout_details_token).toBe('string')
-    expect(t.state.patch.payout_details_token.length).toBeGreaterThan(20)
+    expect(t.state.patch.payout_details_token).toBeNull()   // stored hashed (0087)
+    expect(t.state.patch.payout_token_hash).toMatch(/^[0-9a-f]{64}$/)
     const rot = t.state.notifications.filter(n => n.type === 'linkRotated')
     expect(rot).toHaveLength(1)
     expect(rot[0].to).toBe('new@x.co')
-    expect(rot[0].url).toBe(`https://passthrough.dev/partner/payout-details?token=${t.state.patch.payout_details_token}`)
+    const raw = rot[0].url.split('token=')[1]
+    expect(raw).toMatch(/^[0-9a-f]{20,}$/)
+    expect(require('node:crypto').createHash('sha256').update(raw).digest('hex')).toBe(t.state.patch.payout_token_hash)   // the emailed token is the one whose hash was stored
   })
 
   it('does NOT rotate the token for a casing-only, missing, or unchanged email', async () => {
     t = setupUpdate({ before: { email: 'same@x.co' }, updated: { id: 'p1', email: 'same@x.co', name: 'X' } })
     await t.mod.adminUpdatePartner(t.c({ body: { email: 'same@x.co', status: 'ACTIVE' } }))
     expect(t.state.patch.payout_details_token).toBeUndefined()
+    expect(t.state.patch.payout_token_hash).toBeUndefined()
   })
 
   it('emails the partner when the commission rate actually changes (and not when it is re-sent unchanged)', async () => {

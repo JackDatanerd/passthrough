@@ -78,7 +78,7 @@ async function checkSchema(supabase) {
         return { expected, actual, ok: false, ahead: false, detail: `could not read applied_migrations (${missing.error}) — apply migration 0082 and every one after it, in order` }
       if (missing.versions.length)
         return { expected, actual, ok: false, ahead: false, missing: missing.versions,
-          detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — it was skipped; apply it (every migration is safe to re-run)` }
+          detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — it was skipped; apply it, then every migration after it, in order (the files from 0082 on can be re-run as a range; each one only ever moves schema_version forward)` }
     }
     if (actual > expected)
       return { expected, actual, ok: true, ahead: true, detail: `the database is at migration ${actual}, ahead of this code (${expected}) — expected between applying a migration and deploying, or after a rollback` }

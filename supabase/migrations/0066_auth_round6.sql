@@ -16,4 +16,5 @@ create index if not exists idx_users_email_change_done_token
 -- Always the LAST statement of a migration: records how far this database has been migrated.
 insert into system_state (key, value)
 values ('schema_version', jsonb_build_object('version', 66, 'applied_at', now()))
-on conflict (key) do update set value = excluded.value, updated_at = now();
+on conflict (key) do update set value = excluded.value, updated_at = now()
+  where coalesce((system_state.value ->> 'version')::int, 0) < 66;   -- never move the version BACKWARDS (a re-run of an older file)

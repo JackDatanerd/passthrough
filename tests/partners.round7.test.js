@@ -238,9 +238,10 @@ describe('adminAnonymizePartner', () => {
       name: 'Removed partner', email: `partner-${A}@removed.invalid`, status: 'PAUSED',
       payout_method: null, payout_details: null, payout_details_submitted_at: null, website: null, audience: null, notify_conversions: false,
     })
-    expect(t.st.partnerPatch.payout_details_token).toMatch(/\S{16,}/)
+    expect(t.st.partnerPatch.payout_details_token).toBeNull()   // stored hashed since 0087
+    expect(t.st.partnerPatch.payout_token_hash).toMatch(/^[0-9a-f]{64}$/)
     expect(t.st.partnerPatch.dashboard_token).toMatch(/\S{16,}/)
-    expect(t.st.partnerPatch.payout_details_token).not.toBe(t.st.partnerPatch.dashboard_token)
+    expect(t.st.partnerPatch.payout_token_hash).not.toBe(t.st.partnerPatch.dashboard_token)
     expect(t.st.codePatch).toEqual({ active: false })
     expect(t.st.audits[0]).toMatchObject({ action: 'partner.anonymized' })
   })

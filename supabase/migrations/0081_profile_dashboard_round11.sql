@@ -20,4 +20,5 @@ create index if not exists idx_scans_user_display_score
 -- Always the LAST statement of a migration: records how far this database has been migrated.
 insert into system_state (key, value)
 values ('schema_version', jsonb_build_object('version', 81, 'applied_at', now()))
-on conflict (key) do update set value = excluded.value, updated_at = now();
+on conflict (key) do update set value = excluded.value, updated_at = now()
+  where coalesce((system_state.value ->> 'version')::int, 0) < 81;   -- never move the version BACKWARDS (a re-run of an older file)

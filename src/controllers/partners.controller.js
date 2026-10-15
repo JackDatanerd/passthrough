@@ -16,6 +16,26 @@ const { z } = require('zod')
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
+
+// The payout link is the WRITE capability of the programme, so — like every other bearer token (reset, verify, anon scan) — it
+// is stored as a sha256 (migration 0087, partners.payout_token_hash). payout_details_token is always written null; the raw token
+// exists only in the link that was emailed. Lookups hash what a visitor presents.
+const payoutTokenFields = async (rawToken) => ({ payout_details_token: null, payout_token_hash: await cryptoLib.sha256(rawToken) })
+
+// Presented token -> [column, value] for an exact-match lookup. Payout tokens are matched on their hash.
+async function tokenLookup(column, token) {
+  return column === 'payout_details_token' ? ['payout_token_hash', await cryptoLib.sha256(token)] : [column, token]
+}
+
+// A stored hash cannot be turned back into a link, so "send / show the payout link" mints a fresh token (the old
+// link stops working — the same effect as the admin Regenerate button) and returns the raw token for that one use.
+async function issuePayoutToken(supabase, partnerId) {
+  const raw = cryptoLib.randomToken(32)
+  const { error } = await supabase.from('partners')
+    .update({ ...(await payoutTokenFields(raw)), updated_at: new Date().toISOString() }).eq('id', partnerId)
+  if (error) throw error
+  return raw
+}
 const emailService = require('../services/email.service')
 const { recentCycles, cycleKey } = require('../lib/cycles')
 const { logAdminAction } = require('../lib/adminAudit')
@@ -313,7 +333,7 @@ async function createPartnerRecord(ctx, supabase, { name, email, commissionRate,
   const token = cryptoLib.randomToken(32)
 
   const { data, error } = await supabase.from('partners').insert({
-    name, email, payout_details_token: token, dashboard_token: cryptoLib.randomToken(32),
+    name, email, ...(await payoutTokenFields(token)), dashboard_token: cryptoLib.randomToken(32),
     ...(commissionRate != null ? { commission_rate: commissionRate } : {}),
     ...(website ? { website } : {}), ...(audience ? { audience } : {}),
     ...(termsAcceptedAt ? { terms_accepted_at: termsAcceptedAt, terms_version: termsVersion || null } : {})
@@ -431,7 +451,7 @@ async function adminUpdatePartner(ctx) {
   const emailChanging = body.email !== undefined && !!before?.email && body.email.toLowerCase() !== before.email.toLowerCase()
   const rotatedToken  = emailChanging ? cryptoLib.randomToken(32) : null
   const rotatedDashToken = emailChanging ? cryptoLib.randomToken(32) : null
-  if (rotatedToken) { patch.payout_details_token = rotatedToken; patch.dashboard_token = rotatedDashToken }
+  if (rotatedToken) { Object.assign(patch, await payoutTokenFields(rotatedToken)); patch.dashboard_token = rotatedDashToken }
   // Round 11 (bug): erasure could only clean the CURRENT address from the mail history. Keep the ones a partner
   // used to have (lower-cased, de-duplicated) so adminAnonymizePartner can clean them too; cleared on erasure.
   if (emailChanging) {
@@ -768,7 +788,7 @@ async function adminResendPayoutLink(ctx) {
   const resendBody = typeof ctx.req.json === 'function' ? await ctx.req.json().catch(() => null) : null
   const resendScope = resendBody && resendBody.scope === 'dashboard' ? 'dashboard' : 'payout'
   const { data: partner, error } = await supabase
-    .from('partners').select('name, email, payout_details_token, dashboard_token').eq('id', partnerId).maybeSingle()
+    .from('partners').select('name, email, dashboard_token').eq('id', partnerId).maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
@@ -783,7 +803,7 @@ async function adminResendPayoutLink(ctx) {
       ...(sentDash ? {} : { dashboardUrl }) })
   }
 
-  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
+  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${await issuePayoutToken(supabase, partnerId)}`
   const sent = await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl)
   // AUDIT FIX (feature gap): payout_details_token is deliberately stripped
   // out of partnerRowToCamel everywhere (see mappers.js) so the raw token
@@ -840,7 +860,7 @@ async function adminRegeneratePayoutLink(ctx) {
 
   const { data: partner, error } = await supabase
     .from('partners')
-    .update({ ...(rotatePayout ? { payout_details_token: newPayoutToken } : {}), ...(rotateDash ? { dashboard_token: newDashToken } : {}) })
+    .update({ ...(rotatePayout ? await payoutTokenFields(newPayoutToken) : {}), ...(rotateDash ? { dashboard_token: newDashToken } : {}) })
     .eq('id', partnerId)
     .select('name, email')
     .maybeSingle()
@@ -878,15 +898,19 @@ async function adminGetPartnerLinks(ctx) {
   const partnerId = ctx.req.param('id')
   const supabase = getSupabase(ctx.env)
   const { data: partner, error } = await supabase
-    .from('partners').select('email, dashboard_token, payout_details_token').eq('id', partnerId).maybeSingle()
+    .from('partners').select('email, dashboard_token').eq('id', partnerId).maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
   ctx.header('Cache-Control', 'no-store')
-  await logAdminAction(ctx, supabase, 'partner.links_viewed', 'partner', partnerId, {})
+  // ?scope=dashboard reads the (plain-stored) dashboard link only. Otherwise the payout link is wanted too, and it is
+  // stored hashed — so it is re-issued here (the previously emailed payout link stops working).
+  const dashboardOnly = ctx.req.query && ctx.req.query('scope') === 'dashboard'
+  const payoutToken = dashboardOnly ? null : await issuePayoutToken(supabase, partnerId)
+  await logAdminAction(ctx, supabase, 'partner.links_viewed', 'partner', partnerId, { payoutRotated: !dashboardOnly })
   return ctx.json({ success: true, data: {
     dashboardUrl: `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`,
-    payoutUrl:    `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
+    ...(payoutToken ? { payoutUrl: `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${payoutToken}` } : {})
   } })
 }
 
@@ -1325,141 +1349,71 @@ async function recordPayoutCore(ctx, supabase, partnerId, body, reply, opts = {}
     if (!times.length) return {}
     return { start: new Date(Math.min(...times)).toISOString().slice(0, 10), end: new Date(Math.max(...times)).toISOString().slice(0, 10) }
   })()
-  const { data: payout, error } = await supabase.from('payouts').insert({
-    partner_id:              partnerId,
-    amount_cents:            amountCents,
-    currency,
-    payout_method:           payoutMethod,
-    payout_details_snapshot: partner.payout_details || {},
-    settled_commission_cents: owedCents,
-    note:                    body.note || null,
-    internal_note:           body.internalNote || null,
-    // Round 10: a batch ('ready') or ad hoc payout stored no period at all, so the payout history could not say
-    // which sales a payout covered. With no explicit cycle the span is taken from the sales it actually settles.
-    period_start:            body.periodStart ? body.periodStart.slice(0, 10) : (settledSpan.start || null),
-    period_end:              body.periodEnd   ? body.periodEnd.slice(0, 10)   : (settledSpan.end || null)
-  }).select('*').single()
+  // ONE transaction (0087 record_payout_settlement): lock the partner, insert the payout, claim exactly the ledger rows that are
+  // STILL unpaid and belong to this partner, and — when a concurrent payout had already taken some of them — correct the
+  // figures or discard the payout, all before anything is visible. This used to be an insert, a chunked claim and a hand-rolled
+  // compensation (delete / patch / alert) over separate PostgREST calls, so a failure in the middle left a payout whose commission
+  // was still "owed" (and would be paid again in the next run).
+  const ledgerIds = unpaidLedger.map(l => l.id)
+  const { data: settlement, error } = await supabase.rpc('record_payout_settlement', {
+    p_partner_id: partnerId,
+    p_ledger_ids: ledgerIds,
+    p_payout: {
+      amount_cents:             amountCents,
+      currency,
+      payout_method:            payoutMethod,
+      payout_details_snapshot:  partner.payout_details || {},
+      settled_commission_cents: owedCents,
+      note:                     body.note || null,
+      internal_note:            body.internalNote || null,
+      // Round 10: a batch ('ready') or ad hoc payout stored no period at all, so the payout history could not say
+      // which sales a payout covered. With no explicit cycle the span is taken from the sales it actually settles.
+      period_start:             body.periodStart ? body.periodStart.slice(0, 10) : (settledSpan.start || null),
+      period_end:               body.periodEnd   ? body.periodEnd.slice(0, 10)   : (settledSpan.end || null)
+    },
+    p_discard_if_empty: autoAmount,
+    p_amount_is_auto:   body.amountCents == null
+  })
   if (error) throw error
 
-  let payoutRow = payout
-  let racedWithConcurrentPayout = false
-  let ledgerSettlementFailed = false
+  let payoutRow = settlement.payout
+  const claimedCount = settlement.claimed || 0
+  const racedWithConcurrentPayout = settlement.requested > 0 && claimedCount < settlement.requested
+  // The settlement is all-or-nothing now: a failure above throws and records nothing, so this can only ever be false.
+  const ledgerSettlementFailed = false
 
-  if (unpaidLedger.length > 0) {
-    const ledgerIds = unpaidLedger.map(l => l.id)
-    // Atomic claim: only settle rows that are STILL unpaid at the moment of
-    // this write, not just at the moment of the read above. `.select()`
-    // reports exactly which ones this call won.
-    const claimRows = ids => selectInChunks(part => supabase.from('commission_ledger')
-      .update({ payout_id: payout.id })
-      .in('id', part)
-      .is('payout_id', null)
-      .select('id, commission_amount_cents'), ids)
-    let { data: claimed, error: settleErr } = await claimRows(ledgerIds)
-    if (settleErr) {
-      // A later chunk can fail after earlier chunks were already claimed. Settle only what is left, once, before
-      // alarming anyone: a one-off DB blip then costs nothing, and the alert below can say exactly how far it got.
-      const got = new Set((claimed || []).map(r => r.id))
-      const retry = await claimRows(ledgerIds.filter(id => !got.has(id)))
-      claimed = [...(claimed || []), ...(retry.data || [])]
-      settleErr = retry.error
-    }
-    if (settleErr) {
-      // AUDIT FIX (bug): this used to be console.error only, with the
-      // function still returning success:true and a payout row that CLAIMS
-      // these commissions were settled. They weren't — payout_id is still
-      // null on every one of them, so they're still "unpaid" and will be
-      // pulled into this partner's NEXT payout run too, double-counting
-      // real money the admin already sent once. The payout row itself
-      // isn't rolled back (it genuinely happened), but unlike the "raced"
-      // branch below this failure mode had no owner alert at all.
-      console.error('adminRecordPayout ledger settlement:', settleErr.message)
-      ledgerSettlementFailed = true
-      try {
-        // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId — this
-        // subject is a fixed string shared across every partner, so without
-        // a per-partner dedupeKey, a ledger-settlement failure on a SECOND
-        // partner's payout inside the same 10-minute window (a plausible DB
-        // blip hitting an admin's whole payout-run session) would silently
-        // never reach the owner — exactly the "books may be wrong" case this
-        // alert exists for.
-        await emailService.sendOwnerAlert(ctx.env,
-          'Payout recorded but commission-ledger settlement failed — books may be wrong',
-          `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\namount recorded: ${payoutRow.amount_cents} cents\n` +
-          `ledger rows this payout was supposed to settle: ${ledgerIds.length} (already marked paid before the failure: ${claimed?.length || 0})\nerror: ${settleErr.message}\n\n` +
-          `The payout row was created (real money was already sent), but marking ${(claimed?.length || 0) ? 'the REMAINING' : 'these'} commission_ledger rows ` +
-          `as paid failed — they still show as UNPAID and may be pulled into a future payout for this partner, ` +
-          `double-counting this money. Check commission_ledger for partner_id=${partnerId} with payout_id null ` +
-          `and created before this payout, and settle them by hand if this payout already covers them.`,
-          { dedupeKey: partnerId }
-        )
-      } catch (_) {}
-    } else if ((claimed?.length || 0) < ledgerIds.length) {
-      // A concurrent adminRecordPayout call for this same partner claimed
-      // some (or all) of these rows first. This payout row already exists
-      // and genuinely happened (admin sent real money) — it isn't rolled
-      // back — but if its amount wasn't explicitly typed in, it must be
-      // corrected to reflect only what THIS payout actually settled, or the
-      // books would show commissions counted under two different payouts.
-      racedWithConcurrentPayout = true
-      const actuallySettledCents = (claimed || []).reduce((sum, l) => sum + l.commission_amount_cents, 0)
-      // Auto-computed amount and this call won NOTHING (a concurrent payout took
-      // every row): this payout is a phantom — keep no row, send no "payout on its
-      // way" email, tell the admin plainly.
-      if (autoAmount && (claimed || []).length === 0) {
-        const { error: delErr } = await supabase.from('payouts').delete().eq('id', payout.id)
-        if (delErr) console.error('adminRecordPayout phantom payout cleanup:', delErr.message)
-        try {
-          await emailService.sendOwnerAlert(ctx.env,
-            'Payout recording lost a race — duplicate payout discarded',
-            `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}${delErr ? ' (cleanup FAILED — delete this row by hand)' : ' (row removed)'}\n\n` +
-            `Two payout recordings overlapped for this partner and the other one settled every commission. ` +
-            `Check the payout history before sending any more money.`, { dedupeKey: partnerId })
-        } catch (_) {}
-        return reply({ success: false, code: 'PAYOUT_RACED',
-          message: 'Another payout was recorded for this partner at the same moment and already settled everything. Nothing was recorded here — check the payout history before sending any more money.' }, 409)
-      }
-      // One update carries both the true settled figure and (when the amount
-      // was auto-computed) the corrected amount.
-      const settledPatch = { settled_commission_cents: actuallySettledCents }
-      if (body.amountCents == null) {
-        // Only when the amount was truly omitted: a typed amount is what the admin actually
-        // transferred, so it is never rewritten (the owner alert below flags the mismatch).
-        settledPatch.amount_cents = actuallySettledCents
-      }
-      {
-        // Note (Section 9/10 pass): claimed rows can include unpaid reversal
-        // rows (negative commission_amount_cents — see fulfillment.service.js),
-        // so actuallySettledCents can in theory come out <= 0 here even though
-        // the pre-check earlier required owedCents > 0 at READ time — that's
-        // exactly the race this whole branch exists to handle. If it does,
-        // 0031's payouts_amount_cents_nonnegative constraint will reject this
-        // update; correctErr below already logs and falls through without
-        // throwing, so payoutRow just keeps its original (now-known-wrong)
-        // amount and the owner alert further down still fires either way.
-        const { data: corrected, error: correctErr } = await supabase.from('payouts')
-          .update(settledPatch).eq('id', payout.id).select('*').maybeSingle()
-        if (correctErr) console.error('adminRecordPayout amount correction:', correctErr.message)
-        else if (corrected) payoutRow = corrected
-      }
-      try {
-        // AUDIT FIX (Section 3/4 re-audit, bug): dedupeKey: partnerId — same
-        // fix as the ledger-settlement-failure alert above. Low-likelihood
-        // across different partners, but a busy multi-partner payout
-        // session is exactly when it'd matter most.
-        await emailService.sendOwnerAlert(ctx.env,
-          'Payout recording raced a concurrent payout for the same partner',
-          `partner: ${partner.name} <${partner.email}>\npayout id: ${payout.id}\n` +
-          `ledger rows requested: ${ledgerIds.length}\nledger rows this payout actually claimed: ${claimed?.length || 0}\n` +
-          `recorded amount: ${payoutRow.amount_cents} cents\n\n` +
-          `Another payout for this partner was recorded at almost the same moment (double-click, or two admin sessions). ` +
-          `This payout's amount was ${body.amountCents == null ? 'automatically corrected to' : 'left as manually entered, despite'} ` +
-          `only ${claimed?.length || 0} of ${ledgerIds.length} conversion(s) actually being available to settle here — ` +
-          `review both payouts for this partner before their next payout run.`,
-          { dedupeKey: partnerId }
-        )
-      } catch (_) {}
-    }
+  if (settlement.discarded) {
+    // Auto-computed amount and this call won NOTHING (a concurrent payout took every row): this payout is a phantom —
+    // nothing was kept, no "payout on its way" email is sent, the admin is told plainly.
+    try {
+      await emailService.sendOwnerAlert(ctx.env,
+        'Payout recording lost a race — duplicate payout discarded',
+        `partner: ${partner.name} <${partner.email}>\n\n` +
+        `Two payout recordings overlapped for this partner and the other one settled every commission. ` +
+        `Nothing was recorded by this call. Check the payout history before sending any more money.`, { dedupeKey: partnerId })
+    } catch (_) {}
+    return reply({ success: false, code: 'PAYOUT_RACED',
+      message: 'Another payout was recorded for this partner at the same moment and already settled everything. Nothing was recorded here — check the payout history before sending any more money.' }, 409)
+  }
+
+  if (racedWithConcurrentPayout) {
+    // A concurrent payout for this same partner claimed some of these rows first. The payout row genuinely happened (the admin
+    // sent real money) so it is kept, with its figures already corrected inside the transaction: settled_commission_cents is
+    // what THIS payout really settled, and amount_cents too when the amount was omitted (a typed amount is what was actually
+    // transferred, so it is never rewritten — the alert below flags the mismatch).
+    try {
+      await emailService.sendOwnerAlert(ctx.env,
+        'Payout recording raced a concurrent payout for the same partner',
+        `partner: ${partner.name} <${partner.email}>\npayout id: ${payoutRow.id}\n` +
+        `ledger rows requested: ${settlement.requested}\nledger rows this payout actually claimed: ${claimedCount}\n` +
+        `recorded amount: ${payoutRow.amount_cents} cents\n\n` +
+        `Another payout for this partner was recorded at almost the same moment (double-click, or two admin sessions). ` +
+        `This payout's amount was ${body.amountCents == null ? 'automatically corrected to' : 'left as manually entered, despite'} ` +
+        `only ${claimedCount} of ${settlement.requested} conversion(s) actually being available to settle here — ` +
+        `review both payouts for this partner before their next payout run.`,
+        { dedupeKey: partnerId }
+      )
+    } catch (_) {}
   }
 
   // The payout already happened in real life (admin sent it before
@@ -1563,7 +1517,8 @@ function partnerTokenOf(ctx) {
 // Two sequential exact-match lookups — never a user-supplied string inside an or() filter.
 async function findPartnerByAnyToken(supabase, token, columns) {
   for (const [column, which] of [['dashboard_token', 'dashboard'], ['payout_details_token', 'payout']]) {
-    const { data, error } = await supabase.from('partners').select(columns).eq(column, token).maybeSingle()
+    const [col, val] = await tokenLookup(column, token)
+    const { data, error } = await supabase.from('partners').select(columns).eq(col, val).maybeSingle()
     if (error) throw error
     if (data) return { partner: data, scope: which }
   }
@@ -1590,7 +1545,7 @@ async function getPartnerByToken(ctx) {
   const { data: partner, error } = await supabase
     .from('partners')
     .select('name, payout_method, payout_details, payout_details_submitted_at, dashboard_token')
-    .eq('payout_details_token', token)
+    .eq('payout_token_hash', await cryptoLib.sha256(token))
     .maybeSingle()
   if (error) throw error
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
@@ -1682,7 +1637,7 @@ async function submitPayoutDetails(ctx) {
   // Round 6: read what is being replaced so the owner alert can say WHAT changed (method + last 4 of the
   // account / phone, old -> new) — "details changed" alone gave nothing to check against the partner.
   const { data: previous, error: prevErr } = await supabase.from('partners')
-    .select('payout_method, payout_details').eq('payout_details_token', token).maybeSingle()
+    .select('payout_method, payout_details').eq('payout_token_hash', await cryptoLib.sha256(token)).maybeSingle()
   if (prevErr) throw prevErr
   if (!previous) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
 
@@ -1701,7 +1656,7 @@ async function submitPayoutDetails(ctx) {
       payout_details_submitted_at:  changedAt,
       updated_at:                    changedAt
     })
-    .eq('payout_details_token', token)
+    .eq('payout_token_hash', await cryptoLib.sha256(token))
     .select('name, email')
     .maybeSingle()
   if (error) throw error
@@ -1806,6 +1761,7 @@ async function getPartnerDashboard(ctx) {
   // filter. `scope` tells the page whether the holder may edit payout details directly.
   let partner = null, error = null, scope = 'dashboard'
   for (const [column, which] of [['dashboard_token', 'dashboard'], ['payout_details_token', 'payout']]) {
+    const [lookupCol, lookupVal] = await tokenLookup(column, token)
     const res = await supabase
     .from('partners')
     .select(`
@@ -1814,7 +1770,7 @@ async function getPartnerDashboard(ctx) {
       commission_ledger(id, payment_id, partner_id, referral_code_id, gross_amount_cents, commission_rate, commission_amount_cents, payout_id, reverses_ledger_id, reversal_reason, kind, adjustment_reason, attribution_source, created_at, payments(status)),
       payouts(id, partner_id, amount_cents, currency, payout_method, status, note, settled_commission_cents, period_start, period_end, paid_at, created_at, voided_at)
     `)
-    .eq(column, token)
+    .eq(lookupCol, lookupVal)
     // AUDIT FIX (feature gap): these three sub-selects came back in whatever
     // order Postgres felt like — adminGetPartner already orders the same
     // three relations for exactly this reason (a partner-facing "recent
@@ -2011,13 +1967,15 @@ async function requestPayoutLink(ctx) {
   const supabase = getSupabase(ctx.env)
   let partner = null
   for (const column of ['dashboard_token', 'payout_details_token']) {
+    const [col, val] = await tokenLookup(column, token)
     const { data, error } = await supabase.from('partners')
-      .select('name, email, payout_details_token').eq(column, token).maybeSingle()
+      .select('id, name, email').eq(col, val).maybeSingle()
     if (error) throw error
     if (data) { partner = data; break }
   }
   if (!partner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
-  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${partner.payout_details_token}`
+  if (isRemovedEmail(partner.email)) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+  const payoutUrl = `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${await issuePayoutToken(supabase, partner.id)}`
   // Own quota key: the partner's button must not share a 4-per-hour budget with admin
   // create/resend of the same template (round 5).
   await emailService.sendPartnerPayoutDetailsRequest(ctx.env, supabase, partner.email, partner.name, payoutUrl, { quotaKey: 'partner_payout_link_self' }).catch(() => {})
@@ -2324,8 +2282,8 @@ async function adminRejectApplication(ctx) {
 // keeps the payout row (audit trail) with voided_at set and RELEASES the ledger rows it
 // settled (payout_id back to NULL), so the commission is owed again and every payable /
 // pending / dashboard figure — all derived from ledger.payout_id — corrects itself.
-// Idempotent and resumable: the claim is atomic, and the release step is re-run on a repeat
-// call, so a failure between the two can simply be retried.
+// One transaction (0087 void_payout): the void mark and the release commit together, and a repeat call on a
+// payout that is already void simply re-confirms the release.
 const voidPayoutSchema = z.object({
   reason:        z.string().trim().min(3, 'Say why this payout is being voided.').max(300),
   notifyPartner: z.boolean().optional()
@@ -2343,22 +2301,16 @@ async function adminVoidPayout(ctx) {
   if (error) throw error
   if (!payout) return ctx.json({ success: false, message: 'Payout not found.' }, 404)
 
-  let alreadyVoided = !!payout.voided_at
-  if (!alreadyVoided) {
-    const { data: claimed, error: claimErr } = await supabase.from('payouts')
-      .update({ voided_at: new Date().toISOString(), void_reason: body.reason })
-      .eq('id', payoutId).is('voided_at', null).select('id').maybeSingle()
-    if (claimErr) throw claimErr
-    if (!claimed) alreadyVoided = true   // a concurrent void won the claim; just finish the release
-  }
-
-  const { data: released, error: relErr } = await supabase.from('commission_ledger')
-    .update({ payout_id: null }).eq('payout_id', payoutId).select('id')
-  if (relErr) {
-    console.error('adminVoidPayout ledger release:', relErr.message)
-    return ctx.json({ success: false,
-      message: 'The payout was marked void, but releasing its commission rows failed. Run "Void" again to finish — the commission is not owed again until that succeeds.' }, 500)
-  }
+  // ONE transaction (0087 void_payout): mark the payout void AND release the ledger rows it settled. A repeat call on a payout that
+  // is already void just re-confirms the release. (This used to be a claim UPDATE followed by a separate release UPDATE, with a
+  // "run Void again" message for when the second one failed in between.)
+  const { data: voided, error: voidErr } = await supabase.rpc('void_payout', {
+    p_payout_id: payoutId, p_partner_id: partnerId, p_reason: body.reason
+  })
+  if (voidErr) throw voidErr
+  if (!voided) return ctx.json({ success: false, message: 'Payout not found.' }, 404)
+  const alreadyVoided = !!voided.already_voided
+  const released = Array.from({ length: voided.released || 0 })
 
   if (!alreadyVoided) {
     await logAdminAction(ctx, supabase, 'partner.payout_voided', 'payout', payoutId, {
@@ -2645,7 +2597,7 @@ async function adminAnonymizePartner(ctx) {
     name: 'Removed partner', email: `partner-${partnerId}@${REMOVED_EMAIL_DOMAIN}`, status: 'PAUSED',
     payout_method: null, payout_details: null, payout_details_submitted_at: null,
     website: null, audience: null, notify_conversions: false, internal_notes: null,
-    payout_details_token: cryptoLib.randomToken(32), dashboard_token: cryptoLib.randomToken(32),
+    ...(await payoutTokenFields(cryptoLib.randomToken(32))), dashboard_token: cryptoLib.randomToken(32),
     previous_emails: [],
     updated_at: new Date().toISOString()
   }).eq('id', partnerId)
@@ -2745,8 +2697,9 @@ async function resetMyPartnerLinks(ctx) {
   const supabase = getSupabase(ctx.env)
   let partner = null, column = null
   for (const col of ['dashboard_token', 'payout_details_token']) {
+    const [lookupCol, lookupVal] = await tokenLookup(col, token)
     const { data, error } = await supabase.from('partners')
-      .select('id, name, email, dashboard_token, payout_details_token').eq(col, token).maybeSingle()
+      .select('id, name, email, dashboard_token, payout_token_hash').eq(lookupCol, lookupVal).maybeSingle()
     if (error) throw error
     if (data) { partner = data; column = col; break }
   }
@@ -2754,8 +2707,8 @@ async function resetMyPartnerLinks(ctx) {
 
   const newDash = cryptoLib.randomToken(32), newPayout = cryptoLib.randomToken(32)
   const { data: swapped, error: swapErr } = await supabase.from('partners')
-    .update({ dashboard_token: newDash, payout_details_token: newPayout, updated_at: new Date().toISOString() })
-    .eq('id', partner.id).eq(column, token).select('id').maybeSingle()
+    .update({ dashboard_token: newDash, ...(await payoutTokenFields(newPayout)), updated_at: new Date().toISOString() })
+    .eq('id', partner.id).eq(...(await tokenLookup(column, token))).select('id').maybeSingle()
   if (swapErr) throw swapErr
   if (!swapped) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
 
@@ -2764,8 +2717,8 @@ async function resetMyPartnerLinks(ctx) {
   if (!emailed) {
     // Put the old links back (only if nothing else rotated them meanwhile) rather than strand the partner.
     const { error: undoErr } = await supabase.from('partners')
-      .update({ dashboard_token: partner.dashboard_token, payout_details_token: partner.payout_details_token })
-      .eq('id', partner.id).eq('dashboard_token', newDash).eq('payout_details_token', newPayout)
+      .update({ dashboard_token: partner.dashboard_token, payout_token_hash: partner.payout_token_hash })
+      .eq('id', partner.id).eq('dashboard_token', newDash).eq('payout_token_hash', await cryptoLib.sha256(newPayout))
     if (undoErr) console.error('resetMyPartnerLinks undo:', undoErr.message)
     return ctx.json({ success: false, code: 'EMAIL_FAILED',
       message: 'We couldn\u2019t send your new links, so nothing was changed. Please try again in a few minutes.' }, 502)

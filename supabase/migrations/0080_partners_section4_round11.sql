@@ -11,4 +11,5 @@ alter table partners
 -- (Added by database round 2: this migration shipped without it, so the schema_version guard could not pass.)
 insert into system_state (key, value)
 values ('schema_version', jsonb_build_object('version', 80, 'applied_at', now()))
-on conflict (key) do update set value = excluded.value, updated_at = now();
+on conflict (key) do update set value = excluded.value, updated_at = now()
+  where coalesce((system_state.value ->> 'version')::int, 0) < 80;   -- never move the version BACKWARDS (a re-run of an older file)

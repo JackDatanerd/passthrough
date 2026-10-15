@@ -48,7 +48,50 @@ function createFakeSupabase(resolver = () => undefined) {
   function rpc(name, args) {
     const q = { table: null, op: 'rpc', name, args, filters: [] }
     calls.push(q)
-    return Promise.resolve(resolver(q)).then(r => r ?? { data: null, error: null })
+    return Promise.resolve(resolver(q)).then(r => {
+      if (r !== undefined) return r
+      if (name === 'record_payout_settlement') return emulateRecordPayoutSettlement(args)
+      return { data: null, error: null }
+    })
+  }
+
+  // The resolver of a test written before migration 0087 stubs the individual PostgREST calls the old controller made
+  // (payouts insert / commission_ledger claim / payouts patch or delete). When it does not answer the
+  // record_payout_settlement RPC itself, replay the RPC's body against those stubs — same statements, same order as the SQL
+  // function — so those tests keep asserting the settlement behaviour. Real SQL behaviour is covered by migrations.0087.pglite.test.js.
+  async function emulateRecordPayoutSettlement(a) {
+    const step = async (table, op, extra) => {
+      const sub = { table, op, filters: [], orders: [], patch: null, values: null, cols: '*', single: false, maybe: false, returning: true, ...extra }
+      calls.push(sub)
+      return (await resolver(sub)) ?? { data: null, error: null }
+    }
+    const ins = await step('payouts', 'insert', { values: { partner_id: a.p_partner_id, ...a.p_payout }, single: true })
+    if (ins.error) return { data: null, error: ins.error }
+    let payout = ins.data
+    const ids = a.p_ledger_ids || []
+    let claimed = []
+    if (ids.length) {
+      const c = await step('commission_ledger', 'update', {
+        patch: { payout_id: payout.id },
+        filters: [['in', 'id', ids], ['eq', 'partner_id', a.p_partner_id], ['is', 'payout_id', null]],
+      })
+      if (c.error) return { data: null, error: c.error }
+      claimed = c.data || []
+    }
+    const claimedCents = claimed.reduce((n, r) => n + (r.commission_amount_cents || 0), 0)
+    let discarded = false
+    if (claimed.length < ids.length) {
+      if (a.p_discard_if_empty && claimed.length === 0) {
+        await step('payouts', 'delete', { filters: [['eq', 'id', payout.id]] })
+        discarded = true
+      } else {
+        const patch = { settled_commission_cents: claimedCents, ...(a.p_amount_is_auto ? { amount_cents: claimedCents } : {}) }
+        const u = await step('payouts', 'update', { patch, filters: [['eq', 'id', payout.id]], single: true })
+        if (u.error) return { data: null, error: u.error }
+        payout = u.data || { ...payout, ...patch }
+      }
+    }
+    return { data: { payout, requested: ids.length, claimed: claimed.length, claimed_cents: claimedCents, discarded }, error: null }
   }
 
   return { from, rpc, calls }

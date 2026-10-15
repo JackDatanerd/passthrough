@@ -177,7 +177,8 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
     const db = createFakeSupabase(q => {
       if (q.table !== 'partners') return undefined
       const col = q.filters.find(f => f[0] === 'eq')?.[1]
-      return { data: col === which ? partner : null, error: null }
+      // the payout token is matched on its sha256 column (0087)
+      return { data: col === (which === 'payout_details_token' ? 'payout_token_hash' : which) ? partner : null, error: null }
     })
     const sent = []
     t = loadWithStubs('controllers/partners.controller.js', {
@@ -186,7 +187,7 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
     })
     return { sent, db }
   }
-  const partner = { name: 'K', email: 'k@x.co', payout_details_token: 'WRITE', commission_rate: 0.2, status: 'ACTIVE', referral_codes: [], commission_ledger: [], payouts: [] }
+  const partner = { id: 'p1', name: 'K', email: 'k@x.co', commission_rate: 0.2, status: 'ACTIVE', referral_codes: [], commission_ledger: [], payouts: [] }
 
   it('dashboard opens with the read-only token and reports scope "dashboard"', async () => {
     dash(partner, 'dashboard_token')
@@ -220,8 +221,8 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
     const res = await t.mod.requestPayoutLink(ctxOf({}, { query: { token: 'D' } }))
     expect(res.status).toBe(200)
     expect(sent[0][0]).toBe('k@x.co')
-    expect(sent[0][2]).toContain('/partner/payout-details?token=WRITE')
-    expect(JSON.stringify(res.body)).not.toContain('WRITE')
+    expect(sent[0][2]).toMatch(/\/partner\/payout-details\?token=[0-9a-f]{20,}$/)   // a freshly issued token (the stored one is a hash)
+    expect(JSON.stringify(res.body)).not.toContain(sent[0][2].split('token=')[1])
   })
   it('request-payout-link with a bad token is a 404 and sends nothing', async () => {
     const { sent } = dash(partner, 'nothing')
@@ -237,12 +238,24 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
     expect(JSON.stringify(res.body)).not.toContain('WRITE')
   })
   it('admin links endpoint returns both URLs (no-store) and audit-logs the view', async () => {
-    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: { dashboard_token: 'DASH', payout_details_token: 'WRITE' }, error: null } : undefined))
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: { email: 'k@x.co', dashboard_token: 'DASH' }, error: null } : undefined))
     t = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     const res = await t.mod.adminGetPartnerLinks(ctxOf({}))
     expect(res.body.data.dashboardUrl).toBe('https://app.test/partner/dashboard?token=DASH')
-    expect(res.body.data.payoutUrl).toBe('https://app.test/partner/payout-details?token=WRITE')
+    // the payout token is stored hashed (0087): the link shown is a freshly issued one whose hash is what got stored
+    const raw = res.body.data.payoutUrl.split('token=')[1]
+    expect(raw).toMatch(/^[0-9a-f]{20,}$/)
+    const upd = db.calls.find(q => q.table === 'partners' && q.op === 'update')
+    expect(upd.patch).toMatchObject({ payout_details_token: null, payout_token_hash: require('node:crypto').createHash('sha256').update(raw).digest('hex') })
     expect(db.calls.some(q => q.op === 'insert' && /audit/i.test(q.table))).toBe(true)
+  })
+  it('admin links endpoint with scope=dashboard never rotates the payout link', async () => {
+    const db = createFakeSupabase(q => (q.table === 'partners' ? { data: { email: 'k@x.co', dashboard_token: 'DASH' }, error: null } : undefined))
+    t = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    const res = await t.mod.adminGetPartnerLinks(ctxOf({}, { query: { scope: 'dashboard' } }))
+    expect(res.body.data.dashboardUrl).toBe('https://app.test/partner/dashboard?token=DASH')
+    expect(res.body.data.payoutUrl).toBeUndefined()
+    expect(db.calls.some(q => q.table === 'partners' && q.op === 'update')).toBe(false)
   })
 })
 

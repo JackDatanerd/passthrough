@@ -1,5 +1,6 @@
 -- 0034_employer_lead_confirmation_and_audit.sql
--- Employer leads (Section 5), fix round. Idempotent — safe to re-run.
+-- Employer leads (Section 5), fix round. Safe to re-run ONLY until 0050/0062 change the return types of the two count functions
+-- below (after that, CREATE OR REPLACE here fails: "cannot change return type"). Only migrations 0082 and later are guaranteed re-runnable.
 --
 -- 1. employer_leads.confirmed_at — proof the address belongs to the person who
 --    typed it. The lead form is public and the acknowledgement promises "we'll
