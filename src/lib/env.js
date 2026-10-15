@@ -30,7 +30,8 @@ const FEATURE_SECRETS = {
   OWNER_ALERT_EMAIL:   'owner alert emails (alerts are only stored in alert_logs)',
   PAYSTACK_CALLBACK_URL: 'the post-payment redirect (Paystack falls back to its dashboard setting)',
 }
-const BINDINGS = { RATE_LIMIT_KV: 'rate limiting', RESUMES_BUCKET: 'resume storage (R2)', FIX_QUEUE: 'fix generation queue' }
+const BINDINGS = { RATE_LIMIT_KV: 'rate limiting', RESUMES_BUCKET: 'resume storage (R2)', FIX_QUEUE: 'fix generation queue',
+  BROWSER: 'PDF rendering (paid fixes would ship as DOCX only)' }
 
 const PLACEHOLDER_SECRETS = ['replace_with_minimum_32_char_random_string']
 

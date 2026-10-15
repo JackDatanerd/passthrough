@@ -189,7 +189,9 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   const config = validateEnv(env)
   const bindings = Object.fromEntries(BINDINGS.map(b => [b, !!(env && env[b])]))
   // Both rate-limit backends missing means no limiting at all; the DO alone missing is the degraded KV fallback.
-  const bindingsOk = bindings.RESUMES_BUCKET && bindings.FIX_QUEUE && (bindings.RATE_LIMIT_DO || bindings.RATE_LIMIT_KV)
+  // CROSS-CUTTING INFRA ROUND 10 (bug): BROWSER was listed above but never required here, and validateEnv never warned about it.
+  // Without it every PDF render fails and the caller quietly degrades a paid fix to DOCX-only, while /healthz stayed green.
+  const bindingsOk = bindings.RESUMES_BUCKET && bindings.FIX_QUEUE && bindings.BROWSER && (bindings.RATE_LIMIT_DO || bindings.RATE_LIMIT_KV)
 
   let db = { ok: true }
   try {

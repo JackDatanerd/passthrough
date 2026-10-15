@@ -117,7 +117,7 @@ describe('health: schema version ahead of the code is a note, not a failure (B2)
   })
   it('computeHealth is ok when ahead, and carries the explanation as a note', async () => {
     const db = stateDb({ schema_version: { version: E + 2 }, cron_heartbeat: { at: new Date().toISOString() } })
-    const env = { SUPABASE_URL: 'x', SUPABASE_SERVICE_ROLE_KEY: 'x', JWT_SECRET: 'x'.repeat(40), RESUMES_BUCKET: {}, FIX_QUEUE: {}, RATE_LIMIT_DO: { idFromName: k => k, get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }) }, RATE_LIMIT_KV: {} }
+    const env = { SUPABASE_URL: 'x', SUPABASE_SERVICE_ROLE_KEY: 'x', JWT_SECRET: 'x'.repeat(40), RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {}, RATE_LIMIT_DO: { idFromName: k => k, get: () => ({ fetch: async () => new Response('{}', { status: 200 }) }) }, RATE_LIMIT_KV: {} }
     const h = await computeHealth(env, db)
     expect(h.ok).toBe(true)
     expect(h.problems).toEqual([])

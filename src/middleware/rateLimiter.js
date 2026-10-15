@@ -664,6 +664,14 @@ const draftDownload = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// CROSS-CUTTING INFRA ROUND 10 (bug): GET /scan/:id/cover-letter (a plain stored-file download) shared `draftDownload` with
+// the resume draft downloads - the same fate-sharing split elsewhere in this file. Own bucket, same size.
+const coverLetterDownload = makeLimiter({
+  keyBy: byAccount,
+  windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:coverletterdl',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 // AUDIT FIX (Profile & Dashboard pass, bug): GET /profile/download-pdf and /download-docx ran through
 // pdfRegen / draftDownload — the same KV buckets as a scan's regenerate-pdf and draft downloads. Pulling
 // the main profile plus four extra profiles as PDF spent 5 of the 8 pdfRegen slots, leaving a paying
@@ -1117,7 +1125,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,
