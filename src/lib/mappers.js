@@ -104,6 +104,11 @@ function scanRowToCamel(row) {
     // (grant_fix_credit_once). Both are written only by those RPCs.
     fixJobLockUntil:   row.fix_job_lock_until ?? null,
     fixCreditRound:    row.fix_credit_round ?? null,
+    // Migration 0092: once-only marker for the compensating credit of a failed Badge -> Fix upgrade.
+    upgradeCreditGrantedAt: row.upgrade_credit_granted_at ?? null,
+    // When the CURRENT scan attempt began: a retry spends a new slot long after created_at, and the waiting
+    // screen's clock / stalled warning must count from then, not from the original creation.
+    scanStartedAt:     row.scan_slot_spent_at ?? row.created_at ?? null,
     passed:              row.passed,
     keywordScore:        row.keyword_score,
     formatScore:         row.format_score,
@@ -180,7 +185,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'resumePath', 'resumeAtsPath', 'resumePdfPath',        // storage keys
   'resumeHashHistory', 'fixPaymentId',
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
-  'fixJobLockUntil', 'fixCreditRound', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
+  'fixJobLockUntil', 'fixCreditRound', 'upgradeCreditGrantedAt', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
   'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
 ]
 const CLIENT_SCAN_FIELDS = [
@@ -192,7 +197,7 @@ const CLIENT_SCAN_FIELDS = [
   'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'userId',
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
   'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt',
-  'scanStage', 'fixProgress',                            // waiting-screen telemetry (0088); no resume content in either
+  'scanStartedAt', 'scanStage', 'fixProgress',           // waiting-screen telemetry (0088); no resume content in either
 ]
 // Allow-list: only CLIENT_SCAN_FIELDS get out, whatever else scanRowToCamel grows.
 function toClientScan(scan) {

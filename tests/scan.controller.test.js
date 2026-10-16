@@ -732,7 +732,7 @@ describe('updateResumeData', () => {
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
       'services/resume.parser.js': { extractText: async () => 'x'.repeat(150), serializeResumeData: () => 'synthetic' },
       'services/ats.service.js': { scoreResume: () => (opts.ruleResult ?? { score: 70, keywordScore: 70, formatScore: 70, sectionsScore: 70, contentScore: 70, detail: { keywords: {} } }) },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), extractJson: x => x },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: ({ aiScore: opts.ruleResult?.score ?? 70, missingKeywords: [] }) }), extractJson: x => x },
     })
     return { mod, restore, state }
   }
@@ -1113,7 +1113,7 @@ describe('runAtsScan', () => {
         detectRoleCategory: () => 'engineering',
         detectSeniority: () => 'mid',
       },
-      'services/claude.service.js': { scoreResumeWithAI: async () => opts.aiResult ?? { success: false }, extractJson: x => (typeof x === 'string' ? JSON.parse(x) : x) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => opts.aiResult ?? { success: true, data: ({ aiScore: opts.ruleResult?.score ?? 85, missingKeywords: [] }) }, extractJson: x => (typeof x === 'string' ? JSON.parse(x) : x) },
       'services/email.service.js': {
         sendScanPass: async (...a) => { state.emails.push({ fn: 'sendScanPass', a } ); if (opts.emailThrows) throw opts.emailThrows },
         sendScanFail: async (...a) => { state.emails.push({ fn: 'sendScanFail', a } ); if (opts.emailThrows) throw opts.emailThrows },
@@ -1371,6 +1371,7 @@ describe('generateFix', () => {
     })
     const rewriteCalls = []
     let rewriteCallIdx = 0
+    let lastRule = 70   // the AI mock below mirrors the rule score of the same call, so blended == rule and no number moves
     const env = { RESUMES_BUCKET: {
       get: async () => opts.r2Object ?? { arrayBuffer: async () => new Uint8Array([1]).buffer },
       put: async (key, bytes, meta) => { state.r2Puts.push({ key, meta }) },
@@ -1389,7 +1390,7 @@ describe('generateFix', () => {
         // THAT SAME attempt has already incremented rewriteCallIdx, so the
         // post-increment value is one ahead of "this attempt's" index.
         // opts.scoreFn(n): n = 0 for the baseline (the untouched original, scored before any rewrite), then 1, 2, ... per attempt.
-        scoreResume: () => { if (opts.scoreFn) return { score: opts.scoreFn(rewriteCallIdx), detail: {} }; const idx = Math.max(0, Math.min(rewriteCallIdx - 1, (opts.scoreSequence || []).length - 1)); const r = opts.scoreSequence ? opts.scoreSequence[idx] : (opts.score ?? 90); return { score: r, detail: {} } },
+        scoreResume: () => { if (opts.scoreFn) return { score: (lastRule = opts.scoreFn(rewriteCallIdx)), detail: {} }; const idx = Math.max(0, Math.min(rewriteCallIdx - 1, (opts.scoreSequence || []).length - 1)); const r = opts.scoreSequence ? opts.scoreSequence[idx] : (opts.score ?? 90); lastRule = r; return { score: r, detail: {} } },
         describeWeakAreas: () => ['weak area'],
       },
       'services/claude.service.js': {
@@ -1402,7 +1403,7 @@ describe('generateFix', () => {
         generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false },
         // AUDIT FIX (Auth/Scan round): the fix pipeline now scores candidates
         // like a fresh scan does (rule score blended with the AI opinion).
-        scoreResumeWithAI: async () => opts.aiResult ?? { success: false },
+        scoreResumeWithAI: async () => opts.aiResult ?? { success: true, data: JSON.stringify({ aiScore: lastRule, missingKeywords: [] }) },
         extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': {
@@ -1774,9 +1775,9 @@ describe('generateFix — Auth/Scan audit round', () => {
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
       'services/ats.service.js': { scoreResume: () => ({ score: opts.ruleScore ?? 70, detail: {} }), describeWeakAreas: () => ['weak'] },
       'services/claude.service.js': {
-        rewriteResumeContent: async (...a) => { rewriteCalls.push(a); if (opts.throwOnRewrite) throw new Error('claude exploded'); return { success: true, data: { name: 'Rewritten' }, quantificationOpportunities: [] } },
+        rewriteResumeContent: async (...a) => { rewriteCalls.push(a); if (opts.throwOnRewrite) throw new Error('claude exploded'); return opts.rewriteResult ?? { success: true, data: { name: 'Rewritten' }, quantificationOpportunities: [] } },
         generateBeautifulResumeHTML: async () => { state.html++; return opts.htmlResult ?? { success: true, data: '<html></html>' } },
-        scoreResumeWithAI: async () => opts.aiResult ?? { success: false },
+        scoreResumeWithAI: async () => opts.aiResult ?? { success: true, data: JSON.stringify({ aiScore: opts.ruleScore ?? 70, missingKeywords: [] }) },
         extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': { generateShortCode: async () => 'NEWCODE1', buildVerificationUrl: (e, code) => `https://x/v/${code}`, hashBytes: async () => 'h' },
@@ -1822,6 +1823,19 @@ describe('generateFix — Auth/Scan audit round', () => {
     t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, ruleScore: 70 })
     await t.mod.generateFix(t.env, t.db, 's1')
     expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').fix_ats_score).toBe(70)
+  })
+  it('round 11: with the AI scorer down a high rule score is held under the credential line (no "Verified" on an unblended number)', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' } }, ruleScore: 95, aiResult: { success: false } })
+    await t.mod.generateFix(t.env, t.db, 's1')
+    expect(t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED').fix_ats_score).toBe(79)
+  })
+  it('round 11: a Try Again round that produced nothing hands the retry back AND tells the person (fix_retry_no_gain)', async () => {
+    t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' }, rewritten_resume_data: { name: 'R1' }, resume_ats_path: 'old.docx', fix_retry_count: 1, fix_ats_score: 60 },
+      rewriteResult: { success: false, error: 'PARSE_FAIL' } })
+    const res = await t.mod.generateFix(t.env, t.db, 's1')
+    expect(res).toMatchObject({ success: false, error: 'RETRY_NO_USABLE_REWRITE' })
+    expect(t.state.rpcs.some(r => r.name === 'revert_fix_retry')).toBe(true)
+    expect(t.state.scanUpdates.some(u => u.fix_retry_no_gain === true)).toBe(true)
   })
   it('a crash on a RETRY round reverts via revert_fix_retry (status back to FIX_DELIVERED AND the retry handed back) — not ERROR, no "failed" email — and still alerts the owner', async () => {
     t = fixSetup({ scan: { ...base, original_resume_data: { name: 'J' }, rewritten_resume_data: { name: 'R1' }, resume_ats_path: 'old.docx', fix_retry_count: 1, fix_ats_score: 60 }, throwOnRewrite: true })

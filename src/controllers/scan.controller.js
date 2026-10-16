@@ -258,7 +258,18 @@ async function createScan(ctx) {
     if (srcErr) throw srcErr
     const source = scanRowToCamel(srcRow)
     if (!source) return ctx.json({ success: false, message: 'That scan could not be found.' }, 404)
-    if (source.inputMode === 'file') {
+    // The improved version: a delivered, still-live paid resume (the owner's own edits win) is scanned against the new
+    // job instead of the original upload. Only the structured data is reused - no file is re-parsed.
+    const wantDelivered = String(fields.rescanVersion || '') === 'delivered'
+    const deliveredData = wantDelivered && source.status === 'FIX_DELIVERED' && source.fixPurchased
+      ? (source.userEditedResumeData || source.rewrittenResumeData || null) : null
+    if (wantDelivered && !deliveredData)
+      return ctx.json({ success: false, message: 'That scan has no improved version to reuse.' }, 400)
+    if (wantDelivered && !(await purchaseIsLive(supabase, source)))
+      return ctx.json({ success: false, message: 'That purchase was refunded or is under dispute, so its improved version cannot be reused.' }, 400)
+    if (deliveredData) {
+      rescanData = deliveredData
+    } else if (source.inputMode === 'file') {
       const obj = source.resumePath ? await ctx.env.RESUMES_BUCKET.get(source.resumePath) : null
       if (!obj) return ctx.json({ success: false, message: 'The original file for that scan is no longer stored. Upload it again.' }, 410)
       file = {
@@ -769,26 +780,57 @@ async function refundScanSlot(env, supabase, scan, label, anonRlKey, ipSlotKey =
 // ABOVE what the rules measure is exactly what injection looks like, while
 // honest disagreement stays within a normal range.
 const AI_MAX_ABOVE_RULE = 25
+
+// The AI opinion with ONE second chance. A transient failure (timeout, overloaded, a reply that is not JSON) used to
+// drop the score to rule-only on the spot, so the same resume could score differently - and cross or miss the
+// credential line - depending on the API's mood. Never throws; { success: false } means "no usable AI opinion".
+function aiScoreIsUsable(aiResult) {
+  if (!aiResult?.success) return false
+  try {
+    const parsed = claudeService.extractJson(aiResult.data)
+    return typeof parsed.aiScore === 'number' && Number.isFinite(parsed.aiScore)
+  } catch (_) { return false }
+}
+async function fetchAiScore(env, text, jdText, logLabel) {
+  let last = { success: false }
+  for (let i = 0; i < 2; i++) {
+    try {
+      last = await claudeService.scoreResumeWithAI(env, text, jdText)
+      if (aiScoreIsUsable(last)) return last
+    } catch (e) { console.error(`${logLabel} AI score call failed (attempt ${i + 1}):`, e.message) }
+  }
+  return last
+}
+
+// A score with no AI half is NOT the same measurement as a blended one, so it may never carry the credential:
+// it is held just under the badge line. (The pass line is lower, so a scan still passes/fails on its rule score.)
+// aiBlended says which kind of number this is.
 function blendAiScore(ruleScore, aiResult, logLabel) {
   let finalScore = ruleScore
   let aiMissingKeywords = []
+  let aiBlended = false
   if (aiResult.success) {
     try {
       const parsed = claudeService.extractJson(aiResult.data)
       if (typeof parsed.aiScore === 'number' && Number.isFinite(parsed.aiScore)) {
         const ai = Math.min(Math.max(parsed.aiScore, 0), 100, ruleScore + AI_MAX_ABOVE_RULE)
         finalScore = Math.round((ruleScore * c.ATS_RULE_WEIGHT) + (ai * c.ATS_AI_WEIGHT))
+        aiBlended = true
       }
       if (Array.isArray(parsed.missingKeywords))
         aiMissingKeywords = parsed.missingKeywords
           .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 15)
     } catch (parseErr) {
-      // Non-fatal by design — falls back to rule-only score — but log it
+      // Non-fatal by design - falls back to a rule-only score - but log it
       // so a silent AI-scoring degradation is at least visible in tail.
       console.error(`${logLabel} AI score parse failed, using rule-only score:`, parseErr.message)
     }
   }
-  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords }
+  if (!aiBlended) {
+    console.error(`${logLabel} scored without the AI half - held below the credential threshold`)
+    finalScore = Math.min(finalScore, c.ATS_BADGE_THRESHOLD - 1)
+  }
+  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords, aiBlended }
 }
 
 async function getScan(ctx) {
@@ -927,7 +969,7 @@ async function updateResumeData(ctx) {
   const rawResumeText = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
-  const aiResult = await claudeService.scoreResumeWithAI(ctx.env, rawResumeText, jdText)
+  const aiResult = await fetchAiScore(ctx.env, rawResumeText, jdText, 'updateResumeData')
   const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
   const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
 
@@ -2261,7 +2303,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     const ruleResult = atsService.scoreResume(resumeText, jdText, { structure: layoutStructure })
 
     // AI blend — 70% rule + 30% AI, never fail scan if AI unavailable
-    const aiResult = await claudeService.scoreResumeWithAI(env, resumeText, jdText)
+    const aiResult = await fetchAiScore(env, resumeText, jdText, 'runAtsScan')
     const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
 
     // Checked: this is THE write that completes the scan. If it fails the
@@ -2499,11 +2541,15 @@ async function purchaseIsLive(supabase, scan) {
 }
 const PURCHASE_REVERSED = { success: false, code: 'PURCHASE_REVERSED', message: 'This purchase was refunded or is under dispute, so it can no longer be changed or regenerated.' }
 
-async function grantFixCreditOnce(env, supabase, scan, round, why) {
+async function grantFixCreditOnce(env, supabase, scan, round, why, { upgrade = false } = {}) {
   if (!scan?.userId) return false
   if (!(await purchaseIsLive(supabase, scan))) { console.log(`grantFixCreditOnce: not granting (${why}) — purchase for scan ${scan.id} was reversed`); return false }
   try {
-    const { data, error } = await supabase.rpc('grant_fix_credit_once', { p_scan_id: scan.id, p_user_id: scan.userId, p_round: round })
+    // A Badge -> Fix upgrade runs as round 0, but the Badge delivery before it may already have used round 0's
+    // once-only grant; the upgrade has its own marker so a soft failure of the paid-for upgrade is still compensated.
+    const { data, error } = upgrade
+      ? await supabase.rpc('grant_upgrade_credit_once', { p_scan_id: scan.id, p_user_id: scan.userId })
+      : await supabase.rpc('grant_fix_credit_once', { p_scan_id: scan.id, p_user_id: scan.userId, p_round: round })
     if (error) throw error
     return data !== false
   } catch (creditErr) {
@@ -2556,9 +2602,7 @@ async function cleanupUndeliveredKeys(env, supabase, scanId, keys) {
 async function computeFormattedScore(env, resumeData, jdText, label) {
   const text = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const rule = atsService.scoreResume(text, jdText)
-  let ai = { success: false }
-  try { ai = await claudeService.scoreResumeWithAI(env, text, jdText) }
-  catch (e) { console.error(`${label} AI score call failed, using rule-only score:`, e.message) }
+  const ai = await fetchAiScore(env, text, jdText, label)
   const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, ai, label)
   return { finalScore, aiMissingKeywords, rule }
 }
@@ -2574,9 +2618,7 @@ async function computeFormattedScore(env, resumeData, jdText, label) {
 // other. If the AI call fails this degrades to rule-only, exactly as a scan does.
 async function scoreLikeScan(env, text, jdText, logLabel) {
   const rule = atsService.scoreResume(text, jdText)
-  let aiResult = { success: false }
-  try { aiResult = await claudeService.scoreResumeWithAI(env, text, jdText) }
-  catch (e) { console.error(`${logLabel} AI score call failed, using rule-only score:`, e.message) }
+  const aiResult = await fetchAiScore(env, text, jdText, logLabel)
   const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, aiResult, logLabel)
   return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords }
 }
@@ -2915,6 +2957,9 @@ async function generateFixRun(env, supabase, scanId) {
         console.error(`[CRITICAL] generateFix ${scanId}: revert_fix_retry failed:`, revertErr.message)
         try { await supabase.from('scans').update({ status: 'FIX_DELIVERED' }).eq('id', scanId) } catch (_) {}
       }
+      // The page used to go back to "delivered" with no word that the attempt had produced nothing. Same notice as a
+      // round that found nothing better (the retry itself was handed back, so the person can simply try again).
+      try { await supabase.from('scans').update({ fix_retry_no_gain: true }).eq('id', scanId) } catch (_) {}
       try {
         await emailService.sendOwnerAlert(env, 'generateFix retry round produced no usable rewrite',
           `scanId: ${scanId}\nEvery rewrite attempt in this retry round failed (API/parse/fabrication). The retry was handed back and the previous delivery left untouched.`)
@@ -2968,11 +3013,11 @@ async function generateFixRun(env, supabase, scanId) {
       // A total rewrite failure, not a quality shortfall — compensate every time it happens
       // rather than waiting for retries to run out. Once per round (grantFixCreditOnce), so a
       // re-run of a crashed job can't pay twice.
-      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'rewrite failure')
+      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'rewrite failure', { upgrade: upgradeRound })
     } else if (!isRetry && baselineHeld && producedCandidate && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
       // Round 5 (G2): every rewrite scored BELOW the person's own upload and the upload itself is under the badge
       // threshold - they are handed their original, correctly formatted, and a free credit for another go.
-      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'no rewrite beat the original')
+      await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount || 0, 'no rewrite beat the original', { upgrade: upgradeRound })
     } else if (isRetry && scan.fixRetryCount >= c.MAX_FIX_RETRIES && fixAtsScore < c.ATS_BADGE_THRESHOLD && scan.userId) {
       // Retries are exhausted (this was the last one allowed) and still short of the badge
       // threshold — a free credit for next time. Mutually exclusive with the branch above.
@@ -3392,7 +3437,7 @@ function ledgered(handler) {
 }
 
 // Internals exported for tests only.
-const __test = { coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
+const __test = { blendAiScore, fetchAiScore, coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCreditOnce, deliveredFileStem, buildFailure, refundScanQuota, refundScanSlot, slotSpentAt }
 
 module.exports = {
   __test,

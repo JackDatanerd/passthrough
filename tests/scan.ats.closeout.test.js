@@ -380,7 +380,7 @@ describe('runAtsScan — idempotent claim and structure', () => {
         scoreResume: (text, jd, o) => { state.scored.push(o); return { score: 70, keywordScore: 70, formatScore: 70, sectionsScore: 70, contentScore: 70, detail: {} } },
         detectRoleCategory: () => 'x', detectSeniority: () => 'mid',
       },
-      'services/claude.service.js': { scoreResumeWithAI: async () => { state.ai = (state.ai || 0) + 1; return { success: false } }, extractJson: x => x },
+      'services/claude.service.js': { scoreResumeWithAI: async () => { state.ai = (state.ai || 0) + 1; return { success: true, data: { aiScore: 70, missingKeywords: [] } } }, extractJson: x => x },
       'services/email.service.js': {},
     })
     return { ...m, state, db, env: { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }) } } }
@@ -464,7 +464,7 @@ describe('generateBadge scores what it delivers', () => {
       'services/resume.parser.js': { extractText: async () => 'x'.repeat(200) },
       'services/docx.service.js': { generateAtsDocx: async (d, url, o) => { state.docxCalls.push(o); return Buffer.from('docx') } },
       'services/ats.service.js': { scoreResume: () => ({ score: finalScore, detail: {} }) },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), extractJson: x => x, generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return { success: true, data: '<html></html>' } } },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: { aiScore: finalScore, missingKeywords: [] } }), extractJson: x => x, generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return { success: true, data: '<html></html>' } } },
       'services/design.service.js': { getDesignTokens: () => ({}) },
       'services/badge.service.js': { generateShortCode: async () => 'C', buildVerificationUrl: () => 'https://x/v/C', hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
@@ -513,7 +513,7 @@ describe('small controller fixes', () => {
         'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('d') },
         'services/resume.parser.js': { extractText: async () => 'x'.repeat(150) },
         'services/ats.service.js': { scoreResume: () => ({ score: 70, keywordScore: 70, formatScore: 70, sectionsScore: 70, contentScore: 70, detail: {} }) },
-        'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), extractJson: x => x },
+        'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: { aiScore: 70, missingKeywords: [] } }), extractJson: x => x },
       })
       return { ...m, state }
     }

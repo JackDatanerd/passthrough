@@ -280,7 +280,7 @@ describe('updateDeliveredResume', () => {
       'services/resume.parser.js': { extractText: async () => 'x'.repeat(200) },
       'services/docx.service.js': { generateAtsDocx: async (d, url, o) => { (state.docx ||= []).push(o?.verified === false ? 'unverified' : 'verified'); return Buffer.from('docx') } },
       'services/ats.service.js': { scoreResume: () => ({ score: opts.score ?? 90, detail: {} }), describeWeakAreas: () => [] },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), generateBeautifulResumeHTML: async () => ({ success: false }) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: opts.score ?? 90, missingKeywords: [] }) }), extractJson: x => JSON.parse(x), generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { hashBytes: async () => 'newhash' },
       'services/design.service.js': { getDesignTokens: () => ({}) },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },

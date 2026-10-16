@@ -54,6 +54,7 @@ export default function ScanForm() {
   // always had it). Arrives as /?from=<scanId> from a results page; holds the
   // earlier scan's label once it has loaded.
   const [rescanSource, setRescanSource] = useState(null)
+  const [useImproved, setUseImproved] = useState(false)
   const [file,          setFile         ] = useState(null)
   // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
   // see lib/brainDumpDraft.js. Dropped by ScanResult once a result exists.
@@ -134,6 +135,8 @@ export default function ScanForm() {
         if (cancelled || !d || !['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(d.status)) return
         setRescanSource({
           id: d.id,
+          // A delivered paid resume can be scanned instead of the original upload.
+          hasImproved: d.status === 'FIX_DELIVERED' && !!d.fixPurchased && !!(d.userEditedResumeData || d.rewrittenResumeData),
           label: d.resumeOriginalName
             || (d.inputMode === 'brain_dump' ? 'the background you wrote' : d.inputMode === 'file' ? 'the resume you uploaded' : 'your saved profile'),
         })
@@ -192,6 +195,7 @@ export default function ScanForm() {
         if (profileChoice) formData.append('savedProfileId', profileChoice)
       } else if (entryMode === 'rescan') {
         formData.append('sourceScanId', rescanSource.id)
+        if (rescanSource.hasImproved && useImproved) formData.append('rescanVersion', 'delivered')
       } else if (entryMode === 'manual') {
         formData.append('resumeDataJson', JSON.stringify(manualData))
       } else {
@@ -421,6 +425,12 @@ export default function ScanForm() {
               We'll use <span className="font-medium">{rescanSource.label}</span> again — just add the
               new job description below. This counts as one of your daily free scans.
             </p>
+            {rescanSource.hasImproved && (
+              <label className="mt-2 flex items-start gap-2 text-sm text-gray-700">
+                <input type="checkbox" className="mt-1" checked={useImproved} onChange={e => setUseImproved(e.target.checked)} data-testid="rescan-use-improved" />
+                <span>Scan my improved version instead (the fixed resume we delivered, with any edits you made).</span>
+              </label>
+            )}
           </div>
         )}
 

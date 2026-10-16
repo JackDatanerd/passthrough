@@ -179,7 +179,7 @@ describe('B2 — the owner\'s own edit is the fabrication baseline', () => {
       'services/claude.service.js': {
         rewriteResumeContent: async (...a) => { rewriteCalls.push(a); return { success: true, data: { name: 'Rewritten' }, quantificationOpportunities: [] } },
         generateBeautifulResumeHTML: async () => ({ success: false }),
-        scoreResumeWithAI: async () => ({ success: false }), extractJson: s => JSON.parse(s),
+        scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: 70, missingKeywords: [] }) }), extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': { generateShortCode: async () => 'C', buildVerificationUrl: () => 'https://x/v/C', hashBytes: async () => 'h' },
       'services/design.service.js': { getDesignTokens: () => ({}) },
@@ -302,7 +302,7 @@ describe('G2 — structureResume scores the formatted file before anything is bo
       'services/resume.parser.js': { parse: async () => ({ resumeData: { name: 'Jane Doe', skills: ['Python'] }, parseError: false }), extractText: async () => 'x'.repeat(200) },
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('docx') },
       'services/ats.service.js': { scoreResume: () => ({ score: opts.rule ?? 72, detail: { keywords: { matched: ['a'], missing: [] } } }) },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }), extractJson: s => JSON.parse(s) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: opts.rule ?? 72, missingKeywords: [] }) }), extractJson: s => JSON.parse(s) },
     })
     const env = { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }) } }
     return { mod, restore, state, env }

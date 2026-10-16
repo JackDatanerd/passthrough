@@ -741,7 +741,9 @@ export default function ScanResult() {
   // spinner and "about 30 seconds" until the hourly sweep flipped it to ERROR — up
   // to ~90 minutes of staring at a lie. After three minutes the page says plainly
   // that something is wrong, what will happen, and offers a way out.
-  const stalled = scanning && scan.createdAt && (nowTs - Date.parse(scan.createdAt)) > 3 * 60 * 1000
+  // Count from when THIS attempt began (a retry spends a new slot long after created_at), not from creation.
+  const attemptStartedAt = scan.scanStartedAt || scan.createdAt
+  const stalled = scanning && attemptStartedAt && (nowTs - Date.parse(attemptStartedAt)) > 3 * 60 * 1000
 
   return (
     <div className="min-h-screen flex flex-col bg-gray-50">
@@ -763,7 +765,7 @@ export default function ScanResult() {
         {/* Scanning state */}
         {scanning && (
           <ScanProgress
-            createdAt={scan.createdAt}
+            createdAt={attemptStartedAt}
             stage={scan.scanStage}
             leaveNote={scan.userId ? 'You can leave this page. The scan keeps running and will be in your scans when it finishes.' : null}
           >
