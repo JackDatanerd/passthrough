@@ -24,6 +24,7 @@ import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
 import ScanProgress from '../components/scan/ScanProgress'
 import FixProgress from '../components/scan/FixProgress'
+import DeliveredSummary from '../components/scan/DeliveredSummary'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
 import { useCopy } from '../hooks/useCopy'
@@ -907,6 +908,7 @@ export default function ScanResult() {
             {/* Delivered */}
             {scan.status === 'FIX_DELIVERED' && (
               <div className={`border rounded-xl p-6 ${scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+                <DeliveredSummary scan={scan} />
                 {scan.fixAtsScore >= ATS_BADGE_THRESHOLD ? (
                   <>
                     <p className="font-semibold text-green-900 mb-1">

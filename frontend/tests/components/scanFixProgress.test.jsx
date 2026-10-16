@@ -180,7 +180,7 @@ describe('FixProgress with reported progress', () => {
     const box = screen.getByTestId('fix-attempts').textContent
     expect(box).toContain('Attempt 1: 71')
     expect(box).toContain('Attempt 2: rewriting…')
-    expect(box).toContain(`Aiming for ${ATS_BADGE_THRESHOLD}+`)
+    expect(document.body.textContent).toContain(`Aiming for ${ATS_BADGE_THRESHOLD}+`)
   })
 
   it('marks an attempt that reached the badge line differently from one that fell short', () => {

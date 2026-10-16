@@ -1,5 +1,6 @@
 import ResumeSheet from './ResumeSheet'
 import ProgressSteps from './ProgressSteps'
+import AttemptChips from './AttemptChips'
 import useElapsedSeconds, { currentStep, gateStep } from '../../hooks/useElapsedSeconds'
 import { ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 
@@ -52,21 +53,9 @@ export default function FixProgress({ tier, startedAt, progress, round, children
             You can leave this page. We'll email you when it's ready. Usually under 2 minutes.
           </p>
           <ProgressSteps steps={badge ? BADGE_STEPS : FIX_STEPS} current={current} />
-          {scores.length > 0 && (
-            <div className="mt-3" data-testid="fix-attempts">
-              <div className="flex flex-wrap gap-2">
-                {scores.map((n, i) => (
-                  <span key={i}
-                    className={`text-xs font-semibold rounded-full border px-2.5 py-0.5 ${n >= ATS_BADGE_THRESHOLD ? 'border-green-600 text-green-700' : 'border-gray-300 text-gray-600'}`}>
-                    Attempt {i + 1}: {n}
-                  </span>
-                ))}
-                {retrying && (
-                  <span className="text-xs font-semibold rounded-full border border-blue-300 text-blue-700 px-2.5 py-0.5">
-                    Attempt {live.attempt}: rewriting…
-                  </span>
-                )}
-              </div>
+          {(scores.length > 0 || retrying) && (
+            <div className="mt-3">
+              <AttemptChips scores={scores} working={retrying ? `Attempt ${live.attempt}: rewriting…` : null} />
               {retrying && (
                 <p className="text-xs text-blue-700 mt-2">
                   Aiming for {ATS_BADGE_THRESHOLD}+. The next attempt starts from what the last one missed.

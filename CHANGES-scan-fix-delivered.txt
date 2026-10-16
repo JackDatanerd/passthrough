@@ -1,0 +1,32 @@
+Scan / fix states, round 3: the delivered screen (frontend only, no migration)
+Base: origin/main 1152c57 (rounds 1 and 2 applied). Needs migration 0088 deployed to show the attempt ladder; without it the
+ladder simply stays hidden and everything else works.
+
+WHAT CHANGED
+- New DeliveredSummary at the top of the delivered card (FIX and FIX_PLAIN deliveries only):
+    "84 out of 100, past the 80 line. Up 32 from 52."   or   "76 out of 100, 4 points from the 80."
+  a ScoreRoad with the 75 pass line and the 80 Verified line (a "was" marker shows where it started), and the real attempt ladder
+  from scan.fixProgress.scores ("Attempt 1: 71", "Attempt 2: 76").
+- New ScoreRoad (presentation only; it has a spoken aria-label with both lines) and AttemptChips (now shared with FixProgress).
+- The existing delivered copy, the free retry button, credits, badge-below-threshold and rewrite-failed messages are untouched. The
+  just-short and snag states were already correct (credit granted, retry offered); round 3 adds the picture and the real numbers.
+
+HONESTY RULES
+- Not shown for a badge-only delivery (nothing was rewritten) or a failed rewrite (the original was delivered): neither has a
+  real before-and-after.
+- The ladder only shows attempts the server recorded for THIS paid round (fix_progress.round must equal fix_retry_count); a delivery
+  from before migration 0088, or another round's leftovers, shows the road but no ladder.
+- A paid retry keeps the earlier result when none of this round's attempts beat it. In that case the page says so
+  ("None of this round's attempts beat your earlier result, so you kept that one.") instead of showing a ladder that sits below the score.
+- No "Verified" stamp or other decoration: the existing verified copy already marks it.
+
+NOT IN THIS ROUND
+- The result (verdict) screen before purchase. It sits next to the offer card, tiers and pricing, which you have audited heavily, so it
+  should be its own piece rather than a side effect of this one.
+
+TESTS
+- frontend/tests/components/deliveredSummary.test.jsx (15): when it appears, the wording, ladder rules, kept-earlier note, malformed
+  progress, ScoreRoad label/marker/clamping.
+- frontend/tests/pages/ScanResult.delivered.test.jsx (4): just short, past the line, failed rewrite, pre-0088 delivery.
+- scanFixProgress.test.jsx: one assertion moved with the AttemptChips refactor.
+- frontend/tests/pages + components: 112 files, 845 tests pass; lint 687 files clean; vite build ok.
