@@ -151,8 +151,8 @@ describe('admin_audit_log is append-only', () => {
 
 describe('referral codes are stored upper-case', () => {
   it('refuses a lower-case code', async () => {
-    await expect(db.exec(`insert into referral_codes (partner_id, code, tier_prices) values ('${P1}','lower','{}'::jsonb)`)).rejects.toThrow()
-    await db.exec(`insert into referral_codes (partner_id, code, tier_prices) values ('${P1}','UPPER','{}'::jsonb)`)
+    await expect(db.exec(`insert into referral_codes (partner_id, code, tier_prices) values ('${P1}','lower','{"FIX":1900}'::jsonb)`)).rejects.toThrow()
+    await db.exec(`insert into referral_codes (partner_id, code, tier_prices) values ('${P1}','UPPER','{"FIX":1900}'::jsonb)`)
   })
 })
 

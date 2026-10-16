@@ -1018,3 +1018,12 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #     is running, and the re-drive no longer runs it a second time alongside the live delivery.
 #   * Admin -> Payments: for a fraud-claim dispute press "Send evidence" and then "Contest dispute" — the evidence id is sent along with the contest.
 ```
+
+# DATABASE ROUND 4 (migration 0091 — apply BEFORE deploying this Worker; nothing in the Worker changes, so either order works and the old Worker is unaffected).
+# Schema-level guards for things the app already never does, plus three dead objects removed.
+#   * New CHECKs: free_fix_credits, referral code usage_limit / uses_so_far / clicks, scans.fix_retry_count and employer_leads.submission_count can no
+#     longer be negative (any existing negative value is set to 0 first); referral_codes.tier_prices must be {FIX, BADGE, FIX_PLAIN} -> positive whole
+#     minor units. If a code already holds anything else the constraint is added NOT VALID (new writes are checked, old rows tolerated, a NOTICE says how to list them) — fix those rows, then `alter table referral_codes validate constraint referral_codes_tier_prices_chk;`.
+#   * admin_audit_log: nulling actor_id by hand is refused while the actor still exists (only the account-deletion SET NULL passes), and TRUNCATE is refused.
+#   * partners.payout_details_token can only be NULL (the token has been stored hashed since 0087).
+#   * Dropped: decrement_referral_code_usage() (no caller since 0071), idx_scans_user_id and payment_refunds_payment_idx (each served by another index).
