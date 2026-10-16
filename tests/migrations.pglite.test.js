@@ -152,7 +152,7 @@ describe('scrub_account_data', () => {
     scanSet = await fill('scans', S, ['status', 'input_mode', 'fix_tier', 'verification_status', 'verification_revoked_reason', 'anon_token'])
     await db.exec(`update scans set verification_code = 'CODE1', verification_status = 'ACTIVE', resume_hash = '${'a'.repeat(64)}', resume_pdf_hash = '${'b'.repeat(64)}',
                    resume_hash_history = '[{"docx":"${'c'.repeat(64)}","pdf":"${'d'.repeat(64)}"}]'::jsonb, fix_payment_id = '${P}' where id = '${S}'`)
-    paySet = await fill('payments', P, ['status', 'fix_tier', 'referral_source', 'paystack_ref'])
+    paySet = await fill('payments', P, ['status', 'fix_tier', 'referral_source', 'referral_sub', 'paystack_ref'])
     await db.exec(`insert into email_logs ("to", subject, template, status) values ('real@example.com', 'a', 't', 'sent'), ('pending@example.com', 'b', 't', 'sent')`)
     await db.exec(`insert into user_sessions (user_id, absolute_expires_at, ip, user_agent) values ('${U}', now() + interval '1 day', '1.2.3.4', 'UA')`)
     await db.exec(`insert into saved_profiles (user_id, label, resume_data) values ('${U}', 'p2', '{"name":"x"}')`)

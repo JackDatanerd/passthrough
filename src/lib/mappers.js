@@ -231,6 +231,7 @@ function paymentRowToCamel(row) {
     referralCodeId:      row.referral_code_id,
     referralCode:        row.referral_code,
     referralSource:      row.referral_source ?? null,
+    referralSub:         row.referral_sub ?? null,
     // AUDIT FIX (Section 9/10 pass): refunded_at/refund_reference/disputed_at
     // (migrations 0024/0025) were missing here, same latent-drop shape as
     // fix_tier/referral_code above — no current caller of paymentRowToCamel
@@ -422,6 +423,8 @@ function commissionLedgerRowToCamel(row) {
     kind:                  row.kind ?? 'SALE',
     // Migration 0076: how the code reached checkout — 'link' | 'typed' | 'account' (null before the migration).
     attributionSource:     row.attribution_source ?? null,
+    // Migration 0092: the partner's channel tag (`?sub=`), null when the buyer's link carried none.
+    attributionSub:        row.attribution_sub ?? null,
     adjustmentReason:      row.adjustment_reason ?? null,
     createdBy:             row.created_by ?? null,
     // Migration 0046: false while the referral code's usage count has not yet been credited for this row.

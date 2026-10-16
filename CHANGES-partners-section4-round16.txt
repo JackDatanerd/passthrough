@@ -1,0 +1,28 @@
+Partners / referral program, Section 4 round 16
+
+Bugs
+- requestPayoutLink (partner "email me a payout link"): the link was rotated BEFORE the email and the send result ignored, so a
+  failed send or the 4-per-hour cap left the partner with a dead link and nothing in their inbox. Now: guarded swap, send, and the
+  previous hash is restored if the email did not go (same pattern as resetMyPartnerLinks). The reply stays neutral either way.
+- adminGetPartnerLinks ("Copy payout-details link"): copying silently replaced the partner's live link. The admin UI now asks first
+  (ConfirmDialog) and the partner is emailed the new link (best effort, after the response), so nobody is left holding a dead one.
+- Audit log: partner.referral_code_created / _updated (and the approve-application path) wrote the code TEXT into admin_audit_log
+  detail, which survived the erasure flow's REMOVED-xxxx rename. They now write codeId. Migration 0093 scrubs existing rows
+  (the append-only trigger is switched off for that one statement inside the migration and back on after).
+- applyAsPartner: the owner alert and the applicant mail were awaited, so a stored application answered measurably slower than every
+  silent path (already a partner / cooldown / duplicate pending) - a timing oracle. Both now run after the response.
+
+Feature gap closed: channel tags (?sub=)
+- Share links accept `&sub=<tag>` (1-32 of a-z 0-9 _ -, lower-cased; anything else is dropped, never an error). Captured with the code
+  in useReferralCapture (kept only alongside a code, last click wins, same-code re-entry keeps it), sent at checkout as referralSub,
+  stored in payments.referral_sub and copied to commission_ledger.attribution_sub (also by the reconcile sweeps, with a fallback for a
+  database without the column). Migration 0093 adds both columns with a format CHECK.
+- Partner dashboard: tag field on every share link, "Sales by channel tag" (net sales + commission per tag), tag on each sale, tag column in the CSV.
+- Admin partner page: "Tag" column in the conversions table.
+- Erasure: a removed partner's tags are cleared with their code text.
+
+Migration 0093_partners_section4_round16.sql; EXPECTED_SCHEMA_VERSION 93.
+Tests: tests/partners.round16.test.js, tests/migrations.0093.pglite.test.js, frontend/tests/{partnerDashboard,partnerDetail,useReferralCapture}.round16.test.jsx;
+updated partners.round4 (harness), webhooks.round13, migrations.pglite (keep-list exemption), partnerDashboard.round6 (CSV column).
+
+Not changed: clicks are not broken down per tag (needs per-tag click storage); sales only.

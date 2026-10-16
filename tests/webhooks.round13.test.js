@@ -112,6 +112,17 @@ describe('B2 + B3: the commission sweep recovers attribution and tells the partn
     expect(row.currency).toBe('KES')
     expect(row.commission_amount_cents).toBe(1000)
   })
+  it('round 16: the partner\'s channel tag (referral_sub) reaches the ledger row too, and a database without 0093 is still swept', async () => {
+    const r = rig({ payment: { referral_sub: 'newsletter' } })
+    await r.mod.sweepMissingCommissions(r.env, r.world.db, { now: NOW })
+    expect(r.world.t.commission_ledger[0].attribution_sub).toBe('newsletter')
+    const r2 = rig()
+    r2.world.failNext('payments', 'select', { code: '42703', message: 'column payments.referral_sub does not exist' })
+    const out = await r2.mod.sweepMissingCommissions(r2.env, r2.world.db, { now: NOW })
+    expect(out.error).toBeNull()
+    expect(out.recovered).toHaveLength(1)
+    expect(r2.world.t.commission_ledger[0].attribution_source).toBe('typed')   // the retry still carried the source
+  })
   it('emails the PARTNER about the recovered sale, and nobody is paged for it', async () => {
     const r = rig()
     await r.mod.sweepMissingCommissions(r.env, r.world.db, { now: NOW })

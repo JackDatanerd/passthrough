@@ -59,9 +59,13 @@ function isMissingColumn(error, col) {
   return !!error && (error.code === '42703' || new RegExp(col + '|column', 'i').test(error.message || ''))
 }
 async function selectPaymentsWithSource(buildQuery, cols) {
-  const first = await buildQuery(`${cols}, referral_source`)
-  if (first.error && isMissingColumn(first.error, 'referral_source')) return buildQuery(cols)
-  return first
+  // Round 16: referral_sub (0093, the partner's channel tag) rides along; a database without it retries without, then without
+  // referral_source as before.
+  const first = await buildQuery(`${cols}, referral_source, referral_sub`)
+  if (!first.error || !isMissingColumn(first.error, 'referral_s')) return first
+  const second = await buildQuery(`${cols}, referral_source`)
+  if (second.error && isMissingColumn(second.error, 'referral_source')) return buildQuery(cols)
+  return second
 }
 
 function generatorFor(fixTier) {

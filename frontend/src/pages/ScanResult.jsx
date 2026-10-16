@@ -13,7 +13,7 @@ import CategoryScores from '../components/scan/CategoryScores'
 import AtsDetailPanel from '../components/scan/AtsDetailPanel'
 import FixBanner from '../components/scan/FixBanner'
 import JobDescriptionPanel from '../components/scan/JobDescriptionPanel'
-import { getStoredReferralCode, setStoredReferralCode, getStoredReferralSource } from '../hooks/useReferralCapture'
+import { getStoredReferralCode, setStoredReferralCode, getStoredReferralSource, getStoredReferralSub } from '../hooks/useReferralCapture'
 import { fmtPrice } from '../hooks/usePricing'
 import DiffView from '../components/scan/DiffView'
 import ResumeDataEditor from '../components/scan/ResumeDataEditor'
@@ -436,7 +436,8 @@ export default function ScanResult() {
       const res = await api.post('/payments/initialize', {
         scanId: id, fixTier, referralCode: referralCode || undefined,
         // Partners round 10: how the code reached this checkout (shared link / typed / restored from the account).
-        referralSource: referralCode ? (getStoredReferralSource() || undefined) : undefined
+        referralSource: referralCode ? (getStoredReferralSource() || undefined) : undefined,
+        referralSub: referralCode ? (getStoredReferralSub() || undefined) : undefined
       })
       const { access_code, reference, amount, currency, referralDropped } = res.data.data
       // B1/G1 (round 4): the code stopped applying between the quote and now (it lost the race for

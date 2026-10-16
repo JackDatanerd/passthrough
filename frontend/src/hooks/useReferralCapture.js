@@ -73,8 +73,20 @@ function readStoredRecord() {
 // (restored from the signed-in account on another device). It rides along to checkout so the admin can see which sales
 // came from a shared link and which from a typed code. Older stored values have none.
 const SOURCES = new Set(['link', 'typed', 'account'])
-function writeStored(code, source = 'link', capturedAt = Date.now()) {
-  storageSet(JSON.stringify({ code, capturedAt, source }))
+//
+// Round 16 (feature gap): a link may also carry a partner's own channel tag — `?ref=CODE&sub=newsletter` — kept in the same
+// record as `sub` and sent with the order, so the partner sees which channel earned the sale. Same rule as the server
+// (lib/referralSub.js): 1-32 of a-z 0-9 _ -, anything else is ignored. A tag is only ever stored WITH its code.
+const SUB_FORMAT_RE = /^[a-z0-9_-]{1,32}$/
+function cleanSub(value) {
+  const v = String(value || '').trim().toLowerCase()
+  return SUB_FORMAT_RE.test(v) ? v : ''
+}
+function writeStored(code, source = 'link', capturedAt = Date.now(), sub = '') {
+  const record = { code, capturedAt, source }
+  const tag = cleanSub(sub)
+  if (tag) record.sub = tag
+  storageSet(JSON.stringify(record))
 }
 
 // Round 10 (feature gap): the code lived ONLY in this browser, so a visitor who clicked a partner's link on a phone and
@@ -151,6 +163,9 @@ let lastSyncedSearch = null
 // rather than stored — it used to replace a real partner's attribution, and the server's answer could not undo
 // that for an over-long value. Same pattern as CODE_FORMAT_RE in partners.controller.js.
 const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
+function subFromSearch(search) {
+  try { return cleanSub(new URLSearchParams(search).get('sub')) } catch (_) { return '' }
+}
 function codeFromSearch(search) {
   try {
     const code = (new URLSearchParams(search).get('ref') || '').trim().toUpperCase()
@@ -175,7 +190,7 @@ function captureFromLocationNow() {
   if (!code || rejectedThisSession.has(code)) return
   if (readStored() !== code) {
     previousRawFor.set(code, storageGet())
-    writeStored(code)
+    writeStored(code, 'link', Date.now(), subFromSearch(search))
     pendingClicks.add(code)
   }
 }
@@ -198,7 +213,7 @@ export function useReferralCapture() {
     // Remember what this visit replaces (unless the synchronous capture already did) so a code the server calls
     // invalid can be undone. A repeat visit with the SAME code replaces nothing worth restoring.
     if (previous !== code && !previousRawFor.has(code)) previousRawFor.set(code, storageGet())
-    writeStored(code)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
+    writeStored(code, 'link', Date.now(), subFromSearch(location.search))   // also refreshes the attribution window on every ?ref= visit, even a repeat one
     lastSyncedSearch = location.search
 
     if ((previous !== code || pendingClicks.has(code)) && !trackedThisSession.has(code)) {
@@ -234,7 +249,11 @@ export function getStoredReferralCode() {
 // the same attribution window).
 export function setStoredReferralCode(code) {
   const trimmed = (code || '').trim().toUpperCase()
-  if (trimmed) { writeStored(trimmed, 'typed'); dropClearedMark() }
+  if (trimmed) {
+    // Typing the SAME code that a tagged link stored keeps its channel tag; a different code never inherits one.
+    const keepSub = readStoredRecord()?.code === trimmed ? readStoredRecord().sub : ''
+    writeStored(trimmed, 'typed', Date.now(), keepSub); dropClearedMark()
+  }
   else { storageRemove(); if (!getToken()) markCleared() }
   // Removing the code on purpose must also clear it on the account, or it would be restored on the next sign-in.
   syncToAccount(trimmed)
@@ -245,6 +264,13 @@ export function getStoredReferralSource() {
   captureFromLocationNow()
   const rec = readStoredRecord()
   return rec && SOURCES.has(rec.source) ? rec.source : ''
+}
+
+// The partner's channel tag stored with the code ('' when the link carried none, or there is no live code).
+export function getStoredReferralSub() {
+  captureFromLocationNow()
+  const rec = readStoredRecord()
+  return rec ? cleanSub(rec.sub) : ''
 }
 
 // Called when a session is established or refreshed (AuthContext). Reconciles the browser's code with the account's,

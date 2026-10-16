@@ -13,6 +13,7 @@ import StatCard from '../../components/ui/StatCard'
 import { useToast } from '../../components/ui/Toast'
 import { formatCents, formatDate, formatRate, cn, copyToClipboard, downloadCsv, withinHours } from '../../lib/utils'
 import Alert from '../../components/ui/Alert'
+import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
 import Textarea from '../../components/ui/Textarea'
@@ -936,6 +937,13 @@ function ConversionsTab({ partner }) {
           cell: l => ({ link: 'Link', typed: 'Typed code', account: 'Account' }[l.attributionSource] || '—'),
         },
         {
+          // Round 16: the partner's own channel tag from the share link (`&sub=`), when there was one.
+          key: 'sub',
+          header: 'Tag',
+          cellClassName: 'text-xs text-gray-500',
+          cell: l => l.attributionSub || '—',
+        },
+        {
           // Round 10: which payout settled the row (its paid date), so a payout can be traced back to its sales.
           key: 'payout',
           header: 'Payout',
@@ -1031,6 +1039,7 @@ export default function PartnerDetail() {
   const [showRemove, setShowRemove] = useState(false)
   const [showAdjust, setShowAdjust] = useState(false)
   const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  const [confirmCopyPayout, setConfirmCopyPayout] = useState(false)
   const [regenerating, setRegenerating] = useState(false)
   const [regenScope, setRegenScope] = useState('payout')
 
@@ -1186,7 +1195,7 @@ export default function PartnerDetail() {
         <Button size="sm" variant="secondary" onClick={() => resendLink('payout')}>Resend payout-details link</Button>
         <Button size="sm" variant="secondary" onClick={() => resendLink('dashboard')}>Resend dashboard link</Button>
         <Button size="sm" variant="secondary" onClick={() => copyLink('dashboard')}>Copy dashboard link</Button>
-        <Button size="sm" variant="secondary" onClick={() => copyLink('payout')}>Copy payout-details link</Button>
+        <Button size="sm" variant="secondary" onClick={() => setConfirmCopyPayout(true)}>Copy payout-details link</Button>
         <Button size="sm" variant="secondary" disabled={regenerating} onClick={regenerateLink}>Regenerate link…</Button>
         {(!String(partner.email || '').endsWith('@removed.invalid') || (partner.pendingCommissionCents || 0) !== 0) && (
           <Button size="sm" variant="secondary" onClick={() => setShowAdjust(true)}>
@@ -1246,6 +1255,18 @@ export default function PartnerDetail() {
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
       {showAdjust && <AdjustBalanceModal partner={partner} onClose={() => setShowAdjust(false)} onAdjusted={reload} />}
       {showRemove && <RemoveDataModal partner={partner} onClose={() => setShowRemove(false)} onRemoved={reload} />}
+
+      {/* Round 16: the payout link is stored hashed, so "copying" it mints a NEW one — the link the partner already holds stops working
+          (they are emailed the new one). Say so before it happens, not after. */}
+      <ConfirmDialog
+        open={confirmCopyPayout}
+        title="Copy payout-details link?"
+        message={`This issues a NEW payout-details link and copies it. The link ${partner.name} already has stops working right away; they are emailed the new one so they are not left with a dead link.\n\nTo copy the read-only dashboard link instead, nothing changes — use "Copy dashboard link".`}
+        confirmLabel="Issue and copy"
+        danger={false}
+        onConfirm={async () => { await copyLink('payout'); setConfirmCopyPayout(false) }}
+        onCancel={() => setConfirmCopyPayout(false)}
+      />
 
       {confirmRegenerate && (
         <Modal open onClose={() => setConfirmRegenerate(false)} title="Regenerate link">

@@ -17,6 +17,7 @@ const { z } = require('zod')
 const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib = require('../lib/crypto')
+const { normalizeSub } = require('../lib/referralSub')
 const { scanRowToCamel } = require('../lib/mappers')
 const paystackService = require('../services/paystack.service')
 const emailService = require('../services/email.service')
@@ -100,6 +101,9 @@ const initializeSchema = z.object({
   referralCode: z.string().nullable().optional(),
   // Round 10 (partners, migration 0076): how the code reached checkout. Lenient like referralCode: anything else is dropped.
   referralSource: z.enum(['link', 'typed', 'account']).nullable().optional().catch(undefined),
+  // Round 16 (partners, migration 0093): the partner's channel tag from `?sub=` (lib/referralSub.js). Lenient too: an invalid
+  // tag becomes null and the checkout carries on.
+  referralSub: z.unknown().optional().transform(normalizeSub),
 })
 
 // POST /api/payments/initialize
@@ -449,7 +453,9 @@ async function initializePayment(c2) {
     // reservation inserts exactly the pre-0044 row shape.
     ...(reservationId ? { referral_reservation_id: reservationId } : {}),
     // Round 10 (0076): kept only when a code actually priced this checkout.
-    ...(finalPriced.referralCode && parsed.data.referralSource ? { referral_source: parsed.data.referralSource } : {})
+    ...(finalPriced.referralCode && parsed.data.referralSource ? { referral_source: parsed.data.referralSource } : {}),
+    // Round 16 (0093): the channel tag rides along only with a code that really priced this checkout.
+    ...(finalPriced.referralCode && parsed.data.referralSub ? { referral_sub: parsed.data.referralSub } : {})
   })
   // AUDIT FIX (bug): Paystack has ALREADY been successfully initialized for
   // this reference at this point — every other critical failure in this

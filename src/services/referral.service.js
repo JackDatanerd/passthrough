@@ -387,7 +387,9 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
       usage_counted:           false,
       // Round 10 (0076): how the code reached checkout. Only written when the payment carries one, so a database that
       // has not run the migration yet (or a payment from before it) inserts exactly the old row shape.
-      ...(payment.referral_source ? { attribution_source: payment.referral_source } : {})
+      ...(payment.referral_source ? { attribution_source: payment.referral_source } : {}),
+      // Round 16 (0093): the partner's channel tag, copied from the payment the same conditional way.
+      ...(payment.referral_sub ? { attribution_sub: payment.referral_sub } : {})
     }).select('id').single())
 
     let ledgerId = ledgerRes.data?.id || null

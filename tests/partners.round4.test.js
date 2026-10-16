@@ -176,7 +176,9 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
   function dash(partner, which) {
     const db = createFakeSupabase(q => {
       if (q.table !== 'partners') return undefined
+      if (q.op === 'update') return { data: { id: 'p1' }, error: null }   // round 16: the guarded token swap
       const col = q.filters.find(f => f[0] === 'eq')?.[1]
+      if (col === 'id') return { data: partner, error: null }              // ... and the read of the hash it may have to restore
       // the payout token is matched on its sha256 column (0087)
       return { data: col === (which === 'payout_details_token' ? 'payout_token_hash' : which) ? partner : null, error: null }
     })

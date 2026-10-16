@@ -30,9 +30,15 @@ const fmtCents = formatCents
 // Round 11 (gap): the share link only ever pointed at the home page. useReferralCapture runs on every route, so a link to
 // the pricing page captures the code the same way and lands the visitor closer to a purchase.
 const SHARE_PAGES = [['', 'Home page'], ['pricing', 'Pricing page']]
+// Round 16 (gap): an optional channel tag (`&sub=newsletter`) so a partner who shares one code in several places can see which
+// placement earned each sale (Sales by channel below). Same rule as the server: 1-32 of a-z 0-9 _ -, shown lower-case.
+const SUB_TAG_RE = /^[a-z0-9_-]{1,32}$/
 function ShareLink({ code }) {
   const [page, setPage] = useState('')
-  const url = `${window.location.origin}/${page}?ref=${encodeURIComponent(code)}`
+  const [tag, setTag] = useState('')
+  const cleanTag = tag.trim().toLowerCase()
+  const tagOk = SUB_TAG_RE.test(cleanTag)
+  const url = `${window.location.origin}/${page}?ref=${encodeURIComponent(code)}${tagOk ? `&sub=${encodeURIComponent(cleanTag)}` : ''}`
 
   return (
     <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -45,18 +51,29 @@ function ShareLink({ code }) {
         className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
       <CopyButton variant="link" text={url} label="Copy link" copiedLabel="Copied ✓"
         className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap" />
+      <div className="basis-full flex items-center gap-2 flex-wrap">
+        <input value={tag} onChange={e => setTag(e.target.value)} maxLength={40} placeholder="Channel tag (optional), e.g. newsletter"
+          aria-label="Channel tag for this link" data-testid="share-sub-input"
+          className="text-sm text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5 w-64 max-w-full" />
+        <span className={`text-xs ${cleanTag && !tagOk ? 'text-amber-700' : 'text-gray-400'}`} data-testid="share-sub-hint">
+          {cleanTag && !tagOk
+            ? 'Use 1–32 letters, digits, - or _ — the tag is left off the link until it fits.'
+            : 'Tag a link per placement to see which one earns sales.'}
+        </span>
+      </div>
     </div>
   )
 }
 
 // Round 11 (gap): direction at a glance - net commission per cycle for the last six cycles, and how buyers reached the code.
 const MIX_LABELS = { link: 'Shared link', typed: 'Typed the code', account: 'Remembered on their account', unknown: 'Earlier sales (not recorded)' }
-function TrendSection({ trend, mix, currency }) {
+function TrendSection({ trend, mix, subMix, currency }) {
   const rows = Array.isArray(trend) ? trend : []
   const hasData = rows.some(r => r.commissionCents !== 0 || r.sales > 0)
   const max = Math.max(1, ...rows.map(r => Math.abs(r.commissionCents)))
   const mixTotal = mix ? Object.values(mix).reduce((a, b) => a + b, 0) : 0
-  if (!hasData && mixTotal === 0) return null
+  const subs = Array.isArray(subMix) ? subMix : []
+  if (!hasData && mixTotal === 0 && subs.length === 0) return null
   return (
     <section data-testid="partner-trend">
       <h2 className="text-lg font-semibold text-gray-900 mb-3">Earnings by cycle</h2>
@@ -91,6 +108,12 @@ function TrendSection({ trend, mix, currency }) {
         <div className="mt-3 text-sm text-gray-600" data-testid="partner-attribution-mix">
           <span className="font-medium text-gray-900">How buyers reached your code: </span>
           {Object.entries(mix).filter(([, n]) => n > 0).map(([k, n]) => `${MIX_LABELS[k]} ${n}`).join(' · ')}
+        </div>
+      )}
+      {subs.length > 0 && (
+        <div className="mt-3 text-sm text-gray-600" data-testid="partner-sub-mix">
+          <span className="font-medium text-gray-900">Sales by channel tag: </span>
+          {subs.map(r => `${r.sub} ${r.sales} (${fmtCents(r.commissionCents, currency)})`).join(' · ')}
         </div>
       )}
     </section>
@@ -214,6 +237,7 @@ function ConversionRow({ conversion, currency }) {
         <div>
           {formatDate(conversion.createdAt)}
           {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
+          {conversion.sub && <> · <span className="text-xs text-gray-500" data-testid="conversion-sub">#{conversion.sub}</span></>}
           {conversion.isAdjustment && <> · <span className="text-xs font-medium text-gray-600">Balance adjustment</span></>}
         </div>
         {/* Round 8: a manual admin entry (clawback / write-off / bonus) always carries the reason the admin gave. */}
@@ -351,7 +375,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
       if (!complete) setNotice(`The CSV holds your ${rows.length.toLocaleString()} most recent entries — older ones are not included.`)
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
       downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
-        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency'],
+        ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency', 'Channel tag'],
         ...unique.map(r => [
           String(r.createdAt || '').slice(0, 10), r.code || '',
           r.isAdjustment ? 'Adjustment' : r.isReversal ? 'Refund reversal' : 'Sale',
@@ -362,6 +386,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
           r.paid && paidOnById.get(r.payoutId) ? String(paidOnById.get(r.payoutId)).slice(0, 10) : '',
           r.isAdjustment ? (r.adjustmentReason || '') : '',
           currency || '',
+          r.sub || '',
         ]),
       ])
     } catch (_) {
@@ -777,7 +802,7 @@ export default function PartnerDashboard() {
                     </div>
                   )}
 
-                  <TrendSection trend={data.trend} mix={data.attributionMix} currency={data.currency} />
+                  <TrendSection trend={data.trend} mix={data.attributionMix} subMix={data.subMix} currency={data.currency} />
 
                   <div>
                     <ConversionsSection token={token} initial={data.conversions || []} total={data.conversionsTotal} currency={data.currency} payouts={data.payouts || []} />
