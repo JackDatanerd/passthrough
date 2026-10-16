@@ -91,7 +91,15 @@ let stepUpToken = null, stepUpUntil = 0, stepUpPrompt = null, stepUpPending = nu
 // The caller used to get the original "Confirm your password to continue." back — as if the prompt had never been
 // answered — so the lockout message the server sent was never shown.
 let stepUpFailure = null
-export function setStepUpPrompt(fn) { stepUpPrompt = fn }
+// Settles the prompt that is currently open (as "cancelled") when its host goes away. A prompt is a promise the host
+// resolves from its own UI; if the host unmounts with the dialog open (the admin navigates out of the panel, or the layout
+// remounts) nothing ever resolves it — and because every later refusal joins the one shared `stepUpPending`, EVERY later
+// refund / payout / ban waited on that dead promise for the rest of the page's life, with no prompt ever shown again.
+let cancelStepUpPrompt = null
+export function setStepUpPrompt(fn) {
+  if (fn !== stepUpPrompt && cancelStepUpPrompt) cancelStepUpPrompt()
+  stepUpPrompt = fn
+}
 export function clearStepUp() { stepUpToken = null; stepUpUntil = 0 }
 async function ensureStepUp() {
   if (stepUpToken && Date.now() < stepUpUntil) return true
@@ -102,20 +110,25 @@ async function ensureStepUp() {
       // After a wrong password the prompt is opened again WITH that fact, so it can say so — it used to reopen blank,
       // which looked like a glitch rather than a mistyped password.
       let incorrect = false
-      for (;;) {
-        const password = await stepUpPrompt({ incorrect })          // null/'' = cancelled
-        if (!password) return false
-        try {
-          const res = await api.post('/admin/elevate', { password }, { __noStepUp: true })
-          const d = res.data?.data
-          stepUpToken = d.elevationToken
-          stepUpUntil = Date.now() + Math.max(0, (d.expiresInSeconds - 5)) * 1000
-          return true
-        } catch (e) {
-          if (e.response?.data?.code !== 'PASSWORD_INCORRECT') { stepUpFailure = e; return false }   // anything else: stop asking, and say why
-          incorrect = true
+      const cancelled = new Promise(resolve => { cancelStepUpPrompt = () => resolve(null) })
+      try {
+        for (;;) {
+          // Raced against the host going away (see setStepUpPrompt): null = cancelled, either way.
+          if (!stepUpPrompt) return false                  // the host went away while the last attempt was in flight
+          const password = await Promise.race([stepUpPrompt({ incorrect }), cancelled])
+          if (!password) return false
+          try {
+            const res = await api.post('/admin/elevate', { password }, { __noStepUp: true })
+            const d = res.data?.data
+            stepUpToken = d.elevationToken
+            stepUpUntil = Date.now() + Math.max(0, (d.expiresInSeconds - 5)) * 1000
+            return true
+          } catch (e) {
+            if (e.response?.data?.code !== 'PASSWORD_INCORRECT') { stepUpFailure = e; return false }   // anything else: stop asking, and say why
+            incorrect = true
+          }
         }
-      }
+      } finally { cancelStepUpPrompt = null }
     })().finally(() => { stepUpPending = null })
   }
   return stepUpPending

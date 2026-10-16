@@ -30,7 +30,7 @@ const mount = () => render(
 
 describe('PartnerDetail', () => {
   beforeEach(() => { cleanup(); vi.clearAllMocks(); api.get.mockImplementation(url =>
-    url === '/partners/p1/links'
+    String(url).startsWith('/partners/p1/links')
       ? Promise.resolve({ data: { data: { dashboardUrl: 'https://app.test/partner/dashboard?token=DASH', payoutUrl: 'https://app.test/partner/payout-details?token=WRITE' } } })
       : Promise.resolve({ data: { data: partner } })) })
 
@@ -46,7 +46,7 @@ describe('PartnerDetail', () => {
     mount()
     fireEvent.click(await screen.findByRole('button', { name: /copy dashboard link/i }))
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('https://app.test/partner/dashboard?token=DASH'))
-    expect(api.get).toHaveBeenCalledWith('/partners/p1/links')
+    expect(api.get).toHaveBeenCalledWith('/partners/p1/links?scope=dashboard')
   })
 
   it('B4: a PAYOUT_DETAILS_CHANGED conflict reloads silently — the modal stays open and shows why nothing was recorded', async () => {

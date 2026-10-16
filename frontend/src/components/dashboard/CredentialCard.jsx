@@ -1,8 +1,7 @@
 import { Link } from 'react-router-dom'
 import api from '../../lib/api'
-import Button from '../ui/Button'
 import ButtonLink from '../ui/ButtonLink'
-import { useCopy } from '../../hooks/useCopy'
+import CopyButton from '../ui/CopyButton'
 import { buildBadgeEmbeds } from '../../lib/badgeEmbed'
 import { scanHeading } from '../../lib/scanDisplay'
 import { displayScore } from '../../lib/scanNext'
@@ -15,8 +14,6 @@ function badgeHtml(scan, pageUrl) {
 }
 
 export default function CredentialCard({ scan }) {
-  const link = useCopy()
-  const badge = useCopy()
   const pageUrl = scan.verificationUrl || `${window.location.origin}/v/${scan.verificationCode}`
   return (
     <article className="rounded-lg border border-gray-200 bg-white p-4 flex flex-col gap-3">
@@ -26,8 +23,8 @@ export default function CredentialCard({ scan }) {
       </div>
       <code className="block rounded bg-gray-50 border border-gray-200 px-3 py-2 text-xs text-gray-700 break-all">{pageUrl}</code>
       <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => link.copy(pageUrl)}>{link.copied ? 'Copied' : link.failed ? 'Copy failed' : 'Copy link'}</Button>
-        <Button size="sm" variant="secondary" onClick={() => badge.copy(badgeHtml(scan, pageUrl))}>{badge.copied ? 'Copied' : badge.failed ? 'Copy failed' : 'Copy badge HTML'}</Button>
+        <CopyButton variant="primary" text={pageUrl} label="Copy link" />
+        <CopyButton text={() => badgeHtml(scan, pageUrl)} label="Copy badge HTML" />
         <ButtonLink to={`/v/${scan.verificationCode}`} size="sm" variant="secondary">View as an employer</ButtonLink>
       </div>
     </article>

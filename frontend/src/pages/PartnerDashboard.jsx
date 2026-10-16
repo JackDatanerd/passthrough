@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
 import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime } from '../lib/utils'
-import { useCopy } from '../hooks/useCopy'
+import CopyButton from '../components/ui/CopyButton'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import PartnerLayout from '../components/partner/PartnerLayout'
@@ -31,13 +31,8 @@ const fmtCents = formatCents
 // the pricing page captures the code the same way and lands the visitor closer to a purchase.
 const SHARE_PAGES = [['', 'Home page'], ['pricing', 'Pricing page']]
 function ShareLink({ code }) {
-  const { copied, copy: copyText } = useCopy(2000)
   const [page, setPage] = useState('')
   const url = `${window.location.origin}/${page}?ref=${encodeURIComponent(code)}`
-
-  async function copy() {
-    await copyText(url)
-  }
 
   return (
     <div className="flex items-center gap-2 mt-2 flex-wrap">
@@ -48,10 +43,8 @@ function ShareLink({ code }) {
       <input readOnly value={url}
         onFocus={e => e.target.select()}
         className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
-      <button onClick={copy} type="button"
-        className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap">
-        {copied ? 'Copied ✓' : 'Copy link'}
-      </button>
+      <CopyButton variant="link" text={url} label="Copy link" copiedLabel="Copied ✓"
+        className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap" />
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { NavLink, Link, Outlet } from 'react-router-dom'
 import api, { setStepUpPrompt } from '../../lib/api'
 import { cn, formatCents } from '../../lib/utils'
@@ -110,11 +110,21 @@ function StepUpModal() {
   const [resolver, setResolver] = useState(null)
   // True when the previous attempt was refused (api.js passes { incorrect: true } on the re-ask).
   const [incorrect, setIncorrect] = useState(false)
+  // Mirrors `resolver` so the unmount cleanup can settle a prompt that is still open (state is stale inside it).
+  const pending = useRef(null)
   useEffect(() => {
-    setStepUpPrompt(({ incorrect: wrong } = {}) => new Promise(resolve => { setValue(''); setIncorrect(!!wrong); setResolver(() => resolve); setOpen(true) }))
-    return () => setStepUpPrompt(null)
+    setStepUpPrompt(({ incorrect: wrong } = {}) => new Promise(resolve => {
+      pending.current = resolve
+      setValue(''); setIncorrect(!!wrong); setResolver(() => resolve); setOpen(true)
+    }))
+    return () => {
+      setStepUpPrompt(null)
+      // Leaving the admin panel with the password dialog open = cancelled. Without this the request that asked
+      // for the password waited for ever (lib/api.js also settles it, this just keeps the host's own promise honest).
+      if (pending.current) { pending.current(null); pending.current = null }
+    }
   }, [])
-  const done = v => { setOpen(false); resolver && resolver(v); setResolver(null); setValue(''); setIncorrect(false) }
+  const done = v => { setOpen(false); resolver && resolver(v); pending.current = null; setResolver(null); setValue(''); setIncorrect(false) }
   // The shared Modal (portalled, so it opens ABOVE the refund / ban / payout dialog that asked for the password, with
   // the focus trap, Escape and focus hand-back) instead of a hand-rolled overlay that rendered underneath them.
   return (

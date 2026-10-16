@@ -1,0 +1,37 @@
+SHARED FRONTEND (section 11) — round 12
+=======================================
+Scope: components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js (+ the call sites that had to move with them).
+
+BUG B1 — a closed step-up prompt stranded every later admin action  (lib/api.js, pages/admin/AdminLayout.jsx)
+  The admin password dialog is a promise the host (AdminLayout's StepUpModal) resolves from its UI. If the layout unmounted
+  while the dialog was open, nothing ever resolved it — and because every later 403 ADMIN_STEP_UP_REQUIRED joins the one
+  shared `stepUpPending`, EVERY later refund / payout / ban / partner-link request awaited that dead promise for the rest
+  of the page's life, with no prompt ever shown again (confirmed by a failing test before the fix).
+  Fix: setStepUpPrompt() now settles an open prompt as "cancelled" when the prompt is cleared or replaced by a different
+  function (the request gets the original refusal, and the NEXT refusal opens a fresh prompt on the new host). The prompt is
+  raced against that cancel; the re-ask after a wrong password no longer throws if the host went away meanwhile.
+  StepUpModal also resolves its own pending promise on unmount (a ref, since state is stale inside the cleanup).
+
+GAP G1 — no shared copy-to-clipboard control  (new ui/CopyButton.jsx, new lib/announce.js)
+  Eight copy buttons each re-implemented "label turns to Copied": none told a screen-reader user anything (a button whose text
+  changes is not announced), and several ignored a refused clipboard write (the button simply did nothing).
+  CopyButton wraps useCopy: copied / failed labels, a function `text` evaluated at click time, `variant="link"` for the bare
+  inline style, and an announcement of the outcome through ONE shared polite live region (lib/announce.js, a node on <body>
+  with aria-live and deliberately no role="status", so it can never collide with a page's own status message).
+  Migrated: ScanRow, CredentialCard (x2), VerifySection, CoverLetterPanel, PartnerDashboard ShareLink, ScanResult (Markdown +
+  HTML), Verify (fingerprint rows — now named "Copy .docx fingerprint" / "Copy PDF fingerprint" — and the page link).
+  Visible labels are unchanged except that a refused write now says so ("Copy failed" where a site had no failed state).
+
+GAP G2 — role="menu" without a menu's keyboard model  (new ui/Menu.jsx; dashboard/ScanRow.jsx)
+  ScanRow's "..." menu declared role="menu"/"menuitem" but: focus did not move into it, no arrow keys, Tab left an open menu
+  behind, and picking an item that opens a dialog gave the dialog a focus-return target (the item) that was about to unmount.
+  Menu implements the WAI-ARIA menu button: open on click/Enter/Space/ArrowDown (first item) or ArrowUp (last); arrows wrap,
+  Home/End, type-ahead, disabled items skipped; Escape closes and refocuses the trigger; Tab / Shift+Tab close and continue
+  from the trigger; outside press closes; choosing an item closes with focus already back on the trigger. ScanRow's private
+  RowMenu is replaced by it. (The navbar's Stories / More buttons are disclosures of ordinary links, already complete — left.)
+
+TESTS
+  tests/components/CopyButton.test.jsx (7), tests/components/Menu.test.jsx (12), tests/lib/api.stepUpHostGone.test.jsx (6;
+  5 fail on the old code). tests/partnerDetail.round4.test.jsx: its mock matched the exact old URL and the "Copy dashboard
+  link" request now carries ?scope=dashboard (changed by an earlier round) — mock and assertion brought up to date.
+  Frontend suite: 209 files / 1743 tests pass. vite build succeeds.

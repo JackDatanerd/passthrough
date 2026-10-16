@@ -28,7 +28,7 @@ import DeliveredSummary from '../components/scan/DeliveredSummary'
 import PointsLost from '../components/scan/PointsLost'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
-import { useCopy } from '../hooks/useCopy'
+import CopyButton from '../components/ui/CopyButton'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
 import { clearBrainDumpDraft, loadBrainDumpDraft } from '../lib/brainDumpDraft'
@@ -133,8 +133,6 @@ export default function ScanResult() {
   // showed the candidate its URL or gave them something to paste into a
   // README/LinkedIn/portfolio. The whole point of an embeddable badge is
   // that most people who see it never click through to this page.
-  const { copied: badgeCopied, copy: copyBadgeText } = useCopy(2000)
-  const { copied: badgeHtmlCopied, copy: copyBadgeHtmlText } = useCopy(2000)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
   const [upgradeLoading, setUpgradeLoading] = useState(false)
@@ -661,14 +659,6 @@ export default function ScanResult() {
     return buildBadgeEmbeds(root, scan.verificationCode, scan.verificationUrl)
   }
 
-  async function handleCopyBadge() {
-    await copyBadgeText(badgeUrls().markdown)
-  }
-
-  async function handleCopyBadgeHtml() {
-    await copyBadgeHtmlText(badgeUrls().html)
-  }
-
   async function handleDownload(type) {
     setDlError('')
     try {
@@ -1147,20 +1137,10 @@ export default function ScanResult() {
                             onFocus={e => e.target.select()}
                             className="text-xs text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5 flex-1 min-w-[200px] font-mono"
                           />
-                          <button
-                            onClick={handleCopyBadge}
-                            type="button"
-                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap"
-                          >
-                            {badgeCopied ? 'Copied ✓' : 'Copy Markdown'}
-                          </button>
-                          <button
-                            onClick={handleCopyBadgeHtml}
-                            type="button"
-                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap"
-                          >
-                            {badgeHtmlCopied ? 'Copied ✓' : 'Copy HTML (e-mail signature)'}
-                          </button>
+                          <CopyButton variant="link" text={() => badgeUrls().markdown} label="Copy Markdown" copiedLabel="Copied ✓"
+                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap" />
+                          <CopyButton variant="link" text={() => badgeUrls().html} label="Copy HTML (e-mail signature)" copiedLabel="Copied ✓"
+                            className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors whitespace-nowrap" />
                         </div>
                         <p className="text-xs text-gray-500 mt-1.5">
                           Follows the live status — a change (an unpublish, a new score) shows within a minute or two, longer where a site caches images. The HTML version uses a PNG, which Gmail, Outlook and LinkedIn can show; the Markdown version uses the sharper SVG.

@@ -1,10 +1,9 @@
-import { useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import Checkbox from '../ui/Checkbox'
 import ButtonLink from '../ui/ButtonLink'
-import Button from '../ui/Button'
+import Menu from '../ui/Menu'
+import CopyButton from '../ui/CopyButton'
 import ScoreRing, { barColor } from './ScoreRing'
-import { useCopy } from '../../hooks/useCopy'
 import { formatDate } from '../../lib/utils'
 import { ATS_PASS_THRESHOLD, ATS_BADGE_THRESHOLD } from '../../lib/scoreThresholds'
 import { canDeleteScan, scanHeading, scanDetails } from '../../lib/scanDisplay'
@@ -44,26 +43,6 @@ export function Gauge({ scan }) {
   )
 }
 
-// "⋯" menu. Closes on Esc / outside click and hands focus back to its button.
-function RowMenu({ label, children }) {
-  const [open, setOpen] = useState(false)
-  const wrap = useRef(null)
-  const btn = useRef(null)
-  useEffect(() => {
-    if (!open) return undefined
-    const onDown = e => { if (wrap.current && !wrap.current.contains(e.target)) setOpen(false) }
-    const onKey = e => { if (e.key === 'Escape') { setOpen(false); btn.current?.focus() } }
-    document.addEventListener('mousedown', onDown); document.addEventListener('keydown', onKey)
-    return () => { document.removeEventListener('mousedown', onDown); document.removeEventListener('keydown', onKey) }
-  }, [open])
-  return (
-    <div ref={wrap} className="relative">
-      <button ref={btn} type="button" aria-haspopup="menu" aria-expanded={open} aria-label={label} onClick={() => setOpen(o => !o)}
-        className="px-2.5 py-1.5 text-sm rounded-md border border-gray-300 text-gray-600 hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">⋯</button>
-      {open && <div role="menu" onClick={() => setOpen(false)} className="absolute right-0 top-9 z-10 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg">{children}</div>}
-    </div>
-  )
-}
 const itemClass = 'block w-full text-left px-3 py-2 text-sm rounded-md text-gray-700 hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed'
 
 // `prices`: { fix, badge } already formatted ('$29'); `credits`: free fix credits the person holds.
@@ -71,7 +50,6 @@ export default function ScanRow({ scan, now, credits = 0, prices = {}, selected,
   const need = scanNeed(scan, now)
   const msg = scanMessage(scan, now)
   const heading = scanHeading(scan)
-  const { copied, copy } = useCopy()
   const to = `/scan/${scan.id}`
   const fixLabel = credits > 0 ? 'Fix · free credit' : prices.fix ? `Fix · ${prices.fix}` : 'Fix this resume'
   const link = scan.verificationUrl || (typeof window !== 'undefined' ? `${window.location.origin}/v/${scan.verificationCode}` : '')
@@ -94,15 +72,15 @@ export default function ScanRow({ scan, now, credits = 0, prices = {}, selected,
         {need === 'cred' && <ButtonLink to={to} size="sm">{prices.badge ? `Credential · ${prices.badge}` : 'Get the credential'}</ButtonLink>}
         {need === 'retryfix' && <ButtonLink to={to} size="sm">Use a free retry</ButtonLink>}
         {need === 'error' && <ButtonLink to={to} size="sm" variant="secondary">See what happened</ButtonLink>}
-        {need === 'share' && <Button size="sm" variant="secondary" onClick={() => copy(link)}>{copied ? 'Copied' : 'Copy link'}</Button>}
+        {need === 'share' && <CopyButton text={link} label="Copy link" />}
         {['share', 'retryfix', 'download'].includes(need) && <ButtonLink to={to} size="sm" variant="secondary" title="Your files are on the scan page">Download</ButtonLink>}
-        <RowMenu label={`More actions for ${heading}`}>
+        <Menu label={`More actions for ${heading}`}>
           <button type="button" role="menuitem" className={itemClass} onClick={() => onBreakdown(scan)}>See the breakdown</button>
           {RESCANNABLE.includes(scan.status) && <Link role="menuitem" className={itemClass} to={`/?from=${scan.id}`}>Scan this resume against another job</Link>}
           <button type="button" role="menuitem" className={`${itemClass} text-red-600`} disabled={!canDeleteScan(scan, now)}
             title={canDeleteScan(scan, now) ? 'Delete this scan' : 'Available once processing finishes'}
             aria-label={`Delete ${heading}`} onClick={() => onDelete(scan)}>Delete…</button>
-        </RowMenu>
+        </Menu>
       </div>
     </li>
   )

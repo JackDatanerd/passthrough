@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import { downloadBlob, filenameFromDisposition } from '../../lib/utils'
-import { useCopy } from '../../hooks/useCopy'
+import CopyButton from '../ui/CopyButton'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
 
@@ -11,7 +11,6 @@ import Alert from '../ui/Alert'
 export default function CoverLetterPanel({ scan, onUpdated }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
-  const { copied, copy: copyText } = useCopy(2000)
   const letter = scan.coverLetterText
 
   async function generate() {
@@ -35,10 +34,6 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
     }
   }
 
-  async function copy() {
-    await copyText(letter)
-  }
-
   return (
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="cover-letter">
       <div className="flex items-start justify-between gap-4 flex-wrap">
@@ -58,7 +53,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
         <div className="mt-4">
           <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-md p-4">{letter}</pre>
           <div className="flex gap-2 mt-3">
-            <Button variant="secondary" size="sm" onClick={copy}>{copied ? 'Copied' : 'Copy text'}</Button>
+            <CopyButton text={letter} label="Copy text" />
             <Button variant="secondary" size="sm" onClick={download}>Download (.docx)</Button>
           </div>
         </div>

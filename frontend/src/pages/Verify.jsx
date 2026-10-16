@@ -10,7 +10,7 @@ import Form from '../components/ui/Form'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { formatDate, downloadBlob } from '../lib/utils'
-import { useCopy } from '../hooks/useCopy'
+import CopyButton from '../components/ui/CopyButton'
 import { ATS_BADGE_THRESHOLD } from '../lib/scoreThresholds'
 import { sha256Hex, classifyFingerprint, fileKindOf, extractSha256, MAX_CHECK_BYTES, MAX_CHECK_FILES } from '../lib/fileFingerprint'
 import { isRoleCategory, roleLabel } from '../lib/roleCategories'
@@ -28,16 +28,12 @@ function reportHref(code, why) {
 }
 
 function Fingerprint({ label, hash }) {
-  const { copied, copy: copyText } = useCopy(1500)
   return (
     <div className="flex items-center gap-2 text-xs">
       <span className="text-gray-400 w-12 shrink-0">{label}</span>
       <code className="text-gray-600 break-all font-mono">{hash}</code>
-      <button type="button"
-        onClick={() => copyText(hash)}
-        className="text-blue-700 hover:text-blue-800 underline underline-offset-2 shrink-0">
-        {copied ? 'Copied' : 'Copy'}
-      </button>
+      <CopyButton variant="link" text={hash} resetMs={1500} label="Copy" aria-label={`Copy ${label} fingerprint`}
+        className="text-blue-700 hover:text-blue-800 underline underline-offset-2 shrink-0" />
     </div>
   )
 }
@@ -205,7 +201,6 @@ export default function Verify() {
   const [leadLoading, setLeadLoading] = useState(false)
   const [trap,        setTrap       ] = useState('')  // honeypot — real visitors never see or fill this (see the API's `trap` field)
 
-  const { copied: linkCopied, copy: copyLinkText } = useCopy(2000)
   const [reportOpen, setReportOpen] = useState(false)
 
   // SECTION 7 AUDIT (feature gap G7-1): let the READER check the actual file
@@ -318,12 +313,6 @@ export default function Verify() {
     } finally {
       setLeadLoading(false)
     }
-  }
-
-  async function handleCopyLink() {
-    // copyToClipboard reports failure (insecure context, denied permission);
-    // only claim "copied" when it actually was.
-    await copyLinkText(window.location.href)
   }
 
   async function handleDownload(type) {
@@ -633,12 +622,8 @@ export default function Verify() {
                     Viewed {data.verificationViews} time{data.verificationViews === 1 ? '' : 's'}
                   </p>
                 )}
-                <button
-                  onClick={handleCopyLink}
-                  className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors"
-                >
-                  {linkCopied ? 'Link copied' : 'Copy link'}
-                </button>
+                <CopyButton variant="link" text={() => window.location.href} label="Copy link" copiedLabel="Link copied"
+                  className="text-xs font-medium text-blue-700 hover:text-blue-800 underline underline-offset-2 transition-colors" />
               </div>
             </div>
 

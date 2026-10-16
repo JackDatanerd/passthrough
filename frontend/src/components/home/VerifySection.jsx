@@ -2,7 +2,7 @@ import { useMemo, useRef, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../../lib/api'
 import { buildBadgeEmbeds } from '../../lib/badgeEmbed'
-import { useCopy } from '../../hooks/useCopy'
+import CopyButton from '../ui/CopyButton'
 import { extractVerificationCode } from '../../lib/verificationCode'
 import { sha256Text } from '../../lib/sha256'
 import { SAMPLE_VERIFICATION, TAMPER_DEMO, PLACEMENTS } from '../../lib/homeContent'
@@ -187,15 +187,10 @@ export default function VerifySection({ badgeThreshold }) {
   const { original, edit } = TAMPER_DEMO
   const [text, setText] = useState(original)
   const [fmt, setFmt] = useState('html')
-  const { copied, failed, copy: copyText } = useCopy(1800)
   const embeds = useMemo(sampleEmbeds, [])
   const issued = useMemo(() => sha256Text(original), [original])
   const hash = useMemo(() => sha256Text(text), [text])
   const exact = text === original
-
-  async function copy() {
-    await copyText(embeds[fmt])
-  }
 
   return (
     <section id="receipt" aria-labelledby="receipt-h" className="bg-gradient-to-b from-white to-green-50 py-[72px] scroll-mt-4">
@@ -249,7 +244,7 @@ export default function VerifySection({ badgeThreshold }) {
             </div>
             <pre className="bg-gray-900 text-slate-200 rounded-lg p-3.5 text-xs leading-relaxed overflow-x-auto whitespace-pre-wrap break-all" aria-label="Example embed snippet"><code>{embeds[fmt]}</code></pre>
             <div className="mt-2 flex items-center gap-3">
-              <button type="button" onClick={copy} className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3.5 py-2.5 hover:bg-gray-50">{copied ? 'Copied ✓' : failed ? 'Select & copy manually' : 'Copy snippet'}</button>
+              <CopyButton variant="link" text={() => embeds[fmt]} resetMs={1800} label="Copy snippet" copiedLabel="Copied ✓" failedLabel="Select & copy manually" className="text-sm font-semibold bg-white border border-gray-300 rounded-lg px-3.5 py-2.5 hover:bg-gray-50" />
               <span className="text-xs text-gray-500">Yours uses your own code, after you verify.</span>
             </div>
           </div>
