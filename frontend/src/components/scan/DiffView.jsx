@@ -359,7 +359,7 @@ export default function DiffView({ originalResumeData, rewrittenResumeData, fixT
               You purchased the Verified credential only. Your resume content was formatted into
               an ATS-friendly document and verified as submitted — no wording was changed. If
               you'd like an AI-rewritten version tailored to a specific job description, you can
-              upgrade to the full fix from any scan.
+              upgrade this resume to the full fix with a free fix credit, or scan it against a job and choose Fix.
             </p>
           ) : (
             <DiffContent diff={buildResumeDiff(originalResumeData, rewrittenResumeData)} editedByUser={editedByUser} />

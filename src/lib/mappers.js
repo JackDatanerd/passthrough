@@ -82,6 +82,10 @@ function scanRowToCamel(row) {
     // at all.
     rewriteFailed:       row.rewrite_failed ?? false,
     fixRetryCount:       row.fix_retry_count,
+    // Set while a Badge -> Fix upgrade run is in flight (migration 0089); null otherwise. Server-side only.
+    badgeUpgradedAt:     row.badge_upgraded_at ?? null,
+    // True when the latest Try Again round found nothing better and the previous result was kept (migration 0089).
+    retryNoGain:         row.fix_retry_no_gain ?? false,
     // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026,
     // claim_errored_fix RPC) was missing here despite being selected via
     // `select('*')` on nearly every call site in scan.controller.js — the
@@ -176,12 +180,12 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'resumePath', 'resumeAtsPath', 'resumePdfPath',        // storage keys
   'resumeHashHistory', 'fixPaymentId',
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
-  'fixJobLockUntil', 'fixCreditRound', 'fixErrorRecoveries',   // job bookkeeping (migrations 0026 / 0057)
+  'fixJobLockUntil', 'fixCreditRound', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
   'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
 ]
 const CLIENT_SCAN_FIELDS = [
   'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',
-  'fixAtsScore', 'rewriteFailed', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
+  'fixAtsScore', 'rewriteFailed', 'retryNoGain', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
   'contentScore', 'scanCompletedAt', 'candidateFirstName', 'jobTitle', 'fixPurchased', 'fixTier', 'fixGeneratedAt',
   'coverLetterText', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
   'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',

@@ -10,6 +10,7 @@
 // bundler) handles the CJS/ESM mix at bundle time without any issues.
 
 const JSZip   = require('jszip')
+const { safeSlice } = require('../lib/safeText')
 const c        = require('../config/constants')
 const { analyzePdf } = require('./pdf.inspect')
 const { failureMessage } = require('../lib/scanFailure')
@@ -412,7 +413,7 @@ async function parse(env, bytes, mimeType) {
   // off first and the structured copy (the source of the paid rewrite) lost every LinkedIn / GitHub / portfolio URL.
   // The block is kept and the body gives up the room instead.
   const LINK_MARK = '\n\n[hyperlinks in this document]\n'
-  let truncated = text.slice(0, c.MAX_RESUME_TEXT_CHARS)
+  let truncated = safeSlice(text, c.MAX_RESUME_TEXT_CHARS)
   const linkAt = text.indexOf(LINK_MARK)
   if (linkAt >= 0 && text.length > c.MAX_RESUME_TEXT_CHARS) {
     const links = text.slice(linkAt, linkAt + 1500)
@@ -451,7 +452,7 @@ async function structureBrainDump(env, rawText, opts = {}) {
   // +500: room for createScan's Name/Email preamble on top of a full-length
   // body (Scan/ATS pass) — the body itself is already capped at
   // MAX_RESUME_CHARS by the controller.
-  const truncated = rawText.slice(0, c.MAX_RESUME_CHARS + 500)
+  const truncated = safeSlice(rawText, c.MAX_RESUME_CHARS + 500)
   const claude = require('./claude.service')
   const result = await claude.structureFreeformText(env, truncated, opts)
   if (!result.success)

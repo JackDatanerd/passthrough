@@ -165,7 +165,7 @@ describe('scrub_account_data', () => {
   // scrub_account_data (copy the newest body — a replace that starts from an older one drops every column added since) or listing it here on purpose.
   const KEPT = {
     users: ['created_at', 'deleted_at', 'email_bounce_type', 'email_bounced_at', 'email_verified', 'free_fix_credits', 'notify_outcome_followup', 'notify_scan_results', 'scans_day_reset', 'scans_today', 'terms_accepted_at', 'terms_version'],
-    scans: ['anon_expires_at', 'created_at', 'fix_ats_score', 'fix_credit_round', 'fix_error_recoveries', 'fix_generated_at', 'fix_job_lock_until', 'fix_purchased', 'fix_retry_count',
+    scans: ['anon_expires_at', 'badge_upgraded_at', 'created_at', 'fix_retry_no_gain', 'fix_ats_score', 'fix_credit_round', 'fix_error_recoveries', 'fix_generated_at', 'fix_job_lock_until', 'fix_purchased', 'fix_retry_count',
             'outcome_prompt_attempts', 'passed', 'outcome_prompted_at', 'resume_mime_type', 'rewrite_failed', 'role_category', 'scan_completed_at', 'scan_slot_spent_at', 'seniority_level', 'verification_downloads',
             'verification_views', 'verified_at', 'ats_score', 'content_score', 'format_score', 'keyword_score', 'sections_score', 'updated_at',
             // waiting-screen telemetry (0088): job phase and per-attempt scores. No resume content, nothing personal.
@@ -228,6 +228,56 @@ describe('lead_mailbox_key (SQL) matches canonicalMailbox (JS)', () => {
       let s = ''; for (let i = 0, len = 1 + rnd(14); i < len; i++) s += alpha[rnd(alpha.length)]
       if (rnd(3) === 0) s = s.replace(/@.*/, '') + '@gmail.com'
       expect(await sql(s), JSON.stringify(s)).toBe(canonicalMailbox(s))
+    }
+  })
+})
+
+describe('0089 fix-job lease and credit-once, run against the real functions', () => {
+  const U = '00000000-0000-0000-0000-0000000000a1', S = '00000000-0000-0000-0000-0000000000b1'
+  const T1 = '00000000-0000-0000-0000-0000000000c1', T2 = '00000000-0000-0000-0000-0000000000c2'
+  const lock = async () => (await rows(`select fix_job_lock_until is not null as held, fix_job_lock_token as tok from scans where id = $1`, [S]))[0]
+  beforeAll(async () => {
+    const cols = async t => (await rows(`select column_name, is_nullable, column_default from information_schema.columns where table_name = $1`, [t]))
+    // Insert with only the NOT NULL columns that have no default - whatever the schema requires, filled generically.
+    const mk = async (table, over) => {
+      const need = (await cols(table)).filter(c => c.is_nullable === 'NO' && c.column_default == null && !(c.column_name in over))
+      const vals = { ...over }
+      for (const c of need) vals[c.column_name] = c.column_name.endsWith('email') ? 'a@example.com' : 'x'
+      const k = Object.keys(vals)
+      await db.query(`insert into ${table} (${k.join(',')}) values (${k.map((_, i) => '$' + (i + 1)).join(',')})`, k.map(x => vals[x]))
+    }
+    await mk('users', { id: U, email: 'lease@example.com' })
+    await mk('scans', { id: S, user_id: U })
+  })
+  it('a second claim is refused while the lease is held', async () => {
+    expect((await rows(`select claim_fix_job($1, 600, $2) as ok`, [S, T1]))[0].ok).toBe(true)
+    expect((await rows(`select claim_fix_job($1, 600, $2) as ok`, [S, T2]))[0].ok).toBe(false)
+  })
+  it('a job holding a stale token cannot release the current holder\'s lease', async () => {
+    await db.query(`select release_fix_job($1, $2)`, [S, T2])
+    expect(await lock()).toMatchObject({ held: true, tok: T1 })
+  })
+  it('the holder releases its own lease; a tokenless release (an old worker) still works', async () => {
+    await db.query(`select release_fix_job($1, $2)`, [S, T1])
+    expect((await lock()).held).toBe(false)
+    await rows(`select claim_fix_job($1, 600) as ok`, [S])
+    await db.query(`select release_fix_job($1)`, [S])
+    expect((await lock()).held).toBe(false)
+  })
+  it('grant_fix_credit_once grants once per round, and does not consume the round for a missing user', async () => {
+    const credits = async () => (await rows(`select free_fix_credits as n from users where id = $1`, [U]))[0].n
+    const before = await credits()
+    expect((await rows(`select grant_fix_credit_once($1, $2, 0) as g`, [S, U]))[0].g).toBe(true)
+    expect((await rows(`select grant_fix_credit_once($1, $2, 0) as g`, [S, U]))[0].g).toBe(false)
+    expect(await credits()).toBe(before + 1)
+    const ghost = '00000000-0000-0000-0000-0000000000ff'
+    expect((await rows(`select grant_fix_credit_once($1, $2, 1) as g`, [S, ghost]))[0].g).toBe(false)
+    expect((await rows(`select fix_credit_round as r from scans where id = $1`, [S]))[0].r).toBe(0)
+  })
+  it('the new signatures are callable by service_role only', async () => {
+    for (const sig of ['claim_fix_job(uuid,int,uuid)', 'release_fix_job(uuid,uuid)', 'grant_fix_credit_once(uuid,uuid,int)']) {
+      const [r] = await rows(`select has_function_privilege('anon', '${sig}', 'execute') as a, has_function_privilege('authenticated', '${sig}', 'execute') as u, has_function_privilege('service_role', '${sig}', 'execute') as s`)
+      expect(r, sig).toEqual({ a: false, u: false, s: true })
     }
   })
 })

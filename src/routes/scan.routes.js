@@ -26,6 +26,7 @@ router.post('/:id/initiate-fix', auth, rl.fixQuote, validateUuidParam(), c.initi
 // full reasoning (same fate-sharing class as paymentCancel/click/partnerWrite
 // being split off their own shared buckets elsewhere in this codebase).
 router.post('/:id/redeem-credit', auth, rl.redeemCredit, validateUuidParam(), c.redeemCredit)
+router.post('/:id/upgrade-to-fix', auth, rl.redeemCredit, validateUuidParam(), c.upgradeBadgeToFix)
 router.post('/:id/retry-fix',    auth, rl.retryFix, validateUuidParam(), c.retryFix)
 // FEATURE (Auth/Scan round): re-render a PDF that failed to generate at delivery.
 router.post('/:id/regenerate-pdf', auth, rl.pdfRegen, validateUuidParam(), c.regeneratePdf)

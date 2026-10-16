@@ -16,6 +16,7 @@
 //   * every text field is really a string and is bounded.
 
 const c = require('../config/constants')
+const { safeSlice, stripLoneSurrogates } = require('../lib/safeText')
 
 const PDF_MIME  = 'application/pdf'
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -124,7 +125,8 @@ async function uploadResume(ctx, next) {
     // and in the controller counts characters, so the extra CRs silently cut the END off a long
     // background or job posting that the form said fit. LF-only before anything is measured.
     // NUL can't be stored in Postgres text/jsonb (it would surface as a 500), so drop it at the door.
-    return v.replace(/\u0000/g, '').replace(/\r\n?/g, '\n').slice(0, cap)
+    // Lone surrogate halves are dropped too (and the cap never splits a pair): Postgres refuses either in a text value.
+    return safeSlice(stripLoneSurrogates(v.replace(/\u0000/g, '').replace(/\r\n?/g, '\n')), cap)
   }
 
   const fields = {

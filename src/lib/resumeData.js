@@ -9,6 +9,7 @@
 
 const { z } = require('zod')
 
+const { stripLoneSurrogates } = require('./safeText')
 // A real structured resume is a few KB. Bounded BEFORE it is validated, rendered to a docx and
 // stored as JSONB: the schema is permissive, so it cannot be relied on to cap size.
 const MAX_RESUME_DATA_JSON_CHARS = 100_000
@@ -103,7 +104,8 @@ function hasResumeContent(rd) {
 // anywhere in the payload used to pass validation and then fail inside the RPC as a 500.
 // Removed from every string value and key instead: it is never meaningful resume text.
 function stripNul(v) {
-  if (typeof v === 'string') return v.includes('\u0000') ? v.replace(/\u0000/g, '') : v
+  // Lone surrogate halves are refused by Postgres in jsonb just as NUL is, and a client can send one as "\ud83d" in JSON.
+  if (typeof v === 'string') return stripLoneSurrogates(v.includes('\u0000') ? v.replace(/\u0000/g, '') : v)
   if (Array.isArray(v)) return v.map(stripNul)
   if (v && typeof v === 'object') {
     const out = {}

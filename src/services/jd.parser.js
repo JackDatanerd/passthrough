@@ -15,6 +15,7 @@ function isBlockedHost(hostname) {
 const MAX_BYTES = 500_000
 const MAX_REDIRECTS = 3
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
+const { safeSlice } = require('../lib/safeText')
 const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
 const { decodeHtmlEntities } = require('../lib/htmlEntities')
 
@@ -232,7 +233,11 @@ function extractJsonLdBlocks(html) {
   const out = []
   const MAX_BLOCK = 300_000
   let pos = 0
-  const lower = html.toLowerCase()
+  // ASCII-only lowercase. String.prototype.toLowerCase() is NOT length-preserving ('İ' becomes two code
+  // units), and every index found in `lower` is used to slice the ORIGINAL html below, so a page with one
+  // such character ahead of the JSON-LD block shifted every slice and the block failed to parse. Tag
+  // names are ASCII, so folding A-Z alone is all the literal searches need.
+  const lower = html.replace(/[A-Z]/g, c => String.fromCharCode(c.charCodeAt(0) + 32))
   for (let guard = 0; guard < 200; guard++) {
     const open = lower.indexOf('<script', pos)
     if (open === -1) break
@@ -404,7 +409,7 @@ async function fetchJobDescriptionFromUrl(rawUrl) {
     // Structured data first: when the page declares exactly one JobPosting,
     // its text IS the job description (no nav, footer or "similar jobs").
     const structured = extractJobPostingText(html)
-    if (structured) return { success: true, blocked: false, text: structured.slice(0, MAX_FETCH_CHARS) }
+    if (structured) return { success: true, blocked: false, text: safeSlice(structured, MAX_FETCH_CHARS) }
 
     let text = htmlToText(html)
 
@@ -446,7 +451,7 @@ async function fetchJobDescriptionFromUrl(rawUrl) {
         ? `${text.slice(0, pageTitle.length)}\n${text.slice(pageTitle.length).replace(/^\s+/, '')}`
         : `${pageTitle}\n${text}`
     }
-    return { success: true, blocked: false, text: text.slice(0, MAX_FETCH_CHARS) }
+    return { success: true, blocked: false, text: safeSlice(text, MAX_FETCH_CHARS) }
   } catch (_) {
     return { success: false, blocked: false, text: null,
       message: 'Could not read that page. Paste instead.' }

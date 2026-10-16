@@ -1,0 +1,61 @@
+Scan / ATS core - round 10 (repo at 2b4d9eb; migration is 0089 because 0087/0088 landed upstream meanwhile)
+
+DEPLOY ORDER: apply supabase/migrations/0089_scan_ats_round10.sql BEFORE deploying the worker. The new RPC parameters
+default to NULL, so a not-yet-redeployed worker keeps working against the migrated database; the reverse order makes
+the Badge upgrade fail (missing column) and turns off the job lease until the migration lands (claimFixJob fails open).
+
+BUGS FIXED
+B1  src/services/claude.service.js  restoreFactualFields: the rewrite could change or drop the contact header (name,
+    email, phone, location, linkedin, portfolio) and swap a project's link; detectFabrication never looked at them and
+    sanitizeResumeShape kept whatever the model returned, so the change shipped on a paid, hash-stamped document. They are
+    now carried over from the input exactly (a value the input never had stays empty). Project links are matched by name,
+    then unique containment, then position.
+B2  src/services/ats.service.js  scoreContent: every bullet-glyph line counted as an experience bullet, so certifications,
+    awards and publications (noun phrases) sat in the action-verb denominator. Same experience: content 80 with none,
+    46 with four certifications, 23 with ten (overall 96 -> 83). Bullets are now read outside credential-style sections
+    (certifications, awards, publications, languages, skills, education, ...). Projects deliberately still count. Falls back
+    to the old all-lines behaviour with fewer than 3 bullets left. Also stops those lines surfacing as "quantify this" prompts.
+B3  src/services/jd.parser.js  extractJsonLdBlocks: positions found in html.toLowerCase() were used to slice the original
+    html; a character whose lowercase is longer ('İ') shifted every slice and the posting silently fell back to the
+    plain-text path. ASCII-only case folding keeps lengths equal.
+B4  supabase/migrations/0089 + scan.controller.js  release_fix_job was not owner-scoped: a job that outlived its lease
+    released the lease of the job that had since claimed it. Per-job token. grant_fix_credit_once consumed the round before
+    checking the user existed; it now checks first.
+
+B5  src/lib/safeText.js (new) + scan.controller.js, ats.service.js, jd.parser.js, resume.parser.js, middleware/upload.js,
+    lib/resumeData.js  Text cut by UTF-16 length could be cut in the middle of an emoji, leaving half a surrogate pair.
+    Postgres refuses that in a text/jsonb value (verified on PGlite: "invalid input syntax for type json") and the Anthropic
+    API refuses it in a prompt. A job posting with an emoji at the MAX_JD_CHARS boundary (or a brain dump at its cap) made the
+    scan insert fail. Every cut of user text in the section now goes through safeSlice; upload.js and stripNul also drop lone
+    halves (a JSON body can carry "\ud83d"; multipart cannot - UTF-8 has no encoding for one).
+B6  scan.controller.js upgradeBadgeToFix / revertBadgeUpgrade  The Badge run's fix_progress (round 0, phase 'rendering') was
+    still on the row when the upgrade started; the waiting screen accepts it for the same round number and skipped straight to
+    "Preparing your files". The claim and the revert now clear it.
+
+FEATURE GAPS CLOSED
+G1  POST /api/scan/:id/upgrade-to-fix (scan.controller.js upgradeBadgeToFix, ScanResult.jsx, DiffView.jsx)  A Badge
+    (credential-only) purchase that missed the bar earned a free fix credit that could not be spent on that scan
+    (redeemCredit: "Already purchased"). A delivered Badge can now be upgraded to a full Fix on the same scan with a credit:
+    credit spent atomically, $0 ledger row, compare-and-set to FIX/FIX_PURCHASED, generateFix queued. The run rewrites the
+    resume the person holds (their Badge-era edit), reuses the verification code, and on a crash reverts the tier and
+    hands the credit back (badge_upgraded_at marker). The original payment stays scans.fix_payment_id, so a refund or dispute
+    of it still blocks retries/edits (purchaseIsLive). NOT built: a PAID upgrade - a second payment on one scan cuts across
+    settlement, refunds and disputes (payments.fix_tier CHECK, one purchase per scan); that belongs in the Payments section.
+G2  src/services/claude.service.js checkHtmlFidelity  The designed PDF's credential block was unchecked. A page is now
+    rejected (falling back to the built-in template) when it lacks an <a> to the verification URL, links to an address that
+    is neither that URL nor in the resume, claims "Passthrough Verified" on an unverified document, or omits it on a verified
+    one. Active only when the caller passes `verified` (generateFixRun now does).
+G3  scan.controller.js generateFixRun + ScanResult.jsx  (a) when the original wins the rewrite, or the model returns no
+    usable prompt, quantification prompts are derived from the delivered bullets (fallbackQuantificationPrompts) instead of
+    being empty; (b) a Try Again whose rewrites all scored no better re-delivers the previous result - scans.fix_retry_no_gain
+    (best-effort write after delivery) lets the page say so. (A retry that produced NOTHING was already handed back.)
+
+LEFT AS IS ON PURPOSE
+- resumeDataSchema .passthrough(): pinned by tests/profile.dashboard.test.js as the shared Profile contract; the data is the
+  user's own.
+
+NEW TESTS
+tests/scan.ats.round10.test.js, tests/scan.ats.round10.text.test.js, tests/scan.ats.round10.upgrade.test.js, frontend/tests/pages/ScanResult.round10.test.jsx,
+and a block in tests/migrations.pglite.test.js that runs the new functions on a real Postgres (PGlite).
+Bookkeeping lists updated: tests/mappers.migrations.test.js (fix_job_lock_token is a lease secret, deliberately unmapped),
+tests/migrations.pglite.test.js KEPT (badge_upgraded_at, fix_retry_no_gain survive account erasure like fix_credit_round).

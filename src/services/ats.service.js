@@ -1,4 +1,5 @@
 const constants = require('../config/constants')
+const { safeSlice } = require('../lib/safeText')
 const { decodeHtmlEntities } = require('../lib/htmlEntities')
 
 const STOP_WORDS = new Set([
@@ -438,8 +439,8 @@ function fitJobDescription(text, max) {
     kept.push({ ...z, text: piece })
     used += piece.length + 1
   }
-  if (!kept.length) return src.slice(0, max)
-  return kept.sort((a, b) => a.i - b.i).map(z => z.text.trim()).join('\n').slice(0, max)
+  if (!kept.length) return safeSlice(src, max)
+  return safeSlice(kept.sort((a, b) => a.i - b.i).map(z => z.text.trim()).join('\n'), max)
 }
 
 // ── SCAN/ATS ROUND 4: keyword integrity ───────────────────────────────────────────────────────────────────
@@ -866,6 +867,32 @@ function countQuantifiedFigures(text) {
   return n
 }
 
+// Sections whose lines are a list of facts (credentials, titles, languages, publications), not accomplishment
+// statements. Projects are deliberately NOT here: a project's bullets are written like experience ("Built ..."). Experience-style sections (experience, work history, volunteering, leadership,
+// achievements) win when a heading names both ("Projects & Experience").
+const LIST_SECTION_RE = /(?:^| )(?:skills?|technical|competencies|competency|expertise|technologies|technology|tools|tech|stack|certifications?|certificates?|licenses|licences|awards|honors|honours|publications|languages?|interests|references|education|academic|coursework|training|proficiencies|proficiency)(?: |$)/
+const EXPERIENCE_SECTION_RE = /(?:^| )(?:experience|work|employment|career|internships?|volunteer(?:ing)?|leadership|achievements|accomplishments|activities|highlights)(?: |$)/
+// The lines of the resume that are NOT inside a list-style section. A heading is a line made of heading vocabulary only
+// (isHeadingLine) - deliberately not the looser title-case test, because mistaking "Awards Committee Chair" inside a job
+// for a heading would silently stop counting real bullets.
+function bulletLinesOutsideListSections(text) {
+  const out = []
+  let inList = false
+  for (const line of String(text || '').split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    if (t.length <= 50 && !/[.!?]$/.test(t) && t.split(/\s+/).length <= 6) {
+      const f = foldHeading(t)
+      if (isHeadingLine(t, f)) {
+        inList = LIST_SECTION_RE.test(f) && !EXPERIENCE_SECTION_RE.test(f)
+        continue
+      }
+    }
+    if (!inList) out.push(line)
+  }
+  return out
+}
+
 function scoreContent(resumeText) {
   // Symbolic bullets (•, -, *, ◦, etc.) need no trailing punctuation — the
   // bullet character followed by a space IS the complete marker. Only
@@ -890,7 +917,16 @@ function scoreContent(resumeText) {
   // — real numbered/lettered list markers are always one of these two
   // shapes, while every common title/name abbreviation ("Sr.", "Dr.",
   // "Mr.", "St.") is 2+ letters and no longer matches.
-  let bullets = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
+  // SCAN/ATS ROUND 10 (bug, measured): EVERY bullet-glyph line in the file was counted, so a certification ("✓ AWS
+  // Certified ..."), an award or a publication - all noun phrases, none starting with a verb -
+  // sat in the action-verb denominator. The same experience scored content 80 with no certifications and 46 with four
+  // (overall 96 -> 89), 23 with ten - so a certified candidate was marked down for being certified, and the credential
+  // and the best-of-N rewrite choice both rest on this number. The quantify-this-bullet prompts also surfaced those
+  // lines. Bullets are now read from the experience-style sections only; with fewer than 3 there (or no recognisable
+  // headings) the old all-lines behaviour applies, so nothing that scored before can collapse.
+  const markedLines = resumeText.split('\n').filter(l => BULLET_LINE.test(l))
+  let bullets = bulletLinesOutsideListSections(resumeText).filter(l => BULLET_LINE.test(l))
+  if (bullets.length < 3) bullets = markedLines
   // AUDIT FIX (Auth/Scan round): when the source format carries NO bullet
   // characters at all (a DOCX whose list numbering isn't text, a PDF whose
   // bullet glyphs the extractor dropped) fewer than 3 marked lines are found

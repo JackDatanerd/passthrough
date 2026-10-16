@@ -65,6 +65,7 @@ const claudeService  = require('../services/claude.service')
 const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
+const { safeSlice } = require('../lib/safeText')
 const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
 const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { purgeBadgeCache } = require('../lib/badgeCache')
@@ -352,7 +353,7 @@ async function createScan(ctx) {
   // who used the whole box the UI allowed silently lost the last ~40-150
   // characters of their own text to the preamble. The body is capped first,
   // the preamble goes on top, and both downstream caps allow for it.
-  const brainDumpBody = brainDumpText.slice(0, c.MAX_RESUME_CHARS)
+  const brainDumpBody = safeSlice(brainDumpText, c.MAX_RESUME_CHARS)
   const brainDumpWithContact = (!user && brainDumpText && (contactName || contactEmail))
     ? `Name: ${contactName.slice(0, 100)}\nEmail: ${contactEmail.slice(0, 254)}\n\n${brainDumpBody}`
     : brainDumpBody
@@ -439,7 +440,7 @@ async function createScan(ctx) {
     }
     return {
       input_mode:           'brain_dump',
-      raw_brain_dump_text:  brainDumpWithContact.slice(0, c.MAX_RESUME_CHARS + 500),
+      raw_brain_dump_text:  safeSlice(brainDumpWithContact, c.MAX_RESUME_CHARS + 500),
       // AUDIT FIX (feature gap): contactName/contactEmail were previously
       // ONLY folded into raw_brain_dump_text as a preamble for Claude to
       // read — never persisted as their own values. That meant the one
@@ -922,8 +923,8 @@ async function updateResumeData(ctx) {
   // land on a number computed the exact same way the first one was, not a
   // cheaper approximation that could disagree with it for reasons that have
   // nothing to do with the actual edit.
-  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
-  const rawResumeText = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_TEXT_CHARS)
+  const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
+  const rawResumeText = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
   const aiResult = await claudeService.scoreResumeWithAI(ctx.env, rawResumeText, jdText)
@@ -1123,7 +1124,7 @@ async function structureResume(ctx) {
   let report = prior
   if (formattedScore == null) {
     try {
-      const f = await computeFormattedScore(ctx.env, data, (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS), 'structureResume')
+      const f = await computeFormattedScore(ctx.env, data, safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS), 'structureResume')
       formattedScore = f.finalScore
       if (prior) report = { ...prior, formattedScore }
     } catch (e) {
@@ -1251,7 +1252,7 @@ async function updateDeliveredResume(ctx) {
     return ctx.json({ success: false, message: 'Add at least one job, school, project, skill or a summary — an empty resume can\'t replace your delivered one.' }, 400)
 
   const isPlain = scan.fixTier === 'FIX_PLAIN'
-  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+  const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
   const code = isPlain ? null : (scan.verificationCode || null)
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
 
@@ -1362,7 +1363,7 @@ async function generateCoverLetter(ctx) {
   if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
   const data = scan.rewrittenResumeData || scan.originalResumeData
   if (!data) return ctx.json({ success: false, message: 'No resume content is stored for this scan.' }, 400)
-  const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+  const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
   if (jdText.trim().length < 50) return ctx.json({ success: false, message: 'There is no job description stored for this scan.' }, 400)
 
   const result = await claudeService.generateCoverLetter(ctx.env, data, jdText)
@@ -1600,6 +1601,101 @@ async function redeemCredit(ctx) {
   }
 
   return ctx.json({ success: true, data: { scanId: scan.id } })
+}
+
+// POST /api/scan/:id/upgrade-to-fix — turn a delivered credential-only (Badge) purchase into a full Fix on the SAME
+// scan by spending a free fix credit. SCAN/ATS ROUND 10 (feature gap): a Badge whose delivered file missed the bar is
+// compensated with a free fix credit, but redeemCredit refuses a scan that is already purchased ("Already purchased"),
+// so the only way to use it was to scan the same resume again and re-enter the job. There is deliberately no PAID
+// upgrade here: a second payment on one scan would cut across settlement, refunds and disputes (payments.fix_tier,
+// one purchase per scan) and belongs in the Payments section, not in a scan endpoint.
+//
+// The original paid payment stays the scan's fix_payment_id, so refunding or disputing it still blocks everything
+// purchaseIsLive guards; the credit spend is recorded as a $0 payment row for the history only (the reconcile sweeps
+// ignore any payment that is not the scan's fix_payment_id).
+async function upgradeBadgeToFix(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  if (!user.emailVerified)
+    return ctx.json({ success: false, code: 'EMAIL_NOT_VERIFIED',
+      message: 'Please verify your email address before upgrading — your downloads are sent to it.' }, 403)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id)
+    return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.fixTier !== 'BADGE')
+    return ctx.json({ success: false, message: 'Only a credential-only purchase can be upgraded.' }, 400)
+  if (scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your credential is still being prepared — upgrade once it is ready.' }, 400)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
+
+  const { data: redeemed, error: rpcErr } = await supabase.rpc('redeem_free_fix_credit', { p_user_id: user.id })
+  if (rpcErr) throw rpcErr
+  if (!redeemed)
+    return ctx.json({ success: false, message: 'No free fix credits available.' }, 400)
+
+  let ledgerId = null, claimObtained = false
+  const refund = async why => {
+    try { must(await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id }), 'refund free fix credit') }
+    catch (refundErr) {
+      console.error(`[CRITICAL] upgradeBadgeToFix credit refund failed (${why}) (user ${user.id}, scan ${scan.id}):`, refundErr.message)
+      try { await emailService.sendOwnerAlert(ctx.env, 'upgradeBadgeToFix refund failed — credit stuck consumed',
+        `userId: ${user.id}\nscanId: ${scan.id}\nreason: ${why}\nrefund error: ${refundErr.message}\n\nManually restore this user's free_fix_credits by 1.`) } catch (_) {}
+    }
+  }
+  try {
+    const { data: ledger, error: ledgerErr } = await supabase.from('payments').insert({
+      amount_cents: 0, currency: c.activeCurrency(ctx.env), status: 'SUCCESS', fix_tier: 'FIX',
+      paystack_ref: `credit-upgrade:${scan.id}:${Date.now()}`, user_id: user.id, scan_id: scan.id
+    }).select('id').single()
+    if (ledgerErr) throw ledgerErr
+    ledgerId = ledger.id
+
+    const { data: claimed, error: claimErr } = await supabase.from('scans').update({
+      // fix_progress: the credential-only run's progress (round 0, phase 'rendering') is still on the row; the waiting
+      // screen accepts it for this round (same round number) and would skip straight to "Preparing your files".
+      fix_tier: 'FIX', status: 'FIX_PURCHASED', badge_upgraded_at: new Date().toISOString(), fix_progress: null
+    }).eq('id', scan.id).eq('fix_purchased', true).eq('fix_tier', 'BADGE').eq('status', 'FIX_DELIVERED').select('id')
+    if (claimErr) throw claimErr
+    if (!claimed || claimed.length === 0) {
+      try { await supabase.from('payments').update({ status: 'FAILED' }).eq('id', ledgerId) } catch (_) {}
+      await refund('scan changed concurrently')
+      return ctx.json({ success: false, message: 'This resume changed while we were starting the upgrade. Please try again.' }, 409)
+    }
+    claimObtained = true
+    await ctx.env.FIX_QUEUE.send({ type: 'generateFix', scanId: scan.id })
+  } catch (err) {
+    if (claimObtained) {
+      // Claimed, only the enqueue failed: the scan is FIX_PURCHASED with a live payment, so the orphan sweep
+      // re-enqueues it. The credit is genuinely spent; delivery is only late.
+      console.error(`[CRITICAL] upgradeBadgeToFix: claimed but the enqueue failed — the orphan sweep will re-enqueue it (user ${user.id}, scan ${scan.id}):`, err.message)
+      return ctx.json({ success: true, data: { scanId: scan.id } })
+    }
+    if (ledgerId) { try { await supabase.from('payments').update({ status: 'FAILED' }).eq('id', ledgerId) } catch (_) {} }
+    await refund(err.message)
+    throw err
+  }
+  return ctx.json({ success: true, data: { scanId: scan.id } })
+}
+
+// Undoes a crashed upgrade run (see generateFixRun's catch). Returns true when it reverted one.
+async function revertBadgeUpgrade(env, supabase, scanId, userId) {
+  try {
+    const { data, error } = await supabase.from('scans')
+      .update({ fix_tier: 'BADGE', status: 'FIX_DELIVERED', badge_upgraded_at: null, fix_progress: null })
+      .eq('id', scanId).eq('status', 'FIX_GENERATING').not('badge_upgraded_at', 'is', null).select('id')
+    if (error) throw error
+    if (!data || data.length === 0) return false
+    try { await supabase.from('payments').update({ status: 'FAILED' }).like('paystack_ref', `credit-upgrade:${scanId}:%`).eq('status', 'SUCCESS') } catch (_) {}
+    if (userId) must(await supabase.rpc('increment_free_fix_credits', { p_user_id: userId }), 'refund free fix credit (failed upgrade)')
+    return true
+  } catch (err) {
+    console.error(`[CRITICAL] revertBadgeUpgrade ${scanId}:`, err.message)
+    try { await emailService.sendOwnerAlert(env, 'Failed Badge upgrade could not be reverted',
+      `userId: ${userId}\nscanId: ${scanId}\nerror: ${err.message}\n\nThe scan may be FIX_GENERATING with the FIX tier and the credit spent. Restore fix_tier=BADGE, status=FIX_DELIVERED, badge_upgraded_at=null and one free fix credit.`) } catch (_) {}
+    return false
+  }
 }
 
 // POST /api/scan/:id/retry-fix — user-facing "Try Again" when a delivered
@@ -2159,8 +2255,8 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // box size). A 3-page resume is 8-10k characters; everything past the cap
     // (Education, Skills, older roles) was invisible to scoring and the
     // section check reported it missing (measured: sections 85 -> 43).
-    const resumeText = rawResumeText.slice(0, c.MAX_RESUME_TEXT_CHARS)
-    const jdText     = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+    const resumeText = safeSlice(rawResumeText, c.MAX_RESUME_TEXT_CHARS)
+    const jdText     = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
     await reportProgress(supabase, scanId, { scan_stage: 'scoring' }, 'SCANNING')
     const ruleResult = atsService.scoreResume(resumeText, jdText, { structure: layoutStructure })
 
@@ -2365,18 +2461,22 @@ async function regeneratePdf(ctx) {
 // OPEN: if the lease can't be taken for a reason other than "someone holds it" (an RPC error, a
 // stub), the job runs — a rare duplicate is better than a paid fix that never starts.
 const FIX_JOB_LEASE_SECONDS = 600
+// Returns the job's lease token (truthy) when the lease was taken - or when it could not be asked for - and
+// null when another job holds it. The token goes back to releaseFixJob so a job whose lease expired and was
+// re-claimed can never release the NEW holder's lease (SCAN/ATS ROUND 10).
 async function claimFixJob(supabase, scanId) {
+  const token = globalThis.crypto.randomUUID()
   try {
-    const { data, error } = await supabase.rpc('claim_fix_job', { p_scan_id: scanId, p_lease_seconds: FIX_JOB_LEASE_SECONDS })
-    if (error) { console.error(`[WARN] claim_fix_job ${scanId}:`, error.message); return true }
-    return data !== false
+    const { data, error } = await supabase.rpc('claim_fix_job', { p_scan_id: scanId, p_lease_seconds: FIX_JOB_LEASE_SECONDS, p_token: token })
+    if (error) { console.error(`[WARN] claim_fix_job ${scanId}:`, error.message); return token }
+    return data === false ? null : token
   } catch (err) {
     console.error(`[WARN] claim_fix_job ${scanId}:`, err.message)
-    return true
+    return token
   }
 }
-async function releaseFixJob(supabase, scanId) {
-  try { await supabase.rpc('release_fix_job', { p_scan_id: scanId }) }
+async function releaseFixJob(supabase, scanId, token) {
+  try { await supabase.rpc('release_fix_job', { p_scan_id: scanId, p_token: token }) }
   catch (err) { console.error(`[WARN] release_fix_job ${scanId}:`, err.message) }
 }
 
@@ -2454,7 +2554,7 @@ async function cleanupUndeliveredKeys(env, supabase, scanId, keys) {
 // Score of the ATS-formatted document that would be DELIVERED for this structured resume (the same
 // render-then-score basis updateResumeData and the paid jobs use), blended exactly like a free scan.
 async function computeFormattedScore(env, resumeData, jdText, label) {
-  const text = (await renderStructuredResumeText(resumeData)).slice(0, c.MAX_RESUME_TEXT_CHARS)
+  const text = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const rule = atsService.scoreResume(text, jdText)
   let ai = { success: false }
   try { ai = await claudeService.scoreResumeWithAI(env, text, jdText) }
@@ -2507,7 +2607,7 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   // G4: the designed page is model-written HTML that gets hash-stamped as verified and sent to
   // employers - it must still contain what the resume says before it is allowed to become the PDF.
   const fidelity = htmlResult?.success && htmlResult.data
-    ? (claudeService.checkHtmlFidelity?.(data, htmlResult.data, { verificationUrl }) ?? { ok: true, reasons: [] })
+    ? (claudeService.checkHtmlFidelity?.(data, htmlResult.data, { verificationUrl, verified }) ?? { ok: true, reasons: [] })
     : null
   if (fidelity && !fidelity.ok) {
     htmlError = `designed layout failed the content check: ${fidelity.reasons.slice(0, 3).join('; ')}`
@@ -2546,6 +2646,8 @@ async function generateFixRun(env, supabase, scanId) {
   let priorDelivery = false
   // Whether this run is a paid "Try Again" round (retry counter already spent).
   let retryRound = false
+  // Whether this run is a Badge -> Fix upgrade (scans.badge_upgraded_at is set), and whose credit paid for it.
+  let upgradeRound = false, upgradeUserId = null
   // Keys this run may have written (see cleanupUndeliveredKeys).
   const writtenKeys = []
   try {
@@ -2568,6 +2670,8 @@ async function generateFixRun(env, supabase, scanId) {
     // retry (the first-delivery redelivery case used to fall through to ERROR).
     priorDelivery = !!scan.resumeAtsPath
     retryRound = scan.fixRetryCount > 0
+    upgradeRound = !!scan.badgeUpgradedAt
+    upgradeUserId = scan.userId ?? null
 
     // `originalData` is what the resume WAS — the user's own content. It is
     // what gets persisted as original_resume_data and what the fabrication
@@ -2612,11 +2716,17 @@ async function generateFixRun(env, supabase, scanId) {
     // was later written back as original_resume_data — so after any retry the
     // "original" stored (and shown by DiffView, and offered to "save profile")
     // was the previous rewrite, not the user's resume.
+    // SCAN/ATS ROUND 10: a Badge -> Fix upgrade rewrites the resume the person actually holds. If they edited the
+    // credential-only delivery, that edit IS their resume now - not the upload it was made from.
+    if (upgradeRound) {
+      const held = scan.userEditedResumeData || scan.rewrittenResumeData
+      if (held) originalData = held
+    }
     const isRetry = scan.fixRetryCount > 0
     let resumeData = originalData
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
-    const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+    const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
     const candidateFirstName = candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null
     // DOCX_MIME is now module-level — see top of file.
 
@@ -2814,6 +2924,8 @@ async function generateFixRun(env, supabase, scanId) {
 
     finalData = bestData
     quantificationPrompts = bestQuantificationPrompts
+    // Nothing from the model (the original won, or it returned no usable prompt): derive them from the delivered bullets.
+    if (!quantificationPrompts?.length) quantificationPrompts = claudeService.fallbackQuantificationPrompts?.(finalData) ?? []
     // bestScore stays -1 only if every attempt failed at the API/parse level
     // (never even produced a scoreable candidate) — fall back to scoring the
     // untouched original so fix_ats_score is never left null on a delivered
@@ -2960,11 +3072,20 @@ async function generateFixRun(env, supabase, scanId) {
       // PHASE 3: static suggestions only — no regeneration loop in v1. See
       // QuantificationPrompts.jsx for how these render.
       quantification_prompts: quantificationPrompts,
+      // An upgrade run ends here: the marker is cleared and the Badge-era edit (now folded into original_resume_data)
+      // is not left behind to be mistaken for an edit of THIS delivery.
+      ...(upgradeRound ? { badge_upgraded_at: null, user_edited_resume_data: null } : {}),
       status: 'FIX_DELIVERED'
     }).eq('id', scanId)
     // This write was never checked: a failed update used to fall straight
     // through to "delivered" emails for a scan still stuck at FIX_GENERATING.
     if (deliverErr) throw deliverErr
+    // A Try Again round whose rewrites all scored no better than the delivery already held re-delivered that same
+    // content (carriedForward) - say so. Best-effort and AFTER delivery: it must never block one, and it is a no-op
+    // until migration 0089 is applied.
+    if (isRetry) {
+      try { await supabase.from('scans').update({ fix_retry_no_gain: carriedForward && producedCandidate }).eq('id', scanId) } catch (_) {}
+    }
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
     // SECTION 7 AUDIT FIX (bug, fresh pass): a RETRY round can change fix_ats_score,
     // resume_hash and resume_pdf_hash on an EXISTING verification_code (first
@@ -2993,6 +3114,13 @@ async function generateFixRun(env, supabase, scanId) {
     } catch (_) {}
     // supabase-js query builders are thenable but not real Promises — .catch()
     // doesn't exist on them directly, must use a real try/catch instead.
+    if (upgradeRound) {
+      // A crashed UPGRADE: the credential-only delivery is untouched on the row, so it goes back to being a Badge and
+      // the credit is handed back - otherwise the person is left with a spent credit, no fix, and (the tier now being
+      // FIX with a passing score) no Try Again button. Compare-and-set, so a run that already delivered is never undone.
+      await revertBadgeUpgrade(env, supabase, scanId, upgradeUserId)
+      return { success: false, error: err.message }
+    }
     if (priorDelivery) {
       // AUDIT FIX (Auth/Scan round): a crash during a RETRY round used to set
       // ERROR on a scan whose previous fix was already delivered — the results
@@ -3108,7 +3236,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     // is the one place that must not guess. The delivered document is scored the
     // same way a scan is, and the credential wording follows the result (as it
     // does for a Fix). If scoring itself can't run, the earned scan score stands.
-    const jdText = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+    const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
     let fixAtsScore = scan.atsScore
     let badgeScored = null
     try {
@@ -3230,20 +3358,22 @@ async function generateBadgeRun(env, supabase, scanId) {
 
 // Public entry points: take the scan's lease, run, give it back (see claimFixJob).
 async function generateFix(env, supabase, scanId) {
-  if (!(await claimFixJob(supabase, scanId))) {
+  const lease = await claimFixJob(supabase, scanId)
+  if (!lease) {
     console.log(`generateFix: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
   try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId)) }
-  finally { await releaseFixJob(supabase, scanId) }
+  finally { await releaseFixJob(supabase, scanId, lease) }
 }
 async function generateBadge(env, supabase, scanId) {
-  if (!(await claimFixJob(supabase, scanId))) {
+  const lease = await claimFixJob(supabase, scanId)
+  if (!lease) {
     console.log(`generateBadge: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
   try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateBadgeRun(tracked, supabase, scanId)) }
-  finally { await releaseFixJob(supabase, scanId) }
+  finally { await releaseFixJob(supabase, scanId, lease) }
 }
 
 // SCAN/ATS ROUND 4 (cost ledger): HTTP handlers that make Claude calls inside the request. Each runs against a copy of env that
@@ -3266,7 +3396,7 @@ const __test = { coverLetterFileStem, draftFileStem, purchaseIsLive, grantFixCre
 
 module.exports = {
   __test,
-  createScan, getScanStatus, getScan, initiateFix, redeemCredit, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
+  createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
   structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron

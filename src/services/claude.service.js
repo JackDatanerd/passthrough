@@ -573,6 +573,23 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
 // refresh", and refreshing never helped. Each prompt is now tied to a real bullet of the resume that
 // is being delivered: an exact match is kept, a near-verbatim one is snapped to the real text, and a
 // prompt that points at nothing is dropped. Duplicates collapse to one per bullet.
+// SCAN/ATS ROUND 10: when the original wins the rewrite (or the model returned no usable prompt) the person was left
+// with no "add a number" buttons at all, although their delivered resume plainly has bullets with no figure in them -
+// the single most useful thing they can still do by hand. These are built straight from the delivered bullets, so each
+// one points at a real line by construction. Experience bullets only, no digit, six words or more (the same test the
+// free scan's "unquantified" list uses), at most five.
+function fallbackQuantificationPrompts(resumeData, max = 5) {
+  const out = []
+  for (const job of Array.isArray(resumeData?.experience) ? resumeData.experience : []) {
+    for (const b of Array.isArray(job?.bullets) ? job.bullets : []) {
+      if (out.length >= max) return out
+      const text = typeof b === 'string' ? b.trim() : ''
+      if (!text || /\d/.test(text) || text.split(/\s+/).length < 6) continue
+      out.push({ bullet: text, suggestion: 'How many, how much, how often or how long? Add one real figure you can stand behind.' })
+    }
+  }
+  return out
+}
 const promptKey = t => String(t || '').toLowerCase().replace(/[^\p{L}\p{N}%$]+/gu, ' ').trim()
 function groundQuantificationPrompts(resumeData, raw) {
   if (!Array.isArray(raw)) return []
@@ -617,6 +634,7 @@ function groundQuantificationPrompts(resumeData, raw) {
 // carried over from the input exactly (whatever the model did to them), so a rewrite can neither
 // invent nor drop them. Entry-level fields are matched back to their entry by employer/school
 // (+ title/degree); an entry the model renamed beyond recognition simply gets none.
+const CONTACT_FIELDS = ['name', 'email', 'phone', 'location', 'linkedin', 'portfolio']
 function restoreFactualFields(input, rewritten) {
   const key = (a, b) => `${String(a || '').toLowerCase().replace(/[^a-z0-9]+/g, '')}|${String(b || '').toLowerCase().replace(/[^a-z0-9]+/g, '')}`
   const out = { ...rewritten }
@@ -639,6 +657,27 @@ function restoreFactualFields(input, rewritten) {
   }
   out.experience = restore(input?.experience, rewritten.experience, 'company', 'title', 'location')
   out.education  = restore(input?.education,  rewritten.education,  'institution', 'degree', 'details')
+  // SCAN/ATS ROUND 10: the contact header and a project's link are facts the person supplied too, and nothing
+  // guarded them - detectFabrication does not look at them and sanitizeResumeShape keeps whatever the model
+  // returned. A rewrite that dropped the phone, "tidied" the email or swapped a project URL shipped on a paid,
+  // hash-stamped document. They are carried over from the input exactly; a value the input never had stays
+  // empty rather than being invented.
+  for (const k of CONTACT_FIELDS) out[k] = typeof input?.[k] === 'string' && input[k].trim() ? input[k] : null
+  // A project is identified by its name alone, so the experience/education fallbacks (same employer + position)
+  // do not apply: exact name, then a unique containment ("Tool" -> "Tool CLI"), then the same position when the
+  // counts match.
+  const origProjects = listOf(input?.projects), newProjects = listOf(rewritten.projects)
+  const pk = v => String(v || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  out.projects = newProjects.map((e, i) => {
+    const n = pk(e?.name)
+    let src = origProjects.find(o => pk(o?.name) === n)
+    if (!src && n) {
+      const near = origProjects.filter(o => { const on = pk(o?.name); return on && (on.includes(n) || n.includes(on)) })
+      if (near.length === 1) src = near[0]
+    }
+    if (!src && origProjects.length === newProjects.length) src = origProjects[i]
+    return { ...e, link: src?.link || null }
+  })
   return out
 }
 
@@ -1272,11 +1311,48 @@ const FIDELITY_VOCAB = `experience professional summary skills technical educati
   credential resume curriculum vitae technologies details link links expertise career objective employment history work
   academic additional qualifications training courses honours honors january february march april august september october
   november december page responsible`
-function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
+// SCAN/ATS ROUND 10: the credential block of a designed page is model-written HTML that is hash-stamped and sent to
+// employers, and nothing checked it. A page could omit the verification link (the credential then points nowhere),
+// link somewhere else, or print "Passthrough Verified" on a document the server had decided is only a scan report.
+// Links are compared without scheme, "www." and trailing slash, and with &amp; decoded.
+// Anchors only: a <link href> to the font stylesheet is not a link the reader can follow.
+const hrefsOf = html => {
+  const out = []
+  const tagRe = /<a\b([^>]*)>/gi
+  let t
+  while ((t = tagRe.exec(html)) !== null) {
+    const m = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')/i.exec(t[1])
+    if (m) out.push((m[1] ?? m[2] ?? '').replace(/&amp;/gi, '&').trim())
+  }
+  return out
+}
+const linkKey = u => String(u || '').trim().toLowerCase().replace(/^[a-z][a-z0-9+.-]*:\/\//, '').replace(/^www\./, '').replace(/[/?#]+$/, '')
+function credentialProblems(data, html, visible, { verificationUrl, verified }) {
+  const reasons = []
+  const hrefs = hrefsOf(html)
+  if (verificationUrl && !hrefs.some(h => linkKey(h) === linkKey(verificationUrl))) reasons.push('the verification link is missing or points somewhere else')
+  const own = stringLeaves(data).map(linkKey).filter(Boolean)
+  const stray = hrefs.filter(h => /^https?:\/\//i.test(h)).filter(h => {
+    const k = linkKey(h)
+    if (verificationUrl && k === linkKey(verificationUrl)) return false
+    return !own.some(o => o === k || o.includes(k) || k.includes(o))
+  })
+  if (stray.length) reasons.push(`a link to an address that is not in the resume: ${stray[0].slice(0, 60)}`)
+  if (typeof verified === 'boolean') {
+    const claims = /passthrough\s+verified/i.test(visible)
+    if (verified && verificationUrl && !claims) reasons.push('the "Passthrough Verified" credential line is missing')
+    if (!verified && claims) reasons.push('the page claims "Passthrough Verified" on a document that is not verified')
+    if (!verificationUrl && claims) reasons.push('the page shows a credential line on a document with no verification link')
+  }
+  return reasons
+}
+
+function checkHtmlFidelity(data, html, { verificationUrl, verified } = {}) {
   const reasons = []
   try {
     const visible = visibleTextOfHtml(html)
     if (visible.length < 80) return { ok: false, reasons: ['the page has almost no visible text'] }
+    reasons.push(...credentialProblems(data, html, visible, { verificationUrl, verified }))
     const hay = ` ${fidelityNorm(visible)} `
     const has = needle => { const n = fidelityNorm(needle); return !n || hay.includes(` ${n} `) || hay.includes(n) }
     const wordCoverage = text => {
@@ -1342,4 +1418,4 @@ function checkHtmlFidelity(data, html, { verificationUrl } = {}) {
   return { ok: reasons.length === 0, reasons }
 }
 
-module.exports = { findPlaceholders, groundQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
+module.exports = { findPlaceholders, groundQuantificationPrompts, fallbackQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }

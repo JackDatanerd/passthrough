@@ -137,6 +137,8 @@ export default function ScanResult() {
   const { copied: badgeHtmlCopied, copy: copyBadgeHtmlText } = useCopy(2000)
   const [retryLoading, setRetryLoading] = useState(false)
   const [retryError,   setRetryError  ] = useState('')
+  const [upgradeLoading, setUpgradeLoading] = useState(false)
+  const [upgradeError,   setUpgradeError  ] = useState('')
   // G1: re-run a free scan that failed on our side, in place.
   const [retryScanLoading, setRetryScanLoading] = useState(false)
   const [retryScanError,   setRetryScanError  ] = useState('')
@@ -601,6 +603,27 @@ export default function ScanResult() {
     setPayLoading(false)
   }
 
+  // SCAN/ATS ROUND 10: upgrade a delivered credential-only (Badge) purchase to the full Fix on this same scan by
+  // spending a free fix credit - the credit a missed Badge earns used to be unusable on the scan that earned it.
+  async function handleUpgradeToFix() {
+    if (!user) return navigate(`/register`)
+    if (upgradeLoading) return
+    setNeedsVerify(false); setVerifyResent('')
+    setUpgradeLoading(true); setUpgradeError('')
+    if (!(await ensureVerified())) { setUpgradeLoading(false); return }
+    try {
+      await api.post(`/scan/${id}/upgrade-to-fix`)
+      // Delivered is in POLLING_STOP, so polling has stopped; restart it like handleRedeemCredit / handleRetryFix.
+      await fetchScan()
+      restartPolling()
+      refreshUser()  // freeFixCredits just decremented server-side
+    } catch (err) {
+      if (err.response?.data?.code === 'EMAIL_NOT_VERIFIED') setNeedsVerify(true)
+      setUpgradeError(getErrorMessage(err, 'Could not start the upgrade — please try again.'))
+    }
+    setUpgradeLoading(false)
+  }
+
   async function handleToggleExposure(stateField, apiField, value) {
     setVisibilityError('')
     // Optimistic update — toggles feel bad with a round-trip lag, and this
@@ -949,8 +972,8 @@ export default function ScanResult() {
                         <p className="text-sm text-amber-800 mb-3" data-testid="badge-below-threshold">
                           Your original scored {scan.atsScore ?? '—'}, but the ATS-formatted file we build from it scored {scan.fixAtsScore ?? '—'}/100 —
                           under the {ATS_BADGE_THRESHOLD}+ needed for Passthrough Verified. Your files carry the plain Scan Report wording instead,
-                          and we've added a free fix credit to your account. To use it on this resume, scan it again
-                          ("Scan this same resume against another job" above) and choose Fix — that rewrites it, which a Verified-only purchase doesn't.
+                          and we've added a free fix credit to your account. Use it below to upgrade this same resume to the full Fix —
+                          that rewrites the content, which a Verified-only purchase doesn't.
                         </p>
                       </>
                     ) : scan.rewriteFailed ? (
@@ -973,6 +996,12 @@ export default function ScanResult() {
                         </p>
                       </>
                     )}
+                    {scan.retryNoGain && (
+                      <p className="text-sm text-amber-800 mb-3" data-testid="retry-no-gain">
+                        That Try Again didn't find a better version, so we kept the best result so far — this is the same resume as before,
+                        not a new one.
+                      </p>
+                    )}
                     {scan.fixTier === 'BADGE' ? null : scan.fixRetryCount < MAX_FIX_RETRIES ? (
                       <div className="mb-3">
                         <Alert className="mb-2">{retryError}</Alert>
@@ -987,6 +1016,19 @@ export default function ScanResult() {
                       </p>
                     )}
                   </>
+                )}
+                {scan.fixTier === 'BADGE' && (user?.freeFixCredits || 0) > 0 && (
+                  <div className="mb-4 rounded-lg border border-blue-200 bg-blue-50 px-4 py-3" data-testid="badge-upgrade">
+                    <p className="text-sm font-medium text-blue-900">Upgrade this resume to the full Fix</p>
+                    <p className="text-sm text-blue-800 mt-0.5">
+                      Use one of your free fix credits to have this same resume rewritten for this job — no new scan and no charge.
+                      Your verification link stays the same.
+                    </p>
+                    <Alert className="mt-2">{upgradeError}</Alert>
+                    <Button onClick={handleUpgradeToFix} loading={upgradeLoading} variant="secondary" className="mt-2">
+                      Use a free credit ({user.freeFixCredits} available)
+                    </Button>
+                  </div>
                 )}
                 {/* SECTION 7 AUDIT (feature gap G7-2): the page had no off switch —
                     an owner could not unpublish it (refund/abuse/second thoughts),
