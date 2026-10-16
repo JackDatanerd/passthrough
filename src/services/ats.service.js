@@ -893,6 +893,27 @@ function bulletLinesOutsideListSections(text) {
   return out
 }
 
+// Craft signals - what a hiring manager notices that an ATS does not. They NEVER change the score (the score decides a
+// credential at a hard line and its meaning must not drift); they are reported in detail.content.craft and fed to the
+// rewrite as feedback by describeWeakAreas, so the model is told about weak openers, repeated verbs, filler words and
+// run-on bullets instead of only about missing keywords.
+const WEAK_OPENER = /^(?:responsible for|responsibilities included|helped|assisted with|assisted in|worked on|worked with|tasked with|duties (?:included|include)|in charge of|participated in|involved in|was responsible|exposure to)\b/i
+const BUZZWORDS = /\b(?:team player|hard[- ]?working|results[- ]driven|self[- ]starter|go[- ]getter|detail[- ]oriented|passionate|dynamic|synergy|proven track record|think outside the box|utiliz(?:e|ed|ing)|leverag(?:e|ed|ing))\b/gi
+function craftSignals(bullets, bulletText, fullText) {
+  const texts = bullets.map(bulletText)
+  const openers = texts.map(t => (t.toLowerCase().match(/^[a-z]+/) || [''])[0]).filter(Boolean)
+  const counts = {}
+  for (const o of openers) counts[o] = (counts[o] || 0) + 1
+  const repeated = Object.keys(counts).filter(o => counts[o] >= 3 && o.length > 2)
+  return {
+    weakOpeners: texts.filter(t => WEAK_OPENER.test(t)).length,
+    repeatedOpeners: repeated.slice(0, 4),
+    longBullets: texts.filter(t => t.split(/\s+/).length > 35).length,
+    buzzwords: [...new Set((String(fullText || '').match(BUZZWORDS) || []).map(w => w.toLowerCase()))].slice(0, 6),
+    firstPerson: texts.filter(t => /\b(?:I|my|me)\b/.test(t)).length
+  }
+}
+
 function scoreContent(resumeText) {
   // Symbolic bullets (•, -, *, ◦, etc.) need no trailing punctuation — the
   // bullet character followed by a space IS the complete marker. Only
@@ -972,6 +993,7 @@ function scoreContent(resumeText) {
       quantifiedCount,
       language: nonEnglish ? 'other' : 'en',
       unquantified: { count: unquantified.length, total: bullets.length, examples: unquantified.slice(0, 5).map(b => bulletText(b).slice(0, 160)) },
+      craft: craftSignals(bullets, bulletText, resumeText),
       issues: nonEnglish ? ['The action-verb check only reads English, so it was skipped for this resume'] : []
     }
   }
@@ -1136,7 +1158,10 @@ function describeWeakAreas(scoreResult) {
   const notes = []
   if (scoreResult.keywordScore < 70) {
     const missing = (scoreResult.detail?.keywords?.missing || []).slice(0, 8)
-    notes.push(`keyword match is only ${scoreResult.keywordScore}% — work in these JD terms naturally where truthful: ${missing.join(', ') || '(see JD)'}`)
+    // The model's own read of what is missing is semantic (it sees synonyms the stemmer cannot); offer a few of those too.
+    const ai = (Array.isArray(scoreResult.aiMissingKeywords) ? scoreResult.aiMissingKeywords : []).filter(k => !missing.some(m => String(m).toLowerCase() === String(k).toLowerCase())).slice(0, 4)
+    const all = [...missing, ...ai]
+    notes.push(`keyword match is only ${scoreResult.keywordScore}% — work in these JD terms naturally where truthful, inside bullets that show them used: ${all.join(', ') || '(see JD)'}`)
   }
   if (scoreResult.contentScore < 70) {
     const rate = scoreResult.detail?.content?.actionVerbRate
@@ -1146,9 +1171,21 @@ function describeWeakAreas(scoreResult) {
     const missing = scoreResult.detail?.sections?.missing || []
     if (missing.length) notes.push(`missing expected section(s): ${missing.join(', ')}`)
   }
+  // The summary was worth 15 points yet never reported: `missing` only tracks the four required sections, so a resume
+  // without one was never told to write one.
+  const found = scoreResult.detail?.sections?.found
+  if (Array.isArray(found) && !found.includes('Summary')) notes.push('there is no professional summary — write a 2-3 sentence one from facts already in the resume, aimed at this job')
   if (scoreResult.formatScore < 90) {
     const issues = scoreResult.detail?.format?.issues || []
     if (issues.length) notes.push(`formatting issues: ${issues.join('; ')}`)
+  }
+  const craft = scoreResult.detail?.content?.craft
+  if (craft) {
+    if (craft.weakOpeners > 0) notes.push(`${craft.weakOpeners} bullet(s) open with a weak phrase ("Responsible for", "Helped", "Worked on") — rewrite each to open with a specific action verb`)
+    if (craft.repeatedOpeners?.length) notes.push(`too many bullets start with the same word (${craft.repeatedOpeners.join(', ')}) — vary the verbs`)
+    if (craft.longBullets > 0) notes.push(`${craft.longBullets} bullet(s) run over 35 words — tighten each to one clear sentence`)
+    if (craft.buzzwords?.length) notes.push(`filler words a reader skips: ${craft.buzzwords.join(', ')} — replace with something specific the person did`)
+    if (craft.firstPerson > 0) notes.push('some bullets use "I" / "my" — resumes are written without first person')
   }
   return notes.length ? notes : ['overall score below target — strengthen keyword alignment and bullet specificity throughout']
 }

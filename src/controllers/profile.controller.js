@@ -737,7 +737,7 @@ async function downloadProfilePdf(c) {
   if (res) return res
   let bytes
   try {
-    bytes = await pdfService.generateResumePDF(c.env, pdfTemplate.buildResumeHTML(rd, undefined, null, { verified: false }))
+    bytes = await pdfService.generateResumePDF(c.env, pdfTemplate.buildResumeHTML(rd, { paper: 'letter' }, null, { verified: false }), { paper: 'letter' })
   } catch (err) {
     console.error('downloadProfilePdf:', err.message)
     return c.json({ success: false, message: "We couldn't generate the PDF just now. Please try again in a minute — the .docx is still available." }, 502)

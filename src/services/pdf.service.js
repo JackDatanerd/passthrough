@@ -45,7 +45,7 @@ async function launchBrowser(env, delays = LAUNCH_RETRY_DELAYS_MS) {
   }
 }
 
-async function generateResumePDF(env, html, { launchRetryDelaysMs } = {}) {
+async function generateResumePDF(env, html, { launchRetryDelaysMs, paper } = {}) {
   const browser = await launchBrowser(env, launchRetryDelaysMs)
   try {
     const page = await browser.newPage()
@@ -87,7 +87,7 @@ async function generateResumePDF(env, html, { launchRetryDelaysMs } = {}) {
         await page.setContent(html, { waitUntil })
         await page.emulateMediaType('print')
         return page.pdf({
-          format: 'A4', printBackground: true,
+          format: paper === 'letter' ? 'Letter' : 'A4', printBackground: true,
           // Vertical margins are real page margins so every page of a multi-page resume has them;
           // the layouts (pdfTemplate.service.js, the AI prompt) declare the same @page margin.
           margin: { top: '14mm', right: '0', bottom: '14mm', left: '0' }

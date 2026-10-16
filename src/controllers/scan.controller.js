@@ -1087,7 +1087,7 @@ function coverLetterFileStem(resumeData) {
 async function downloadDraft(ctx) {
   const { scan, res } = await loadDraftScan(ctx)
   if (res) return res
-  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null)
+  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: designService.detectPaper(scan.jobDescriptionText) })
   ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(docxBytes)
@@ -1103,8 +1103,9 @@ async function downloadDraftPdf(ctx) {
   if (res) return res
   let pdfBytes
   try {
-    const html = pdfTemplate.buildResumeHTML(scan.originalResumeData, undefined, null, { verified: false })
-    pdfBytes = await pdfService.generateResumePDF(ctx.env, html)
+    const paper = designService.detectPaper(scan.jobDescriptionText)
+    const html = pdfTemplate.buildResumeHTML(scan.originalResumeData, { paper }, null, { verified: false })
+    pdfBytes = await pdfService.generateResumePDF(ctx.env, html, { paper })
   } catch (err) {
     console.error(`downloadDraftPdf ${scan.id}:`, err.message)
     return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute — the .docx draft is still available.' }, 502)
@@ -1300,7 +1301,8 @@ async function updateDeliveredResume(ctx) {
 
   // Same procedure as generateFix's delivery: build with the credential wording, score the file
   // as delivered, and rebuild with the honest wording if it misses the bar.
-  let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
+  const paper = designService.detectPaper(jdText)
+  let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper })
   const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
   let fixAtsScore, scored
   if (text && text.trim().length >= 100) { scored = await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume'); fixAtsScore = scored.score }
@@ -1308,7 +1310,7 @@ async function updateDeliveredResume(ctx) {
   const editReport = deliveredReport(scored)
   const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
   if (verificationUrl && !credentialVerified)
-    docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false })
+    docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false, paper })
 
   const version = cryptoLib.randomToken(6)
   const docxKey = storage.atsDocxKey(scan.id, version)
@@ -1318,7 +1320,7 @@ async function updateDeliveredResume(ctx) {
   let resumeHash, pdfKey, pdfHash
   try {
     resumeHash = await badgeService.hashBytes(docxBytes)
-    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
     ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
   } catch (renderErr) {
     await deleteSuperseded(ctx.env, [docxKey], [])
@@ -1408,7 +1410,20 @@ async function generateCoverLetter(ctx) {
   const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
   if (jdText.trim().length < 50) return ctx.json({ success: false, message: 'There is no job description stored for this scan.' }, 400)
 
-  const result = await claudeService.generateCoverLetter(ctx.env, data, jdText)
+  // Optional steering from the person (all of it is clipped again inside the service and treated as data there):
+  // who it is addressed to, which company, what to lead with, and the tone. An empty / absent body is fine.
+  let rawBody = {}
+  try { rawBody = await ctx.req.json() } catch (_) { rawBody = {} }
+  const steer = z.object({
+    company:   z.string().max(80).optional(),
+    recipient: z.string().max(80).optional(),
+    lead:      z.string().max(300).optional(),
+    tone:      z.enum(['warm', 'direct', 'formal']).optional(),
+  }).safeParse(rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {})
+  if (!steer.success) return ctx.json({ success: false, message: 'Those letter options are not valid.' }, 400)
+  const result = await claudeService.generateCoverLetter(ctx.env, data, jdText, {
+    ...steer.data, jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel
+  })
   if (!result.success) {
     console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
     return ctx.json({ success: false, message: 'We couldn\'t write the cover letter just now. Please try again in a minute.' }, 502)
@@ -1423,18 +1438,28 @@ async function generateCoverLetter(ctx) {
   if (updErr) throw updErr
   if (Array.isArray(updated) && updated.length === 0)
     return ctx.json({ success: false, message: 'Your resume changed while the letter was being written. Please try again.' }, 409)
+  // Which prompt generation wrote it (migration 0094) - best-effort and AFTER the letter is stored, so a worker deployed
+  // before the migration still delivers the letter.
+  try { await supabase.from('scans').update({ letter_prompt_version: claudeService.PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
   return ctx.json({ success: true, data: { coverLetterText: result.data } })
 }
 
 async function downloadCoverLetter(ctx) {
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
-  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data').eq('id', ctx.req.param('id')).maybeSingle()
+  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data, job_description_text').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
   if (!row.cover_letter_text) return ctx.json({ success: false, message: 'No cover letter yet.' }, 404)
   const data = row.rewritten_resume_data || row.original_resume_data
-  const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name)
+  // Letterhead (name + contact line, the same header the resume carries) and the date, in the form the posting's
+  // spelling implies: "October 16, 2026" for a US posting, "16 October 2026" for a UK one.
+  const paper = designService.detectPaper(row.job_description_text)
+  const now = new Date()
+  const date = paper === 'a4'
+    ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
+    : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+  const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name, { contact: data, date, paper })
   ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(bytes)
@@ -2445,7 +2470,7 @@ async function regeneratePdf(ctx) {
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
   const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory)
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
   const version = cryptoLib.randomToken(6)
   const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
   if (!pdfKey) {
@@ -2666,7 +2691,7 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   for (const cand of candidates) {
     for (let attempt = 1; attempt <= cand.attempts; attempt++) {
       try {
-        const pdfBytes = await pdfService.generateResumePDF(env, cand.html)
+        const pdfBytes = await pdfService.generateResumePDF(env, cand.html, { paper: designTokens?.paper })
         const pdfKey = storage.beautifulPdfKey(scanId, version)
         await env.RESUMES_BUCKET.put(pdfKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
         // The PDF is the file candidates email to hiring managers — it needs a
@@ -2769,6 +2794,9 @@ async function generateFixRun(env, supabase, scanId) {
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
     const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
+    const paper = designService.detectPaper(jdText)
+    // What the writer is told about the target (a prompt input, not a score input).
+    const writerContext = { jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel, roleCategory: scan.roleCategory }
     const candidateFirstName = candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null
     // DOCX_MIME is now module-level — see top of file.
 
@@ -2841,12 +2869,15 @@ async function generateFixRun(env, supabase, scanId) {
     let baselineHeld = false
     if (!isRetry) {
       try {
-        const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl)
+        const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper })
         const baseScored = await scoreLikeScan(env, await resumeParser.extractText(baseBytes, DOCX_MIME), jdText, 'generateFix (baseline)')
         bestScore = baseScored.score
         bestDocxBytes = baseBytes
         bestReport = deliveredReport(baseScored)
         baselineHeld = true
+        // The very first attempt used to run blind: this read of the upload (what is weak, which terms are missing) was
+        // computed and then thrown away, and only a PAID RETRY was told. Attempt 1 now gets it too.
+        lastFeedback = { score: baseScored.score, threshold: c.ATS_BADGE_THRESHOLD, baseline: true, weakAreas: atsService.describeWeakAreas(baseScored) }
       } catch (baseErr) {
         console.error(`[WARN] generateFix ${scanId}: baseline scoring failed, continuing without a floor:`, baseErr.message)
       }
@@ -2871,7 +2902,7 @@ async function generateFixRun(env, supabase, scanId) {
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
       progress.phase = 'rewriting'; progress.attempt = attempt
       await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
-      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, guardBaseline)
+      const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, guardBaseline, writerContext)
       if (!rewriteResult.success) {
         // AUDIT FIX: FABRICATION_DETECTED used to hit the same `break` as a
         // genuine API/parse failure — but it isn't one. It means THIS ONE
@@ -2896,6 +2927,14 @@ async function generateFixRun(env, supabase, scanId) {
           }
           continue
         }
+        if (rewriteResult.error === 'CONTENT_LOST' && attempt < c.MAX_FIX_ATTEMPTS) {
+          lastFeedback = {
+            score: null,
+            threshold: c.ATS_BADGE_THRESHOLD,
+            weakAreas: ['Previous attempt cut too much: a job lost all its bullets, or fewer than half of the original bullets were kept. Tighten and merge bullets, but keep at least one for every role that had any and keep roughly half or more of the original achievements in total.']
+          }
+          continue
+        }
         // FEATURE GAP CLOSED (Scan/ATS pass): every OTHER failure used to `break`
         // — so one malformed or truncated answer, or one overloaded-API blip that
         // outlasted the call's own retries, ended the whole paid fix on attempt 1
@@ -2914,7 +2953,7 @@ async function generateFixRun(env, supabase, scanId) {
       const candidateQuantificationPrompts = rewriteResult.quantificationOpportunities || []
       // Score the REAL generated file, not a synthetic text approximation —
       // see the WYSIWYG comment above.
-      const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl)
+      const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl, { paper })
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
       const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
       producedCandidate = true
@@ -3044,8 +3083,8 @@ async function generateFixRun(env, supabase, scanId) {
     // word of header text, so the stored score is deliberately NOT re-derived.
     const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
     const docxBytes = (verificationUrl && !credentialVerified)
-      ? await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false })
-      : (bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl))
+      ? await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper })
+      : (bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl, { paper }))
 
     // Fresh key per generation: the previously delivered object stays intact
     // (and is what the public page keeps verifying) until the DB row is
@@ -3058,7 +3097,7 @@ async function generateFixRun(env, supabase, scanId) {
     })
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
@@ -3130,6 +3169,11 @@ async function generateFixRun(env, supabase, scanId) {
     // until migration 0089 is applied.
     if (isRetry) {
       try { await supabase.from('scans').update({ fix_retry_no_gain: carriedForward && producedCandidate }).eq('id', scanId) } catch (_) {}
+    }
+    // Which prompt generation wrote this resume (migration 0094): lets the interview outcomes people report be compared
+    // across prompt versions. Best-effort and after delivery, so it can never block one (a no-op until the migration is applied).
+    if (producedCandidate && !rewriteFailed) {
+      try { await supabase.from('scans').update({ prompt_version: claudeService.PROMPT_VERSION }).eq('id', scanId) } catch (_) {}
     }
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
     // SECTION 7 AUDIT FIX (bug, fresh pass): a RETRY round can change fix_ats_score,
@@ -3271,7 +3315,8 @@ async function generateBadgeRun(env, supabase, scanId) {
     // Versioned keys + hashes for BOTH files — see generateFix and config/storage.js.
     progress.phase = 'rendering'
     await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
-    let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl)
+    const paper = designService.detectPaper(safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS))
+    let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { paper })
 
     // FEATURE GAP CLOSED (Scan/ATS pass): the badge used to certify the number the
     // FREE scan produced — fix_ats_score was copied from scan.atsScore — while the
@@ -3296,7 +3341,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     const credentialVerified = typeof fixAtsScore === 'number' && fixAtsScore >= c.ATS_BADGE_THRESHOLD
     if (!credentialVerified) {
       console.error(`[WARN] generateBadge ${scanId}: delivered document scored ${fixAtsScore} (< ${c.ATS_BADGE_THRESHOLD}) — issuing the honest, unverified wording`)
-      docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false })
+      docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper })
       // The buyer paid for the CREDENTIAL and the file we can hand over doesn't earn it (the
       // free scan measured their upload; this is the regenerated, ATS-formatted document). They
       // get the honest wording AND a free fix credit — a Badge can't be retried, so the credit is
@@ -3311,7 +3356,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory)
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: true })
 
     // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —

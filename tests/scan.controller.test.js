@@ -857,7 +857,8 @@ describe('downloadDraft', () => {
   it('generates the docx from original_resume_data with no verification URL (never credentialed)', async () => {
     t = setup()
     await t.mod.downloadDraft(baseCtx())
-    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null])
+    // the third argument is the page size taken from the posting (Letter unless it reads as UK)
+    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null, { paper: 'letter' }])
   })
 })
 
@@ -1411,7 +1412,7 @@ describe('generateFix', () => {
         buildVerificationUrl: (env2, code) => `https://passthrough.dev/v/${code}`,
         hashBytes: async () => 'hash123',
       },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: opts.pdfImpl ?? (async () => Buffer.from('fake-pdf')) },
       'services/email.service.js': {
         sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }),
@@ -1646,12 +1647,12 @@ describe('generateFix', () => {
       'services/ats.service.js': { scoreResume: () => ({ score: 50, detail: {} }), describeWeakAreas: () => [] },
       'services/claude.service.js': { rewriteResumeContent: async () => ({ success: true, data: { name: 'R' }, quantificationOpportunities: [] }), generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { generateShortCode: async () => 'C1', buildVerificationUrl: () => 'https://x/v/C1', hashBytes: async () => 'h' },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },
       'services/email.service.js': { sendFixDelivered: async () => {}, sendFixDeliveredPlain: async () => {}, sendFixFailed: async () => {}, sendOwnerAlert: async () => {} },
     })
     await loaded.mod.generateFix(env, db, 's1')
-    expect(docxArgs).toEqual({ verified: false })
+    expect(docxArgs).toEqual({ verified: false, paper: 'letter' })
     loaded.restore()
   })
 
@@ -1781,7 +1782,7 @@ describe('generateFix — Auth/Scan audit round', () => {
         extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': { generateShortCode: async () => 'NEWCODE1', buildVerificationUrl: (e, code) => `https://x/v/${code}`, hashBytes: async () => 'h' },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async () => { state.pdfCalls++; if (opts.pdfFailTimes && state.pdfCalls <= opts.pdfFailTimes) throw new Error('browser busy'); return Buffer.from('pdf') } },
       'services/email.service.js': {
         sendFixDelivered: async (...a) => state.emails.push({ fn: 'sendFixDelivered', a }), sendFixDeliveredPlain: async () => {},
@@ -1873,7 +1874,7 @@ describe('regeneratePdf', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return opts.htmlResult ?? { success: true, data: '<html></html>' } } },
       'services/badge.service.js': { hashBytes: async () => 'pdfhash' },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async (_env, html) => { state.pdfHtmls.push(html); if (opts.pdfThrows) throw new Error('browser down'); if (opts.pdfRejectAiHtml && html === '<html></html>') throw new Error('bad css'); return Buffer.from('pdf') } },
     })
     return { ...loaded, state, db, env }
@@ -2032,7 +2033,7 @@ describe('generateBadge', () => {
         extractText: async () => opts.extractedText ?? 'python java sql aws docker kubernetes react node express postgres redis kafka terraform',
       },
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('fake-docx') },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/claude.service.js': { generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false } },
       'services/badge.service.js': {
         generateShortCode: async () => 'NEWCODE1',
@@ -2165,7 +2166,7 @@ describe('generateBadge', () => {
     const loaded = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('x') },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { htmlArgs = a; return { success: false } } },
       'services/badge.service.js': { generateShortCode: async () => 'C1', buildVerificationUrl: () => 'https://x/v/C1', hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },

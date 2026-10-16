@@ -1,0 +1,25 @@
+DOCUMENT GENERATION PROMPTS - round 1 (base: upstream c66c444)
+
+Goal: stop optimising only for ATS; write for the human reader who decides on an interview. Targets US/UK.
+
+APPLY MIGRATION 0094 BEFORE DEPLOYING (EXPECTED_SCHEMA_VERSION is now 94).
+
+Gaps closed
+- Rewrite prompt: interview-focused craft rules (summary, outcome-led bullets, relevance order, voice, US/UK conventions).
+- Career length derived from job dates (src/lib/careerFacts.js); summary may state it, fabrication guards accept it, bullets may not.
+- Baseline feedback + role/seniority/field context fed to the rewrite; craft signals (weak/repeated openers, long bullets, buzzwords) fed back as feedback only. Scoring unchanged, so the verified-credential threshold does not drift.
+- Cover letter v2: tone, recipient, lead-with, company; hard integrity checks (digits, invented names, placeholders, salutation/sign-off/name) and soft style checks; letterhead + date in the DOCX. Frontend "Tailor it (optional)" panel.
+- US Letter vs UK A4 from the posting (DOCX and PDF); UK spelling instruction; Education-first order when there is no job history.
+- HTML design prompt: restrained, text-only; dark palette removed.
+- PROMPT_VERSION / letter_prompt_version stamped on scans; view prompt_outcome_rates joins scan_outcomes.
+
+Bugs fixed
+- Rewrite that emptied or halved bullets passed the fabrication guard (new CONTENT_LOST guard + retry).
+- Non-Latin keys / certification words, empty key matching everything, volunteer entries losing rewritten bullets.
+- Letter guard flagged apostrophe surnames (O'Brien, D'Souza); paper detection chose A4 for "CV" and Dublin, Ohio.
+
+Known / not done
+- Prompt quality is NOT measured against live model output (no API key in the audit environment).
+- AI score prompt and weights deliberately untouched. ats.service still has Swahili stop words / 'mpesa'.
+- Pre-existing failures on pristine upstream: tests/employer-leads.controller.test.js R6-G3 (timeout), frontend sharedFrontend.section11.round7d (raw radio/checkbox in ScanForm.jsx).
+- This is a fix pass, not the independent clean audit; another independent pass is still required.

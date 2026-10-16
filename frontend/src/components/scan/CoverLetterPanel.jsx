@@ -4,19 +4,39 @@ import { downloadBlob, filenameFromDisposition } from '../../lib/utils'
 import CopyButton from '../ui/CopyButton'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
+import Input from '../ui/Input'
+import Textarea from '../ui/Textarea'
+import Select from '../ui/Select'
 
 // FEATURE GAP CLOSED (Scan/ATS pass): scans.cover_letter_text existed since the first migration
 // and nothing wrote it. A cover letter for the same job as the delivered resume, written only
 // from that resume's facts (the server rejects a draft that invents a figure). Owner-only.
+//
+// Optional "tailor it" fields: who it is addressed to, the company, what the letter should lead with, and the tone.
+// A letter that names the person and the company, and opens with the thing the applicant most wants read, is the
+// difference between a letter that gets read and "Dear Hiring Manager" boilerplate. Nothing here is required; an empty
+// form sends no body at all (the server then writes a general letter from the resume and the posting).
 export default function CoverLetterPanel({ scan, onUpdated }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [tailor, setTailor] = useState(false)
+  const [company, setCompany] = useState('')
+  const [recipient, setRecipient] = useState('')
+  const [lead, setLead] = useState('')
+  const [tone, setTone] = useState('warm')
   const letter = scan.coverLetterText
 
   async function generate() {
     setBusy(true); setError('')
     try {
-      const res = await api.post(`/scan/${scan.id}/cover-letter`)
+      const body = {}
+      if (company.trim()) body.company = company.trim()
+      if (recipient.trim()) body.recipient = recipient.trim()
+      if (lead.trim()) body.lead = lead.trim()
+      if (tone !== 'warm') body.tone = tone
+      const res = Object.keys(body).length
+        ? await api.post(`/scan/${scan.id}/cover-letter`, body)
+        : await api.post(`/scan/${scan.id}/cover-letter`)
       onUpdated({ coverLetterText: res.data.data.coverLetterText })
     } catch (err) {
       setError(getErrorMessage(err, 'We couldn\'t write the letter just now — try again in a minute.'))
@@ -47,6 +67,25 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
         <Button variant={letter ? 'secondary' : 'primary'} size="sm" onClick={generate} loading={busy}>
           {letter ? 'Write a new one' : 'Write my cover letter'}
         </Button>
+      </div>
+      <div className="mt-3">
+        <button type="button" onClick={() => setTailor(t => !t)} aria-expanded={tailor}
+          className="text-sm font-medium text-blue-700 hover:text-blue-800 focus:outline-none focus:underline">
+          {tailor ? 'Hide options' : 'Tailor it (optional)'}
+        </button>
+        {tailor && (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2" data-testid="cover-letter-options">
+            <Input label="Company" value={company} onChange={e => setCompany(e.target.value)} maxLength={80} placeholder="Northwind Logistics" />
+            <Input label="Hiring manager's name" value={recipient} onChange={e => setRecipient(e.target.value)} maxLength={80} placeholder="Ms. Njeri" hint="Leave blank for “Dear Hiring Manager”." />
+            <Textarea wrapperClassName="sm:col-span-2" label="Lead with" rows={2} value={lead} onChange={e => setLead(e.target.value)} maxLength={300} showCount
+              hint="The one thing you most want them to read first — it must already be true of your resume." />
+            <Select label="Tone" value={tone} onChange={e => setTone(e.target.value)}>
+              <option value="warm">Warm</option>
+              <option value="direct">Direct</option>
+              <option value="formal">Formal</option>
+            </Select>
+          </div>
+        )}
       </div>
       <Alert className="mt-3">{error}</Alert>
       {letter && (

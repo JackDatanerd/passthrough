@@ -111,14 +111,14 @@ describe('claude.service', () => {
     expect(r.success).toBe(true)
     expect(r.data).toContain('Dear Hiring Manager')
   })
-  it('cover letter: a draft with an invented figure is retried once; a second one fails rather than shipping it', async () => {
+  it('cover letter: a draft with an invented figure is retried; three in a row fail rather than shipping one', async () => {
     const bad = 'Dear Hiring Manager,\n\n' + 'I increased revenue by 450% at Acme and want to do the same for you. '.repeat(3) + '\n\nSincerely,\nA'
-    const fetchMock = fetchReturning(bad, bad)
+    const fetchMock = fetchReturning(bad, bad, bad)
     vi.stubGlobal('fetch', fetchMock)
     const r = await claude.generateCoverLetter({ ANTHROPIC_API_KEY: 'k' }, orig, 'x'.repeat(80))
     expect(r.success).toBe(false)
     expect(r.error).toBe('FABRICATION_DETECTED')
-    expect(fetchMock).toHaveBeenCalledTimes(2)
+    expect(fetchMock).toHaveBeenCalledTimes(3)
   })
 })
 
@@ -282,7 +282,7 @@ describe('updateDeliveredResume', () => {
       'services/ats.service.js': { scoreResume: () => ({ score: opts.score ?? 90, detail: {} }), describeWeakAreas: () => [] },
       'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: opts.score ?? 90, missingKeywords: [] }) }), extractJson: x => JSON.parse(x), generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { hashBytes: async () => 'newhash' },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
       'lib/badgeCache.js': { purgeBadgeCache: async c => { state.purged.push(c) } },
     })
@@ -459,7 +459,7 @@ describe('fix jobs: lease and once-only compensation', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': { extractText: async () => 'short' },
       'services/docx.service.js': { generateAtsDocx: async (d, u, o) => { state.docx.push(o?.verified === false ? 'unverified' : 'verified'); return Buffer.from('d') } },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/claude.service.js': { generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { generateShortCode: async () => 'NEW', buildVerificationUrl: (e, c) => `https://x/v/${c}`, hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },
@@ -483,7 +483,7 @@ describe('fix jobs: lease and once-only compensation', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': { extractText: async () => 'short' },
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('d') },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/claude.service.js': { generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { generateShortCode: async () => 'NEW', buildVerificationUrl: (e, c) => `https://x/v/${c}`, hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('p') },

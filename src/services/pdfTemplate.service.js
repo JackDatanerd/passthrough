@@ -47,6 +47,8 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const stack   = fontStacks(fonts)
   const hPt = Number(fonts.hPt) || 23
   const bPt = Number(fonts.bPt) || 10.5
+  // US Letter unless the tokens say A4 (see design.service.js detectPaper) - the customers apply to US and UK employers.
+  const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '269mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
 
   const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(str).filter(Boolean).map(esc)
   const href = safeHref(verificationUrl)
@@ -106,12 +108,16 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const languages = list(d.languages).map(str).filter(Boolean)
   const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(' &middot; ')}</p>` : ''
 
-  // Projects lead for candidates with no formal experience — the same rule the AI layout is given.
+  // No job history (a student, a career changer, a from-scratch resume): Education then Projects lead, because that is
+  // the strongest evidence they have and what a US/UK reader looks for first. With job history the order is the usual
+  // Experience > Projects > Education. The DOCX uses the same order (docx.service.js).
   const projectsSection = section('Projects', projects)
   const experienceSection = section('Experience', experience)
-  const body = (experience ? [experienceSection, projectsSection] : [projectsSection, experienceSection]).join('') +
-    section('Education', education) + section('Skills', skillsHtml) + section('Certifications', certsHtml) +
-    section('Volunteer Experience', volunteer) + section('Awards', plainList(d.awards)) +
+  const educationSection = section('Education', education)
+  const head = experience ? [experienceSection, projectsSection, educationSection] : [educationSection, projectsSection, section('Volunteer Experience', volunteer)]
+  const body = head.join('') +
+    section('Skills', skillsHtml) + section('Certifications', certsHtml) +
+    (experience ? section('Volunteer Experience', volunteer) : '') + section('Awards', plainList(d.awards)) +
     section('Publications', plainList(d.publications)) + section('Languages', languagesHtml)
 
   return `<!DOCTYPE html>
@@ -120,13 +126,13 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
 /* Top/bottom page margins belong to the PRINT ENGINE (pdf.service.js passes the same 14mm), not to
    the container: padding on one tall box only pads its first top and last bottom edge, so on a
    2-page resume page 1 ran to the bottom edge and page 2 started at the top edge. */
-@page { size: A4; margin: 14mm 0 }
+@page { size: ${paper.css}; margin: 14mm 0 }
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.45 }
-.page { width: 210mm; min-height: 269mm; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
+.page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 2pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin: 0 0 3pt }
 .cred { font-size: 8pt; font-variant: small-caps; color: ${esc(palette.primary)}; text-decoration: none }

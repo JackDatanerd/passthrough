@@ -182,7 +182,7 @@ describe('B2 — the owner\'s own edit is the fabrication baseline', () => {
         scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: 70, missingKeywords: [] }) }), extractJson: s => JSON.parse(s),
       },
       'services/badge.service.js': { generateShortCode: async () => 'C', buildVerificationUrl: () => 'https://x/v/C', hashBytes: async () => 'h' },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
       'services/email.service.js': { sendFixDelivered: async () => {}, sendFixDeliveredPlain: async () => {}, sendFixFailed: async () => {}, sendOwnerAlert: async () => {} },
     })

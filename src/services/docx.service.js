@@ -38,9 +38,11 @@ function hrefFor(text) {
   if (/^(?:www\.|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|co|me|app|ai|xyz|info|ke|uk)(?:\/|$))\S*$/i.test(t) && !/\s/.test(t)) return `https://${t}`
   return null
 }
+// Letter (US) unless told A4 (UK / Europe) - see design.service.js detectPaper. docx counts in twentieths of a point.
+const pageProps = paper => ({ page: { size: paper === 'a4' ? { width: 11906, height: 16838 } : { width: 12240, height: 15840 } } })
 const linkRun = (text, size = 18) => new TextRun({ text, size, font: 'Calibri', color: '0563C1', underline: {} })
 
-async function generateAtsDocx(resumeData, verificationUrl, { verified = true } = {}) {
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper } = {}) {
   resumeData = xmlSafe(resumeData)
   verificationUrl = xmlSafe(verificationUrl)
   const children = []
@@ -88,7 +90,9 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
     children.push(new Paragraph({ text: '' }))
   }
 
+  const sec = { experience: [], education: [], skills: [], certifications: [], projects: [], volunteer: [], awards: [], publications: [], languages: [] }
   if (resumeData.experience?.length) {
+    const children = sec.experience
     children.push(new Paragraph({ text: 'EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
     for (const job of resumeData.experience) {
       // job.company/job.dates may legitimately be null — Claude is
@@ -114,6 +118,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   }
 
   if (resumeData.education?.length) {
+    const children = sec.education
     children.push(new Paragraph({ text: 'EDUCATION', heading: HeadingLevel.HEADING_2 }))
     for (const e of resumeData.education) {
       // Same null-safety as the experience block above.
@@ -131,6 +136,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   }
 
   if (resumeData.skills?.length) {
+    const children = sec.skills
     children.push(new Paragraph({ text: 'SKILLS', heading: HeadingLevel.HEADING_2 }))
     children.push(new Paragraph({
       children: [new TextRun({ text: resumeData.skills.join(' · '), font: 'Calibri', size: 22 })]
@@ -139,6 +145,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   }
 
   if (resumeData.certifications?.length) {
+    const children = sec.certifications
     children.push(new Paragraph({ text: 'CERTIFICATIONS', heading: HeadingLevel.HEADING_2 }))
     for (const cert of resumeData.certifications)
       children.push(new Paragraph({
@@ -151,6 +158,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   // resume.parser.js's serializeResumeData for why this section exists now
   // (it didn't before) and who it matters most for.
   if (resumeData.projects?.length) {
+    const children = sec.projects
     children.push(new Paragraph({ text: 'PROJECTS', heading: HeadingLevel.HEADING_2 }))
     for (const p of resumeData.projects) {
       const techLine = p.technologies?.length ? p.technologies.join(', ') : null
@@ -181,6 +189,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   // Sections the schema gained for from-scratch resumes (see lib/resumeData.js). Same plain
   // literal-bullet style as everything above, so they extract and score like the rest.
   if (resumeData.volunteer?.length) {
+    const children = sec.volunteer
     children.push(new Paragraph({ text: 'VOLUNTEER EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
     for (const v of resumeData.volunteer) {
       const titleLine = [v.role, v.organization].filter(Boolean).join(' — ')
@@ -197,16 +206,28 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
   }
   for (const [title, key] of [['AWARDS', 'awards'], ['PUBLICATIONS', 'publications']]) {
     if (!resumeData[key]?.length) continue
+    const children = sec[key]
     children.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_2 }))
     for (const item of resumeData[key])
       children.push(new Paragraph({ style: 'ListParagraph', children: [new TextRun({ text: `•  ${item}`, font: 'Calibri', size: 22 })] }))
     children.push(new Paragraph({ text: '' }))
   }
   if (resumeData.languages?.length) {
+    const children = sec.languages
     children.push(new Paragraph({ text: 'LANGUAGES', heading: HeadingLevel.HEADING_2 }))
     children.push(new Paragraph({ children: [new TextRun({ text: resumeData.languages.join(' · '), font: 'Calibri', size: 22 })] }))
     children.push(new Paragraph({ text: '' }))
   }
+
+  // Section order. With job history: Experience > Projects > Education (the usual US/UK order, as before for everyone
+  // who has experience, except that Projects now sit right after Experience instead of after Certifications).
+  // Without any (a student, a career changer, a from-scratch resume): Education then Projects lead, because that is
+  // the strongest evidence they have. pdfTemplate.service.js and the AI layout prompt use the same order.
+  const hasJobs = !!resumeData.experience?.length
+  const order = hasJobs
+    ? ['experience', 'projects', 'education', 'skills', 'certifications', 'volunteer', 'awards', 'publications', 'languages']
+    : ['education', 'projects', 'volunteer', 'skills', 'certifications', 'awards', 'publications', 'languages']
+  for (const k of order) children.push(...sec[k])
 
   // ListParagraph style is used purely for left-indentation on bullet lines
   // now — bullets themselves are a literal "•" text character (see above),
@@ -232,29 +253,45 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true } 
         paragraph:  { indent: { left: 720 } }
       }]
     },
-    sections: [{ children }]
+    sections: [{ properties: pageProps(paper), children }]
   })
 
   return Packer.toBuffer(doc)
 }
 
-// A plain cover letter: one paragraph per blank-line-separated block, line breaks kept inside a
-// block (the salutation / sign-off). The candidate's name is only the file's title.
-async function generateCoverLetterDocx(text, name) {
+// A cover letter on one page: the candidate's name and contact line as a letterhead (the same header the resume
+// carries, so the two documents read as a set), the date, then the body - one paragraph per blank-line-separated
+// block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are optional: called
+// with just (text, name) the file is the plain letter it always was.
+async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper } = {}) {
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
-  const children = blocks.map(b => new Paragraph({
+  const who = xmlSafe(name || '')
+  const head = []
+  if (who) head.push(new Paragraph({ children: [new TextRun({ text: who, bold: true, size: 32, font: 'Calibri Light' })] }))
+  const c = xmlSafe(contact || {})
+  const parts = [c.email, c.phone, c.location, c.linkedin, c.portfolio].map(v => String(v || '').trim()).filter(Boolean)
+  if (parts.length) {
+    const runs = []
+    parts.forEach((p, i) => {
+      if (i > 0) runs.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
+      const href = hrefFor(p)
+      runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p)] }) : new TextRun({ text: p, size: 18, font: 'Calibri' }))
+    })
+    head.push(new Paragraph({ spacing: { after: 240 }, children: runs }))
+  }
+  if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)), font: 'Calibri', size: 22 })] }))
+  const children = [...head, ...blocks.map(b => new Paragraph({
     spacing: { after: 200 },
     children: b.split('\n').flatMap((line, i) => [
       new TextRun({ text: line, font: 'Calibri', size: 22, break: i > 0 ? 1 : 0 })
     ])
-  }))
-  const who = xmlSafe(name || '')
+  }))]
   const doc = new Document({
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    sections: [{ children }]
+    sections: [{ properties: pageProps(paper), children }]
   })
   return Packer.toBuffer(doc)
 }

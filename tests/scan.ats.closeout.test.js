@@ -181,9 +181,13 @@ describe('deterministic PDF template', () => {
     expect(() => buildResumeHTML(null, null, null)).not.toThrow()
     expect(() => buildResumeHTML({ experience: 'x', skills: 5, projects: [null] }, {}, 'ftp://x')).not.toThrow()
   })
-  it('projects lead when there is no formal experience', () => {
-    const h = buildResumeHTML({ name: 'N', projects: [{ name: 'P', description: 'd' }], education: [{ degree: 'B', institution: 'U' }] }, {}, null)
-    expect(h.indexOf('Projects')).toBeLessThan(h.indexOf('Education'))
+  it('education then projects lead when there is no formal experience; experience then projects then education otherwise', () => {
+    const edu = [{ degree: 'B', institution: 'U' }], proj = [{ name: 'P', description: 'd' }]
+    const none = buildResumeHTML({ name: 'N', projects: proj, education: edu }, {}, null)
+    expect(none.indexOf('>Education<')).toBeLessThan(none.indexOf('>Projects<'))
+    const some = buildResumeHTML({ name: 'N', projects: proj, education: edu, experience: [{ company: 'Acme', title: 'Dev', bullets: ['Built a thing'] }] }, {}, null)
+    expect(some.indexOf('>Experience<')).toBeLessThan(some.indexOf('>Projects<'))
+    expect(some.indexOf('>Projects<')).toBeLessThan(some.indexOf('>Education<'))
   })
 })
 
@@ -465,7 +469,7 @@ describe('generateBadge scores what it delivers', () => {
       'services/docx.service.js': { generateAtsDocx: async (d, url, o) => { state.docxCalls.push(o); return Buffer.from('docx') } },
       'services/ats.service.js': { scoreResume: () => ({ score: finalScore, detail: {} }) },
       'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: { aiScore: finalScore, missingKeywords: [] } }), extractJson: x => x, generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return { success: true, data: '<html></html>' } } },
-      'services/design.service.js': { getDesignTokens: () => ({}) },
+      'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/badge.service.js': { generateShortCode: async () => 'C', buildVerificationUrl: () => 'https://x/v/C', hashBytes: async () => 'h' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
       'services/email.service.js': { sendFixDelivered: async (...a) => state.emails.push(a), sendOwnerAlert: async () => {}, sendFixFailed: async () => {} },
