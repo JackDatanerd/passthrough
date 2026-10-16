@@ -742,7 +742,7 @@ export default function AdminLeads() {
               header: 'Notes',
               cell: l => (
                 <>
-                  <Textarea
+                  <Textarea showCount
                     key={`${l.id}:${l.notes || ''}`}
                     aria-label={`Notes for ${l.email}`}
                     defaultValue={l.notes || ''}
@@ -1024,7 +1024,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
         )}
         <Input label="Role title (optional)" value={form.roleTitle} onChange={set('roleTitle')} />
         {mode === 'add' && (
-          <Textarea id="lead-form-notes" label="Notes (optional)" value={form.notes} onChange={set('notes')} rows={3} maxLength={2000} />
+          <Textarea showCount id="lead-form-notes" label="Notes (optional)" value={form.notes} onChange={set('notes')} rows={3} maxLength={2000} />
         )}
         {error && <p className="text-sm text-red-600" role="alert">{error}</p>}
         {needsOverride && (

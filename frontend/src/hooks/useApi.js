@@ -38,6 +38,9 @@ export function useApi() {
   const [progress, setProgress] = useState(null)
   const mounted = useRef(true)
   const callId = useRef(0)
+  // Which call the displayed `progress` belongs to. Progress used to follow "the newest call", so starting any other call
+  // mid-upload froze the bar at its last value (updates were ignored) and it never went back to null when the upload ended.
+  const progressOwner = useRef(0)
   // The newest call that had STARTED when the displayed error landed. A success clears the error only if it started after
   // that: a call that was already running when a failure arrived knows nothing about that failure, and used to wipe it.
   const errorMark = useRef(-1)
@@ -64,12 +67,12 @@ export function useApi() {
     }
     const controller = !keepAlive && typeof AbortController !== 'undefined' ? new AbortController() : null
     if (controller) controllers.current.set(id, controller)
-    if (mounted.current) { setPending(n => n + 1); setError(null); errorMark.current = -1; if (wantsProgress) setProgress(0) }
+    if (mounted.current) { setPending(n => n + 1); setError(null); errorMark.current = -1; if (wantsProgress) { progressOwner.current = id; setProgress(0) } }
     try {
       const callOptions = controller ? { signal: controller.signal } : {}
       if (wantsProgress) {
         callOptions.onUploadProgress = e => {
-          if (mounted.current && id === callId.current && e && e.total > 0)
+          if (mounted.current && id === progressOwner.current && e && e.total > 0)
             setProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)))
         }
       }
@@ -87,7 +90,7 @@ export function useApi() {
       if (!isCancelError(err) && mounted.current && !superseded.current.has(id)) { errorMark.current = callId.current; setError(getErrorMessage(err, fallback)) }
       throw err
     } finally {
-      if (wantsProgress && mounted.current && id === callId.current) setProgress(null)
+      if (progressOwner.current === id) { progressOwner.current = 0; if (mounted.current) setProgress(null) }
       controllers.current.delete(id)
       superseded.current.delete(id)
       if (mounted.current) setPending(n => Math.max(0, n - 1))

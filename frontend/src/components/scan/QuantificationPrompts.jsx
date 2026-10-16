@@ -61,7 +61,7 @@ function PromptRow({ prompt, scan, onSaved }) {
       )}
       {onSaved && editing && (
         <div className="mt-2 flex flex-col gap-2">
-          <Textarea
+          <Textarea showCount
             value={text}
             onChange={e => setText(e.target.value)}
             rows={2}

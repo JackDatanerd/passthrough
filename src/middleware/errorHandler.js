@@ -98,6 +98,8 @@ function errorHandler(err, ctx) {
   // that simply lacked the variable leaked internals to every client.
   const env = (ctx && ctx.env) || {}
   const showMessage = env.NODE_ENV === 'development' || env.NODE_ENV === 'test' || (err.expose === true && status < 500)
+  // GENERIC_ERROR_MESSAGE: the SPA's getErrorMessage (frontend/src/lib/errors.js) recognises this exact text on a 5xx and shows
+  // its friendlier "The server had a problem…" line instead. Change it in both places.
   return ctx.json({ success: false, message: showMessage ? err.message : 'An error occurred.' }, status)
 }
 

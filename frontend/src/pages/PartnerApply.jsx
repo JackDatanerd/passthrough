@@ -92,8 +92,8 @@ export default function PartnerApply() {
                 <Input label="Your name" value={name} onChange={e => setName(e.target.value)} maxLength={200} />
                 <Input label="Email" type="email" value={email} onChange={e => setEmail(e.target.value)} maxLength={320} />
                 <Input label="Website or social profile (optional)" value={website} onChange={e => setWebsite(e.target.value)} maxLength={300} />
-                <Textarea label="Who would you share it with? (optional)" value={audience} onChange={e => setAudience(e.target.value)} maxLength={1000} rows={3} />
-                <Textarea label="Anything else? (optional)" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} rows={3} />
+                <Textarea showCount label="Who would you share it with? (optional)" value={audience} onChange={e => setAudience(e.target.value)} maxLength={1000} rows={3} />
+                <Textarea showCount label="Anything else? (optional)" value={message} onChange={e => setMessage(e.target.value)} maxLength={2000} rows={3} />
                 {/* Honeypot: off-screen, not tabbable, not announced. */}
                 <div aria-hidden="true" style={{ position: 'absolute', left: '-10000px', height: 0, overflow: 'hidden' }}>
                   <label>Company <input tabIndex={-1} autoComplete="off" value={company} onChange={e => setCompany(e.target.value)} /></label>

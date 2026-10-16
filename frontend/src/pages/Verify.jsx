@@ -147,7 +147,7 @@ function ReportForm({ code, onClose }) {
         <option value="">Choose…</option>
         {REPORT_REASONS.map(([value, text]) => <option key={value} value={value}>{text}</option>)}
       </Select>
-      <Textarea label="Details (optional)" rows={3} maxLength={1000} value={details} onChange={e => setDetails(e.target.value)}
+      <Textarea showCount label="Details (optional)" rows={3} maxLength={1000} value={details} onChange={e => setDetails(e.target.value)}
         hint="Do not include anything private — this goes to the Passthrough team." />
       <Input type="email" label="Your e-mail (optional, only if you want a reply)" value={email} onChange={e => setEmail(e.target.value)} />
       <TurnstileWidget onToken={setCaptcha} resetSignal={captchaReset} />

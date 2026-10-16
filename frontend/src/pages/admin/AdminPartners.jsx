@@ -196,7 +196,7 @@ function RejectApplicationModal({ app, cooldownDays = 30, onClose, onDone }) {
         <p className="text-sm text-gray-500">
           {app.name} will be emailed the decision. They can re-apply after {cooldownDays} days.
         </p>
-        <Input label="Reason (optional — included in the email)" value={reason} onChange={e => setReason(e.target.value)} maxLength={500}
+        <Input showCount label="Reason (optional — included in the email)" value={reason} onChange={e => setReason(e.target.value)} maxLength={500}
           placeholder="e.g. We're only onboarding career-coaching audiences right now." />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">

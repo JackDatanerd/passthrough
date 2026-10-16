@@ -1,5 +1,6 @@
 import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
+import { useCharCount, FieldFooter } from './CharCount'
 
 // Changes vs. the original:
 //  - id comes from useId(), not the label text. Two inputs with the same label
@@ -12,7 +13,7 @@ import { cn } from '../../lib/utils'
 //    an accessible name (several forms used placeholder-only fields).
 // `size="sm"` is the compact field used in toolbars and inline forms (search boxes, a rename field) — those had hand-rolled
 // `<input>`s because the only size here was the full form-field one. (It shadows the native `size` attribute, as Select's does.)
-const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, size = 'md', 'aria-describedby': extraDescribedBy, ...props }, ref) {
+const Input = forwardRef(function Input({ label, error, hint, className, wrapperClassName, id, endAdornment, size = 'md', 'aria-describedby': extraDescribedBy, showCount = false, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): this used to include `${inputId}-hint`
@@ -22,6 +23,8 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
   // aria-describedby pointing at an id that didn't exist in the DOM: a
   // dangling ARIA reference, exactly what axe/screen readers flag.
   const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].concat(extraDescribedBy || []).filter(Boolean).join(' ') || undefined
+  // showCount (with maxLength): an "n/limit" counter that also reports a paste the browser cut short — see CharCount.jsx.
+  const { handlers, counter } = useCharCount({ enabled: showCount, maxLength: props.maxLength, value: props.value, defaultValue: props.defaultValue, onChange: props.onChange, onPaste: props.onPaste, onBlur: props.onBlur })
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   const control = (
@@ -40,6 +43,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
         className
       )}
       {...props}
+      {...handlers}
     />
   )
 
@@ -60,8 +64,10 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
           {endAdornment}
         </div>
       ) : control}
-      {hint && !error && <p id={`${inputId}-hint`} className="text-xs text-gray-500">{hint}</p>}
-      {error && <p id={`${inputId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+      <FieldFooter counter={counter}>
+        {hint && !error && <p id={`${inputId}-hint`} className="text-xs text-gray-500">{hint}</p>}
+        {error && <p id={`${inputId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+      </FieldFooter>
     </div>
   )
 })

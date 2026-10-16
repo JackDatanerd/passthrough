@@ -1,15 +1,18 @@
 import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
+import { useCharCount, FieldFooter } from './CharCount'
 
 // See Input.jsx for what changed and why (useId, forwardRef, aria wiring).
 // `size="sm"` is the compact box for table cells and inline notes (a per-row note field), like Input's and Select's.
-const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, size = 'md', 'aria-describedby': extraDescribedBy, ...props }, ref) {
+const Textarea = forwardRef(function Textarea({ label, error, hint, className, wrapperClassName, id, rows = 5, size = 'md', 'aria-describedby': extraDescribedBy, showCount = false, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   // BUG FIX (Section 11 audit): see Input.jsx — describedBy used to
   // reference `${inputId}-hint` even when the hint <p> wasn't rendered
   // (it only renders when `hint && !error`), a dangling ARIA reference.
   const describedBy = [error && `${inputId}-error`, hint && !error && `${inputId}-hint`].concat(extraDescribedBy || []).filter(Boolean).join(' ') || undefined
+  // showCount (with maxLength): an "n/limit" counter that also reports a paste the browser cut short — see CharCount.jsx.
+  const { handlers, counter } = useCharCount({ enabled: showCount, maxLength: props.maxLength, value: props.value, defaultValue: props.defaultValue, onChange: props.onChange, onPaste: props.onPaste, onBlur: props.onBlur })
   const ariaLabel = props['aria-label'] ?? (!label && props.placeholder ? props.placeholder : undefined)
 
   // Width/margin belong on `wrapperClassName`: a `w-*` in `className` lands on the control next to
@@ -38,9 +41,12 @@ const Textarea = forwardRef(function Textarea({ label, error, hint, className, w
           className
         )}
         {...props}
+        {...handlers}
       />
-      {hint && !error && <p id={`${inputId}-hint`} className="text-xs text-gray-500">{hint}</p>}
-      {error && <p id={`${inputId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+      <FieldFooter counter={counter}>
+        {hint && !error && <p id={`${inputId}-hint`} className="text-xs text-gray-500">{hint}</p>}
+        {error && <p id={`${inputId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+      </FieldFooter>
     </div>
   )
 })

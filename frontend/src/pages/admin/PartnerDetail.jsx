@@ -281,8 +281,8 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
           </div>
         </div>
         <Input label="Website / channel" value={website} maxLength={300} onChange={e => setWebsite(e.target.value)} />
-        <Input label="Audience" value={audience} maxLength={1000} onChange={e => setAudience(e.target.value)} />
-        <Textarea label="Internal notes (admin only)" rows={3} maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}
+        <Input showCount label="Audience" value={audience} maxLength={1000} onChange={e => setAudience(e.target.value)} />
+        <Textarea showCount label="Internal notes (admin only)" rows={3} maxLength={2000} value={notes} onChange={e => setNotes(e.target.value)}
           hint="Never shown to the partner. Removed if their personal data is erased." />
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
         <div className="flex gap-2 justify-end">
@@ -372,7 +372,7 @@ function AdjustBalanceModal({ partner, onClose, onAdjusted }) {
             </button>
           )}
         </div>
-        <Textarea label="Reason (the partner sees this)" rows={3} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
+        <Textarea showCount label="Reason (the partner sees this)" rows={3} maxLength={500} value={reason} onChange={e => setReason(e.target.value)}
           placeholder="e.g. Self-referral through a second account" />
         {removed
           ? <p className="text-xs text-gray-500">This partner's data was removed: the entry is recorded as a write-off, the reason is not kept and nobody is emailed.</p>

@@ -54,7 +54,10 @@ export function getErrorMessage(err, fallback = GENERIC) {
         }).filter(Boolean)
         if (parts.length) return parts.join(' · ')
       }
-      if (typeof data.message === 'string' && data.message && data.message !== 'Validation failed') return data.message
+      // The Worker masks every UNHANDLED 5xx as exactly this text (middleware/errorHandler.js, GENERIC_ERROR_MESSAGE). It says
+      // nothing and tells the person nothing to do, so for a 5xx it yields to the friendlier line below. Keep the two in sync.
+      const masked = res.status >= 500 && data.message === 'An error occurred.'
+      if (typeof data.message === 'string' && data.message && data.message !== 'Validation failed' && !masked) return data.message
     }
     if (res.status === 429) return 'Too many requests — please wait a moment and try again.'
     if (res.status === 413) return 'That file is too large.'
