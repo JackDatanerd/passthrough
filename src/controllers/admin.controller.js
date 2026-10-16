@@ -154,8 +154,12 @@ async function adminDashboardStats(ctx) {
   const { count: whAttentionCount, error: whErr } = await supabase
     .from('webhook_events').select('id', { count: 'exact', head: true }).in('status', ['FAILED', 'HELD'])
   if (whErr) throw whErr
-  const { count: whStuckCount, error: whStuckErr } = await supabase
-    .from('webhook_events').select('id', { count: 'exact', head: true }).eq('status', 'RECEIVED').lt('received_at', fifteenMinAgo)
+  // Webhooks round 16 (B1): "stuck" is measured from the row's last pickup (last_attempt_at, migration 0090), not its first receipt —
+  // a FAILED event Paystack just redelivered is being worked on, not stuck. Before 0090 the column is absent: fall back to received_at.
+  const stuckCount = col => supabase
+    .from('webhook_events').select('id', { count: 'exact', head: true }).eq('status', 'RECEIVED').lt(col, fifteenMinAgo)
+  let { count: whStuckCount, error: whStuckErr } = await stuckCount('last_attempt_at')
+  if (whStuckErr && /last_attempt_at/.test(whStuckErr.message || '')) ({ count: whStuckCount, error: whStuckErr } = await stuckCount('received_at'))
   if (whStuckErr) throw whStuckErr
 
   const { count: leadsThisWeekCount, error: leadErr } = await supabase

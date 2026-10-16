@@ -227,7 +227,7 @@ export default function AdminPayments() {
   // the payment itself flips to REFUNDED when Paystack's resolve webhook arrives, so the list is only reloaded.
   function acceptDispute(payment) {
     setPendingAction({ type: 'accept-dispute', payment, danger: true,
-      confirmMsg: `Accept the dispute on ${payment.paystackRef}? Paystack refunds the buyer ${formatCents(payment.amountCents, payment.currency)} and you cannot contest it afterwards.` })
+      confirmMsg: `Accept the dispute on ${payment.paystackRef}? Paystack refunds the buyer the disputed amount (up to ${formatCents(payment.amountCents, payment.currency)}, the whole payment unless the dispute is for less) and you cannot contest it afterwards.` })
   }
   // Webhooks round 15 (G1): contest with a generated proof of delivery (server refuses when nothing was delivered).
   function contestDispute(payment) {

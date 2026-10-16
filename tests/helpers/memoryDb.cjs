@@ -18,7 +18,8 @@ const likeHit = (v, pat, ci) => typeof v === 'string' && likeRe(pat, ci).test(v)
 
 function matches(row, filters) {
   return filters.every(([op, col, val, val2]) => {
-    const v = row[col]
+    // webhook_events.last_attempt_at (migration 0090) is NOT NULL DEFAULT now(), backfilled from received_at — rows seeded without it read as that.
+    const v = row[col] === undefined && col === 'last_attempt_at' ? row.received_at : row[col]
     switch (op) {
       case 'eq':  return v === val
       case 'neq': return v !== val

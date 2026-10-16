@@ -118,6 +118,7 @@ describe('G1: contest a dispute with a proof of delivery', () => {
     })
     const paystack = {
       listDisputes: async () => ({ data: [] }),
+      fetchDispute: async () => ({ data: { refund_amount: null } }),   // round 16: contest reads the disputed amount, as accept does
       getDisputeUploadUrl: async (e, id, name) => { log.push(['url', id, name]); return { signedUrl: 'https://s3.example/put', fileName: 'stored-' + name } },
       uploadDisputeProof: async (url, bytes, type) => { log.push(['upload', url, bytes, type]) },
       declineDispute: async (e, id, o) => { log.push(['decline', id, o]); return { status: true } },

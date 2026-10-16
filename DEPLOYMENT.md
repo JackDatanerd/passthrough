@@ -1010,4 +1010,11 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * saved-profile RPCs refuse NULL / non-object input (they used to blank the saved profile); admin_audit_log is append-only (UPDATE/DELETE
 #     are refused; deleting an admin user still nulls actor_id); referral codes must be upper-case (the migration upper-cases existing ones and
 #     stops with a message if two codes differ only by case — resolve those by hand first); deleting a scan clears the profile pointers to it.
+
+# WEBHOOKS ROUND 16 (migration 0090 — apply BEFORE deploying this Worker; two added columns, so the old Worker keeps working against it and this
+# Worker falls back to the old behaviour if it runs first). Adds webhook_events.last_attempt_at (when a row was last picked up; backfilled from
+# received_at) and payments.dispute_evidence_id.
+#   * A webhook event that Paystack redelivers, an admin replays or the hourly re-drive picks up is no longer shown as "stuck" / replayable while it
+#     is running, and the re-drive no longer runs it a second time alongside the live delivery.
+#   * Admin -> Payments: for a fraud-claim dispute press "Send evidence" and then "Contest dispute" — the evidence id is sent along with the contest.
 ```

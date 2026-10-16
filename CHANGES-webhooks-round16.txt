@@ -1,0 +1,29 @@
+WEBHOOKS (SECTION 8) — INDEPENDENT AUDIT, ROUND 16
+Migration 0090 — apply BEFORE deploying this Worker (it degrades gracefully if the Worker runs first). No new environment variables.
+Verified clean this round: Svix signature (published Svix test vector), Paystack refund amount arrives as a string in minor units (Paystack's own
+sample) and Number() handles it, dispute API paths, the generated proof PDF (pypdf / qpdf --check).
+
+FEATURE GAPS CLOSED
+G1  Contest now finishes a FRAUD-CLAIM dispute. Paystack's Manage Disputes flow needs an evidence record for a fraud claim and its id quoted on
+    resolve (`evidence`). "Send evidence" used to throw that id away and "Contest" never sent one, so for the commonest card-dispute type the two
+    buttons never connected and Paystack would refuse the contest. Now: submitDisputeEvidence keeps the id (payments.dispute_evidence_id, stored as
+    '<disputeId>:<evidenceId>' so it can only be quoted for the dispute it was made for) and says "press Contest next"; contestPaymentDispute quotes
+    it (declineDispute sends `evidence` only when there is one). If Paystack refuses a contest naming evidence and none is on file, the admin is told
+    to Send evidence first. A chargeback (no evidence needed) contests exactly as before.
+    Also: the decline now carries the amount the dispute is FOR (as accept has since round 15), not always the whole payment.
+
+BUGS FIXED
+B1  A retried event looked "stuck" the moment it was picked up. received_at is the FIRST receipt and never moves, so a FAILED row that Paystack
+    redelivered, an admin replayed or the re-drive picked up became RECEIVED with an old timestamp: Replay / Dismiss were offered for a running
+    event, the attention list and dashboard counted it, and the hourly re-drive ran it ALONGSIDE the live delivery (double alerts, double Paystack
+    calls, a re-drive attempt spent) — defeating the round 14 B6 / round 15 B3 guards for exactly the rows they exist for. Reproduced with two probes
+    against the round 15 code. Fix: webhook_events.last_attempt_at (0090, NOT NULL DEFAULT now(), backfilled from received_at) is stamped by every
+    pickup (live redelivery, replay, re-drive) and is the clock for: isStuckReceived (list flags, Replay / Dismiss 409), the ATTENTION filter, the
+    re-drive's runnable and exhausted queries, closeUnrunnableReceived and the dashboard's stuck count (crosses into admin.controller.js). Before 0090
+    every one of them falls back to received_at instead of failing.
+B2  The "Accept dispute" confirmation said the buyer is refunded the whole payment; since round 15 only the disputed amount is (frontend text).
+
+TESTS
+tests/webhooks.round16.test.js (new). tests/helpers/memoryDb.cjs reads a row's missing last_attempt_at as its received_at (the column default).
+tests/migrations.0087.pglite.test.js now applies every later migration so "newest migration after the full chain" stays true.
+Backend (rebased on upstream HEAD 7945056, migrations 0088-0089 already taken by the Scan work): 187 files, 4317 tests pass.

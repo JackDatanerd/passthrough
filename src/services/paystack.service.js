@@ -353,9 +353,11 @@ async function uploadDisputeProof(signedUrl, bytes, contentType = 'application/p
     throw err
   } finally { clearTimeout(timeout) }
 }
-function declineDispute(env, disputeId, { message, refundAmount, uploadedFilename }) {
+// Webhooks round 16 (G1): `evidence` is the id returned by addDisputeEvidence — Paystack requires it to resolve a fraud claim and ignores
+// it otherwise, so it is sent only when there is one.
+function declineDispute(env, disputeId, { message, refundAmount, uploadedFilename, evidence }) {
   return disputeCall(env, 'PUT', disputeId, 'resolve',
-    { resolution: 'declined', message, refund_amount: refundAmount, uploaded_filename: uploadedFilename }, 'Paystack dispute decline')
+    { resolution: 'declined', message, refund_amount: refundAmount, uploaded_filename: uploadedFilename, ...(evidence ? { evidence } : {}) }, 'Paystack dispute decline')
 }
 
 module.exports = { addDisputeEvidence, acceptDispute, fetchDispute, getDisputeUploadUrl, uploadDisputeProof, declineDispute, initializeTransaction, verifyTransaction, listRefunds, listRecentRefunds, scopeRefundsToTransaction, refundItemTransaction, listDisputes, createRefund, isPendingStatus, PENDING_STATUSES }

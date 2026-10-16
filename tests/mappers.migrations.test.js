@@ -28,7 +28,7 @@ const DELIBERATELY_UNMAPPED = {
   // previous_emails (0080): the addresses a partner used to have, kept ONLY so erasure can reach the mail history sent to them — personal data the
   // admin/partner API never needs (partners.controller.js reads it directly for the erasure).
   // 0086: reversal_notice_sent_at is the claim that makes the buyer's reversal email go out once; dispute_id is Paystack's id, read only by the admin dispute actions.
-  payments: ['reversal_notice_sent_at', 'dispute_id'],
+  payments: ['reversal_notice_sent_at', 'dispute_id', 'dispute_evidence_id'],   // 0088: dispute_evidence_id is '<disputeId>:<evidenceId>', read only by the admin contest action
   partners: ['payout_details_token', 'payout_token_hash', 'dashboard_token', 'previous_emails'],
 }
 
