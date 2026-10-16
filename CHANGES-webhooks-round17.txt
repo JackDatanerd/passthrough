@@ -1,0 +1,42 @@
+Section 8 (Webhooks) — round 17 (fresh independent audit of webhooks.controller.js, webhooks.routes.js, resend-webhook, the re-drive and the inbox)
+Base: 63aa532 "Docgen prompts round 1 ..."
+
+NO MIGRATION. Nothing to apply before deploying (the refusal stamps reuse the existing system_state table).
+
+GAP
+G1  A delivery that REACHED the app but was refused left no durable trace. A bad signature (wrong or rotated signing key), a source IP outside
+    PAYSTACK_WEBHOOK_IPS, a missing secret and an oversized body were only logged and, at most once per 30 minutes, emailed; Admin → Webhooks
+    could not say "Paystack is reaching you and every delivery is being refused", and the only other signal (a paid sale with no event on
+    record) comes later and only after a customer has paid. Both handlers now stamp the newest refusal per provider in system_state
+    (webhook_rejected:paystack / webhook_rejected:resend: time + reason, never an IP or any request content), at most once a minute per
+    provider through the shared quota, in the background, and never able to change or delay the HTTP answer.
+    The health response gains `lastRejected` and `rejectedSinceLastEvent`; Admin → Webhooks and the dashboard show a red notice only when a
+    refusal that LOOKS like the provider (well-formed signature / svix headers, blocked IP, missing secret) is newer than the last delivery
+    that got through. Scanner-shaped refusals (no signature headers, oversized, unreadable) are recorded but never raise the notice.
+    New: src/lib/webhookRejections.js.
+
+BUGS
+B1  The last_attempt_at -> received_at fallback was permanent for the life of a Worker instance. PostgREST's schema cache can lag a migration
+    by seconds to minutes, so a deploy racing migration 0090 pinned every warm instance to the old clock: a freshly retried FAILED row was
+    again "stuck" at once (and re-driven beside the live delivery), and the heartbeat stamp stopped. The fallback now expires after 5 minutes
+    (STALE_COL_RETRY_MS) and the next query probes the real column again; a column that is genuinely missing is re-downgraded for another
+    interval.
+B2  recordEvent's retry bump updated by id alone. A redelivery that had read FAILED/RECEIVED a moment before another worker (admin Replay, the
+    hourly re-drive, a parallel delivery) finished the row wrote it back to RECEIVED. The bump now only moves a row that is still
+    FAILED/RECEIVED; if nothing moved it re-reads the row and answers "done" only for a positively finished row (PROCESSED/IGNORED/HELD),
+    otherwise it processes as before, so the guard can never turn a retry into a silent drop.
+B3  redriveStaleEvents skipped rows whose stored payload has no readable event/type WITHOUT removing them from its window (REDRIVE_PER_RUN * 3,
+    oldest first), so enough of them starved every newer failure for ever. They are now closed as IGNORED ("closed — stored payload is not a
+    replayable event"), conditional on the row still being unfinished, and the owner is told once a day when one of them was a money event
+    (charge.success / refund.* / charge.dispute.*).
+
+TESTS
+tests/webhooks.round17.test.js (31): the helper, each refusal reason from both handlers, the health output, B1 expiry (fake clock), B2 guard
+(including the unknown-state fallback), B3 (closed, alerted, not closed if finished meanwhile, no longer crowds out a newer row).
+frontend/tests/pages/Webhooks.round17.test.jsx (7). Two older tests updated: a refusal now writes the one system_state stamp, so
+"touches nothing" became "touches nothing else" (tests/webhooks.controller.test.js x3, tests/resend-webhook.test.js x1).
+
+NOT CHANGED (reviewed, deliberate)
+- payments.dispute_due_at / dispute_id / dispute_evidence_id stay set after a dispute is cleared. Every reader filters on status DISPUTED or
+  compares ids, none behaves differently, and nulling them would make the clear depend on migrations 0083/0086/0090 being applied.
+- A typo'd PAYSTACK_WEBHOOK_IPS still fails closed (already warned about at startup by env.js).

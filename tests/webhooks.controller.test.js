@@ -89,7 +89,7 @@ describe('signature, size and source checks', () => {
     const w = seed(); t = harness(w)
     const res = await t.fire(chargeSuccess(), { signature: 'deadbeef' })
     expect(res.status).toBe(401)
-    expect(w.calls).toHaveLength(0)
+    expect(w.calls.filter(c => c.table !== 'system_state')).toHaveLength(0)   // round 17: the refusal itself is stamped in system_state, nothing else is touched
     expect(w.t.payments[0].status).toBe('PENDING')
   })
   it('rejects a missing signature', async () => {
@@ -113,7 +113,7 @@ describe('signature, size and source checks', () => {
     const w = seed(); t = harness(w)
     const res = await t.fire(chargeSuccess(), { headers: { 'content-length': String(10 * 1024 * 1024) } })
     expect(res.status).toBe(413)
-    expect(w.calls).toHaveLength(0)
+    expect(w.calls.filter(c => c.table !== 'system_state')).toHaveLength(0)
   })
   it('rejects an oversized body even when content-length lies', async () => {
     const w = seed(); t = harness(w)
@@ -139,7 +139,7 @@ describe('signature, size and source checks', () => {
     const w = seed(); t = harness(w)
     expect((await t.fire(null, { rawBody: '{not json' })).status).toBe(200)
     expect((await t.fire({ hello: 'world' })).status).toBe(200)
-    expect(w.calls).toHaveLength(0)
+    expect(w.calls.filter(c => c.table !== 'system_state')).toHaveLength(0)
   })
 })
 

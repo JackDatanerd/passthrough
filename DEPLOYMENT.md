@@ -618,6 +618,10 @@ Every push to `main` triggers an automatic rebuild and deploy.
 5. Every verified event is recorded in the `webhook_events` table and is visible —
    with a **Replay** button for HELD / FAILED / IGNORED ones — under
    **Admin → Webhooks** (search by reference or event type, view the stored payload).
+   Deliveries that reach the app but are REFUSED (wrong or rotated signing key, source IP outside
+   `PAYSTACK_WEBHOOK_IPS`, missing secret) are not events, so they are not listed; the newest one per provider is
+   stamped in `system_state` and Admin → Webhooks / the dashboard show a red notice while a refusal is newer than
+   the last delivery that got through. Check the signing key (or the IP list) when you see it.
 6. Recovery you don't have to do by hand (hourly, from the cron): FAILED or stuck events
    are re-run up to 8 times and you're emailed once if they stay stuck; a HELD event
    waiting over a day is escalated; recent paid payments are checked against Paystack

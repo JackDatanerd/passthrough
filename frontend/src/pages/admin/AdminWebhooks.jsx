@@ -226,6 +226,25 @@ export default function AdminWebhooks() {
         </form>
       </div>
 
+      {/* Webhooks round 17 (G1): deliveries that REACH the app but are refused (wrong/rotated signing key, source IP not allowed) used to
+          leave no trace here. Shown only when the newest refusal is newer than the last delivery that got through. */}
+      {health?.rejectedSinceLastEvent?.length > 0 && (
+        <div role="alert" className="text-sm text-red-800 bg-red-50 border border-red-200 rounded-md px-3 py-2">
+          {health.rejectedSinceLastEvent.map(provider => {
+            const r = health.lastRejected?.[provider]
+            const why = r?.reason === 'ip' ? 'its source IP is not in the allow-list (PAYSTACK_WEBHOOK_IPS)'
+              : r?.reason === 'not-configured' ? 'the signing secret is not configured on the Worker'
+              : 'the signature did not verify — the signing key here does not match the one in the dashboard'
+            return (
+              <div key={provider}>
+                <strong>{provider === 'resend' ? 'Resend' : 'Paystack'} deliveries are being refused</strong>
+                {' '}(latest {r?.at ? formatDate(r.at) : 'recently'}): {why}. Nothing has got through since.
+              </div>
+            )
+          })}
+        </div>
+      )}
+
       {health && health.available && (
         <div className={(health.unrecovered ?? health.paidWithoutEvent) > 0 ? 'text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2' : 'text-xs text-gray-500'}>
           {(health.unrecovered ?? health.paidWithoutEvent) > 0 ? (

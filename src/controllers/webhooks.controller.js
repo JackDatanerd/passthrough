@@ -155,6 +155,9 @@ const { hitQuota } = require('../middleware/rateLimiter')
 const { logAdminAction } = require('../lib/adminAudit')
 const { parseCidr, ipInCidr } = require('../lib/clientIp')
 const { buildProofPdf } = require('../lib/proofPdf')
+const rejections = require('../lib/webhookRejections')
+// Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
+const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
 
 // Real Paystack events are a few KB. Anything near this is not one.
 const MAX_BODY_BYTES = 256 * 1024
@@ -327,18 +330,31 @@ function isInboxMissing(err) {
 // "stuck" the instant it was picked up: Replay/Dismiss were offered, the attention list and dashboard counted it, and the hourly
 // re-drive ran it alongside the live delivery. `last_attempt_at` (migration 0090) is stamped at every pickup and is what every
 // "is this stuck?" test reads. Before 0090 the column does not exist: the first query that says so flips this to the old clock.
+// Webhooks round 17 (B1): that flip used to be permanent for the life of the Worker instance. PostgREST's schema cache can lag a migration
+// by seconds to minutes (PGRST204 "could not find the 'last_attempt_at' column"), so a deploy that races migration 0090 pinned every
+// warm instance to the old clock — the round-16 bug (a freshly retried FAILED row instantly "stuck" and re-driven beside the live
+// delivery) came straight back and the heartbeat stamp stopped, until the instance happened to recycle. The downgrade now expires:
+// after STALE_COL_RETRY_MS the next query probes the real column again (and re-downgrades, for another interval, if it is still missing).
+const STALE_COL_RETRY_MS = 5 * 60 * 1000
 let staleCol = 'last_attempt_at'
+let staleColDowngradedAt = 0
+function staleColumn() {
+  if (staleCol !== 'last_attempt_at' && Date.now() - staleColDowngradedAt >= STALE_COL_RETRY_MS) staleCol = 'last_attempt_at'
+  return staleCol
+}
 function legacyStaleCol(err) {
-  if (staleCol === 'last_attempt_at' && isColumnMissing(err) && /last_attempt_at/.test(err?.message || '')) { staleCol = 'received_at'; return true }
+  if (staleColumn() === 'last_attempt_at' && isColumnMissing(err) && /last_attempt_at/.test(err?.message || '')) {
+    staleCol = 'received_at'; staleColDowngradedAt = Date.now(); return true
+  }
   return false
 }
-const touchPatch = () => (staleCol === 'last_attempt_at' ? { last_attempt_at: new Date().toISOString() } : {})
+const touchPatch = () => (staleColumn() === 'last_attempt_at' ? { last_attempt_at: new Date().toISOString() } : {})
 async function withStaleCol(fn) {
   let r = await fn()
   if (r && r.error && legacyStaleCol(r.error)) r = await fn()
   return r
 }
-const staleSelect = cols => (staleCol === 'last_attempt_at' ? `${cols}, last_attempt_at` : cols)
+const staleSelect = cols => (staleColumn() === 'last_attempt_at' ? `${cols}, last_attempt_at` : cols)
 
 // mode: 'new' | 'retry' (seen before but not finished) | 'done' | 'unavailable'
 async function recordEvent(supabase, { eventKey, eventType, reference, payload, provider = 'paystack' }) {
@@ -354,7 +370,17 @@ async function recordEvent(supabase, { eventKey, eventType, reference, payload, 
     if (!existing) return { mode: 'new', id: null, attempts: 1 }
     if (['PROCESSED', 'IGNORED', 'HELD'].includes(existing.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1 }
     const attempts = (existing.attempts || 1) + 1
-    await withStaleCol(() => supabase.from('webhook_events').update({ status: 'RECEIVED', attempts, ...touchPatch() }).eq('id', existing.id))
+    // Webhooks round 17 (B2): the bump used to be keyed on `id` alone, so a redelivery that read FAILED/RECEIVED a moment before another worker
+    // (admin Replay, the hourly re-drive, a parallel delivery) finished the row wrote it BACK to RECEIVED — a finished row shown as in-flight
+    // and counted as stuck once the clock aged. Now it only moves a row that is still unfinished; if it already finished, this delivery is a duplicate.
+    const { data: bumped } = await withStaleCol(() => supabase.from('webhook_events')
+      .update({ status: 'RECEIVED', attempts, ...touchPatch() }).eq('id', existing.id).in('status', ['FAILED', 'RECEIVED']).select('id'))
+    if (Array.isArray(bumped) && bumped.length === 0) {
+      // Nothing moved: either somebody finished the row (a duplicate delivery) or it is in a state this guard does not know. Only a row that is
+      // positively finished is answered "done"; anything else is processed as before, so the guard can never turn a retry into a silent drop.
+      const { data: now } = await supabase.from('webhook_events').select('status').eq('id', existing.id).maybeSingle()
+      if (now && ['PROCESSED', 'IGNORED', 'HELD'].includes(now.status)) return { mode: 'done', id: existing.id, attempts: existing.attempts || 1 }
+    }
     return { mode: 'retry', id: existing.id, attempts }
   }
   if (isInboxMissing(error)) return { mode: 'unavailable', id: null, attempts: 0 }
@@ -858,6 +884,7 @@ async function handlePaystack(c) {
     if (await alertAllowed(c.env, 'webhook-alert-cooldown:paystack-secret-missing'))
       alert(c, 'Paystack webhook cannot verify signatures — secret not configured',
         'PAYSTACK_SECRET_KEY is missing from this Worker. Every Paystack webhook is being rejected with 500 (so Paystack keeps retrying). Set it: wrangler secret put PAYSTACK_SECRET_KEY')
+    noteRejected(c, 'paystack', 'not-configured')
     return c.text('Webhook not configured', 500)
   }
 
@@ -870,9 +897,10 @@ async function handlePaystack(c) {
   if (ipRejected) console.error(`Webhook rejected: source IP ${sourceIp || '(none)'} is not in PAYSTACK_WEBHOOK_IPS`)
 
   const declared = Number.parseInt(c.req.header('content-length') || '', 10)
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return c.text('Payload too large', 413)
+  const tooLarge = () => { noteRejected(c, 'paystack', 'too-large'); return c.text('Payload too large', 413) }
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return tooLarge()
   const bodyBytes = new Uint8Array(await c.req.arrayBuffer())
-  if (bodyBytes.byteLength > MAX_BODY_BYTES) return c.text('Payload too large', 413)
+  if (bodyBytes.byteLength > MAX_BODY_BYTES) return tooLarge()
 
   const givenSig = (c.req.header('x-paystack-signature') || '').trim().toLowerCase()
   let sigOk = cryptoLib.timingSafeEqual(await cryptoLib.hmacSha512Hex(secret, bodyBytes), givenSig)
@@ -889,6 +917,7 @@ async function handlePaystack(c) {
         `If Paystack changed its outbound IPs, every webhook is failing until the list is updated (payments are still recovered by the buyer's return visit and the hourly sweeps, ` +
         `but refunds and disputes are not). Update it: wrangler secret put PAYSTACK_WEBHOOK_IPS — or delete it to rely on the signature alone. ` +
         `Further occurrences in the next 30 minutes are logged but not emailed.`)
+    noteRejected(c, 'paystack', sigOk ? 'ip' : (rejections.looksLikePaystackSignature(givenSig) ? 'signature' : 'unsigned'))
     return c.text('Forbidden', 403)
   }
   if (!sigOk) {
@@ -899,6 +928,7 @@ async function handlePaystack(c) {
         `A request to /api/webhooks/paystack failed HMAC verification.\nsource IP: ${c.req.header('cf-connecting-ip') || '(unknown)'}\n\n` +
         `Either PAYSTACK_SECRET_KEY is wrong/rotated (real payments will not fulfil until fixed) or someone is probing the endpoint. ` +
         `Further mismatches in the next 30 minutes are logged but not emailed.`)
+    noteRejected(c, 'paystack', rejections.looksLikePaystackSignature(givenSig) ? 'signature' : 'unsigned')
     return c.text('Invalid signature', 401)
   }
 
@@ -914,6 +944,7 @@ async function handlePaystack(c) {
       alert(c, 'Paystack sent a signed webhook this app cannot read',
         `A correctly signed request to /api/webhooks/paystack was not valid JSON or had no string \`event\` field (${bodyBytes.byteLength} bytes). It was acknowledged (200) and dropped.\n\n` +
         `If this repeats, Paystack may have changed its payload format. Emailed at most once a day.`)
+    noteRejected(c, 'paystack', 'unreadable')
     return c.text('OK', 200)
   }
 
@@ -1048,7 +1079,7 @@ async function listWebhookEvents(c) {
     let q = getSupabase(c.env).from('webhook_events').select(cols, { count: 'exact' })
       .order('received_at', { ascending: false }).range(from, from + pageSize - 1)
     if (status === 'ATTENTION')
-      q = q.or(`status.in.(FAILED,HELD),and(status.eq.RECEIVED,${staleCol}.lt.${new Date(Date.now() - STUCK_RECEIVED_MS).toISOString()})`)
+      q = q.or(`status.in.(FAILED,HELD),and(status.eq.RECEIVED,${staleColumn()}.lt.${new Date(Date.now() - STUCK_RECEIVED_MS).toISOString()})`)
     else if (status && EVENT_STATUSES.includes(status)) q = q.eq('status', status)
     if (reference) q = q.ilike('reference', `%${reference.replace(/_/g, '\\_')}%`)
     if (type) q = q.eq('event_type', type)
@@ -1555,7 +1586,7 @@ async function closeUnrunnableReceived(supabase, { now = Date.now() } = {}) {
     const { data, error } = await withStaleCol(() => supabase.from('webhook_events')
       .update({ status: 'IGNORED', processed_at: iso, note: 'closed — unfinished, nothing stored to re-run' })
       .eq('status', 'RECEIVED').is('payload', null)
-      .lt(staleCol, new Date(now - REDRIVE_MIN_AGE_MS).toISOString())
+      .lt(staleColumn(), new Date(now - REDRIVE_MIN_AGE_MS).toISOString())
       .neq('event_type', 'charge.success').not('event_type', 'like', 'refund.%').not('event_type', 'like', 'charge.dispute%')
       .select('id'))
     if (error) { console.error('closeUnrunnableReceived failed:', error.message); return [] }
@@ -1564,6 +1595,23 @@ async function closeUnrunnableReceived(supabase, { now = Date.now() } = {}) {
     console.error('closeUnrunnableReceived error:', err.message)
     return []
   }
+}
+
+// Closes rows the re-drive window cannot ever run (see B3 in redriveStaleEvents). Conditional on the row still being unfinished, so a
+// row another worker finished meanwhile is left alone. Returns the rows actually closed. Never throws.
+async function closeUnreadableStored(supabase, rows, { now = Date.now() } = {}) {
+  const closed = []
+  const iso = new Date(now).toISOString()
+  for (const row of rows) {
+    try {
+      const { data, error } = await supabase.from('webhook_events')
+        .update({ status: 'IGNORED', processed_at: iso, note: 'closed — stored payload is not a replayable event' })
+        .eq('id', row.id).in('status', ['FAILED', 'RECEIVED']).select('id')
+      if (error) { console.error('closeUnreadableStored failed:', error.message); continue }
+      if (Array.isArray(data) && data.length) closed.push(row)
+    } catch (err) { console.error('closeUnreadableStored error:', err && err.message) }
+  }
+  return closed
 }
 
 async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
@@ -1584,7 +1632,7 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
   const old = new Date(now - REDRIVE_MIN_AGE_MS).toISOString()
   const runnable = (withCol) => supabase.from('webhook_events')
     .select(`${base}, payload${withCol ? ', redrives' : ''}`)
-    .in('status', ['FAILED', 'RECEIVED']).lt(staleCol, old)
+    .in('status', ['FAILED', 'RECEIVED']).lt(staleColumn(), old)
     .lt(withCol ? 'redrives' : 'attempts', MAX_REDRIVES)
     .not('payload', 'is', null)
     .order('received_at', { ascending: true }).limit(REDRIVE_PER_RUN * 3)
@@ -1594,9 +1642,12 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
   if (error) { result.error = error.message; return result }
 
   let ran = 0
+  const unreadable = []
   for (const row of rows || []) {
     if (ran >= REDRIVE_PER_RUN) break
-    if (!storedKind(row)) continue
+    // Webhooks round 17 (B3): a row whose stored payload has no readable event/type used to be skipped here WITHOUT leaving the window, so
+    // enough of them (the window is REDRIVE_PER_RUN * 3 oldest-first) starved every newer failure for ever. They are closed below instead.
+    if (!storedKind(row)) { unreadable.push(row); continue }
     const r = await runStoredEvent(c, supabase, row, { redrive: useRedrives })
     if (r.skipped) continue                     // another run (admin replay, live redelivery) has the row — not ours to count
     ran++
@@ -1609,7 +1660,7 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
   // behind old ones. Their payload stays viewable and replayable from Admin → Webhooks.
   const spentQ = () => supabase.from('webhook_events')
     .select('id, provider, status, attempts, event_type, reference')
-    .in('status', ['FAILED', 'RECEIVED']).lt(staleCol, old)
+    .in('status', ['FAILED', 'RECEIVED']).lt(staleColumn(), old)
     .gte(useRedrives ? 'redrives' : 'attempts', MAX_REDRIVES)
     .order('received_at', { ascending: false }).limit(25)
   const { data: spent, error: spentErr } = await withStaleCol(() => spentQ())
@@ -1628,6 +1679,16 @@ async function redriveStaleEvents(env, ctx, { now = Date.now() } = {}) {
       result.recovered.map(r => `${r.event}  ${r.reference || ''}  → ${r.status}`).join('\n'), 'redrive-recovered')
 
   result.unrunnableClosed = await closeUnrunnableReceived(supabase, { now })
+  if (unreadable.length) {
+    const closed = await closeUnreadableStored(supabase, unreadable, { now })
+    result.unrunnableClosed = result.unrunnableClosed.concat(closed.map(r => r.id))
+    const money = closed.filter(r => isActionableEvent(r.event_type || ''))
+    if (money.length && await alertAllowed(env, 'webhook-alert-cooldown:unreadable-stored', 24 * 3600))
+      alert(c, `${money.length} stored webhook event(s) could not be re-run`,
+        `The stored payload of ${money.map(r => `${r.event_type} (${r.reference || r.id})`).join(', ')} has no readable event type, so it can never be replayed; the row was closed as IGNORED ` +
+        `(note: "stored payload is not a replayable event") rather than left to block newer failures from being re-driven. ` +
+        `Check each reference under Payments → Reconcile / Recheck.`, 'unreadable-stored')
+  }
 
   // G1: close what a person (or another path) has already settled, THEN escalate what is left.
   result.heldClosed = await closeResolvedHeldEvents(supabase)
@@ -1803,7 +1864,7 @@ async function openDisputeSummary(supabase) {
 }
 
 async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
-  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], unrecovered: 0, unrecoveredReferences: [], lastResendEventAt: null }
+  const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], unrecovered: 0, unrecoveredReferences: [], lastResendEventAt: null, lastRejected: { paystack: null, resend: null }, rejectedSinceLastEvent: [] }
   try {
     const latest = async type => {
       let q = supabase.from('webhook_events').select('received_at').eq('provider', 'paystack')   // Resend events have their own stamp below
@@ -1855,6 +1916,10 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
     const { data } = await supabase.from('system_state').select('value').eq('key', 'resend_webhook').maybeSingle()
     out.lastResendEventAt = data?.value?.last_event_at || null
   } catch (_) { /* optional */ }
+  // Webhooks round 17 (G1): the newest refused delivery per provider (stamped by handlePaystack / handleResend), and which providers
+  // have been refused since the last delivery they got through. Never throws; a missing row reads as "none".
+  out.lastRejected = await rejections.readRejections(supabase)
+  out.rejectedSinceLastEvent = rejections.rejectedSinceLastEvent(out.lastRejected, { paystack: out.lastEventAt, resend: out.lastResendEventAt }, now)
   return out
 }
 
@@ -1916,4 +1981,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

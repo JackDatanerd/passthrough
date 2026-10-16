@@ -27,6 +27,9 @@ const { recordSuppression, flagAccountBounce } = require('../lib/emailSuppressio
 const emailService = require('../services/email.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
+const rejections = require('../lib/webhookRejections')
+// Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
+const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
 
 const MAX_BODY_BYTES = 256 * 1024
 const MAX_RECIPIENTS = 20
@@ -201,15 +204,17 @@ async function handleResend(c) {
       'RESEND_WEBHOOK_SECRET is missing from this Worker. Every Resend bounce / spam-complaint event is being rejected with 500, ' +
       'so complaining and permanently-bounced addresses are NOT being suppressed. Resend retries for a limited time only. ' +
       'Set it: wrangler secret put RESEND_WEBHOOK_SECRET (the whsec_… signing secret of the Resend webhook).')
+    noteRejected(c, 'resend', 'not-configured')
     return c.text('Webhook not configured', 500)
   }
 
   const declared = Number.parseInt(c.req.header('content-length') || '', 10)
-  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return c.text('Payload too large', 413)
+  const tooLarge = () => { noteRejected(c, 'resend', 'too-large'); return c.text('Payload too large', 413) }
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return tooLarge()
   // ROUND-7 (B6): raw bytes, like the Paystack handler — the size cap is in bytes and the signature is checked over
   // exactly what was sent (text() strips a leading BOM and repairs invalid UTF-8, then the HMAC no longer matches).
   const bodyBytes = new Uint8Array(await c.req.arrayBuffer())
-  if (bodyBytes.byteLength > MAX_BODY_BYTES) return c.text('Payload too large', 413)
+  if (bodyBytes.byteLength > MAX_BODY_BYTES) return tooLarge()
 
   const valid = await verifySvixSignature({
     secret, body: bodyBytes,
@@ -223,6 +228,7 @@ async function handleResend(c) {
       `A request to /api/webhooks/resend failed Svix signature verification.\nsource IP: ${c.req.header('cf-connecting-ip') || '(unknown)'}\n\n` +
       `Either RESEND_WEBHOOK_SECRET is wrong or was rotated in Resend (real complaints and bounces are then NOT being suppressed until it is fixed) ` +
       `or someone is probing the endpoint. Further failures in the next 30 minutes are logged but not emailed.`)
+    noteRejected(c, 'resend', rejections.looksLikeSvixDelivery({ id: c.req.header('svix-id'), timestamp: c.req.header('svix-timestamp'), signature: c.req.header('svix-signature') }) ? 'signature' : 'unsigned')
     return c.text('Invalid signature', 401)
   }
 

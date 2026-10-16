@@ -271,10 +271,11 @@ describe('round 6 — G2: any verified event stamps "last Resend event"', () => 
     expect(t.state.stamps[0]).toMatchObject({ key: 'resend_webhook', value: { last_event_type: 'email.delivered' } })
     expect(Date.parse(t.state.stamps[0].value.last_event_at)).toBeGreaterThan(Date.now() - 5000)
   })
-  it('a bad signature never stamps', async () => {
+  it('a bad signature never stamps "last Resend event" (round 17: it is recorded as a refusal instead)', async () => {
     t = setup()
     await t.call(complaint(), { headers: { 'svix-signature': 'v1,AAAA' } })
-    expect(t.state.stamps).toHaveLength(0)
+    expect(t.state.stamps.filter(s => s.key === 'resend_webhook')).toHaveLength(0)
+    expect(t.state.stamps.filter(s => s.key === 'webhook_rejected:resend')).toHaveLength(1)
   })
   it('a failing stamp never changes the answer', async () => {
     t = setup({ leads: [lead] })

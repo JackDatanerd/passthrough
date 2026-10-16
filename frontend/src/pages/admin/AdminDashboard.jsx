@@ -92,6 +92,13 @@ export default function AdminDashboard() {
         <h2 className="font-semibold text-gray-900 mb-3">Needs attention</h2>
         {/* Webhooks round 12 (W3): `unrecovered` (round 11) — sales newer than the last charge.success received — not the raw
             count, so the banner clears when webhooks flow again instead of staying lit for the whole 7-day window. */}
+        {/* Webhooks round 17 (G1): refused deliveries (bad signature / IP) since the last one that got through. */}
+        {webhookHealth?.rejectedSinceLastEvent?.length > 0 && (
+          <Link to="/admin/webhooks" className="block mb-4 text-sm text-red-800 bg-red-50 border border-red-200 rounded-md px-3 py-2 hover:border-red-300">
+            {webhookHealth.rejectedSinceLastEvent.map(p => (p === 'resend' ? 'Resend' : 'Paystack')).join(' and ')} webhook deliveries are reaching this app but being refused
+            (wrong or rotated signing key, or a blocked source IP) — nothing has got through since. Check the signing key →
+          </Link>
+        )}
         {webhookHealth?.available && (webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent) > 0 && (
           <Link to="/admin/webhooks" className="block mb-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 hover:border-amber-300">
             {webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent} paid sale{(webhookHealth.unrecovered ?? webhookHealth.paidWithoutEvent) === 1 ? ' has' : 's have'} no Paystack webhook on record
