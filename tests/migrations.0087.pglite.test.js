@@ -37,6 +37,8 @@ beforeAll(async () => {
   await db.exec(`insert into partners (id,name,email,payout_details_token,dashboard_token) values ('${P2}','Q','q@x.co','other-token','dash2')`)
   const f87 = files.find(f => f.startsWith('0087'))
   await db.exec(read(f87))
+  // anything newer than 0087 on top, so "the newest migration" below is really the newest
+  for (const f of files.filter(f => f > '0087')) await db.exec(read(f))
 }, 180000)
 afterAll(async () => { await db?.close() })
 

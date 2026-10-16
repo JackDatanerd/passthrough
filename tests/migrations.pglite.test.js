@@ -167,7 +167,9 @@ describe('scrub_account_data', () => {
     users: ['created_at', 'deleted_at', 'email_bounce_type', 'email_bounced_at', 'email_verified', 'free_fix_credits', 'notify_outcome_followup', 'notify_scan_results', 'scans_day_reset', 'scans_today', 'terms_accepted_at', 'terms_version'],
     scans: ['anon_expires_at', 'created_at', 'fix_ats_score', 'fix_credit_round', 'fix_error_recoveries', 'fix_generated_at', 'fix_job_lock_until', 'fix_purchased', 'fix_retry_count',
             'outcome_prompt_attempts', 'passed', 'outcome_prompted_at', 'resume_mime_type', 'rewrite_failed', 'role_category', 'scan_completed_at', 'scan_slot_spent_at', 'seniority_level', 'verification_downloads',
-            'verification_views', 'verified_at', 'ats_score', 'content_score', 'format_score', 'keyword_score', 'sections_score', 'updated_at'],
+            'verification_views', 'verified_at', 'ats_score', 'content_score', 'format_score', 'keyword_score', 'sections_score', 'updated_at',
+            // waiting-screen telemetry (0088): job phase and per-attempt scores. No resume content, nothing personal.
+            'scan_stage', 'fix_progress'],
     payments: ['amount_cents', 'created_at', 'dispute_due_at', 'dispute_id', 'disputed_at', 'last_reconciled_at', 'paid_at', 'paystack_access_code', 'receipt_delivered_at', 'receipt_sent_at', 'referral_code', 'refund_claimed_at', 'refund_reference', 'refunded_at', 'reversal_notice_sent_at', 'currency', 'updated_at'],
   }
   const check = async (table, id, set) => {

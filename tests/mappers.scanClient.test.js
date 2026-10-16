@@ -16,4 +16,13 @@ describe('toClientScan — allow-list serializer', () => {
     expect(out).not.toHaveProperty('futureSecret')
     expect(out.id).toBe('x')
   })
+  it('lets the waiting-screen telemetry out (0088), and reads a row that predates it as null, not undefined', () => {
+    const fp = { startedAt: 't', round: 1, phase: 'rewriting', attempt: 2, of: 3, scores: [70] }
+    const out = toClientScan(scanRowToCamel({ id: 'x', scan_stage: 'scoring', fix_progress: fp }))
+    expect(out.scanStage).toBe('scoring')
+    expect(out.fixProgress).toEqual(fp)
+    const old = toClientScan(scanRowToCamel({ id: 'y' }))
+    expect(old.scanStage).toBeNull()
+    expect(old.fixProgress).toBeNull()
+  })
 })

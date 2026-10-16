@@ -93,6 +93,9 @@ function scanRowToCamel(row) {
     fixErrorRecoveries: row.fix_error_recoveries ?? 0,
     // Round 4: when the free-scan slot behind this scan was spent (a retry spends a new one long after created_at).
     scanSlotSpentAt:   row.scan_slot_spent_at ?? null,
+    // Migration 0088: where the running job is, for the waiting screens (telemetry only; status stays the truth).
+    scanStage:         row.scan_stage ?? null,
+    fixProgress:       row.fix_progress ?? null,
     // Migration 0057: the job lease (claim_fix_job) and the once-per-round compensation marker
     // (grant_fix_credit_once). Both are written only by those RPCs.
     fixJobLockUntil:   row.fix_job_lock_until ?? null,
@@ -185,6 +188,7 @@ const CLIENT_SCAN_FIELDS = [
   'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'userId',
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',
   'rewrittenResumeData', 'userEditedResumeData', 'quantificationPrompts', 'createdAt', 'updatedAt',
+  'scanStage', 'fixProgress',                            // waiting-screen telemetry (0088); no resume content in either
 ]
 // Allow-list: only CLIENT_SCAN_FIELDS get out, whatever else scanRowToCamel grows.
 function toClientScan(scan) {

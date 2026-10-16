@@ -169,6 +169,8 @@ export default function ScanResult() {
   // Last status a FULL fetch returned — lets the poller ask the tiny
   // /scan/status endpoint and only pull the whole scan when it changed.
   const lastStatusRef = useRef(null)
+  // Last scan-stage / fix-progress the status endpoint reported (see pollScan), to merge only real changes.
+  const telemetryRef  = useRef(null)
 
   async function fetchScan() {
     try {
@@ -177,6 +179,7 @@ export default function ScanResult() {
       const data   = res.data.data
       hasLoadedRef.current = true
       lastStatusRef.current = data.status
+      telemetryRef.current = JSON.stringify([data.scanStage ?? null, data.fixProgress ?? null])
       setScan(data)
       setLoading(false)
       setPollError('')
@@ -235,7 +238,18 @@ export default function ScanResult() {
     if (awaitingPaymentRef.current && Date.now() >= awaitingDeadlineRef.current) return fetchScan()   // gives up cleanly
     try {
       const res = await api.get(`/scan/status/${id}${anonToken ? `?token=${anonToken}` : ''}`)
-      if (res.data?.data?.status === known) { setPollError(''); return true }
+      const d = res.data?.data
+      if (d?.status === known) {
+        setPollError('')
+        // Same status, but the job may have moved on inside it (scan stage, fix attempt). Merge just that telemetry
+        // into the scan we already hold, and only when it changed, so an unchanged tick causes no re-render.
+        const key = JSON.stringify([d.scanStage ?? null, d.fixProgress ?? null])
+        if (key !== telemetryRef.current) {
+          telemetryRef.current = key
+          setScan(prev => prev ? { ...prev, scanStage: d.scanStage ?? null, fixProgress: d.fixProgress ?? null } : prev)
+        }
+        return true
+      }
     } catch (_) { /* fall through: the full fetch classifies the error */ }
     return fetchScan()
   }
@@ -735,6 +749,7 @@ export default function ScanResult() {
         {scanning && (
           <ScanProgress
             createdAt={scan.createdAt}
+            stage={scan.scanStage}
             leaveNote={scan.userId ? 'You can leave this page. The scan keeps running and will be in your scans when it finishes.' : null}
           >
             {pollError && (
@@ -882,7 +897,7 @@ export default function ScanResult() {
 
             {/* Fix generating */}
             {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
-              <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt}>
+              <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt} progress={scan.fixProgress} round={scan.fixRetryCount}>
                 {pollError && (
                   <p className="text-xs text-amber-600 mt-3">{pollError}</p>
                 )}

@@ -389,7 +389,7 @@ describe('runAtsScan — idempotent claim and structure', () => {
     t = setup()
     await t.mod.runAtsScan(t.env, t.db, 's1')
     const claim = t.state.updates[0]
-    expect(claim.patch).toEqual({ status: 'SCANNING' })
+    expect(claim.patch).toEqual({ status: 'SCANNING', scan_stage: 'reading' })
     expect(claim.filters.find(f => f[0] === 'eq' && f[1] === 'status')[2]).toBe('PENDING')
   })
   it('a duplicate delivery of an already-handled scan does nothing — no AI bill, no rewrite of its result', async () => {

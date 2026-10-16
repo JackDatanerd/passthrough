@@ -1,6 +1,6 @@
 import ResumeSheet from './ResumeSheet'
 import ProgressSteps from './ProgressSteps'
-import useElapsedSeconds, { currentStep } from '../../hooks/useElapsedSeconds'
+import useElapsedSeconds, { currentStep, gateStep } from '../../hooks/useElapsedSeconds'
 
 // Scan wait. The API reports only PENDING/SCANNING today, so the steps are
 // time-paced and the LAST step stays open until the server says the scan is done.
@@ -11,12 +11,14 @@ export const SCAN_STEPS = [
   ['Scoring', 'Stays open until the result is ready'],
 ]
 export const SCAN_STEP_STARTS = [0, 6, 13, 20]
+// scan.scanStage (migration 0088): 'reading' = fetching and reading the file; 'scoring' = text is ready, rules + AI are scoring.
+export const SCAN_STAGE_GATES = { reading: [0, 1], scoring: [2, 3] }
 
 function fmt(s) { const n = Math.floor(s); return `${Math.floor(n / 60)}:${String(n % 60).padStart(2, '0')}` }
 
 // `leaveNote` is decided by the caller, because only the caller knows whether a
 // result email will really be sent (it is not, for a plain anonymous upload).
-export default function ScanProgress({ createdAt, leaveNote, children }) {
+export default function ScanProgress({ createdAt, stage, leaveNote, children }) {
   const elapsed = useElapsedSeconds(createdAt)
   return (
     <div className="bg-white rounded-xl border border-gray-200 p-6 shadow-sm" role="status" aria-live="polite">
@@ -28,7 +30,7 @@ export default function ScanProgress({ createdAt, leaveNote, children }) {
             <span className="text-xs tabular-nums text-gray-400" data-testid="scan-elapsed">{fmt(elapsed)}</span>
           </div>
           <p className="text-sm text-gray-500 mt-0.5">Usually about 30 seconds.</p>
-          <ProgressSteps steps={SCAN_STEPS} current={currentStep(elapsed, SCAN_STEP_STARTS)} />
+          <ProgressSteps steps={SCAN_STEPS} current={gateStep(currentStep(elapsed, SCAN_STEP_STARTS), SCAN_STAGE_GATES[stage])} />
         </div>
       </div>
       {leaveNote && <p className="text-xs text-gray-500 mt-4 border-t border-gray-100 pt-3">{leaveNote}</p>}

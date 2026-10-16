@@ -605,7 +605,7 @@ async function getScanStatus(ctx) {
   // `select('*')` read the entire row each time — the resume text, the job description, the structured data and the full
   // report, up to ~100 KB. Only the columns the ownership check and the response use are read.
   const { data: row, error } = await supabase.from('scans')
-    .select('id, status, user_id, anon_token, anon_expires_at, ats_score, passed, keyword_score, format_score, sections_score, content_score')
+    .select('id, status, user_id, anon_token, anon_expires_at, ats_score, passed, keyword_score, format_score, sections_score, content_score, scan_stage, fix_progress')
     .eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   const scan = scanRowToCamel(row)
@@ -631,7 +631,10 @@ async function getScanStatus(ctx) {
     keywordScore:  scan.keywordScore,
     formatScore:   scan.formatScore,
     sectionsScore: scan.sectionsScore,
-    contentScore:  scan.contentScore
+    contentScore:  scan.contentScore,
+    // Migration 0088: lets the waiting screens follow the real pipeline. Telemetry only — `status` is still the truth.
+    scanStage:     scan.scanStage,
+    fixProgress:   scan.fixProgress
   }})
 }
 
@@ -1971,6 +1974,17 @@ const SCAN_TAKEOVER_SECONDS = 180   // round 5: was 120 - one legitimately slow 
 
 // The queue / waitUntil entry point. Wraps the real work so every Claude call the scan makes (the structuring pass, the
 // scoring pass, a scanned-PDF transcription) is written to the cost ledger when it finishes.
+// Waiting-screen telemetry (migration 0088). BEST-EFFORT by design: a failed or skipped write must never fail or slow
+// a scan or a paid fix, so errors are swallowed, and the write is conditional on the job still being in flight so a
+// late write can never touch a row that has already finished or been taken over.
+// A copy, so a later change to the running object can never rewrite what an earlier write already sent.
+const snapshot = p => ({ ...p, scores: [...p.scores] })
+async function reportProgress(supabase, scanId, patch, inFlightStatus) {
+  try {
+    await supabase.from('scans').update(patch).eq('id', scanId).eq('status', inFlightStatus)
+  } catch (_) { /* telemetry only */ }
+}
+
 async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   return claudeUsage.withUsage(supabase, env, scanId, tracked => runAtsScanInner(tracked, supabase, scanId, rawAnonToken, opts))
 }
@@ -1997,11 +2011,11 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // has not been touched for SCAN_TAKEOVER_SECONDS (the first run died); while it is merely
     // in progress the outcome says so and the queue consumer retries later instead of acking it.
     let { data: claimed, error: claimErr } = await supabase.from('scans')
-      .update({ status: 'SCANNING' }).eq('id', scanId).eq('status', 'PENDING').select('id')
+      .update({ status: 'SCANNING', scan_stage: 'reading' }).eq('id', scanId).eq('status', 'PENDING').select('id')
     if (!claimErr && Array.isArray(claimed) && claimed.length === 0) {
       const staleBefore = new Date(Date.now() - SCAN_TAKEOVER_SECONDS * 1000).toISOString()
       ;({ data: claimed, error: claimErr } = await supabase.from('scans')
-        .update({ status: 'SCANNING' }).eq('id', scanId).eq('status', 'SCANNING').lt('updated_at', staleBefore).select('id'))
+        .update({ status: 'SCANNING', scan_stage: 'reading' }).eq('id', scanId).eq('status', 'SCANNING').lt('updated_at', staleBefore).select('id'))
       if (!claimErr && Array.isArray(claimed) && claimed.length === 0) {
         const { data: cur } = await supabase.from('scans').select('status').eq('id', scanId).maybeSingle()
         if (cur?.status === 'SCANNING') {
@@ -2138,6 +2152,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // section check reported it missing (measured: sections 85 -> 43).
     const resumeText = rawResumeText.slice(0, c.MAX_RESUME_TEXT_CHARS)
     const jdText     = (scan.jobDescriptionText || '').slice(0, c.MAX_JD_CHARS)
+    await reportProgress(supabase, scanId, { scan_stage: 'scoring' }, 'SCANNING')
     const ruleResult = atsService.scoreResume(resumeText, jdText, { structure: layoutStructure })
 
     // AI blend — 70% rule + 30% AI, never fail scan if AI unavailable
@@ -2150,6 +2165,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // scan that will never finish.
     const savedRes = await supabase.from('scans').update({
       ats_score:       finalScore,
+      scan_stage:      null,
       passed:          finalScore >= c.ATS_PASS_THRESHOLD,
       keyword_score:   ruleResult.keywordScore,
       format_score:    ruleResult.formatScore,
@@ -2536,7 +2552,9 @@ async function generateFixRun(env, supabase, scanId) {
       console.log(`generateFix: scan ${scanId} is already delivered — duplicate job, skipping`)
       return { success: true, skipped: true }
     }
-    await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
+    // Waiting-screen telemetry (0088). `round` ties it to THIS paid round, so the page ignores what a previous round left behind.
+    const progress = { startedAt: new Date().toISOString(), round: scan.fixRetryCount || 0, phase: 'starting', attempt: 0, of: c.MAX_FIX_ATTEMPTS, scores: [] }
+    await supabase.from('scans').update({ status: 'FIX_GENERATING', fix_progress: snapshot(progress) }).eq('id', scanId)
     // Any delivery already on the row must survive a crash — not only on a counted
     // retry (the first-delivery redelivery case used to fall through to ERROR).
     priorDelivery = !!scan.resumeAtsPath
@@ -2690,6 +2708,8 @@ async function generateFixRun(env, supabase, scanId) {
     }
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
+      progress.phase = 'rewriting'; progress.attempt = attempt
+      await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
       const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, guardBaseline)
       if (!rewriteResult.success) {
         // AUDIT FIX: FABRICATION_DETECTED used to hit the same `break` as a
@@ -2737,6 +2757,8 @@ async function generateFixRun(env, supabase, scanId) {
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
       const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
       producedCandidate = true
+      progress.scores.push(candidateScore.score); progress.phase = 'scoring'
+      await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
 
       if (candidateScore.score > bestScore || (baselineHeld && candidateScore.score === bestScore)) {
         baselineHeld = false
@@ -2836,6 +2858,8 @@ async function generateFixRun(env, supabase, scanId) {
       await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount, 'retries exhausted below threshold')
     }
 
+    progress.phase = 'rendering'
+    await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
     // Reuse the winning attempt's already-generated docx bytes instead of
     // generating a 4th time — bestDocxBytes is set whenever a NEW attempt in
     // THIS round beats the running best. The one case it's still null: a
@@ -3019,7 +3043,8 @@ async function generateBadgeRun(env, supabase, scanId) {
       console.log(`generateBadge: scan ${scanId} is already delivered — duplicate job, skipping`)
       return { success: true, skipped: true }
     }
-    await supabase.from('scans').update({ status: 'FIX_GENERATING' }).eq('id', scanId)
+    const progress = { startedAt: new Date().toISOString(), round: scan.fixRetryCount || 0, phase: 'starting', attempt: 0, of: 0, scores: [] }
+    await supabase.from('scans').update({ status: 'FIX_GENERATING', fix_progress: snapshot(progress) }).eq('id', scanId)
     priorDelivery = !!scan.resumeAtsPath
 
     let finalData
@@ -3062,6 +3087,8 @@ async function generateBadgeRun(env, supabase, scanId) {
 
     // Pass verificationUrl — not hardcoded domain
     // Versioned keys + hashes for BOTH files — see generateFix and config/storage.js.
+    progress.phase = 'rendering'
+    await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
     let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl)
 
     // FEATURE GAP CLOSED (Scan/ATS pass): the badge used to certify the number the

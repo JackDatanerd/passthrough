@@ -634,6 +634,20 @@ describe('getScanStatus', () => {
     const res2 = await t.mod.getScanStatus(baseCtx())
     expect(res2.body.data.badgeEligible).toBe(true)
   })
+
+  it('reports the job stage and the fix progress for the waiting screens (0088), and null for rows that have neither', async () => {
+    const fp = { startedAt: '2026-10-16T10:00:00Z', round: 0, phase: 'scoring', attempt: 2, of: 3, scores: [71, 78] }
+    t = setup({ id: 's1', user_id: 'u1', status: 'FIX_GENERATING', scan_stage: null, fix_progress: fp })
+    const res = await t.mod.getScanStatus(baseCtx())
+    expect(res.body.data.fixProgress).toEqual(fp)
+    expect(res.body.data.scanStage).toBe(null)
+    t.restore()
+
+    t = setup({ id: 's1', user_id: 'u1', status: 'SCANNING', scan_stage: 'scoring' })
+    const res2 = await t.mod.getScanStatus(baseCtx())
+    expect(res2.body.data.scanStage).toBe('scoring')
+    expect(res2.body.data.fixProgress).toBe(null)   // an old row without the column reads as "no progress", not undefined
+  })
 })
 
 describe('getScan', () => {
@@ -1144,7 +1158,18 @@ describe('runAtsScan', () => {
   it('marks the scan SCANNING immediately, before doing any real work', async () => {
     t = setup()
     await t.mod.runAtsScan({}, t.db, 's1')
-    expect(t.state.scanUpdates[0]).toEqual({ status: 'SCANNING' })
+    expect(t.state.scanUpdates[0]).toEqual({ status: 'SCANNING', scan_stage: 'reading' })
+  })
+
+  it('reports the scoring stage before it scores, and clears the stage when the result is saved (waiting screen, 0088)', async () => {
+    t = setup()
+    await t.mod.runAtsScan(t.env, t.db, 's1')
+    const patches = t.state.scanUpdates
+    const scoringAt = patches.findIndex(p => p.scan_stage === 'scoring')
+    const final = patches.find(p => p.ats_score != null)
+    expect(scoringAt).toBeGreaterThan(0)
+    expect(patches.indexOf(final)).toBeGreaterThan(scoringAt)
+    expect(final.scan_stage).toBeNull()
   })
 
   it('file-mode: pulls bytes from R2 and extracts text', async () => {
@@ -1392,7 +1417,23 @@ describe('generateFix', () => {
   it('marks the scan FIX_GENERATING immediately', async () => {
     t = setup()
     await t.mod.generateFix(t.env, t.db, 's1')
-    expect(t.state.scanUpdates[0]).toEqual({ status: 'FIX_GENERATING' })
+    expect(t.state.scanUpdates[0]).toEqual({
+      status: 'FIX_GENERATING',
+      fix_progress: { startedAt: expect.any(String), round: 0, phase: 'starting', attempt: 0, of: expect.any(Number), scores: [] },
+    })
+  })
+
+  it('reports real progress for the waiting screen: starting, then rewriting and scoring per attempt, then rendering (0088)', async () => {
+    t = setup()
+    await t.mod.generateFix(t.env, t.db, 's1')
+    const fp = t.state.scanUpdates.map(u => u.fix_progress).filter(Boolean)
+    expect(fp.map(x => x.phase)).toEqual(['starting', 'rewriting', 'scoring', 'rendering'])
+    // each write is its own snapshot: the first one was not rewritten by the phases after it
+    expect(fp[0].scores).toEqual([])
+    expect(fp[1]).toMatchObject({ attempt: 1, scores: [] })
+    expect(fp[2].scores).toHaveLength(1)
+    expect(fp[3].scores).toEqual(fp[2].scores)
+    expect(fp.every(x => x.startedAt === fp[0].startedAt && x.round === 0)).toBe(true)
   })
 
   it('brain_dump/saved_profile with no structured data fails into the top-level catch (ERROR + owner alert)', async () => {
@@ -1989,7 +2030,10 @@ describe('generateBadge', () => {
   it('marks the scan FIX_GENERATING immediately', async () => {
     t = setup()
     await t.mod.generateBadge(t.env, t.db, 's1')
-    expect(t.state.scanUpdates[0]).toEqual({ status: 'FIX_GENERATING' })
+    expect(t.state.scanUpdates[0]).toEqual({
+      status: 'FIX_GENERATING',
+      fix_progress: { startedAt: expect.any(String), round: 0, phase: 'starting', attempt: 0, of: 0, scores: [] },
+    })
   })
 
   it('never rewrites content — the AI rewrite service is never invoked, and rewritten_resume_data is never written', async () => {

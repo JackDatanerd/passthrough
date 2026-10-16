@@ -9,7 +9,8 @@ import React from 'react'
 import ScanProgress, { SCAN_STEPS, SCAN_STEP_STARTS } from '../../src/components/scan/ScanProgress'
 import FixProgress, { FIX_STEP_STARTS } from '../../src/components/scan/FixProgress'
 import ResumeSheet from '../../src/components/scan/ResumeSheet'
-import { currentStep } from '../../src/hooks/useElapsedSeconds'
+import { currentStep, gateStep } from '../../src/hooks/useElapsedSeconds'
+import { ATS_BADGE_THRESHOLD } from '../../src/lib/scoreThresholds'
 
 const T0 = new Date('2026-10-16T10:00:00Z').getTime()
 const iso = msAgo => new Date(T0 - msAgo).toISOString()
@@ -96,13 +97,13 @@ describe('FixProgress', () => {
 
   it('holds the last step until the server delivers', () => {
     render(<FixProgress tier="FIX" startedAt={iso(10 * 60 * 1000)} />)
-    expect(current()).toContain('Scoring the real file')
+    expect(current()).toContain('Preparing your files')
     expect(FIX_STEP_STARTS.length).toBe(4)
   })
 
   it('restarts its pacing when the server timestamp changes (a retry flips the scan back to generating)', () => {
     const { rerender } = render(<FixProgress tier="FIX" startedAt={iso(10 * 60 * 1000)} />)
-    expect(current()).toContain('Scoring the real file')
+    expect(current()).toContain('Preparing your files')
     rerender(<FixProgress tier="FIX" startedAt={iso(0)} />)
     expect(current()).toContain('Reading your scan')
   })
@@ -126,6 +127,89 @@ describe('ResumeSheet', () => {
       const { unmount } = render(<ResumeSheet elapsedSeconds={s} />)
       const top = parseFloat(screen.getByTestId('resume-beam').style.top)
       expect(top).toBeGreaterThanOrEqual(0); expect(top).toBeLessThan(100)
+      unmount()
+    }
+  })
+})
+
+// ── Round 2: the server's own report narrows the clock's guess (migration 0088) ──────────────────────────────────────────
+describe('gateStep', () => {
+  it('is a floor and a ceiling, and does nothing without a known gate', () => {
+    expect(gateStep(0, [2, 3])).toBe(2)
+    expect(gateStep(9, [0, 1])).toBe(1)
+    expect(gateStep(2, [1, 3])).toBe(2)
+    expect(gateStep(2, undefined)).toBe(2)
+  })
+})
+
+describe('ScanProgress with a reported stage', () => {
+  it('never shows "Scoring" while the server says it is still reading, however long that takes', () => {
+    render(<ScanProgress createdAt={iso(10 * 60 * 1000)} stage="reading" />)
+    expect(current()).toContain('Pulling out sections')
+  })
+  it('jumps ahead to matching/scoring as soon as the server says it is scoring, even at the start of the clock', () => {
+    render(<ScanProgress createdAt={iso(0)} stage="scoring" />)
+    expect(current()).toContain('Matching the job')
+  })
+  it('falls back to the clock for a stage value this build does not know (forward compatible)', () => {
+    render(<ScanProgress createdAt={iso(25_000)} stage="some-future-stage" />)
+    expect(current()).toContain('Scoring')
+  })
+})
+
+describe('FixProgress with reported progress', () => {
+  const fp = (over = {}) => ({ startedAt: iso(0), round: 0, phase: 'starting', attempt: 0, of: 3, scores: [], ...over })
+  const at100s = over => <FixProgress tier="FIX" startedAt={iso(100_000)} round={0} progress={fp({ startedAt: iso(100_000), ...over })} />
+
+  it('follows the real phase: rewriting, scoring and rendering each hold their own step', () => {
+    const { unmount } = render(at100s({ phase: 'rewriting', attempt: 1 }))
+    expect(current()).toContain('Rewriting weak lines'); unmount()
+    const r2 = render(at100s({ phase: 'scoring', attempt: 1, scores: [71] }))
+    expect(current()).toContain('Scoring the real file'); r2.unmount()
+    render(at100s({ phase: 'rendering', attempt: 1, scores: [71] }))
+    expect(current()).toContain('Preparing your files')
+  })
+
+  it('anchors to the run\'s own start, so the bookkeeping updates that bump updatedAt cannot reset the steps', () => {
+    render(<FixProgress tier="FIX" startedAt={iso(0)} round={0} progress={fp({ startedAt: iso(100_000), phase: 'rendering', scores: [90] })} />)
+    expect(current()).toContain('Preparing your files')
+  })
+
+  it('shows the real attempt ladder, and says what a further attempt is for', () => {
+    render(at100s({ phase: 'rewriting', attempt: 2, scores: [71] }))
+    const box = screen.getByTestId('fix-attempts').textContent
+    expect(box).toContain('Attempt 1: 71')
+    expect(box).toContain('Attempt 2: rewriting…')
+    expect(box).toContain(`Aiming for ${ATS_BADGE_THRESHOLD}+`)
+  })
+
+  it('marks an attempt that reached the badge line differently from one that fell short', () => {
+    render(at100s({ phase: 'rendering', attempt: 2, scores: [71, ATS_BADGE_THRESHOLD + 4] }))
+    const chips = [...screen.getByTestId('fix-attempts').querySelectorAll('span')]
+    expect(chips[0].className).toContain('text-gray-600')
+    expect(chips[1].className).toContain('text-green-700')
+  })
+
+  it('shows no ladder on the first attempt: nothing real to show yet', () => {
+    render(at100s({ phase: 'rewriting', attempt: 1 }))
+    expect(screen.queryByTestId('fix-attempts')).toBeNull()
+  })
+
+  it('ignores progress left on the row by a PREVIOUS paid round until the new run writes its own', () => {
+    render(<FixProgress tier="FIX" startedAt={iso(0)} round={1} progress={fp({ round: 0, phase: 'rendering', scores: [90], startedAt: iso(100_000) })} />)
+    expect(current()).toContain('Reading your scan')
+    expect(screen.queryByTestId('fix-attempts')).toBeNull()
+  })
+
+  it('the badge-only flow, which reports only starting and rendering, never skips past formatting early', () => {
+    render(<FixProgress tier="BADGE" startedAt={iso(0)} round={0} progress={fp({ phase: 'rendering', of: 0 })} />)
+    expect(current()).toContain('Formatting your resume')
+  })
+
+  it('survives malformed progress without crashing (unknown phase, non-array scores, wrong types)', () => {
+    for (const bad of [null, 'x', 7, { round: 0, phase: 'nope', scores: 'x' }, { round: 0, phase: 'rewriting', scores: [null, 'a', 70] }]) {
+      const { unmount } = render(<FixProgress tier="FIX" startedAt={iso(0)} round={0} progress={bad} />)
+      expect(document.querySelector('[role="status"]')).toBeTruthy()
       unmount()
     }
   })

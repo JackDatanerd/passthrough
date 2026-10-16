@@ -1,0 +1,36 @@
+Scan / fix waiting states, round 2: real stages (migration 0088)
+Base: 8bc0c6d + passthrough-scan-fix-states (round 1 must be applied first; ScanResult.jsx carries both rounds).
+
+MIGRATION 0088_scan_stage_progress.sql (run it BEFORE deploying the Worker; EXPECTED_SCHEMA_VERSION is now 88)
+- scans.scan_stage text null, check in ('reading','scoring').
+- scans.fix_progress jsonb null: { startedAt, round, phase, attempt, of, scores[] }.
+- Telemetry only: written best-effort by the job, nothing decides anything from it, no resume content in either.
+- Re-runnable (add column if not exists; constraint dropped and re-added); ends with the ledger row and schema_version upsert.
+
+BACKEND (scan.controller.js, mappers.js)
+- runAtsScan: claim writes scan_stage 'reading'; 'scoring' is written just before rule + AI scoring; the result save clears it.
+- generateFix: the FIX_GENERATING flip now writes fix_progress {phase:'starting'}; each attempt writes 'rewriting' then 'scoring'
+  (with that attempt's REAL score appended), then 'rendering' before the final files. generateBadge writes 'starting' and 'rendering'.
+- reportProgress(): best-effort (errors swallowed), conditional on the job still being in flight, and every write is a snapshot,
+  so a slow or failed telemetry write can never fail or slow a scan or a paid fix, and never touches a finished row.
+- getScanStatus and the client allow-list return scanStage and fixProgress (null for rows that predate the migration).
+- `round` in fix_progress is fix_retry_count, so the page ignores what a previous paid round left behind.
+- Side effect to know about: scans.updated_at has a trigger, so these writes refresh it while a job is alive. That only makes the
+  existing stale-job sweep and the stale-SCANNING takeover (both keyed on updated_at) less likely to hit a job that is making progress.
+
+FRONTEND
+- ScanResult poll: when the status is unchanged but the scan stage / fix progress moved, only that telemetry is merged into the scan
+  (no full refetch, and no re-render on an unchanged tick).
+- ScanProgress: scan_stage gates the paced steps ('reading' can never show "Scoring"; 'scoring' jumps ahead to matching/scoring).
+- FixProgress: fix_progress gates the steps by phase, anchors to the run's own startedAt (so updated_at bumps cannot reset the steps),
+  and shows the real attempt ladder ("Attempt 1: 71", "Attempt 2: rewriting…", "Aiming for 80+"). Step list now follows the real
+  order: reading, rewriting, scoring the real file, preparing files.
+- An unknown stage or phase value is ignored (the clock alone decides), so a newer backend never breaks an older page.
+
+TESTS
+- tests: scan.controller (claim payloads updated, +4 new: scoring stage and clear, fix phases in order as independent snapshots, badge
+  payload, status endpoint), mappers.scanClient (+1), migrations.pglite KEPT list (scan_stage, fix_progress are non-personal telemetry),
+  migrations.0087.pglite now applies migrations newer than 0087 so "newest migration" is really the newest (this also runs 0088 in pglite).
+- frontend: scanFixProgress (27), ScanResult.progress (2: the real poll merges stage and attempt ladder into the screen).
+- Not from this change: frontend/tests/partnerDetail.round4.test.jsx "Copy dashboard link" fails in my sandbox on the untouched
+  baseline too (a clipboard-call assertion). Not investigated further.
