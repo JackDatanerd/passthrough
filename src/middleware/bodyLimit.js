@@ -18,6 +18,8 @@
 // Nothing legitimate here is large: the biggest JSON payload in the app is a
 // structured resume, comfortably under 100KB.
 
+const { stripLoneSurrogates } = require('../lib/safeText')
+
 const MAX_JSON_BYTES = 1 * 1024 * 1024
 
 // method + path of every route that mounts middleware/upload.js
@@ -47,12 +49,13 @@ function isMultipartRoute(c, routes) {
 // Postgres rejects NUL in text and jsonb; strip it from every parsed JSON string (keys too) so a stray
 // \u0000 can never reach an insert as a 500.
 function stripNul(v, depth = 0) {
-  if (typeof v === 'string') return v.includes('\u0000') ? v.replace(/\u0000/g, '') : v
+  // Lone UTF-16 halves (a JSON \ud83d escape with no partner) are refused by Postgres (22P02) just like NUL, so they go too.
+  if (typeof v === 'string') return stripLoneSurrogates(v.includes('\u0000') ? v.replace(/\u0000/g, '') : v)
   if (depth > 64 || v === null || typeof v !== 'object') return v
   if (Array.isArray(v)) { for (let i = 0; i < v.length; i++) v[i] = stripNul(v[i], depth + 1); return v }
   for (const k of Object.keys(v)) {
     const nv = stripNul(v[k], depth + 1)
-    const nk = k.includes('\u0000') ? k.replace(/\u0000/g, '') : k
+    const nk = stripLoneSurrogates(k.includes('\u0000') ? k.replace(/\u0000/g, '') : k)
     if (nk === k) { v[k] = nv; continue }
     // Cross-cutting infra round 12 (bug): `v[nk] = nv` with nk === '__proto__' (e.g. the key "__pro\u0000to__") is not a property
     // write once the own key is gone — it runs Object.prototype's setter and makes nv the PROTOTYPE of the parsed body, so

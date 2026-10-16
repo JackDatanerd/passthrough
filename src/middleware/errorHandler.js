@@ -60,6 +60,14 @@ function errorHandler(err, ctx) {
     return ctx.json({ success: false, message: 'Some of the text you entered contains characters or values we cannot store. Please check it and try again.' }, 400)
   }
 
+  // 22P02 whose message names JSON / a surrogate: text Postgres cannot read as JSON (a lone UTF-16 half that got past the
+  // input cleaning). The request's own text, not a server fault. Any other 22P02 (a malformed uuid in internal code) stays a 500.
+  if (err.code === '22P02' && err.expose !== true && /type json|surrogate/i.test(String(err.message || ''))) {
+    const rayId = ctx.req && typeof ctx.req.header === 'function' ? ctx.req.header('cf-ray') : undefined
+    console.error(`Invalid JSON text 22P02 answered 400${rayId ? ` [${rayId}]` : ''}:`, redactPgDetails(err.message))
+    return ctx.json({ success: false, message: 'Some of the text you entered contains characters or values we cannot store. Please check it and try again.' }, 400)
+  }
+
   if (typeof err.getResponse === 'function') return err.getResponse()
 
   // A request body that isn't valid JSON: bodyLimit.js wraps c.req.json() and tags the

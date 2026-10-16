@@ -14,7 +14,7 @@ const hit = async c => { let passed = false; const res = await rl.general(c, asy
 
 describe('one-click opt-outs are exempt from the generic per-IP bucket', () => {
   for (const [method, p] of [
-    ['POST', '/api/outcomes/unsubscribe'], ['GET', '/api/outcomes/unsubscribe'], ['POST', '/api/outcomes/unsubscribe/'],
+    ['POST', '/api/outcomes/unsubscribe'], ['GET', '/api/outcomes/unsubscribe'],
     ['POST', '/api/employer-leads/unsubscribe'], ['POST', '/api/employer-leads/remove'],
   ]) {
     it(`${method} ${p} is never answered by \`general\` (shared mail-provider IPs)`, async () => {

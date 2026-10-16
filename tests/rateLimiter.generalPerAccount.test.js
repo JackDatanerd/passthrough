@@ -52,7 +52,6 @@ describe('general limiter — the history purge loop', () => {
     let blocked = 0
     for (let i = 0; i < 160; i++) if (await hit(del(env, { token: t })) === 429) blocked++
     expect(blocked).toBe(0)
-    expect(await hit(del(env, { token: t, path: '/api/profile/scans/' }))).toBe(200)
   })
   it('the exemption does not leak: other methods/paths and unauthenticated callers stay capped', async () => {
     const env = { RATE_LIMIT_KV: kvStore(), JWT_SECRET: SECRET, NODE_ENV: 'production' }

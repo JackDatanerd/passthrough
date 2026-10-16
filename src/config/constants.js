@@ -10,7 +10,7 @@ module.exports = {
   // The highest supabase/migrations number this code expects the database to have applied. Every
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
-  // tests/schemaVersion.test.js fails when the newest migration and this value disagree.
+  // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
   EXPECTED_SCHEMA_VERSION: 91,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back

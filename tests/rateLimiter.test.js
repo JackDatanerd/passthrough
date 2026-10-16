@@ -19,9 +19,9 @@ describe('isScanPollRequest — polling has its own budget', () => {
   it('matches GET /api/scan/:id and /api/scan/status/:id', () => {
     expect(poll('GET', '/api/scan/3f2a-uuid')).toBe(true)
     expect(poll('GET', '/api/scan/status/3f2a-uuid')).toBe(true)
-    expect(poll('GET', '/api/scan/3f2a-uuid/')).toBe(true)
   })
   it('does NOT match history, downloads, mutations or other routes', () => {
+    expect(poll('GET', '/api/scan/3f2a-uuid/')).toBe(false)   // Hono does not route a trailing slash: it is a 404, not a poll
     expect(poll('GET', '/api/scan/history')).toBe(false)
     expect(poll('GET', '/api/scan/status')).toBe(false)
     expect(poll('GET', '/api/scan/abc/download')).toBe(false)
@@ -42,13 +42,13 @@ describe('general limiter', () => {
   it('skips the employer-lead opt-out endpoints, which have their own bucket, but not confirm or the form', async () => {
     const reads = { n: 0 }
     const kv = { get: async () => { reads.n++; return null }, put: async () => {} }
-    for (const [method, path] of [['POST', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/unsubscribe'], ['GET', '/api/employer-leads/unsubscribe'], ['POST', '/api/employer-leads/unsubscribe/']]) {
+    for (const [method, path] of [['POST', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/unsubscribe'], ['GET', '/api/employer-leads/unsubscribe']]) {
       reads.n = 0
       const { passed } = await hit(rl.general, ctx({ method, path, env: { RATE_LIMIT_KV: kv } }))
       expect(passed).toBe(true)
       expect(reads.n, `${method} ${path} should skip the generic bucket`).toBe(0)
     }
-    for (const [method, path] of [['POST', '/api/employer-leads/confirm'], ['POST', '/api/employer-leads'], ['GET', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/remove-me']]) {
+    for (const [method, path] of [['POST', '/api/employer-leads/confirm'], ['POST', '/api/employer-leads'], ['GET', '/api/employer-leads/remove'], ['POST', '/api/employer-leads/remove-me'], ['POST', '/api/employer-leads/unsubscribe/']]) {
       reads.n = 0
       await hit(rl.general, ctx({ method, path, env: { RATE_LIMIT_KV: kv } }))
       expect(reads.n, `${method} ${path} should still be counted`).toBeGreaterThan(0)

@@ -347,14 +347,31 @@ const general = makeLimiter({
   // whole history" is a loop of 25-scan batches, and every batch was ALSO counted here, so this 100-per-15-min bucket
   // ended any purge after ~100 batches (2,500 scans) with a 429 — the purpose-built `historyPurge` budget (600/hour per
   // account) was never the binding one, and the dashboard's "Delete all" stalled part-way on a large history.
-  skip: async c => c.req.path.startsWith('/api/webhooks') || c.req.path.startsWith('/api/verify') || isScanPollRequest(c) || isLeadOptOutRequest(c) || await isHistoryPurgeRequest(c)
+  //
+  // CROSS-CUTTING INFRA ROUND 13 (bug): these exemptions used to match by path PREFIX / sloppy regex, i.e. without asking whether a
+  // real route sits there. Hono routes strictly, so `/api/verify/a/b/c`, `/api/webhooks/anything`, `/api/scan/<id>/` (trailing
+  // slash) and `/api/employer-leads/unsubscribe/` are all 404s that no route limiter ever sees - and the app-wide `optionalAuth`
+  // still spends two Supabase queries (user + session) on every one of them for any valid bearer token. A free account could loop
+  // such a path with no ceiling at all. The exemption now applies only to the exact routes that carry a limiter of their own.
+  skip: async c => isExemptRoute(c) || isScanPollRequest(c) || isLeadOptOutRequest(c) || await isHistoryPurgeRequest(c)
 })
+
+// Exactly the routes whose own limiter replaces `general` (see routes/webhooks.routes.js and routes/verify.routes.js). Method and
+// shape both have to match, so an unmatched path under the same prefix stays on the generic bucket.
+const WEBHOOK_PATH = /^\/api\/webhooks\/(?:paystack|resend)\/?$/
+const VERIFY_GET_PATH = /^\/api\/verify\/(?:by-hash\/[^/]+|[^/]+(?:\/(?:download|badge\.svg|badge\.png|qr\.svg|qr\.png|card\.png))?)$/
+const VERIFY_POST_PATH = /^\/api\/verify\/[^/]+\/report$/
+function isExemptRoute(c) {
+  const { method, path } = c.req
+  if (method === 'POST') return WEBHOOK_PATH.test(path) || VERIFY_POST_PATH.test(path)
+  return method === 'GET' && VERIFY_GET_PATH.test(path)
+}
 
 // The history purge loop. Skipped on `general` only when a token THIS Worker signed names the account (the same cheap
 // HMAC check `general` keys on): an anonymous or forged-token caller stays on the per-IP bucket, so the exemption cannot
 // be used to hammer the route unauthenticated. The route's own `historyPurge` limiter (per account) still applies.
 async function isHistoryPurgeRequest(c) {
-  if (c.req.method !== 'DELETE' || c.req.path.replace(/\/+$/, '') !== '/api/profile/scans') return false
+  if (c.req.method !== 'DELETE' || c.req.path !== '/api/profile/scans') return false
   const key = await bySignedToken(c)
   return typeof key === 'string' && key.startsWith('u:')
 }
@@ -365,7 +382,7 @@ async function isHistoryPurgeRequest(c) {
 // hand-off). AUDIT FIX (cross-cutting infra round 9): /api/outcomes/unsubscribe was missing from this list, so
 // its own 600-per-hour limiter was never the binding one.
 function isLeadOptOutRequest(c) {
-  const p = c.req.path.replace(/\/+$/, '')
+  const p = c.req.path   // exact: Hono does not match a trailing slash, so a slashed path is a 404 that no opt-out limiter sees
   return (c.req.method === 'POST' && (p === '/api/employer-leads/remove' || p === '/api/employer-leads/unsubscribe' || p === '/api/outcomes/unsubscribe'))
     || (c.req.method === 'GET' && (p === '/api/employer-leads/unsubscribe' || p === '/api/outcomes/unsubscribe'))
 }
@@ -380,7 +397,7 @@ function isLeadOptOutRequest(c) {
 // /history is a real list query, not a poll, so it stays on `general`.
 function isScanPollRequest(c) {
   if (c.req.method !== 'GET') return false
-  const m = /^\/api\/scan\/(?:status\/)?([^/]+)\/?$/.exec(c.req.path)
+  const m = /^\/api\/scan\/(?:status\/)?([^/]+)$/.exec(c.req.path)
   return !!m && m[1] !== 'history' && m[1] !== 'status'
 }
 

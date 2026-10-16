@@ -571,6 +571,8 @@ health check reports the schema as behind.
    | `API_URL`      | `https://api.passthrough.dev/api` |
    | `VERIFY_PREVIEW_KEY` | *(optional)* same value as the Worker secret of that name — see "Optional secrets" |
    | `VITE_TURNSTILE_SITE_KEY` | *(optional)* Turnstile site key; pair with the Worker's `TURNSTILE_SECRET_KEY`. Baked in at build time. Cloudflare's always-passes test key for trying it: `1x00000000000000000000AA` (secret `1x0000000000000000000000000000000AA`) |
+   | `VITE_PUBLIC_SITE_URL` | *(optional)* public site origin the admin partner page builds referral links from; defaults to the origin the admin is browsing from. Baked in at build time. |
+   | `VITE_HARDSHIP_CODE` | *(optional)* the code of an ordinary 0%-commission referral code with halved tier prices (create it in Admin -> Partners); the scan page offers it as a hardship price. Unset = the feature is absent. Baked in at build time. |
 
    Both point at the same Worker, and **both must include the `/api` suffix** —
    every Worker route is mounted under `/api` (e.g. `/api/auth/login`). Both
