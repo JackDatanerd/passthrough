@@ -91,7 +91,7 @@ export default function Navbar() {
               type="button"
               onClick={() => setStoriesOpen(o => !o)}
               aria-expanded={storiesOpen}
-              aria-controls="navbar-stories"
+              aria-controls={storiesOpen ? 'navbar-stories' : undefined}
               className={`inline-flex items-center gap-1 ${linkCls}`}
             >
               {STORIES.label}
@@ -115,7 +115,7 @@ export default function Navbar() {
             type="button"
             onClick={() => setMenuOpen(o => !o)}
             aria-expanded={menuOpen}
-            aria-controls="navbar-more"
+            aria-controls={menuOpen ? 'navbar-more' : undefined}
             className="lg:hidden px-1.5 max-[359px]:px-1 py-3 text-ink-2 hover:text-ink transition-colors"
           >
             {menuOpen ? 'Close' : 'More'}

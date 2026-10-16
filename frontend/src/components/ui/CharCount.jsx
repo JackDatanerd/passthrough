@@ -37,7 +37,10 @@ export function useCharCount({ enabled, maxLength, value, defaultValue, onChange
       if (e.defaultPrevented) return
       const t = e.target
       let text = e.clipboardData?.getData?.('text') ?? ''
-      if (t.tagName === 'INPUT') text = text.replace(/\r?\n/g, '')   // a single-line input drops line breaks on paste
+      // Clipboards (Windows above all) carry CRLF, but a field counts a line break as ONE character; counting the \r as well
+      // reported a paste that fit exactly as "cut", and overstated every real cut by the number of line breaks.
+      text = text.replace(/\r\n?/g, '\n')
+      if (t.tagName === 'INPUT') text = text.replace(/\n/g, '')   // a single-line input drops line breaks on paste
       const replaced = (t.selectionEnd ?? 0) - (t.selectionStart ?? 0)
       const lost = String(t.value ?? '').length - replaced + text.length - max
       if (lost > 0) { keepCut.current = true; setCut(lost) }

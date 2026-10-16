@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 
 // A button that opens a MENU of actions / links, with the keyboard model that role="menu" promises (WAI-ARIA menu button):
@@ -21,12 +21,32 @@ export default function Menu({
   const btn = useRef(null)
   const list = useRef(null)
   const menuId = useId()
+  const [pos, setPos] = useState(null)   // viewport coordinates once open (see below)
 
   const items = useCallback(() => (list.current ? Array.from(list.current.querySelectorAll(ITEM)) : []), [])
   const close = useCallback((restoreFocus = true) => {
     setOpen(false)
     if (restoreFocus) btn.current?.focus()
   }, [])
+
+  // The list is positioned against the VIEWPORT (position: fixed), not its parent: inside a scrolling wrapper (a DataTable's
+  // overflow-x-auto, a modal body) an absolutely-positioned list is clipped or drags a scrollbar in, worst on the last row.
+  // It flips above the trigger when there is no room below, and closes when anything scrolls or the window resizes.
+  useLayoutEffect(() => {
+    if (!open) { setPos(null); return undefined }
+    const place = () => {
+      const r = btn.current?.getBoundingClientRect(); if (!r) return
+      const h = list.current?.offsetHeight || 0
+      const below = r.bottom + 4
+      const top = below + h > window.innerHeight && r.top - 4 - h >= 0 ? r.top - 4 - h : below
+      setPos(align === 'left' ? { top, left: r.left } : { top, right: Math.max(0, document.documentElement.clientWidth - r.right) })
+    }
+    place()
+    const onScroll = e => { if (!(e.target instanceof Node && list.current?.contains(e.target))) setOpen(false) }   // the target can be window/document
+    window.addEventListener('scroll', onScroll, true)
+    window.addEventListener('resize', place)
+    return () => { window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', place) }
+  }, [open, align])
 
   // Focus the requested item as soon as the menu is in the page; items leave the Tab order (arrows move within the menu).
   useEffect(() => {
@@ -90,8 +110,9 @@ export default function Menu({
           onKeyDown={onMenuKeyDown}
           // Capture: focus is back on the trigger BEFORE the chosen item's own handler runs, so a dialog that item opens
           // remembers the trigger (still on the page) as where to return focus — not the item that is about to unmount.
-          onClickCapture={() => close()}
-          className={cn('absolute top-9 z-10 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', align === 'left' ? 'left-0' : 'right-0', menuClassName)}
+          onClickCapture={e => { if (e.target instanceof Element && e.target.closest(ITEM)) close() }}
+          style={pos ? { position: 'fixed', ...pos } : undefined}
+          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', align === 'left' ? 'left-0' : 'right-0', menuClassName)}
         >{children}</div>
       )}
     </div>

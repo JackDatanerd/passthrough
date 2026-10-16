@@ -7,6 +7,7 @@ import Button from '../ui/Button'
 import Input from '../ui/Input'
 import Textarea from '../ui/Textarea'
 import Select from '../ui/Select'
+import Checkbox from '../ui/Checkbox'
 import FileUpload from '../ui/FileUpload'
 import Form from '../ui/Form'
 import { addAnonScanToken } from '../../lib/anonScans'
@@ -426,10 +427,14 @@ export default function ScanForm() {
               new job description below. This counts as one of your daily free scans.
             </p>
             {rescanSource.hasImproved && (
-              <label className="mt-2 flex items-start gap-2 text-sm text-gray-700">
-                <input type="checkbox" className="mt-1" checked={useImproved} onChange={e => setUseImproved(e.target.checked)} data-testid="rescan-use-improved" />
-                <span>Scan my improved version instead (the fixed resume we delivered, with any edits you made).</span>
-              </label>
+              <Checkbox
+                wrapperClassName="mt-2"
+                alignTop
+                checked={useImproved}
+                onChange={e => setUseImproved(e.target.checked)}
+                data-testid="rescan-use-improved"
+                label="Scan my improved version instead (the fixed resume we delivered, with any edits you made)."
+              />
             )}
           </div>
         )}

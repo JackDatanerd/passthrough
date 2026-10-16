@@ -1,3 +1,4 @@
+import { Children } from 'react'
 import { cn } from '../../lib/utils'
 
 // Inline notice box. The red "something failed" box was hand-written, with
@@ -18,7 +19,8 @@ const variants = {
 const TEXT_SIZE = /(?:^|\s)text-(?:xs|sm|base|lg|xl|2xl)(?:\s|$)/
 
 export default function Alert({ variant = 'error', className, children, ...props }) {
-  if (children === null || children === undefined || children === false || children === '') return null
+  // Several children that are ALL empty ({a}{b} with both falsy) used to draw an empty bordered box.
+  if (!Children.toArray(children).some(c => c !== '')) return null
   return (
     <div
       role={variant === 'error' ? 'alert' : 'status'}

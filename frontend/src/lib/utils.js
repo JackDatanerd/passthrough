@@ -147,7 +147,10 @@ export function filenameFromDisposition(headers, fallback) {
     if (!raw) return fallback
     const star = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(raw)
     const plain = /filename\s*=\s*"([^"]+)"/i.exec(raw) || /filename\s*=\s*([^;\s]+)/i.exec(raw)
-    const name = star ? decodeURIComponent(star[1].trim()) : plain ? plain[1].trim() : ''
+    // A malformed filename* (bad %-escape) must not throw away a perfectly good plain filename beside it.
+    let name = ''
+    if (star) { try { name = decodeURIComponent(star[1].trim()) } catch (_) { name = '' } }
+    if (!name && plain) name = plain[1].trim()
     return name && !/[\\/]/.test(name) && name.length <= 120 ? name : fallback
   } catch (_) { return fallback }
 }

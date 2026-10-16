@@ -17,7 +17,8 @@ const Checkbox = forwardRef(function Checkbox({ label, description, error, align
   const showError = !!(label && error)   // description lives inside the <label>, so it is part of the name
   const innerRef = useRef(null)
   // `indeterminate` (a "select all" box over a partly-selected list) is a DOM property, not an attribute.
-  useEffect(() => { if (innerRef.current) innerRef.current.indeterminate = !!indeterminate }, [indeterminate])
+  // No dependency list: a click clears the DOM property itself, so it is re-asserted after every render.
+  useEffect(() => { if (innerRef.current) innerRef.current.indeterminate = !!indeterminate })
   const setRefs = node => {
     innerRef.current = node
     if (typeof ref === 'function') ref(node)

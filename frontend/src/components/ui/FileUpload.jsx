@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { validateUpload, normalizeUpload } from '../../lib/upload'
+import { announce } from '../../lib/announce'
 
 // Resume dropzone.
 //
@@ -81,7 +82,9 @@ export default function FileUpload({
     const problem = validateUpload(f, maxMB, extensions) || (typeof validate === 'function' ? validate(f) : null)
     if (problem) { setError(problem); return }              // previous selection stays as-is
     setError('')
-    commit(normalizeUpload(f))
+    const next = normalizeUpload(f)
+    commit(next)
+    announce(`Selected ${next?.name || f.name}`)   // the visible text swap alone is silent to a screen reader
   }
 
   function openPicker() {
@@ -162,7 +165,12 @@ export default function FileUpload({
       {file && !disabled && (
         <button
           type="button"
-          onClick={() => { setError(''); commit(null) }}
+          onClick={() => {
+            setError(''); commit(null)
+            announce('File removed')
+            // This button unmounts with the file; without a destination focus would fall to <body>.
+            zoneRef.current?.focus()
+          }}
           className="mt-1 text-xs text-gray-500 hover:text-red-600 underline"
         >
           Remove file
