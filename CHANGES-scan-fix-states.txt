@@ -1,0 +1,31 @@
+Scan / fix waiting states redesign (round 1, frontend only)
+Base: 8bc0c6d. No migration. No backend change. Offer card, tiers and pricing untouched.
+
+WHAT CHANGED
+- ScanResult.jsx: the scanning spinner card and the "Generating your fixed resume" banner are replaced by
+  ScanProgress and FixProgress. The existing stalled box (3-minute rule), poll-error notes and the
+  "Start a new scan" link are kept, passed in as children.
+- New: components/scan/ResumeSheet.jsx, ProgressSteps.jsx, ScanProgress.jsx, FixProgress.jsx and
+  hooks/useElapsedSeconds.js.
+
+DESIGN RULES (why it looks the way it does)
+- The page does not know the resume's lines while a job runs, so the sheet is abstract: no real text, no
+  per-line "problem" marks, no rewritten sentences. Anything line-specific there would be invented.
+- The API reports only PENDING / SCANNING / FIX_PURCHASED / FIX_GENERATING, so steps are time-paced and the
+  LAST step is held open until the server reports the real result. No percentage anywhere.
+- Pacing is anchored to the server timestamp (scan.createdAt for scans, scan.updatedAt for fixes), so a refresh
+  keeps its place and a fix retry (which flips the scan back to FIX_GENERATING) restarts the steps.
+- "You can leave this page" on the scan wait is shown ONLY for logged-in scans. The scan-result email is sent
+  only to logged-in users who have not opted out, and to anonymous resume-from-scratch scans with a contact
+  email. A plain anonymous upload gets no email, so the page does not promise one.
+- The fix wait keeps the existing email promise (sendFixDelivered) and adds "You can leave this page".
+- Reduced motion: the beam is hidden (motion-reduce:hidden) and the transitions and spinner are motion-safe only.
+
+LATER ROUNDS (not in this one)
+- Real stages: nullable scan_stage / fix_progress on the scan row so the steps follow the pipeline.
+- Result and delivered screens, just-short-of-80 state, fix snag state.
+
+TESTS
+- frontend/tests/components/scanFixProgress.test.jsx (15 tests): step pacing, last-step hold, refresh anchoring,
+  missing/future timestamps, no percentage, leave note only when provided, children rendered, live region,
+  tier copy, retry restart, decorative sheet, reduced motion, beam bounds.

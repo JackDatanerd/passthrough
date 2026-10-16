@@ -22,6 +22,8 @@ import DeliveredResumeEditor from '../components/scan/DeliveredResumeEditor'
 import CoverLetterPanel from '../components/scan/CoverLetterPanel'
 import SaveProfilePrompt from '../components/scan/SaveProfilePrompt'
 import Spinner from '../components/ui/Spinner'
+import ScanProgress from '../components/scan/ScanProgress'
+import FixProgress from '../components/scan/FixProgress'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
 import { useCopy } from '../hooks/useCopy'
@@ -731,10 +733,10 @@ export default function ScanResult() {
 
         {/* Scanning state */}
         {scanning && (
-          <div className="bg-white rounded-xl border border-gray-200 p-10 text-center shadow-sm">
-            <Spinner size="lg" className="mx-auto mb-4" />
-            <p className="font-medium text-gray-700">Scanning your resume…</p>
-            <p className="text-sm text-gray-400 mt-1">This takes about 30 seconds</p>
+          <ScanProgress
+            createdAt={scan.createdAt}
+            leaveNote={scan.userId ? 'You can leave this page. The scan keeps running and will be in your scans when it finishes.' : null}
+          >
             {pollError && (
               <p className="text-xs text-amber-600 mt-2">{pollError}</p>
             )}
@@ -749,7 +751,7 @@ export default function ScanResult() {
                 <Link to="/" className="mt-2 inline-block text-sm text-blue-700 underline underline-offset-2">Start a new scan</Link>
               </div>
             )}
-          </div>
+          </ScanProgress>
         )}
 
         {/* Error state */}
@@ -880,20 +882,11 @@ export default function ScanResult() {
 
             {/* Fix generating */}
             {['FIX_PURCHASED', 'FIX_GENERATING'].includes(scan.status) && (
-              <div className="bg-blue-50 border border-blue-200 rounded-xl p-6 flex items-center gap-4">
-                <Spinner className="shrink-0" />
-                <div>
-                  <p className="font-medium text-blue-900">
-                    {scan.fixTier === 'BADGE'
-                      ? 'Verifying and formatting your resume…'
-                      : 'Generating your fixed resume…'}
-                  </p>
-                  <p className="text-sm text-blue-700 mt-0.5">We'll email you when it's ready. Usually under 2 minutes.</p>
-                  {pollError && (
-                    <p className="text-xs text-amber-600 mt-1">{pollError}</p>
-                  )}
-                </div>
-              </div>
+              <FixProgress tier={scan.fixTier} startedAt={scan.updatedAt}>
+                {pollError && (
+                  <p className="text-xs text-amber-600 mt-3">{pollError}</p>
+                )}
+              </FixProgress>
             )}
 
             {/* Delivered */}
