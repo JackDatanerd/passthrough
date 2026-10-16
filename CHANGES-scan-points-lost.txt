@@ -1,0 +1,26 @@
+Result screen, round 4: "Where your points went" (no migration)
+Base: origin/main b57fa15 (rounds 1-3 applied). The offer card, tiers and pricing are untouched.
+
+WHAT CHANGED
+- New card between the score card and "Why this score": the three biggest places the score loses points, worst first, each with the
+  plain reason ("−17 Keyword match: Missing from your resume: kubernetes, terraform").
+  Header: "48 of 100 points are missing, and 28 of them stand between you and the 80."
+- Backend: ats.service exports CATEGORY_WEIGHTS (0.35 / 0.25 / 0.20 / 0.20, the weights scoreResume already uses) and buildAtsDetail
+  returns them as atsDetail.weights. A job description with nothing scoreable (keywords.noKeywords) drops the keyword weight to 0,
+  matching scoreResume's own re-weighting. The existing atsDetail.keywords shape is unchanged.
+- Frontend: lib/pointsLost.js splits the gap between the score and 100 across the categories in proportion to weight x shortfall,
+  with largest-remainder rounding, so the points shown always add up to the real gap exactly, whatever the AI blend did to the final
+  score. The weights come from the server, so the page carries no second copy that could drift.
+
+HONESTY RULES
+- Hidden when the server sent no weights (older API), there is no score, or no category has a shortfall to attribute.
+- The wording says the points are "split by how much each part counts": an attribution of the real gap, not a claim that fixing one
+  category recovers exactly that many points.
+
+TESTS
+- tests/ats.categoryWeights.test.js (3): weights are frozen, sum to 1, and reproduce scoreResume's score across several resumes and
+  job descriptions (the guard that fails if the scoring formula ever drifts from the exported weights); no-keyword JD flagged.
+- tests/scan.controller.test.js: getScan returns the exact weights, and a zero keyword weight when the JD had nothing scoreable.
+- frontend/tests/components/pointsLost.test.jsx (13) and frontend/tests/pages/ScanResult.pointsLost.test.jsx (2).
+- Whole suite: 388 of 389 files, 5962 of 5963 tests pass; lint 692 files clean; vite build ok. The one failure is
+  frontend/tests/partnerDetail.round4.test.jsx "Copy dashboard link", which also fails on the untouched baseline in my sandbox.

@@ -25,6 +25,7 @@ import Spinner from '../components/ui/Spinner'
 import ScanProgress from '../components/scan/ScanProgress'
 import FixProgress from '../components/scan/FixProgress'
 import DeliveredSummary from '../components/scan/DeliveredSummary'
+import PointsLost from '../components/scan/PointsLost'
 import Button from '../components/ui/Button'
 import { statusLabel, formatDate } from '../lib/utils'
 import { useCopy } from '../hooks/useCopy'
@@ -843,6 +844,7 @@ export default function ScanResult() {
                 the score card and before the resume editor below — explains
                 the number the person just saw before offering to let them
                 act on it. */}
+            <PointsLost scan={scan} />
             <AtsDetailPanel scan={scan} />
 
             {/* G5: the exact job description this was scored against. */}

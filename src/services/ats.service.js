@@ -1117,7 +1117,13 @@ function describeWeakAreas(scoreResult) {
   return notes.length ? notes : ['overall score below target — strengthen keyword alignment and bullet specificity throughout']
 }
 
+// How much each category counts toward the rule-based score (scoreResume's own formula, kept in step by a test that
+// reproduces scoreResume from these numbers). Exposed so the results page can say where the missing points are
+// without carrying a second copy of the weights that could drift from the real ones.
+const CATEGORY_WEIGHTS = Object.freeze({ keywords: 0.35, format: 0.25, sections: 0.20, content: 0.20 })
+
 module.exports = {
+  CATEGORY_WEIGHTS,
   splitJdZones,
   extractWeightedKeywords,
   fitJobDescription, collapseWhitespaceRuns,

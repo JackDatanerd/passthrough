@@ -700,8 +700,17 @@ function buildAtsDetail(fullAtsReport) {
     aiMissingKeywords: fullAtsReport.aiMissingKeywords || [],
     // Score of the ATS-formatted file a purchase would deliver (null until it has been built for an
     // uploaded file; equal to the scan score for typed / saved-profile scans).
-    formattedScore: fullAtsReport.formattedScore ?? null
+    formattedScore: fullAtsReport.formattedScore ?? null,
+    // How much each category counts, so the page can say where the missing points are. A job description with nothing
+    // scoreable in it drops the keyword category entirely (scoreResume re-weights the other three), so it counts for 0.
+    weights: categoryWeightsFor(fullAtsReport)
   }
+}
+
+function categoryWeightsFor(fullAtsReport) {
+  const W = atsService.CATEGORY_WEIGHTS
+  if (!W) return null
+  return { keywords: fullAtsReport.keywords?.noKeywords === true ? 0 : W.keywords, format: W.format, sections: W.sections, content: W.content }
 }
 
 // Shared by runAtsScan and updateResumeData: both call scoreResumeWithAI and

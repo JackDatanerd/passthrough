@@ -699,6 +699,14 @@ describe('getScan', () => {
     expect(res.body.data.atsDetail.keywords).toEqual({ matched: ['x'], missing: ['y'], warnings: [] })
     expect(res.body.data.failure).toBe(null)
     expect(res.body.data.atsDetail.aiMissingKeywords).toEqual(['z'])
+    // the category weights come from the scoring service, so the page never carries its own copy of them
+    expect(res.body.data.atsDetail.weights).toEqual({ keywords: 0.35, format: 0.25, sections: 0.2, content: 0.2 })
+    t.restore()
+
+    // a job description with nothing scoreable in it drops the keyword category (scoreResume re-weights the other three)
+    t = setup({ id: 's1', user_id: 'u1', full_ats_report: { keywords: { matched: [], missing: [], noKeywords: true } } })
+    const resNoKw = await t.mod.getScan(baseCtx())
+    expect(resNoKw.body.data.atsDetail.weights).toEqual({ keywords: 0, format: 0.25, sections: 0.2, content: 0.2 })
     t.restore()
 
     t = setup({ id: 's1', user_id: 'u1', status: 'ERROR', full_ats_report: { error: 'scoring failed', errorCode: 'NO_TEXT' } })
