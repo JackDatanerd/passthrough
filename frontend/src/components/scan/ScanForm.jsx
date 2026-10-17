@@ -15,7 +15,7 @@ import Alert from '../ui/Alert'
 import ProgressBar from '../ui/ProgressBar'
 import { isCancelError } from '../../lib/errors'
 import ResumeFieldsForm from './ResumeFieldsForm'
-import { loadBrainDumpDraft, saveBrainDumpDraft } from '../../lib/brainDumpDraft'
+import { loadBrainDumpDraft, saveBrainDumpDraft, markDraftSent } from '../../lib/brainDumpDraft'
 import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
 import { formatNumber } from '../../lib/utils'
 
@@ -42,14 +42,26 @@ export default function ScanForm() {
   const navigate  = useNavigate()
   const { user }  = useAuth()
   const [params]  = useSearchParams()
+  // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
+  // see lib/brainDumpDraft.js. Dropped by ScanResult once that scan's result exists.
+  const [draft0] = useState(() => loadBrainDumpDraft(user?.id || null))
 
   // PHASE 1 — entry mode toggle: upload an existing resume, or start from
   // a pasted brain dump when the user doesn't have a polished resume yet.
   // PHASE 4 — a third mode, 'savedProfile', only available (and only shown
   // as an option) to a logged-in user who has previously saved one.
-  const [entryMode, setEntryMode] = useState('upload') // 'upload' | 'brainDump' | 'manual' | 'savedProfile' | 'rescan'
-  // Fourth way in: fill the structured form yourself (no AI structuring, no length box).
-  const [manualData, setManualData] = useState(EMPTY_MANUAL)
+  // Opens where the person left off: a kept background or a half-filled form brings its own tab forward (an explicit
+  // ?mode= link, handled below, still wins).
+  const [entryMode, setEntryMode] = useState(() =>
+    params.get('mode') || params.get('from') ? 'upload'
+      : draft0?.text?.trim() ? 'brainDump' : draft0?.manual ? 'manual' : 'upload') // 'upload' | 'brainDump' | 'manual' | 'savedProfile' | 'rescan'
+  // Fourth way in: fill the structured form yourself (no AI structuring, no length box). A kept draft comes back; a signed-in
+  // person starts with their account name and email in the (visible, editable) fields instead of the server adding them
+  // behind their back to a form they left blank.
+  const [manualData, setManualData] = useState(() => draft0?.manual
+    ? { ...EMPTY_MANUAL, ...draft0.manual }
+    : { ...EMPTY_MANUAL, name: user?.name || '', email: user?.email || '' })
+  const restoredManual = !!draft0?.manual
   // FEATURE GAP CLOSED (Scan/ATS pass): "scan this same resume against another job"
   // for scans that came from an upload or a typed background (saved-profile users
   // always had it). Arrives as /?from=<scanId> from a results page; holds the
@@ -57,9 +69,6 @@ export default function ScanForm() {
   const [rescanSource, setRescanSource] = useState(null)
   const [useImproved, setUseImproved] = useState(false)
   const [file,          setFile         ] = useState(null)
-  // What was being typed when the page was last left (a failed scan, a closed tab) comes back —
-  // see lib/brainDumpDraft.js. Dropped by ScanResult once a result exists.
-  const [draft0] = useState(() => loadBrainDumpDraft(user?.id || null))
   // Whose draft this is. Set once and never reset to null when the session ends while the form is open —
   // otherwise the next keystroke would re-save the last person's text as an unowned draft.
   const draftOwner = useRef(user?.id || null)
@@ -105,8 +114,8 @@ export default function ScanForm() {
 
   useEffect(() => {
     if (user?.id && !draftOwner.current) draftOwner.current = user.id
-    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail, owner: draftOwner.current })
-  }, [brainDumpText, contactName, contactEmail, user?.id])
+    saveBrainDumpDraft({ text: brainDumpText, name: contactName, email: contactEmail, manual: manualData, owner: draftOwner.current })
+  }, [brainDumpText, contactName, contactEmail, manualData, user?.id])
 
   // Deep links from the landing page's "three ways to start" cards: /?mode=brainDump | manual.
   useEffect(() => {
@@ -222,6 +231,9 @@ export default function ScanForm() {
       // slot, so only the LAST anon scan before registering was ever
       // claimable — see anonScans.js.
       if (anonToken) addAnonScanToken(scanId, anonToken)
+      // Which scan this draft produced: only that scan's result clears it (lib/brainDumpDraft.js).
+      if (entryMode === 'brainDump') markDraftSent(scanId, 'text')
+      else if (entryMode === 'manual') markDraftSent(scanId, 'manual')
 
       navigate(`/scan/${scanId}`)
     } catch (err) {
@@ -404,6 +416,11 @@ export default function ScanForm() {
 
         {entryMode === 'manual' && (
           <div>
+            {restoredManual && (
+              <p role="status" className="mb-2 text-xs text-blue-800 bg-blue-50 border border-blue-100 rounded-md px-3 py-1.5">
+                We kept what you were filling in last time — it's back in the form below.
+              </p>
+            )}
             <p className="text-xs text-gray-500 mb-3">
               Prefer to type it in yourself? Fill in what you have — nothing is guessed or rewritten
               before your score, and you can add more any time after.

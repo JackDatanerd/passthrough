@@ -2239,6 +2239,8 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     // Layout facts only the raw DOCX shows (tables, text boxes, columns, images).
     let layoutStructure = null
     let uploadFailure = null
+    // The structured resume a typed / hand-filled / saved-profile scan is scored on (null for an uploaded file).
+    let structuredData = null
 
     if (scan.inputMode === 'brain_dump') {
       // PHASE 1: no file to extract from — structure the raw pasted text
@@ -2250,17 +2252,25 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       // scan, or this job interrupted after structuring and picked up again) — reuse it: no
       // second Claude call, and the person's own entries are never re-interpreted.
       let resumeData = scan.originalResumeData ? JSON.parse(JSON.stringify(scan.originalResumeData)) : null
+      // RESUME-FROM-SCRATCH ROUND 2: only data the model just structured from free text gets the account-name / email fallback
+      // below. Entries the person typed into the form themselves (or an earlier scan's data) are theirs as written: an
+      // address they left blank on purpose used to be filled in from their account and printed on the resume.
+      const structuredNow = !resumeData
       if (!resumeData) {
         const structured = await resumeParser.structureBrainDump(env, scan.rawBrainDumpText, structureOpts)
         const { parseError, parseErrorMessage } = structured
         resumeData = structured.resumeData
         if (parseError || !resumeData) {
+          const structErrorCode = /could not structure/i.test(parseErrorMessage || '') ? 'STRUCTURE_FAILED' : 'NEEDS_MORE_DETAIL'
           await supabase.from('scans').update({
             status: 'ERROR',
             full_ats_report: {
               error: parseErrorMessage || 'Could not structure background.',
-              errorCode: /could not structure/i.test(parseErrorMessage || '') ? 'STRUCTURE_FAILED' : 'NEEDS_MORE_DETAIL'
-            }
+              errorCode: structErrorCode
+            },
+            // "Tell us more" cannot be retried with the same text (retry-scan refuses it), so the pasted background has no
+            // further use: it is not kept in the row for the life of the account. A retryable failure keeps it.
+            ...(isRetryable(structErrorCode) ? {} : { raw_brain_dump_text: null })
           }).eq('id', scanId)
           // Only a failure of OUR structuring call is refunded — "tell us more"
           // (too little text) is the person's to fix, and refunding those would
@@ -2274,7 +2284,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       // (see structureFreeformText's prompt), which means it's frequently
       // null. A logged-in user falls back to what's on their account; an
       // anonymous one to the name / email they typed into the form for exactly this.
-      if (scan.userId && (!resumeData.name || !resumeData.email)) {
+      if (scan.userId && structuredNow && (!resumeData.name || !resumeData.email)) {
         const { data: userRow } = await supabase.from('users').select('name, email').eq('id', scan.userId).maybeSingle()
         if (userRow) {
           resumeData.name  = resumeData.name  || userRow.name
@@ -2287,6 +2297,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       // AUDIT FIX (bug): see renderStructuredResumeText's comment above —
       // this used to be a direct resumeParser.serializeResumeData(resumeData)
       // call, scoring synthetic text instead of the real generated document.
+      structuredData = resumeData
       rawResumeText = await renderStructuredResumeText(resumeData)
 
       // Persist the structured data now: generateFix/generateBadge need this exact object later
@@ -2312,6 +2323,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       }
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
       // see renderStructuredResumeText's comment.
+      structuredData = scan.originalResumeData
       rawResumeText = await renderStructuredResumeText(scan.originalResumeData)
       // BUG FIX (audit): same candidate_first_name gap as the brain_dump
       // branch above — saved-profile scans never got it set until a Fix/
@@ -2336,10 +2348,20 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       uploadFailure = up.failure
     }
 
-    if (uploadFailure || !rawResumeText || rawResumeText.trim().length < 100) {
-      const code = uploadFailure?.code || 'TOO_SHORT'
+    // RESUME-FROM-SCRATCH ROUND 2 (bug): this 100-character floor exists to catch an EMPTY FILE (a scan, a blank page). A resume
+    // the person typed into the structured form is real content however short: one job with one bullet renders to ~76
+    // characters, so a perfectly valid "Fill it in myself" submission used to end here as TOO_SHORT - "we found almost no
+    // text in this FILE, upload a new one" - a non-retryable dead end that also threw the form away. Structured scans that
+    // carry content are scored as they are (honestly low when thin, with the editor right there to add to it); only one with
+    // nothing in it asks for more detail.
+    const thinButReal = !!structuredData && hasResumeContent(structuredData)
+    if (uploadFailure || !rawResumeText || (rawResumeText.trim().length < 100 && !thinButReal)) {
+      const code = uploadFailure?.code || (structuredData ? 'NEEDS_MORE_DETAIL' : 'TOO_SHORT')
       await supabase.from('scans').update({
-        status: 'ERROR', full_ats_report: { error: failureMessage(code), errorCode: code }
+        status: 'ERROR', full_ats_report: { error: failureMessage(code), errorCode: code },
+        // A failure that retrying cannot fix leaves nothing to retry from: drop the pasted background (see the structuring
+        // failure above).
+        ...(scan.inputMode === 'brain_dump' && !isRetryable(code) ? { raw_brain_dump_text: null } : {})
       }).eq('id', scanId)
       // No Claude scoring call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.

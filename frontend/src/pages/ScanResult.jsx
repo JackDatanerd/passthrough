@@ -31,7 +31,7 @@ import { statusLabel, formatDate } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES } from '../lib/scoreThresholds'
 import { getAnonScanToken, addAnonScanToken, removeAnonScanToken } from '../lib/anonScans'
-import { clearBrainDumpDraft, loadBrainDumpDraft } from '../lib/brainDumpDraft'
+import { clearDraftIfSent, loadBrainDumpDraft } from '../lib/brainDumpDraft'
 import Alert from '../components/ui/Alert'
 import ConfirmDialog from '../components/ui/ConfirmDialog'
 import Checkbox from '../components/ui/Checkbox'
@@ -340,10 +340,13 @@ export default function ScanResult() {
     return () => pollRef.current?.stop()
   }, [id])
 
-  // A typed background is only kept in the browser (lib/brainDumpDraft.js) until it has produced a
-  // result; after that the structured copy on the scan is the record.
+  // A typed background (or a hand-filled form) is only kept in the browser (lib/brainDumpDraft.js) until it has produced a
+  // result; after that the structured copy on the scan is the record. Only THIS scan's own draft is cleared: opening any
+  // other from-scratch result used to wipe whatever new background was half typed.
   const draftDone = scan && scan.inputMode === 'brain_dump' && ['COMPLETE_PASS', 'COMPLETE_FAIL', 'FIX_PURCHASED', 'FIX_GENERATING', 'FIX_DELIVERED'].includes(scan.status)
-  useEffect(() => { if (draftDone) clearBrainDumpDraft() }, [draftDone])
+  useEffect(() => { if (draftDone) clearDraftIfSent(id) }, [draftDone, id])
+  // What is still kept for a retry (read once per render of the failure screen; storage is local and cheap).
+  const keptDraft = scan && scan.status === 'ERROR' ? loadBrainDumpDraft(user?.id || null) : null
 
   // G3: look for an open checkout once the scan is on screen and still buyable.
   const buyable = !!(user && scan && !scan.fixPurchased && ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status))
@@ -814,15 +817,15 @@ export default function ScanResult() {
                     text, an over-long PDF: each gets its own instruction, and no "try again" that could never work. */}
                 <p className="text-sm text-red-600" data-testid="scan-failure-message">
                   {scan.failure && scan.failure.code !== 'SYSTEM' ? scan.failure.message : scan.inputMode === 'brain_dump'
-                    ? "We couldn't structure your background. Try adding more detail — company names, roles, and what you did. If you wrote plenty already, this may have been a temporary problem on our side — trying again is safe."
+                    ? "We couldn't build your resume from what you gave us. Try adding more detail — company names, roles, and what you did. If you added plenty already, this may have been a temporary problem on our side — trying again is safe."
                     : scan.inputMode === 'saved_profile'
                       ? "We couldn't score your saved profile. This is usually a temporary problem on our side — try again in a minute."
                       : "We couldn't read your resume. Try uploading a text-based PDF or .docx — or, if it is one, this may have been a temporary problem on our side and trying again is safe."}
                 </p>
               </>
             )}
-            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && !!loadBrainDumpDraft(user?.id || null)?.text?.trim() && (
-              <p className="text-sm text-red-600 mt-2">What you wrote is still saved in this browser — "Try again" puts it straight back in the box.</p>
+            {!scan.fixPurchased && scan.inputMode === 'brain_dump' && (!!keptDraft?.text?.trim() || !!keptDraft?.manual) && (
+              <p className="text-sm text-red-600 mt-2">What you {keptDraft?.text?.trim() ? 'wrote' : 'filled in'} is still saved in this browser — "Try again" puts it straight back {keptDraft?.text?.trim() ? 'in the box' : 'in the form'}.</p>
             )}
             {!scan.fixPurchased && scan.failure?.retryable !== false && (user?.id && scan.userId === user.id || (!scan.userId && anonToken)) && (
               <div className="mt-4">
@@ -831,7 +834,7 @@ export default function ScanResult() {
                 <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. It counts as a scan, like the one that failed did.</p>
               </div>
             )}
-            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? '/?mode=brainDump' : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">
+            {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? (keptDraft?.manual && !keptDraft?.text?.trim() ? '/?mode=manual' : '/?mode=brainDump') : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">
               {scan.failure?.retryable === false
                 ? (scan.inputMode === 'file' ? 'Upload a different file' : 'Add more detail and try again')
                 : 'Start over with different input'}

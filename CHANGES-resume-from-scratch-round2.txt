@@ -1,0 +1,33 @@
+RESUME FROM SCRATCH — round 2 (independent re-audit: G1, B1–B4)
+
+BUGS
+B1  A valid hand-filled resume could hard-fail. runAtsScan's 100-character floor (meant for empty FILES) rejected anything that
+    renders shorter: one job + one bullet + name + email is ~76 characters, a skills-only form ~47. The scan ended TOO_SHORT -
+    "we found almost no text in this file, upload a new one" - non-retryable, no editor (only shown for completed scans), and
+    the form was gone. Structured scans (typed form, typed background, saved profile) that carry real content are now scored as
+    they are (honestly low when thin; the editor and "Worth adding" hints are right there). One with nothing in it fails as
+    NEEDS_MORE_DETAIL instead of TOO_SHORT. Uploaded files keep TOO_SHORT.
+B2  ScanResult cleared the saved draft whenever ANY from-scratch result was open, so opening an old result (history, e-mail, other
+    tab) deleted a new background that was half typed. ScanForm now notes which scan it sent and what that part of the draft held
+    (lib/brainDumpDraft.js markDraftSent); only that scan's result clears it (clearDraftIfSent), and only if nothing different was
+    typed since. Sending the typed text leaves a half-filled form alone and the reverse.
+B3  raw_brain_dump_text stayed on a scan that ended ERROR for the life of the account (the "wiped once a result exists" comment only
+    held for success). A failure retrying cannot fix (NEEDS_MORE_DETAIL / thin structured input) now drops it at once; retryable
+    failures keep it for retry-scan; retention.service.js purgeFailedBackgrounds clears any scan left ERROR for 7 days (no migration).
+B4  Smaller:
+    - A signed-in person who left name/email blank on the hand-filled form had their ACCOUNT name/email printed on the resume
+      ("nothing is guessed" on the form). The fallback now only applies to data the model just structured from free text; the form
+      starts with the account name/email visible and editable, and the editor hints at a missing name.
+    - manualHasContent refused awards/publications-only forms the server accepts (parity with hasResumeContent).
+    - Hand-filled scans are stored as brain_dump, so they showed "couldn't structure your background" / "built from your text".
+      Copy is neutral now; the failure "start over" link opens the form when that is what was kept.
+    - GET /scan/:id/download-draft-pdf shared the PAID regenerate-pdf bucket (rl.pdfRegen). Own rl.draftPdf bucket, same size.
+
+GAPS
+G1  The "Fill it in myself" form was never kept (the typed background was, since round 1). It is saved in the same draft as you go,
+    comes back after a reload / failed scan with a notice, and the form tab reopens on it (an explicit ?mode= link still wins).
+(Upstream's shared lib/links.js already makes the PDF contact line clickable, so the second gap from this pass is closed there.)
+
+TESTS
+New: tests/resume.scratch.round2.test.js, frontend/tests/components/resumeFromScratch.round2.test.jsx.
+Updated: tests/retention.deadletter.test.js (new step), tests/crossCutting.round1.test.js (draftPdf), resumeFromScratch.test.jsx (name hint).

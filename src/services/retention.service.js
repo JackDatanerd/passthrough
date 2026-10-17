@@ -50,6 +50,25 @@ const PURGE_RPC_MAX_ROUNDS = 5
 
 const DAY = 24 * 60 * 60 * 1000
 
+// A typed background is kept on its scan only so a scan that failed on OUR side can be retried in place (retry-scan). A
+// completed scan drops it (runAtsScan) and a failure retrying cannot fix drops it at once; one that stayed ERROR is a
+// retry nobody made, and the full career narrative plus the typed name / email would otherwise sit in the row for the
+// life of the account (resume-from-scratch round 2). A week is far past any real "try again".
+const FAILED_BACKGROUND_RETENTION_DAYS = 7
+async function purgeFailedBackgrounds(supabase, now = Date.now()) {
+  try {
+    const { data, error } = await supabase.from('scans')
+      .update({ raw_brain_dump_text: null })
+      .eq('status', 'ERROR').not('raw_brain_dump_text', 'is', null)
+      .lt('updated_at', new Date(now - FAILED_BACKGROUND_RETENTION_DAYS * DAY).toISOString())
+      .select('id')
+    if (error) return { cleared: 0, error: error.message }
+    return { cleared: (data || []).length }
+  } catch (err) {
+    return { cleared: 0, error: err.message }
+  }
+}
+
 // Anonymous scans past their TTL. `anon_expires_at` IS the deadline — this
 // used to compare against (now - 24h), so a scan promised for 24 hours was
 // really kept for ~48. Rows whose R2 object could not be deleted are KEPT, so
@@ -243,7 +262,7 @@ const purgeOldClaudeUsage = (supabase) =>
   drainPurge(supabase, 'purge_old_claude_usage', { p_days: CLAUDE_USAGE_RETENTION_DAYS }, PURGE_RPC_BATCH * 4)
 
 async function runRetention(env, supabase, now = Date.now()) {
-  const [anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage] = await Promise.all([
+  const [anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds] = await Promise.all([
     purgeExpiredAnonScans(env, supabase, now),
     purgeOldLogs(supabase, now),
     clearExpiredTokens(supabase, now),
@@ -253,11 +272,12 @@ async function runRetention(env, supabase, now = Date.now()) {
     purgeOldVerifyReports(supabase, now),
     purgeDeadSessions(supabase),
     purgeOldClaudeUsage(supabase),
+    purgeFailedBackgrounds(supabase, now),
   ])
-  return { anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage }
+  return { anon, logs, tokens, leads, staleLeads, applications, reports, sessions, claudeUsage, failedBackgrounds }
 }
 
 module.exports = {
-  runRetention, purgeDeadSessions, purgeOldClaudeUsage, DEAD_SESSION_RETENTION_DAYS, CLAUDE_USAGE_RETENTION_DAYS, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
+  runRetention, purgeFailedBackgrounds, FAILED_BACKGROUND_RETENTION_DAYS, purgeDeadSessions, purgeOldClaudeUsage, DEAD_SESSION_RETENTION_DAYS, CLAUDE_USAGE_RETENTION_DAYS, purgeOldVerifyReports, purgeExpiredAnonScans, purgeOldLogs, clearExpiredTokens, purgeArchivedLeads, purgeStaleUnconfirmedLeads, purgeRejectedPartnerApplications,
   REJECTED_APPLICATION_RETENTION_DAYS, EMAIL_LOG_RETENTION_DAYS, ALERT_LOG_RETENTION_DAYS, ARCHIVED_LEAD_RETENTION_DAYS, UNCONFIRMED_LEAD_RETENTION_DAYS, ANON_SCAN_TTL_HOURS: c.ANON_SCAN_TTL_HOURS
 }

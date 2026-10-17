@@ -139,8 +139,8 @@ describe('anonScan device allowance (G6)', () => {
 })
 
 // ── B4: per-account budgets on routes behind auth ────────────────────────────
-describe('per-account keys on resumeEdit / pdfRegen / draftDownload (B4)', () => {
-  for (const [name, max] of [['resumeEdit', 15], ['pdfRegen', 8], ['draftDownload', 30]]) {
+describe('per-account keys on resumeEdit / pdfRegen / draftPdf / draftDownload (B4)', () => {
+  for (const [name, max] of [['resumeEdit', 15], ['pdfRegen', 8], ['draftPdf', 8], ['draftDownload', 30]]) {
     it(`${name}: two signed-in users on one IP do not share a budget; anonymous callers still do`, async () => {
       const app = new Hono()
       app.use('*', async (c, next) => { const u = c.req.header('x-user'); if (u) c.set('user', { id: u }); return next() })

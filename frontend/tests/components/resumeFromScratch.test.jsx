@@ -69,7 +69,7 @@ describe('missingHints', () => {
     expect(text).toMatch(/email/i); expect(text).toMatch(/phone/i); expect(text).toMatch(/Dates on 1 role/); expect(text).toMatch(/1 role/)
   })
   it('is empty for a complete resume, and safe on null', () => {
-    expect(missingHints({ email: 'a@b.c', phone: '1', summary: 's', experience: [{ dates: '2020', bullets: ['x'] }] })).toEqual([])
+    expect(missingHints({ name: 'J', email: 'a@b.c', phone: '1', summary: 's', experience: [{ dates: '2020', bullets: ['x'] }] })).toEqual([])
     expect(missingHints(null)).toEqual([])
   })
 })

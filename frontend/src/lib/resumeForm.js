@@ -1,7 +1,8 @@
 // Pure helpers for the from-scratch resume form (kept out of the components so they can be unit-tested).
 
 // Does the hand-filled structured form carry anything worth scoring? (Mirrors the server's
-// hasResumeContent in lib/resumeData.js, which is the authority.)
+// hasResumeContent in lib/resumeData.js, which is the authority — awards and publications count there too, so a form
+// holding only those is no longer refused here while the server would have accepted it.)
 export const filled = v => typeof v === 'string' && v.trim()
 export function manualHasContent(d) {
   if (!d) return false
@@ -9,7 +10,7 @@ export function manualHasContent(d) {
   return !!(filled(d.summary)
     || list(d.experience).some(e => filled(e?.title) || filled(e?.company) || list(e?.bullets).some(filled))
     || list(d.education).some(e => filled(e?.institution) || filled(e?.degree))
-    || list(d.skills).some(filled) || list(d.certifications).some(filled)
+    || list(d.skills).some(filled) || ['certifications', 'awards', 'publications'].some(k => list(d[k]).some(filled))
     || list(d.projects).some(p => filled(p?.name) || filled(p?.description))
     || list(d.volunteer).some(v => filled(v?.organization) || filled(v?.role)))
 }
@@ -22,6 +23,7 @@ export const EMPTY_MANUAL = { name: '', email: '', phone: '', location: '', link
 export function missingHints(data) {
   const out = []
   if (!data) return out
+  if (!String(data.name || '').trim()) out.push('Your name — the first line of the document.')
   if (!String(data.email || '').trim()) out.push('An email address — it is the first thing an ATS parser looks for.')
   if (!String(data.phone || '').trim()) out.push('A phone number.')
   const exp = Array.isArray(data.experience) ? data.experience : []

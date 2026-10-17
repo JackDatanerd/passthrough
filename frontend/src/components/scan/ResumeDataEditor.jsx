@@ -127,7 +127,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
-          <h3 className="font-semibold text-gray-900">{isFile ? 'The resume we read from your file' : 'The resume we built from your text'}</h3>
+          <h3 className="font-semibold text-gray-900">{isFile ? 'The resume we read from your file' : 'The resume we built from what you gave us'}</h3>
           <p className="text-sm text-gray-500 mt-0.5">
             {isFile
               ? 'This is what a fix would rebuild your document from. Correct anything we misread — your score is re-checked from the corrected version.'

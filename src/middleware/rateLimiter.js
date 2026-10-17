@@ -688,6 +688,15 @@ const pdfRegen = makeLimiter({
   windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:pdfregen',
   message: msg('Too many requests. Please wait a moment.')
 })
+// RESUME-FROM-SCRATCH ROUND 2 (bug): the free draft PDF (a headless-browser render, before any purchase) shared `pdfRegen` with
+// the PAID regenerate-pdf route, the very fate-sharing the comment above says each of these has been split out of. Eight
+// draft downloads while iterating on a resume used the whole 15-minute budget of the paid recovery action. Own bucket,
+// same size.
+const draftPdf = makeLimiter({
+  keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
+  windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:draftpdf',
+  message: msg('Too many requests. Please wait a moment.')
+})
 const draftDownload = makeLimiter({
   keyBy: byAccount,   // signed-in callers get their own budget (CGNAT/office fairness); anonymous ones stay per-IP
   windowSeconds: 15 * 60, max: 30, keyPrefix: 'rl:draftdownload',
@@ -1162,7 +1171,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerProgram, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

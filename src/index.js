@@ -591,6 +591,9 @@ async function retentionSweep(event, env, ctx) {
           console.log(`Retention sweep: ${r.sessions.deleted} dead session(s), ${r.claudeUsage.deleted} claude_usage row(s) purged`)
         if (r.sessions?.error) console.error('Retention sweep (sessions):', r.sessions.error)
         if (r.claudeUsage?.error) console.error('Retention sweep (claude_usage):', r.claudeUsage.error)
+        // Resume-from-scratch round 2: a typed background kept for a retry nobody made.
+        if (r.failedBackgrounds?.cleared) console.log(`Retention sweep: ${r.failedBackgrounds.cleared} failed-scan background(s) cleared`)
+        if (r.failedBackgrounds?.error) console.error('Retention sweep (failed backgrounds):', r.failedBackgrounds.error)
       } catch (err) {
         console.error('Retention sweep error:', err.message)
       }
