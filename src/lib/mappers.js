@@ -57,6 +57,7 @@ function userRowToCamel(row) {
     // Round 10 (migration 0076): the partner code this person arrived with (restored into the SPA's attribution store on sign-in).
     referredByCode:        row.referred_by_code ?? null,
     referredAt:            row.referred_at ?? null,
+    referredSub:           row.referred_sub ?? null,
     createdAt:             row.created_at,
     updatedAt:             row.updated_at
   }

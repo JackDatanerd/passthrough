@@ -157,7 +157,7 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
               <Input label="Badge price" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
               <Input label="Plain fix" type="number" step="0.01" value={plain} onChange={e => setPlain(e.target.value)} />
             </div>
-            <p className="text-xs text-gray-400">Prices in the platform currency; leave a tier blank to keep its normal price.</p>
+            <p className="text-xs text-gray-400">Prices in the platform currency. Leave a tier blank and buyers pay its normal price there — the partner still earns commission on it.</p>
           </div>
         )}
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}

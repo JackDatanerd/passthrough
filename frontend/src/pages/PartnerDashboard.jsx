@@ -188,6 +188,11 @@ function CodeCard({ code, partnerActive, currency }) {
             checkout price tags. If PAYSTACK_CURRENCY is ever not USD, a
             partner would see the wrong symbol on their own promo prices. */}
         {prices.map(([tier, cents]) => `${TIER_LABEL[tier] || tier}: ${fmtCents(cents, currency)}`).join(' · ')}
+        {prices.length < Object.keys(TIER_LABEL).length && (
+          <span className="block text-xs text-gray-400 mt-0.5">
+            Other plans are bought at their normal price with this code — you still earn commission on them.
+          </span>
+        )}
       </div>
       <div className="text-sm text-gray-500 mt-1">
         {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'}` : ''} · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}

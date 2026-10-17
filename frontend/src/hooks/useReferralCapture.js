@@ -98,11 +98,13 @@ function writeStored(code, source = 'link', capturedAt = Date.now(), sub = '') {
 // Codes the server refuses (unusable / the buyer's own) are not pushed again this page session: restoreReferralFromAccount
 // runs on every session refresh and would otherwise re-post the same refused code each time.
 const syncRefused = new Set()
-function syncToAccount(code, capturedAt) {
+function syncToAccount(code, capturedAt, sub) {
   if (!getToken()) return
   if (code && syncRefused.has(code)) return
   const body = { code: code || null }
   if (code && Number.isFinite(capturedAt)) body.capturedAt = new Date(capturedAt).toISOString()
+  // Round 17: the channel tag is kept on the account with the code, so a purchase on another device is still tagged.
+  if (code && cleanSub(sub)) body.sub = cleanSub(sub)
   api.post('/partners/attribution', body)
     .then(res => { if (code && res?.data?.data?.stored === false) syncRefused.add(code) })
     .catch(() => {})
@@ -150,7 +152,7 @@ function trackClick(code) {
   // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
   // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
   api.post('/partners/track-click', { code })
-    .then(res => { if (res?.data?.valid === false) rejectCode(code); else syncToAccount(code, readStoredRecord()?.code === code ? readStoredRecord().capturedAt : undefined) })
+    .then(res => { if (res?.data?.valid === false) rejectCode(code); else { const rec = readStoredRecord(); syncToAccount(code, rec?.code === code ? rec.capturedAt : undefined, rec?.code === code ? rec.sub : undefined) } })
     .catch(() => {})
 }
 // The last location.search the synchronous capture looked at. It runs ONCE per distinct
@@ -224,7 +226,7 @@ export function useReferralCapture() {
       // told the account, so on another device (or after clearing site data) the account's older referred_at expired first.
       // Once per page session, push the refreshed start to the account (a no-op when signed out).
       refreshSyncedThisSession.add(code)
-      syncToAccount(code, readStoredRecord()?.capturedAt)
+      syncToAccount(code, readStoredRecord()?.capturedAt, readStoredRecord()?.sub)
     }
     pendingClicks.delete(code)
   }, [location.search])
@@ -249,14 +251,15 @@ export function getStoredReferralCode() {
 // the same attribution window).
 export function setStoredReferralCode(code) {
   const trimmed = (code || '').trim().toUpperCase()
+  let keepSub = ''
   if (trimmed) {
     // Typing the SAME code that a tagged link stored keeps its channel tag; a different code never inherits one.
-    const keepSub = readStoredRecord()?.code === trimmed ? readStoredRecord().sub : ''
+    keepSub = readStoredRecord()?.code === trimmed ? readStoredRecord().sub : ''
     writeStored(trimmed, 'typed', Date.now(), keepSub); dropClearedMark()
   }
   else { storageRemove(); if (!getToken()) markCleared() }
   // Removing the code on purpose must also clear it on the account, or it would be restored on the next sign-in.
-  syncToAccount(trimmed)
+  syncToAccount(trimmed, undefined, keepSub)
 }
 
 // How the stored code got here ('link' | 'typed' | 'account'), or '' when there is none / it predates this field.
@@ -293,9 +296,13 @@ export function restoreReferralFromAccount(user) {
       if (!recaptured && accountCode && !(accountLive && accountAt > removedAt)) { syncToAccount(''); return }
     }
     if (accountLive && (!local || (local.code !== accountCode && accountAt > local.capturedAt))) {
-      if (!rejectedThisSession.has(accountCode)) writeStored(accountCode, 'account', accountAt)
+      if (!rejectedThisSession.has(accountCode)) writeStored(accountCode, 'account', accountAt, user?.referredSub)
       return
     }
-    if (local && local.code !== accountCode) syncToAccount(local.code, local.capturedAt)
+    if (local && local.code !== accountCode) syncToAccount(local.code, local.capturedAt, local.sub)
+    // Same code, but this browser knows the channel tag and the account does not (a tagged click that predates the tag being
+    // kept on the account, or one the account never received): hand it over, unless the account's click is the newer one.
+    else if (local && local.sub && local.sub !== (user?.referredSub || '') && (!Number.isFinite(accountAt) || local.capturedAt >= accountAt))
+      syncToAccount(local.code, local.capturedAt, local.sub)
   } catch (_) { /* attribution is best-effort */ }
 }

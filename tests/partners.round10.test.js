@@ -198,7 +198,22 @@ describe('referral attribution kept on the account', () => {
   it('null or blank clears it (the buyer removed the code on purpose)', async () => {
     const { svc, db, updates } = setup(GOOD)
     expect(await svc.setUserAttribution(db, { id: 'u1', email: 'b@x.co' }, '')).toEqual({ cleared: true })
-    expect(updates[0]).toEqual({ referred_by_code: null, referred_at: null })
+    expect(updates[0]).toEqual({ referred_by_code: null, referred_at: null, referred_sub: null })
+  })
+  // Round 17: the channel tag (&sub=) is kept on the account with the code, last click wins.
+  it('stores a valid channel tag with the code, normalised, and drops an invalid one', async () => {
+    const a = setup(GOOD)
+    const out = await a.svc.setUserAttribution(a.db, { id: 'u1', email: 'b@x.co' }, 'K20', undefined, ' YouTube-Jan ')
+    expect(out).toMatchObject({ stored: true, code: 'K20', referredSub: 'youtube-jan' })
+    expect(a.updates[0].referred_sub).toBe('youtube-jan')
+    const b = setup(GOOD)
+    await b.svc.setUserAttribution(b.db, { id: 'u1', email: 'b@x.co' }, 'K20', undefined, 'bad tag!')
+    expect(b.updates[0].referred_sub).toBeNull()
+  })
+  it('a click without a tag replaces an older tag instead of keeping it', async () => {
+    const a = setup(GOOD)
+    await a.svc.setUserAttribution(a.db, { id: 'u1', email: 'b@x.co' }, 'K20')
+    expect(a.updates[0]).toHaveProperty('referred_sub', null)
   })
 })
 

@@ -56,10 +56,22 @@ describe('resolvePrice', () => {
     const r = await resolvePrice(dbReturning(codeRow()), 'FIX', {}, 'coach20')
     expect(r).toEqual({ amount: 1900, currency: r.currency, referralApplied: true, discountApplied: true, referralCode: codeRow() })
   })
-  it('falls back to standard pricing for a tier the code does not cover', async () => {
+  // Round 17 (gap): a tier the code does not price is bought at the normal price but is STILL credited to the partner —
+  // it used to be inert (no discount and no attribution), so the partner earned nothing on that plan.
+  it('credits the partner, at the normal price, for a tier the code does not price', async () => {
     const r = await resolvePrice(dbReturning(codeRow()), 'FIX_PLAIN', {}, 'coach20')
     expect(r.amount).toBe(3900)
-    expect(r.referralApplied).toBe(false)
+    expect(r.referralApplied).toBe(true)
+    expect(r.discountApplied).toBe(false)
+    expect(r.referralCode).toEqual(codeRow())
+  })
+  it('an unpriced tier is still refused for a self-referral, an inactive code or an unknown code', async () => {
+    const self = await resolvePrice(dbReturning(codeRow({ partners: { status: 'ACTIVE', email: 'me@x.co' } })), 'FIX_PLAIN', {}, 'coach20', { buyerEmail: 'me@x.co' })
+    expect(self).toMatchObject({ referralApplied: false, referralCode: null, selfReferral: true })
+    const off = await resolvePrice(dbReturning(codeRow({ active: false })), 'FIX_PLAIN', {}, 'coach20')
+    expect(off).toMatchObject({ referralApplied: false, referralCode: null })
+    const none = await resolvePrice(dbReturning(null), 'FIX_PLAIN', {}, 'nope')
+    expect(none).toMatchObject({ referralApplied: false, referralCode: null })
   })
   it('a code can never make the customer pay MORE than the current public price (promo undercuts it)', async () => {
     const r = await resolvePrice(dbReturning(codeRow({ tier_prices: { FIX: 3900 } })), 'FIX', promoEnv, 'coach20')

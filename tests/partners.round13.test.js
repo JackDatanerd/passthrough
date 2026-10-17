@@ -65,7 +65,7 @@ describe('B1 — registering carries the browser capture time', () => {
   const register = fs.readFileSync(path.join(__dirname, '../frontend/src/pages/Register.jsx'), 'utf8')
   it('the register schema accepts it and hands it to setUserAttribution', () => {
     expect(auth).toMatch(/referralCapturedAt: z\.string\(\)\.max\(40\)\.nullish\(\)\.catch\(undefined\)/)
-    expect(auth).toMatch(/setUserAttribution\(supabase, \{ id: user\.id, email: user\.email \}, referralCode, referralCapturedAt \|\| undefined\)/)
+    expect(auth).toMatch(/setUserAttribution\(supabase, \{ id: user\.id, email: user\.email \}, referralCode, referralCapturedAt \|\| undefined, referralSub \|\| undefined\)/)
   })
   it('the Register page sends it', () => {
     expect(register).toMatch(/referralCapturedAt: getStoredReferralCapturedAt\(\) \|\| undefined/)

@@ -410,7 +410,7 @@ function passwordEmailProblem(password, email) {
 // POST /api/auth/register
 async function register(c) {
   const body = await c.req.json()
-  const { name, email, password, turnstileToken, referralCode, referralCapturedAt } = z.object({
+  const { name, email, password, turnstileToken, referralCode, referralCapturedAt, referralSub } = z.object({
     // FEATURE GAP CLOSED (Auth/Scan round): sign-up never asked for — or
     // recorded — acceptance of the Terms/Privacy Policy. Required now, and
     // stored with the version accepted so a later terms change can tell who
@@ -429,6 +429,7 @@ async function register(c) {
     referralCode: z.string().max(100).nullish().catch(undefined),
     // Section 4 round 13 (bug): when the browser first captured the code, so registering does not restart the 30-day window.
     referralCapturedAt: z.string().max(40).nullish().catch(undefined),
+    referralSub: z.string().max(40).nullish().catch(undefined),
     // BUG FIX: no upper bound anywhere a password is set (here, reset,
     // change) — bcryptjs silently truncates at 72 bytes, so anything past
     // that is quietly ignored with no error, giving false confidence in
@@ -483,8 +484,8 @@ async function register(c) {
   // nothing about it can fail a sign-up; a code that cannot apply (unknown, expired, the partner's own address) is simply not stored.
   if (referralCode) {
     try {
-      const out = await require('../services/referral.service').setUserAttribution(supabase, { id: user.id, email: user.email }, referralCode, referralCapturedAt || undefined)
-      if (out.stored) { user.referredByCode = out.code; user.referredAt = out.referredAt || new Date().toISOString() }   // the STORED start (the browser's capture time), not "now"
+      const out = await require('../services/referral.service').setUserAttribution(supabase, { id: user.id, email: user.email }, referralCode, referralCapturedAt || undefined, referralSub || undefined)
+      if (out.stored) { user.referredByCode = out.code; user.referredAt = out.referredAt || new Date().toISOString(); user.referredSub = out.referredSub || null }   // the STORED start (the browser's capture time), not "now"
     } catch (e) { console.error('register referral attribution (ignored):', e.message) }
   }
 

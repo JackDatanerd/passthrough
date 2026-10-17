@@ -589,7 +589,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
     <Modal open onClose={onClose} title={`New referral code — ${partner.name}`} dismissible={!saving}>
       <Form onSubmit={handleCreate} className="flex flex-col gap-4">
         <Input label="Code" value={code} onChange={e => setCode(e.target.value.toUpperCase())} placeholder="COACHNAME20" />
-        <p className="text-xs text-gray-400 -mt-2">Leave a tier blank to leave it undiscounted.</p>
+        <p className="text-xs text-gray-400 -mt-2">Leave a tier blank and buyers pay its normal price there — the partner still earns commission on it.</p>
         <div className="grid grid-cols-3 gap-3">
           <Input label={`FIX (${partner.currency || 'USD'})`} type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
           <Input label={`BADGE (${partner.currency || 'USD'})`} type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />

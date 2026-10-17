@@ -2613,7 +2613,7 @@ async function adminAnonymizePartner(ctx) {
   for (const rc of ownCodes || []) {
     if (/^REMOVED-[0-9A-F]{8}$/.test(rc.code)) continue
     const placeholder = `REMOVED-${String(rc.id).replace(/-/g, '').slice(0, 8).toUpperCase()}`
-    const { error: uErr } = await supabase.from('users').update({ referred_by_code: null, referred_at: null }).eq('referred_by_code', rc.code)
+    const { error: uErr } = await supabase.from('users').update({ referred_by_code: null, referred_at: null, referred_sub: null }).eq('referred_by_code', rc.code)
     if (uErr) throw uErr
     const { error: pErr2 } = await supabase.from('payments').update({ referral_code: placeholder }).eq('referral_code_id', rc.id)
     if (pErr2) throw pErr2
@@ -2787,17 +2787,18 @@ async function resetMyPartnerLinks(ctx) {
 }
 
 // ── Round 10 (feature gap): remember the referral code on the signed-in ACCOUNT ─────────────────────────────────
-// body { code: string | null }. null/'' clears it (the buyer removed the code on purpose). A code that cannot apply is
+// body { code: string | null, capturedAt?, sub? }. null/'' clears it (the buyer removed the code on purpose). A code that cannot apply is
 // answered { stored: false } rather than an error — the SPA simply keeps what it had.
 const attributionSchema = z.object({
   code: z.string().trim().max(100).nullable().optional(),
-  capturedAt: z.string().datetime().optional()    // when the browser first captured the code — keeps the 30-day window honest
+  capturedAt: z.string().datetime().optional(),   // when the browser first captured the code — keeps the 30-day window honest
+  sub: z.string().trim().max(40).nullable().optional().catch(undefined)   // the link's channel tag (&sub=); anything that is not a valid tag is dropped
 })
 async function setMyReferralAttribution(ctx) {
   const user = ctx.get('user')
   const body = attributionSchema.parse(await ctx.req.json().catch(() => ({})))
   const supabase = getSupabase(ctx.env)
-  const out = await referralService.setUserAttribution(supabase, user, body.code ?? null, body.capturedAt)
+  const out = await referralService.setUserAttribution(supabase, user, body.code ?? null, body.capturedAt, body.sub ?? null)
   return ctx.json({ success: true, data: out })
 }
 

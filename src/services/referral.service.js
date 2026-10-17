@@ -31,6 +31,7 @@
 // predates this migration, or a reservation that outlived its TTL before
 // being consumed).
 const c = require('../config/constants')
+const { normalizeSub } = require('../lib/referralSub')
 
 async function lookupCode(supabase, rawCode) {
   if (!rawCode) return null
@@ -85,7 +86,7 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   const currency = c.activeCurrency(env)
   const tierPrice = codeRow?.tier_prices?.[fixTier]
 
-  if (!isCodeUsable(codeRow) || tierPrice == null)
+  if (!isCodeUsable(codeRow))
     return { amount: standard, currency, referralApplied: false, referralCode: null }
 
   // Self-referral guard: a partner buying with their own code would collect
@@ -95,6 +96,13 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   // detected here.)
   if (isSelfReferral(codeRow, opts.buyerEmail))
     return { amount: standard, currency, referralApplied: false, referralCode: null, selfReferral: true }
+
+  // Section 4 round 17 (gap): a code that prices only SOME tiers used to be inert on the others — no discount AND no
+  // attribution, so a partner whose code priced just the Fix tier earned nothing on a Badge or Plain-fix sale although the
+  // terms promise commission on every purchase in the window. The code now still applies to an unpriced tier: the buyer pays
+  // the normal price (no discount) and the sale is credited to the partner on what was actually charged.
+  if (tierPrice == null)
+    return { amount: standard, currency, referralApplied: true, discountApplied: false, referralCode: codeRow }
 
   // BUGFIX: tier_prices on a referral code is a static, admin-set cents
   // value with no awareness of an active site-wide promo (isPromoActive()).
@@ -620,9 +628,9 @@ const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
 // start: a future/garbage value falls back to now, an older-than-window one is refused, and a code the account already
 // holds is never moved BACKWARDS in time by a stale push.
 const ATTRIBUTION_WINDOW_MS = 30 * 24 * 3600 * 1000
-async function setUserAttribution(supabase, user, rawCode, capturedAt) {
+async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub) {
   if (rawCode == null || String(rawCode).trim() === '') {
-    const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null }).eq('id', user.id)
+    const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null, referred_sub: null }).eq('id', user.id)
     if (error) throw error
     return { cleared: true }
   }
@@ -649,10 +657,13 @@ async function setUserAttribution(supabase, user, rawCode, capturedAt) {
   if (current?.referred_by_code && current.referred_by_code !== code && Number.isFinite(currentAt) && currentAt > at)
     return { stored: false, reason: 'older' }
 
+  // Round 17 (gap): the partner's channel tag (`&sub=`) is the same attribution as the code and now rides on the account the
+  // same way — last click wins, so a click without a tag replaces an older tag rather than keeping it.
+  const sub = normalizeSub(rawSub)
   const { error } = await supabase.from('users')
-    .update({ referred_by_code: code, referred_at: new Date(at).toISOString() }).eq('id', user.id)
+    .update({ referred_by_code: code, referred_at: new Date(at).toISOString(), referred_sub: sub }).eq('id', user.id)
   if (error) throw error
-  return { stored: true, code, referredAt: new Date(at).toISOString() }
+  return { stored: true, code, referredAt: new Date(at).toISOString(), referredSub: sub }
 }
 
 // Owner alert for a conversion that could not be (fully) recorded. Lazy

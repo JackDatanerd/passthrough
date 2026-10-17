@@ -70,8 +70,13 @@ export default function PartnerTerms() {
           <ul className="list-disc pl-5 space-y-1">
             {ATTRIBUTION_TERMS.map(t => <li key={t}>{t}</li>)}
             <li>
-              Credit follows the browser the visitor used. A sale made on a different device, or after the visitor cleared their
-              browser data, is only credited if they enter your code at checkout.
+              Credit follows the browser the visitor used, and — once they are signed in — their account. A sale made on a
+              different device, or after the visitor cleared their browser data, is still credited if they are signed in and your
+              link was the most recent one they followed; otherwise it is only credited if they enter your code at checkout.
+            </li>
+            <li>
+              If your code sets a discounted price for only some plans, it still credits you for every plan: on the others the
+              buyer pays the normal price and you earn commission on what they paid.
             </li>
             <li>If a visitor follows another partner's link after yours, the most recent click is the one credited.</li>
           </ul>
