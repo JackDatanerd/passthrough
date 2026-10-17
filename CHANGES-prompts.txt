@@ -1,0 +1,16 @@
+PROMPTS ROUND (PROMPT_VERSION docgen-2026-10-v3)
+
+Scorer       score.js + lib/atsChecklist.js: model fills a requirement checklist with verbatim evidence; code verifies quotes,
+             drops requirements not in the posting, computes the score. Replies without a usable checklist fail (never guessed).
+Rewrite      rewrite.js: 7 worked examples, tighter skill-rename rule, honesty clause on baseline AND retry feedback,
+             quantification pointers by {job, bullet} index (text form still accepted), one corrective style pass
+             (lib/rewriteStyle.js) naming the exact fault.
+Letter       letter.js: model letter, one length ceiling (320) shared by prompt and guard, hook prefers a real achievement.
+Extractors   extract.js: shared rules, verbatim-copy fidelity, own-figures rule; dropUngroundedFigures drops any extracted
+             bullet/summary whose numbers are not in the source text (ground truth can no longer be embellished).
+PDF          the built-in template is now the default layout; the model-written layout is opt-in with env PDF_AI_LAYOUT=1.
+Process      prompts moved to src/prompts/ (README there); evals/ (12 fixtures) + `npm run eval:prompts` live runner;
+             package.json script to add:  "eval:prompts": "node scripts/prompt-eval.cjs"
+Tests        tests/prompts.quality.test.js, tests/prompts.evalset.test.js; old {aiScore} mocks moved to the checklist reply
+             (tests/helpers/scoreReply.js); tests exercising the AI layout set PDF_AI_LAYOUT=1.
+No migration. Backend: all 199 test files pass.

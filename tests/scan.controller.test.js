@@ -869,7 +869,7 @@ describe('createScan', () => {
     const waitUntilPromises = []
     const bucketOps = []
     return {
-      env: { RESUMES_BUCKET: { put: async (...a) => bucketOps.push({ op: 'put', a }), delete: async (...a) => bucketOps.push({ op: 'delete', a }) }, ...over.env },
+      env: { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async (...a) => bucketOps.push({ op: 'put', a }), delete: async (...a) => bucketOps.push({ op: 'delete', a }) }, ...over.env },
       get: k => ({ uploadedFile: over.file, formFields: over.fields ?? {}, user: over.user, authError: over.authError }[k]),
       req: {},
       json: (body, status = 200) => ({ body, status }),
@@ -1095,7 +1095,7 @@ describe('runAtsScan', () => {
       if (q.table === 'users' && q.op === 'select') return { data: opts.userRow ?? { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
       if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: null, error: null } }
     })
-    const env = { RESUMES_BUCKET: { get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) } }
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer }) } }
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': {
@@ -1373,7 +1373,7 @@ describe('generateFix', () => {
     const rewriteCalls = []
     let rewriteCallIdx = 0
     let lastRule = 70   // the AI mock below mirrors the rule score of the same call, so blended == rule and no number moves
-    const env = { RESUMES_BUCKET: {
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: {
       get: async () => opts.r2Object ?? { arrayBuffer: async () => new Uint8Array([1]).buffer },
       put: async (key, bytes, meta) => { state.r2Puts.push({ key, meta }) },
       delete: async key => { state.r2Deletes.push(key) },
@@ -1639,7 +1639,7 @@ describe('generateFix', () => {
       if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
       if (q.table === 'scans' && q.op === 'update') return { data: [{ id: 's1' }], error: null }
     })
-    const env = { RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
     const loaded = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/docx.service.js': { generateAtsDocx: async (data, url, opts2) => { docxArgs = opts2; return Buffer.from('x') } },
@@ -1769,7 +1769,7 @@ describe('generateFix — Auth/Scan audit round', () => {
       if (q.op === 'rpc') { state.rpcs.push({ name: q.name, args: q.args }); return { data: true, error: null } }
     })
     const rewriteCalls = []
-    const env = { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }), put: async (key) => { state.r2Puts.push(key) }, delete: async () => {} } }
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }), put: async (key) => { state.r2Puts.push(key) }, delete: async () => {} } }
     const loaded = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/resume.parser.js': { parse: async () => { state.parseCalls++; return { resumeData: { name: 'Parsed' }, parseError: false } }, extractText: async () => 'x'.repeat(150) },
@@ -1869,7 +1869,7 @@ describe('regeneratePdf', () => {
       if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.updates.push(q.patch); state.updateFilters.push(q.filters); return { data: 'updateReturn' in opts ? opts.updateReturn : [{ id: 's1' }], error: opts.updateErr || null } }
     })
-    const env = { RESUMES_BUCKET: { put: async k => { state.r2Puts.push(k) }, delete: async k => { state.r2Deletes.push(k) } } }
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async k => { state.r2Puts.push(k) }, delete: async k => { state.r2Deletes.push(k) } } }
     const loaded = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/claude.service.js': { generateBeautifulResumeHTML: async (...a) => { state.htmlArgs = a; return opts.htmlResult ?? { success: true, data: '<html></html>' } } },
@@ -1896,6 +1896,16 @@ describe('regeneratePdf', () => {
     const res = await t.mod.regeneratePdf(call())
     expect(res.body.data.alreadyAvailable).toBe(true)
     expect(t.state.htmlArgs).toBe(null)
+  })
+  it('by default the built-in template is the layout: the model is never asked to write the page (PDF_AI_LAYOUT is opt-in)', async () => {
+    t = pdfSetup()
+    delete t.env.PDF_AI_LAYOUT
+    const res = await t.mod.regeneratePdf(call())
+    expect(res.body.success).toBe(true)
+    expect(t.state.htmlArgs).toBe(null)
+    expect(t.state.pdfHtmls).toHaveLength(1)
+    expect(t.state.pdfHtmls[0]).not.toBe('<html></html>')
+    expect(t.state.pdfHtmls[0]).toContain('Rewritten')
   })
   it('renders from the REWRITTEN data with the credential wording the score earns, stores the PDF and attaches it only where none exists', async () => {
     t = pdfSetup()
@@ -2021,7 +2031,7 @@ describe('generateBadge', () => {
       if (q.table === 'users' && q.op === 'select') return { data: userRow, error: null }
       if (q.table === 'scans' && q.op === 'update') { state.scanUpdates.push(q.patch); return { data: opts.deliverError ? null : [{ id: 's1' }], error: opts.deliverError || null } }
     })
-    const env = { RESUMES_BUCKET: {
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: {
       get: async () => ('r2Object' in opts ? opts.r2Object : { arrayBuffer: async () => new Uint8Array([1]).buffer }),
       put: async () => {},
       delete: async () => {},
@@ -2162,7 +2172,7 @@ describe('generateBadge', () => {
       if (q.table === 'users' && q.op === 'select') return { data: { id: 'u1', name: 'Jane', email: 'jane@x.com' }, error: null }
       if (q.table === 'scans' && q.op === 'update') return { data: [{ id: 's1' }], error: null }
     })
-    const env = { RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
+    const env = { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } }
     const loaded = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
       'services/docx.service.js': { generateAtsDocx: async () => Buffer.from('x') },

@@ -1,3 +1,4 @@
+import { CHECKLIST_TEXT, RESUME_TEXT, JD_TEXT } from './helpers/scoreReply.js'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { createRequire } from 'node:module'
 import JSZip from 'jszip'
@@ -192,11 +193,11 @@ describe('B5: a dead-lettered free scan gets its slot back by the same rule as e
 describe('G1: the ATS score is requested at temperature 0, and a model that refuses the parameter still scores', () => {
   const realFetch = globalThis.fetch
   afterEach(() => { globalThis.fetch = realFetch })
-  const ok = () => new Response(JSON.stringify({ content: [{ type: 'text', text: '{"aiScore": 70, "missingKeywords": []}' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })
+  const ok = () => new Response(JSON.stringify({ content: [{ type: 'text', text: CHECKLIST_TEXT }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }), { status: 200 })
   it('sends temperature: 0 for scoring', async () => {
     const bodies = []
     globalThis.fetch = async (u, init) => { bodies.push(JSON.parse(init.body)); return ok() }
-    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'resume', 'jd')
+    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
     expect(bodies[0].temperature).toBe(0)
   })
@@ -208,7 +209,7 @@ describe('G1: the ATS score is requested at temperature 0, and a model that refu
         ? new Response(JSON.stringify({ error: { type: 'invalid_request_error', message: '`temperature` is not supported for this model' } }), { status: 400 })
         : ok()
     }
-    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'resume', 'jd')
+    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
     expect(bodies).toHaveLength(2)
     expect('temperature' in bodies[1]).toBe(false)
@@ -216,7 +217,7 @@ describe('G1: the ATS score is requested at temperature 0, and a model that refu
   it('an unrelated 400 is still fatal and is not retried', async () => {
     let n = 0
     globalThis.fetch = async () => { n++; return new Response(JSON.stringify({ error: { message: 'prompt is too long' } }), { status: 400 }) }
-    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'resume', 'jd')
+    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(false); expect(n).toBe(1)
   })
 })

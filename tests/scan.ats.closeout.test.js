@@ -1,3 +1,4 @@
+import { CHECKLIST_TEXT, RESUME_TEXT, JD_TEXT } from './helpers/scoreReply.js'
 import { describe, it, expect, afterEach, beforeEach } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
@@ -143,15 +144,15 @@ describe('callClaude retries transient failures (through scoreResumeWithAI)', ()
   const err = status => ({ ok: false, status, headers: { get: () => null }, json: async () => ({ error: { message: `e${status}` } }) })
   it('a 529 then a success succeeds', async () => {
     let n = 0
-    globalThis.fetch = async () => (++n === 1 ? err(529) : ok('{"aiScore": 80}'))
-    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'resume', 'jd')
+    globalThis.fetch = async () => (++n === 1 ? err(529) : ok(CHECKLIST_TEXT))
+    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
     expect(n).toBe(2)
   })
   it('a 401 is not retried', async () => {
     let n = 0
     globalThis.fetch = async () => { n++; return err(401) }
-    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'resume', 'jd')
+    const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(false)
     expect(n).toBe(1)
   })
@@ -387,7 +388,7 @@ describe('runAtsScan — idempotent claim and structure', () => {
       'services/claude.service.js': { scoreResumeWithAI: async () => { state.ai = (state.ai || 0) + 1; return { success: true, data: { aiScore: 70, missingKeywords: [] } } }, extractJson: x => x },
       'services/email.service.js': {},
     })
-    return { ...m, state, db, env: { RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }) } } }
+    return { ...m, state, db, env: { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { get: async () => ({ arrayBuffer: async () => new Uint8Array([1]).buffer }) } } }
   }
   it('claims a PENDING scan; SCANNING is only taken over once the row has gone stale', async () => {
     t = setup()
@@ -474,7 +475,7 @@ describe('generateBadge scores what it delivers', () => {
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
       'services/email.service.js': { sendFixDelivered: async (...a) => state.emails.push(a), sendOwnerAlert: async () => {}, sendFixFailed: async () => {} },
     })
-    return { ...m, state, db, env: { RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } } }
+    return { ...m, state, db, env: { PDF_AI_LAYOUT: '1', RESUMES_BUCKET: { put: async () => {}, delete: async () => {} } } }
   }
   it('a delivered document that clears the threshold gets the verified credential and ITS score', async () => {
     t = setup(86)

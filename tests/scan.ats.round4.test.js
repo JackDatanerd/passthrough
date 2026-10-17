@@ -1,4 +1,5 @@
 // Scan/ATS round 4 — scoring integrity, the fabrication guard, the HTML sanitizer, and the Claude cost ledger.
+import { CHECKLIST_TEXT, RESUME_TEXT, JD_TEXT } from './helpers/scoreReply.js'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
@@ -249,12 +250,12 @@ describe('sanitizeGeneratedHtml: escaped spellings of url( and @import', () => {
 // ── cost ledger ────────────────────────────────────────────────────────────────────────────────────────────
 describe('claude cost ledger', () => {
   function fakeFetch(usage) {
-    return vi.fn(async () => ({ ok: true, status: 200, headers: new Map(), json: async () => ({ content: [{ type: 'text', text: '{"aiScore":50,"missingKeywords":[]}' }], stop_reason: 'end_turn', usage }), text: async () => '' }))
+    return vi.fn(async () => ({ ok: true, status: 200, headers: new Map(), json: async () => ({ content: [{ type: 'text', text: CHECKLIST_TEXT }], stop_reason: 'end_turn', usage }), text: async () => '' }))
   }
   it('a call reports its token usage, label and model to the job\'s collector', async () => {
     vi.stubGlobal('fetch', fakeFetch({ input_tokens: 1200, output_tokens: 80 }))
     const env = { ANTHROPIC_API_KEY: 'k', __usage: [] }
-    const r = await claude.scoreResumeWithAI(env, 'resume text '.repeat(20), 'jd text '.repeat(20))
+    const r = await claude.scoreResumeWithAI(env, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
     expect(r.usage).toEqual({ input_tokens: 1200, output_tokens: 80 })
     expect(env.__usage).toHaveLength(1)
@@ -263,7 +264,7 @@ describe('claude cost ledger', () => {
   })
   it('without a collector nothing breaks', async () => {
     vi.stubGlobal('fetch', fakeFetch({ input_tokens: 5, output_tokens: 5 }))
-    expect((await claude.scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, 'a'.repeat(100), 'b'.repeat(100))).success).toBe(true)
+    expect((await claude.scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)).success).toBe(true)
     vi.unstubAllGlobals()
   })
   it('track() copies env rather than mutating the shared one', () => {

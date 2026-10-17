@@ -2698,8 +2698,14 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   const candidates = []
   let htmlError = null
   let htmlResult = null
-  try { htmlResult = await claudeService.generateBeautifulResumeHTML(env, data, designTokens, verificationUrl, { verified }) }
-  catch (e) { htmlResult = { success: false, error: e.message } }
+  // PROMPT REVIEW: laying out a page from fields that must be rendered "exactly as given" is templating, not writing - a
+  // model call there costs a 6,000-token budget, can truncate, varies run to run, and needs a sanitizer, a fidelity
+  // check and a render check to police it. The deterministic template is now the designed PDF; the model layout is an
+  // opt-in (PDF_AI_LAYOUT=1) kept only so the switch can be flipped back without a deploy of new code.
+  if (String(env?.PDF_AI_LAYOUT || '') === '1') {
+    try { htmlResult = await claudeService.generateBeautifulResumeHTML(env, data, designTokens, verificationUrl, { verified }) }
+    catch (e) { htmlResult = { success: false, error: e.message } }
+  }
   // G4: the designed page is model-written HTML that gets hash-stamped as verified and sent to
   // employers - it must still contain what the resume says before it is allowed to become the PDF.
   const fidelity = htmlResult?.success && htmlResult.data
@@ -2709,8 +2715,8 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
     htmlError = `designed layout failed the content check: ${fidelity.reasons.slice(0, 3).join('; ')}`
     console.error(`[WARN] designed PDF layout rejected for ${scanId}: ${htmlError} - using the built-in template`)
   } else if (htmlResult?.success && htmlResult.data) candidates.push({ html: htmlResult.data, label: 'designed layout', attempts: 2 })
-  else {
-    htmlError = htmlResult?.error || 'HTML generation failed'
+  else if (htmlResult) {
+    htmlError = htmlResult.error || 'HTML generation failed'
     console.error(`[WARN] HTML resume generation failed for ${scanId}: ${htmlError} — using the built-in template`)
   }
   try { candidates.push({ html: pdfTemplate.buildResumeHTML(data, designTokens, verificationUrl, { verified }), label: 'built-in template', attempts: 1 }) }
