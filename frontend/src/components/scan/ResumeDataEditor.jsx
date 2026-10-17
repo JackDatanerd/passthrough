@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import ResumeFieldsForm from './ResumeFieldsForm'
 import api, { getErrorMessage } from '../../lib/api'
-import { downloadBlob } from '../../lib/utils'
+import { saveBlobResponse } from '../../lib/utils'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
 import ConfirmDialog from '../ui/ConfirmDialog'
@@ -114,8 +114,9 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
       const path = type === 'pdf' ? 'download-draft-pdf' : 'download-draft'
       const url = `/scan/${scan.id}/${path}${anonToken ? `?token=${anonToken}` : ''}`
       const res = await api.get(url, { responseType: 'blob' })
-      const stem = String(data.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-      downloadBlob(res.data, `${stem ? `${stem}-` : ''}resume-draft.${type === 'pdf' ? 'pdf' : 'docx'}`)
+      // The server names the file (accent-aware: "Jose-Nunez..."); building a name here dropped its accent handling and
+      // produced "jose-nu-n-ez-resume-draft.docx". The fallback only applies when the header is not readable.
+      saveBlobResponse(res, `resume-draft.${type === 'pdf' ? 'pdf' : 'docx'}`)
     } catch (err) {
       setDlError(getErrorMessage(err, 'Could not download your draft — try again.'))
     }

@@ -17,6 +17,18 @@ const { hrefFor, displayUrl } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
 
+// The divider under each heading is drawn from the palette's PRIMARY, lightened: the palette's `accent` is a pale tint
+// (contrast 1.1-1.4 against white on most palettes) and as a 1px rule it all but vanished on screen and on paper.
+const ruleColor = hex => {
+  const m = /^#?([0-9a-f]{6})$/i.exec(String(hex || ''))
+  if (!m) return '#9CA3AF'
+  const n = parseInt(m[1], 16)
+  const mix = c => Math.round(c * 0.45 + 255 * 0.55).toString(16).padStart(2, '0')
+  return `#${mix((n >> 16) & 255)}${mix((n >> 8) & 255)}${mix(n & 255)}`
+}
+// A CSS string literal from arbitrary text (the name in the page footer).
+const cssStr = v => String(v ?? '').replace(/[\\"\n\r\f<>&]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
+
 const esc = v => String(v ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -101,7 +113,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
       (details ? `<p>${esc(details)}</p>` : '') + `</div>`
   }).join('')
 
-  const skills = list(d.skills).map(str).filter(Boolean)
+  const skills = list(d.skills).map(str).map(stripBullet).map(str).filter(Boolean)
   const skillsHtml = skills.length ? `<p class="skills">${skills.map(esc).join(' &middot; ')}</p>` : ''
 
   const certs = list(d.certifications).map(str).filter(Boolean)
@@ -128,7 +140,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
       (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
   }).join('')
   const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li>${esc(stripBullet(i))}</li>`).join('')}</ul>` : '' }
-  const languages = list(d.languages).map(str).filter(Boolean)
+  const languages = list(d.languages).map(str).map(stripBullet).map(str).filter(Boolean)
   const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(' &middot; ')}</p>` : ''
 
   // No job history (a student, a career changer, a from-scratch resume): Education then Projects lead, because that is
@@ -149,18 +161,20 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
 /* Top/bottom page margins belong to the PRINT ENGINE (pdf.service.js passes the same 14mm), not to
    the container: padding on one tall box only pads its first top and last bottom edge, so on a
    2-page resume page 1 ran to the bottom edge and page 2 started at the top edge. */
-@page { size: ${paper.css}; margin: 14mm 0 }
+@page { size: ${paper.css}; margin: 14mm 0;
+  @bottom-center { content: "${cssStr(d.name) ? cssStr(d.name) + '  \\00B7  ' : ''}Page " counter(page) " of " counter(pages); font: 8pt ${stack.body}; color: #6B7280 } }
+@page :first { @bottom-center { content: none } }
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
-body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; overflow-wrap: anywhere; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: ${compact ? 1.36 : 1.45} }
 .page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 2pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin: 0 0 3pt }
 .cred { font-size: 8pt; font-variant: small-caps; color: ${esc(palette.primary)}; text-decoration: none }
 h2 { font-family: ${stack.heading}; font-size: ${bPt + 1.5}pt; text-transform: uppercase; letter-spacing: 1pt; color: ${esc(palette.primary)};
-  border-bottom: 1px solid ${esc(palette.accent)}; padding-bottom: 2pt; margin: ${compact ? '10pt 0 4pt' : '14pt 0 6pt'};
+  border-bottom: 1px solid ${ruleColor(palette.primary)}; padding-bottom: 2pt; margin: ${compact ? '10pt 0 4pt' : '14pt 0 6pt'};
   break-after: avoid; page-break-after: avoid }
 section { page-break-inside: auto }
 .entry { margin-bottom: ${compact ? 5 : 7}pt; break-inside: avoid; page-break-inside: avoid }
@@ -203,11 +217,11 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
-body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; overflow-wrap: anywhere; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.55 }
 .page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 20mm 0 22mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 3pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
-.contact { font-size: ${Math.max(bPt - 2, 8)}pt; margin: 0 0 18pt; padding-bottom: 8pt; border-bottom: 1px solid ${esc(palette.accent)} }
+.contact { font-size: ${Math.max(bPt - 2, 8)}pt; margin: 0 0 18pt; padding-bottom: 8pt; border-bottom: 1px solid ${ruleColor(palette.primary)} }
 .date { margin: 0 0 14pt }
 .block { margin: 0 0 11pt; orphans: 3; widows: 3 }
 a { color: inherit; text-decoration: none }

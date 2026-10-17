@@ -316,7 +316,8 @@ describe('PDF template and DOCX — paper size and section order', () => {
 
   it('the template prints Letter by default and A4 on request, with a content height that cannot add a blank page', () => {
     const letter = buildResumeHTML(noJobs, { paper: 'letter' }, null)
-    expect(letter).toMatch(/@page \{ size: Letter; margin: 14mm 0 \}/)
+    // (the page rule also carries the running-footer margin boxes since applicant docs round 3, so the margin is matched, not the closing brace)
+    expect(letter).toMatch(/@page \{ size: Letter; margin: 14mm 0;/)
     expect(letter).toContain('width: 8.5in')
     const a4 = buildResumeHTML(noJobs, { paper: 'a4' }, null)
     expect(a4).toMatch(/size: A4/)

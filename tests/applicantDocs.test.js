@@ -293,3 +293,68 @@ describe('checkRenderedPdf — the render gate for delivered PDFs', () => {
     expect(r.skipped).toBe(true)
   })
 })
+
+// ── pass 3 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+const lum = hex => { const c = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(v => (v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)); return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2] }
+const contrastWhite = hex => 1.05 / (lum(hex) + 0.05)
+
+describe('section rules are visible on every palette', () => {
+  const RD = { name: 'A', summary: 'S', skills: ['x'] }
+  it('draws the rule from the primary colour, not the pale accent tint', () => {
+    for (const [primary, accent] of [['#374151', '#F3F4F6'], ['#B45309', '#FEF3C7'], ['#111827', '#E5E7EB'], ['#1E3A8A', '#CBD5E1']]) {
+      const html = buildResumeHTML(RD, { palette: { bg: '#FFFFFF', primary, accent, text: '#111' } }, null)
+      const rule = /border-bottom: 1px solid (#[0-9a-f]{6})/i.exec(html)[1]
+      expect(rule.toLowerCase()).not.toBe(accent.toLowerCase())
+      expect(contrastWhite(rule)).toBeGreaterThan(1.8)        // the old accent rules sat at 1.1-1.4: invisible on paper
+      const cl = buildCoverLetterHTML('Hi', { name: 'A', email: 'a@b.co' }, { palette: { bg: '#FFFFFF', primary, accent, text: '#111' } }, {})
+      expect(cl).toContain(`border-bottom: 1px solid ${rule}`)
+    }
+  })
+})
+
+describe('skills and languages are not doubled either', () => {
+  const rd = { name: 'A', skills: ['• SQL', '- Python', '* R', 'Excel'], languages: ['• English', '– Swahili'], experience: [{ title: 'E', company: 'X', bullets: ['b'] }] }
+  it('strips a pasted glyph from every entry in the DOCX and the PDF template', async () => {
+    const text = await extractText(await generateAtsDocx(rd, null), DOCX)
+    expect(text).toContain('SQL · Python · R · Excel')
+    expect(text).toContain('English · Swahili')
+    const html = buildResumeHTML(rd, {}, null)
+    expect(html).toContain('SQL &middot; Python &middot; R &middot; Excel')
+    expect(html).toContain('English &middot; Swahili')
+  })
+})
+
+describe('a running footer after page one', () => {
+  it('DOCX: "Name · Page X of Y" on every page but the first, nothing on a single page', async () => {
+    const z = await JSZip.loadAsync(await generateAtsDocx(FULL, null))
+    const names = Object.keys(z.files).filter(n => /word\/footer\d+\.xml$/.test(n))
+    expect(names.length).toBe(2)
+    const xmls = await Promise.all(names.map(n => z.file(n).async('string')))
+    const withText = xmls.filter(x => /PAGE/.test(x))
+    expect(withText.length).toBe(1)
+    expect(withText[0]).toMatch(/NUMPAGES/)
+    expect(withText[0]).toContain('Wanjiru Mwangi')
+    expect(xmls.find(x => !/PAGE/.test(x)).replace(/<[^>]+>/g, '').trim()).toBe('')
+    const doc = await z.file('word/document.xml').async('string')
+    expect(doc).toMatch(/<w:titlePg\/>/)
+    expect(doc).toMatch(/w:footer="400"/)
+  })
+  it('DOCX without a name still gets "Page X of Y"', async () => {
+    const z = await JSZip.loadAsync(await generateAtsDocx({ skills: ['x'] }, null))
+    const xmls = await Promise.all(Object.keys(z.files).filter(n => /word\/footer\d+\.xml$/.test(n)).map(n => z.file(n).async('string')))
+    expect(xmls.some(x => /Page /.test(x) && /PAGE/.test(x))).toBe(true)
+  })
+  it('PDF template: margin-box footer after page one, with the name safely escaped', () => {
+    const html = buildResumeHTML({ name: 'Wanjiru "Wa\\" <Mwangi>' , skills: ['x'] }, { paper: 'a4' }, null)
+    expect(html).toMatch(/@bottom-center \{ content: "Wanjiru Wa Mwangi  \\00B7  Page " counter\(page\) " of " counter\(pages\)/)
+    expect(html).toMatch(/@page :first \{ @bottom-center \{ content: none \} \}/)
+    expect(buildResumeHTML({ skills: ['x'] }, {}, null)).toMatch(/content: "Page " counter\(page\)/)
+  })
+})
+
+describe('very long unbroken strings stay on the page', () => {
+  it('sets overflow-wrap on the page body of the resume and the letter', () => {
+    expect(buildResumeHTML({ name: 'A' }, {}, null)).toMatch(/overflow-wrap: anywhere/)
+    expect(buildCoverLetterHTML('Hi', { name: 'A' }, {}, {})).toMatch(/overflow-wrap: anywhere/)
+  })
+})

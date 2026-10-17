@@ -1,4 +1,4 @@
-const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopType, BorderStyle } = require('docx')
+const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopType, BorderStyle, Footer, PageNumber, AlignmentType } = require('docx')
 const { hrefFor } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
@@ -155,7 +155,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   if (resumeData.skills?.length) {
     sec.skills.push(heading('SKILLS'))
-    sec.skills.push(plain(resumeData.skills.join(' · ')))
+    sec.skills.push(plain(resumeData.skills.map(stripBullet).filter(x => String(x).trim()).join(' · ')))
   }
 
   if (resumeData.certifications?.length) {
@@ -198,7 +198,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   }
   if (resumeData.languages?.length) {
     sec.languages.push(heading('LANGUAGES'))
-    sec.languages.push(plain(resumeData.languages.join(' · ')))
+    sec.languages.push(plain(resumeData.languages.map(stripBullet).filter(x => String(x).trim()).join(' · ')))
   }
 
   // Section order. With job history: Experience > Projects > Education (the usual US/UK order). Without any (a student,
@@ -225,7 +225,18 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     description: 'ATS-friendly resume',
     styles: buildStyles(d),
     sections: [{
-      properties: { page: { size, margin: { top: d.marginTB, bottom: d.marginTB, left: d.marginLR, right: d.marginLR } } },
+      // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
+      // separate, and a recruiter should be able to tell whose page 2 it is. The first page has an empty footer so a
+      // one-page resume carries nothing extra. The footer sits close to the page edge (400) so it never eats into the
+      // bottom margin the fit calibration was measured with.
+      properties: { titlePage: true, page: { size, margin: { top: d.marginTB, bottom: d.marginTB, left: d.marginLR, right: d.marginLR, footer: 400, header: 400 } } },
+      footers: {
+        default: new Footer({ children: [new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ children: [resumeData.name ? `${resumeData.name}  ·  Page ` : 'Page ', PageNumber.CURRENT, ' of ', PageNumber.TOTAL_PAGES], size: 16, color: MUTED })],
+        })] }),
+        first: new Footer({ children: [new Paragraph({ children: [] })] }),
+      },
       children,
     }],
   })

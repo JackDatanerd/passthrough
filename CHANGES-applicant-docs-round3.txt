@@ -1,0 +1,24 @@
+APPLICANT-FACING DOCUMENTS - round 3 (base: upstream f8b3348; template is now the primary delivered PDF)
+Findings of the independent third pass, all closed. No migration, no new dependency.
+
+Bugs fixed
+- B1  Section dividers were nearly invisible. The rule under each heading (and under the cover letter's contact line) was drawn in
+      the palette's `accent`, a pale tint at 1.1-1.4 contrast against white on most palettes - gone on screen and on paper.
+      It is now the palette's primary lightened toward white (ruleColor in pdfTemplate.service.js), contrast > 1.8 on every palette.
+- B2  Free-draft download (ResumeDataEditor.jsx) ignored the server's filename and built its own stem without accent handling:
+      "Jose Nunez" downloaded as jose-nu-n-ez-resume-draft.docx. It now saves with saveBlobResponse (server name wins).
+- B3  Skills and languages kept a pasted bullet glyph ("• SQL · - Python"): stripBullet now covers them in the DOCX and the PDF.
+
+Gaps closed
+- G1  Multi-page resumes now identify their pages: DOCX footer "Name · Page X of Y" on every page after the first (first page
+      footer empty, so a one-page resume carries nothing; footer distance 400 twips so the measured fit capacity is unchanged -
+      the 28-size sweep still has no near-miss spills); PDF template uses @page margin boxes with the same text after page one
+      (the name is sanitised for the CSS string; an engine without margin-box support ignores them harmlessly).
+- G2  overflow-wrap: anywhere on the page body (resume and letter): a very long unbroken token (170-char URL) no longer runs
+      off the page edge.
+
+Still open / not verifiable here
+- Chromium and Word behaviour (margin-box support and PDF text order in Chromium, blank last page, template fonts on Cloudflare's
+  Chromium - the template is now everyone's PDF and uses system font stacks only). WeasyPrint/LibreOffice renders were checked.
+- Owner decisions: embedding fonts in the template; refunded/disputed purchases keep downloadable files.
+- Low: cover letters over ~390 words spill a few lines onto page 2 of the PDF; no right-to-left layout.
