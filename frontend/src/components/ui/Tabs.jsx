@@ -16,7 +16,13 @@ export function Tabs({ tabs, value, onChange, idPrefix, ariaLabel, className, ta
   const refs = useRef({})
   const enabled = tabs.filter(t => !t.disabled)
 
+  // The one tab stop: the selected tab, or — when `value` matches no enabled tab (removed, disabled, not set yet) — the first
+  // enabled one, so the strip is never unreachable from the keyboard.
+  const stopId = enabled.some(t => t.id === value) ? value : enabled[0]?.id
+
   function onKeyDown(e, id) {
+    // Alt/Cmd+Arrow is the browser's Back/Forward; Ctrl+Arrow belongs to the OS/screen reader. Not ours to swallow.
+    if (e.altKey || e.ctrlKey || e.metaKey) return
     const at = enabled.findIndex(t => t.id === id)
     let next = null
     if (e.key === 'ArrowRight') next = enabled[(at + 1) % enabled.length]
@@ -42,7 +48,7 @@ export function Tabs({ tabs, value, onChange, idPrefix, ariaLabel, className, ta
             id={tabId(idPrefix, t.id)}
             aria-selected={on}
             aria-controls={panelId(idPrefix, t.id)}
-            tabIndex={on ? 0 : -1}
+            tabIndex={t.id === stopId ? 0 : -1}
             disabled={t.disabled}
             onClick={() => onChange?.(t.id)}
             onKeyDown={e => onKeyDown(e, t.id)}

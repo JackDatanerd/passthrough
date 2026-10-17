@@ -7,6 +7,8 @@ import { cn } from '../../lib/utils'
 // start; being able to look at what was typed removes the guesswork.
 const PasswordInput = forwardRef(function PasswordInput({ className, ...props }, ref) {
   const [shown, setShown] = useState(false)
+  // Two password fields on one form (new + confirm) used to give two identical "Show password" buttons; name the field.
+  const named = typeof props.label === 'string' && props.label.trim() && !/^password$/i.test(props.label.trim()) ? `: ${props.label.trim()}` : ''
   return (
     <Input
       ref={ref}
@@ -19,7 +21,7 @@ const PasswordInput = forwardRef(function PasswordInput({ className, ...props },
         <button
           type="button"
           onClick={() => setShown(s => !s)}
-          aria-label={shown ? 'Hide password' : 'Show password'}
+          aria-label={`${shown ? 'Hide' : 'Show'} password${named}`}
           className="absolute inset-y-0 right-0 px-3 text-xs font-medium text-gray-500 hover:text-gray-800 rounded-r-md focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
           {shown ? 'Hide' : 'Show'}

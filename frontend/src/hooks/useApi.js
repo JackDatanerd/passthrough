@@ -71,6 +71,8 @@ export function useApi() {
     }
     const id = ++callId.current
     if (replace) {
+      // Documented behaviour (pinned by tests): EVERY other call still running on this hook is pushed aside, so use one
+      // hook per "latest wins" family (a search box), never share it with a save.
       controllers.current.forEach((c, otherId) => { if (otherId !== id) { superseded.current.add(otherId); c.abort() } })
     }
     const controller = !keepAlive && typeof AbortController !== 'undefined' ? new AbortController() : null
@@ -85,6 +87,8 @@ export function useApi() {
         }
       }
       const res = await apiCall(callOptions)
+      // Pushed aside while it was in flight and the caller ignored the signal: its data must not be applied over the newer call's.
+      if (superseded.current.has(id)) { const gone = new Error('A newer request replaced this one.'); gone.name = 'AbortError'; throw gone }
       // apiCall is usually `() => api.post(...)`, but callers sometimes do more
       // work in there (claim a resource, navigate) and don't care about the
       // return value — don't crash on `res.data` if apiCall didn't resolve to

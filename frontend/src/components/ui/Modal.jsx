@@ -93,6 +93,12 @@ const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-lg', xl: 'max-w-2xl' 
 
 export default function Modal({ open, onClose, title, children, dismissible = true, ariaLabel, describedBy, size = 'md' }) {
   const titleId = useId()
+  // A dialog with neither a title nor an ariaLabel has no accessible name (Select/Switch warn the same way).
+  const unnamed = open && !title && !ariaLabel
+  useEffect(() => {
+    if (unnamed && import.meta.env?.DEV && import.meta.env?.MODE !== 'test')
+      console.warn('<Modal> has no accessible name: pass `title` or `ariaLabel`.')
+  }, [unnamed])
   const dialogRef = useRef(null)
   const onCloseRef = useRef(onClose)
   const dismissibleRef = useRef(dismissible)

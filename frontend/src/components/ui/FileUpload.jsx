@@ -111,7 +111,11 @@ export default function FileUpload({
           e.preventDefault(); dragDepth.current = 0; setDrag(false)
           if (!disabled) handle(e.dataTransfer.files)
         }}
-        onDragOver={e => e.preventDefault()}
+        onDragOver={e => {
+          e.preventDefault()
+          // A disabled zone must not advertise itself as a drop target (the drop is ignored).
+          if (disabled && e.dataTransfer) e.dataTransfer.dropEffect = 'none'
+        }}
         // BUG FIX (audit): these two previously ignored `disabled`, so
         // dragging a file over a disabled dropzone still lit it up blue as
         // if it were droppable — onDrop already correctly no-ops when

@@ -39,7 +39,16 @@ export default function Menu({
       const h = list.current?.offsetHeight || 0
       const below = r.bottom + 4
       const top = below + h > window.innerHeight && r.top - 4 - h >= 0 ? r.top - 4 - h : below
-      setPos(align === 'left' ? { top, left: r.left } : { top, right: Math.max(0, document.documentElement.clientWidth - r.right) })
+      // Clamped so the list never spills past either viewport edge (it is min-w-56 wide, anchored to one side of the trigger).
+      const vw = document.documentElement.clientWidth
+      const w = list.current?.offsetWidth || 0
+      const MARGIN = 8
+      const maxLeft = Math.max(MARGIN, vw - w - MARGIN)
+      if (align === 'left') setPos({ top, left: Math.min(Math.max(MARGIN, r.left), maxLeft) })
+      else {
+        const left = Math.min(Math.max(MARGIN, r.right - w), maxLeft)
+        setPos({ top, left })
+      }
     }
     place()
     const onScroll = e => { if (!(e.target instanceof Node && list.current?.contains(e.target))) setOpen(false) }   // the target can be window/document
@@ -112,7 +121,7 @@ export default function Menu({
           // remembers the trigger (still on the page) as where to return focus — not the item that is about to unmount.
           onClickCapture={e => { if (e.target instanceof Element && e.target.closest(ITEM)) close() }}
           style={pos ? { position: 'fixed', ...pos } : undefined}
-          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', align === 'left' ? 'left-0' : 'right-0', menuClassName)}
+          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', !pos && (align === 'left' ? 'left-0' : 'right-0'), menuClassName)}
         >{children}</div>
       )}
     </div>

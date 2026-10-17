@@ -1,0 +1,8 @@
+Shared frontend (section 11) round 15
+- Tabs: arrow keys ignore Alt/Ctrl/Cmd (browser Back/Forward no longer swallowed); one tab stop always exists (falls back to first enabled tab).
+- FileUpload: a disabled dropzone sets dropEffect 'none' instead of advertising a drop it ignores.
+- Menu: list clamped inside the viewport horizontally (both alignments).
+- PasswordInput: Show/Hide button names its field when the label is specific ("Show password: Confirm password").
+- Modal: dev warning when it has neither title nor ariaLabel.
+- useApi: a call pushed aside by replace:true whose caller ignored the signal is refused (AbortError) instead of returning stale data; doc comment now says replace pushes aside EVERY other call on the hook.
+- Tests: frontend/tests/sharedFrontend.section11.round15.test.jsx
