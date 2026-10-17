@@ -183,8 +183,13 @@ describe('prompts are consistent with their own guards (static checks)', () => {
   it('both the baseline read and every retry carry the honesty clause; a guard rejection does not need it', () => {
     expect(feedbackFor({ score: 61, threshold: 80, baseline: true, weakAreas: ['x'] })).toContain(HONEST_CLAUSE)
     expect(feedbackFor({ score: 70, threshold: 80, weakAreas: ['x'] })).toContain(HONEST_CLAUSE)
+    for (const fb of [feedbackFor({ score: 61, threshold: 80, baseline: true, weakAreas: ['x'] }), feedbackFor({ score: 70, threshold: 80, weakAreas: ['x'] })])
+      expect(fb).not.toMatch(/\b(?:61|70|80)\b|\/100/)                    // the writer is never handed a score or a target
     expect(feedbackFor({ score: 70, threshold: 80, weakAreas: ['x'] })).not.toMatch(/meaningfully strengthen/)
     expect(feedbackFor(null)).toBe('')
   })
-  it('prompt version was bumped for this generation', () => { expect(claude.PROMPT_VERSION).toBe('docgen-2026-10-v3') })
+  it('prompt versions are per prompt, so a change in one can be told apart from a change in another', () => {
+    expect(claude.PROMPT_VERSION).toBe('docgen-rewrite4.score4.extract4')
+    expect(claude.LETTER_PROMPT_VERSION).toBe('docgen-letter4')
+  })
 })

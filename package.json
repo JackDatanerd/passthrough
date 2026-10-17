@@ -15,7 +15,8 @@
     "lint":       "node scripts/lint-undefined.cjs",
     "bundle-check": "wrangler deploy --dry-run --outdir=.wrangler/dry-run",
     "predeploy":  "npm run lint && npm run test:worker",
-    "eval:prompts": "node scripts/prompt-eval.cjs"
+    "eval:prompts": "node scripts/prompt-eval.cjs",
+    "eval:dry": "node scripts/prompt-eval.cjs --dry-run"
   },
   "dependencies": {
     "@supabase/supabase-js":  "^2.39.0",

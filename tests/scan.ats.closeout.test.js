@@ -142,14 +142,26 @@ describe('callClaude retries transient failures (through scoreResumeWithAI)', ()
   afterEach(() => { globalThis.fetch = realFetch })
   const ok = text => ({ ok: true, status: 200, json: async () => ({ content: [{ type: 'text', text }], stop_reason: 'end_turn' }) })
   const err = status => ({ ok: false, status, headers: { get: () => null }, json: async () => ({ error: { message: `e${status}` } }) })
-  it('a 529 then a success succeeds', async () => {
+  it('a 529 then a success succeeds (requirements pass retried once, then the judging pass)', async () => {
+    const claude = await import('../src/services/claude.service.js'); claude._clearRequirementsCache()
     let n = 0
     globalThis.fetch = async () => (++n === 1 ? err(529) : ok(CHECKLIST_TEXT))
     const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
-    expect(n).toBe(2)
+    expect(n).toBe(3)
+  })
+  it('the posting\'s requirement list is measured once and reused: a second score of the same job costs one call, not two', async () => {
+    const claude = await import('../src/services/claude.service.js'); claude._clearRequirementsCache()
+    let n = 0
+    globalThis.fetch = async () => { n++; return ok(CHECKLIST_TEXT) }
+    const a = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)
+    const b = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT + ' Also did more.', JD_TEXT)
+    expect(a.success && b.success).toBe(true)
+    expect(n).toBe(3)                                              // requirements once + two judging passes
+    expect(JSON.parse(b.data).checklist.requirementsCached).toBe(true)
   })
   it('a 401 is not retried', async () => {
+    const claude = await import('../src/services/claude.service.js'); claude._clearRequirementsCache()
     let n = 0
     globalThis.fetch = async () => { n++; return err(401) }
     const r = await scoreResumeWithAI({ ANTHROPIC_API_KEY: 'k' }, RESUME_TEXT, JD_TEXT)

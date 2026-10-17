@@ -181,13 +181,15 @@ describe('rewrite prompt', () => {
     expect(claude.levelGuidance('executive', true)).toMatch(/LEADERSHIP/)
     expect(claude.levelGuidance('mid', true)).toMatch(/MID-LEVEL/)
   })
-  it('the first attempt is told how the upload scores (baseline feedback), a retry is told it is a retry', async () => {
+  it('the first attempt is told what is weak in the upload (baseline feedback, never a score to chase), a retry is told it is a retry', async () => {
     const f = captureFetch(good); vi.stubGlobal('fetch', f)
     await claude.rewriteResumeContent({ ANTHROPIC_API_KEY: 'k' }, base, jd, { score: 61, threshold: 80, baseline: true, weakAreas: ['no professional summary'] }, base, {})
-    expect(f.bodies[0].messages[0].content).toMatch(/resume as it stands scores 61\/100/)
+    expect(f.bodies[0].messages[0].content).toMatch(/screening the resume as it stands would find these weak: no professional summary/)
+    expect(f.bodies[0].messages[0].content).not.toMatch(/\b61\b|\b80\b|\/100/)         // no number to chase: that is a gradient toward keyword stuffing
     expect(f.bodies[0].messages[0].content).not.toMatch(/this is a retry/)
     await claude.rewriteResumeContent({ ANTHROPIC_API_KEY: 'k' }, base, jd, { score: 70, threshold: 80, weakAreas: ['x'] }, base, {})
     expect(f.bodies[1].messages[0].content).toMatch(/this is a retry/)
+    expect(f.bodies[1].messages[0].content).not.toMatch(/\b70\b|\b80\b|\/100/)
   })
   it('rejects a rewrite that guts the bullets with CONTENT_LOST, and a fabricated one with FABRICATION_DETECTED', async () => {
     const gutted = clone(base); gutted.experience.forEach(e => { e.bullets = [] })
@@ -259,14 +261,59 @@ describe('cover letter v2', () => {
     vi.stubGlobal('fetch', captureFetch(bad, bad, bad))
     expect((await claude.generateCoverLetter(opts, short, jd)).success).toBe(false)
   })
-  it('strips a preamble before the salutation, and rejects a letter with no sign-off or the wrong last line', async () => {
+  it('strips a preamble before the salutation; the sign-off and name are supplied by code, so a missing or wrong one is repaired, not failed', async () => {
     vi.stubGlobal('fetch', captureFetch('Here is your letter:\n\n' + letter()))
     const r = await claude.generateCoverLetter(opts, base, jd)
     expect(r.success).toBe(true)
     expect(r.data.startsWith('Dear Hiring Manager,')).toBe(true)
     const noSign = letter().replace(/\n\nSincerely,\nAmina Otieno$/, '')
-    vi.stubGlobal('fetch', captureFetch(noSign, noSign, noSign))
-    expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(false)
+    vi.stubGlobal('fetch', captureFetch(noSign))
+    const repaired = await claude.generateCoverLetter(opts, base, jd)
+    expect(repaired.success).toBe(true)
+    expect(repaired.data.endsWith('\n\nSincerely,\nAmina Otieno')).toBe(true)
+    const wrongName = letter().replace(/Amina Otieno$/, 'Someone Else')
+    vi.stubGlobal('fetch', captureFetch(wrongName))
+    expect((await claude.generateCoverLetter(opts, base, jd)).data.endsWith('\n\nSincerely,\nAmina Otieno')).toBe(true)
+  })
+  it('never guesses an honorific: a typed recipient is used exactly as given; a UK posting gets Yours sincerely / Yours faithfully', async () => {
+    const withMs = letter().replace('Dear Hiring Manager,', 'Dear Ms. Smith,')
+    vi.stubGlobal('fetch', captureFetch(withMs))
+    const us = await claude.generateCoverLetter(opts, base, jd, { recipient: 'Sam Smith' })
+    expect(us.data.startsWith('Dear Sam Smith,')).toBe(true)
+    expect(us.data).not.toMatch(/Ms\.|Mr\./)
+    const ukJd = 'Operations analyst. Organisation of the programme and colour-coded reports in London.'
+    vi.stubGlobal('fetch', captureFetch(letter()))
+    const named = await claude.generateCoverLetter(opts, base, ukJd, { recipient: 'Sam Smith' })
+    expect(named.data.endsWith('\n\nYours sincerely,\nAmina Otieno')).toBe(true)
+    const anon = await claude.generateCoverLetter(opts, base, ukJd)
+    expect(anon.data.startsWith('Dear Hiring Manager,')).toBe(true)
+    expect(anon.data.endsWith('\n\nYours faithfully,\nAmina Otieno')).toBe(true)
+  })
+  it('accepts the evidence-first JSON reply, and retries when an evidence quote is not in the resume', async () => {
+    const ev = [{ need: 'weekly reporting', quote: 'Responsible for weekly reporting to management' }]
+    const good = JSON.stringify({ evidence: ev, letter: letter() })
+    const f = captureFetch(good); vi.stubGlobal('fetch', f)
+    const r = await claude.generateCoverLetter(opts, base, jd)
+    expect(r.success).toBe(true); expect(f).toHaveBeenCalledTimes(1)
+    expect(r.data.startsWith('Dear ')).toBe(true); expect(r.data).not.toMatch(/"letter"|evidence/)
+    const fake = JSON.stringify({ evidence: [{ need: 'weekly reporting', quote: 'Led a 40-person analytics division at Google' }], letter: letter() })
+    const f2 = captureFetch(fake, good); vi.stubGlobal('fetch', f2)
+    const r2 = await claude.generateCoverLetter(opts, base, jd)
+    expect(r2.success).toBe(true); expect(f2).toHaveBeenCalledTimes(2)
+    expect(f2.bodies[1].messages[0].content).toMatch(/evidence quote is not in the resume/)
+    const broken = '{"evidence": [], "letter": "Dear X, unterminated'
+    vi.stubGlobal('fetch', captureFetch(broken, broken, broken))
+    expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(false)     // never delivers raw JSON
+  })
+  it('the gaps list comes from the scorer, picks the model letter, and is clipped; no list means no gap talk is requested', async () => {
+    const f = captureFetch(letter()); vi.stubGlobal('fetch', f)
+    await claude.generateCoverLetter(opts, base, jd, { knownGaps: ['Kubernetes <b>', 'Terraform', 'Go', 'extra fourth'] })
+    expect(f.bodies[0].messages[0].content).toMatch(/<known_gaps>\nKubernetes b\nTerraform\nGo\n<\/known_gaps>/)
+    expect(f.bodies[0].system).toMatch(/one honest gap/)
+    const f2 = captureFetch(letter()); vi.stubGlobal('fetch', f2)
+    await claude.generateCoverLetter(opts, base, jd)
+    expect(f2.bodies[0].messages[0].content).toMatch(/<known_gaps>\n\(none\)\n<\/known_gaps>/)
+    expect(f2.bodies[0].system).toMatch(/strong fit/)
   })
   it('placeholders are still retried and rejected', async () => {
     const bad = letter('I would love to join [Company Name] and bring weekly reporting that management can trust to your team. '.repeat(2))
@@ -399,10 +446,21 @@ describe('ats feedback — craft signals and the summary note (scores unchanged)
     expect(r.detail.content.craft).toBeTruthy()
     expect(Math.abs(r.score - again.score)).toBeLessThanOrEqual(12)       // the verb list moves the content score as before; craft adds nothing of its own
   })
-  it('semantic (AI) missing keywords are offered alongside the rule-based ones', () => {
+  it('terms the semantic read calls genuinely MISSING are never named to the writer; partial ones are offered with a boundary', () => {
     const r = ats.scoreResume(text, 'Data Analyst Tableau Looker Snowflake dbt reporting')
-    const notes = ats.describeWeakAreas({ ...r, keywordScore: 30, aiMissingKeywords: ['data modelling'] }).join(' | ')
-    expect(notes).toContain('data modelling')
+    const gap = (r.detail?.keywords?.missing || [])[0]
+    expect(gap, 'fixture should have a rule-missing term').toBeTruthy()
+    const notes = ats.describeWeakAreas({ ...r, keywordScore: 30, aiMissingKeywords: ['data modelling', gap], aiPartialKeywords: ['stakeholder reporting'] }).join(' | ')
+    expect(notes).not.toContain('data modelling')                    // a real gap: naming it only invites stuffing
+    expect(notes.toLowerCase()).not.toContain(String(gap).toLowerCase())
+    expect(notes).toContain('stakeholder reporting')                  // touched but not shown: say so plainly, where a bullet supports it
+    expect(notes).toMatch(/ONLY where a bullet genuinely shows|only touches/)
+  })
+  it('when every missing term is a genuine gap the writer is told to add none', () => {
+    const r = ats.scoreResume(text, 'Data Analyst Tableau Looker')
+    const all = r.detail?.keywords?.missing || []
+    const notes = ats.describeWeakAreas({ ...r, keywordScore: 30, aiMissingKeywords: all, aiPartialKeywords: [] }).join(' | ')
+    expect(notes).toMatch(/do not add any term the resume does not already support/)
   })
 })
 

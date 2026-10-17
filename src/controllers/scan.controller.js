@@ -40,6 +40,7 @@ const storage        = require('../config/storage')
 const { getSupabase } = require('../config/supabase')
 const cryptoLib       = require('../lib/crypto')
 const { utcMidnight }   = require('../lib/utcDay')
+const { isBorderline, pickMedian } = require('../lib/aiScoreSampling')
 const { badgeBlock }     = require('../lib/badgeGate')
 
 // AUDIT FIX (Scan pass): anon_token is a bearer capability (read access to an
@@ -808,15 +809,27 @@ function aiScoreIsUsable(aiResult) {
     return typeof parsed.aiScore === 'number' && Number.isFinite(parsed.aiScore)
   } catch (_) { return false }
 }
-async function fetchAiScore(env, text, jdText, logLabel) {
+async function fetchAiScore(env, text, jdText, logLabel, ruleScore = null) {
   let last = { success: false }
   for (let i = 0; i < 2; i++) {
     try {
       last = await claudeService.scoreResumeWithAI(env, text, jdText)
-      if (aiScoreIsUsable(last)) return last
+      if (aiScoreIsUsable(last)) break
     } catch (e) { console.error(`${logLabel} AI score call failed (attempt ${i + 1}):`, e.message) }
   }
-  return last
+  if (!aiScoreIsUsable(last)) return last
+  // Borderline: when the BLENDED number lands within a point of the pass or credential line, the AI half is sampled twice
+  // more and the median taken, so the verdict does not turn on one draw. Everything else costs the one call it always did.
+  const firstAi = claudeService.extractJson(last.data).aiScore
+  if (!isBorderline(ruleScore, firstAi, c, AI_MAX_ABOVE_RULE)) return last
+  const samples = [{ result: last, ai: firstAi }]
+  for (let i = 0; i < 2; i++) {
+    try {
+      const r = await claudeService.scoreResumeWithAI(env, text, jdText)
+      if (aiScoreIsUsable(r)) samples.push({ result: r, ai: claudeService.extractJson(r.data).aiScore })
+    } catch (e) { console.error(`${logLabel} borderline re-score failed:`, e.message) }
+  }
+  return pickMedian(samples).result
 }
 
 // A score with no AI half is NOT the same measurement as a blended one, so it may never carry the credential:
@@ -825,6 +838,7 @@ async function fetchAiScore(env, text, jdText, logLabel) {
 function blendAiScore(ruleScore, aiResult, logLabel) {
   let finalScore = ruleScore
   let aiMissingKeywords = []
+  let aiPartialKeywords = []
   let aiBlended = false
   if (aiResult.success) {
     try {
@@ -834,6 +848,9 @@ function blendAiScore(ruleScore, aiResult, logLabel) {
         finalScore = Math.round((ruleScore * c.ATS_RULE_WEIGHT) + (ai * c.ATS_AI_WEIGHT))
         aiBlended = true
       }
+      if (Array.isArray(parsed.checklist?.requirements))
+        aiPartialKeywords = parsed.checklist.requirements
+          .filter(r => r && r.status === 'partial' && !r.computed && typeof r.requirement === 'string' && r.requirement.length <= 60).map(r => r.requirement).slice(0, 8)
       if (Array.isArray(parsed.missingKeywords))
         aiMissingKeywords = parsed.missingKeywords
           .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 15)
@@ -847,7 +864,7 @@ function blendAiScore(ruleScore, aiResult, logLabel) {
     console.error(`${logLabel} scored without the AI half - held below the credential threshold`)
     finalScore = Math.min(finalScore, c.ATS_BADGE_THRESHOLD - 1)
   }
-  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords, aiBlended }
+  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords, aiPartialKeywords, aiBlended }
 }
 
 async function getScan(ctx) {
@@ -986,7 +1003,7 @@ async function updateResumeData(ctx) {
   const rawResumeText = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
-  const aiResult = await fetchAiScore(ctx.env, rawResumeText, jdText, 'updateResumeData')
+  const aiResult = await fetchAiScore(ctx.env, rawResumeText, jdText, 'updateResumeData', ruleResult.score)
   const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
   const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
 
@@ -1451,8 +1468,14 @@ async function generateCoverLetter(ctx) {
     tone:      z.enum(['warm', 'direct', 'formal']).optional(),
   }).safeParse(rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {})
   if (!steer.success) return ctx.json({ success: false, message: 'Those letter options are not valid.' }, 400)
+  // What the posting asks for that the DELIVERED resume does not show (the scorer's genuinely-missing requirements, most
+  // important first), so the letter addresses at most one real gap - and none when there is none - instead of the model
+  // deciding on its own that the candidate lacks something.
+  const gapSource = Array.isArray(scan.fixAtsReport?.aiMissingKeywords) && scan.fixAtsReport.aiMissingKeywords.length
+    ? scan.fixAtsReport.aiMissingKeywords : scan.fullAtsReport?.aiMissingKeywords
   const result = await claudeService.generateCoverLetter(ctx.env, data, jdText, {
-    ...steer.data, jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel
+    ...steer.data, jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel,
+    knownGaps: Array.isArray(gapSource) ? gapSource.filter(g => typeof g === 'string').slice(0, 3) : [],
   })
   if (!result.success) {
     console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
@@ -1470,7 +1493,7 @@ async function generateCoverLetter(ctx) {
     return ctx.json({ success: false, message: 'Your resume changed while the letter was being written. Please try again.' }, 409)
   // Which prompt generation wrote it (migration 0094) - best-effort and AFTER the letter is stored, so a worker deployed
   // before the migration still delivers the letter.
-  try { await supabase.from('scans').update({ letter_prompt_version: claudeService.PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
+  try { await supabase.from('scans').update({ letter_prompt_version: claudeService.LETTER_PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
   return ctx.json({ success: true, data: { coverLetterText: result.data } })
 }
 
@@ -2429,7 +2452,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     const ruleResult = atsService.scoreResume(resumeText, jdText, { structure: layoutStructure })
 
     // AI blend — 70% rule + 30% AI, never fail scan if AI unavailable
-    const aiResult = await fetchAiScore(env, resumeText, jdText, 'runAtsScan')
+    const aiResult = await fetchAiScore(env, resumeText, jdText, 'runAtsScan', ruleResult.score)
     const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
 
     // Checked: this is THE write that completes the scan. If it fails the
@@ -2728,7 +2751,7 @@ async function cleanupUndeliveredKeys(env, supabase, scanId, keys) {
 async function computeFormattedScore(env, resumeData, jdText, label) {
   const text = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const rule = atsService.scoreResume(text, jdText)
-  const ai = await fetchAiScore(env, text, jdText, label)
+  const ai = await fetchAiScore(env, text, jdText, label, rule.score)
   const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, ai, label)
   return { finalScore, aiMissingKeywords, rule }
 }
@@ -2744,9 +2767,9 @@ async function computeFormattedScore(env, resumeData, jdText, label) {
 // other. If the AI call fails this degrades to rule-only, exactly as a scan does.
 async function scoreLikeScan(env, text, jdText, logLabel) {
   const rule = atsService.scoreResume(text, jdText)
-  const aiResult = await fetchAiScore(env, text, jdText, logLabel)
-  const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, aiResult, logLabel)
-  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords }
+  const aiResult = await fetchAiScore(env, text, jdText, logLabel, rule.score)
+  const { finalScore, aiMissingKeywords, aiPartialKeywords } = blendAiScore(rule.score, aiResult, logLabel)
+  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiPartialKeywords }
 }
 
 // The breakdown persisted as scans.fix_ats_report for a DELIVERED file (same shape as

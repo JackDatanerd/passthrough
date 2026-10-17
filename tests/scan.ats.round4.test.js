@@ -254,12 +254,14 @@ describe('claude cost ledger', () => {
   }
   it('a call reports its token usage, label and model to the job\'s collector', async () => {
     vi.stubGlobal('fetch', fakeFetch({ input_tokens: 1200, output_tokens: 80 }))
+    claude._clearRequirementsCache()
     const env = { ANTHROPIC_API_KEY: 'k', __usage: [] }
     const r = await claude.scoreResumeWithAI(env, RESUME_TEXT, JD_TEXT)
     expect(r.success).toBe(true)
     expect(r.usage).toEqual({ input_tokens: 1200, output_tokens: 80 })
-    expect(env.__usage).toHaveLength(1)
-    expect(env.__usage[0]).toMatchObject({ label: 'score', input_tokens: 1200, output_tokens: 80 })
+    // two passes: the posting's requirement list (cached afterwards), then the judging of the resume - both on the ledger
+    expect(env.__usage.map(u => u.label)).toEqual(['score_requirements', 'score'])
+    expect(env.__usage[1]).toMatchObject({ label: 'score', input_tokens: 1200, output_tokens: 80 })
     vi.unstubAllGlobals()
   })
   it('without a collector nothing breaks', async () => {

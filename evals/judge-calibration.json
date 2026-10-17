@@ -1,0 +1,4 @@
+{
+  "instructions": "Add 20+ pairs YOU have judged. Each pair: { id, jd, original (resume object), rewrite (resume object), human: 'rewrite' | 'original' | 'tie' } where human is which version YOU think would get the interview for that posting. Take real rewrites from delivered fixes (scans.rewritten_resume_data vs original_resume_data) rather than synthetic ones, and include cases where the rewrite is worse. `npm run eval:prompts -- --calibrate` reports how often the judge agrees with you; trust a judge win-rate only when agreement is 80% or better.",
+  "pairs": []
+}

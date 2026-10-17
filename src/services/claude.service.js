@@ -4,17 +4,20 @@
 
 const { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk } = require('../lib/careerFacts')
 const { isUkSpelling } = require('./design.service')
-const { SCORE_SYSTEM, buildScoreUser } = require('../prompts/score')
+const { SCORE_SYSTEM, REQUIREMENTS_SYSTEM, buildScoreUser, buildRequirementsUser } = require('../prompts/score')
+const { FIX_PROMPT_VERSION, LETTER_PROMPT_VERSION, PROMPT_VERSIONS, LETTER_WORDS, BUZZ_WORDS, buzzAlternation } = require('../prompts/constants')
 const { REWRITE_SYSTEM, levelGuidance, feedbackFor } = require('../prompts/rewrite')
-const { LETTER_SYSTEM } = require('../prompts/letter')
-const { STRUCTURE_SYSTEM, FREEFORM_SYSTEM } = require('../prompts/extract')
-const { computeChecklistScore } = require('../lib/atsChecklist')
-const { findRewriteStyleProblems } = require('../lib/rewriteStyle')
+const { LETTER_SYSTEM, letterSystemFor, pickLetterKind } = require('../prompts/letter')
+const { STRUCTURE_SYSTEM, FREEFORM_SYSTEM, STRUCTURE_EXTRAS, FREEFORM_EXTRAS } = require('../prompts/extract')
+const { computeChecklistScore, normalizeRequirements, mergeJudgement, canon: canonText, quoteInResume, tokenSet: tokenSetOf, mostlyIn } = require('../lib/atsChecklist')
+const { findRewriteStyleProblems, findProvenanceProblems, findRenameProblems } = require('../lib/rewriteStyle')
 
 // Stamped on every delivered fix and cover letter (scans.prompt_version / letter_prompt_version, migration 0094) so
 // the outcomes people report (interview / no interview) can be compared across prompt generations. Bump it on ANY
 // change to a document-writing prompt or to a guard that changes what the model may write.
-const PROMPT_VERSION = 'docgen-2026-10-v3'
+// Per-prompt generations live in prompts/constants.js (PROMPT_VERSIONS), so a change in one prompt can be told apart from
+// a change in another. PROMPT_VERSION stamps a delivered fix (rewrite + score + extraction); LETTER_PROMPT_VERSION a letter.
+const PROMPT_VERSION = FIX_PROMPT_VERSION
 
 function model(env) {
   return env.ANTHROPIC_MODEL || 'claude-sonnet-4-6'
@@ -75,14 +78,34 @@ const sleep = ms => new Promise(r => setTimeout(r, ms))
 // itself to it so the job can write one ledger row per call when it finishes.
 function trackUsage(env, label, usage) {
   if (!usage) return
+  // With prompt caching on (PROMPT_CACHE), the API reports cached tokens in two extra fields and EXCLUDES them from
+  // input_tokens. The ledger has one input column, so cached tokens are folded in as billing-equivalents (a cache write
+  // bills at 1.25x the input price, a cache read at 0.1x) - turning caching on can then never make the ledger under-report.
+  const created = Number(usage.cache_creation_input_tokens) || 0
+  const read = Number(usage.cache_read_input_tokens) || 0
   const entry = {
     label: label || 'unlabelled',
     model: model(env),
-    input_tokens:  Number(usage.input_tokens)  || 0,
+    input_tokens:  (Number(usage.input_tokens) || 0) + Math.round(created * 1.25) + Math.round(read * 0.1),
     output_tokens: Number(usage.output_tokens) || 0,
+    ...(created || read ? { cache_created: created, cache_read: read } : {}),
   }
   if (env && Array.isArray(env.__usage)) env.__usage.push(entry)
   console.log('[claude-usage]', JSON.stringify(entry))
+}
+
+// PROMPT CACHING (opt-in, env PROMPT_CACHE = on / 1 / true; OFF by default). Every call of one prompt sends the same system
+// text, so with caching on it goes out as a cache-marked block and repeat calls within a few minutes are billed at a tenth
+// of the input price (prompts under the model's minimum cacheable length are simply not cached). `stableChars` marks where the
+// part that is identical across calls ends (the rewrite prompt is followed by a per-candidate level paragraph; the cover
+// letter by a tone line): only that prefix is cached. Off, the request is exactly what it always was.
+const promptCacheOn = env => /^(?:on|1|true|yes)$/i.test(String(env?.PROMPT_CACHE ?? ''))
+function systemField(env, system, stableChars) {
+  if (!promptCacheOn(env) || typeof system !== 'string' || !system) return system
+  const n = Number.isInteger(stableChars) && stableChars > 0 && stableChars < system.length ? stableChars : system.length
+  const blocks = [{ type: 'text', text: system.slice(0, n), cache_control: { type: 'ephemeral' } }]
+  if (n < system.length) blocks.push({ type: 'text', text: system.slice(n) })
+  return blocks
 }
 
 async function callClaude(env, system, userMsg, maxTokens, opts = {}) {
@@ -111,7 +134,7 @@ async function callClaude(env, system, userMsg, maxTokens, opts = {}) {
             model:    model(env),
             max_tokens: maxTokens,
             ...(sendTemperature ? { temperature: opts.temperature } : {}),
-            system,
+            system: systemField(env, system, opts.stableSystemChars),
             messages: [{ role: 'user', content: userMsg }]
           }),
           signal: controller.signal
@@ -276,30 +299,75 @@ function stripPromptTags(s) {
 function jsonForPrompt(obj) {
   return JSON.stringify(obj).replace(/</g, '\\u003c')
 }
-// The model fills in a requirement checklist; the NUMBER is computed in code (lib/atsChecklist.js), which checks every
-// quoted piece of evidence against the resume and every requirement against the posting. Resolves to the same
-// { success, data } envelope as every other call, with `data` a JSON string { aiScore, missingKeywords, checklist }, so
-// the blend in scan.controller.js is unchanged. A reply that does not carry a usable checklist is a failure, never a
+// PASS 1: the posting's requirement list, measured once per posting and cached - in this isolate's memory and, when a KV
+// namespace is bound (PROMPT_CACHE_KV, else RATE_LIMIT_KV), across isolates for two weeks. The baseline read and every
+// later re-score of the same job are judged against the SAME list, so the denominator cannot drift between runs.
+const REQ_CACHE = new Map()
+const REQ_CACHE_MAX = 200
+const REQ_KV_TTL_S = 14 * 24 * 3600
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, '0')).join('')
+}
+async function extractRequirements(env, jdText, opts = {}) {
+  const key = `reqlist:v${PROMPT_VERSIONS.score}:` + (await sha256Hex(canonText(jdText)))
+  const kv = env.PROMPT_CACHE_KV || env.RATE_LIMIT_KV
+  if (REQ_CACHE.has(key)) return { success: true, list: REQ_CACHE.get(key), cached: true }
+  if (kv && typeof kv.get === 'function') {
+    try {
+      const hit = await kv.get(key, 'json')
+      if (Array.isArray(hit) && hit.length) { REQ_CACHE.set(key, hit); return { success: true, list: hit, cached: true } }
+    } catch (_) { /* a cache miss is never an error */ }
+  }
+  const result = await callClaude(
+    env, REQUIREMENTS_SYSTEM, buildRequirementsUser(jdText, stripPromptTags), 1400,
+    { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'score_requirements', temperature: 0 }
+  )
+  if (!result.success) return { success: false, error: result.error, result }
+  let parsed
+  try { parsed = extractJson(result.data) } catch (_) { return { success: false, error: 'SCORE_PARSE_FAIL', result } }
+  const list = normalizeRequirements(parsed, jdText)
+  if (!list) return { success: false, error: 'SCORE_TOO_FEW_REQUIREMENTS', result }
+  if (REQ_CACHE.size >= REQ_CACHE_MAX) REQ_CACHE.delete(REQ_CACHE.keys().next().value)
+  REQ_CACHE.set(key, list)
+  if (kv && typeof kv.put === 'function') { try { await kv.put(key, JSON.stringify(list), { expirationTtl: REQ_KV_TTL_S }) } catch (_) {} }
+  return { success: true, list, cached: false }
+}
+
+// The model fills in a requirement checklist against that fixed list; the NUMBER is computed in code
+// (lib/atsChecklist.js), which checks every quoted piece of evidence against the resume, every "must" cue and every
+// years figure against the posting and the resume's dates, and drops anything the posting does not state. Resolves to the
+// same { success, data } envelope as every other call, with `data` a JSON string { aiScore, missingKeywords, checklist },
+// so the blend in scan.controller.js is unchanged. A reply that does not carry a usable checklist is a failure, never a
 // guessed score: the caller then holds the result below the credential line.
 async function scoreResumeWithAI(env, resumeText, jdText, opts = {}) {
+  const now = opts.now instanceof Date ? opts.now : new Date()
+  const req = await extractRequirements(env, jdText, opts)
+  if (!req.success) return { success: false, data: null, error: req.error, stopReason: req.result?.stopReason || null }
+  const list = req.list.map(({ id, requirement, priority }) => ({ id, requirement, priority }))
   const result = await callClaude(
     env,
     SCORE_SYSTEM,
-    buildScoreUser(resumeText, jdText, stripPromptTags),
+    buildScoreUser(resumeText, jdText, stripPromptTags, list, now),
     1800,
     { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'score', temperature: 0 }
   )
   if (!result.success) return result
   let parsed
   try { parsed = extractJson(result.data) } catch (_) { return { ...result, success: false, data: null, error: 'SCORE_PARSE_FAIL' } }
-  const computed = computeChecklistScore(parsed, { resumeText, jdText })
+  const merged = mergeJudgement(req.list, parsed)
+  if (!merged) return { ...result, success: false, data: null, error: 'SCORE_NO_CHECKLIST' }
+  const computed = computeChecklistScore(merged, { resumeText, jdText, now })
   if (!computed.ok) return { ...result, success: false, data: null, error: `SCORE_${computed.reason}` }
   return {
     ...result,
     data: JSON.stringify({
       aiScore: computed.score,
       missingKeywords: computed.missingKeywords,
-      checklist: { coverage: Math.round(computed.coverage * 100) / 100, requirements: computed.rows, discarded: computed.discarded, downgraded: computed.downgraded },
+      checklist: {
+        coverage: Math.round(computed.coverage * 100) / 100, requirements: computed.rows, discarded: computed.discarded,
+        downgraded: computed.downgraded, cueDowngraded: computed.cueDowngraded, years: computed.years, requirementsCached: req.cached,
+      },
     }),
   }
 }
@@ -332,12 +400,35 @@ async function scoreResumeWithAI(env, resumeText, jdText, opts = {}) {
 // this" treatment as scoreResumeWithAI, plus groundCertifications() below
 // as a second, deterministic (non-AI) layer specifically for the highest-
 // fraud-value field.
+// Notes the extraction model returned beside the resume (warnings, questions) are DATA for the person's screen: strings only,
+// clipped, never trusted for anything else.
+function cleanNotes(v, maxItems, maxLen) {
+  return (Array.isArray(v) ? v : []).filter(x => typeof x === 'string').map(x => cleanLine(x, maxLen)).filter(Boolean).slice(0, maxItems)
+}
+
+// Brain-dump bullets are model-written, so each must point at the words it came from. The check runs on the RAW reply (before
+// figure-dropping can shift indices). A bullet with no real span in the text is reported, not deleted: losing a true
+// bullet to a missing span would cost the person more than flagging it does.
+function checkSourceSpans(rawObj, rawText) {
+  const jobs = Array.isArray(rawObj?.experience) ? rawObj.experience : []
+  const spans = Array.isArray(rawObj?.sourceSpans) ? rawObj.sourceSpans : []
+  const rc = canonText(rawText), rs = tokenSetOf(rawText)
+  const byKey = new Map()
+  for (const sp of spans) if (sp && Number.isInteger(sp.job) && Number.isInteger(sp.bullet) && typeof sp.span === 'string') byKey.set(`${sp.job}:${sp.bullet}`, sp.span)
+  const unverified = []
+  jobs.forEach((j, ji) => (Array.isArray(j?.bullets) ? j.bullets : []).forEach((b, bi) => {
+    if (typeof b !== 'string' || !b.trim()) return
+    const span = byKey.get(`${ji}:${bi}`)
+    if (!span || span.trim().split(/\s+/).length < 2 || !quoteInResume(span, rc, rs)) unverified.push(cleanLine(b, 80))
+  }))
+  return unverified
+}
 async function parseResumeStructure(env, rawText) {
   const result = await callClaude(
     env,
     STRUCTURE_SYSTEM,
     `<resume>\n${stripPromptTags(rawText)}\n</resume>\n` +
-    `Return: ${RESUME_JSON_SHAPE}`,
+    `Return: ${RESUME_JSON_SHAPE}${STRUCTURE_EXTRAS}`,
     // AUDIT FIX (Auth/Scan round): 2000 output tokens is less than the JSON
     // for a full 7,000+ character resume, so long resumes came back
     // RESPONSE_TRUNCATED and the paid fix (or credential) failed outright.
@@ -348,7 +439,7 @@ async function parseResumeStructure(env, rawText) {
   if (!parsed.success) return parsed
   const shaped = shapeExtraction(parsed.data)
   if (!shaped) return { success: false, data: null, error: 'PARSE_FAIL' }
-  return { ...parsed, data: groundCertifications(dropUngroundedFigures(shaped, rawText, 'parseResumeStructure'), rawText) }
+  return { ...parsed, data: groundCertifications(dropUngroundedFigures(shaped, rawText, 'parseResumeStructure'), rawText), warnings: cleanNotes(parsed.data?.warnings, 5, 160) }
 }
 
 // SCAN/ATS ROUND 4: a PDF with no text layer (a phone scan, a "print to image" export) used to fail as "could not be
@@ -407,21 +498,32 @@ async function structureFreeformText(env, rawText, opts = {}) {
     env,
     FREEFORM_SYSTEM,
     `<background>\n${stripPromptTags(rawText)}\n</background>\n` +
-    `Structure this into resume data. Return: ${RESUME_JSON_SHAPE}`,
+    `Structure this into resume data. Return: ${RESUME_JSON_SHAPE}${FREEFORM_EXTRAS}`,
     // AUDIT FIX (Scan/ATS pass): 2500 output tokens is less than the JSON for a
     // full 8,500-character background (every sentence becomes a bullet plus the
     // schema's own keys) — a long brain dump came back RESPONSE_TRUNCATED and the
     // scan failed as "could not structure". Matches parseResumeStructure's budget
     // class. The wall-clock budget is the caller's: runAtsScan runs on the queue
     // (no 30s waitUntil cap), so it passes a longer one.
-    7000,
+    // 9000: every bullet now also carries a source span, which adds roughly a third to the JSON.
+    9000,
     { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'structure_freetext' }
   )
   const parsed = parseJsonResult(result, 'structureFreeformText')
   if (!parsed.success) return parsed
   const shaped = shapeExtraction(parsed.data)
   if (!shaped) return { success: false, data: null, error: 'PARSE_FAIL' }
-  return { ...parsed, data: groundCertifications(dropUngroundedFigures(shaped, rawText, 'structureFreeformText'), rawText) }
+  const unverified = checkSourceSpans(parsed.data, rawText)
+  return {
+    ...parsed,
+    data: groundCertifications(dropUngroundedFigures(shaped, rawText, 'structureFreeformText'), rawText),
+    warnings: cleanNotes(parsed.data?.warnings, 5, 160),
+    questions: cleanNotes(parsed.data?.questions, 5, 120),
+    // The bullets here are written by the model from loose text, so they are not the person's verbatim words. The UI can ask
+    // for a confirmation before the credential certifies them; `unverifiedBullets` are the ones with no real source span.
+    unverifiedBullets: unverified.slice(0, 20),
+    needsConfirmation: true,
+  }
 }
 
 // The extraction calls' JSON is the BASELINE for everything downstream (the score, the DOCX,
@@ -529,22 +631,34 @@ function targetLine(resumeData, jdText, context = {}) {
     ? `career length from the job dates: ${facts.years} years (the summary may say "${facts.years}+ years" or less, never more)`
     : 'career length: not stated - do not give a number of years')
   parts.push(`spelling: ${isUkSpelling(jdText) ? 'UK' : 'US'}`)
-  return { line: `<target>${parts.join(' | ')}</target>`, hasJobs }
+  parts.push(`summary: ${summaryWorthWriting(resumeData) ? 'write' : 'keep'}`)
+  return { line: `<target>${parts.join(' | ')}</target>`, hasJobs, years: typeof facts.years === 'number' ? facts.years : null }
+}
+
+// Decided in code, not left to the model: a summary is written when there is something real to summarise (two or more
+// bullets, project descriptions or education details between them). A resume that says "Packed orders" and nothing else
+// keeps whatever summary it has - a summary built on that much could only be padding.
+function summaryWorthWriting(resumeData) {
+  const jobs = Array.isArray(resumeData?.experience) ? resumeData.experience : []
+  const bullets = jobs.reduce((n, j) => n + (Array.isArray(j?.bullets) ? j.bullets.filter(b => typeof b === 'string' && b.trim()).length : 0), 0)
+  const projects = Array.isArray(resumeData?.projects) ? resumeData.projects.filter(p => p && (p.description || p.name)).length : 0
+  const edu = Array.isArray(resumeData?.education) ? resumeData.education.filter(e => e && e.details).length : 0
+  return bullets + projects + edu >= 2
 }
 
 // `scoreFeedback`: { score, threshold, weakAreas[] } for a retry round or the baseline read of the very first attempt
 // (`baseline: true`), or { score: null, weakAreas[] } for a guard rejection.
 async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = null, baseline = resumeData, context = {}, internal = {}) {
   const feedbackBlock = feedbackFor(scoreFeedback)
-  const { line, hasJobs } = targetLine(baseline || resumeData, jdText, context)
+  const { line, hasJobs, years } = targetLine(baseline || resumeData, jdText, context)
   const result = await callClaude(
     env,
-    REWRITE_SYSTEM + '\n\n' + levelGuidance(context.seniority, hasJobs),
+    REWRITE_SYSTEM + '\n\n' + levelGuidance(context.seniority, hasJobs, { years }),
     `${line}\n<resume_data>\n${jsonForPrompt(resumeData)}\n</resume_data>\n\n<job_description>\n${stripPromptTags(jdText)}\n</job_description>${feedbackBlock}\nReturn the JSON envelope described above — "resume" must follow the exact same schema as the input resume object.`,
     // Full resume JSON + quantification prompts. Raised from 4500 with the
     // timeout above — see LONG_CALL_TIMEOUT_MS.
     7000,
-    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'rewrite' }
+    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'rewrite', stableSystemChars: REWRITE_SYSTEM.length }
   )
   if (!result.success) return result
   // CRITICAL: result.data is a raw string — must parse before use as object
@@ -584,11 +698,15 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
   // contain, a repeated opening verb inside a role, an over-long bullet, first person). ONE corrective pass, told
   // exactly what to fix; if that pass fails for any reason the first (truthful, merely less polished) rewrite ships.
   if (!internal.styleRetry) {
-    const problems = findRewriteStyleProblems(baseline || resumeData, rewritten)
+    const problems = [
+      ...findRewriteStyleProblems(baseline || resumeData, rewritten),
+      ...findProvenanceProblems(resumeData, rewritten, envelope.provenance),
+      ...findRenameProblems(resumeData, envelope.skillRenames),
+    ]
     if (problems.length) {
       console.error(`rewriteResumeContent style pass: ${problems.length} issue(s) - ${problems.slice(0, 3).join(' | ')}`)
       const second = await rewriteResumeContent(env, resumeData, jdText,
-        { score: null, weakAreas: ['the previous attempt broke the style rules. Fix exactly these and change nothing else that was fine: ' + problems.slice(0, 8).join('; ')] },
+        { score: null, weakAreas: ['the previous attempt broke the rules. Fix exactly these and change nothing else that was fine: ' + problems.slice(0, 8).join('; ')] },
         baseline, context, { styleRetry: true })
       if (second.success) return second
     }
@@ -1167,14 +1285,14 @@ function unknownNames(letter, corpus) {
   }
   return [...found]
 }
-const LETTER_CLICHES = /\b(?:i am writing to (?:apply|express)|i am (?:excited|thrilled|delighted|pleased) to (?:apply|submit)|please accept this|team player|hard[- ]?working|hard worker|fast learner|passionate about|results[- ]driven|self[- ]starter|detail[- ]oriented|proven track record|think outside the box|great fit)\b/i
+const LETTER_CLICHES = new RegExp(`\\b(?:i am writing to (?:apply|express)|i am (?:excited|thrilled|delighted|pleased) to (?:apply|submit)|please accept this|great fit|i believe i would be a great|i am confident that my skills|${buzzAlternation(BUZZ_WORDS.filter(w => !['etc', 'various'].includes(w)))})\\b`, 'i')
 
 // -> { hard: [...], soft: [...] }. Hard problems are integrity or shape failures (never delivered); soft ones are style,
 // retried once or twice and then accepted rather than failing a paying customer over a cliché.
 function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts, haveNumbers, corpus }) {
   const hard = [], soft = []
   if (!/^Dear\b/.test(text)) hard.push('it must start with the salutation (no preamble)')
-  if (!/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Respectfully),?\s*\n/i.test(text)) hard.push('it must end with a sign-off line ("Sincerely,") followed by the candidate\'s name')
+  if (!/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Yours faithfully|Respectfully),?\s*\n/i.test(text)) hard.push('it must end with a sign-off line ("Sincerely,") followed by the candidate\'s name')
   const name = cleanLine(resumeData?.name, 80)
   if (name && !text.trim().toLowerCase().endsWith(name.toLowerCase())) hard.push(`the very last line must be the candidate's name, exactly "${name}"`)
   // Figures: digits are checked everywhere; spelled-out numbers only when they are a claim about years.
@@ -1188,13 +1306,61 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   // The words inside a placeholder ("[Company Name]") are already reported above; they are not invented names.
   const names = unknownNames(holes.reduce((t, h) => t.split(h).join(' '), text), corpus)
   if (names.length) hard.push(`it named things that are not in the resume, the posting or the application details (${names.slice(0, 6).join(', ')}) - remove them; never add an employer, school, credential or tool`)
-  if (text.split(/\s+/).length > 320) soft.push('it is too long - 220-300 words, never over 320')
+  if (text.split(/\s+/).length > LETTER_WORDS.ceiling) soft.push(`it is too long - ${LETTER_WORDS.min}-${LETTER_WORDS.max} words, never over ${LETTER_WORDS.ceiling}`)
   const cliche = text.match(LETTER_CLICHES)
   if (cliche) soft.push(`it used the cliche "${cliche[0]}" - replace it with a specific fact`)
   return { hard, soft }
 }
 
-// opts = { company, recipient, role, lead, tone, jobTitle, seniority } - all optional, all clipped here.
+// The letter's salutation and sign-off are WRITTEN BY CODE, not trusted to the model: it used to guess "Ms."/"Mr." from
+// a first name, and a UK letter needs "Yours sincerely" (a named recipient) or "Yours faithfully" (none), not "Sincerely".
+function applyLetterFrame(text, { recipient, name, uk }) {
+  const lines = String(text).split('\n')
+  if (/^Dear\b/.test(lines[0])) lines[0] = `Dear ${recipient || 'Hiring Manager'},`
+  let body = lines.join('\n')
+  if (name) {
+    const close = uk ? (recipient ? 'Yours sincerely' : 'Yours faithfully') : 'Sincerely'
+    const m = body.match(/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Yours faithfully|Respectfully),?\s*\n[^\n]*\s*$/i)
+    body = (m ? body.slice(0, m.index) : body.replace(/\s+$/, '')) + `\n\n${close},\n${name}`
+  }
+  return body
+}
+
+// { letter, evidence } from the model's reply. The prompt asks for JSON { evidence, letter }; a plain-text letter (an older
+// shape, or a model that ignored the format) is accepted as before with evidence = null. A reply that starts like JSON
+// but does not parse is { letter: null }: retried, never delivered as raw JSON.
+function parseLetterReply(raw) {
+  let text = String(raw || '').replace(/^```[a-z]*\n?|```$/gim, '').trim()
+  if (text.startsWith('{')) {
+    try {
+      const j = extractJson(text)
+      if (j && typeof j.letter === 'string') return { letter: j.letter.trim(), evidence: Array.isArray(j.evidence) ? j.evidence : [] }
+    } catch (_) { /* falls through */ }
+    return { letter: null, evidence: null }
+  }
+  const dear = text.search(/^Dear\b/m)
+  if (dear > 0) text = text.slice(dear).trim()
+  return { letter: text, evidence: null }
+}
+
+// Every proof sentence is traceable: each evidence quote must be in the resume and each need in the posting. Soft problems
+// - they trigger a retry, and are accepted on the last attempt rather than failing a paying customer.
+function checkLetterEvidence(evidence, { resumeText, jdText }) {
+  if (!Array.isArray(evidence)) return []
+  const soft = []
+  const rc = canonText(resumeText), rs = tokenSetOf(resumeText), js = tokenSetOf(jdText)
+  const entries = evidence.filter(e => e && typeof e === 'object').slice(0, 6)
+  if (!entries.length) return ['it gave no evidence - list two or three entries, each with the exact resume words behind a proof sentence']
+  for (const e of entries) {
+    const quote = typeof e.quote === 'string' ? e.quote : ''
+    const need = typeof e.need === 'string' ? e.need : ''
+    if (!quoteInResume(quote, rc, rs)) soft.push(`an evidence quote is not in the resume ("${cleanLine(quote, 50)}") - quote the resume's own words`)
+    else if (need && !mostlyIn(need, js)) soft.push(`an evidence "need" is not in the posting ("${cleanLine(need, 50)}")`)
+  }
+  return soft.slice(0, 3)
+}
+
+// opts = { company, recipient, role, lead, tone, jobTitle, seniority, knownGaps } - all optional, all clipped here.
 async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   const source = { ...resumeData }
   const details = {
@@ -1205,6 +1371,14 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   }
   const toneLine = LETTER_TONES[opts.tone] || LETTER_TONES.warm
   const facts = careerFacts(source)
+  // What the posting asks for that the resume does not show (the scorer's genuinely-missing requirements): data from our
+  // own pipeline, not something the model decides. At most three, shortest first-class: the letter names at most one.
+  const knownGaps = (Array.isArray(opts.knownGaps) ? opts.knownGaps : []).map(g => cleanLine(g, 60)).filter(Boolean).slice(0, 3)
+  const hasJobs = Array.isArray(source.experience) && source.experience.length > 0
+  const letterBase = letterSystemFor(pickLetterKind({ hasJobs, years: facts.years, knownGaps }))
+  const system = letterBase + '\n' + toneLine
+  const uk = isUkSpelling(jdText)
+  const resumeCorpus = [sourceText(source), stringLeaves(source).join(' ')].join('\n')
   const haveNumbers = numbersIn(sourceText(source))
   // Figures may come from the resume, the posting (a "40-person team" the letter answers) or the typed details; but
   // a claim about the candidate's OWN years of experience is checked against the resume's dates alone.
@@ -1217,7 +1391,7 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   const targetBits = [
     typeof facts.years === 'number' && facts.years >= 1 ? `career length from the job dates: ${facts.years} years (state "${facts.years} years" or less, never more)` : 'career length: not stated - do not give a number of years',
     opts.seniority ? `level: ${cleanLine(opts.seniority, 20)}` : null,
-    `spelling: ${isUkSpelling(jdText) ? 'UK' : 'US'}`,
+    `spelling: ${uk ? 'UK' : 'US'}`,
   ].filter(Boolean)
   const MAX_ATTEMPTS = 3
   let feedback = ''
@@ -1225,20 +1399,25 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
     const result = await callClaude(
       env,
-      LETTER_SYSTEM + '\n' + toneLine,
-      `<target>${targetBits.join(' | ')}</target>\n<application_details>\n${detailLines.join('\n') || '(none given)'}\n</application_details>\n` +
+      system,
+      `<target>${targetBits.join(' | ')}</target>\n<application_details>\n${detailLines.join('\n') || '(none given)'}\n</application_details>\n<known_gaps>\n${knownGaps.join('\n') || '(none)'}\n</known_gaps>\n` +
       `<resume_data>\n${jsonForPrompt(resumeData)}\n</resume_data>\n\n<job_description>\n${stripPromptTags(jdText)}\n</job_description>${feedback}`,
       1400,
-      { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'cover_letter' }
+      { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'cover_letter', stableSystemChars: letterBase.length }
     )
     if (!result.success) return result
     if (result.stopReason === 'max_tokens') return { success: false, data: null, error: 'RESPONSE_TRUNCATED' }
-    // Anything before the salutation ("Here is your letter:") and a code fence are not part of the letter.
-    let text = String(result.data || '').replace(/^```[a-z]*\n?|```$/gim, '').trim()
-    const dear = text.search(/^Dear\b/m)
-    if (dear > 0) text = text.slice(dear).trim()
+    const reply = parseLetterReply(result.data)
+    if (reply.letter === null) {
+      lastProblem = 'PARSE_FAIL'
+      feedback = '\n\nIMPORTANT — the previous reply was not valid JSON. Return ONLY the JSON object {"evidence": [...], "letter": "..."} with the letter in one string.'
+      continue
+    }
+    // The model never gets to choose the salutation or sign-off (no guessed honorific, UK vs US closing).
+    let text = applyLetterFrame(reply.letter, { recipient: details.recipient, name: cleanLine(resumeData?.name, 80), uk })
     if (text.length < 120) return { success: false, data: null, error: 'PARSE_FAIL' }
     const { hard, soft } = checkLetter(text, { resumeData: source, jdText, details, allowedNumbers, facts, haveNumbers, corpus })
+    soft.push(...checkLetterEvidence(reply.evidence, { resumeText: resumeCorpus, jdText }))
     if (!hard.length && (!soft.length || attempt === MAX_ATTEMPTS)) return { success: true, data: text.slice(0, 4000), error: null }
     lastProblem = hard.some(h => /figures|named things/.test(h)) ? 'FABRICATION_DETECTED' : hard.some(h => /placeholders/.test(h)) ? 'PLACEHOLDER_DETECTED' : hard.length ? 'LETTER_SHAPE' : lastProblem
     feedback = `\n\nIMPORTANT — the previous draft was rejected: ${[...hard, ...soft].join('; ')}. Write the letter again fixing exactly that, and keep everything else the rules above ask for.`
@@ -1609,4 +1788,4 @@ function checkHtmlFidelity(data, html, { verificationUrl, verified } = {}) {
   return { ok: reasons.length === 0, reasons }
 }
 
-module.exports = { PROMPT_VERSION, REWRITE_SYSTEM, LETTER_SYSTEM, contentLost, unknownNames, checkLetter, levelGuidance, findPlaceholders, groundQuantificationPrompts, fallbackQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }
+module.exports = { _callClaude: callClaude, _clearRequirementsCache: () => REQ_CACHE.clear(), extractRequirements, applyLetterFrame, parseLetterReply, checkLetterEvidence, summaryWorthWriting, PROMPT_VERSION, LETTER_PROMPT_VERSION, PROMPT_VERSIONS, REWRITE_SYSTEM, LETTER_SYSTEM, contentLost, unknownNames, checkLetter, levelGuidance, findPlaceholders, groundQuantificationPrompts, fallbackQuantificationPrompts, extractTextFromPdf, decodeCssEscapes, checkHtmlFidelity, visibleTextOfHtml, generateCoverLetter, numbersIn, restoreFactualFields, RESUME_JSON_SHAPE, unsupportedSkills, inventedNumbers, scoreResumeWithAI, parseResumeStructure, structureFreeformText, rewriteResumeContent, generateBeautifulResumeHTML, extractJson, detectFabrication, sanitizeResumeShape, sanitizeGeneratedHtml, isAllowedResourceUrl, groundCertifications }

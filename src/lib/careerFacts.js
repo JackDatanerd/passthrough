@@ -91,4 +91,44 @@ function tenureClaimOk(n, facts, sourceNumbers) {
   return facts && typeof facts.years === 'number' && n >= 0 && n <= facts.years
 }
 
-module.exports = { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk, yearsIn }
+// ── Years of experience from PLAIN TEXT (the scorer sees text, not the structured resume) ────────────────────────
+// The scorer model used to be asked whether "5+ years" was met, with no date to count "Present" against, and an
+// empty quote was accepted as proof. This counts it instead: every date range in the text that is not on an
+// education line, merged into a union of year intervals (overlapping jobs count once, gaps are not counted), with an
+// open range ending at the current year. Year granularity only; null when the text carries no usable range.
+const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?'
+const RANGE_RE = new RegExp(
+  `\\b(?:${MONTH}\\s+)?((?:19|20)\\d{2})\\s*(?:-|–|—|to|until|till)\\s*(?:${MONTH}\\s+)?((?:19|20)\\d{2}(?!\\d)|\\d{2}(?!\\d)|present|current|currently|now|today|ongoing|date)`,
+  'gi'
+)
+const EDU_LINE = /\b(?:universit(?:y|é|à)|college|school|academy|institute|bachelor|master|msc|bsc|b\.?sc|m\.?sc|mba|phd|ph\.d|diploma|degree|gpa|graduat\w*|a-levels?|gcses?|high school|coursework|dissertation|thesis)\b/i
+
+function yearsFromText(text, now = new Date()) {
+  const thisYear = now.getUTCFullYear()
+  const spans = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    if (EDU_LINE.test(line)) continue
+    RANGE_RE.lastIndex = 0
+    for (const m of line.matchAll(RANGE_RE)) {
+      const start = +m[1]
+      let end
+      const tail = m[2].toLowerCase()
+      if (/^\d{4}$/.test(tail)) end = +tail
+      else if (/^\d{2}$/.test(tail)) end = +(m[1].slice(0, 2) + tail)
+      else end = thisYear
+      if (start > thisYear || end < start) continue
+      spans.push([start, Math.min(end, thisYear)])
+    }
+  }
+  if (!spans.length) return null
+  spans.sort((a, b) => a[0] - b[0])
+  let total = 0, [curStart, curEnd] = spans[0]
+  for (const [s, e] of spans.slice(1)) {
+    if (s <= curEnd) curEnd = Math.max(curEnd, e)
+    else { total += curEnd - curStart; curStart = s; curEnd = e }
+  }
+  total += curEnd - curStart
+  return total
+}
+
+module.exports = { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk, yearsIn, yearsFromText }

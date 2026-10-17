@@ -1158,11 +1158,19 @@ function scoreResume(resumeText, jdText, { structure = null } = {}) {
 function describeWeakAreas(scoreResult) {
   const notes = []
   if (scoreResult.keywordScore < 70) {
-    const missing = (scoreResult.detail?.keywords?.missing || []).slice(0, 8)
-    // The model's own read of what is missing is semantic (it sees synonyms the stemmer cannot); offer a few of those too.
-    const ai = (Array.isArray(scoreResult.aiMissingKeywords) ? scoreResult.aiMissingKeywords : []).filter(k => !missing.some(m => String(m).toLowerCase() === String(k).toLowerCase())).slice(0, 4)
-    const all = [...missing, ...ai]
-    notes.push(`keyword match is only ${scoreResult.keywordScore}% — work in these JD terms naturally where truthful, inside bullets that show them used: ${all.join(', ') || '(see JD)'}`)
+    const ruleMissing = (scoreResult.detail?.keywords?.missing || []).slice(0, 12)
+    // The semantic read (which sees synonyms the stemmer cannot) also marks terms as genuinely missing. Those are gaps in
+    // what the person has done, not wording problems: naming them only tempts the writer to stuff them in, so they are
+    // never listed. What is named is (1) rule-missing terms the semantic read did NOT call missing - likely present in
+    // other words - and (2) requirements the resume only touches (a skills-list mention, related experience).
+    const gap = new Set((Array.isArray(scoreResult.aiMissingKeywords) ? scoreResult.aiMissingKeywords : []).map(k => String(k).toLowerCase()))
+    // The rule-based list also holds word pairs ("analyst tableau"); a pair that contains a genuine gap is that gap in disguise.
+    const hidesGap = m => { const t = ` ${String(m).toLowerCase()} `; return [...gap].some(g => g && (t.includes(` ${g} `) || ` ${g} `.includes(t))) }
+    const wording = ruleMissing.filter(m => !hidesGap(m)).slice(0, 8)
+    const partial = (Array.isArray(scoreResult.aiPartialKeywords) ? scoreResult.aiPartialKeywords : []).filter(k => typeof k === 'string').slice(0, 6)
+    if (wording.length) notes.push(`the posting's wording is weakly reflected. Terms the resume may already show in other words - use one ONLY where a bullet genuinely shows the same thing, in the posting's words: ${wording.join(', ')}`)
+    if (partial.length) notes.push(`requirements the resume only touches (a skills-list mention or related experience) - where a bullet already shows them used, say so plainly in the posting's words: ${partial.join(', ')}`)
+    if (!wording.length && !partial.length) notes.push('keyword alignment is weak, but the remaining gaps are things the resume does not show - do not add any term the resume does not already support')
   }
   if (scoreResult.contentScore < 70) {
     const rate = scoreResult.detail?.content?.actionVerbRate

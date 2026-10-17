@@ -1,0 +1,27 @@
+PROMPTS ROUND 2 (prompt versions: rewrite 4, score 4, extract 4, letter 4 - see src/prompts/constants.js)
+
+Scorer      score.js, lib/atsChecklist.js, lib/careerFacts.js, lib/aiScoreSampling.js
+            Two passes: the posting's requirement list is measured once and cached (memory, and KV when PROMPT_CACHE_KV or
+            RATE_LIMIT_KV is bound), then the resume is judged against that fixed list. Years of experience are COUNTED in
+            code from the resume's dates and today's date (the model is told the date and is not asked to judge a bare
+            "5+ years"); a "must" needs a cue that is really in the posting; a years figure not in the posting is ignored.
+            Results within a point of the pass/credential line are sampled twice more and the median taken.
+Rewrite     rewrite.js, lib/rewriteStyle.js, lib/skillAliases.js
+            Truth -> output -> craft. The model returns provenance + skillRenames, which code checks (a bullet's figures must come
+            from the bullets it cites; a rename may change spelling/spacing/abbreviation, never a version or a related tool).
+            Summary on/off and spelling are decided in code. A senior posting for a junior candidate gets "true scope"
+            guidance. The writer is never shown a score or target, and genuine gaps are never named to it. One verb may open
+            at most 3 bullets across the whole resume.
+Letter      letter.js
+            Three model letters (strong / one honest gap / early career) chosen in code. Salutation and sign-off are written
+            by code (no guessed Ms./Mr.; UK: Yours sincerely / Yours faithfully). Gaps come from the scorer (known_gaps).
+            Evidence-first JSON, each quote checked against the resume. Length constants shared with the guard and the eval.
+Extraction  extract.js
+            Scrambled-column rule + warnings; brain-dump bullets carry source spans (checked in code); derived dates are
+            never computed (questions are returned); needsConfirmation / unverifiedBullets returned for the UI.
+Process     per-prompt versions (scans.prompt_version = rewrite+score+extract, letter_prompt_version = letter); shared
+            constants; opt-in prompt caching (PROMPT_CACHE=on) with a ledger that cannot under-report.
+Evals       40 fixtures (US/UK, Western names, dev + holdout), property checks, pairwise judge (+ calibration file), 8 gold
+            extraction cases, stored baseline with regression exit codes, decontamination test, offline dry-run harness test.
+            Live runs: ANTHROPIC_API_KEY=... npm run eval:prompts (see evals/README.md).
+No migration. Existing tests changed where the contract changed on purpose (see the hand-off notes).
