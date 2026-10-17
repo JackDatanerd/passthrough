@@ -140,12 +140,15 @@ describe('G1: open disputes near their auto-accept deadline page the owner', () 
     const w2 = createWorld({ payments: [{ id: 'x', paystack_ref: 'rx', status: 'SUCCESS', amount_cents: 1, currency: 'USD' }] }); const l2 = loadController(w2)
     expect((await l2.mod.checkDisputeDeadlines(kvEnv(), {}, w2.db)).alerted).toEqual([])
   })
-  it('DISPUTE_WARN_HOURS widens the window (clamped 1-15) and a failing query never throws', async () => {
+  it('DISPUTE_WARN_HOURS widens the window (strict 1-15, round 14 convention) and a failing query never throws', async () => {
     const w = world(); const { mod } = loadController(w)
     expect(mod.disputeWarnMs({})).toBe(6 * 3600000)
-    expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '99' })).toBe(15 * 3600000)
+    expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '99' })).toBe(6 * 3600000)   // out of range = malformed -> default
+    expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '12' })).toBe(12 * 3600000)
+    expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '0.5' })).toBe(6 * 3600000)
+    expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '7h' })).toBe(6 * 3600000)
     expect(mod.disputeWarnMs({ DISPUTE_WARN_HOURS: '0' })).toBe(6 * 3600000)
-    const r = await mod.checkDisputeDeadlines(kvEnv({ DISPUTE_WARN_HOURS: '24' }), {}, w.db)
+    const r = await mod.checkDisputeDeadlines(kvEnv({ DISPUTE_WARN_HOURS: '15' }), {}, w.db)
     expect(r.alerted).toEqual(expect.arrayContaining(['ra', 'rc']))
     const broken = { from: () => { throw new Error('db down') } }
     const r2 = await mod.checkDisputeDeadlines(kvEnv(), {}, broken)

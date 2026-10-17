@@ -243,7 +243,7 @@ wrangler secret put PAYSTACK_WEBHOOK_IPS
 # attack). Delete it once the retries have drained.
 wrangler secret put PAYSTACK_SECRET_KEY_PREVIOUS
 
-# OPTIONAL: how many hours before Paystack's ~16h auto-accept an OPEN dispute pages you (default 6, range 1-15).
+# OPTIONAL: how many hours before Paystack's ~16h auto-accept an OPEN dispute pages you (default 6, range 1-15; a malformed or out-of-range value falls back to 6, as validateEnv warns).
 # The hourly cron emails once per 3h per dispute while it is inside this window, and once more just after the
 # deadline passes. Set as a normal var (wrangler.toml [vars]) or secret.
 # DISPUTE_WARN_HOURS = "6"
@@ -1072,6 +1072,13 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * A webhook event that Paystack redelivers, an admin replays or the hourly re-drive picks up is no longer shown as "stuck" / replayable while it
 #     is running, and the re-drive no longer runs it a second time alongside the live delivery.
 #   * Admin -> Payments: for a fraud-claim dispute press "Send evidence" and then "Contest dispute" — the evidence id is sent along with the contest.
+
+# WEBHOOKS ROUND 19 (migration 0097 — apply BEFORE deploying this Worker; two added nullable columns, so the old Worker keeps working against it and
+# this Worker falls back to the old behaviour if it runs first). Adds payments.dispute_answered_at / dispute_answer (contested / accepted / resolved).
+#   * Admin -> Payments: a contested or accepted dispute says so and stops offering Send evidence / Contest / Accept; the deadline emails stop for it.
+#   * The hourly dispute sweep now also asks Paystack, by dispute id, about DISPUTED payments older than its 45-day window (10 per run, oldest-checked
+#     first), so a lost resolve webhook for a slow chargeback no longer leaves the payment DISPUTED for good.
+#   * DISPUTE_WARN_HOURS is parsed like the other numeric vars: malformed or outside 1-15 falls back to 6 (validateEnv warns).
 
 # DATABASE ROUND 4 (migration 0091 — apply BEFORE deploying this Worker; nothing in the Worker changes, so either order works and the old Worker is unaffected).
 # Schema-level guards for things the app already never does, plus three dead objects removed.

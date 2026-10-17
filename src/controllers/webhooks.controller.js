@@ -155,6 +155,8 @@ const { hitQuota } = require('../middleware/rateLimiter')
 const { logAdminAction } = require('../lib/adminAudit')
 const { parseCidr, ipInCidr } = require('../lib/clientIp')
 const { buildProofPdf } = require('../lib/proofPdf')
+const { readBodyCapped } = require('../lib/readBody')
+const constants = require('../config/constants')
 const rejections = require('../lib/webhookRejections')
 // Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
 const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
@@ -751,6 +753,28 @@ async function recordDisputeId(supabase, payment, d) {
   } catch (err) { console.error('dispute id not stored:', err && err.message); return false }
 }
 
+// Round 19 (G2): the merchant's own answer to a dispute (contest / accept / a resolution that left the payment waiting on a human)
+// is stamped on the payment, so the deadline pages (B1) and Admin → Payments can tell "unanswered" from "answered, awaiting the bank".
+// Best effort and column-tolerant (migration 0097): a Worker deployed before it simply behaves as before.
+async function markDisputeAnswered(supabase, payment, kind) {
+  try {
+    if (!payment || !kind) return false
+    let q = supabase.from('payments').update({ dispute_answered_at: new Date().toISOString(), dispute_answer: kind }).eq('status', 'DISPUTED')
+    q = payment.id ? q.eq('id', payment.id) : q.eq('paystack_ref', payment.paystack_ref)
+    const { error } = await q
+    if (error) { if (!isColumnMissing(error)) console.error('dispute answer not stored:', error.message); return false }
+    return true
+  } catch (err) { console.error('dispute answer not stored:', err && err.message); return false }
+}
+async function resetDisputeAnswer(supabase, payment) {
+  try {
+    if (!payment || !payment.id) return false
+    const { error } = await supabase.from('payments').update({ dispute_answered_at: null, dispute_answer: null }).eq('id', payment.id).eq('status', 'DISPUTED')
+    if (error) { if (!isColumnMissing(error)) console.error('dispute answer not reset:', error.message); return false }
+    return true
+  } catch (err) { console.error('dispute answer not reset:', err && err.message); return false }
+}
+
 async function processDispute(c, supabase, event) {
   const payment = await fulfillment.findPaymentForEvent(supabase, event)
   const d = event.data || {}
@@ -777,6 +801,7 @@ async function processDispute(c, supabase, event) {
       .eq('id', payment.id).eq('status', 'SUCCESS').select('id')
     if (error) throw error
     marked = !!(updated && updated.length)
+    if (marked) await resetDisputeAnswer(supabase, payment)   // a new dispute starts unanswered (round 19, G2)
   }
   // create (just marked) and remind (a re-sent, possibly extended deadline) both carry due_at; the guarded update only
   // touches a payment that is DISPUTED right now.
@@ -856,6 +881,7 @@ async function processDispute(c, supabase, event) {
     detail = `Nothing was marked — the payment is currently ${payment.status}, not SUCCESS, so it was left as-is.`
   }
 
+  if (event.event === 'charge.dispute.resolve' && payment && payment.status === 'DISPUTED' && !auto) await markDisputeAnswered(supabase, payment, 'resolved')
   if (event.event === 'charge.dispute.create') detail += disputeDeadlineLine(d)
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
@@ -899,8 +925,9 @@ async function handlePaystack(c) {
   const declared = Number.parseInt(c.req.header('content-length') || '', 10)
   const tooLarge = () => { noteRejected(c, 'paystack', 'too-large'); return c.text('Payload too large', 413) }
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return tooLarge()
-  const bodyBytes = new Uint8Array(await c.req.arrayBuffer())
-  if (bodyBytes.byteLength > MAX_BODY_BYTES) return tooLarge()
+  // Round 19 (B3): streamed with a cap — a chunked body with no Content-Length used to be buffered whole before being measured.
+  const bodyBytes = await readBodyCapped(c, MAX_BODY_BYTES)
+  if (!bodyBytes) return tooLarge()
 
   const givenSig = (c.req.header('x-paystack-signature') || '').trim().toLowerCase()
   let sigOk = cryptoLib.timingSafeEqual(await cryptoLib.hmacSha512Hex(secret, bodyBytes), givenSig)
@@ -1309,7 +1336,8 @@ async function loadDisputedPayment(c, supabase) {
   const reference = c.req.param('reference')
   const cols = 'id, paystack_ref, status, user_id, scan_id, fix_tier, amount_cents, currency, paid_at, created_at, disputed_at, dispute_id'
   const load = fields => supabase.from('payments').select(fields).eq('paystack_ref', reference).maybeSingle()
-  let { data: payment, error } = await load(`${cols}, dispute_evidence_id`)
+  let { data: payment, error } = await load(`${cols}, dispute_evidence_id, dispute_answered_at`)
+  if (error && isColumnMissing(error)) ({ data: payment, error } = await load(`${cols}, dispute_evidence_id`))   // 0097 not applied yet
   if (error && isColumnMissing(error)) ({ data: payment, error } = await load(cols))   // 0090 not applied yet
   if (error) throw error
   if (!payment) return { fail: c.json({ success: false, message: 'Payment not found.' }, 404) }
@@ -1382,6 +1410,7 @@ async function acceptPaymentDispute(c) {
     await paystackService.acceptDispute(c.env, disputeId, { message: note || 'Dispute accepted by the merchant', refundAmount })
   } catch (err) { return paystackFailure(c, err) }
   const partial = refundAmount < payment.amount_cents
+  await markDisputeAnswered(supabase, payment, 'accepted')
   await logAdminAction(c, supabase, 'payment.dispute_accept', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note, refundAmount, partial })
   return c.json({ success: true, message: partial
     ? `Dispute accepted with Paystack for ${refundAmount} of the ${payment.amount_cents} paid. Only that part is refunded, so the payment is NOT reversed automatically — decide in Admin → Payments (Reverse if the whole sale should come back).`
@@ -1409,9 +1438,8 @@ async function submitDisputeEvidence(c) {
 
   const when = (payment.paid_at || payment.created_at || '').slice(0, 10)
   const details = clip(body?.serviceDetails, 1500) ||
-    `Digital service delivered online: a resume fix${payment.fix_tier ? ` (${payment.fix_tier} tier)` : ''} generated for the buyer's own uploaded resume (scan ${payment.scan_id || 'n/a'}), ` +
-    `paid on ${when || 'n/a'} under Paystack reference ${payment.paystack_ref}. The result is available to the signed-in account holder for download, ` +
-    `and the work is verifiable on the app's public verification page.`
+    `Digital service delivered online: ${serviceSentence(payment.fix_tier).what}${payment.fix_tier ? ` (${constants.tierLabel(payment.fix_tier)})` : ''} ` +
+    `(scan ${payment.scan_id || 'n/a'}), paid on ${when || 'n/a'} under Paystack reference ${payment.paystack_ref}. ${serviceSentence(payment.fix_tier).how}`
   const fields = {
     customer_email: user.email, customer_name: clip(user.name, 120) || user.email, customer_phone: phone, service_details: details,
   }
@@ -1441,6 +1469,14 @@ async function submitDisputeEvidence(c) {
 // recovered after 30 minutes) while the files from the first delivery are still there, and contest used to answer "not delivered — accept the
 // dispute instead" in that window: with the ~16 h auto-accept clock running, that pushed an admin into giving up a dispute that could be won.
 // Delivered = this payment owns the scan AND (FIX_DELIVERED, or FIX_GENERATING for a retry round on files that already exist).
+// Round 19 (B2): what was actually sold, per tier. The evidence goes to Paystack and the card network, so it must not describe a
+// rewritten resume for the credential-only (BADGE) tier. Tier names come from constants.tierLabel; the sentence is per product.
+function serviceSentence(tier) {
+  if (tier === 'BADGE')
+    return { what: 'a verifiable credential (a public verification page and badge) issued for the buyer\'s own uploaded resume', how: 'The credential is available to the signed-in account holder and is verifiable on the app\'s public verification page.' }
+  return { what: 'a rewritten resume generated from the buyer\'s own uploaded resume', how: 'The result is available to the signed-in account holder for download, and the work is verifiable on the app\'s public verification page.' }
+}
+
 function workWasDelivered(scan, payment) {
   if (!scan || !payment || scan.fix_payment_id !== payment.id) return false
   if (scan.status === 'FIX_DELIVERED') return true
@@ -1477,8 +1513,8 @@ async function contestPaymentDispute(c) {
     `Paid on: ${(payment.paid_at || payment.created_at || '').slice(0, 10) || 'n/a'}`,
     ...(user && user.email ? [`Buyer account: ${user.email}`] : []),
     '',
-    `Service: a rewritten resume (${scan.fix_tier || payment.fix_tier || 'FIX'} tier) generated from the buyer's own uploaded resume. It is a digital service delivered online; there is nothing to ship.`,
-    `Delivery: completed. The result is available for download to the signed-in buyer account (scan ${scan.id}).`,
+    `Service: ${serviceSentence(scan.fix_tier || payment.fix_tier).what} (${constants.tierLabel(scan.fix_tier || payment.fix_tier)}). It is a digital service delivered online; there is nothing to ship.`,
+    `Delivery: completed. ${serviceSentence(scan.fix_tier || payment.fix_tier).how.replace(/^The (result|credential) is available/, 'It is available')} (scan ${scan.id}).`,
     ...(scan.verification_code && scan.verification_status === 'ACTIVE' && c.env.FRONTEND_URL
       ? [`Public verification page for the delivered work: ${c.env.FRONTEND_URL}/v/${scan.verification_code}`] : []),
     ...(note ? ['', `Merchant note: ${note}`] : []),
@@ -1501,6 +1537,7 @@ async function contestPaymentDispute(c) {
       return c.json({ success: false, message: `Paystack refused it: ${err.message} — this looks like a fraud claim. Use "Send evidence" first (it needs the buyer's phone number), then Contest again.` }, 422)
     return paystackFailure(c, err)
   }
+  await markDisputeAnswered(supabase, payment, 'contested')
   await logAdminAction(c, supabase, 'payment.dispute_contest', 'payment', payment.id, { reference: payment.paystack_ref, hasNote: !!note, withEvidence: !!evidence })
   return c.json({ success: true, message: 'Dispute contested with Paystack, with a proof of delivery attached. The payment stays DISPUTED until Paystack reports the outcome (won → back to SUCCESS, lost → refunded and reversed automatically).' })
 }
@@ -1737,6 +1774,47 @@ function disputeIsResolved(d) {
   return !!d && (String(d.status || '').toLowerCase() === 'resolved' || !!d.resolution)
 }
 
+// Round 19 (G1): the list above only reaches DISPUTE_LOOKBACK_MS back, and sweepReversedPayments only looks at payments created in
+// that window — but a bank chargeback can stay open far longer. A lost resolve webhook for such a dispute left the payment DISPUTED
+// for good (a lost sale never reversed, a won one never counted again). This walks DISPUTED payments OLDER than the window, a few per
+// run, oldest-checked first (last_reconciled_at rotates them), asks Paystack for each by its dispute id, and hands the answers to the
+// same decision loop as the listed ones. A payment without a stored dispute id is looked up in Paystack's list around its disputed_at.
+const OLD_DISPUTES_PER_RUN = 10
+async function fetchOldOpenDisputes(env, supabase, now, alreadyListed = new Set()) {
+  const out = []
+  try {
+    const cutoff = new Date(now - DISPUTE_LOOKBACK_MS).toISOString()
+    const cols = 'id, paystack_ref, dispute_id, disputed_at, paid_at, created_at'
+    let { data, error } = await supabase.from('payments').select(`${cols}, last_reconciled_at`)
+      .eq('status', 'DISPUTED')
+      .or(`disputed_at.lt.${cutoff},and(disputed_at.is.null,created_at.lt.${cutoff})`)
+      .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(OLD_DISPUTES_PER_RUN)
+    let tracked = true
+    if (error && isColumnMissing(error)) {
+      tracked = false
+      ;({ data, error } = await supabase.from('payments').select(cols).eq('status', 'DISPUTED')
+        .or(`disputed_at.lt.${cutoff},and(disputed_at.is.null,created_at.lt.${cutoff})`).order('created_at', { ascending: true }).limit(OLD_DISPUTES_PER_RUN))
+    }
+    if (error) { console.error('old open disputes query:', error.message); return out }
+    for (const p of data || []) {
+      if (p.dispute_id && alreadyListed.has(String(p.dispute_id))) continue   // the listing already carries it
+      try {
+        const r = await resolveDispute(env, supabase, p, { withAmount: false })
+        if (r.id) {
+          const json = await paystackService.fetchDispute(env, r.id)
+          const d = json && json.data
+          if (d && typeof d === 'object' && !alreadyListed.has(String(d.id ?? r.id))) {
+            const tx = d.transaction && typeof d.transaction === 'object' ? d.transaction : {}
+            out.push({ ...d, id: d.id ?? r.id, transaction: { ...tx, reference: typeof tx.reference === 'string' && tx.reference ? tx.reference : p.paystack_ref } })
+          }
+        }
+      } catch (err) { console.error(`old open dispute ${p.paystack_ref} not checked:`, err && err.message) }
+      if (tracked) { try { await supabase.from('payments').update({ last_reconciled_at: new Date(now).toISOString() }).eq('id', p.id) } catch (_) { /* rotation marker only */ } }
+    }
+  } catch (err) { console.error('old open disputes error:', err && err.message) }
+  return out
+}
+
 async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date.now(), list = null } = {}) {
   const result = { checked: 0, actioned: [], failed: [], needsHuman: [], error: null }
   try {
@@ -1754,7 +1832,10 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
       return { data: all }
     })
     const body = await fetchList()
-    const disputes = (Array.isArray(body?.data) ? body.data : []).filter(d => d && d.transaction && typeof d.transaction.reference === 'string')
+    const listed = Array.isArray(body?.data) ? body.data : []
+    const seen = new Set(listed.filter(d => d && d.id != null).map(d => String(d.id)))
+    const older = await fetchOldOpenDisputes(env, supabase, now, seen)
+    const disputes = [...listed, ...older].filter(d => d && d.transaction && typeof d.transaction.reference === 'string')
     result.checked = disputes.length
     if (!disputes.length) return result
 
@@ -1789,6 +1870,7 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         if (/accept/.test(resolution) && Number.isFinite(disputed) && disputed > 0 && known.amount > 0 && disputed < known.amount) {
           // ROUND-11 (G4): left for a human — but if the resolve webhook was the thing that got lost, nobody has been told.
           result.needsHuman.push({ reference: d.transaction.reference, dispute: d.id ?? null, disputed, paid: known.amount })
+          await markDisputeAnswered(supabase, { paystack_ref: d.transaction.reference }, 'resolved')   // resolved by Paystack, now waiting on a person (round 19)
           continue
         }
       }
@@ -1851,25 +1933,42 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
 const DISPUTE_WARN_DEFAULT_HOURS = 6
 const DISPUTE_OVERDUE_GRACE_MS = 3 * 3_600_000
 function disputeWarnMs(env) {
-  const n = Number.parseFloat(env && env.DISPUTE_WARN_HOURS)
-  return (Number.isFinite(n) && n >= 1 ? Math.min(n, 15) : DISPUTE_WARN_DEFAULT_HOURS) * 3_600_000
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict (round 14 convention): malformed / outside 1-15 -> the default 6
+  return numEnv(env && env.DISPUTE_WARN_HOURS, DISPUTE_WARN_DEFAULT_HOURS, NUMERIC_ENV.DISPUTE_WARN_HOURS) * 3_600_000
+}
+// Paystack's own view: once a dispute is past the merchant's turn (answered in the dashboard, with the bank, or closed) the deadline
+// page is noise. Any doubt (no key, Paystack down, an unfamiliar status) means "still ours" — an extra page beats a missed one.
+const PAST_MERCHANT_TURN = new Set(['awaiting-bank-feedback', 'resolved', 'archived'])
+async function disputeNoLongerAwaitingUs(env, disputeId) {
+  try {
+    const json = await paystackService.fetchDispute(env, disputeId)
+    return PAST_MERCHANT_TURN.has(String(json && json.data && json.data.status || '').toLowerCase())
+  } catch (_) { return false }
 }
 async function checkDisputeDeadlines(env, ctx, supabase = getSupabase(env), { now = Date.now() } = {}) {
   const result = { checked: 0, alerted: [], error: null }
   try {
     const horizon = new Date(now + disputeWarnMs(env)).toISOString()
     const floor = new Date(now - DISPUTE_OVERDUE_GRACE_MS).toISOString()
-    const { data, error } = await supabase.from('payments')
-      .select('id, paystack_ref, scan_id, amount_cents, currency, dispute_due_at')
-      .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null)
-      .lte('dispute_due_at', horizon).gte('dispute_due_at', floor)
-      .order('dispute_due_at', { ascending: true }).limit(25)
+    // Round 19 (B1): an answered dispute (contested / accepted here, or already past the merchant's turn on Paystack) is not paged again.
+    // dispute_answered_at is migration 0097, dispute_id 0086: each tier degrades to the one before it.
+    const base = 'id, paystack_ref, scan_id, amount_cents, currency, dispute_due_at'
+    let data = null, error = null
+    for (const cols of [`${base}, dispute_id, dispute_answered_at`, `${base}, dispute_id`, base]) {
+      ;({ data, error } = await supabase.from('payments').select(cols)
+        .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null)
+        .lte('dispute_due_at', horizon).gte('dispute_due_at', floor)
+        .order('dispute_due_at', { ascending: true }).limit(25))
+      if (!(error && isColumnMissing(error) && !/dispute_due_at/.test(error.message || ''))) break
+    }
     if (error) { if (!isColumnMissing(error)) result.error = error.message; return result }
     const rows = data || []
     result.checked = rows.length
     for (const p of rows) {
       const due = Date.parse(p.dispute_due_at)
       if (!Number.isFinite(due)) continue
+      if (p.dispute_answered_at) { result.answered = (result.answered || 0) + 1; continue }
+      if (p.dispute_id && await disputeNoLongerAwaitingUs(env, p.dispute_id)) { result.answered = (result.answered || 0) + 1; continue }
       if (!(await alertAllowed(env, `webhook-alert-cooldown:dispute-deadline:${p.id}`, 3 * 3600))) continue
       result.alerted.push(p.paystack_ref)
       const line = disputeDeadlineLine({ due_at: p.dispute_due_at }, now).trim()
@@ -2043,6 +2142,7 @@ const SELFTEST_PROBES = [
   { table: 'webhook_events', column: 'last_attempt_at', mig: '0090' }, { table: 'payment_refunds', column: 'id', mig: '0053' },
   { table: 'payments', column: 'dispute_due_at', mig: '0083' }, { table: 'payments', column: 'dispute_id', mig: '0086' },
   { table: 'payments', column: 'dispute_evidence_id', mig: '0090' },
+  { table: 'payments', column: 'dispute_answered_at', mig: '0097' }, { table: 'users', column: 'email_bounced_at', mig: '0086' },
 ]
 async function svixRoundTrip(secret) {
   // Sign a sample exactly as Svix does and verify it with the code that checks real deliveries: proves the secret decodes and verifies.
@@ -2112,6 +2212,12 @@ async function buildSelfTest(env, supabase, { origin = '' } = {}) {
     for (const pr of SELFTEST_PROBES) {
       const { error } = await supabase.from(pr.table).select(pr.column).limit(1)
       if (error) missing.push(`${pr.mig} (${pr.table}.${pr.column})`)
+    }
+    // The refund total is one RPC (0053): without it a partial-refund total silently falls back to Paystack's list alone.
+    // A nil-uuid payment, no event, p_count false: the function locks nothing, writes nothing and returns 0.
+    if (typeof supabase.rpc === 'function') {
+      const { error: rpcErr } = await supabase.rpc('record_refund_and_total', { p_payment_id: '00000000-0000-0000-0000-000000000000', p_reference: 'selftest', p_event_id: null, p_count: false })
+      if (rpcErr && /could not find the function|42883|PGRST202/i.test(`${rpcErr.code || ''} ${rpcErr.message || ''}`)) missing.push('0053 (function record_refund_and_total)')
     }
     if (!missing.length) return add('schema', 'Database migrations', 'ok', 'Every table and column the webhook code reads is present.')
     add('schema', 'Database migrations', 'warn', `Not readable: ${[...new Set(missing)].join(', ')}. The code degrades gracefully, but apply these migrations.`)

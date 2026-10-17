@@ -504,7 +504,9 @@ async function adminListPayments(ctx) {
     if (reference) q = q.ilike('paystack_ref', `%${reference}%`)
     return q
   }
-  let { data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at`)
+  // Webhooks round 19 (G2): dispute_answered_at / dispute_answer (migration 0097) come with the same fallback, one tier at a time.
+  let { data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at, dispute_answered_at, dispute_answer`)
+  if (error && (error.code === '42703' || /dispute_answer/i.test(error.message || ''))) ({ data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at`))
   if (error && (error.code === '42703' || /dispute_due_at/i.test(error.message || ''))) ({ data, error, count } = await listPayments(PAYMENT_COLS))
   if (error) throw error
 
@@ -526,6 +528,8 @@ async function adminListPayments(ctx) {
     scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
     refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
     disputeDueAt: p.status === 'DISPUTED' ? (p.dispute_due_at ?? null) : null,
+    disputeAnswer: p.status === 'DISPUTED' ? (p.dispute_answer ?? null) : null,
+    disputeAnsweredAt: p.status === 'DISPUTED' ? (p.dispute_answered_at ?? null) : null,
     receiptSentAt: p.receipt_sent_at, receiptDeliveredAt: p.receipt_delivered_at,
     lastReconciledAt: p.last_reconciled_at,
     refundedCents: refundedBy.get(p.id) || 0,

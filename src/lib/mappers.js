@@ -249,6 +249,9 @@ function paymentRowToCamel(row) {
     disputedAt:          row.disputed_at,
     // Migration 0083 (webhooks round 13): when Paystack auto-accepts the open dispute; only meaningful while DISPUTED.
     disputeDueAt:        row.dispute_due_at ?? null,
+    // Migration 0097 (webhooks round 19): the merchant's own answer to the open dispute (contested / accepted / resolved).
+    disputeAnsweredAt:   row.dispute_answered_at ?? null,
+    disputeAnswer:       row.dispute_answer ?? null,
     // Migrations 0044 / 0048 — same latent-drop shape as the columns above (found by the
     // mapper-vs-migrations drift test, tests/mappers.migrations.test.js).
     referralReservationId: row.referral_reservation_id ?? null,

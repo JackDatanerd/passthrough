@@ -22,6 +22,11 @@ const PAGE_SIZE = 25
 const STATUSES = ['PENDING', 'SUCCESS', 'FAILED', 'ABANDONED', 'REFUNDED', 'DISPUTED']
 
 // "Respond within 5h 20m" / "Deadline passed 3h ago — Paystack may have auto-accepted" for a dispute's auto-accept time.
+const DISPUTE_ANSWER_TEXT = {
+  contested: 'Contested with proof of delivery — waiting for the bank\'s decision',
+  accepted: 'Accepted with Paystack — the refund is on its way',
+  resolved: 'Resolved by Paystack — needs your decision (Reverse or Clear dispute)',
+}
 function disputeTimeLeft(dueAt, now = Date.now()) {
   const due = Date.parse(dueAt)
   if (!Number.isFinite(due)) return { overdue: false, text: '' }
@@ -377,7 +382,11 @@ export default function AdminPayments() {
                     <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
                   )}
                   {/* Webhooks round 13 (G1): Paystack accepts an unanswered dispute (and refunds the buyer) at this time. */}
-                  {p.status === 'DISPUTED' && p.disputeDueAt && (() => {
+                  {/* Webhooks round 19 (G2): once answered, the auto-accept countdown no longer applies. */}
+                  {p.status === 'DISPUTED' && p.disputeAnswer && (
+                    <div className="text-xs text-blue-700 mt-0.5">{DISPUTE_ANSWER_TEXT[p.disputeAnswer] || 'Dispute answered'}</div>
+                  )}
+                  {p.status === 'DISPUTED' && !p.disputeAnswer && p.disputeDueAt && (() => {
                     const left = disputeTimeLeft(p.disputeDueAt)
                     return <div className={left.overdue ? 'text-xs text-red-600 mt-0.5' : 'text-xs text-amber-700 mt-0.5'}>{left.text}</div>
                   })()}
@@ -463,6 +472,7 @@ export default function AdminPayments() {
                   )}
                   {p.status === 'DISPUTED' && (
                     <>
+                      {!p.disputeAnswer && (<>
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => setEvidenceDialog({ payment: p, phone: '', details: '', error: '' })}>
                         Send evidence
@@ -475,6 +485,7 @@ export default function AdminPayments() {
                         onClick={() => acceptDispute(p)}>
                         Accept dispute
                       </Button>
+                      </>)}
                       <Button size="sm" variant="secondary" disabled={busyRef === p.paystackRef}
                         onClick={() => resolvePayment(p, 'clear-dispute')}>
                         Clear dispute

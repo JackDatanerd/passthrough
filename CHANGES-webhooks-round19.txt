@@ -1,0 +1,36 @@
+Section 8 (Webhooks) - round 19 (fresh independent audit of webhooks.controller.js, webhooks.routes.js, resend-webhook.controller.js, webhookRejections.js and what they call)
+Base: bd342b0 "Applicant docs round 5"
+
+MIGRATION 0097 (apply BEFORE deploying; additive, nullable columns - the old Worker is unaffected). EXPECTED_SCHEMA_VERSION 96 -> 97.
+(0096 was taken upstream by paper_size while this round was in flight, so this one is 0097.)
+
+GAPS
+G1  A DISPUTED payment older than 45 days was invisible to every sweep (sweepDisputes lists a 45-day window; sweepReversedPayments only
+    looks at payments created in 45 days), so a lost charge.dispute.resolve for a slow chargeback left it DISPUTED for good: a lost sale
+    never reversed, a won one never counted again. sweepDisputes now also walks DISPUTED payments older than the window (10 per run,
+    oldest-checked first via last_reconciled_at), asks Paystack by the stored dispute id (or finds it in the list), and feeds the answers
+    through the same decision loop. A dispute already in the listing is not fetched twice.
+G2  The merchant's own answer to a dispute lived only in the admin audit log. payments.dispute_answered_at / dispute_answer now record
+    contested / accepted (Admin actions) and resolved (Paystack resolved it but it still waits on a person). A new dispute resets it.
+    Admin -> Payments shows the state and stops offering Send evidence / Contest / Accept for an answered dispute. Send evidence alone does
+    not count (it does not close the dispute).
+    Self-test also probes users.email_bounced_at (0086), payments.dispute_answered_at (0097) and the record_refund_and_total RPC (0053).
+
+BUGS
+B1  checkDisputeDeadlines kept paging "answer it now" / "deadline has passed" after the dispute had been contested or accepted. It now skips an
+    answered payment and asks Paystack once for the rest: a dispute past the merchant's turn (awaiting-bank-feedback / resolved / archived) is not
+    paged; any doubt (Paystack down, unfamiliar status) still pages.
+B2  The dispute evidence and the proof-of-delivery PDF said "a rewritten resume" for every tier. The credential-only (BADGE) tier now describes a
+    verifiable credential; names come from constants.tierLabel.
+B3  The 256 KB body cap was checked against Content-Length only; a chunked body was buffered whole first. New lib/readBody.js streams with a
+    running cap and stops reading at the limit (Paystack and Resend handlers).
+B4  DISPUTE_WARN_HOURS had its own parser. It is now in numEnv / NUMERIC_ENV (1-15, strict): malformed or out of range = 6, as validateEnv warns.
+    tests/webhooks.round18.test.js updated for that (99 is now the default, not 15).
+
+Files: src/controllers/webhooks.controller.js, resend-webhook.controller.js, admin.controller.js, src/lib/readBody.js (new), numEnv.js, mappers.js,
+src/config/constants.js, supabase/migrations/0097_webhooks_round19.sql, frontend/src/pages/admin/AdminPayments.jsx, DEPLOYMENT.md;
+tests/webhooks.round19.test.js (17), frontend/tests/pages/Webhooks.round19.test.jsx (3), tests/webhooks.round18.test.js and
+tests/migrations.pglite.test.js (keep list) updated.
+Backend suite: all pass except tests/scan.ats.round10.text.test.js (pglite emoji test, 5 s timeout). Frontend page suite: all pass except
+AuthForms.round3 (Register password toggles). Both fail identically on the untouched base and are unrelated to Section 8.
+Section 8 is NOT closed until a fresh independent pass finds nothing.

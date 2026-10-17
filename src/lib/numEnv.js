@@ -28,5 +28,6 @@ const NUMERIC_ENV = {
   COMMISSION_MIN_PAYOUT_CENTS: { min: 0, max: 100000000 },
   REFERRAL_MIN_PRICE_PCT:   { min: 0, max: 100, integer: false },
   REFERRAL_VELOCITY_ALERT:  { min: 0, max: 100000 },
+  DISPUTE_WARN_HOURS:       { min: 1, max: 15, integer: false },
 }
 module.exports = { parseNumEnv, numEnv, NUMERIC_ENV }

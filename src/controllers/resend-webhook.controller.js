@@ -28,6 +28,7 @@ const emailService = require('../services/email.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
 const rejections = require('../lib/webhookRejections')
+const { readBodyCapped } = require('../lib/readBody')
 // Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
 const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
 
@@ -213,8 +214,8 @@ async function handleResend(c) {
   if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return tooLarge()
   // ROUND-7 (B6): raw bytes, like the Paystack handler — the size cap is in bytes and the signature is checked over
   // exactly what was sent (text() strips a leading BOM and repairs invalid UTF-8, then the HMAC no longer matches).
-  const bodyBytes = new Uint8Array(await c.req.arrayBuffer())
-  if (bodyBytes.byteLength > MAX_BODY_BYTES) return tooLarge()
+  const bodyBytes = await readBodyCapped(c, MAX_BODY_BYTES)   // streamed with a cap (round 19, B3)
+  if (!bodyBytes) return tooLarge()
 
   const valid = await verifySvixSignature({
     secret, body: bodyBytes,
