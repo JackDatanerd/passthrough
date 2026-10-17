@@ -531,8 +531,10 @@ async function createScan(ctx) {
     let ipSlotKey = null   // set once this request has spent a slot of the per-IP ceiling
     {
       const ip = clientIp(ctx)
-      const envCap = parseInt(ctx.env.SCAN_IP_DAILY_CAP, 10)
-      const ipCap = Number.isFinite(envCap) ? envCap : c.FREE_SCANS_PER_IP_PER_DAY
+      // Strict parse (lib/numEnv.js, same rule validateEnv warns by): "0.5", "-1", "1e3", "7d" are malformed -> the default,
+      // never a silently-off (0) or near-total (1) ceiling.
+      const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')
+      const ipCap = numEnv(ctx.env.SCAN_IP_DAILY_CAP, c.FREE_SCANS_PER_IP_PER_DAY, NUMERIC_ENV.SCAN_IP_DAILY_CAP)
       if (ipCap > 0 && !rateLimiter.isBypassed(ctx.env, ip)) {
         const ipOk = await rateLimiter.hitQuota(ctx.env, `rl:scanip:${rateKeyIp(ip)}`, ipCap, 24 * 3600)
         if (ipOk) ipSlotKey = `rl:scanip:${rateKeyIp(ip)}`

@@ -484,8 +484,8 @@ const MAX_REVERSAL_CHECKS_PER_RUN = 20
 // shared with the other sweeps (50 on the Workers free plan, 1000 on paid).
 const MAX_REVERSAL_CHECKS_CEILING = 100
 function reversalChecksPerRun(env) {
-  const n = Number.parseInt(env && env.REVERSAL_CHECKS_PER_RUN, 10)
-  return Number.isFinite(n) && n >= 1 ? Math.min(n, MAX_REVERSAL_CHECKS_CEILING) : MAX_REVERSAL_CHECKS_PER_RUN
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: out of range / malformed -> the default 20
+  return numEnv(env && env.REVERSAL_CHECKS_PER_RUN, MAX_REVERSAL_CHECKS_PER_RUN, NUMERIC_ENV.REVERSAL_CHECKS_PER_RUN)
 }
 
 async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = true } = {}) {

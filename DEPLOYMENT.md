@@ -1072,7 +1072,6 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * A webhook event that Paystack redelivers, an admin replays or the hourly re-drive picks up is no longer shown as "stuck" / replayable while it
 #     is running, and the re-drive no longer runs it a second time alongside the live delivery.
 #   * Admin -> Payments: for a fraud-claim dispute press "Send evidence" and then "Contest dispute" — the evidence id is sent along with the contest.
-```
 
 # DATABASE ROUND 4 (migration 0091 — apply BEFORE deploying this Worker; nothing in the Worker changes, so either order works and the old Worker is unaffected).
 # Schema-level guards for things the app already never does, plus three dead objects removed.
@@ -1082,3 +1081,4 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * admin_audit_log: nulling actor_id by hand is refused while the actor still exists (only the account-deletion SET NULL passes), and TRUNCATE is refused.
 #   * partners.payout_details_token can only be NULL (the token has been stored hashed since 0087).
 #   * Dropped: decrement_referral_code_usage() (no caller since 0071), idx_scans_user_id and payment_refunds_payment_idx (each served by another index).
+```

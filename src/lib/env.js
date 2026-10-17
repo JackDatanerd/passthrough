@@ -123,7 +123,7 @@ function validateEnv(env) {
   {
     const { parseNumEnv, NUMERIC_ENV } = require('./numEnv')
     for (const [k, range] of Object.entries(NUMERIC_ENV)) {
-      const r = parseNumEnv(env[k], { ...range, integer: k !== 'ADMIN_SESSION_MAX_HOURS' })
+      const r = parseNumEnv(env[k], { integer: k !== 'ADMIN_SESSION_MAX_HOURS', ...range })
       if (r.ok || r.unset) continue
       const effect = k === 'ADMIN_STEP_UP_MINUTES' ? 'password step-up stays ON at 10 minutes'
         : k === 'ADMIN_SESSION_MAX_HOURS' ? 'the default 24-hour admin session cap applies'

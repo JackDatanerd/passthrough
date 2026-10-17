@@ -243,7 +243,8 @@ describe('G5: REVERSAL_CHECKS_PER_RUN', () => {
     restore = rs
     expect(mod.reversalChecksPerRun({})).toBe(20)
     expect(mod.reversalChecksPerRun({ REVERSAL_CHECKS_PER_RUN: '60' })).toBe(60)
-    expect(mod.reversalChecksPerRun({ REVERSAL_CHECKS_PER_RUN: '9999' })).toBe(100)
+    expect(mod.reversalChecksPerRun({ REVERSAL_CHECKS_PER_RUN: '9999' })).toBe(20)   // out of range = malformed -> default (round 14), as validateEnv warns
+    expect(mod.reversalChecksPerRun({ REVERSAL_CHECKS_PER_RUN: '7d' })).toBe(20)
     for (const bad of ['0', '-3', 'many', '']) expect(mod.reversalChecksPerRun({ REVERSAL_CHECKS_PER_RUN: bad })).toBe(20)
   })
   it('the sweep asks the database for that many rows', async () => {

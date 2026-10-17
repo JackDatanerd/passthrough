@@ -533,8 +533,9 @@ async function warnIfOverLimit(supabase, env, codeId) {
 // code per day. The partner is told once when a limited code reaches its limit (otherwise they learn of it from a
 // buyer who says the code stopped working). Both are KV-deduped, best-effort, and never change the conversion result.
 function velocityThreshold(env) {
-  const n = Number(env && env.REFERRAL_VELOCITY_ALERT)
-  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 10
+  // Strict (lib/numEnv): a blank variable (Number('') = 0) used to turn the alert OFF; only an explicit "0" does.
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')
+  return numEnv(env && env.REFERRAL_VELOCITY_ALERT, 10, NUMERIC_ENV.REFERRAL_VELOCITY_ALERT)
 }
 async function onceKey(env, key, ttlSeconds) {
   const kv = env && env.RATE_LIMIT_KV

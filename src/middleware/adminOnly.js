@@ -51,11 +51,14 @@ function adminSessionTooOld(c, now = Date.now()) {
 const ELEVATION_PURPOSE = 'admin-elevation'
 const DEFAULT_STEP_UP_MINUTES_WHEN_MALFORMED = 10
 function stepUpMinutes(env) {
-  const r = require('../lib/numEnv').parseNumEnv(env && env.ADMIN_STEP_UP_MINUTES, { min: 0, integer: false })
+  // Same rule validateEnv applies (lib/numEnv.js NUMERIC_ENV): a whole number of minutes in [0, 240].
+  // Anything else — "10m", "0.5" (which used to floor to 0 = OFF), "5.5", "300" — is malformed and the
+  // guard stays ON at the documented default rather than being switched off or silently reinterpreted.
+  const { parseNumEnv, NUMERIC_ENV } = require('../lib/numEnv')
+  const r = parseNumEnv(env && env.ADMIN_STEP_UP_MINUTES, { ...NUMERIC_ENV.ADMIN_STEP_UP_MINUTES, integer: true })
   if (r.unset) return 0
-  // A malformed value ("10m") must not silently switch the guard off: it stays ON at the default.
   if (!r.ok) return DEFAULT_STEP_UP_MINUTES_WHEN_MALFORMED
-  return r.value > 0 ? Math.min(Math.floor(r.value), 240) : 0
+  return r.value
 }
 async function mintElevation(env, user, sessionId) {
   const mins = stepUpMinutes(env)

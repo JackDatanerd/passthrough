@@ -70,8 +70,8 @@ function pendingCents(ledgerRows) {
 // land before money leaves. Reversal rows are never held (they must net
 // immediately).
 function holdDaysFor(env) {
-  const n = parseInt(env?.COMMISSION_HOLD_DAYS, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "7d" / "1e3" -> default 0, never a prefix
+  return numEnv(env?.COMMISSION_HOLD_DAYS, 0, NUMERIC_ENV.COMMISSION_HOLD_DAYS)
 }
 // A commission on a payment that is currently DISPUTED (a chargeback is open) is
 // held regardless of the age window: if the dispute is lost the sale is reversed
@@ -111,15 +111,13 @@ function voidedPairIds(ledgerRows) {
 // Optional minimum payout (env COMMISSION_MIN_PAYOUT_CENTS, default 0 = off).
 // Payable commission below it is "carried forward" rather than shown as ready.
 function payoutDetailsHoldHoursFor(env) {
-  const raw = env?.PAYOUT_DETAILS_HOLD_HOURS
-  if (raw === undefined || raw === null || String(raw).trim() === '') return 48
-  const n = parseInt(raw, 10)
-  return Number.isFinite(n) && n >= 0 ? n : 48
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "0.5" used to parse as 0 = hold OFF; now malformed -> 48
+  return numEnv(env?.PAYOUT_DETAILS_HOLD_HOURS, 48, NUMERIC_ENV.PAYOUT_DETAILS_HOLD_HOURS)
 }
 
 function minPayoutFor(env) {
-  const n = parseInt(env?.COMMISSION_MIN_PAYOUT_CENTS, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "2000c" / "1e3" -> default 0 (off), never a prefix
+  return numEnv(env?.COMMISSION_MIN_PAYOUT_CENTS, 0, NUMERIC_ENV.COMMISSION_MIN_PAYOUT_CENTS)
 }
 function payoutReadiness(ledgerRows, holdDays, minPayout) {
   const payable = payableCents(ledgerRows, holdDays)
@@ -933,8 +931,9 @@ const tierPricesSchema = z.object({
 // admin passes confirmLowPrice; a price that is not below standard comes back as a warning. Judged against the
 // platform currency's STANDARD table (never the promo) so it is stable while a promo runs.
 function referralMinPricePct(env) {
-  const n = Number(env && env.REFERRAL_MIN_PRICE_PCT)
-  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 10
+  // Strict (lib/numEnv): Number('') is 0, which silently switched the guard OFF for a blank variable; "0x10" read as 16.
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')
+  return numEnv(env && env.REFERRAL_MIN_PRICE_PCT, 10, NUMERIC_ENV.REFERRAL_MIN_PRICE_PCT)
 }
 function priceGuardrails(env, tierPrices) {
   const out = { tooLow: [], noDiscount: [] }

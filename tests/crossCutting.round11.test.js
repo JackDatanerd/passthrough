@@ -28,7 +28,8 @@ describe('strict numeric env (round 11, B1)', () => {
   it('a malformed step-up value keeps step-up ON; unset/0 is off', () => {
     expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '10m' })).toBe(10)
     expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '15' })).toBe(15)
-    expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '999' })).toBe(240)
+    expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '999' })).toBe(10)   // out of range = malformed (round 14): same answer validateEnv's warning gives
+    expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '0.5' })).toBe(10)   // used to floor to 0 = OFF
     expect(adminOnly.stepUpMinutes({})).toBe(0)
     expect(adminOnly.stepUpMinutes({ ADMIN_STEP_UP_MINUTES: '0' })).toBe(0)
   })

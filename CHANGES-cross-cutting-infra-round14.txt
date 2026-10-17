@@ -1,0 +1,25 @@
+CROSS-CUTTING INFRA ROUND 14 (bugs only; independent pass of section 9)
+
+BUG: adminOnly.js stepUpMinutes parsed ADMIN_STEP_UP_MINUTES with integer:false and no maximum, then floored it,
+while lib/env.js validateEnv and DEPLOYMENT.md say a malformed value keeps step-up ON at 10 minutes. So "0.5"
+floored to 0 = step-up silently OFF (while the start-up warning claimed ON), "5.5" -> 5, "300" -> 240.
+FIX: stepUpMinutes uses the same NUMERIC_ENV range and integer rule as validateEnv; anything malformed -> 10.
+Test: tests/stepUpMinutes.test.js.
+
+DOC: DEPLOYMENT.md - the "DATABASE ROUND 4 (migration 0091)" lines sat outside the release-notes code fence;
+the fence now closes after them.
+Out-of-range values (above 240) are now malformed too -> 10, matching the start-up warning (previously clamped to 240; tests/crossCutting.round11.test.js updated).
+
+BUG (second independent pass; spans sections 2/6/8): four consumers still read numeric env vars with parseInt, contradicting
+DEPLOYMENT.md ("a malformed value is no longer read as a prefix: the built-in default applies") and validateEnv's warning.
+  * scan.controller.js createScan: SCAN_IP_DAILY_CAP "0.5"/"-1"/"0x10" -> 0 / negative = per-IP ceiling OFF; "1e3" -> 1 scan/IP/day; "7d" -> 7.
+  * partners.controller.js holdDaysFor: COMMISSION_HOLD_DAYS "7d" -> 7, "1e3" -> 1.
+  * partners.controller.js payoutDetailsHoldHoursFor: PAYOUT_DETAILS_HOLD_HOURS "0.5" -> 0 = payout-redirect hold OFF.
+  * reconcile.service.js reversalChecksPerRun: REVERSAL_CHECKS_PER_RUN "200" clamped to 100 instead of the default 20.
+FIX: all four use lib/numEnv numEnv() with the NUMERIC_ENV range (PAYOUT_DETAILS_HOLD_HOURS 0-8760 added to NUMERIC_ENV so validateEnv
+warns about it too). tests/webhooks.round13.test.js updated ('9999' -> default 20). Guard test: no src file may parseInt/parseFloat/Number a NUMERIC_ENV name.
+
+BUG (third pass): the same class survived in three more readers. COMMISSION_MIN_PAYOUT_CENTS used parseInt ("2000c" -> 2000, "1e3" -> 1);
+REFERRAL_MIN_PRICE_PCT and REFERRAL_VELOCITY_ALERT used Number(), and Number('') is 0, so a BLANK variable silently turned the
+low-price guard / velocity alert OFF ("0x10" read as 16). All three now use numEnv with NUMERIC_ENV ranges (so validateEnv warns on them too;
+REFERRAL_MIN_PRICE_PCT may be fractional). Only an explicit "0" disables the alert / minimum.

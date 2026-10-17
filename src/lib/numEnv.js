@@ -24,5 +24,9 @@ const NUMERIC_ENV = {
   SCAN_IP_DAILY_CAP:        { min: 0, max: 100000 },
   COMMISSION_HOLD_DAYS:     { min: 0, max: 365 },
   REVERSAL_CHECKS_PER_RUN:  { min: 1, max: 100 },
+  PAYOUT_DETAILS_HOLD_HOURS: { min: 0, max: 8760 },
+  COMMISSION_MIN_PAYOUT_CENTS: { min: 0, max: 100000000 },
+  REFERRAL_MIN_PRICE_PCT:   { min: 0, max: 100, integer: false },
+  REFERRAL_VELOCITY_ALERT:  { min: 0, max: 100000 },
 }
 module.exports = { parseNumEnv, numEnv, NUMERIC_ENV }
