@@ -59,6 +59,8 @@ router.get(  '/',                          admin, c.adminListPartners)
 router.get(  '/overview',                  admin, c.adminPartnersOverview)
 router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
+// Round 18: paid sales that used a code but have no commission row (declared before '/:id').
+router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissions)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).
 router.post( '/payouts/batch',             admin, admin.stepUp, c.adminRecordPayoutBatch)
 // Round 8: email partners who have not accepted the current terms version (batched, resumable).
@@ -88,6 +90,8 @@ router.post( '/:id/anonymize',            admin, admin.stepUp, validateUuidParam
 // Round 8: manual ledger adjustment (clawback / write-off / bonus). It moves money, so it needs the same
 // step-up as recording or voiding a payout.
 router.post( '/:id/adjustments',          admin, admin.stepUp, validateUuidParam(), c.adminAdjustLedger)
+// Round 18: reject one sale (negative ledger row, like a refund, without touching the buyer's payment).
+router.post( '/:id/ledger/:ledgerId/reverse', admin, admin.stepUp, validateUuidParam(), validateUuidParam('ledgerId'), c.adminReverseSale)
 // STEP-UP (round 10): a code's tier prices decide what a buyer pays and what the partner earns on it, so setting or changing
 // them is a money decision like the commission rate above. Switching a code off / changing its limit or expiry stays one click.
 const priceEdit = admin.stepUpWhen(body => !!body && body.tierPrices !== undefined)

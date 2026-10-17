@@ -103,7 +103,7 @@ describe('B3 — erasure reaches the addresses a partner used to have', () => {
     t = setup({ partner: { ...PARTNER, email: 'Old2@X.co', previous_emails: ['old@x.co'] } })
     await t.mod.adminUpdatePartner(ctxOf({ body: { email: 'third@x.co' } }))
     const patch = t.st.updates.find(u => u.patch.email)?.patch
-    expect(patch.previous_emails).toEqual(['old@x.co', 'Old2@X.co'])
+    expect(patch.previous_emails).toEqual(['old@x.co', 'old2@x.co'])
   })
 })
 

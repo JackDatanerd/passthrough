@@ -878,8 +878,47 @@ function CyclesTab({ partner, onChanged }) {
   )
 }
 
-function ConversionsTab({ partner }) {
+// Round 18 (feature gap): reject ONE sale. Reverses that sale's commission like a refund would (a negative row, the usage slot
+// released) without touching the buyer's payment. The reason stays in the audit log; the partner is emailed the amount.
+function ReverseSaleModal({ partner, sale, onClose, onDone }) {
+  const toast = useToast()
+  const { execute, loading, error } = useApi()
+  const [reason, setReason] = useState('')
+  async function submit() {
+    if (reason.trim().length < 5) return execute(() => Promise.reject(new Error('Say why (at least 5 characters). It is kept in the audit log.')), { fallback: 'Say why.' }).catch(() => {})
+    try {
+      const data = await execute(() => api.post(`/partners/${partner.id}/ledger/${sale.id}/reverse`, { reason: reason.trim() }),
+        { fallback: 'Failed to reverse the sale.' })
+      toast({ message: data.alreadyPaidOut ? 'Sale reversed. It was already paid, so it becomes a refund credit against the next payout.' : 'Sale reversed.', type: 'success' })
+      onDone()
+      onClose()
+    } catch (_) { /* error already captured by useApi */ }
+  }
+  return (
+    <Modal open onClose={onClose} title="Reverse this sale's commission" dismissible={!loading}>
+      <Form onSubmit={submit} className="flex flex-col gap-4">
+        <p className="text-sm text-gray-600">
+          Takes back <strong>{formatCents(sale.commissionAmountCents, sale.currency || partner.currency)}</strong> earned on payment{' '}
+          <span className="font-mono text-xs">{sale.paymentRef || '—'}</span>. The buyer's payment is not touched. The partner is emailed.
+          {sale.payoutId ? ' This sale was already paid out, so the reversal is netted against their next payout.' : ''}
+        </p>
+        <Textarea showCount label="Reason (audit log only — the partner does not see it)" rows={3} maxLength={300} value={reason}
+          onChange={e => setReason(e.target.value)} placeholder="e.g. Buyer was the partner's own second account" />
+        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        <div className="flex gap-2 justify-end">
+          <Button type="button" variant="secondary" onClick={onClose}>Cancel</Button>
+          <Button type="submit" variant="danger" loading={loading}>Reverse sale</Button>
+        </div>
+      </Form>
+    </Modal>
+  )
+}
+
+function ConversionsTab({ partner, onChanged }) {
   const ledger = partner.commissionLedger || []
+  const [reversing, setReversing] = useState(null)
+  const reversedIds = new Set(ledger.filter(l => l.reversesLedgerId).map(l => l.reversesLedgerId))
+  const removed = String(partner.email || '').endsWith('@removed.invalid')
   if (ledger.length === 0) return <EmptyState className="text-gray-400 italic">No conversions or adjustments yet.</EmptyState>
 
   return (
@@ -955,6 +994,14 @@ function ConversionsTab({ partner }) {
           },
         },
         {
+          // Round 18: reject one sale. Only a real, not-yet-reversed sale on a partner who has not been erased.
+          key: 'actions',
+          header: '',
+          cell: l => (l.kind === 'ADJUSTMENT' || l.reversesLedgerId || reversedIds.has(l.id) || removed || !onChanged) ? null : (
+            <button type="button" className="text-xs text-red-600 hover:underline" onClick={() => setReversing(l)}>Reverse</button>
+          ),
+        },
+        {
           key: 'status',
           header: 'Status',
           cell: l => (
@@ -976,6 +1023,7 @@ function ConversionsTab({ partner }) {
       rows={ledger}
       rowKey={l => l.id}
     />
+    {reversing && <ReverseSaleModal partner={partner} sale={reversing} onClose={() => setReversing(null)} onDone={() => onChanged && onChanged()} />}
     </div>
   )
 }
@@ -1249,7 +1297,7 @@ export default function PartnerDetail() {
         </div>
       )}
       {tab === 'cycles' && <CyclesTab partner={partner} onChanged={reload} />}
-      {tab === 'conversions' && <ConversionsTab partner={partner} />}
+      {tab === 'conversions' && <ConversionsTab partner={partner} onChanged={reload} />}
       {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={reload} />}
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}

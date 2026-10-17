@@ -115,7 +115,12 @@ function TrendSection({ trend, mix, subMix, currency }) {
       {subs.length > 0 && (
         <div className="mt-3 text-sm text-gray-600" data-testid="partner-sub-mix">
           <span className="font-medium text-gray-900">Sales by channel tag: </span>
-          {subs.map(r => `${r.sub} ${r.sales} (${fmtCents(r.commissionCents, currency)})`).join(' · ')}
+          {subs.map(r => {
+            // Round 18: visits per tag next to its sales, so a channel that sends traffic but never sells is visible.
+            const visits = r.clicks > 0 ? `${formatNumber(r.clicks)} visit${r.clicks === 1 ? '' : 's'} → ` : ''
+            const rate = r.clicks > 0 && r.sales > 0 ? `, ${+(Math.min(100, r.sales / r.clicks * 100)).toFixed(1)}%` : ''
+            return `${r.sub} ${visits}${r.sales} sale${r.sales === 1 ? '' : 's'} (${fmtCents(r.commissionCents, currency)}${rate})`
+          }).join(' · ')}
         </div>
       )}
     </section>
@@ -724,7 +729,7 @@ export default function PartnerDashboard() {
               )}
               {data.payoutHoldUntil && (
                 <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid="payout-hold">
-                  You changed your payout details recently, so the next payout is on hold until about{' '}
+                  You added or changed your payout details recently, so the next payout is on hold until about{' '}
                   {formatDateTime(data.payoutHoldUntil)}. This protects you if someone else ever got hold of your link.
                 </div>
               )}
@@ -813,7 +818,23 @@ export default function PartnerDashboard() {
                 </section>
 
                 <section id="payouts" className="scroll-mt-24">
-                  <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout history</h2>
+                  <div className="flex items-center justify-between mb-3">
+                    <h2 className="text-lg font-semibold text-gray-900">Payout history</h2>
+                    {/* Round 18: a payout record to keep for tax and bookkeeping (the conversions CSV above holds sales only). */}
+                    {data.payouts.length > 0 && (
+                      <button type="button" className="text-sm text-blue-600 hover:underline" data-testid="payouts-csv"
+                        onClick={() => downloadCsv(`passthrough-payouts-${new Date().toISOString().slice(0, 10)}.csv`, [
+                          ['Paid on (UTC)', 'Amount', 'Currency', 'Method', 'Sales from (UTC)', 'Sales to (UTC)', 'Note'],
+                          ...data.payouts.map(p => [
+                            String(p.paidAt || '').slice(0, 10), (p.amountCents || 0) / 100, p.currency || data.currency || '',
+                            p.payoutMethod === 'BANK' ? 'Bank transfer' : p.payoutMethod === 'MOBILE_MONEY' ? 'Mobile money' : '',
+                            String(p.periodStart || '').slice(0, 10), String(p.periodEnd || '').slice(0, 10), p.note || '',
+                          ]),
+                        ])}>
+                        Download CSV
+                      </button>
+                    )}
+                  </div>
                   {data.payouts.length === 0 ? (
                     <EmptyState>No payouts yet.</EmptyState>
                   ) : (

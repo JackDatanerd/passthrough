@@ -129,8 +129,8 @@ describe('buildSubMix (round 16)', () => {
     ]
     t = load()
     expect(t.mod.buildSubMix(rows)).toEqual([
-      { sub: 'news', sales: 2, commissionCents: 200 },
-      { sub: 'yt', sales: 1, commissionCents: 50 },
+      { sub: 'news', sales: 2, commissionCents: 200, clicks: 0 },
+      { sub: 'yt', sales: 1, commissionCents: 50, clicks: 0 },
     ])
   })
 })

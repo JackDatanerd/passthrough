@@ -151,7 +151,10 @@ function rejectCode(code) {
 function trackClick(code) {
   // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
   // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
-  api.post('/partners/track-click', { code })
+  // Round 18: the channel tag travels with the click so the partner sees visits per channel. A repeat visit with no tag
+  // sends none (the stored tag is only trusted when it belongs to this code).
+  const rec = readStoredRecord()
+  api.post('/partners/track-click', { code, ...(rec?.code === code && rec.sub ? { sub: rec.sub } : {}) })
     .then(res => { if (res?.data?.valid === false) rejectCode(code); else { const rec = readStoredRecord(); syncToAccount(code, rec?.code === code ? rec.capturedAt : undefined, rec?.code === code ? rec.sub : undefined) } })
     .catch(() => {})
 }

@@ -457,7 +457,7 @@ export const PARTNER_FILTERS = {
   paused:     { label: 'Paused',                       test: p => p.status !== 'ACTIVE' && !isRemovedPartner(p) },
   ready:      { label: 'Ready to pay',                 test: p => (p.readyToPayCents || 0) > 0 },
   noDetails:  { label: 'No payout details yet',        test: p => !p.payoutMethod && !isRemovedPartner(p) },
-  terms:      { label: 'Terms not accepted',           test: p => p.status === 'ACTIVE' && p.termsCurrent === false && !isRemovedPartner(p) },
+  terms:      { label: 'Terms not accepted',           test: p => p.termsCurrent === false && !isRemovedPartner(p) },
   mailFailed: { label: 'Setup mail problem',         test: p => !!p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && !p.payoutMethod },
   removed:    { label: 'Removed (erased)',             test: isRemovedPartner },
 }
@@ -504,7 +504,7 @@ export default function AdminPartners() {
   const payableCount = partners.filter(isPayable).length
   const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
   // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
-  const termsOutstanding = partners.filter(p => p.status === 'ACTIVE' && p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
+  const termsOutstanding = partners.filter(p => p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
   const [confirmTerms, setConfirmTerms] = useState(false)
   const failedTermsIds = useRef(new Set())
   async function sendTermsNotice() {
@@ -556,7 +556,7 @@ export default function AdminPartners() {
         </p>
       )}
       <ConfirmDialog open={confirmTerms} danger={false} title="Send terms notice?"
-        message={`Email the ${termsOutstanding} active partner${termsOutstanding === 1 ? '' : 's'} who haven't accepted the current partner terms. Each gets one email per terms version (up to 40 per run).`}
+        message={`Email the ${termsOutstanding} partner${termsOutstanding === 1 ? '' : 's'} (active or paused) who haven't accepted the current partner terms. Each gets one email per terms version (up to 40 per run).`}
         confirmLabel="Send notice" onConfirm={sendTermsNotice} onCancel={() => setConfirmTerms(false)} />
 
       {showRun && <PayoutRunModal partners={partners} holdHours={holdHours} onClose={() => setShowRun(false)} onDone={load} />}

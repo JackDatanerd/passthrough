@@ -1,0 +1,32 @@
+Partners / Referral program - section 4, round 18
+
+BUGS
+ B1  trackClick treated real "CUBOT" handsets as bots (`bot\b`), silently dropping their clicks. Crawlers and headless
+     browsers are still filtered.
+ B2  The payout-hold banner said "You changed your payout details" after a FIRST submission too. Now "added or changed".
+ B3  Sign-up count per code counted every account that ever used the code. It now counts only accounts whose 30-day
+     attribution window is still open.
+ B4  previous_emails was documented as lower-cased but was not. Stored lower-cased and trimmed now (test updated).
+
+FEATURE GAPS
+ G1  Per-channel clicks: migration 0096 (referral_sub_clicks + increment_referral_sub_clicks, service role only).
+     trackClick records the &sub= tag; the hook sends it; the dashboard channel line shows visits, sales and conversion
+     rate, including tags with visits but no sale yet. Erasure deletes the counters.
+ G2  Terms notice now also goes to PAUSED partners (admin filter, count and confirm text match).
+ G3  Partner dashboard: "Download CSV" for payout history.
+ G4  Admin can reject ONE sale: POST /partners/:id/ledger/:ledgerId/reverse (step-up). Reuses reverseCommission, so the
+     usage slot is released and a paid sale becomes a refund credit. The admin's reason lives in the audit log only; the
+     partner sees a fixed reason and gets the reversal email. "Reverse" button on the Conversions tab.
+ G5  Admin "Missing commissions" list: GET /partners/unrecorded-commissions (successful code payments, 90 days, older
+     than 15 minutes, no commission row) with a Retry that calls the existing reconcile endpoint.
+
+NOT DONE
+ - Self-referral is still an email-only check (a stronger signal needs a policy decision).
+
+OPERATIONS
+ - Apply migration 0096 before deploying. Without it channel clicks log an error and the dashboard shows no click counts;
+   nothing else breaks.
+ - EXPECTED_SCHEMA_VERSION 95 -> 96.
+
+TESTS
+ - tests/partners.round18.test.js (new); partners.round11 and round16 updated for B4 and the new sub-mix shape.

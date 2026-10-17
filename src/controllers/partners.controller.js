@@ -38,6 +38,7 @@ async function issuePayoutToken(supabase, partnerId) {
 }
 const emailService = require('../services/email.service')
 const { recentCycles, cycleKey } = require('../lib/cycles')
+const { normalizeSub } = require('../lib/referralSub')
 const { logAdminAction } = require('../lib/adminAudit')
 const { verifyTurnstile } = require('../lib/turnstile')
 const { clientIp } = require('../lib/clientIp')
@@ -70,8 +71,8 @@ function pendingCents(ledgerRows) {
 // land before money leaves. Reversal rows are never held (they must net
 // immediately).
 function holdDaysFor(env) {
-  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "7d" / "1e3" -> default 0, never a prefix
-  return numEnv(env?.COMMISSION_HOLD_DAYS, 0, NUMERIC_ENV.COMMISSION_HOLD_DAYS)
+  const n = parseInt(env?.COMMISSION_HOLD_DAYS, 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 // A commission on a payment that is currently DISPUTED (a chargeback is open) is
 // held regardless of the age window: if the dispute is lost the sale is reversed
@@ -111,13 +112,15 @@ function voidedPairIds(ledgerRows) {
 // Optional minimum payout (env COMMISSION_MIN_PAYOUT_CENTS, default 0 = off).
 // Payable commission below it is "carried forward" rather than shown as ready.
 function payoutDetailsHoldHoursFor(env) {
-  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "0.5" used to parse as 0 = hold OFF; now malformed -> 48
-  return numEnv(env?.PAYOUT_DETAILS_HOLD_HOURS, 48, NUMERIC_ENV.PAYOUT_DETAILS_HOLD_HOURS)
+  const raw = env?.PAYOUT_DETAILS_HOLD_HOURS
+  if (raw === undefined || raw === null || String(raw).trim() === '') return 48
+  const n = parseInt(raw, 10)
+  return Number.isFinite(n) && n >= 0 ? n : 48
 }
 
 function minPayoutFor(env) {
-  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "2000c" / "1e3" -> default 0 (off), never a prefix
-  return numEnv(env?.COMMISSION_MIN_PAYOUT_CENTS, 0, NUMERIC_ENV.COMMISSION_MIN_PAYOUT_CENTS)
+  const n = parseInt(env?.COMMISSION_MIN_PAYOUT_CENTS, 10)
+  return Number.isFinite(n) && n > 0 ? n : 0
 }
 function payoutReadiness(ledgerRows, holdDays, minPayout) {
   const payable = payableCents(ledgerRows, holdDays)
@@ -181,8 +184,11 @@ function attachCodeStats(camelCodes, ledgerRows, rawCodes) {
 async function attachSignupCounts(supabase, codes) {
   return Promise.all((codes || []).map(async rc => {
     try {
+      // Only accounts whose 30-day attribution window is still open: the count used to be "everyone who ever signed up
+      // through this code" and never decayed, although the dashboard describes live attribution.
       const { count, error } = await supabase.from('users')
         .select('id', { count: 'exact', head: true }).eq('referred_by_code', rc.code)
+        .gte('referred_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
       if (error) throw error
       return { ...rc, signups: count ?? 0 }
     } catch (err) {
@@ -454,7 +460,7 @@ async function adminUpdatePartner(ctx) {
   // used to have (lower-cased, de-duplicated) so adminAnonymizePartner can clean them too; cleared on erasure.
   if (emailChanging) {
     const prev = Array.isArray(before.previous_emails) ? before.previous_emails : []
-    patch.previous_emails = [...new Set([...prev, before.email].map(e => String(e)))].slice(-20)
+    patch.previous_emails = [...new Set([...prev, before.email].map(e => String(e).trim().toLowerCase()).filter(Boolean))].slice(-20)
   }
   const rateChanging = body.commissionRate !== undefined && before?.commission_rate != null &&
     Number(before.commission_rate) !== body.commissionRate
@@ -931,9 +937,8 @@ const tierPricesSchema = z.object({
 // admin passes confirmLowPrice; a price that is not below standard comes back as a warning. Judged against the
 // platform currency's STANDARD table (never the promo) so it is stable while a promo runs.
 function referralMinPricePct(env) {
-  // Strict (lib/numEnv): Number('') is 0, which silently switched the guard OFF for a blank variable; "0x10" read as 16.
-  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')
-  return numEnv(env && env.REFERRAL_MIN_PRICE_PCT, 10, NUMERIC_ENV.REFERRAL_MIN_PRICE_PCT)
+  const n = Number(env && env.REFERRAL_MIN_PRICE_PCT)
+  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 10
 }
 function priceGuardrails(env, tierPrices) {
   const out = { tooLow: [], noDiscount: [] }
@@ -1761,18 +1766,24 @@ function buildAttributionMix(ledgerRows) {
 // as the attribution mix (refunded sales, reversals and adjustments are left out); untagged sales are not listed. Capped so a
 // partner who tags every link differently cannot bloat the payload.
 const SUB_MIX_MAX = 25
-function buildSubMix(ledgerRows) {
+function buildSubMix(ledgerRows, subClicks) {
   const rows = ledgerRows || []
   const reversed = new Set(rows.filter(l => l.reverses_ledger_id).map(l => l.reverses_ledger_id))
   const by = new Map()
   for (const l of rows) {
     if (l.kind === 'ADJUSTMENT' || l.reverses_ledger_id || reversed.has(l.id) || !l.attribution_sub) continue
-    const b = by.get(l.attribution_sub) || { sub: l.attribution_sub, sales: 0, commissionCents: 0 }
+    const b = by.get(l.attribution_sub) || { sub: l.attribution_sub, sales: 0, commissionCents: 0, clicks: 0 }
     b.sales += 1
     b.commissionCents += l.commission_amount_cents || 0
     by.set(l.attribution_sub, b)
   }
-  return [...by.values()].sort((a, b) => b.sales - a.sales || a.sub.localeCompare(b.sub)).slice(0, SUB_MIX_MAX)
+  // Round 18: tags with visits but no sale yet still show (that is exactly the channel worth knowing about).
+  for (const [sub, clicks] of Object.entries(subClicks || {})) {
+    const b = by.get(sub) || { sub, sales: 0, commissionCents: 0, clicks: 0 }
+    b.clicks = clicks
+    by.set(sub, b)
+  }
+  return [...by.values()].sort((a, b) => b.sales - a.sales || b.clicks - a.clicks || a.sub.localeCompare(b.sub)).slice(0, SUB_MIX_MAX)
 }
 
 async function getPartnerDashboard(ctx) {
@@ -1814,6 +1825,16 @@ async function getPartnerDashboard(ctx) {
 
   const ledger = partner.commission_ledger || []
   const codes  = partner.referral_codes || []
+  // Round 18: visits per channel tag, summed over this partner's codes. Best-effort: a failed read only hides the click column.
+  const subClicks = {}
+  try {
+    const ids = codes.map(rc => rc.id).filter(Boolean)
+    if (ids.length) {
+      const { data: scRows, error: scErr } = await supabase.from('referral_sub_clicks').select('sub, clicks').in('code_id', ids)
+      if (scErr) throw scErr
+      for (const r of scRows || []) subClicks[r.sub] = (subClicks[r.sub] || 0) + (r.clicks || 0)
+    }
+  } catch (err) { console.error('dashboard sub clicks:', err.message) }
 
   // AUDIT FIX (Section 3/4 re-audit, feature gap + minor data-exposure bug):
   // this response has always fetched and shipped the FULL commission ledger
@@ -1899,7 +1920,7 @@ async function getPartnerDashboard(ctx) {
     conversions,
     trend:          buildCycleTrend(ledger, 6),
     attributionMix: buildAttributionMix(ledger),
-    subMix:         buildSubMix(ledger),
+    subMix:         buildSubMix(ledger, subClicks),
     // So the frontend can say "showing the most recent 50 of 214" instead of
     // silently looking complete when it isn't.
     conversionsTotal: ledger.length,
@@ -2064,7 +2085,8 @@ async function trackClick(ctx) {
   // so the browser kept it and it replaced a real partner's stored attribution. Say plainly it is not a code.
   if (!CODE_FORMAT_RE.test(code)) return ctx.json({ success: true, valid: false })
   const ua = ctx.req.header?.('user-agent') || ''
-  if (!ua || BOT_UA.test(ua)) return ctx.json({ success: true })
+  // `bot\b` also matches real handsets such as "CUBOT P40" (a brand sold in Africa), whose clicks were silently dropped.
+  if (!ua || (BOT_UA.test(ua) && !/cubot/i.test(ua))) return ctx.json({ success: true })
 
   const supabase = getSupabase(ctx.env)
   // Round 6 (feature gap / bug): `?ref=` is a generic query parameter (`?ref=producthunt`, `?ref=twitter`), and
@@ -2082,6 +2104,12 @@ async function trackClick(ctx) {
   if (valid === false) return ctx.json({ success: true, valid: false })
   const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
   if (error) console.error('trackClick:', error.message)
+  // Round 18 (feature gap): the channel tag is counted per code too, so the partner sees visits and conversion by channel.
+  const sub = normalizeSub(body.sub)
+  if (sub) {
+    const { error: subErr } = await supabase.rpc('increment_referral_sub_clicks', { p_code: code, p_sub: sub })
+    if (subErr) console.error('trackClick sub:', subErr.message)
+  }
   return ctx.json(valid === true ? { success: true, valid: true } : { success: true })
 }
 
@@ -2621,6 +2649,9 @@ async function adminAnonymizePartner(ctx) {
     if (subPayErr) throw subPayErr
     const { error: subLedErr } = await supabase.from('commission_ledger').update({ attribution_sub: null }).eq('referral_code_id', rc.id).not('attribution_sub', 'is', null)
     if (subLedErr) throw subLedErr
+    // Round 18: the per-channel click counters carry the same partner-worded tags.
+    const { error: subClkErr } = await supabase.from('referral_sub_clicks').delete().eq('code_id', rc.id)
+    if (subClkErr) throw subClkErr
     const { error: rnErr } = await supabase.from('referral_codes').update({ code: placeholder }).eq('id', rc.id)
     if (rnErr) throw rnErr
   }
@@ -2820,7 +2851,7 @@ async function acceptPartnerTerms(ctx) {
   return ctx.json({ success: true, alreadyAccepted: false, termsVersion: PARTNER_TERMS_VERSION, termsAcceptedAt: acceptedAt })
 }
 
-// Emails every ACTIVE partner who has not accepted the current version, once each. Capped per run (the mail
+// Emails every ACTIVE or PAUSED partner who has not accepted the current version, once each. Capped per run (the mail
 // provider throttles) and resumable: terms_notified_version records who has been told, so clicking again only
 // sends to the rest and never mails anyone twice for the same version.
 const TERMS_NOTICE_BATCH = 40
@@ -2836,7 +2867,8 @@ async function adminSendTermsNotice(ctx) {
   const skipIds = body.skipIds || []
   let q = supabase.from('partners')
     .select('id, name, email, dashboard_token', { count: 'exact' })
-    .eq('status', 'ACTIVE')
+    // PAUSED partners are told too: the terms page promises an email before a change, and they may be reactivated.
+    .in('status', ['ACTIVE', 'PAUSED'])
     .or(`terms_version.is.null,terms_version.neq.${version}`)
     .or(`terms_notified_version.is.null,terms_notified_version.neq.${version}`)
   if (skipIds.length) q = q.not('id', 'in', `(${skipIds.join(',')})`)
@@ -2860,6 +2892,69 @@ async function adminSendTermsNotice(ctx) {
   return ctx.json({ success: true, version, sent, failed, failedIds, remaining })
 }
 
+// ── Round 18 (feature gap): reject ONE sale ─────────────────────────────────
+// Until now a single fraudulent or disputed-by-hand sale could only be clawed back with an unlinked adjustment, or by
+// refunding the buyer. This reverses that sale's commission in the ledger exactly the way a refund does (a negative row
+// pointing at the original, the usage slot released) without touching the buyer's payment. The admin's wording stays in
+// the audit log; the partner sees a fixed reason, so internal notes never reach them.
+const reverseSaleSchema = z.object({ reason: z.string().trim().min(5, 'Give a reason (at least 5 characters).').max(300) })
+async function adminReverseSale(ctx) {
+  const ledgerId = ctx.req.param('ledgerId')
+  const body = reverseSaleSchema.parse(await ctx.req.json().catch(() => ({})))
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('commission_ledger')
+    .select('id, payment_id, partner_id, kind, reverses_ledger_id, commission_amount_cents, payout_id')
+    .eq('id', ledgerId).eq('partner_id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  if (!row) return ctx.json({ success: false, message: 'Sale not found for this partner.' }, 404)
+  if (row.kind === 'ADJUSTMENT' || row.reverses_ledger_id || !row.payment_id)
+    return ctx.json({ success: false, message: 'Only a sale can be reversed. Use an adjustment for anything else.' }, 400)
+
+  const { reverseCommission } = require('../services/fulfillment.service')
+  const out = await reverseCommission(supabase, row.payment_id, 'ADMIN_REVERSED')
+  if (!out.reversed)
+    return ctx.json({ success: false, message: out.reason === 'already-reversed' ? 'This sale was already reversed.' : 'Nothing to reverse for this sale.' }, 409)
+
+  await logAdminAction(ctx, supabase, 'partner.sale_reversed', 'partner', row.partner_id,
+    { ledgerId: row.id, paymentId: row.payment_id, commissionCents: out.commissionCents, alreadyPaidOut: out.alreadyPaidOut, reason: body.reason })
+  let emailed = false
+  try {
+    await require('../services/referral.service').notifyPartnerReversal(ctx.env, supabase, row.partner_id, out.commissionCents, out.currency)
+    emailed = true
+  } catch (err) { console.error('adminReverseSale notify:', err.message) }
+  return ctx.json({ success: true, alreadyPaidOut: out.alreadyPaidOut, commissionCents: out.commissionCents, emailed })
+}
+
+// ── Round 18 (feature gap): paid sales that carry a code but have no commission row ──────────────────────────────
+// recordConversion failures are retried by the sweeps and announced by an owner alert, but nothing let an admin SEE what
+// was still missing. Read-only: a successful payment that used a partner code, older than 15 minutes (the normal path
+// finishes in seconds), with no commission row. Recovery is the existing POST /payments/:reference/reconcile.
+async function adminListUnrecordedCommissions(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()
+  const settleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString()
+  const { data: pays, error } = await supabase.from('payments')
+    .select('id, paystack_ref, amount_cents, currency, created_at, referral_code_id, referral_codes(code, partners(id, name))')
+    .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
+    .gte('created_at', since).lte('created_at', settleBefore)
+    .order('created_at', { ascending: false }).limit(500)
+  if (error) throw error
+  const ids = (pays || []).map(p => p.id)
+  const recorded = new Set()
+  for (let i = 0; i < ids.length; i += 100) {
+    const { data: led, error: lErr } = await supabase.from('commission_ledger')
+      .select('payment_id').in('payment_id', ids.slice(i, i + 100)).is('reverses_ledger_id', null)
+    if (lErr) throw lErr
+    for (const l of led || []) recorded.add(l.payment_id)
+  }
+  const missing = (pays || []).filter(p => !recorded.has(p.id)).slice(0, 100).map(p => ({
+    paymentId: p.id, reference: p.paystack_ref, amountCents: p.amount_cents, currency: p.currency, paidAt: p.created_at,
+    code: p.referral_codes?.code || null, partnerId: p.referral_codes?.partners?.id || null,
+    partnerName: p.referral_codes?.partners?.name || null,
+  }))
+  return ctx.json({ success: true, data: missing, checked: ids.length })
+}
+
 module.exports = {
   buildCyclesSummary, buildCycleTrend, buildAttributionMix, buildSubMix, sweepPayoutDue,
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
@@ -2870,5 +2965,5 @@ module.exports = {
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
   recoverPartnerLinks, adminAnonymizePartner,
   adminAdjustLedger, acceptPartnerTerms, adminSendTermsNotice,
-  resetMyPartnerLinks, setMyReferralAttribution
+  resetMyPartnerLinks, setMyReferralAttribution, adminReverseSale, adminListUnrecordedCommissions
 }

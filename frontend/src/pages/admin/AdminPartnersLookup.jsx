@@ -235,22 +235,71 @@ function PayoutsLog() {
   )
 }
 
+// Round 18 (feature gap): paid sales that used a partner code but have no commission row. recordConversion failures are
+// retried by the sweeps and announced by an alert; this is the place an admin can SEE what is still missing and retry it
+// (the same reconcile call the payment screens use). Read-only until a row's Retry is pressed.
+function UnrecordedCommissions() {
+  const toast = useToast()
+  const [state, setState] = useState({ rows: [], loading: true, error: false, checked: 0 })
+  const [busy, setBusy] = useState(null)
+  const load = () => {
+    setState(s => ({ ...s, loading: true, error: false }))
+    api.get('/partners/unrecorded-commissions')
+      .then(r => setState({ rows: r.data.data || [], checked: r.data.checked || 0, loading: false, error: false }))
+      .catch(() => setState({ rows: [], checked: 0, loading: false, error: true }))
+  }
+  useEffect(() => { load() }, [])
+  async function retry(row) {
+    setBusy(row.paymentId)
+    try {
+      await api.post(`/payments/${encodeURIComponent(row.reference)}/reconcile`)
+      toast({ message: 'Retried. Reloading the list.', type: 'success' })
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || 'The retry failed. Try again in a moment.', type: 'error' })
+    } finally { setBusy(null); load() }
+  }
+  if (state.loading) return <Spinner />
+  if (state.error) return <p className="text-sm text-red-600">Could not load. <button type="button" className="underline" onClick={load}>Try again</button></p>
+  return (
+    <div className="flex flex-col gap-2" data-testid="unrecorded-commissions">
+      <p className="text-xs text-gray-500">
+        Successful payments from the last 90 days that used a partner code and have no commission row (checked {state.checked}; payments under 15 minutes old are skipped).
+      </p>
+      {state.rows.length === 0
+        ? <p className="text-sm text-gray-500">Nothing missing.</p>
+        : (
+          <ul className="divide-y divide-gray-100 border border-gray-200 rounded-lg">
+            {state.rows.map(r => (
+              <li key={r.paymentId} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                <span className="min-w-0">
+                  <span className="font-mono text-xs text-gray-500">{r.reference}</span>
+                  <span className="block text-gray-700">{r.partnerName || 'Unknown partner'} · {r.code || '—'} · {formatCents(r.amountCents, r.currency)} · {formatDate(r.paidAt)}</span>
+                </span>
+                <Button size="sm" variant="secondary" loading={busy === r.paymentId} onClick={() => retry(r)}>Retry</Button>
+              </li>
+            ))}
+          </ul>
+        )}
+    </div>
+  )
+}
+
 export default function PartnersLookupPanel() {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState('codes')
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)} className="self-start text-xs text-gray-400 hover:text-gray-600">Find a code · Payout history →</button>
+    return <button type="button" onClick={() => setOpen(true)} className="self-start text-xs text-gray-400 hover:text-gray-600">Find a code · Payout history · Missing commissions →</button>
   }
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col gap-3" data-testid="partners-lookup">
       <div className="flex items-center gap-4 text-sm">
-        {[['codes', 'Referral codes'], ['payouts', 'Payout history']].map(([k, l]) => (
+        {[['codes', 'Referral codes'], ['payouts', 'Payout history'], ['missing', 'Missing commissions']].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setTab(k)}
             className={tab === k ? 'font-medium text-blue-700 underline underline-offset-4' : 'text-gray-500 hover:text-gray-700'}>{l}</button>
         ))}
         <button type="button" onClick={() => setOpen(false)} className="ml-auto text-xs text-gray-400 hover:text-gray-600">Close</button>
       </div>
-      {tab === 'codes' ? <CodeLookup /> : <PayoutsLog />}
+      {tab === 'codes' ? <CodeLookup /> : tab === 'payouts' ? <PayoutsLog /> : <UnrecordedCommissions />}
     </div>
   )
 }
