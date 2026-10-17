@@ -4,13 +4,16 @@
 # style-src needs 'unsafe-inline' for React style={{}} attributes. connect-src is
 # `https:` rather than the exact API origin because VITE_API_URL is a per-deploy
 # build setting; to tighten it, replace `https:` with your API origin
-# (e.g. https://api.passthrough.dev). Paystack checkout is a top-level redirect,
-# not an embedded script/frame, so it needs no entry here.
+# (e.g. https://api.passthrough.dev). Paystack checkout: ScanResult.jsx opens it with
+# @paystack/inline-js (bundled, so script-src needs nothing), which embeds Paystack's checkout
+# page in an IFRAME - frame-src must allow checkout.paystack.com (and standard.paystack.co, the
+# package's other production host) or the buyer sees "This content is blocked" and cannot pay.
+# The popup's API calls go to api.paystack.co, already covered by connect-src https:.
 /*
   X-Frame-Options: DENY
   X-Content-Type-Options: nosniff
   Referrer-Policy: strict-origin-when-cross-origin
-  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com https://checkout.paystack.com https://standard.paystack.co; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https:; font-src 'self' data:; connect-src 'self' https:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
 
 /v/*
   X-Robots-Tag: noindex, nofollow

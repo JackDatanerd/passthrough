@@ -20,6 +20,12 @@ describe('SPA Content-Security-Policy (frontend/public/_headers)', () => {
     expect(script).toBe("script-src 'self' https://challenges.cloudflare.com")
     expect(csp).not.toMatch(/unsafe-eval/)
   })
+  it('lets the Paystack checkout popup frame itself, and nothing else third-party but Turnstile', () => {
+    // ScanResult.jsx uses @paystack/inline-js, which embeds checkout.paystack.com in an iframe. Without this the buy
+    // button shows "This content is blocked" and nobody can pay.
+    const frames = directive('frame-src').split(/\s+/).slice(1).sort()
+    expect(frames).toEqual(['https://challenges.cloudflare.com', 'https://checkout.paystack.com', 'https://standard.paystack.co'])
+  })
   it('blocks plugins, base-tag hijack and framing', () => {
     expect(directive('object-src')).toBe("object-src 'none'")
     expect(directive('base-uri')).toBe("base-uri 'self'")
