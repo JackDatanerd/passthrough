@@ -1,0 +1,33 @@
+Section 8 (Webhooks) — round 18 (fresh independent audit of webhooks.controller.js, webhooks.routes.js, webhookRejections.js)
+Base: 0b27f08 "Move to usepassthrough.com"  (audited at 3b14768; the only commit since touched no webhook file)
+
+NO MIGRATION. Nothing to apply before deploying. New OPTIONAL var: DISPUTE_WARN_HOURS (default 6, clamped 1-15).
+
+GAPS
+G1  payments.dispute_due_at drove nothing. Paystack auto-accepts an unanswered dispute after ~16 h, but this app only
+    mentioned the deadline in the one email sent when the dispute opened. checkDisputeDeadlines runs from the hourly
+    cron: an open (DISPUTED) payment whose deadline is within DISPUTE_WARN_HOURS gets "Dispute deadline approaching —
+    answer it now", and one that passed in the last 3 h gets "Dispute deadline has passed" (check Paystack — it may have
+    been auto-accepted). One email per payment per 3 h; a failing query never breaks the cron.
+G2  No way to check the webhook setup before a real delivery failed. New GET /api/admin/webhook-events/self-test and a
+    "Check webhook setup" button on Admin → Webhooks: Paystack secret present/shape, Paystack accepts the key (read-only
+    disputes call), retired key still set, IP list parses, Resend secret is a valid whsec_ base64 key (Svix round-trip),
+    the webhook migrations (0065/0086/0090) are applied, and no refusal is pending — plus the two URLs to register.
+    It sends nothing into the inbox, so it cannot clear the refused-delivery warning.
+
+BUGS
+B1  The refused-delivery stamp held only the NEWEST refusal per provider. Scanner-shaped refusals (unsigned, too-large,
+    ...) overwrote a real 'signature'/'ip' refusal, so the red notice on Admin → Webhooks and the dashboard vanished
+    while a rotated signing key was still breaking every delivery. Flagged reasons now have their own stamp
+    (webhook_rejected_flagged:<provider>) and their own throttle slot; readRejections prefers it.
+    Existing round17 / resend tests updated for the new key.
+B2  contestPaymentDispute answered "not delivered — accept the dispute instead" while a paid retry round had the scan at
+    FIX_GENERATING, though the files had been delivered earlier. New workWasDelivered(): delivered, or generating with
+    fix_retry_count > 0 and a stored resume_ats_path, on the disputed payment's own scan. A first-time generation and
+    another owner's scan are still refused.
+
+Files: src/controllers/webhooks.controller.js, src/lib/webhookRejections.js, src/routes/admin.routes.js, src/index.js,
+frontend/src/pages/admin/AdminWebhooks.jsx, DEPLOYMENT.md; tests/webhooks.round18.test.js (15),
+frontend/tests/pages/Webhooks.round18.test.jsx (2), tests/webhooks.round17.test.js + tests/resend-webhook.test.js (updated).
+Backend suite: 4581/4582 (the one failure, employer-leads CSV truncation timeout, is pre-existing and unrelated).
+Section 8 is NOT closed until a fresh independent pass finds nothing.

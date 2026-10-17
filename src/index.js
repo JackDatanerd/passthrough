@@ -295,6 +295,8 @@ async function webhookMaintenanceSweep(event, env, ctx) {
         if (r.error) console.error('Dispute sweep:', r.error)
         else if (r.actioned.length || r.failed.length) console.log(`Dispute sweep: checked ${r.checked}, ${r.actioned.length} caught up, ${r.failed.length} failed`)
       } catch (err) { console.error('Dispute sweep error:', err.message) }
+      // Webhooks round 18 (G1): an open dispute close to Paystack's auto-accept deadline pages the owner (the stored deadline used to drive nothing).
+      try { await require('./controllers/webhooks.controller').checkDisputeDeadlines(env, ctx) } catch (err) { console.error('Dispute deadline check error:', err.message) }
       // Round 9 (G1): page the owner when paid sales exist but Paystack's webhooks are not arriving.
       try { await require('./controllers/webhooks.controller').checkWebhookDelivery(env, ctx) } catch (err) { console.error('Webhook delivery check error:', err.message) }
       // Webhooks round 15 (G2): a rotated-out signing key still being accepted.

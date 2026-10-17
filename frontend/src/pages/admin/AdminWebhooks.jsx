@@ -70,6 +70,14 @@ export default function AdminWebhooks() {
   const [bulkNote, setBulkNote] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
 
+  // Round 18 (G2): check the setup (secrets, IP list, migrations, Paystack key) without waiting for a real delivery to fail.
+  const [selfTest, setSelfTest] = useState(null)   // { loading, data, error } | null
+  async function runSelfTest() {
+    setSelfTest({ loading: true, data: null, error: '' })
+    try { setSelfTest({ loading: false, data: (await api.get('/admin/webhook-events/self-test')).data.data, error: '' }) }
+    catch (err) { setSelfTest({ loading: false, data: null, error: getErrorMessage(err, 'The self-test could not be run.') }) }
+  }
+
   const loadHealth = useCallback(async () => {
     try { setHealth((await api.get('/admin/webhook-events/health')).data.data) }
     catch (_) { setHealth(null) }
@@ -266,6 +274,33 @@ export default function AdminWebhooks() {
           )}.
         </div>
       )}
+
+      <div className="flex flex-col gap-2">
+        <div>
+          <Button size="sm" variant="secondary" loading={!!selfTest?.loading} onClick={runSelfTest}>Check webhook setup</Button>
+          <span className="text-xs text-gray-500 ml-3">Checks the signing secrets, IP allow-list, migrations and Paystack key. Sends nothing to the inbox.</span>
+        </div>
+        {selfTest?.error && <p role="alert" className="text-sm text-red-600">{selfTest.error}</p>}
+        {selfTest?.data && (
+          <div className="text-sm border border-gray-200 rounded-md px-3 py-2" aria-label="Webhook setup check">
+            <ul className="flex flex-col gap-1">
+              {selfTest.data.checks.map(ck => (
+                <li key={ck.id} className="flex flex-wrap items-baseline gap-2">
+                  <Badge variant={ck.status === 'ok' ? 'green' : ck.status === 'warn' ? 'amber' : 'red'}>{ck.status === 'ok' ? 'OK' : ck.status === 'warn' ? 'CHECK' : 'FIX'}</Badge>
+                  <span className="font-medium text-gray-800">{ck.label}</span>
+                  <span className="text-xs text-gray-600">{ck.detail}</span>
+                </li>
+              ))}
+            </ul>
+            {(selfTest.data.endpoints?.paystack || selfTest.data.endpoints?.resend) && (
+              <p className="text-xs text-gray-500 mt-2">
+                URLs to register — Paystack: <span className="font-mono">{selfTest.data.endpoints.paystack}</span>
+                {' · '}Resend: <span className="font-mono">{selfTest.data.endpoints.resend}</span>
+              </p>
+            )}
+          </div>
+        )}
+      </div>
 
       <p className="text-xs text-gray-500 bg-gray-50 border border-gray-200 rounded-md px-3 py-2">
         HELD = an amount/currency mismatch was caught (use Payments → Recheck to accept it). FAILED = processing threw

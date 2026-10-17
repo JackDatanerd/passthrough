@@ -275,7 +275,7 @@ describe('round 6 — G2: any verified event stamps "last Resend event"', () => 
     t = setup()
     await t.call(complaint(), { headers: { 'svix-signature': 'v1,AAAA' } })
     expect(t.state.stamps.filter(s => s.key === 'resend_webhook')).toHaveLength(0)
-    expect(t.state.stamps.filter(s => s.key === 'webhook_rejected:resend')).toHaveLength(1)
+    expect(t.state.stamps.filter(s => s.key === 'webhook_rejected_flagged:resend')).toHaveLength(1)
   })
   it('a failing stamp never changes the answer', async () => {
     t = setup({ leads: [lead] })

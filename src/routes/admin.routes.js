@@ -40,6 +40,7 @@ router.post('/scans/:id/requeue-fix', admin.stepUp, validateUuidParam(), c.admin
 // Webhook inbox (Section 8): what Paystack sent, what we did with it, and a replay
 // for anything that was HELD / FAILED / IGNORED.
 router.get('/webhook-events', wh.listWebhookEvents)
+router.get('/webhook-events/self-test', wh.getWebhookSelfTest)   // before /:id so 'self-test' is not read as an id (Webhooks round 18, G2)
 router.get('/webhook-events/health', wh.getWebhookHealth)   // before /:id so 'health' is not read as an id
 router.get('/webhook-events/:id', validateUuidParam(), wh.getWebhookEvent)
 // Webhooks round 12 (W2): a Replay re-runs the stored event, which can reverse a sale or clear a dispute — the same actions

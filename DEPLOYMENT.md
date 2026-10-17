@@ -243,6 +243,11 @@ wrangler secret put PAYSTACK_WEBHOOK_IPS
 # attack). Delete it once the retries have drained.
 wrangler secret put PAYSTACK_SECRET_KEY_PREVIOUS
 
+# OPTIONAL: how many hours before Paystack's ~16h auto-accept an OPEN dispute pages you (default 6, range 1-15).
+# The hourly cron emails once per 3h per dispute while it is inside this window, and once more just after the
+# deadline passes. Set as a normal var (wrangler.toml [vars]) or secret.
+# DISPUTE_WARN_HOURS = "6"
+
 # Shared secret between the Worker and the /v/:code Pages Function. When set on
 # BOTH sides (same value; on Pages it is an environment variable named
 # VERIFY_PREVIEW_KEY), the Function's link-preview fetch skips the per-IP verify
@@ -622,6 +627,10 @@ Every push to `main` triggers an automatic rebuild and deploy.
    `PAYSTACK_WEBHOOK_IPS`, missing secret) are not events, so they are not listed; the newest one per provider is
    stamped in `system_state` and Admin → Webhooks / the dashboard show a red notice while a refusal is newer than
    the last delivery that got through. Check the signing key (or the IP list) when you see it.
+   **Check webhook setup** (Admin → Webhooks) runs a no-side-effect self-test — keys present and well-formed, Paystack
+   accepts the key, IP list parses, the webhook migrations are applied, nothing is being refused — and prints the two
+   URLs to register with Paystack and Resend. A refusal that looks like a scanner (missing/oversized body) is kept
+   separately from a real signature/IP refusal, so junk traffic can no longer hide the red notice.
 6. Recovery you don't have to do by hand (hourly, from the cron): FAILED or stuck events
    are re-run up to 8 times and you're emailed once if they stay stuck; a HELD event
    waiting over a day is escalated; recent paid payments are checked against Paystack

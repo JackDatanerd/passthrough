@@ -1437,6 +1437,16 @@ async function submitDisputeEvidence(c) {
 // resolves the dispute as `declined`. Only offered when this payment's own fix was actually delivered — otherwise there is nothing
 // to prove and the honest answer is to accept. The payment is not touched here: Paystack's resolve webhook moves it (won → back to
 // SUCCESS, lost → reversed), exactly as for an accept.
+// Webhooks round 18 (B2): was this payment's work delivered? A paid retry round parks the scan at FIX_GENERATING (stuck ones are only
+// recovered after 30 minutes) while the files from the first delivery are still there, and contest used to answer "not delivered — accept the
+// dispute instead" in that window: with the ~16 h auto-accept clock running, that pushed an admin into giving up a dispute that could be won.
+// Delivered = this payment owns the scan AND (FIX_DELIVERED, or FIX_GENERATING for a retry round on files that already exist).
+function workWasDelivered(scan, payment) {
+  if (!scan || !payment || scan.fix_payment_id !== payment.id) return false
+  if (scan.status === 'FIX_DELIVERED') return true
+  return scan.status === 'FIX_GENERATING' && (Number(scan.fix_retry_count) || 0) > 0 && !!scan.resume_ats_path
+}
+
 async function contestPaymentDispute(c) {
   const supabase = getSupabase(c.env)
   let body = {}
@@ -1446,9 +1456,9 @@ async function contestPaymentDispute(c) {
   if (fail) return fail
   if (!payment.scan_id) return c.json({ success: false, message: 'This payment has no scan, so there is no delivered work to prove — accept the dispute instead.' }, 409)
   const { data: scan, error: scanErr } = await supabase.from('scans')
-    .select('id, status, fix_payment_id, fix_tier, verification_code, verification_status').eq('id', payment.scan_id).maybeSingle()
+    .select('id, status, fix_payment_id, fix_tier, fix_retry_count, resume_ats_path, verification_code, verification_status').eq('id', payment.scan_id).maybeSingle()
   if (scanErr) throw scanErr
-  if (!scan || scan.fix_payment_id !== payment.id || scan.status !== 'FIX_DELIVERED')
+  if (!workWasDelivered(scan, payment))
     return c.json({ success: false, message: 'The work for this payment was not delivered (or another payment owns it) — there is nothing to prove. Accept the dispute instead.' }, 409)
   const { data: user, error: userErr } = payment.user_id
     ? await supabase.from('users').select('email').eq('id', payment.user_id).maybeSingle() : { data: null, error: null }
@@ -1830,6 +1840,51 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
   return result
 }
 
+// ── dispute countdown (hourly cron, see index.js) ──────────────────────────────
+// Webhooks round 18 (G1): payments.dispute_due_at (migration 0083) is stored the moment a dispute opens, but only the dashboard and the
+// payments list ever read it. An open dispute that nobody answered was announced once (the create email) plus whatever reminders Paystack
+// itself sends — both are emails that can be missed — and then Paystack auto-accepts and refunds the buyer after about 16 hours with nothing
+// from this app in between. Each hour: a still-DISPUTED payment whose deadline is within DISPUTE_WARN_HOURS (default 6, env-tunable 1-15)
+// pages the owner, at most once every 3 hours per payment, and says whether Contest is available (the work was delivered). A deadline that has
+// just passed is reported too (Paystack may already have auto-accepted; its resolve webhook / the dispute sweep then reverses the sale).
+// Notify-only, best effort, never throws; without migration 0083 there is no deadline to read and it does nothing.
+const DISPUTE_WARN_DEFAULT_HOURS = 6
+const DISPUTE_OVERDUE_GRACE_MS = 3 * 3_600_000
+function disputeWarnMs(env) {
+  const n = Number.parseFloat(env && env.DISPUTE_WARN_HOURS)
+  return (Number.isFinite(n) && n >= 1 ? Math.min(n, 15) : DISPUTE_WARN_DEFAULT_HOURS) * 3_600_000
+}
+async function checkDisputeDeadlines(env, ctx, supabase = getSupabase(env), { now = Date.now() } = {}) {
+  const result = { checked: 0, alerted: [], error: null }
+  try {
+    const horizon = new Date(now + disputeWarnMs(env)).toISOString()
+    const floor = new Date(now - DISPUTE_OVERDUE_GRACE_MS).toISOString()
+    const { data, error } = await supabase.from('payments')
+      .select('id, paystack_ref, scan_id, amount_cents, currency, dispute_due_at')
+      .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null)
+      .lte('dispute_due_at', horizon).gte('dispute_due_at', floor)
+      .order('dispute_due_at', { ascending: true }).limit(25)
+    if (error) { if (!isColumnMissing(error)) result.error = error.message; return result }
+    const rows = data || []
+    result.checked = rows.length
+    for (const p of rows) {
+      const due = Date.parse(p.dispute_due_at)
+      if (!Number.isFinite(due)) continue
+      if (!(await alertAllowed(env, `webhook-alert-cooldown:dispute-deadline:${p.id}`, 3 * 3600))) continue
+      result.alerted.push(p.paystack_ref)
+      const line = disputeDeadlineLine({ due_at: p.dispute_due_at }, now).trim()
+      alert({ env, executionCtx: ctx }, due <= now ? 'Dispute deadline has passed' : 'Dispute deadline approaching — answer it now',
+        `reference: ${p.paystack_ref}\nscanId: ${p.scan_id || '(none)'}\namount: ${p.amount_cents} ${p.currency || ''}\n\n${line}\n\n` +
+        `Admin → Payments → this payment: Contest dispute (sends a generated proof of delivery; only offered when the work was delivered), ` +
+        `Send evidence, or Accept dispute. Emailed at most once every 3 hours per payment.`, `${p.paystack_ref}:dispute-deadline`)
+    }
+  } catch (err) {
+    result.error = err && err.message
+    console.error('dispute deadline check error:', result.error)
+  }
+  return result
+}
+
 // ── delivery health ──────────────────────────────────────────────────────────
 // ROUND-5 (feature gap): every recovery above assumes webhooks arrive. When they stop — the webhook
 // URL changed or was never saved in the Paystack dashboard, a rotated key now fails every signature —
@@ -1976,9 +2031,116 @@ async function checkRetiredSecret(env, ctx) {
   }
 }
 
+// ── setup self-test ─────────────────────────────────────────────────────────────────────────────────────────────────
+// Webhooks round 18 (G2): the only way to learn that the webhook URL, a signing secret, the IP list or a migration was wrong was for a
+// real payment (or a real bounce) to fail first — Admin → Webhooks reports refusals only AFTER they happen. This checks what it can check
+// from here, without sending a fake event (a synthetic delivery would land in the inbox and read as "a delivery got through", clearing the
+// very warning it exists to protect). GET /api/admin/webhook-events/self-test → { endpoints, checks: [{ id, label, status: ok|warn|fail, detail }] }.
+// Never throws; each check is independent.
+const SELFTEST_PROBES = [
+  { table: 'webhook_events', column: 'id', mig: '0025' }, { table: 'webhook_events', column: 'note', mig: '0036' },
+  { table: 'webhook_events', column: 'redrives', mig: '0065' }, { table: 'webhook_events', column: 'processing_ms', mig: '0086' },
+  { table: 'webhook_events', column: 'last_attempt_at', mig: '0090' }, { table: 'payment_refunds', column: 'id', mig: '0053' },
+  { table: 'payments', column: 'dispute_due_at', mig: '0083' }, { table: 'payments', column: 'dispute_id', mig: '0086' },
+  { table: 'payments', column: 'dispute_evidence_id', mig: '0090' },
+]
+async function svixRoundTrip(secret) {
+  // Sign a sample exactly as Svix does and verify it with the code that checks real deliveries: proves the secret decodes and verifies.
+  const { verifySvixSignature } = require('../lib/svix')
+  const raw = atob(String(secret).replace(/^whsec_/, ''))
+  const keyBytes = Uint8Array.from(raw, ch => ch.charCodeAt(0))
+  if (!keyBytes.length) return false
+  const key = await crypto.subtle.importKey('raw', keyBytes, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'])
+  const id = 'msg_selftest', ts = String(Math.floor(Date.now() / 1000)), body = '{"type":"selftest"}'
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${id}.${ts}.${body}`))
+  let bin = ''; for (const b of new Uint8Array(sig)) bin += String.fromCharCode(b)
+  return verifySvixSignature({ secret, id, timestamp: ts, signature: `v1,${btoa(bin)}`, body })
+}
+
+async function buildSelfTest(env, supabase, { origin = '' } = {}) {
+  const checks = []
+  const add = (id, label, status, detail) => checks.push({ id, label, status, detail })
+  const guard = async (id, label, fn) => { try { await fn() } catch (err) { add(id, label, 'fail', `could not be checked: ${err && err.message}`) } }
+  const base = String(origin || '').replace(/\/+$/, '')
+
+  await guard('paystack-secret', 'Paystack signing secret', async () => {
+    const key = env.PAYSTACK_SECRET_KEY
+    if (!key) return add('paystack-secret', 'Paystack signing secret', 'fail', 'PAYSTACK_SECRET_KEY is not set — every Paystack webhook is refused with 500.')
+    const sample = new TextEncoder().encode('{"event":"selftest"}')
+    const sig = await cryptoLib.hmacSha512Hex(key, sample)
+    const ok = cryptoLib.timingSafeEqual(sig, await cryptoLib.hmacSha512Hex(key, sample)) && rejections.looksLikePaystackSignature(sig)
+    const mode = /^sk_live_/.test(key) ? 'live' : /^sk_test_/.test(key) ? 'test' : null
+    if (!ok) return add('paystack-secret', 'Paystack signing secret', 'fail', 'A sample could not be signed and verified with this key.')
+    if (!mode) return add('paystack-secret', 'Paystack signing secret', 'warn', 'The key does not start with sk_live_ / sk_test_ — check it is the secret key, not the public one.')
+    add('paystack-secret', 'Paystack signing secret', 'ok', `A ${mode}-mode secret key is set and signs / verifies a sample. Paystack signs webhooks with this same key.`)
+  })
+
+  await guard('paystack-api', 'Paystack accepts the key', async () => {
+    if (!env.PAYSTACK_SECRET_KEY) return add('paystack-api', 'Paystack accepts the key', 'fail', 'No key to try.')
+    try {
+      await paystackService.listDisputes(env, { perPage: 1 })
+      add('paystack-api', 'Paystack accepts the key', 'ok', 'Paystack answered an authenticated request (dispute list) — the key is valid and the dispute sweep can run.')
+    } catch (err) { add('paystack-api', 'Paystack accepts the key', 'fail', `Paystack refused or did not answer: ${err.message}. A wrong key also fails every webhook signature.`) }
+  })
+
+  await guard('paystack-previous', 'Retired Paystack key', async () => {
+    if (!env.PAYSTACK_SECRET_KEY_PREVIOUS) return add('paystack-previous', 'Retired Paystack key', 'ok', 'No previous key is accepted.')
+    if (env.PAYSTACK_SECRET_KEY_PREVIOUS === env.PAYSTACK_SECRET_KEY) return add('paystack-previous', 'Retired Paystack key', 'warn', 'PAYSTACK_SECRET_KEY_PREVIOUS equals the current key — remove it.')
+    add('paystack-previous', 'Retired Paystack key', 'warn', 'PAYSTACK_SECRET_KEY_PREVIOUS is set: webhooks signed with the old key still verify. Remove it once retries have drained (~72 h after a rotation).')
+  })
+
+  await guard('paystack-ips', 'Paystack IP allow-list', async () => {
+    const raw = env.PAYSTACK_WEBHOOK_IPS
+    if (!raw || !String(raw).trim()) return add('paystack-ips', 'Paystack IP allow-list', 'ok', 'Not set — deliveries are accepted on the signature alone.')
+    const { valid, invalid } = require('../lib/clientIp').parseIpAllowList(raw)
+    if (!valid.length) return add('paystack-ips', 'Paystack IP allow-list', 'fail', 'PAYSTACK_WEBHOOK_IPS has no usable entry — EVERY Paystack webhook is refused with 403.')
+    if (invalid.length) return add('paystack-ips', 'Paystack IP allow-list', 'warn', `${valid.length} usable entr${valid.length === 1 ? 'y' : 'ies'}; these match nothing: ${invalid.join(', ')}.`)
+    add('paystack-ips', 'Paystack IP allow-list', 'ok', `${valid.length} entr${valid.length === 1 ? 'y' : 'ies'}. If Paystack changes its outbound IPs, deliveries are refused until this is updated.`)
+  })
+
+  await guard('resend-secret', 'Resend signing secret', async () => {
+    const secret = env.RESEND_WEBHOOK_SECRET
+    if (!secret) return add('resend-secret', 'Resend signing secret', 'fail', 'RESEND_WEBHOOK_SECRET is not set — bounces and spam complaints are refused with 500 and nobody is suppressed.')
+    let ok = false
+    try { ok = await svixRoundTrip(secret) } catch (_) { ok = false }
+    if (!ok) return add('resend-secret', 'Resend signing secret', 'fail', 'The secret does not decode as a Svix signing secret (whsec_…) — every Resend delivery will fail verification.')
+    add('resend-secret', 'Resend signing secret', 'ok', 'Decodes as a Svix secret and verifies a sample signed with it.')
+  })
+
+  await guard('schema', 'Database migrations', async () => {
+    const missing = []
+    for (const pr of SELFTEST_PROBES) {
+      const { error } = await supabase.from(pr.table).select(pr.column).limit(1)
+      if (error) missing.push(`${pr.mig} (${pr.table}.${pr.column})`)
+    }
+    if (!missing.length) return add('schema', 'Database migrations', 'ok', 'Every table and column the webhook code reads is present.')
+    add('schema', 'Database migrations', 'warn', `Not readable: ${[...new Set(missing)].join(', ')}. The code degrades gracefully, but apply these migrations.`)
+  })
+
+  await guard('delivery', 'Deliveries reaching the app', async () => {
+    const h = await computeWebhookHealth(supabase)
+    if (!h.available) return add('delivery', 'Deliveries reaching the app', 'warn', 'The inbox could not be read.')
+    if (h.rejectedSinceLastEvent && h.rejectedSinceLastEvent.length)
+      return add('delivery', 'Deliveries reaching the app', 'fail', `${h.rejectedSinceLastEvent.join(' and ')} deliveries are being refused (wrong signing key, blocked IP or missing secret) and nothing has got through since.`)
+    if (deliveryProblem(h)) return add('delivery', 'Deliveries reaching the app', 'fail', deliveryProblem(h))
+    add('delivery', 'Deliveries reaching the app', h.lastEventAt ? 'ok' : 'warn',
+      h.lastEventAt ? `Last Paystack event ${h.lastEventAt}; last Resend event ${h.lastResendEventAt || 'never'}.` : 'No Paystack event has ever been received — register the URL below in the Paystack dashboard.')
+  })
+
+  return { endpoints: { paystack: base ? `${base}/api/webhooks/paystack` : null, resend: base ? `${base}/api/webhooks/resend` : null }, checks,
+    ok: checks.every(c => c.status !== 'fail') }
+}
+
+// GET /api/admin/webhook-events/self-test
+async function getWebhookSelfTest(c) {
+  let origin = ''
+  try { origin = new URL(c.req.url).origin } catch (_) { origin = '' }
+  return c.json({ success: true, data: await buildSelfTest(c.env, getSupabase(c.env), { origin }) })
+}
+
 // GET /api/admin/webhook-events/health
 async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { buildSelfTest, getWebhookSelfTest, checkDisputeDeadlines, disputeWarnMs, workWasDelivered, STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

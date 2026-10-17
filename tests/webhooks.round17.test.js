@@ -46,9 +46,9 @@ describe('G1: webhookRejections helper', () => {
     expect(await lib.recordRejection({}, 'paystack', 'signature', w.db)).toBe(true)
     expect(await lib.recordRejection({}, 'resend', 'unsigned', w.db)).toBe(true)
     const rows = Object.fromEntries(w.t.system_state.map(r => [r.key, r.value]))
-    expect(Object.keys(rows).sort()).toEqual(['webhook_rejected:paystack', 'webhook_rejected:resend'])
-    expect(Object.keys(rows['webhook_rejected:paystack']).sort()).toEqual(['last_at', 'last_reason'])
-    expect(rows['webhook_rejected:paystack'].last_reason).toBe('signature')
+    expect(Object.keys(rows).sort()).toEqual(['webhook_rejected:resend', 'webhook_rejected_flagged:paystack'])   // round 18: flagged refusals have their own stamp
+    expect(Object.keys(rows['webhook_rejected_flagged:paystack']).sort()).toEqual(['last_at', 'last_reason'])
+    expect(rows['webhook_rejected_flagged:paystack'].last_reason).toBe('signature')
   })
 
   it('is throttled through the shared quota (a flood of junk is not a flood of writes) and ignores unknown providers', async () => {
@@ -121,7 +121,7 @@ describe('G1: handlePaystack records what it refuses', () => {
       executionCtx: { waitUntil: p => pending.push(p) }, text: (t, s) => ({ text: t, status: s }),
     }
     const res = await mod.handlePaystack(c); await Promise.all(pending)
-    const row = w.t.system_state.find(r => r.key === 'webhook_rejected:paystack')
+    const row = w.t.system_state.find(r => r.key === 'webhook_rejected_flagged:paystack' || r.key === 'webhook_rejected:paystack')
     return { res, row: row && row.value, w }
   }
 
@@ -201,7 +201,7 @@ describe('G1: handleResend records what it refuses', () => {
       executionCtx: { waitUntil: p => pending.push(p) }, text: (t, s) => ({ text: t, status: s }),
     }
     const res = await l.mod.handleResend(c); await Promise.all(pending)
-    const row = w.t.system_state.find(r => r.key === 'webhook_rejected:resend')
+    const row = w.t.system_state.find(r => r.key === 'webhook_rejected_flagged:resend' || r.key === 'webhook_rejected:resend')
     return { res, row: row && row.value }
   }
   it('bad signature with svix headers → 401 + "signature"', async () => {
