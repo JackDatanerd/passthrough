@@ -1,0 +1,47 @@
+APPLICANT-FACING DOCUMENTS - round 1 (base: upstream 63aa532, includes docgen prompts round 1)
+
+Scope: the files an applicant receives - DOCX resume, designed PDF (built-in template; the AI layout is the prompt
+owner's), cover letter (DOCX + new PDF), free-draft and saved-profile downloads. Prompts untouched.
+No migration. No new dependency.
+
+Gaps closed
+- G1  DOCX design layer (services/docx.service.js): styles instead of per-run formatting - Calibri set as the document
+      default, real Heading 2 (bold, navy, rule underneath, keep-with-next), 0.75in margins, paragraph spacing instead of
+      blank paragraphs, hanging-indent bullets, dates right-aligned with a tab stop, credential on its own line, literal
+      bullet for certifications (was a check mark). ATS-safe as before: single column, no tables/text boxes, real text.
+      Measured: same ATS score (95/95) on the sample before and after; one page where the old file ran to two.
+- G2  PDF contact line and project link are real links (email, phone, LinkedIn, portfolio, project) via lib/links.js,
+      the same rule the DOCX uses. Chromium does not linkify text.
+- G3  PDF credential prints its address next to the badge (a printed/flattened PDF can still be checked).
+- G4  Cover letter: new GET /api/scan/:id/cover-letter-pdf (same palette/type/letterhead as the delivered resume, rendered
+      on demand, behind the pdfRegen limiter), "Download (.pdf)" button; DOCX letterhead restyled to match the resume.
+- G5  Fit control (lib/docFit.js): a resume estimated to be just over one page gets a slightly denser layout in both the
+      DOCX and the PDF template; a clearly longer one is left alone. Pure function of the data, unit-tested.
+- G6  (paper size) already closed by docgen prompts round 1 for scans; added design.paperForLocation so the saved-profile
+      downloads (no posting to read) use the applicant's location line (A4 for Kenya/UK/EU..., Letter for US/Canada...,
+      Letter when it says nothing).
+
+Bugs fixed
+- B1  DOCX section headings and spacer paragraphs named no font and the file has no theme: Word falls back to Times New Roman.
+- B2  Wrapped bullets returned to the margin under the glyph (flat indent, no hanging).
+- B3  Education entries ran together (no spacing between entries).
+- B4  Every section ended with an empty paragraph; content ending at a page bottom spilled a blank last page.
+- B5  No keepNext/keepLines anywhere: a heading or job title could be stranded at a page bottom.
+- B6  Saved-profile download name for accented names ("Jose Nunez" -> "jose-nu-n-ez-resume"); all downloads now share
+      lib/fileStems.js ("Jose-Nunez-Resume").
+- B7  DOCX only linked 13 top-level domains (.design .tech .ng .co.za .in .ca .edu .studio .fr .de .com.au linktr.ee were plain
+      grey text). Bare hosts are now recognised structurally.
+- B8  Template page box was exactly as tall as the printable area on A4 (269mm): can print a blank trailing page. 268mm now
+      (design.service PAPER.a4.minHeight too); headings carry break-after: avoid.
+- B9  (traced, resume.parser.js) the DOCX text extractor read a paragraph's tab-stop DEFINITION as a tab character, putting a
+      phantom leading tab on every paragraph with a right-aligned date - the commonest Word resume layout.
+- B10 (lib/docFit.js, found while testing) estimateLoad(null) threw.
+
+Known / not done
+- The AI layout path (claude.service.js prompt) still has no instruction to link contact details or to print the credential
+  address (G2/G3 for that path). Prompt owner.
+- Not verifiable here (no Chromium): B8's blank-page and heading-orphan cases, and which fonts Cloudflare's Chromium has
+  for the template's system stacks (Georgia / Helvetica Neue). WeasyPrint and LibreOffice renders were checked instead.
+- Decision left open: after a refund/dispute the delivered files stay downloadable (purchaseIsLive guards change/regenerate
+  only; fix_purchased is not reset).
+- This is a fix pass, not the independent clean audit; another independent pass is still required.

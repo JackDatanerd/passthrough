@@ -250,7 +250,10 @@ function docxXmlToLines(xml, ctx = {}) {
     // afterward) since a separate extraction pass would only look inside
     // <w:t>...</w:t> tags and silently drop any inserted \t/\n sitting
     // outside them.
-    const withBreaks = p.replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:(br|cr)\b[^>]*\/>/g, '\n')
+    // A tab STOP definition (<w:tabs><w:tab w:val="right" w:pos="..."/></w:tabs> in the paragraph properties) is layout,
+    // not content: it matched the same pattern as a tab character and put a phantom leading tab on every paragraph that
+    // has a right-aligned date (the commonest Word resume layout), so only tabs inside runs are converted.
+    const withBreaks = p.replace(/<w:tabs>[\s\S]*?<\/w:tabs>/g, '').replace(/<w:tab\b[^>]*\/>/g, '\t').replace(/<w:(br|cr)\b[^>]*\/>/g, '\n')
     const parts = []
     for (const m of withBreaks.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>|[\t\n]/g)) {
       parts.push(m[1] !== undefined ? m[1] : m[0])

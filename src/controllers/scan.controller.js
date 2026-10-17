@@ -70,6 +70,7 @@ const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON
 const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { purgeBadgeCache } = require('../lib/badgeCache')
 const badgeService     = require('../services/badge.service')
+const fileStems          = require('../lib/fileStems')
 const pdfService        = require('../services/pdf.service')
 const pdfTemplate        = require('../services/pdfTemplate.service')
 const docxService        = require('../services/docx.service')
@@ -1062,27 +1063,16 @@ async function loadDraftScan(ctx) {
 
 // SCAN/ATS ROUND 4: every delivered file was named resume-ats.docx / resume-verified.pdf — the name a recruiter sees in the
 // attachment, identical for every candidate. "Jane Doe" -> "Jane-Doe-Resume"; nothing usable -> "Resume".
-function deliveredFileStem(resumeData) {
-  // Accents are stripped (José -> Jose), not turned into separators (Jos-e).
-  const stem = String(resumeData?.name || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40).replace(/-+$/, '')
-  return stem ? `${stem}-Resume` : 'Resume'
-}
+function deliveredFileStem(resumeData) { return fileStems.resumeStem(resumeData?.name) }
 
 // "Jane Doe" -> "jane-doe"; nothing usable -> ''. Used only for the downloaded file's name.
 // SCAN/ATS ROUND 6 (bug): the cover-letter name was built by stripping "-resume-draft" back off draftFileStem(), which only
 // works when there IS a name ("jane-doe-resume-draft"). With no name, or a name with no Latin letters, the bare
 // "resume-draft" has no leading dash, nothing was stripped, and the letter downloaded as "resume-draft-cover-letter.docx".
-function nameSlug(resumeData) {
-  return String(resumeData?.name || '').toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-}
-function draftFileStem(resumeData) {
-  const stem = nameSlug(resumeData)
-  return stem ? `${stem}-resume-draft` : 'resume-draft'
-}
-function coverLetterFileStem(resumeData) {
-  const stem = nameSlug(resumeData)
-  return stem ? `${stem}-cover-letter` : 'cover-letter'
-}
+// The three stems now live in lib/fileStems.js, shared with the profile download.
+function nameSlug(resumeData) { return fileStems.nameSlug(resumeData?.name) }
+function draftFileStem(resumeData) { return fileStems.draftStem(resumeData?.name) }
+function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resumeData?.name) }
 
 async function downloadDraft(ctx) {
   const { scan, res } = await loadDraftScan(ctx)
@@ -1444,13 +1434,13 @@ async function generateCoverLetter(ctx) {
   return ctx.json({ success: true, data: { coverLetterText: result.data } })
 }
 
-async function downloadCoverLetter(ctx) {
+async function loadCoverLetter(ctx) {
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
-  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data, job_description_text').eq('id', ctx.req.param('id')).maybeSingle()
+  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data, job_description_text, role_category').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
-  if (!row || row.user_id !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
-  if (!row.cover_letter_text) return ctx.json({ success: false, message: 'No cover letter yet.' }, 404)
+  if (!row || row.user_id !== user.id) return { res: ctx.json({ success: false, message: 'Access denied.' }, 403) }
+  if (!row.cover_letter_text) return { res: ctx.json({ success: false, message: 'No cover letter yet.' }, 404) }
   const data = row.rewritten_resume_data || row.original_resume_data
   // Letterhead (name + contact line, the same header the resume carries) and the date, in the form the posting's
   // spelling implies: "October 16, 2026" for a US posting, "16 October 2026" for a UK one.
@@ -1459,10 +1449,38 @@ async function downloadCoverLetter(ctx) {
   const date = paper === 'a4'
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+  return { row, data, paper, date }
+}
+
+async function downloadCoverLetter(ctx) {
+  const { res, row, data, paper, date } = await loadCoverLetter(ctx)
+  if (res) return res
   const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name, { contact: data, date, paper })
   ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(bytes)
+}
+
+// GET /api/scan/:id/cover-letter-pdf
+// FEATURE GAP CLOSED (applicant docs pass): the resume ships as DOCX + PDF but the letter was .docx only, and the PDF is
+// the file most people send. Same palette, type and letterhead as the delivered resume (the design tokens are seeded
+// from the same user/scan), rendered on demand from the deterministic template (no Claude call, nothing stored). It costs
+// a headless-browser render, so the route sits behind the same tighter limiter as the other PDF renders.
+async function downloadCoverLetterPdf(ctx) {
+  const { res, row, data, paper, date } = await loadCoverLetter(ctx)
+  if (res) return res
+  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })
+  let pdfBytes
+  try {
+    const html = pdfTemplate.buildCoverLetterHTML(row.cover_letter_text, data, designTokens, { date })
+    pdfBytes = await pdfService.generateResumePDF(ctx.env, html, { paper })
+  } catch (err) {
+    console.error(`downloadCoverLetterPdf ${row.id}:`, err.message)
+    return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute — the .docx letter is still available.' }, 502)
+  }
+  ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.pdf"`)
+  ctx.header('Content-Type', 'application/pdf')
+  return ctx.body(pdfBytes)
 }
 
 // POST /api/scan/:id/initiate-fix
@@ -3488,6 +3506,6 @@ module.exports = {
   __test,
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
-  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter,  // section audit: "generate a resume from scratch"
+  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
 }

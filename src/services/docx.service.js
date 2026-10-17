@@ -1,23 +1,20 @@
-const { Document, Packer, Paragraph, TextRun, HeadingLevel, ExternalHyperlink } = require('docx')
-
+const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopType, BorderStyle } = require('docx')
+const { hrefFor } = require('../lib/links')
+const { densityFor } = require('../lib/docFit')
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
 // NOT verificationCode — avoids hardcoded domain
-// CHANGE FROM v8: returns the DOCX bytes (Buffer) directly instead of writing
-// to outputPath and returning that path. R2 has no filesystem — the caller
-// .put()s these bytes into the bucket under the key from config/storage.js.
+// Returns the DOCX bytes (Buffer) directly: R2 has no filesystem — the caller .put()s these bytes into the bucket under
+// the key from config/storage.js.
 //
-// SECTION 7 AUDIT: `verified` (default true) selects the credential wording.
-// false is used when the final score is under the Verified threshold — the link
-// still points at the (honest) scan-report page, but the document must not
-// claim a credential the page will not confirm.
-// AUDIT FIX (Auth/Scan round): the docx library escapes & < > but writes any
-// other character verbatim, including XML-1.0-illegal control characters
-// (form feed / vertical tab / NUL and lone surrogates) that PDF text
-// extraction and pasted text can carry into a resume. Word refuses a document
-// containing one ("unreadable content") — a paid deliverable that won't open.
-// Verified against the docx library: U+000B / U+0000 / U+000C reach
-// word/document.xml unchanged. Every string is cleaned before it is used.
+// `verified` (default true) selects the credential wording. false is used when the final score is under the Verified
+// threshold — the link still points at the (honest) scan-report page, but the document must not claim a credential the
+// page will not confirm.
+//
+// xmlSafe: the docx library escapes & < > but writes any other character verbatim, including XML-1.0-illegal control
+// characters (form feed / vertical tab / NUL and lone surrogates) that PDF text extraction and pasted text can carry into
+// a resume. Word refuses a document containing one ("unreadable content") — a paid deliverable that won't open. Every
+// string is cleaned before it is used.
 function xmlSafe(v) {
   if (typeof v === 'string')
     return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
@@ -27,271 +24,241 @@ function xmlSafe(v) {
   return v
 }
 
-// A contact detail as a clickable link where it plainly is one (an address, a profile URL). Only
-// http(s) and mailto targets are ever produced; anything else stays plain text. Word does not
-// turn typed URLs into links when it opens a file, so plain text meant the verification link and
-// the profile links on a delivered resume could not be clicked.
-function hrefFor(text) {
-  const t = String(text || '').trim()
-  if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(t)) return `mailto:${t}`
-  if (/^https?:\/\/\S+$/i.test(t)) return t
-  if (/^(?:www\.|(?:[a-z0-9-]+\.)+(?:com|org|net|io|dev|co|me|app|ai|xyz|info|ke|uk)(?:\/|$))\S*$/i.test(t) && !/\s/.test(t)) return `https://${t}`
-  return null
-}
 // Letter (US) unless told A4 (UK / Europe) - see design.service.js detectPaper. docx counts in twentieths of a point.
-const pageProps = paper => ({ page: { size: paper === 'a4' ? { width: 11906, height: 16838 } : { width: 12240, height: 15840 } } })
-const linkRun = (text, size = 18) => new TextRun({ text, size, font: 'Calibri', color: '0563C1', underline: {} })
+const PAGES = { letter: { width: 12240, height: 15840 }, a4: { width: 11906, height: 16838 } }
+const pageSize = paper => (paper === 'a4' ? PAGES.a4 : PAGES.letter)
+
+// ── Design ──────────────────────────────────────────────────────────────────────────────────────────────────────────
+// The look is defined ONCE, as document styles (not per-run), so the headings are real Word headings that carry their
+// own font, colour, rule and keep-with-next. Before this the section headings were Word's stock Heading 2 (blue, regular
+// weight, no font named anywhere in the file — Word falls back to Times New Roman for a paragraph that names none),
+// spacing was blank paragraphs, and a wrapped bullet returned to the margin under the bullet glyph.
+//
+// ATS safety is unchanged: single column, no tables / text boxes / images, real text, literal "•" bullets (a native list
+// is a documented parsing risk, see the note above the Document below), standard section names. A right-aligned date is a
+// tab stop (extracts as a tab between the title and the dates), which every parser reads as a separator.
+const NAVY = '1F3A5F', MUTED = '5B6470'
+const DENSITY = {
+  normal:  { body: 21, name: 40, small: 18, jobGap: 150, entryGap: 100, bulletAfter: 30, headBefore: 230, headAfter: 80, marginTB: 1000, marginLR: 1080 },
+  compact: { body: 20, name: 38, small: 17, jobGap: 100, entryGap: 70,  bulletAfter: 20, headBefore: 170, headAfter: 60, marginTB: 800,  marginLR: 960  },
+}
+const BULLET_INDENT = { left: 400, hanging: 260 }   // the glyph sits at 140, the text (and every wrapped line) at 400
+
+const linkRun = (text, size = 18) => new TextRun({ text, size, color: '0563C1', underline: {} })
+const plainRun = (text, size) => new TextRun({ text, size })
+
+// A contact detail run: a real link where it plainly is one (an address, a profile URL, a phone number). Word does not
+// turn typed URLs into links when it opens a file, so plain text meant the profile links on a delivered resume could not
+// be clicked.
+function contactRuns(parts, size) {
+  const runs = []
+  parts.forEach((p, i) => {
+    if (i > 0) runs.push(plainRun(' | ', size))
+    const href = hrefFor(p, { phone: true })
+    runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p, size)] }) : plainRun(p, size))
+  })
+  return runs
+}
+
+function buildStyles(d) {
+  return {
+    default: {
+      document: { run: { font: 'Calibri', size: d.body }, paragraph: { spacing: { after: 0, line: 259 } } },
+      heading2: {
+        run: { font: 'Calibri', size: d.body + 2, bold: true, color: NAVY, characterSpacing: 20 },
+        paragraph: {
+          spacing: { before: d.headBefore, after: d.headAfter }, keepNext: true, keepLines: true,
+          border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY, space: 2 } },
+        },
+      },
+    },
+  }
+}
 
 async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper } = {}) {
-  resumeData = xmlSafe(resumeData)
+  resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
+  const size = pageSize(paper)
+  const d = DENSITY[densityFor(resumeData, paper === 'a4' ? 'a4' : 'letter')]
+  const textWidth = size.width - 2 * d.marginLR       // the right-aligned date stops here
   const children = []
 
-  children.push(new Paragraph({
-    children: [new TextRun({ text: resumeData.name || '', bold: true, size: 32, font: 'Calibri Light' })]
-  }))
-
-  // [{ text, href? }] — joined with " | " below.
-  const parts = []
-  const addPart = (text, href = hrefFor(text)) => { if (text) parts.push({ text, href }) }
-  addPart(resumeData.email)
-  addPart(resumeData.location, null)
-  addPart(resumeData.phone, null)
-  // AUDIT FIX (section audit — "generate a resume from scratch"): linkedin/
-  // portfolio previously had no schema field at all, so there was nothing to
-  // render here even when a candidate provided one — see the schema note on
-  // claude.service.js's parseResumeStructure.
-  addPart(resumeData.linkedin)
-  addPart(resumeData.portfolio)
-  // The credential line: a real link to the verification page. Omitted entirely (not just left
-  // blank) when there's no verification link for this tier — see FIX_PLAIN in
-  // scan.controller.js's generateFix. The label stays plain text so it extracts as before.
-  const credLabel = verificationUrl ? `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: ` : ''
-  const contactRuns = []
-  parts.forEach((p, i) => {
-    if (i > 0) contactRuns.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
-    contactRuns.push(p.href
-      ? new ExternalHyperlink({ link: p.href, children: [linkRun(p.text)] })
-      : new TextRun({ text: p.text, size: 18, font: 'Calibri' }))
+  const heading = text => new Paragraph({ text, heading: 'Heading2' })
+  const bullet = text => new Paragraph({
+    keepLines: true, indent: BULLET_INDENT, spacing: { after: d.bulletAfter },
+    children: [new TextRun({ children: ['•', new Tab(), text] })],
   })
+  // A title line with the dates (or tech list) right-aligned on the same line. keepNext: a title is never stranded at the
+  // bottom of a page away from its first bullet.
+  const titleRow = (left, right, gap) => new Paragraph({
+    keepNext: true, keepLines: true, spacing: { before: gap },
+    tabStops: right ? [{ type: TabStopType.RIGHT, position: textWidth }] : undefined,
+    children: [
+      new TextRun({ text: left, bold: true }),
+      ...(right ? [new TextRun({ children: [new Tab(), right], color: MUTED, size: d.body - 1 })] : []),
+    ],
+  })
+  const plain = (text, extra = {}) => new Paragraph({ ...extra, children: [new TextRun({ text })] })
+
+  // ── Header: name, contact line, credential line ──
+  if (resumeData.name)
+    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color: NAVY })] }))
+
+  // addPart: [{ text }] — joined with " | " below. link detection is shared with the PDF (lib/links.js).
+  const parts = []
+  for (const v of [resumeData.email, resumeData.phone, resumeData.location, resumeData.linkedin, resumeData.portfolio])
+    if (v) parts.push(String(v))
+  // The credential line: a real link to the verification page, on its own line (it used to trail the contact line and
+  // wrap awkwardly). Omitted entirely (not just left blank) when there's no verification link for this tier — see
+  // FIX_PLAIN in scan.controller.js's generateFix. The label stays plain text so it extracts as before.
+  if (parts.length)
+    children.push(new Paragraph({ spacing: { after: verificationUrl ? 20 : 60 }, children: contactRuns(parts, d.small) }))
   if (verificationUrl) {
-    if (contactRuns.length) contactRuns.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
-    contactRuns.push(new TextRun({ text: credLabel, size: 18, font: 'Calibri' }))
-    contactRuns.push(hrefFor(verificationUrl)
-      ? new ExternalHyperlink({ link: hrefFor(verificationUrl), children: [linkRun(verificationUrl)] })
-      : new TextRun({ text: verificationUrl, size: 18, font: 'Calibri' }))
+    const label = `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: `
+    const href = hrefFor(verificationUrl)
+    children.push(new Paragraph({
+      spacing: { after: 60 },
+      children: [plainRun(label, d.small), href ? new ExternalHyperlink({ link: href, children: [linkRun(verificationUrl, d.small)] }) : plainRun(verificationUrl, d.small)],
+    }))
   }
-  children.push(new Paragraph({ children: contactRuns }))
-  children.push(new Paragraph({ text: '' }))
 
   if (resumeData.summary) {
-    children.push(new Paragraph({ text: 'PROFESSIONAL SUMMARY', heading: HeadingLevel.HEADING_2 }))
-    children.push(new Paragraph({ children: [new TextRun({ text: resumeData.summary, font: 'Calibri', size: 22 })] }))
-    children.push(new Paragraph({ text: '' }))
+    children.push(heading('PROFESSIONAL SUMMARY'))
+    children.push(plain(resumeData.summary))
   }
 
   const sec = { experience: [], education: [], skills: [], certifications: [], projects: [], volunteer: [], awards: [], publications: [], languages: [] }
+
   if (resumeData.experience?.length) {
-    const children = sec.experience
-    children.push(new Paragraph({ text: 'EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
+    const out = sec.experience
+    out.push(heading('EXPERIENCE'))
     for (const job of resumeData.experience) {
-      // job.company/job.dates may legitimately be null — Claude is
-      // instructed (see claude.service.js) to leave ambiguous fields null
-      // rather than guess. Template-literal interpolation would otherwise
-      // stringify that as the literal text "null" in a paying customer's
-      // delivered resume. Build from filtered, joined parts instead — same
-      // pattern resume.parser.js's serializeResumeData already uses.
-      const titleLine = [job.title, job.company, job.location].filter(Boolean).join(' — ')
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
-          ...(job.dates ? [new TextRun({ text: `  ${job.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
-        ]
-      }))
-      for (const b of (job.bullets || []))
-        children.push(new Paragraph({
-          style: 'ListParagraph',
-          children: [new TextRun({ text: `•  ${b}`, font: 'Calibri', size: 22 })]
-        }))
-      children.push(new Paragraph({ text: '' }))
+      // job.company/job.dates may legitimately be null — Claude is instructed (see claude.service.js) to leave ambiguous
+      // fields null rather than guess. Build from filtered, joined parts so the literal text "null" can never reach a
+      // paying customer's resume (same pattern resume.parser.js's serializeResumeData uses).
+      out.push(titleRow([job.title, job.company, job.location].filter(Boolean).join(' — '), job.dates, d.jobGap))
+      for (const b of (job.bullets || [])) out.push(bullet(b))
     }
   }
 
   if (resumeData.education?.length) {
-    const children = sec.education
-    children.push(new Paragraph({ text: 'EDUCATION', heading: HeadingLevel.HEADING_2 }))
+    const out = sec.education
+    out.push(heading('EDUCATION'))
     for (const e of resumeData.education) {
-      // Same null-safety as the experience block above.
-      const titleLine = [e.degree, e.institution].filter(Boolean).join(' — ')
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
-          ...(e.dates ? [new TextRun({ text: `  ${e.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
-        ]
-      }))
-      if (e.details)
-        children.push(new Paragraph({ children: [new TextRun({ text: e.details, font: 'Calibri', size: 22 })] }))
+      out.push(titleRow([e.degree, e.institution].filter(Boolean).join(' — '), e.dates, d.entryGap))
+      if (e.details) out.push(plain(e.details))
     }
-    children.push(new Paragraph({ text: '' }))
   }
 
   if (resumeData.skills?.length) {
-    const children = sec.skills
-    children.push(new Paragraph({ text: 'SKILLS', heading: HeadingLevel.HEADING_2 }))
-    children.push(new Paragraph({
-      children: [new TextRun({ text: resumeData.skills.join(' · '), font: 'Calibri', size: 22 })]
-    }))
-    children.push(new Paragraph({ text: '' }))
+    sec.skills.push(heading('SKILLS'))
+    sec.skills.push(plain(resumeData.skills.join(' · ')))
   }
 
   if (resumeData.certifications?.length) {
-    const children = sec.certifications
-    children.push(new Paragraph({ text: 'CERTIFICATIONS', heading: HeadingLevel.HEADING_2 }))
-    for (const cert of resumeData.certifications)
-      children.push(new Paragraph({
-        children: [new TextRun({ text: `✓ ${cert}`, font: 'Calibri', size: 22 })]
-      }))
-    children.push(new Paragraph({ text: '' }))
+    sec.certifications.push(heading('CERTIFICATIONS'))
+    // A literal bullet like every other list (it was a "✓", a glyph some fonts and parsers drop).
+    for (const cert of resumeData.certifications) sec.certifications.push(bullet(cert))
   }
 
-  // AUDIT FIX (section audit — "generate a resume from scratch"): see
-  // resume.parser.js's serializeResumeData for why this section exists now
-  // (it didn't before) and who it matters most for.
   if (resumeData.projects?.length) {
-    const children = sec.projects
-    children.push(new Paragraph({ text: 'PROJECTS', heading: HeadingLevel.HEADING_2 }))
+    const out = sec.projects
+    out.push(heading('PROJECTS'))
     for (const p of resumeData.projects) {
-      const techLine = p.technologies?.length ? p.technologies.join(', ') : null
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: p.name || '', bold: true, font: 'Calibri', size: 22 }),
-          ...(techLine ? [new TextRun({ text: `  ${techLine}`, font: 'Calibri', size: 22, color: '666666' })] : [])
-        ]
-      }))
-      if (p.description)
-        children.push(new Paragraph({
-          style: 'ListParagraph',
-          children: [new TextRun({ text: `•  ${p.description}`, font: 'Calibri', size: 22 })]
-        }))
+      out.push(titleRow(p.name || '', p.technologies?.length ? p.technologies.join(', ') : null, d.entryGap))
+      if (p.description) out.push(bullet(p.description))
       if (p.link) {
-        // A project link is a link where it plainly is one (same rule as the contact line), not grey text to retype.
-        const projectHref = hrefFor(p.link)
-        children.push(new Paragraph({
-          children: [projectHref
-            ? new ExternalHyperlink({ link: projectHref, children: [linkRun(p.link, 20)] })
-            : new TextRun({ text: p.link, font: 'Calibri', size: 20, color: '666666' })]
+        // A project link is a link where it plainly is one (same rule as the contact line), indented under its bullet.
+        const href = hrefFor(p.link)
+        out.push(new Paragraph({
+          indent: { left: BULLET_INDENT.left },
+          children: [href ? new ExternalHyperlink({ link: href, children: [linkRun(p.link, d.body - 1)] }) : new TextRun({ text: p.link, size: d.body - 1, color: MUTED })],
         }))
       }
-      children.push(new Paragraph({ text: '' }))
     }
   }
 
-  // Sections the schema gained for from-scratch resumes (see lib/resumeData.js). Same plain
-  // literal-bullet style as everything above, so they extract and score like the rest.
+  // Sections the schema gained for from-scratch resumes (see lib/resumeData.js). Same plain literal-bullet style as
+  // everything above, so they extract and score like the rest.
   if (resumeData.volunteer?.length) {
-    const children = sec.volunteer
-    children.push(new Paragraph({ text: 'VOLUNTEER EXPERIENCE', heading: HeadingLevel.HEADING_2 }))
+    const out = sec.volunteer
+    out.push(heading('VOLUNTEER EXPERIENCE'))
     for (const v of resumeData.volunteer) {
-      const titleLine = [v.role, v.organization].filter(Boolean).join(' — ')
-      children.push(new Paragraph({
-        children: [
-          new TextRun({ text: titleLine, bold: true, font: 'Calibri', size: 22 }),
-          ...(v.dates ? [new TextRun({ text: `  ${v.dates}`, font: 'Calibri', size: 22, color: '666666' })] : [])
-        ]
-      }))
-      for (const b of (v.bullets || []))
-        children.push(new Paragraph({ style: 'ListParagraph', children: [new TextRun({ text: `•  ${b}`, font: 'Calibri', size: 22 })] }))
-      children.push(new Paragraph({ text: '' }))
+      out.push(titleRow([v.role, v.organization].filter(Boolean).join(' — '), v.dates, d.jobGap))
+      for (const b of (v.bullets || [])) out.push(bullet(b))
     }
   }
   for (const [title, key] of [['AWARDS', 'awards'], ['PUBLICATIONS', 'publications']]) {
     if (!resumeData[key]?.length) continue
-    const children = sec[key]
-    children.push(new Paragraph({ text: title, heading: HeadingLevel.HEADING_2 }))
-    for (const item of resumeData[key])
-      children.push(new Paragraph({ style: 'ListParagraph', children: [new TextRun({ text: `•  ${item}`, font: 'Calibri', size: 22 })] }))
-    children.push(new Paragraph({ text: '' }))
+    sec[key].push(heading(title))
+    for (const item of resumeData[key]) sec[key].push(bullet(item))
   }
   if (resumeData.languages?.length) {
-    const children = sec.languages
-    children.push(new Paragraph({ text: 'LANGUAGES', heading: HeadingLevel.HEADING_2 }))
-    children.push(new Paragraph({ children: [new TextRun({ text: resumeData.languages.join(' · '), font: 'Calibri', size: 22 })] }))
-    children.push(new Paragraph({ text: '' }))
+    sec.languages.push(heading('LANGUAGES'))
+    sec.languages.push(plain(resumeData.languages.join(' · ')))
   }
 
-  // Section order. With job history: Experience > Projects > Education (the usual US/UK order, as before for everyone
-  // who has experience, except that Projects now sit right after Experience instead of after Certifications).
-  // Without any (a student, a career changer, a from-scratch resume): Education then Projects lead, because that is
-  // the strongest evidence they have. pdfTemplate.service.js and the AI layout prompt use the same order.
+  // Section order. With job history: Experience > Projects > Education (the usual US/UK order). Without any (a student,
+  // a career changer, a from-scratch resume): Education then Projects lead, because that is the strongest evidence they
+  // have. pdfTemplate.service.js and the AI layout prompt use the same order.
   const hasJobs = !!resumeData.experience?.length
   const order = hasJobs
     ? ['experience', 'projects', 'education', 'skills', 'certifications', 'volunteer', 'awards', 'publications', 'languages']
     : ['education', 'projects', 'volunteer', 'skills', 'certifications', 'awards', 'publications', 'languages']
   for (const k of order) children.push(...sec[k])
+  // No trailing blank paragraph: spacing is paragraph spacing now, so nothing can spill onto an empty last page.
+  if (!children.length) children.push(new Paragraph({ text: '' }))
 
-  // ListParagraph style is used purely for left-indentation on bullet lines
-  // now — bullets themselves are a literal "•" text character (see above),
-  // not Word's native numbering/list feature. That's a deliberate choice:
-  // native list formatting is a well-documented real-world ATS-parsing risk
-  // (many employer ATS engines mis-parse or drop it entirely), and it also
-  // means the bullet marker never exists as extractable plain text, which
-  // silently broke our own content scorer's bullet/action-verb detection on
-  // any resume we generated ourselves.
+  // Bullets are a literal "•" text character followed by a tab (hanging indent), not Word's native numbering feature.
+  // That is a deliberate choice: native list formatting is a well-documented real-world ATS-parsing risk (many employer
+  // ATS engines mis-parse or drop it entirely), and it also means the bullet marker never exists as extractable plain
+  // text, which silently broke our own content scorer's bullet/action-verb detection on any resume we generated.
   const doc = new Document({
-    // Without these the file's properties read creator "Un-named" and no title — what a
-    // recruiter sees in a file listing / document inspector / ATS import.
+    // Without these the file's properties read creator "Un-named" and no title — what a recruiter sees in a file listing
+    // / document inspector / ATS import.
     title:   resumeData.name ? `${resumeData.name} — Resume` : 'Resume',
     creator: resumeData.name || 'Passthrough',
     lastModifiedBy: 'Passthrough',
     description: 'ATS-friendly resume',
-    styles: {
-      paragraphStyles: [{
-        id:         'ListParagraph',
-        name:       'List Paragraph',
-        basedOn:    'Normal',
-        quickFormat: true,
-        paragraph:  { indent: { left: 720 } }
-      }]
-    },
-    sections: [{ properties: pageProps(paper), children }]
+    styles: buildStyles(d),
+    sections: [{
+      properties: { page: { size, margin: { top: d.marginTB, bottom: d.marginTB, left: d.marginLR, right: d.marginLR } } },
+      children,
+    }],
   })
 
   return Packer.toBuffer(doc)
 }
 
-// A cover letter on one page: the candidate's name and contact line as a letterhead (the same header the resume
-// carries, so the two documents read as a set), the date, then the body - one paragraph per blank-line-separated
-// block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are optional: called
-// with just (text, name) the file is the plain letter it always was.
+// A cover letter on one page: the candidate's name and contact line as a letterhead (the same header the resume carries,
+// in the same type and colour, so the two documents read as a set), the date, then the body - one paragraph per
+// blank-line-separated block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are
+// optional: called with just (text, name) the file is the plain letter it always was.
 async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper } = {}) {
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const who = xmlSafe(name || '')
+  const d = DENSITY.normal
+  const size = pageSize(paper)
   const head = []
-  if (who) head.push(new Paragraph({ children: [new TextRun({ text: who, bold: true, size: 32, font: 'Calibri Light' })] }))
   const c = xmlSafe(contact || {})
   const parts = [c.email, c.phone, c.location, c.linkedin, c.portfolio].map(v => String(v || '').trim()).filter(Boolean)
-  if (parts.length) {
-    const runs = []
-    parts.forEach((p, i) => {
-      if (i > 0) runs.push(new TextRun({ text: ' | ', size: 18, font: 'Calibri' }))
-      const href = hrefFor(p)
-      runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p)] }) : new TextRun({ text: p, size: 18, font: 'Calibri' }))
-    })
-    head.push(new Paragraph({ spacing: { after: 240 }, children: runs }))
-  }
-  if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)), font: 'Calibri', size: 22 })] }))
+  const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY, space: 6 } }
+  // The rule closes the letterhead: under the contact line, or under the name when there is no contact line.
+  if (who) head.push(new Paragraph({ spacing: { after: parts.length ? 40 : 280 }, border: parts.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color: NAVY })] }))
+  if (parts.length) head.push(new Paragraph({ spacing: { after: 280 }, border: rule, children: contactRuns(parts, d.small) }))
+  if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)) })] }))
   const children = [...head, ...blocks.map(b => new Paragraph({
-    spacing: { after: 200 },
-    children: b.split('\n').flatMap((line, i) => [
-      new TextRun({ text: line, font: 'Calibri', size: 22, break: i > 0 ? 1 : 0 })
-    ])
+    spacing: { after: 180 },
+    children: b.split('\n').flatMap((line, i) => [new TextRun({ text: line, break: i > 0 ? 1 : 0 })]),
   }))]
+  if (!children.length) children.push(new Paragraph({ text: '' }))
   const doc = new Document({
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    sections: [{ properties: pageProps(paper), children }]
+    styles: buildStyles({ ...d, body: 22 }),
+    sections: [{ properties: { page: { size, margin: { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })
   return Packer.toBuffer(doc)
 }

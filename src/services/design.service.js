@@ -56,6 +56,21 @@ function detectPaper(jdText) {
   const hits = String(jdText || '').match(UK_MARKERS)
   return hits && hits.length >= 1 && !/\b(?:united states|usa|u\.s\.|new york|california|texas)\b/i.test(String(jdText)) ? 'a4' : 'letter'
 }
+// Paper for a document that has no job posting to read it from (the saved-profile download): the applicant's own
+// location line. US / Canada / a few Latin-American and Philippine markets use Letter, nearly everywhere else A4. null when
+// the location says nothing either way — the caller keeps its default (Letter, like detectPaper).
+const LETTER_PLACES = /\b(?:united states|u\.?s\.?a?\.?|america|canada|mexico|chile|colombia|venezuela|philippines|dominican republic|costa rica|panama|guatemala|puerto rico)\b|,\s*(?:A[LKZR]|C[AOT]|D[C]|F[L]|G[A]|H[I]|I[LAN]|K[SY]|L[A]|M[AINSOT]|N[EVHJMYCD]|O[HKR]|P[A]|R[I]|S[CD]|T[NX]|U[T]|V[AT]|W[AVIY]|O[N]|Q[C]|B[C]|A[B]|M[B]|N[S])\s*$/
+const A4_PLACES = /\b(?:united kingdom|uk|england|scotland|wales|northern ireland|ireland|kenya|uganda|tanzania|rwanda|ethiopia|nigeria|ghana|south africa|zambia|zimbabwe|egypt|morocco|india|pakistan|bangladesh|sri lanka|australia|new zealand|singapore|malaysia|uae|dubai|saudi arabia|qatar|germany|france|spain|italy|netherlands|belgium|sweden|norway|denmark|finland|poland|portugal|switzerland|austria|brazil|argentina|turkey|nairobi|mombasa|kisumu|kampala|lagos|accra|johannesburg|cape town|london|dublin|paris|berlin|amsterdam)\b/i
+function paperForLocation(location) {
+  const t = String(location || '').trim()
+  if (!t) return null
+  // A bare two-letter code is only read as a state/province when it follows a comma (", TX"); "IN", "DE" and "ID" are left out
+  // because they are as often India, Germany and Indonesia (A4) as Indiana, Delaware and Idaho.
+  const stateCode = /,\s*([A-Z]{2})\s*$/.exec(t)
+  if (stateCode && !['IN', 'DE', 'ID'].includes(stateCode[1]) && LETTER_PLACES.test(t)) return 'letter'
+  if (/\b(?:united states|u\.?s\.?a?\.?|america|canada|mexico|chile|colombia|venezuela|philippines|dominican republic|costa rica|panama|guatemala|puerto rico)\b/i.test(t)) return 'letter'
+  return A4_PLACES.test(t) ? 'a4' : null
+}
 const isUkSpelling = jdText => (String(jdText || '').match(/\b(?:organis\w+|programme\w*|colour\w*|centre\w*|specialis\w+|licence|behaviour\w*|analyse\w*|optimis\w+|prioritis\w+|judgement|whilst)\b/gi) || []).length >= 2
 
 function getDesignTokens(userId, scanId, industry = 'default', { jdText = '' } = {}) {
@@ -71,4 +86,4 @@ function getDesignTokens(userId, scanId, industry = 'default', { jdText = '' } =
   }
 }
 
-module.exports = { getDesignTokens, detectPaper, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '269mm', docx: { width: 11906, height: 16838 } } } }
+module.exports = { getDesignTokens, detectPaper, paperForLocation, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }

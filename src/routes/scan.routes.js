@@ -53,5 +53,6 @@ router.post('/:id/retry-scan',     rl.anonScan, validateUuidParam(), c.retryScan
 router.patch('/:id/delivered-resume', auth, rl.resumeEdit, validateUuidParam(), c.updateDeliveredResume)
 router.post('/:id/cover-letter',   auth, rl.coverLetter, validateUuidParam(), c.generateCoverLetter)
 router.get( '/:id/cover-letter',   auth, rl.coverLetterDownload, validateUuidParam(), c.downloadCoverLetter)
+router.get( '/:id/cover-letter-pdf', auth, rl.pdfRegen, validateUuidParam(), c.downloadCoverLetterPdf)
 
 module.exports = router

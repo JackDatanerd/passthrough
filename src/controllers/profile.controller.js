@@ -29,6 +29,8 @@ const constants = require('../config/constants')
 const docxService = require('../services/docx.service')
 const pdfService = require('../services/pdf.service')
 const pdfTemplate = require('../services/pdfTemplate.service')
+const designService = require('../services/design.service')
+const fileStems = require('../lib/fileStems')
 const { utcMidnight } = require('../lib/utcDay')
 const { SCAN_STATUSES, STATUS_FILTERS, sanitizeSearch, applyScanFilters, parseIdList } = require('../lib/scanSearch')
 
@@ -702,10 +704,8 @@ async function deleteScanHistory(c) {
 // out as the thing it IS — a resume. Same deterministic renderers the free scan draft uses
 // (no Claude call, no credential line), fed from users.saved_profile.resumeData.
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-function profileFileStem(rd) {
-  const stem = String(rd?.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
-  return stem ? `${stem}-resume` : 'resume'
-}
+// Same accent-aware name as the scan downloads (lib/fileStems.js): "José Núñez" is "Jose-Nunez-Resume", not "jose-nu-n-ez-resume".
+function profileFileStem(rd) { return fileStems.resumeStem(rd?.name) }
 async function loadProfileResume(c) {
   const user = c.get('user')
   const profileId = c.req.query('profileId')
@@ -727,7 +727,9 @@ async function loadProfileResume(c) {
 async function downloadProfileDocx(c) {
   const { rd, res } = await loadProfileResume(c)
   if (res) return res
-  const bytes = await docxService.generateAtsDocx(rd, null)
+  // No posting to read the paper from: the applicant's own location line decides (Letter when it says nothing).
+  const paper = designService.paperForLocation(rd?.location) || 'letter'
+  const bytes = await docxService.generateAtsDocx(rd, null, { paper })
   c.header('Content-Disposition', `attachment; filename="${profileFileStem(rd)}.docx"`)
   c.header('Content-Type', DOCX_MIME)
   return c.body(bytes)
@@ -737,7 +739,8 @@ async function downloadProfilePdf(c) {
   if (res) return res
   let bytes
   try {
-    bytes = await pdfService.generateResumePDF(c.env, pdfTemplate.buildResumeHTML(rd, { paper: 'letter' }, null, { verified: false }), { paper: 'letter' })
+    const paper = designService.paperForLocation(rd?.location) || 'letter'
+    bytes = await pdfService.generateResumePDF(c.env, pdfTemplate.buildResumeHTML(rd, { paper }, null, { verified: false }), { paper })
   } catch (err) {
     console.error('downloadProfilePdf:', err.message)
     return c.json({ success: false, message: "We couldn't generate the PDF just now. Please try again in a minute — the .docx is still available." }, 502)

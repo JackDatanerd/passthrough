@@ -13,6 +13,9 @@
 // resources (system fonts only), so it also needs no sanitizing and cannot make
 // the headless browser fetch anything.
 
+const { hrefFor, displayUrl } = require('../lib/links')
+const { densityFor } = require('../lib/docFit')
+
 const esc = v => String(v ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
@@ -40,20 +43,39 @@ function fontStacks(fonts) {
   }
 }
 
+// An address, a profile URL or a phone number is a real link where it plainly is one (lib/links.js, the same rule the
+// DOCX uses). Chromium does not linkify text, so these used to be dead text in the file applicants actually email.
+const contactItem = raw => {
+  const t = typeof raw === 'string' ? raw.trim() : ''
+  if (!t) return ''
+  const h = hrefFor(t, { phone: true })
+  return h ? `<a href="${esc(h)}">${esc(t)}</a>` : esc(t)
+}
+
 function buildResumeHTML(data, designTokens, verificationUrl, { verified = true } = {}) {
   const d = data || {}
   const palette = designTokens?.palette || { bg: '#FFFFFF', primary: '#1E40AF', accent: '#E2E8F0', text: '#1F2937' }
   const fonts   = designTokens?.fonts || {}
   const stack   = fontStacks(fonts)
   const hPt = Number(fonts.hPt) || 23
-  const bPt = Number(fonts.bPt) || 10.5
+  const bPtBase = Number(fonts.bPt) || 10.5
   // US Letter unless the tokens say A4 (see design.service.js detectPaper) - the customers apply to US and UK employers.
-  const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '269mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  // min-height stays a hair UNDER the printable height (page minus the 14mm top and bottom margins): a box exactly as tall as the
+  // page area can tip a few sub-pixels over it and print a blank trailing page.
+  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm', minHeight: '268mm' } : { key: 'letter', css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  // A resume that is only just over one page gets a slightly denser layout instead of a nearly empty second page (lib/docFit.js
+  // estimates the length from the data; a clearly longer resume is left alone). designTokens.density forces either.
+  const density = designTokens?.density === 'compact' || designTokens?.density === 'normal' ? designTokens.density : densityFor(d, paper.key)
+  const compact = density === 'compact'
+  const bPt = bPtBase - (compact ? 0.5 : 0)
 
-  const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(str).filter(Boolean).map(esc)
+  // Contact details are links where they plainly are one (see contactItem above).
+  const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(contactItem).filter(Boolean)
   const href = safeHref(verificationUrl)
+  // The address is printed next to the credential: a printed or flattened PDF has no clickable link, and the point of the
+  // credential is that a reader can check it. (The DOCX has always shown the full URL.)
   const credential = href
-    ? `<a class="cred" href="${esc(href)}">${verified ? '&#10003; Passthrough Verified' : 'Passthrough Scan Report'}</a>`
+    ? `<a class="cred" href="${esc(href)}">${verified ? '&#10003; Passthrough Verified' : 'Passthrough Scan Report'}</a> <a class="credurl" href="${esc(href)}">${esc(displayUrl(href))}</a>`
     : ''
 
   const section = (title, inner) => inner ? `<section><h2>${esc(title)}</h2>${inner}</section>` : ''
@@ -90,7 +112,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     const desc = str(p?.description)
     const link = str(p?.link)
     if (!name && !desc) return ''
-    const l = safeHref(link)
+    const l = hrefFor(link)
     return `<div class="entry"><div class="row"><span class="strong">${esc(name)}</span>${tech.length ? `<span class="dates">${tech.map(esc).join(', ')}</span>` : ''}</div>` +
       (desc ? `<ul><li>${esc(desc)}</li></ul>` : '') +
       (link ? `<p class="link">${l ? `<a href="${esc(l)}">${esc(link)}</a>` : esc(link)}</p>` : '') + `</div>`
@@ -131,15 +153,16 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
 html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
-  font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.45 }
+  font-family: ${stack.body}; font-size: ${bPt}pt; line-height: ${compact ? 1.36 : 1.45} }
 .page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 2pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin: 0 0 3pt }
 .cred { font-size: 8pt; font-variant: small-caps; color: ${esc(palette.primary)}; text-decoration: none }
 h2 { font-family: ${stack.heading}; font-size: ${bPt + 1.5}pt; text-transform: uppercase; letter-spacing: 1pt; color: ${esc(palette.primary)};
-  border-bottom: 1px solid ${esc(palette.accent)}; padding-bottom: 2pt; margin: 14pt 0 6pt }
+  border-bottom: 1px solid ${esc(palette.accent)}; padding-bottom: 2pt; margin: ${compact ? '10pt 0 4pt' : '14pt 0 6pt'};
+  break-after: avoid; page-break-after: avoid }
 section { page-break-inside: auto }
-.entry { margin-bottom: 7pt; page-break-inside: avoid }
+.entry { margin-bottom: ${compact ? 5 : 7}pt; break-inside: avoid; page-break-inside: avoid }
 .row { display: flex; justify-content: space-between; gap: 12pt }
 .strong { font-weight: 700 }
 .dates { color: ${esc(palette.primary)}; white-space: nowrap; font-size: ${Math.max(bPt - 1, 8)}pt }
@@ -148,7 +171,8 @@ li { margin-bottom: 2pt }
 p { margin: 0 }
 .summary, .skills { margin-top: 2pt }
 .link { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin-top: 2pt }
-a { color: inherit }
+a { color: inherit; text-decoration: none }
+.credurl { font-size: 7.5pt; opacity: .75 }
 </style></head><body><div class="page">
 <h1>${esc(d.name || '')}</h1>
 ${contact.length ? `<p class="contact">${contact.join(' &nbsp;|&nbsp; ')}</p>` : ''}
@@ -157,4 +181,41 @@ ${summary ? section('Summary', summary) : ''}${body}
 </div></body></html>`
 }
 
-module.exports = { buildResumeHTML }
+// The cover letter as a designed page: the same letterhead, palette and type as the resume so the two files read as a set.
+// `text` is the plain letter (blank-line-separated blocks, line breaks kept inside a block); `date` is already formatted.
+// Pure and escaped like buildResumeHTML — no scripts, no images, no remote resources.
+function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
+  const d = data || {}
+  const palette = designTokens?.palette || { bg: '#FFFFFF', primary: '#1E40AF', accent: '#E2E8F0', text: '#1F2937' }
+  const fonts   = designTokens?.fonts || {}
+  const stack   = fontStacks(fonts)
+  const hPt = Number(fonts.hPt) || 23
+  const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + 0.5
+  const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '268mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(contactItem).filter(Boolean)
+  const blocks = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
+  const body = blocks.map(b => `<p class="block">${b.split('\n').map(l => esc(l.trim())).join('<br>')}</p>`).join('')
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><title>${esc(d.name ? `${d.name} - Cover letter` : 'Cover letter')}</title>
+<style>
+@page { size: ${paper.css}; margin: 14mm 0 }
+* { box-sizing: border-box }
+html, body { margin: 0; padding: 0 }
+html { background: ${esc(palette.bg)} }
+body { -webkit-print-color-adjust: exact; print-color-adjust: exact; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
+  font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.55 }
+.page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 20mm 0 22mm; border-left: 4px solid ${esc(palette.primary)} }
+h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 3pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
+.contact { font-size: ${Math.max(bPt - 2, 8)}pt; margin: 0 0 18pt; padding-bottom: 8pt; border-bottom: 1px solid ${esc(palette.accent)} }
+.date { margin: 0 0 14pt }
+.block { margin: 0 0 11pt; orphans: 3; widows: 3 }
+a { color: inherit; text-decoration: none }
+</style></head><body><div class="page">
+${d.name ? `<h1>${esc(d.name)}</h1>` : ''}
+${contact.length ? `<p class="contact">${contact.join(' &nbsp;|&nbsp; ')}</p>` : ''}
+${date ? `<p class="date">${esc(date)}</p>` : ''}
+${body}
+</div></body></html>`
+}
+
+module.exports = { buildResumeHTML, buildCoverLetterHTML }

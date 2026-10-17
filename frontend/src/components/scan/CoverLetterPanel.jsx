@@ -18,6 +18,7 @@ import Select from '../ui/Select'
 // form sends no body at all (the server then writes a general letter from the resume and the posting).
 export default function CoverLetterPanel({ scan, onUpdated }) {
   const [busy, setBusy] = useState(false)
+  const [pdfBusy, setPdfBusy] = useState(false)
   const [error, setError] = useState('')
   const [tailor, setTailor] = useState(false)
   const [company, setCompany] = useState('')
@@ -52,6 +53,18 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
     } catch (err) {
       setError(getErrorMessage(err, 'Could not download the letter — try again.'))
     }
+  }
+
+  // The PDF is the file most people send; it is rendered on demand (a few seconds), so it has its own busy state.
+  async function downloadPdf() {
+    setError(''); setPdfBusy(true)
+    try {
+      const res = await api.get(`/scan/${scan.id}/cover-letter-pdf`, { responseType: 'blob' })
+      downloadBlob(res.data, filenameFromDisposition(res.headers, 'cover-letter.pdf'))
+    } catch (err) {
+      setError(getErrorMessage(err, 'Could not download the PDF — try again in a minute, or use the .docx.'))
+    }
+    setPdfBusy(false)
   }
 
   return (
@@ -94,6 +107,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
           <div className="flex gap-2 mt-3">
             <CopyButton text={letter} label="Copy text" />
             <Button variant="secondary" size="sm" onClick={download}>Download (.docx)</Button>
+            <Button variant="secondary" size="sm" onClick={downloadPdf} loading={pdfBusy}>Download (.pdf)</Button>
           </div>
         </div>
       )}

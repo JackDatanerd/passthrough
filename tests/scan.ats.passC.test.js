@@ -143,7 +143,8 @@ describe('docx.service', () => {
   it('the text still extracts in reading order with links inline (ATS-safe)', async () => {
     const rp = require('../src/services/resume.parser.js')
     const text = await rp.extractText(await docx.generateAtsDocx(data, 'https://passthrough.dev/v/abc'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
-    expect(text).toContain('j@x.com | linkedin.com/in/jane | Passthrough Verified: https://passthrough.dev/v/abc')
+    // The credential sits on its own line under the contact line (applicant docs pass); the order and the links are unchanged.
+    expect(text).toContain('j@x.com | linkedin.com/in/jane\nPassthrough Verified: https://passthrough.dev/v/abc')
   })
   it('builds a cover letter document', async () => {
     const buf = await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nPara one.\n\nSincerely,\nJane', 'Jane Doe')
