@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime } from '../lib/utils'
+import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime, formatNumber } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
+import Switch from '../components/ui/Switch'
+import Disclosure from '../components/ui/Disclosure'
 import PartnerLayout from '../components/partner/PartnerLayout'
 import EmptyState from '../components/ui/EmptyState'
 import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
@@ -377,7 +379,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
         if ((out.data || []).length < CSV_PAGE) { complete = true; break }
       }
       // Round 15 (gap): hitting the page cap used to stop silently, so a long history produced a CSV that looked complete.
-      if (!complete) setNotice(`The CSV holds your ${rows.length.toLocaleString()} most recent entries — older ones are not included.`)
+      if (!complete) setNotice(`The CSV holds your ${formatNumber(rows.length)} most recent entries — older ones are not included.`)
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
       downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
         ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency', 'Channel tag'],
@@ -509,7 +511,7 @@ function PayoutStatement({ token, payout, currency }) {
             ))}
           </ul>
           {truncated ? (
-            <p className="text-xs text-gray-500 mt-2">Showing the first {rows.length.toLocaleString()} sales of a larger payout, so no total is shown here — the payout amount above is the full figure.</p>
+            <p className="text-xs text-gray-500 mt-2">Showing the first {formatNumber(rows.length)} sales of a larger payout, so no total is shown here — the payout amount above is the full figure.</p>
           ) : (
             <p className="text-xs font-medium text-gray-900 mt-2 flex justify-between"><span>Commission settled by this payout</span><span>{fmtCents(total, currency)}</span></p>
           )}
@@ -576,11 +578,7 @@ function NotificationPrefs({ token, initial }) {
         </p>
         {state === 'error' && <p className="text-xs text-red-600 mt-1">Couldn't save that — try again in a moment.</p>}
       </div>
-      <button type="button" role="switch" aria-checked={on} onClick={toggle} disabled={state === 'saving'}
-        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${on ? 'bg-blue-600' : 'bg-gray-300'} disabled:opacity-60`}>
-        <span className="sr-only">Email me for each sale</span>
-        <span className={`inline-block h-5 w-5 transform rounded-full bg-white transition-transform ${on ? 'translate-x-5' : 'translate-x-0.5'}`} />
-      </button>
+      <Switch label="Email me for each sale" checked={on} onChange={toggle} disabled={state === 'saving'} />
     </div>
   )
 }

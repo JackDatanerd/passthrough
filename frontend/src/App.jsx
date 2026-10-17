@@ -12,6 +12,7 @@ import usePageTitle from './hooks/usePageTitle'
 import { useReferralCapture } from './hooks/useReferralCapture'
 import TermsUpdateBanner from './components/layout/TermsUpdateBanner'
 import SessionResumePrompt from './components/layout/SessionResumePrompt'
+import UnsavedChangesPrompt from './components/layout/UnsavedChangesPrompt'
 import OfflineBanner from './components/layout/OfflineBanner'
 import RouteAnnouncer from './components/layout/RouteAnnouncer'
 
@@ -192,6 +193,7 @@ function AppShell() {
       <RoutedApp />
       <TermsUpdateBanner />
       <SessionResumePrompt />
+      <UnsavedChangesPrompt />
     </>
   )
 }

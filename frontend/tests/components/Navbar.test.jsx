@@ -76,7 +76,8 @@ describe('Navbar', () => {
     expect(links.filter(l => wanted.some(w => w[0] === l[0]))).toEqual(wanted)
     const stories = screen.getByRole('button', { name: 'Stories' })
     expect(stories).toHaveAttribute('aria-expanded', 'false')
-    expect(stories).toHaveAttribute('aria-controls', 'navbar-stories')
+    // aria-controls only names the panel while it exists (no dangling reference, same as <Menu> and the "More" button)
+    expect(stories).not.toHaveAttribute('aria-controls')
     // the proof-style sections are NOT in the bar any more — they live in the dropdown
     for (const gone of ['Proof', 'The receipt', 'Hot categories', 'Applicant stories']) expect(screen.queryByText(gone)).toBeNull()
   })
@@ -86,6 +87,7 @@ describe('Navbar', () => {
     renderNavbar({ user: null, logout: () => {} })
     await user.click(screen.getByRole('button', { name: 'Stories' }))
     expect(screen.getByRole('button', { name: 'Stories' })).toHaveAttribute('aria-expanded', 'true')
+    expect(screen.getByRole('button', { name: 'Stories' })).toHaveAttribute('aria-controls', 'navbar-stories')
     const panel = document.getElementById('navbar-stories')
     expect([...panel.querySelectorAll('a')].map(a => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Applicant stories', '/#stories'], ['Proof', '/#proof'], ['The receipt', '/#receipt'], ['Hot categories', '/#hot'],

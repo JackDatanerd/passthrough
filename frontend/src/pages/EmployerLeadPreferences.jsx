@@ -6,6 +6,8 @@ import Button from '../components/ui/Button'
 import Input from '../components/ui/Input'
 import Checkbox from '../components/ui/Checkbox'
 import Select from '../components/ui/Select'
+import Fieldset from '../components/ui/Fieldset'
+import FieldError from '../components/ui/FieldError'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import { ROLE_CATEGORIES } from '../lib/roleCategories'
@@ -81,17 +83,16 @@ export default function EmployerLeadPreferences() {
                   <option value="">Choose a field…</option>
                   {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
                 </Select>
-                <fieldset>
-                  <legend className="text-sm font-medium text-gray-700 mb-1">Also hiring in (up to {MAX_EXTRA_FIELDS})</legend>
+                <Fieldset legend={`Also hiring in (up to ${MAX_EXTRA_FIELDS})`}>
                   <div className="grid grid-cols-2 gap-1">
                     {ROLE_CATEGORIES.filter(([key]) => key !== field).map(([key, label]) => (
                       <Checkbox key={key} label={label} checked={extras.includes(key)} onChange={() => toggle(key)}
                         disabled={!extras.includes(key) && extras.length >= MAX_EXTRA_FIELDS} />
                     ))}
                   </div>
-                </fieldset>
+                </Fieldset>
                 <Input label="Job title (optional)" value={roleTitle} onChange={e => setRoleTitle(e.target.value)} maxLength={100} />
-                {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
+                <FieldError className="text-sm text-red-600">{formError}</FieldError>
                 <Button type="submit" className="w-full">Save</Button>
               </form>
             </>

@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useId } from 'react'
 import { cn } from '../../lib/utils'
+import FieldError from './FieldError'
 
 // FEATURE GAP CLOSED (Section 11 audit): every filter/admin <select> re-typed
 // the same border/padding classes independently — AdminPayments, AdminScans,
@@ -58,7 +59,6 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
       <select
         ref={ref}
         id={selectId}
-        aria-invalid={error ? true : undefined}
         aria-describedby={describedBy}
         className={cn(
           'w-full rounded-md border text-gray-900',
@@ -71,11 +71,12 @@ const Select = forwardRef(function Select({ label, error, hint, className, wrapp
           className
         )}
         {...props}
+        aria-invalid={error ? true : props['aria-invalid']}   // after the spread: an error always marks the field invalid
       >
         {children}
       </select>
       {hint && !error && <p id={`${selectId}-hint`} className="text-xs text-gray-500">{hint}</p>}
-      {error && <p id={`${selectId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+      <FieldError id={`${selectId}-error`}>{error}</FieldError>
     </div>
   )
 })

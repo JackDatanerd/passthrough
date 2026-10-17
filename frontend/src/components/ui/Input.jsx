@@ -1,5 +1,6 @@
 import { forwardRef, useId } from 'react'
 import { cn } from '../../lib/utils'
+import FieldError from './FieldError'
 import { useCharCount, FieldFooter } from './CharCount'
 
 // Changes vs. the original:
@@ -32,7 +33,6 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
       ref={ref}
       id={inputId}
       aria-label={ariaLabel}
-      aria-invalid={error ? true : undefined}
       aria-describedby={describedBy}
       className={cn(
         'w-full rounded-md border px-3 text-gray-900 placeholder-gray-500',
@@ -44,6 +44,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
       )}
       {...props}
       {...handlers}
+      aria-invalid={error ? true : props['aria-invalid']}   // after the spread: an error always marks the field invalid
     />
   )
 
@@ -66,7 +67,7 @@ const Input = forwardRef(function Input({ label, error, hint, className, wrapper
       ) : control}
       <FieldFooter counter={counter}>
         {hint && !error && <p id={`${inputId}-hint`} className="text-xs text-gray-500">{hint}</p>}
-        {error && <p id={`${inputId}-error`} role="alert" className="text-xs text-red-600">{error}</p>}
+        <FieldError id={`${inputId}-error`}>{error}</FieldError>
       </FieldFooter>
     </div>
   )

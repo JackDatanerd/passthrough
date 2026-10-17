@@ -61,6 +61,14 @@ export function useApi() {
     // keepAlive: for a write that must finish even if its screen goes away (a dialog closed mid-save): the call is
     // handed no signal and is never aborted by unmount or `replace`.
     const { fallback, replace = false, keepAlive = false, progress: wantsProgress = false } = options || {}
+    // The screen is gone: a chained call (`await execute(a); await execute(b)` whose first step finished after unmount) used to
+    // start anyway, with a signal nothing would ever abort. It is refused like any other cancelled call, unless it is a
+    // keepAlive write, which is meant to finish without its screen.
+    if (!mounted.current && !keepAlive) {
+      const gone = new Error('The screen that started this request is gone.')
+      gone.name = 'AbortError'
+      throw gone
+    }
     const id = ++callId.current
     if (replace) {
       controllers.current.forEach((c, otherId) => { if (otherId !== id) { superseded.current.add(otherId); c.abort() } })

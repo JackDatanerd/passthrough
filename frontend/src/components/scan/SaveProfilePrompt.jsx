@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
 import Input from '../ui/Input'
-import Radio from '../ui/Radio'
+import RadioGroup from '../ui/RadioGroup'
 import ConfirmDialog from '../ui/ConfirmDialog'
 import { formatDate } from '../../lib/utils'
 
@@ -117,11 +117,9 @@ export default function SaveProfilePrompt({ scanId, deliveredAvailable = false }
               : 'Reuse your background against a new job description in one step — no re-uploading.'}
         </p>
         {deliveredAvailable && (
-          <fieldset className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-700">
-            <legend className="sr-only">Which version to save</legend>
-            <Radio size="sm" label="Your resume as it was" name={`profile-version-${scanId}`} checked={version === 'original'} onChange={() => setVersion('original')} />
-            <Radio size="sm" label="The fixed version" name={`profile-version-${scanId}`} checked={version === 'delivered'} onChange={() => setVersion('delivered')} />
-          </fieldset>
+          <RadioGroup legend="Which version to save" srOnlyLegend size="sm" name={`profile-version-${scanId}`} value={version} onChange={setVersion}
+            className="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-gray-700"
+            options={[{ value: 'original', label: 'Your resume as it was' }, { value: 'delivered', label: 'The fixed version' }]} />
         )}
         {status === 'error' && <p role="alert" className="text-xs text-red-600 mt-1">{error}</p>}
       </div>

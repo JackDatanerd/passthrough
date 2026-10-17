@@ -1,5 +1,6 @@
 import { forwardRef, useEffect, useId, useRef } from 'react'
 import { cn } from '../../lib/utils'
+import FieldError from './FieldError'
 
 // Checkbox with an optional label. Seven checkboxes were hand-rolled with different
 // sizes, colours and label wiring (two had NO accessible name beyond an aria-label
@@ -10,7 +11,7 @@ import { cn } from '../../lib/utils'
 // a message tied to the box (aria-invalid + aria-describedby, announced when it appears) — the two
 // things the hand-rolled consent / preference checkboxes (Register's terms, Settings' email opt-in)
 // had to build themselves because this component had neither. Both need a `label`.
-const Checkbox = forwardRef(function Checkbox({ label, description, error, alignTop, className, wrapperClassName, id, indeterminate, ...props }, ref) {
+const Checkbox = forwardRef(function Checkbox({ label, description, error, alignTop, className, wrapperClassName, id, indeterminate, 'aria-describedby': extraDescribedBy, ...props }, ref) {
   const autoId = useId()
   const inputId = id || autoId
   const noteId = `${inputId}-note`
@@ -31,9 +32,11 @@ const Checkbox = forwardRef(function Checkbox({ label, description, error, align
       type="checkbox"
       className={cn('h-4 w-4 rounded border-gray-300 text-blue-700 focus:ring-2 focus:ring-blue-500', className)}
       aria-checked={indeterminate ? 'mixed' : undefined}
-      aria-invalid={showError ? true : undefined}
-      aria-describedby={showError ? noteId : undefined}
       {...props}
+      // After the spread, so neither can be replaced by a caller's own props: the error stays tied to the box (the caller's
+      // description is joined to it, not swapped for it) and an error always marks the box invalid.
+      aria-invalid={showError ? true : props['aria-invalid']}
+      aria-describedby={[showError && noteId, extraDescribedBy].filter(Boolean).join(' ') || undefined}
     />
   )
   // Without a label the wrapper class (spacing, say) still applies, on a plain span around the box.
@@ -65,7 +68,7 @@ const Checkbox = forwardRef(function Checkbox({ label, description, error, align
   return (
     <div className={wrapperClassName}>
       {row}
-      <p id={noteId} role="alert" className="mt-1 text-sm text-red-600">{error}</p>
+      <FieldError id={noteId} className="mt-1 text-sm text-red-600">{error}</FieldError>
     </div>
   )
 })

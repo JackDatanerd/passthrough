@@ -17,6 +17,7 @@ import { formatDate, formatNumber, saveBlobResponse } from '../../lib/utils'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
+import Fieldset from '../../components/ui/Fieldset'
 import Radio from '../../components/ui/Radio'
 import FileUpload from '../../components/ui/FileUpload'
 import ToggleChip from '../../components/ui/ToggleChip'
@@ -1011,8 +1012,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
           {ROLE_CATEGORIES.map(([key, label]) => <option key={key} value={key}>{label}</option>)}
         </Select>
         {form.roleCategory && (
-          <fieldset className="flex flex-col gap-1">
-            <legend className="text-sm font-medium text-gray-700 mb-1">Also hiring in (up to 4)</legend>
+          <Fieldset legend="Also hiring in (up to 4)" className="flex flex-col gap-1">
             <div className="grid grid-cols-2 gap-x-4 gap-y-1">
               {ROLE_CATEGORIES.filter(([key]) => key !== form.roleCategory).map(([key, label]) => (
                 <Checkbox key={key} label={label} checked={form.extras.includes(key)}
@@ -1020,7 +1020,7 @@ function LeadFormModal({ open, mode, lead, onClose, onSaved }) {
                   onChange={e => setForm(f => ({ ...f, extras: e.target.checked ? [...f.extras, key] : f.extras.filter(k => k !== key) }))} />
               ))}
             </div>
-          </fieldset>
+          </Fieldset>
         )}
         <Input label="Role title (optional)" value={form.roleTitle} onChange={set('roleTitle')} />
         {mode === 'add' && (

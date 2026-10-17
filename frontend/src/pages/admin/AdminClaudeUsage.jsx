@@ -5,12 +5,13 @@ import DataTable from '../../components/ui/DataTable'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import useLatestRequest from '../../hooks/useLatestRequest'
+import { formatNumber } from '../../lib/utils'
 
 // DATABASE AUDIT (feature gap): the Claude cost ledger (claude_usage, migration 0072) was written on every call
 // and read by nothing. This is the read side: tokens per day and per kind of call, and — only when the owner
 // has set CLAUDE_USD_PER_MTOK_INPUT / _OUTPUT — an estimated spend. The ledger is purged after 400 days.
 const WINDOWS = [7, 30, 90, 365]
-const fmt = n => (n == null ? '—' : Number(n).toLocaleString())
+const fmt = n => formatNumber(n)
 const usd = n => (n == null ? '—' : `$${Number(n).toFixed(2)}`)
 
 const NUM_COLS = [

@@ -40,5 +40,38 @@ export function confirmDiscardUnsaved(message = LEAVE_MESSAGE) {
   return true
 }
 
+// ── The question as a dialog ─────────────────────────────────────────────────────────────────────────
+// SHARED FRONTEND (feature gap): both questions above went through the browser's native window.confirm(). A browser can switch
+// those off for a page ("Prevent this page from creating additional dialogs", or an embedded webview that never shows them), and
+// a suppressed confirm() answers "cancel" without showing anything — so someone holding an unsaved draft could neither leave the
+// page nor sign out, with no explanation. <UnsavedChangesPrompt> (layout) registers a host here and the question is asked in the
+// app's own, accessible dialog instead. With no host registered (a unit test, a bare render) the native confirm is the fallback.
+//
+// askDiscardUnsaved() -> Promise<boolean>, same meaning as confirmDiscardUnsaved(): true = go ahead, false = they chose to stay.
+// Several callers asking at once (every dirty editor on a page runs its own blocker for the same navigation) share ONE dialog.
+let discardHost = null
+let discardPending = null
+
+// `fn({ message, confirmLabel, cancelLabel })` -> Promise<boolean>. Pass null to unregister.
+export function setDiscardPrompt(fn) { discardHost = typeof fn === 'function' ? fn : null }
+
+// `force`: ask even when no editor has registered itself yet (the route blocker only fires for a dirty editor, so it always asks).
+export function askDiscardUnsaved(message = LEAVE_MESSAGE, { confirmLabel, cancelLabel, force = false } = {}) {
+  if (!force && !hasUnsavedWork()) return Promise.resolve(true)
+  if (!discardHost) {
+    if (!force) return Promise.resolve(confirmDiscardUnsaved(message))
+    // The native fallback behaves exactly as the route blocker's own confirm always did (it does not open the "already agreed" window).
+    const stay = typeof window !== 'undefined' && typeof window.confirm === 'function' && !window.confirm(message)
+    return Promise.resolve(!stay)
+  }
+  if (!discardPending) {
+    discardPending = Promise.resolve()
+      .then(() => discardHost({ message, confirmLabel, cancelLabel }))
+      .then(ok => { if (ok) allowNextLeave(); return !!ok }, () => false)   // a host that failed answers "stay": nothing is discarded by accident
+      .finally(() => { discardPending = null })
+  }
+  return discardPending
+}
+
 // For tests.
-export function resetLeaveGuard() { leaveAllowedUntil = 0 }
+export function resetLeaveGuard() { leaveAllowedUntil = 0; discardHost = null; discardPending = null }

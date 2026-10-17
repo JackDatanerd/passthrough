@@ -1,8 +1,9 @@
-import { useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import api from '../../lib/api'
 import { buildBadgeEmbeds } from '../../lib/badgeEmbed'
 import CopyButton from '../ui/CopyButton'
+import { Tabs, TabPanel } from '../ui/Tabs'
 import { extractVerificationCode } from '../../lib/verificationCode'
 import { sha256Text } from '../../lib/sha256'
 import { SAMPLE_VERIFICATION, TAMPER_DEMO, PLACEMENTS } from '../../lib/homeContent'
@@ -12,7 +13,6 @@ import { SAMPLE_VERIFICATION, TAMPER_DEMO, PLACEMENTS } from '../../lib/homeCont
 // illustration (labelled as one); the only live behaviour is the tamper test, which hashes a line of
 // SAMPLE text in the browser — the real check (/check) does the same with the real file and uploads nothing.
 const FORMATS = [['html', 'HTML'], ['markdown', 'Markdown'], ['link', 'Plain link']]
-const NAV_KEYS = { ArrowRight: 1, ArrowLeft: -1 }
 
 function sampleEmbeds() {
   let root = String(api.defaults.baseURL || '/api')
@@ -125,31 +125,16 @@ function PlacementMock({ id }) {
 
 function Placements() {
   const [active, setActive] = useState(PLACEMENTS[0].id)
-  const refs = useRef({})
-  function onKey(e, i) {
-    let next = null
-    if (NAV_KEYS[e.key]) next = PLACEMENTS[(i + NAV_KEYS[e.key] + PLACEMENTS.length) % PLACEMENTS.length]
-    else if (e.key === 'Home') next = PLACEMENTS[0]
-    else if (e.key === 'End') next = PLACEMENTS[PLACEMENTS.length - 1]
-    if (!next) return
-    e.preventDefault()
-    setActive(next.id)
-    refs.current[next.id]?.focus()
-  }
   const current = PLACEMENTS.find(p => p.id === active)
   return (
     <div>
-      <div role="tablist" aria-label="Where to put your link" className="flex flex-wrap gap-1 border-b border-gray-200 mt-3.5">
-        {PLACEMENTS.map((p, i) => (
-          <button key={p.id} type="button" role="tab" id={`home-tab-${p.id}`} aria-selected={active === p.id} aria-controls={`home-panel-${p.id}`}
-            tabIndex={active === p.id ? 0 : -1} ref={el => { refs.current[p.id] = el }} onClick={() => setActive(p.id)} onKeyDown={e => onKey(e, i)}
-            className={`px-3 py-3 -mb-px text-sm font-semibold border-b-[3px] ${active === p.id ? 'text-blue-700 border-blue-700' : 'text-gray-500 border-transparent hover:text-gray-700'}`}>{p.label}</button>
-        ))}
-      </div>
-      <div role="tabpanel" id={`home-panel-${active}`} aria-labelledby={`home-tab-${active}`} className="pt-4">
+      <Tabs idPrefix="home" ariaLabel="Where to put your link" tabs={PLACEMENTS} value={active} onChange={setActive}
+        className="flex flex-wrap gap-1 border-b border-gray-200 mt-3.5"
+        tabClassName={on => `px-3 py-3 -mb-px text-sm font-semibold border-b-[3px] ${on ? 'text-blue-700 border-blue-700' : 'text-gray-500 border-transparent hover:text-gray-700'}`} />
+      <TabPanel idPrefix="home" value={active} className="pt-4">
         <PlacementMock id={active} />
         <p className="mt-2.5 text-[13.5px] text-gray-500">{current.tip}</p>
-      </div>
+      </TabPanel>
     </div>
   )
 }

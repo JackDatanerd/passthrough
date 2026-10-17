@@ -19,6 +19,8 @@
 // Renders nothing if there's no detail to show (a scan that predates this
 // feature, or one that errored before scoring ran).
 
+import Disclosure from '../ui/Disclosure'
+
 function Chip({ children, tone = 'amber' }) {
   const tones = {
     amber: 'bg-amber-50 text-amber-800 border-amber-200',
@@ -171,14 +173,12 @@ export default function AtsDetailPanel({ scan, detail: detailProp, title = 'Why 
       )}
 
       {hasMatched && (
-        <details className="mt-4">
-          <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">
-            {keywords.matched.length} keyword{keywords.matched.length === 1 ? '' : 's'} already matched
-          </summary>
+        <Disclosure className="mt-4" summaryClassName="text-xs text-gray-500 hover:text-gray-700"
+          summary={`${keywords.matched.length} keyword${keywords.matched.length === 1 ? '' : 's'} already matched`}>
           <div className="flex flex-wrap gap-1.5 mt-2">
             {keywords.matched.map((kw, i) => <Chip key={i} tone="gray">{kw}</Chip>)}
           </div>
-        </details>
+        </Disclosure>
       )}
     </div>
   )

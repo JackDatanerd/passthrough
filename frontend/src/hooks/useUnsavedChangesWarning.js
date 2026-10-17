@@ -1,6 +1,6 @@
 import { useContext, useEffect } from 'react'
 import { UNSAFE_DataRouterContext, useBlocker } from 'react-router-dom'
-import { markUnsaved, leaveAllowed, LEAVE_MESSAGE } from '../lib/unsavedGuard'
+import { markUnsaved, leaveAllowed, askDiscardUnsaved, LEAVE_MESSAGE } from '../lib/unsavedGuard'
 
 // Two protections while `dirty` is true, for the editors that hold long hand-typed drafts (the saved
 // profile, a scan's resume data, a PAID delivered resume):
@@ -19,9 +19,16 @@ function useRouteBlocker(dirty) {
     // session — see confirmDiscardUnsaved), so asking again would be a second prompt, or a "Stay" after the damage is done.
     dirty && !leaveAllowed() && currentLocation.pathname !== nextLocation.pathname)
   useEffect(() => {
-    if (blocker.state !== 'blocked') return
-    if (window.confirm(LEAVE_MESSAGE)) blocker.proceed()
-    else blocker.reset()
+    if (blocker.state !== 'blocked') return undefined
+    // The app's own dialog (several dirty editors share one), with the native confirm only as the fallback — a browser can
+    // suppress window.confirm, which answers "cancel" silently and left the person unable to leave the page.
+    let live = true
+    askDiscardUnsaved(LEAVE_MESSAGE, { confirmLabel: 'Leave page', cancelLabel: 'Stay', force: true }).then(ok => {
+      if (!live) return
+      if (ok) blocker.proceed()
+      else blocker.reset()
+    })
+    return () => { live = false }
   }, [blocker])
 }
 

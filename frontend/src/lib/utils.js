@@ -194,9 +194,15 @@ export function formatRate(rate) {
 
 // ── Time windows ─────────────────────────────────────────────────────────────
 // True when `iso` is a valid timestamp less than `hours` ago (used for the post-payout-details-change hold).
+// A timestamp AHEAD of this device's clock still counts when it is only a little ahead (the server's clock runs fast, or the
+// device's slow); one further out than CLOCK_SKEW_HOURS is not a moment that has happened yet, so it is not "within" anything —
+// it used to count as inside the window for as long as it stayed in the future.
+const CLOCK_SKEW_HOURS = 1
 export function withinHours(iso, hours) {
   const ms = Date.parse(iso)
-  return Number.isFinite(ms) && Date.now() - ms < hours * 3600000
+  if (!Number.isFinite(ms)) return false
+  const age = Date.now() - ms
+  return age < hours * 3600000 && age > -CLOCK_SKEW_HOURS * 3600000
 }
 
 // ── CSV export ───────────────────────────────────────────────────────────────
@@ -211,6 +217,9 @@ export function withinHours(iso, hours) {
 // is made only of letters, digits and `+ ( ) - space` (so it can hold no quote, comma or operator that could form a
 // formula) and starts like a number, it is written as ="value", which Excel and Sheets show verbatim. Anything else
 // falls back to the normal rules.
+// Excel refuses a string literal inside a formula past 255 characters (the cell shows #VALUE!), so a longer value takes the ordinary
+// text rules instead of the ="value" form. Phone and account numbers are nowhere near the limit.
+const CSV_TEXT_FORMULA_MAX = 250
 export function csvText(v) { return { __csvText: v == null ? '' : String(v) } }
 
 export function csvCell(v) {
@@ -218,7 +227,7 @@ export function csvCell(v) {
   if (typeof v === 'object' && typeof v.__csvText === 'string') {
     const raw = v.__csvText
     if (raw === '') return ''
-    if (/^[0-9A-Za-z+() -]+$/.test(raw) && /^[0-9+()-]/.test(raw)) return '"=""' + raw + '"""'
+    if (raw.length <= CSV_TEXT_FORMULA_MAX && /^[0-9A-Za-z+() -]+$/.test(raw) && /^[0-9+()-]/.test(raw)) return '"=""' + raw + '"""'
     return csvCell(raw)
   }
   let s = String(v)

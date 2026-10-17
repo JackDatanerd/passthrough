@@ -107,12 +107,17 @@ export function ToastProvider({ children }) {
         const dupe = list.current.find(t => t.type === type && t.message === text && !t.action)
         if (dupe) {
           clearTimer(dupe.id)
-          if (duration > 0) arm(dupe.id, duration)
+          // A toast kept until dismissed (`duration: 0`) stays that way when the same message arrives again: restarting it
+          // as an auto-dismissing one made a message the caller asked to keep vanish after a few seconds. A repeat that
+          // itself asks for `duration: 0` upgrades a timed toast to a persistent one.
+          const persistent = dupe.persistent || duration === 0
+          if (persistent) { if (!dupe.persistent) commit(list.current.map(t => (t.id === dupe.id ? { ...t, persistent: true } : t))) }
+          else if (duration > 0) arm(dupe.id, duration)
           return dupe.id
         }
       }
       const id = ++nextId.current
-      const next = [...list.current, { id, message: text, type, action: act }]
+      const next = [...list.current, { id, message: text, type, action: act, persistent: duration === 0 }]
       // Cap at 5 on screen; whatever is pushed off loses its timer too.
       const dropped = next.slice(0, Math.max(0, next.length - 5))
       dropped.forEach(t => clearTimer(t.id))

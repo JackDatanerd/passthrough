@@ -43,7 +43,12 @@ export function useCharCount({ enabled, maxLength, value, defaultValue, onChange
       if (t.tagName === 'INPUT') text = text.replace(/\n/g, '')   // a single-line input drops line breaks on paste
       const replaced = (t.selectionEnd ?? 0) - (t.selectionStart ?? 0)
       const lost = String(t.value ?? '').length - replaced + text.length - max
-      if (lost > 0) { keepCut.current = true; setCut(lost) }
+      if (lost > 0) {
+        keepCut.current = true; setCut(lost)
+        // The change event of a paste fires in the same task. A paste the browser swallowed whole (a field that is already
+        // full) fires none, and the flag used to survive to the NEXT edit, which then left the notice up.
+        setTimeout(() => { keepCut.current = false }, 0)
+      }
     },
     onBlur: e => { keepCut.current = false; setCut(0); onBlur?.(e) },
   }
