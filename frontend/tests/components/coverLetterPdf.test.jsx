@@ -31,7 +31,7 @@ describe('CoverLetterPanel — PDF download', () => {
     render(<CoverLetterPanel scan={scan} onUpdated={vi.fn()} />)
     await user.click(screen.getByRole('button', { name: 'Download (.pdf)' }))
     await waitFor(() => expect(downloadBlob).toHaveBeenCalled())
-    expect(api.get).toHaveBeenCalledWith('/scan/s1/cover-letter-pdf', { responseType: 'blob' })
+    expect(api.get).toHaveBeenCalledWith('/scan/s1/cover-letter-pdf', expect.objectContaining({ responseType: 'blob', params: { tz: expect.any(String) } }))
     expect(downloadBlob.mock.calls[0][1]).toBe('jane-doe-cover-letter.pdf')
   })
   it('a failed render is reported and points at the docx', async () => {

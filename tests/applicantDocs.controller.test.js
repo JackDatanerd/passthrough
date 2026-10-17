@@ -1,11 +1,11 @@
-import { describe, it, expect, afterEach } from 'vitest'
+import { describe, it, expect, afterEach, vi } from 'vitest'
 import { createFakeSupabase } from './helpers/fakeSupabase.cjs'
 import { loadWithStubs } from './helpers/loadWithStubs.cjs'
 
 // APPLICANT DOCS pass: the delivery routes — cover letter PDF, and the saved-profile downloads' name and paper.
 
 let t
-afterEach(() => t?.restore())
+afterEach(() => { t?.restore(); vi.useRealTimers() })
 
 function ctxFor({ headers, user = { id: 'u1', emailVerified: true }, query = {} } = {}) {
   return {
@@ -51,6 +51,15 @@ describe('downloadCoverLetterPdf', () => {
     expect(t.seen.opts.paper).toBe('letter')
     expect(t.seen.html).toMatch(/size: Letter/)
     expect(t.seen.html).toMatch(/[A-Z][a-z]+ \d{1,2}, \d{4}/)
+  })
+  it('dates the letter for the applicant\'s day, not UTC\'s (Nairobi is ahead; an unknown zone is UTC)', async () => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-16T22:30:00Z'))
+    const dateFor = async query => { t?.restore(); t = setup(SCAN); await t.mod.downloadCoverLetterPdf(ctxFor({ headers: {}, query })); return t.seen.html }
+    expect(await dateFor({ tz: 'Africa/Nairobi' })).toContain('17 October 2026')
+    expect(await dateFor({})).toContain('16 October 2026')
+    expect(await dateFor({ tz: 'Mars/Phobos' })).toContain('16 October 2026')
+    expect(await dateFor({ tz: 'x'.repeat(200) })).toContain('16 October 2026')
+    expect(await dateFor({ tz: 'America/Los_Angeles' })).toContain('16 October 2026')
   })
   it('404 without a letter, 403 for another user, 502 (with the docx fallback named) when the render fails', async () => {
     t = setup({ ...SCAN, cover_letter_text: null })

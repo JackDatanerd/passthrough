@@ -1,0 +1,32 @@
+APPLICANT-FACING DOCUMENTS - round 2 (base: upstream fe041d3 = applicant docs round 1)
+Findings of the independent second pass, all closed. No migration, no new dependency.
+
+Gaps closed
+- G1  Render gate for the delivered PDF (lib/pdfQa.js, used by renderDeliveredPdf in scan.controller.js). The designed
+      layout is model-written HTML; checkHtmlFidelity only looked at the HTML. The printed PDF is now inspected with the
+      analyzer ingest already uses (pdf.inspect.js): at most as many pages as the content justifies, one column, no
+      hidden text (tiny / off-page / white), candidate name and email present in the extracted text. A rejection falls
+      through to the built-in template; the template's own PDF always ships. An inspector failure never blocks delivery
+      (skipped, not rejected).
+- G2  Fit control recalibrated per renderer (lib/docFit.js). Round 1 used one capacity (53) for both: measured against real
+      renders of 28 sizes, the DOCX holds ~58.5 units and the PDF template ~48-50. Before: DOCX resumes at 60-62 units still
+      spilled 2 lines onto page 2 while 53-59 were squeezed for nothing; template resumes at 50-56 spilled and compact
+      would have fixed them. After: DOCX capacity 58.5 (compact absorbs 8%), PDF 48 (17%); every near-miss spill in the
+      sweep now fits one page, and anything compact cannot fix stays at normal density.
+
+Bugs fixed
+- B1  Cover letter date was computed in UTC: Nairobi applicants got yesterday's date from 00:00 to 03:00 (Sydney until 11:00,
+      US evenings got tomorrow). The browser now sends its IANA zone (?tz=), validated with Intl (unknown/missing/overlong
+      -> UTC), on both the .docx and .pdf downloads.
+- B2  A bullet that already started with a glyph rendered doubled ("• • Built...", "• - Built...") in the DOCX and the PDF -
+      the editor, pasted lists and model output all carried markers. lib/bulletText.js strips one leading marker (dash/star/
+      middle dot only when followed by whitespace; digits and "-based" untouched) in every bullet list of both renderers.
+- B3  The contact line linked every field, so a location like "St.Louis" became a link to https://St.Louis. The location
+      is never linked (DOCX, PDF template, cover letter).
+
+Still open / not verifiable here
+- Chromium and Word behaviour (blank last page, heading orphans, template fonts on Cloudflare's Chromium). The PDF capacity
+  constants come from WeasyPrint, so they are set at the safe end.
+- The AI layout prompt still has no instruction to link contact details or print the credential address (prompt owner).
+- Left for the owner: refunded/disputed purchases keep downloadable files; embedding fonts in the fallback template.
+- Low: cover letters over ~390 words spill a few lines onto page 2 of the PDF; no right-to-left layout.

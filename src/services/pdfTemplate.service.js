@@ -15,6 +15,7 @@
 
 const { hrefFor, displayUrl } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
+const { stripBullet } = require('../lib/bulletText')
 
 const esc = v => String(v ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
@@ -45,10 +46,10 @@ function fontStacks(fonts) {
 
 // An address, a profile URL or a phone number is a real link where it plainly is one (lib/links.js, the same rule the
 // DOCX uses). Chromium does not linkify text, so these used to be dead text in the file applicants actually email.
-const contactItem = raw => {
+const contactItem = (raw, link = true) => {
   const t = typeof raw === 'string' ? raw.trim() : ''
   if (!t) return ''
-  const h = hrefFor(t, { phone: true })
+  const h = link ? hrefFor(t, { phone: true }) : null   // the location is never a link ("St.Louis" is a place, not a host)
   return h ? `<a href="${esc(h)}">${esc(t)}</a>` : esc(t)
 }
 
@@ -70,7 +71,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const bPt = bPtBase - (compact ? 0.5 : 0)
 
   // Contact details are links where they plainly are one (see contactItem above).
-  const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(contactItem).filter(Boolean)
+  const contact = [contactItem(d.email), contactItem(d.phone), contactItem(d.location, false), contactItem(d.linkedin), contactItem(d.portfolio)].filter(Boolean)
   const href = safeHref(verificationUrl)
   // The address is printed next to the credential: a printed or flattened PDF has no clickable link, and the point of the
   // credential is that a reader can check it. (The DOCX has always shown the full URL.)
@@ -88,7 +89,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     const bullets = list(job?.bullets).map(str).filter(Boolean)
     if (!head && !dates && !bullets.length) return ''
     return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
-      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : '') + `</div>`
+      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
   }).join('')
 
   const education = list(d.education).map(e => {
@@ -104,7 +105,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const skillsHtml = skills.length ? `<p class="skills">${skills.map(esc).join(' &middot; ')}</p>` : ''
 
   const certs = list(d.certifications).map(str).filter(Boolean)
-  const certsHtml = certs.length ? `<ul>${certs.map(c => `<li>${esc(c)}</li>`).join('')}</ul>` : ''
+  const certsHtml = certs.length ? `<ul>${certs.map(c => `<li>${esc(stripBullet(c))}</li>`).join('')}</ul>` : ''
 
   const projects = list(d.projects).map(p => {
     const name = str(p?.name)
@@ -114,7 +115,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     if (!name && !desc) return ''
     const l = hrefFor(link)
     return `<div class="entry"><div class="row"><span class="strong">${esc(name)}</span>${tech.length ? `<span class="dates">${tech.map(esc).join(', ')}</span>` : ''}</div>` +
-      (desc ? `<ul><li>${esc(desc)}</li></ul>` : '') +
+      (desc ? `<ul><li>${esc(stripBullet(desc))}</li></ul>` : '') +
       (link ? `<p class="link">${l ? `<a href="${esc(l)}">${esc(link)}</a>` : esc(link)}</p>` : '') + `</div>`
   }).join('')
 
@@ -124,9 +125,9 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     const bullets = list(v?.bullets).map(str).filter(Boolean)
     if (!head && !dates && !bullets.length) return ''
     return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
-      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(b)}</li>`).join('')}</ul>` : '') + `</div>`
+      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
   }).join('')
-  const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '' }
+  const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li>${esc(stripBullet(i))}</li>`).join('')}</ul>` : '' }
   const languages = list(d.languages).map(str).filter(Boolean)
   const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(' &middot; ')}</p>` : ''
 
@@ -192,7 +193,7 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
   const hPt = Number(fonts.hPt) || 23
   const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + 0.5
   const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '268mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
-  const contact = [d.email, d.phone, d.location, d.linkedin, d.portfolio].map(contactItem).filter(Boolean)
+  const contact = [contactItem(d.email), contactItem(d.phone), contactItem(d.location, false), contactItem(d.linkedin), contactItem(d.portfolio)].filter(Boolean)
   const blocks = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const body = blocks.map(b => `<p class="block">${b.split('\n').map(l => esc(l.trim())).join('<br>')}</p>`).join('')
   return `<!DOCTYPE html>

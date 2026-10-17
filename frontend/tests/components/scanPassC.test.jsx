@@ -105,7 +105,7 @@ describe('CoverLetterPanel', () => {
     api.get.mockResolvedValue({ data: new Blob(['x']) })
     await user.click(screen.getByRole('button', { name: 'Download (.docx)' }))
     await waitFor(() => expect(downloadBlob).toHaveBeenCalled())
-    expect(api.get).toHaveBeenCalledWith('/scan/s1/cover-letter', { responseType: 'blob' })
+    expect(api.get).toHaveBeenCalledWith('/scan/s1/cover-letter', expect.objectContaining({ responseType: 'blob' }))
     expect(screen.getByRole('button', { name: 'Write a new one' })).toBeInTheDocument()
   })
   it('the optional tailoring fields are sent, trimmed, only when filled in', async () => {

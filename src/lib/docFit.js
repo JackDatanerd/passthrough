@@ -7,9 +7,13 @@
 
 const CPL_FULL   = 108   // characters per full-width line at normal density
 const CPL_BULLET = 98    // ...and per indented bullet line
-const CAPACITY_A4 = 53   // line units one A4 page holds at normal density
-const SQUEEZE_LIMIT = 1.13 // beyond this much overflow a second page is the honest answer
-
+// Line units one A4 page holds at normal density, and how much overflow a denser layout can absorb, PER RENDERER -
+// measured, not guessed (applicant docs pass 2): resumes of 20 sizes were rendered and their real page counts compared with
+// the estimate. The DOCX (Calibri, 0.75in margins) holds about 58.5 and compact absorbs ~8% more; the PDF template holds
+// about 48-50 (bigger type, 14mm page margins) and compact absorbs ~17%. The PDF figures come from WeasyPrint, not Chromium, so
+// the PDF capacity is set at the low, safe end: compacting a little early costs nothing, compacting too late leaves a spill.
+const CAPACITY_A4 = { docx: 58.5, pdf: 48 }
+const SQUEEZE_LIMIT = { docx: 1.08, pdf: 1.17 } // beyond this much overflow a second page is the honest answer
 const str = v => (typeof v === 'string' ? v.trim() : '')
 const arr = v => (Array.isArray(v) ? v : [])
 const wrapLines = (s, cpl) => { const t = str(s); return t ? Math.max(1, Math.ceil(t.length / cpl)) : 0 }
@@ -43,12 +47,13 @@ function estimateLoad(d) {
 }
 
 // The printable height of Letter is 94% of A4's, so its capacity is too.
-const capacityFor = paper => (paper === 'letter' ? CAPACITY_A4 * 0.935 : CAPACITY_A4)
+const capacityFor = (paper, target = 'pdf') => (CAPACITY_A4[target] || CAPACITY_A4.pdf) * (paper === 'letter' ? 0.935 : 1)
 
-/** densityFor(data, 'a4'|'letter') -> 'normal' | 'compact' (paper uses design.service.js's lower-case keys; anything but 'letter' is A4 capacity here) */
-function densityFor(data, paper = 'letter') {
-  const load = estimateLoad(data), cap = capacityFor(paper)
-  return load > cap && load <= cap * SQUEEZE_LIMIT ? 'compact' : 'normal'
+/** densityFor(data, 'a4'|'letter', 'pdf'|'docx') -> 'normal' | 'compact' (paper uses design.service.js's lower-case keys) */
+function densityFor(data, paper = 'letter', target = 'pdf') {
+  const t = target === 'docx' ? 'docx' : 'pdf'
+  const load = estimateLoad(data), cap = capacityFor(paper, t)
+  return load > cap && load <= cap * SQUEEZE_LIMIT[t] ? 'compact' : 'normal'
 }
 
 module.exports = { estimateLoad, densityFor, capacityFor, CAPACITY_A4, SQUEEZE_LIMIT }

@@ -16,6 +16,9 @@ import Select from '../ui/Select'
 // A letter that names the person and the company, and opens with the thing the applicant most wants read, is the
 // difference between a letter that gets read and "Dear Hiring Manager" boilerplate. Nothing here is required; an empty
 // form sends no body at all (the server then writes a general letter from the resume and the posting).
+// The letter is dated "today" for the applicant, so the server needs their time zone (an unknown zone falls back to UTC there).
+const browserTimeZone = () => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone || undefined } catch { return undefined } }
+
 export default function CoverLetterPanel({ scan, onUpdated }) {
   const [busy, setBusy] = useState(false)
   const [pdfBusy, setPdfBusy] = useState(false)
@@ -48,7 +51,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   async function download() {
     setError('')
     try {
-      const res = await api.get(`/scan/${scan.id}/cover-letter`, { responseType: 'blob' })
+      const res = await api.get(`/scan/${scan.id}/cover-letter`, { responseType: 'blob', params: { tz: browserTimeZone() } })
       downloadBlob(res.data, filenameFromDisposition(res.headers, 'cover-letter.docx'))
     } catch (err) {
       setError(getErrorMessage(err, 'Could not download the letter — try again.'))
@@ -59,7 +62,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   async function downloadPdf() {
     setError(''); setPdfBusy(true)
     try {
-      const res = await api.get(`/scan/${scan.id}/cover-letter-pdf`, { responseType: 'blob' })
+      const res = await api.get(`/scan/${scan.id}/cover-letter-pdf`, { responseType: 'blob', params: { tz: browserTimeZone() } })
       downloadBlob(res.data, filenameFromDisposition(res.headers, 'cover-letter.pdf'))
     } catch (err) {
       setError(getErrorMessage(err, 'Could not download the PDF — try again in a minute, or use the .docx.'))

@@ -71,6 +71,7 @@ const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
 const { purgeBadgeCache } = require('../lib/badgeCache')
 const badgeService     = require('../services/badge.service')
 const fileStems          = require('../lib/fileStems')
+const pdfQa              = require('../lib/pdfQa')
 const pdfService        = require('../services/pdf.service')
 const pdfTemplate        = require('../services/pdfTemplate.service')
 const docxService        = require('../services/docx.service')
@@ -1434,6 +1435,12 @@ async function generateCoverLetter(ctx) {
   return ctx.json({ success: true, data: { coverLetterText: result.data } })
 }
 
+function safeTimeZone(tz) {
+  const t = typeof tz === 'string' ? tz.trim().slice(0, 64) : ''
+  if (!t) return 'UTC'
+  try { new Intl.DateTimeFormat('en-US', { timeZone: t }); return t } catch (_) { return 'UTC' }
+}
+
 async function loadCoverLetter(ctx) {
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
@@ -1445,10 +1452,14 @@ async function loadCoverLetter(ctx) {
   // Letterhead (name + contact line, the same header the resume carries) and the date, in the form the posting's
   // spelling implies: "October 16, 2026" for a US posting, "16 October 2026" for a UK one.
   const paper = designService.detectPaper(row.job_description_text)
+  // "Today" is the applicant's today: the browser sends its IANA zone (?tz=Africa/Nairobi). In UTC the letter carried
+  // yesterday's date for anyone ahead of it for part of the day (Nairobi 00:00-03:00, Sydney until 11:00) and tomorrow's for
+  // anyone behind it in the evening. An unknown or missing zone is UTC.
+  const timeZone = safeTimeZone(ctx.req.query('tz'))
   const now = new Date()
   const date = paper === 'a4'
-    ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' })
-    : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })
+    ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
+    : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
   return { row, data, paper, date }
 }
 
@@ -2710,6 +2721,17 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
     for (let attempt = 1; attempt <= cand.attempts; attempt++) {
       try {
         const pdfBytes = await pdfService.generateResumePDF(env, cand.html, { paper: designTokens?.paper })
+        // The designed layout is model-written HTML: check what Chromium actually PRINTED before it becomes the file an
+        // applicant emails (page count, one column, no hidden text, name and email extractable - lib/pdfQa.js, the analyzer
+        // ingest uses). A rejection falls through to the built-in template; the template's own PDF always ships.
+        if (cand.label === 'designed layout') {
+          const qa = await pdfQa.checkRenderedPdf(pdfBytes, data)
+          if (!qa.ok) {
+            lastErr = new Error(`designed PDF failed the render check: ${qa.reasons.join('; ')}`)
+            console.error(`[WARN] designed PDF rejected for ${scanId}: ${qa.reasons.join('; ')} - using the built-in template`)
+            break
+          }
+        }
         const pdfKey = storage.beautifulPdfKey(scanId, version)
         await env.RESUMES_BUCKET.put(pdfKey, pdfBytes, { httpMetadata: { contentType: 'application/pdf' } })
         // The PDF is the file candidates email to hiring managers — it needs a

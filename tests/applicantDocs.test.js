@@ -7,6 +7,9 @@ import { densityFor, estimateLoad } from '../src/lib/docFit.js'
 import { resumeStem, draftStem, coverLetterStem } from '../src/lib/fileStems.js'
 import { paperForLocation, PAPER } from '../src/services/design.service.js'
 import { extractText } from '../src/services/resume.parser.js'
+import { stripBullet } from '../src/lib/bulletText.js'
+import { checkRenderedPdf, allowedPages } from '../src/lib/pdfQa.js'
+import { buildPdf, resumePage } from './helpers/pdfBuilder.js'
 
 // APPLICANT DOCS pass: the delivered DOCX / PDF / cover letter as a document the applicant is proud to send.
 
@@ -58,26 +61,36 @@ describe('lib/fileStems', () => {
   })
 })
 
+// Shapes whose real page counts were measured (LibreOffice for the DOCX, WeasyPrint for the template): jobs x bullets.
+const bl = n => Array.from({ length: n }, (_, i) => `Delivered project ${i} that improved reporting accuracy and reduced manual effort across the finance team by ${10 + i} percent.`)
+const SHAPE = (jobs, b) => ({
+  name: 'Test Person', email: 't@x.com', phone: '+254 700 000 000', location: 'Nairobi, Kenya', linkedin: 'linkedin.com/in/t',
+  summary: 'Analyst with experience across several industries and a record of measurable delivery for stakeholders.',
+  experience: Array.from({ length: jobs }, (_, i) => ({ title: 'Analyst ' + i, company: 'Company ' + i, location: 'Nairobi', dates: '2015 – 2018', bullets: bl(b) })),
+  education: [{ degree: 'BSc Statistics', institution: 'University of Nairobi', dates: '2010 – 2014' }], skills: ['SQL', 'Python', 'Excel', 'Power BI', 'Tableau'], certifications: ['AWS CP'],
+})
+
 describe('lib/docFit', () => {
-  it('leaves a short resume and a clearly two-page resume alone, and tightens one that is just over a page', () => {
-    expect(densityFor({ name: 'A', summary: 'Hi.', experience: [JOB(1)] }, 'a4')).toBe('normal')
-    expect(densityFor({ experience: Array.from({ length: 14 }, (_, i) => JOB(i, 4)) }, 'a4')).toBe('normal')
-    const edge = { summary: 'x'.repeat(300), experience: [JOB(1, 4), JOB(2, 4), JOB(3, 4)], education: [{ degree: 'BSc', institution: 'U', dates: '2016' }], skills: ['a', 'b'] }
-    // Find a size just over capacity by adding jobs one at a time.
-    let d = { ...edge }, n = 4
-    while (densityFor(d, 'a4') === 'normal' && n < 12) d = { ...edge, experience: [...edge.experience, ...Array.from({ length: n - 3 }, (_, i) => JOB(10 + i, 3))] }, n++
-    expect(densityFor(d, 'a4')).toBe('compact')
+  it('DOCX: squeezes the sizes that really spill two lines onto page 2, leaves the ones that fit and the ones that need two pages', () => {
+    for (const [j, b] of [[4, 4], [5, 3], [7, 2]]) expect(densityFor(SHAPE(j, b), 'a4', 'docx')).toBe('compact')   // 60-62 units: 2 lines on page 2 at normal, 1 page compact
+    for (const [j, b] of [[2, 5], [5, 2], [6, 2]]) expect(densityFor(SHAPE(j, b), 'a4', 'docx')).toBe('normal')    // already one page
+    for (const [j, b] of [[8, 2], [6, 4], [5, 4]]) expect(densityFor(SHAPE(j, b), 'a4', 'docx')).toBe('normal')    // genuinely two pages, compact would not save it
+  })
+  it('PDF template: squeezes what spills at normal and compact fixes, leaves what compact cannot fix', () => {
+    for (const [j, b] of [[3, 4], [4, 3], [6, 2]]) expect(densityFor(SHAPE(j, b), 'a4', 'pdf')).toBe('compact')
+    for (const [j, b] of [[2, 5], [3, 3], [3, 5], [5, 3]]) expect(densityFor(SHAPE(j, b), 'a4', 'pdf')).toBe('normal')
+    expect(densityFor(SHAPE(4, 3), 'a4')).toBe(densityFor(SHAPE(4, 3), 'a4', 'pdf'))   // pdf is the default target
   })
   it('Letter holds less than A4', () => {
-    const d = { summary: 'x'.repeat(200), experience: [JOB(1, 4), JOB(2, 4), JOB(3, 3), JOB(4, 2)], education: [{ degree: 'BSc', institution: 'U' }], skills: ['a'] }
-    const a4 = densityFor(d, 'a4'), letter = densityFor(d, 'letter')
-    expect(['normal', 'compact']).toContain(a4)
-    expect(['normal', 'compact']).toContain(letter)
+    const d = SHAPE(3, 4)
+    expect(densityFor(d, 'a4', 'pdf')).toBe('compact')
     expect(estimateLoad(d)).toBeGreaterThan(0)
+    expect(['normal', 'compact']).toContain(densityFor(d, 'letter', 'docx'))
   })
   it('never throws on junk', () => {
     expect(() => densityFor(null)).not.toThrow()
-    expect(() => densityFor({ experience: 'x', skills: 5, projects: [null] })).not.toThrow()
+    expect(() => densityFor({ experience: 'x', skills: 5, projects: [null] }, 'a4', 'docx')).not.toThrow()
+    expect(estimateLoad(null)).toBeGreaterThan(0)
   })
 })
 
@@ -211,5 +224,72 @@ describe('paperForLocation', () => {
     for (const l of ['Austin, TX', 'Dublin, OH', 'Toronto, Canada', 'New York, NY', 'London, ON']) expect(paperForLocation(l)).toBe('letter')
     for (const l of ['Nairobi, Kenya', 'London, UK', 'Dublin, Ireland', 'Lagos, Nigeria', 'Berlin, DE']) expect(paperForLocation(l)).toBe('a4')
     for (const l of ['', null, 'Somewhere', 'Wilmington, DE', 'Mumbai, IN']) expect(paperForLocation(l)).toBeNull()
+  })
+})
+
+describe('stripBullet', () => {
+  it('removes one pasted marker and nothing that is content', () => {
+    for (const [i, o] of [['• Built it', 'Built it'], ['•Built it', 'Built it'], ['- Built it', 'Built it'], ['– Built it', 'Built it'], ['* Built it', 'Built it'], ['· Built it', 'Built it'],
+      ['  ●  Built it', 'Built it'], ['• - Built it', 'Built it'], ['▪ ▪ Built it', 'Built it']]) expect(stripBullet(i)).toBe(o)
+    for (const keep of ['5% growth in revenue', '-based architecture', '–5% churn', '2019 – 2021 at Acme', 'Built it', '• ', '-']) expect(stripBullet(keep)).toBe(keep)
+    expect(stripBullet(null)).toBe('')
+  })
+  it('a bullet that arrives with its own glyph is not doubled in the DOCX or the PDF', async () => {
+    const rd = { name: 'A', experience: [{ title: 'Eng', company: 'X', dates: '2020', bullets: ['• Pasted bullet', '- Dash bullet', '* Star bullet', 'Plain bullet'] }], certifications: ['• AWS'], projects: [{ name: 'P', description: '• Desc' }] }
+    const text = await extractText(await generateAtsDocx(rd, null), DOCX)
+    expect(text).toMatch(/^•\tPasted bullet$/m)
+    expect(text).toMatch(/^•\tDash bullet$/m)
+    expect(text).toMatch(/^•\tAWS$/m)
+    expect(text).not.toMatch(/•\t[•*-]/)
+    const html = buildResumeHTML(rd, {}, null)
+    expect(html).toContain('<li>Pasted bullet</li>')
+    expect(html).toContain('<li>Dash bullet</li>')
+    expect(html).toContain('<li>AWS</li>')
+    expect(html).toContain('<li>Desc</li>')
+  })
+})
+
+describe('the location is never a link', () => {
+  const rd = { name: 'A', email: 'a@b.co', location: 'St.Louis', linkedin: 'linkedin.com/in/a' }
+  it('DOCX and PDF template keep "St.Louis" as text and still link the rest', async () => {
+    const z = await JSZip.loadAsync(await generateAtsDocx(rd, null))
+    const rels = await z.file('word/_rels/document.xml.rels').async('string')
+    expect(rels).not.toContain('St.Louis')
+    expect(rels).toContain('https://linkedin.com/in/a')
+    const html = buildResumeHTML(rd, {}, null)
+    expect(html).not.toContain('href="https://St.Louis"')
+    expect(html).toContain('St.Louis')
+    expect(html).toContain('href="https://linkedin.com/in/a"')
+    expect(buildCoverLetterHTML('Hi', rd, {}, {})).not.toContain('href="https://St.Louis"')
+  })
+})
+
+describe('checkRenderedPdf — the render gate for delivered PDFs', () => {
+  const DATA = { name: 'Jane Doe', email: 'jane@example.com', experience: [{ title: 'Developer', company: 'Foo', bullets: ['x'] }] }
+  it('passes a clean single-column resume that carries the name and email', async () => {
+    const r = await checkRenderedPdf(buildPdf([resumePage()]), DATA)
+    expect(r.reasons).toEqual([])
+    expect(r.ok).toBe(true)
+  })
+  it('rejects a layout with far more pages than the content needs', async () => {
+    const r = await checkRenderedPdf(buildPdf([resumePage(), resumePage(), resumePage(), resumePage(), resumePage()]), DATA)
+    expect(r.ok).toBe(false)
+    expect(r.reasons.join(' ')).toMatch(/5 pages/)
+    expect(allowedPages(DATA)).toBe(2)
+  })
+  it('rejects hidden text (tiny type)', async () => {
+    const r = await checkRenderedPdf(buildPdf([resumePage([{ text: 'keyword stuffing react node aws', x: 50, y: 40, size: 2 }])]), DATA)
+    expect(r.ok).toBe(false)
+    expect(r.reasons).toContain('hidden text')
+  })
+  it('rejects a PDF whose text does not carry the candidate name or email', async () => {
+    const r = await checkRenderedPdf(buildPdf([resumePage()]), { ...DATA, name: 'Someone Else', email: 'other@x.com' })
+    expect(r.ok).toBe(false)
+    expect(r.reasons).toEqual(expect.arrayContaining(['name missing from the PDF text', 'email missing from the PDF text']))
+  })
+  it('never blocks on its own failure: unreadable bytes are skipped, not rejected', async () => {
+    const r = await checkRenderedPdf(new Uint8Array([1, 2, 3]), DATA)
+    expect(r.ok).toBe(true)
+    expect(r.skipped).toBe(true)
   })
 })

@@ -1,6 +1,7 @@
 const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopType, BorderStyle } = require('docx')
 const { hrefFor } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
+const { stripBullet } = require('../lib/bulletText')
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
 // NOT verificationCode — avoids hardcoded domain
@@ -52,9 +53,11 @@ const plainRun = (text, size) => new TextRun({ text, size })
 // be clicked.
 function contactRuns(parts, size) {
   const runs = []
-  parts.forEach((p, i) => {
+  parts.forEach((part, i) => {
+    const p = typeof part === 'string' ? part : part.text
     if (i > 0) runs.push(plainRun(' | ', size))
-    const href = hrefFor(p, { phone: true })
+    // The location is never a link: "St.Louis" is a place, not a host (it came out as https://St.Louis).
+    const href = part && part.link === false ? null : hrefFor(p, { phone: true })
     runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p, size)] }) : plainRun(p, size))
   })
   return runs
@@ -79,14 +82,14 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
   const size = pageSize(paper)
-  const d = DENSITY[densityFor(resumeData, paper === 'a4' ? 'a4' : 'letter')]
+  const d = DENSITY[densityFor(resumeData, paper === 'a4' ? 'a4' : 'letter', 'docx')]
   const textWidth = size.width - 2 * d.marginLR       // the right-aligned date stops here
   const children = []
 
   const heading = text => new Paragraph({ text, heading: 'Heading2' })
   const bullet = text => new Paragraph({
     keepLines: true, indent: BULLET_INDENT, spacing: { after: d.bulletAfter },
-    children: [new TextRun({ children: ['•', new Tab(), text] })],
+    children: [new TextRun({ children: ['•', new Tab(), stripBullet(text)] })],
   })
   // A title line with the dates (or tech list) right-aligned on the same line. keepNext: a title is never stranded at the
   // bottom of a page away from its first bullet.
@@ -106,8 +109,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   // addPart: [{ text }] — joined with " | " below. link detection is shared with the PDF (lib/links.js).
   const parts = []
-  for (const v of [resumeData.email, resumeData.phone, resumeData.location, resumeData.linkedin, resumeData.portfolio])
-    if (v) parts.push(String(v))
+  for (const [v, link] of [[resumeData.email, true], [resumeData.phone, true], [resumeData.location, false], [resumeData.linkedin, true], [resumeData.portfolio, true]])
+    if (v) parts.push({ text: String(v), link })
   // The credential line: a real link to the verification page, on its own line (it used to trail the contact line and
   // wrap awkwardly). Omitted entirely (not just left blank) when there's no verification link for this tier — see
   // FIX_PLAIN in scan.controller.js's generateFix. The label stays plain text so it extracts as before.
@@ -242,7 +245,8 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   const size = pageSize(paper)
   const head = []
   const c = xmlSafe(contact || {})
-  const parts = [c.email, c.phone, c.location, c.linkedin, c.portfolio].map(v => String(v || '').trim()).filter(Boolean)
+  const parts = [[c.email, true], [c.phone, true], [c.location, false], [c.linkedin, true], [c.portfolio, true]]
+    .map(([v, link]) => ({ text: String(v || '').trim(), link })).filter(x => x.text)
   const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY, space: 6 } }
   // The rule closes the letterhead: under the contact line, or under the name when there is no contact line.
   if (who) head.push(new Paragraph({ spacing: { after: parts.length ? 40 : 280 }, border: parts.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color: NAVY })] }))
