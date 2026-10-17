@@ -50,13 +50,19 @@ function mostlyIn(phrase, textSet) {
   return hit / t.length >= 0.5
 }
 
-// Is `quote` really in the resume? Whitespace/punctuation/case-insensitive substring, or (for a longer quote) nearly
+// Is `quote` really in the resume? Whitespace/punctuation/case-insensitive whole-word match, or (for a longer quote) nearly
 // all of its words in order-insensitive presence - models sometimes drop a comma or a bullet glyph.
 function quoteInResume(quote, resumeCanon, resumeSet) {
   const q = canon(quote)
   if (!q) return false
-  if (resumeCanon.includes(q)) return true
-  const t = q.split(' ').map(stem).filter(Boolean)
+  const qt = q.split(' ')
+  // A quote has to carry substance: at least one word that is not filler and is two letters or more. Without this a one-letter
+  // or filler "quote" (\"a\", \"the\", \"for the\") is trivially inside any resume, and a requirement the resume never mentions
+  // was credited as met - exactly the unsupported credit this check exists to remove (Scan/ATS round 12).
+  if (!qt.some(w => w.length >= 2 && !STOP.has(w) && !STOP.has(stem(w)))) return false
+  // And it has to match whole words: a fragment (\"ython\") is not in a resume that says \"Python\".
+  if (` ${resumeCanon} `.includes(` ${q} `)) return true
+  const t = qt.map(stem).filter(Boolean)
   if (t.length < 4) return false
   return t.filter(w => resumeSet.has(w)).length / t.length >= 0.9
 }

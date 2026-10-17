@@ -171,7 +171,9 @@ describe('scrub_account_data', () => {
             // waiting-screen telemetry (0088): job phase and per-attempt scores. No resume content, nothing personal.
             'scan_stage', 'fix_progress',
             // which prompt generation wrote the delivery (0092): a version string, nothing personal.
-            'prompt_version', 'letter_prompt_version'],
+            'prompt_version', 'letter_prompt_version',
+            // the page size the person chose for the delivered files (0096): 'letter' / 'a4', a preference, nothing personal.
+            'paper_size'],
     payments: ['amount_cents', 'created_at', 'dispute_due_at', 'dispute_evidence_id', 'dispute_id', 'disputed_at', 'last_reconciled_at', 'paid_at', 'paystack_access_code', 'receipt_delivered_at', 'receipt_sent_at', 'referral_code', 'refund_claimed_at', 'refund_reference', 'refunded_at', 'reversal_notice_sent_at', 'currency', 'updated_at'],
   }
   const check = async (table, id, set) => {

@@ -10,7 +10,7 @@
 // bundler) handles the CJS/ESM mix at bundle time without any issues.
 
 const JSZip   = require('jszip')
-const { safeSlice } = require('../lib/safeText')
+const { safeSlice, cleanText } = require('../lib/safeText')
 const c        = require('../config/constants')
 const { analyzePdf } = require('./pdf.inspect')
 const { failureMessage } = require('../lib/scanFailure')
@@ -228,7 +228,10 @@ function docxXmlToLines(xml, ctx = {}) {
       })
     }
     // Link targets: append "(url)" after link text that doesn't already show it.
-    const shownNow = () => [...p.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1]).join('').toLowerCase()
+    // The runs hold XML text ("a=1&amp;b=2"), the link target is already decoded ("a=1&b=2"): compared as they were, a URL that
+    // contains an ampersand never counted as shown and was printed a second time after its own link text (Scan/ATS round 12).
+    const shownNow = () => [...p.matchAll(/<w:t\b[^>]*>([\s\S]*?)<\/w:t>/g)].map(m => m[1]).join('')
+      .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&').toLowerCase()
     const addUrl = url => {
       if (shownNow().includes(normUrl(url))) return ''
       return `<w:r><w:t xml:space="preserve"> (${xmlEscape(url.replace(/^mailto:/i, ''))})</w:t></w:r>`
@@ -349,7 +352,13 @@ const MIN_TEXT = 100
 
 // One entry point for an uploaded resume: its text, its layout facts, or a failure CODE (see lib/scanFailure.js).
 // `env` is optional — with it, a PDF that is only a picture of a page is read by the model instead of failing.
-async function analyzeUpload(bytes, mimeType, { env } = {}) {
+// The text that leaves here is cleaned of NUL and lone surrogate halves (a docx numeric reference such as &#0; or &#xD83D;,
+// a PDF text layer, the model's OCR): none of them can be stored, and the report quotes the person's own bullets.
+async function analyzeUpload(bytes, mimeType, opts = {}) {
+  const r = await analyzeUploadRaw(bytes, mimeType, opts)
+  return r && typeof r.text === 'string' ? { ...r, text: cleanText(r.text) } : r
+}
+async function analyzeUploadRaw(bytes, mimeType, { env } = {}) {
   try {
     if (mimeType === 'application/pdf') {
       const r = await analyzePdf(bytes)
@@ -388,7 +397,7 @@ async function inspectStructure(bytes, mimeType) {
 // Text only. No model fallback — callers that want one use analyzeUpload with an env.
 async function extractText(bytes, mimeType) {
   if (mimeType !== 'application/pdf') {
-    try { return await extractDocxText(bytes) } catch (err) { console.error('extractText:', err.message); return '' }
+    try { return cleanText(await extractDocxText(bytes)) } catch (err) { console.error('extractText:', err.message); return '' }
   }
   return (await analyzeUpload(bytes, mimeType)).text || ''
 }

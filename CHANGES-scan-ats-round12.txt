@@ -1,0 +1,65 @@
+SCAN / ATS CORE - round 12 (base: upstream b21595f)
+
+Section 2: scan.controller.js, scan.routes.js, ats.service.js, claude.service.js, resume.parser.js, jd.parser.js,
+jdBoilerplate.js, docx.service.js, pdf.service.js, ScanForm / ScanResult / DiffView / FixBanner / CategoryScores /
+QuantificationPrompts / ScoreGauge / SaveProfilePrompt, lib/resumeDiff.js - audited as one section, as if no earlier
+comment existed.
+
+APPLY MIGRATION 0096 BEFORE (OR WITH) THE DEPLOY. EXPECTED_SCHEMA_VERSION is now 96. (An upstream 0095 for partners landed
+while this round was in progress, so this round's migration is 0096.) The worker tolerates the column arriving late: it
+writes paper_size only when a person chose a size and reads it best-effort on the cover-letter download.
+
+Gap closed
+- G1 Page size is the person's choice. It was only guessed from the job posting and could not be corrected. New
+  scans.paper_size ('letter' | 'a4' | NULL = decide from the posting); a "Page size" select on the scan form and in the
+  delivered-resume editor (saving rebuilds both files on the new size); a rescan keeps its source's choice unless the form
+  picks one; the choice reaches the .docx, the PDF, the cover letter and the cover-letter PDF, and the AI layout tokens.
+  PATCH /scan/:id/delivered-resume accepts { paper: 'letter' | 'a4' | 'auto' }. Pure helper: src/lib/paperChoice.js.
+
+Bugs fixed
+- B1  Text from outside never passed the NUL / lone-surrogate scrub that typed fields get. A docx numeric reference
+      (&#0;, &#xD83D;), a PDF text layer, the OCR fallback and a fetched job page (JSON-LD "\ud83d", a raw NUL) reached Postgres:
+      the report write failed (22P05 / 22P02) and the scan ended as a "temporary problem" that every retry reproduced; a
+      fetched posting made createScan return 500. Separately, the 160-character example cut in the report was a plain
+      .slice and split an emoji. lib/safeText.js gains cleanText / cleanDeep; applied in analyzeUpload, extractText,
+      htmlToText and extractJobPostingText; the example cut uses safeSlice.
+- B2  The hourly sweep recovered a stuck Badge -> Fix UPGRADE as "delivered": tier FIX, no rewrite, the free credit spent
+      and not returned, badge_upgraded_at still set (so it could not be upgraded again). It now reverts the upgrade
+      through revertBadgeUpgrade (tier BADGE, credit returned), and the plain redelivery flip skips upgrades.
+      revertBadgeUpgrade also no longer returns the credit twice when the run had already handed it back, and clears
+      upgrade_credit_granted_at so a later upgrade can be refunded again.
+- B3  "That Try Again found nothing better..." stayed on the page after the owner edited the resume. Cleared on edit.
+- B4  Spelled-out figures: "twenty-five" was read as 20 and 5, so an honest 25 <-> twenty-five rewrite looked like invented
+      numbers and could burn the paid fix's attempts. numbersIn now reads compounds, "two hundred", "two million",
+      "half a million", and knows sixty..ninety; a bare "one" is ignored.
+- B5  Career length was last end - first start (2005-2007 + 2020-Present = 21 years); the summary was allowed to claim it.
+      careerFacts.years is now the time worked (merged job periods); the old number is kept as `span`.
+- B6  detectPaper gave A4 to Birmingham AL, Manchester NH, London Ontario and any "UK" mention, and Letter to Dublin,
+      Berlin, Nairobi. A4 and Letter signals are now weighed (ties stay Letter); UK-named cities count only when no US state
+      / Canadian province follows.
+- B7  The cover-letter guard rejected a letter that restated the posting's own requirement ("your posting asks for five
+      years") as an unsupported claim; three attempts, then a 502. Restating is allowed; claiming it is still refused.
+- B8  "Phase I" / "Type I" counted as first person in the craft feedback; a capitalised "My" did not count. Shared
+      src/lib/firstPerson.js.
+- B9  The extractor printed a link's URL a second time after its own text whenever the URL contained "&" (XML-escaped text
+      compared with a decoded target).
+- B10 (new checklist scorer) a one-letter, filler or mid-word "quote" ("a", "the", "ython") counted as evidence, so a
+      checklist for requirements the resume never mentions scored 100. A quote must now carry a non-filler word of two letters
+      or more and match whole words.
+- B11 (new style guard) "Phase I" was flagged as first person and "dynamic pricing / programming / content" as the banned
+      word "dynamic", each costing a corrective Claude pass over correct text.
+
+Merge note: upstream's "Applicant docs round 4" added an `accent` colour option on the same DOCX calls this round gave a `paper`
+choice; both are passed together (paper from the person's choice or the posting, accent from the palette).
+
+Tests: tests/scan.ats.round12.test.js (60). Full suite on this base: 426 files / 6494 tests, all passing. Updated: tests/scan.ats.round10.upgrade.test.js (the revert patch now also
+clears upgrade_credit_granted_at), tests/migrations.pglite.test.js (paper_size in the account-scrub keep list).
+
+Known / not done
+- Worst case for the new style-correction pass: it can double the rewrite calls of an attempt (up to ~90 s each). Three
+  attempts near the call timeout plus scoring and PDF could pass the 600 s job lease. Typical runs are far shorter; not
+  changed here.
+- Page-number footers in the PDF use CSS page-margin boxes; calibration so far is from WeasyPrint, not the production
+  Chromium. Not verified here.
+- A docx whose text contains a NUL is accepted (cleaned), not refused.
+- This is a fix pass, not the independent clean audit; another independent pass is still required.

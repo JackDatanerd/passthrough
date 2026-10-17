@@ -15,6 +15,7 @@ import Alert from '../ui/Alert'
 import ProgressBar from '../ui/ProgressBar'
 import { isCancelError } from '../../lib/errors'
 import ResumeFieldsForm from './ResumeFieldsForm'
+import PaperSizeSelect from './PaperSizeSelect'
 import { loadBrainDumpDraft, saveBrainDumpDraft, markDraftSent } from '../../lib/brainDumpDraft'
 import { manualHasContent, filled, EMPTY_MANUAL } from '../../lib/resumeForm'
 import { formatNumber } from '../../lib/utils'
@@ -94,6 +95,7 @@ export default function ScanForm() {
   const [useUrl,  setUseUrl ] = useState(false)
   const [jobUrl,  setJobUrl ] = useState('')
   const [jdText,  setJdText ] = useState('')
+  const [paperSize, setPaperSize] = useState('')   // '' = Automatic; 'letter' | 'a4' = the person's choice
   const [loading, setLoading] = useState(false)
   // Upload progress (0-100) and the controller that cancels it: a 5MB resume on a slow phone link takes over a minute,
   // and the button used to spin with no sign of movement and no way out.
@@ -147,9 +149,11 @@ export default function ScanForm() {
           id: d.id,
           // A delivered paid resume can be scanned instead of the original upload.
           hasImproved: d.status === 'FIX_DELIVERED' && !!d.fixPurchased && !!(d.userEditedResumeData || d.rewrittenResumeData),
+          paperSize: d.paperSize || '',
           label: d.resumeOriginalName
             || (d.inputMode === 'brain_dump' ? 'the background you wrote' : d.inputMode === 'file' ? 'the resume you uploaded' : 'your saved profile'),
         })
+        setPaperSize(d.paperSize || '')
         setEntryMode('rescan')
       })
       .catch(() => {})
@@ -215,6 +219,9 @@ export default function ScanForm() {
           formData.append('contactEmail', contactEmail.trim())
         }
       }
+      // Only sent when it says something: a rescan whose source was set to a size and is now back on Automatic says so explicitly.
+      if (paperSize) formData.append('paperSize', paperSize)
+      else if (entryMode === 'rescan' && rescanSource?.paperSize) formData.append('paperSize', 'auto')
       if (useUrl && jobUrl.trim())
         formData.append('jobDescriptionUrl', jobUrl.trim())
       else
@@ -529,6 +536,8 @@ export default function ScanForm() {
           </div>
         )}
       </div>
+
+      <PaperSizeSelect value={paperSize} onChange={setPaperSize} disabled={loading} />
 
       <Alert>{error}</Alert>
 

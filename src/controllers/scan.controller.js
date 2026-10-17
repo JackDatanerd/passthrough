@@ -65,6 +65,10 @@ const claudeService  = require('../services/claude.service')
 const resumeParser   = require('../services/resume.parser')
 const jdParser        = require('../services/jd.parser')
 const designService   = require('../services/design.service')
+// The page size of a scan's documents (docx, PDF, cover letter): the person's own choice (scans.paper_size, migration 0096)
+// wins; with none, the job posting decides (design.service.js detectPaper).
+const { cleanPaperChoice } = require('../lib/paperChoice')
+const paperFor = (scan, jdText) => cleanPaperChoice(scan?.paperSize) || designService.detectPaper(jdText ?? scan?.jobDescriptionText)
 const { safeSlice } = require('../lib/safeText')
 const { revokeVerification, restoreVerification, recordTombstones, REVOKE_REASON } = require('../lib/verification')
 const { parseClientResumeData, hasResumeContent } = require('../lib/resumeData')
@@ -200,6 +204,13 @@ async function createScan(ctx) {
   const savedProfileId = typeof fields.savedProfileId === 'string' && fields.savedProfileId ? fields.savedProfileId : null
   if (savedProfileId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(savedProfileId))
     return ctx.json({ success: false, message: 'Invalid saved profile.' }, 400)
+
+  // Page size for the delivered documents (migration 0096): '' / 'auto' = decided from the posting, 'letter' or 'a4' = the
+  // person's choice. Anything else is a mistake worth saying so about, not something to guess at.
+  const paperRaw = String(fields.paperSize || '').trim().toLowerCase()
+  if (paperRaw && paperRaw !== 'auto' && !cleanPaperChoice(paperRaw))
+    return ctx.json({ success: false, message: 'Page size must be Auto, US Letter or A4.' }, 400)
+  let paperSize = cleanPaperChoice(paperRaw)
   // FEATURE GAP CLOSED (Scan/ATS pass): rescan a scan you already ran against a
   // NEW job description without uploading the file again. Saved-profile users
   // always had this ("Rescan with new JD"); anyone who uploaded a file or typed
@@ -260,6 +271,8 @@ async function createScan(ctx) {
     if (srcErr) throw srcErr
     const source = scanRowToCamel(srcRow)
     if (!source) return ctx.json({ success: false, message: 'That scan could not be found.' }, 404)
+    // A rescan keeps the page size its source was set to, unless the form picked one.
+    if (!paperRaw && source.paperSize) paperSize = source.paperSize
     // The improved version: a delivered, still-live paid resume (the owner's own edits win) is scanned against the new
     // job instead of the original upload. Only the structured data is reused - no file is re-parsed.
     const wantDelivered = String(fields.rescanVersion || '') === 'delivered'
@@ -407,6 +420,8 @@ async function createScan(ctx) {
       job_title:            deriveJobTitle(jdText),
       role_category:        atsService.detectRoleCategory(jdText),
       seniority_level:      atsService.detectSeniority(jdText),
+      // Only when the person chose one: leaving the key out keeps createScan working on a database that has not had 0096 yet.
+      ...(paperSize ? { paper_size: paperSize } : {}),
     }
   }
 
@@ -1085,7 +1100,7 @@ function accentFor(scan, id) {
 async function downloadDraft(ctx) {
   const { scan, res } = await loadDraftScan(ctx)
   if (res) return res
-  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: designService.detectPaper(scan.jobDescriptionText), accent: accentFor(scan) })
+  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: paperFor(scan, scan.jobDescriptionText), accent: accentFor(scan) })
   ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(docxBytes)
@@ -1101,7 +1116,7 @@ async function downloadDraftPdf(ctx) {
   if (res) return res
   let pdfBytes
   try {
-    const paper = designService.detectPaper(scan.jobDescriptionText)
+    const paper = paperFor(scan, scan.jobDescriptionText)
     const html = pdfTemplate.buildResumeHTML(scan.originalResumeData, { paper }, null, { verified: false })
     pdfBytes = await pdfService.generateResumePDF(ctx.env, html, { paper })
   } catch (err) {
@@ -1292,6 +1307,17 @@ async function updateDeliveredResume(ctx) {
   if (!hasResumeContent(resumeData))
     return ctx.json({ success: false, message: 'Add at least one job, school, project, skill or a summary — an empty resume can\'t replace your delivered one.' }, 400)
 
+  // Page size (migration 0096): the editor can switch the delivered files between Auto / US Letter / A4. Sent only when the
+  // person touched it; the column is written only when it actually changes.
+  let paperChoice = scan.paperSize || null
+  if (body?.paper !== undefined) {
+    const raw = String(body.paper ?? '').trim().toLowerCase()
+    if (raw && raw !== 'auto' && !cleanPaperChoice(raw))
+      return ctx.json({ success: false, message: 'Page size must be Auto, US Letter or A4.' }, 400)
+    paperChoice = cleanPaperChoice(raw)
+  }
+  const paperChanged = (paperChoice || null) !== (scan.paperSize || null)
+
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
   const code = isPlain ? null : (scan.verificationCode || null)
@@ -1299,7 +1325,7 @@ async function updateDeliveredResume(ctx) {
 
   // Same procedure as generateFix's delivery: build with the credential wording, score the file
   // as delivered, and rebuild with the honest wording if it misses the bar.
-  const paper = designService.detectPaper(jdText)
+  const paper = paperChoice || designService.detectPaper(jdText)
   const accent = accentFor(scan)
   let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper, accent })
   const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
@@ -1319,7 +1345,7 @@ async function updateDeliveredResume(ctx) {
   let resumeHash, pdfKey, pdfHash
   try {
     resumeHash = await badgeService.hashBytes(docxBytes)
-    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice })
     ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
   } catch (renderErr) {
     await deleteSuperseded(ctx.env, [docxKey], [])
@@ -1360,6 +1386,7 @@ async function updateDeliveredResume(ctx) {
     fix_generated_at:    new Date().toISOString(),
     verified_at:         isPlain ? null : new Date().toISOString(),
     rewrite_failed:      false,
+    ...(paperChanged ? { paper_size: paperChoice } : {}),
     quantification_prompts: prompts,
     candidate_first_name: candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null,
     // The cover letter was written from the previous version.
@@ -1376,10 +1403,14 @@ async function updateDeliveredResume(ctx) {
     return ctx.json({ success: false, message: 'Your resume changed while you were editing (a retry may be running). Refresh the page and try again.' }, 409)
   }
   await deleteSuperseded(ctx.env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
+  // Scan/ATS round 12: "that Try Again found nothing better, this is the same resume as before" described the version
+  // that has just been replaced by the owner's own edit; it stayed on the page. Best-effort and after the edit is stored
+  // (a database without migration 0089 simply has no flag to clear).
+  if (scan.retryNoGain) { try { await supabase.from('scans').update({ fix_retry_no_gain: false }).eq('id', scan.id) } catch (_) {} }
   if (code) await purgeBadgeCache(code)
 
   return ctx.json({ success: true, data: {
-    fixAtsScore, hasPdf: !!finalPdfKey, quantificationPrompts: prompts,
+    fixAtsScore, hasPdf: !!finalPdfKey, quantificationPrompts: prompts, retryNoGain: false, paperSize: paperChoice,
     credentialVerified,
     rewrittenResumeData: resumeData,
     userEditedResumeData: resumeData,
@@ -1459,7 +1490,11 @@ async function loadCoverLetter(ctx) {
   const data = row.rewritten_resume_data || row.original_resume_data
   // Letterhead (name + contact line, the same header the resume carries) and the date, in the form the posting's
   // spelling implies: "October 16, 2026" for a US posting, "16 October 2026" for a UK one.
-  const paper = designService.detectPaper(row.job_description_text)
+  // The person's own page-size choice (0096). A separate best-effort read: the column list above is explicit, and a database that
+  // has not had the migration yet must still serve the letter (it then falls back to the posting, exactly as before).
+  let chosenPaper = null
+  try { chosenPaper = (await supabase.from('scans').select('paper_size').eq('id', row.id).maybeSingle())?.data?.paper_size || null } catch (_) {}
+  const paper = chosenPaper || designService.detectPaper(row.job_description_text)
   // "Today" is the applicant's today: the browser sends its IANA zone (?tz=Africa/Nairobi). In UTC the letter carried
   // yesterday's date for anyone ahead of it for part of the day (Nairobi 00:00-03:00, Sydney until 11:00) and tomorrow's for
   // anyone behind it in the evening. An unknown or missing zone is UTC.
@@ -1469,7 +1504,7 @@ async function loadCoverLetter(ctx) {
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
   const accent = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })?.palette?.primary
-  return { row, data, paper, date, accent }
+  return { row, data, paper, date, chosenPaper, accent }
 }
 
 async function downloadCoverLetter(ctx) {
@@ -1487,9 +1522,9 @@ async function downloadCoverLetter(ctx) {
 // from the same user/scan), rendered on demand from the deterministic template (no Claude call, nothing stored). It costs
 // a headless-browser render, so the route sits behind the same tighter limiter as the other PDF renders.
 async function downloadCoverLetterPdf(ctx) {
-  const { res, row, data, paper, date } = await loadCoverLetter(ctx)
+  const { res, row, data, paper, date, chosenPaper } = await loadCoverLetter(ctx)
   if (res) return res
-  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })
+  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, paper: chosenPaper })
   let pdfBytes
   try {
     const html = pdfTemplate.buildCoverLetterHTML(row.cover_letter_text, data, designTokens, { date })
@@ -1787,13 +1822,19 @@ async function upgradeBadgeToFix(ctx) {
 // Undoes a crashed upgrade run (see generateFixRun's catch). Returns true when it reverted one.
 async function revertBadgeUpgrade(env, supabase, scanId, userId) {
   try {
+    const { data: before } = await supabase.from('scans').select('upgrade_credit_granted_at').eq('id', scanId).maybeSingle()
+    const alreadyCredited = !!before?.upgrade_credit_granted_at
     const { data, error } = await supabase.from('scans')
-      .update({ fix_tier: 'BADGE', status: 'FIX_DELIVERED', badge_upgraded_at: null, fix_progress: null })
+      // upgrade_credit_granted_at is cleared too (Scan/ATS round 12): when the run had already handed the credit back
+      // (grant_upgrade_credit_once) the revert must not hand it back a SECOND time, and a later upgrade of the same scan
+      // has to be able to hand one back again - the marker is once per upgrade attempt, not once per scan.
+      .update({ fix_tier: 'BADGE', status: 'FIX_DELIVERED', badge_upgraded_at: null, fix_progress: null, upgrade_credit_granted_at: null })
       .eq('id', scanId).eq('status', 'FIX_GENERATING').not('badge_upgraded_at', 'is', null).select('id')
     if (error) throw error
     if (!data || data.length === 0) return false
     try { await supabase.from('payments').update({ status: 'FAILED' }).like('paystack_ref', `credit-upgrade:${scanId}:%`).eq('status', 'SUCCESS') } catch (_) {}
-    if (userId) must(await supabase.rpc('increment_free_fix_credits', { p_user_id: userId }), 'refund free fix credit (failed upgrade)')
+    // alreadyCredited was read before the update (RETURNING would show the cleared marker).
+    if (userId && !alreadyCredited) must(await supabase.rpc('increment_free_fix_credits', { p_user_id: userId }), 'refund free fix credit (failed upgrade)')
     return true
   } catch (err) {
     console.error(`[CRITICAL] revertBadgeUpgrade ${scanId}:`, err.message)
@@ -2530,7 +2571,7 @@ async function regeneratePdf(ctx) {
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
   const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
   const version = cryptoLib.randomToken(6)
   const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
   if (!pdfKey) {
@@ -2871,7 +2912,7 @@ async function generateFixRun(env, supabase, scanId) {
     if (isRetry && scan.rewrittenResumeData) resumeData = scan.rewrittenResumeData
 
     const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
-    const paper = designService.detectPaper(jdText)
+    const paper = paperFor(scan, jdText)
     const accent = accentFor(scan, scanId)
     // What the writer is told about the target (a prompt input, not a score input).
     const writerContext = { jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel, roleCategory: scan.roleCategory }
@@ -3175,7 +3216,7 @@ async function generateFixRun(env, supabase, scanId) {
     })
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
@@ -3393,7 +3434,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     // Versioned keys + hashes for BOTH files — see generateFix and config/storage.js.
     progress.phase = 'rendering'
     await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
-    const paper = designService.detectPaper(safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS))
+    const paper = paperFor(scan, safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS))
     const accent = accentFor(scan, scanId)
     let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { paper, accent })
 
@@ -3435,7 +3476,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: true })
 
     // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —
@@ -3568,5 +3609,5 @@ module.exports = {
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
   structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
-  runAtsScan, generateFix, generateBadge  // exported for webhook + payments + cron
+  runAtsScan, generateFix, generateBadge, revertBadgeUpgrade  // exported for webhook + payments + cron
 }

@@ -143,7 +143,8 @@ describe('a crashed upgrade run is reverted, not stranded', () => {
     })
     const res = await t.mod.generateFix({}, db, 's1')
     expect(res.success).toBe(false)
-    expect(st.scanUpdates).toContainEqual({ fix_tier: 'BADGE', status: 'FIX_DELIVERED', badge_upgraded_at: null, fix_progress: null })
+    // round 12: the once-per-upgrade credit marker is cleared with the rest, so a later upgrade of this scan can be handed back again
+    expect(st.scanUpdates).toContainEqual({ fix_tier: 'BADGE', status: 'FIX_DELIVERED', badge_upgraded_at: null, fix_progress: null, upgrade_credit_granted_at: null })
     expect(st.scanUpdates.some(p => p.status === 'ERROR')).toBe(false)
     expect(st.paymentUpdates).toContainEqual({ status: 'FAILED' })
     expect(st.refunds).toEqual([{ p_user_id: 'u1' }])

@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import ResumeFieldsForm from './ResumeFieldsForm'
+import PaperSizeSelect from './PaperSizeSelect'
 import api, { getErrorMessage } from '../../lib/api'
 import Button from '../ui/Button'
 import Alert from '../ui/Alert'
@@ -19,9 +20,12 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
   const [error, setError] = useState('')
   const [result, setResult] = useState(null)
   const [confirmCancel, setConfirmCancel] = useState(false)
+  // The page size of the two files ('' = Automatic, from the posting). Changing it rebuilds them like any other edit.
+  const [paper, setPaper] = useState(scan.paperSize || '')
   // The draft as it was when editing started, to tell whether anything was changed.
   const baseline = useRef(null)
-  const dirty = editing && draft !== null && baseline.current !== null && JSON.stringify(draft) !== baseline.current
+  const paperChanged = paper !== (scan.paperSize || '')
+  const dirty = editing && draft !== null && baseline.current !== null && (JSON.stringify(draft) !== baseline.current || paperChanged)
   useUnsavedChangesWarning(dirty)
 
   const data = scan.rewrittenResumeData || scan.originalResumeData
@@ -32,13 +36,14 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
     const copy = JSON.parse(JSON.stringify(data))
     baseline.current = JSON.stringify(copy)
     setDraft(copy)
+    setPaper(scan.paperSize || '')
     setError(''); setResult(null); setEditing(true)
   }
 
   async function save() {
     setSaving(true); setError('')
     try {
-      const res = await api.patch(`/scan/${scan.id}/delivered-resume`, { resumeData: draft })
+      const res = await api.patch(`/scan/${scan.id}/delivered-resume`, paperChanged ? { resumeData: draft, paper: paper || 'auto' } : { resumeData: draft })
       const d = res.data.data
       setResult({ score: d.fixAtsScore, verified: d.credentialVerified })
       setEditing(false)
@@ -72,6 +77,7 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
       {editing && (
         <div className="mt-4 flex flex-col gap-5">
           <ResumeFieldsForm draft={draft} setDraft={setDraft} />
+          <PaperSizeSelect value={paper} onChange={setPaper} disabled={saving} hint="Both files are rebuilt on this page size when you save." />
           <Alert>{error}</Alert>
           <div className="flex gap-3">
             <Button onClick={save} loading={saving}>Save &amp; rebuild files</Button>

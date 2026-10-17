@@ -1,3 +1,4 @@
+const { cleanPaperChoice } = require('../lib/paperChoice')
 const PALETTES = [
   { id:'clinical',   bg:'#FFFFFF', primary:'#1E40AF', accent:'#E2E8F0', text:'#1F2937' },
   { id:'forest',     bg:'#FFFFFF', primary:'#166534', accent:'#DCFCE7', text:'#14532D' },
@@ -47,14 +48,34 @@ function djb2(str) {
   return Math.abs(h)
 }
 
-// Paper size. The product's customers apply to US and UK employers: US Letter is 8.5x11in, the UK / Ireland /
-// Europe use A4. A Letter-sized page printed on A4 (or the reverse) is rescaled by the print dialog, so the
-// page is chosen from the posting: UK-spelling words, a pound sign or a UK/Irish place name -> A4, anything
-// else -> Letter (the US default).
-const UK_MARKERS = /\b(?:organis(?:e|ed|ing|ation|ations)|programme|programmes|colour|centre|centres|specialis(?:e|ed|ing|ation)|licence|behaviour|analyse|analysed|recognis(?:e|ed)|optimis(?:e|ed|ation)|prioritis(?:e|ed)|judgement|enrolment|fulfil|favour|labour|catalogue|whilst|curriculum vitae|nhs|uk|united kingdom|england|scotland|wales|northern ireland|london|manchester|birmingham|edinburgh|glasgow|leeds|bristol|cardiff|belfast|ireland)\b|£/gi
+// Paper size. The product's customers apply to US and UK employers (and across Africa and Europe): US Letter is
+// 8.5x11in and is used in the US and Canada; almost everywhere else uses A4. A page of the wrong size is rescaled by the
+// print dialog, so the page is chosen from the posting - unless the person chose one (resolvePaper): signals for A4
+// (UK spelling, a pound / euro sign, a UK / Irish / European / African / Gulf / Asia-Pacific place name, "UK") are weighed
+// against signals for Letter ("US", a US state or "City, ST", Canada and its provinces, 401(k), EEO wording); A4 wins only
+// when it has MORE signals, so a posting that is truly ambiguous ("US and UK customers") stays Letter, the US default.
+// Scan/ATS round 12: the old rule gave A4 to any posting that said "London", "Manchester" or "Birmingham" - Birmingham AL,
+// Manchester NH and London, Ontario - and "UK" anywhere, and gave Letter to Dublin, Berlin or Nairobi.
+const US_STATES = 'alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|wisconsin|wyoming'
+const CA_PROVINCES = 'ontario|quebec|british columbia|alberta|manitoba|saskatchewan|nova scotia|new brunswick|newfoundland'
+const US_ABBR = 'AL|AK|AZ|AR|CA|CO|CT|DE|FL|GA|HI|ID|IL|IN|IA|KS|KY|LA|ME|MD|MA|MI|MN|MS|MO|MT|NE|NV|NH|NJ|NM|NY|NC|ND|OH|OK|OR|PA|RI|SC|SD|TN|TX|UT|VT|VA|WA|WV|WI|WY|DC'
+const CA_ABBR = 'ON|QC|BC|AB|MB|SK|NS|NB|NL'
+// Places that exist on both sides of the Atlantic: counted for A4 only when NOT followed by a US state / Canadian province.
+const AMBIGUOUS_CITIES = 'london|manchester|birmingham|glasgow|bristol|cardiff|belfast|edinburgh|leeds|durham|cambridge|oxford|reading|hamilton|perth|sydney|richmond|portland|lancaster|plymouth|newcastle|dover|bath|windsor'
+const A4_WORDS = new RegExp(String.raw`\b(?:organis(?:e|ed|ing|ation|ations)|programme|programmes|colour|centre|centres|specialis(?:e|ed|ing|ation)|licence|behaviour|analyse|analysed|recognis(?:e|ed)|optimis(?:e|ed|ation)|prioritis(?:e|ed)|judgement|enrolment|fulfil|favour|labour|catalogue|whilst|curriculum vitae|nhs|united kingdom|england|scotland|wales|northern ireland|ireland|dublin|germany|berlin|munich|france|paris|netherlands|amsterdam|spain|madrid|barcelona|italy|milan|rome|switzerland|zurich|geneva|sweden|stockholm|norway|oslo|denmark|copenhagen|finland|helsinki|poland|warsaw|portugal|lisbon|belgium|brussels|austria|vienna|europe|emea|kenya|nairobi|mombasa|nigeria|lagos|abuja|ghana|accra|south africa|johannesburg|cape town|uganda|kampala|tanzania|dar es salaam|rwanda|kigali|ethiopia|egypt|cairo|morocco|india|bangalore|bengaluru|mumbai|delhi|hyderabad|pune|pakistan|australia|new zealand|singapore|uae|dubai|abu dhabi|saudi arabia|riyadh|qatar|doha)\b|£|€`, 'gi')
+const A4_UK_CAPS = /\bUK\b/g
+const CITY_RE = new RegExp(String.raw`\b(${AMBIGUOUS_CITIES})\b(?!\s*,\s*(?:${US_STATES}|${CA_PROVINCES}|${US_ABBR}|${CA_ABBR})\b)`, 'gi')
+const LETTER_WORDS = new RegExp(String.raw`\b(?:united states|usa|u\.s\.a?\.?|america|american|canada|canadian|mexico|${US_STATES}|${CA_PROVINCES}|401\(k\)|eeo|equal opportunity employer|w-2|h-1b|us citizen(?:ship)?)\b`, 'gi')
+const LETTER_US_CAPS = /\bUS\b/g
+const LETTER_CITY_STATE = new RegExp(String.raw`\b[A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s(?:${US_ABBR}|${CA_ABBR})\b`, 'g')
+const count = (re, s) => (s.match(re) || []).length
 function detectPaper(jdText) {
-  const hits = String(jdText || '').match(UK_MARKERS)
-  return hits && hits.length >= 1 && !/\b(?:united states|usa|u\.s\.|new york|california|texas)\b/i.test(String(jdText)) ? 'a4' : 'letter'
+  const t = String(jdText || '')
+  if (!t.trim()) return 'letter'
+  // "Birmingham, Alabama" is Letter, not A4: the state / province after an ambiguous city is also a Letter signal.
+  const a4 = count(A4_WORDS, t) + count(A4_UK_CAPS, t) + count(CITY_RE, t)
+  const letter = count(LETTER_WORDS, t) + count(LETTER_US_CAPS, t) + count(LETTER_CITY_STATE, t)
+  return a4 > letter ? 'a4' : 'letter'
 }
 // Paper for a document that has no job posting to read it from (the saved-profile download): the applicant's own
 // location line. US / Canada / a few Latin-American and Philippine markets use Letter, nearly everywhere else A4. null when
@@ -71,9 +92,11 @@ function paperForLocation(location) {
   if (/\b(?:united states|u\.?s\.?a?\.?|america|canada|mexico|chile|colombia|venezuela|philippines|dominican republic|costa rica|panama|guatemala|puerto rico)\b/i.test(t)) return 'letter'
   return A4_PLACES.test(t) ? 'a4' : null
 }
+// What the person chose ('letter' | 'a4'; anything else = Auto) wins over the guess.
+function resolvePaper(explicit, jdText) { return cleanPaperChoice(explicit) || detectPaper(jdText) }
 const isUkSpelling = jdText => (String(jdText || '').match(/\b(?:organis\w+|programme\w*|colour\w*|centre\w*|specialis\w+|licence|behaviour\w*|analyse\w*|optimis\w+|prioritis\w+|judgement|whilst)\b/gi) || []).length >= 2
 
-function getDesignTokens(userId, scanId, industry = 'default', { jdText = '' } = {}) {
+function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null } = {}) {
   const seed     = djb2((userId || 'anon') + scanId)
   const allowed  = INDUSTRY[industry] || null
   const filtered = allowed ? PALETTES.filter(p => allowed.includes(p.id)) : PALETTES
@@ -82,8 +105,8 @@ function getDesignTokens(userId, scanId, industry = 'default', { jdText = '' } =
     // A second, independent hash for the font: indexing both lists with the SAME number made the
     // pair follow gcd(palettes, fonts) — only a fraction of palette/font combinations ever occurred.
     fonts:   FONTS[djb2(`font:${userId || 'anon'}${scanId}`) % FONTS.length],
-    paper:   detectPaper(jdText)
+    paper:   resolvePaper(paper, jdText)
   }
 }
 
-module.exports = { getDesignTokens, detectPaper, paperForLocation, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }
+module.exports = { getDesignTokens, detectPaper, paperForLocation, resolvePaper, cleanPaperChoice, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }

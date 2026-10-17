@@ -183,13 +183,33 @@ async function scheduled(event, env, ctx) {
         // generation that re-ran for an already-delivered scan (retry count 0, files present) was caught by the blanket
         // ERROR flip below, which hid files the person had paid for and received until a whole regeneration (a second
         // Claude bill) ran. A FIX_GENERATING scan that already has delivered files simply goes back to FIX_DELIVERED.
-        const { data: stuckRedelivery, error: redeliveryErr } = await supabase
+        //
+        // SCAN/ATS ROUND 12 (bug): a stuck Badge -> Fix UPGRADE run matches that query too (files from the Badge, retry count
+        // 0), and was "recovered" into FIX_DELIVERED as tier FIX with no rewrite, the free credit spent and not handed back,
+        // and badge_upgraded_at still set - so the person lost the credit AND the upgrade, and could not upgrade again.
+        // An upgrade is undone instead (tier BADGE, credit back) by the same revertBadgeUpgrade a crashed run uses.
+        const { data: stuckUpgrades, error: upgradeErr } = await supabase
+          .from('scans')
+          .select('id, user_id')
+          .eq('status', 'FIX_GENERATING')
+          .lt('updated_at', stuckCutoff)
+          .not('badge_upgraded_at', 'is', null)
+        if (upgradeErr) console.error('Stuck upgrade recovery:', upgradeErr.message)
+        for (const row of stuckUpgrades || []) {
+          const reverted = await require('./controllers/scan.controller').revertBadgeUpgrade(env, supabase, row.id, row.user_id)
+          if (reverted) console.log(`Recovered stuck Badge upgrade ${row.id} → BADGE / FIX_DELIVERED (credit returned)`)
+          else revertFailedIds.push(row.id)
+        }
+        let redeliveryQuery = supabase
           .from('scans')
           .update({ status: 'FIX_DELIVERED' })
           .eq('status', 'FIX_GENERATING')
           .lt('updated_at', stuckCutoff)
           .not('resume_ats_path', 'is', null)
           .eq('fix_retry_count', 0)
+          .is('badge_upgraded_at', null)
+        if (revertFailedIds.length) redeliveryQuery = redeliveryQuery.not('id', 'in', `(${revertFailedIds.join(',')})`)
+        const { data: stuckRedelivery, error: redeliveryErr } = await redeliveryQuery
           .select('id')
         if (redeliveryErr) console.error('Stuck redelivery recovery:', redeliveryErr.message)
         else if (stuckRedelivery?.length > 0) console.log(`Recovered ${stuckRedelivery.length} stuck redelivery(ies) → FIX_DELIVERED`)

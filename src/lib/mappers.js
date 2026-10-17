@@ -87,6 +87,8 @@ function scanRowToCamel(row) {
     badgeUpgradedAt:     row.badge_upgraded_at ?? null,
     // True when the latest Try Again round found nothing better and the previous result was kept (migration 0089).
     retryNoGain:         row.fix_retry_no_gain ?? false,
+    // The page size the person chose for the delivered documents (0096); null = decided from the posting (design.service resolvePaper).
+    paperSize:           row.paper_size ?? null,
     // AUDIT FIX (Section 9/10 pass): fix_error_recoveries (migration 0026,
     // claim_errored_fix RPC) was missing here despite being selected via
     // `select('*')` on nearly every call site in scan.controller.js — the
@@ -191,7 +193,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
 ]
 const CLIENT_SCAN_FIELDS = [
   'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',
-  'fixAtsScore', 'rewriteFailed', 'retryNoGain', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
+  'fixAtsScore', 'rewriteFailed', 'retryNoGain', 'paperSize', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
   'contentScore', 'scanCompletedAt', 'candidateFirstName', 'jobTitle', 'fixPurchased', 'fixTier', 'fixGeneratedAt',
   'coverLetterText', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
   'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',

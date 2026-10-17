@@ -1029,7 +1029,25 @@ function unsupportedSkills(orig, rewritten) {
 // "one" is deliberately not a number word here: it is one of the commonest words in ordinary
 // prose ("one-on-one", "one of the", "no one"), and treating it as a figure made a faithful
 // rewrite look like it had invented a metric.
-const NUMBER_WORDS = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, twenty: 20, thirty: 30, forty: 40, fifty: 50, hundred: 100, dozen: 12 }
+const NUMBER_WORDS = { two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19, twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90, hundred: 100, dozen: 12 }
+const UNIT_WORDS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 }
+const TENS_WORDS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 }
+const SCALE_WORDS = { hundred: 100, thousand: 1e3, million: 1e6, billion: 1e9 }
+// Spelled-out figures (Scan/ATS round 12): "twenty-five" is 25 - it used to be read as the two figures 20 and 5, so an
+// honest "25" <-> "twenty-five" rewrite looked like two invented numbers and burned the paid fix's attempts. Also "two
+// hundred", "three million" and "half a million". A bare "one" is ordinary English ("one of the"), not a figure.
+const NUMBER_PHRASE = /\b(?:(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)(?:[-\s]+(one|two|three|four|five|six|seven|eight|nine))?|(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen))(?:[-\s]+(hundred|thousand|million|billion))?\b|\bhalf an?\s+(thousand|million|billion)\b|\b(hundred|dozen)\b/g
+function spelledNumbers(lower) {
+  const out = []
+  for (const m of lower.matchAll(NUMBER_PHRASE)) {
+    if (m[5]) { out.push(0.5 * SCALE_WORDS[m[5]]); continue }
+    if (m[6]) { out.push(NUMBER_WORDS[m[6]]); continue }
+    const base = m[1] ? TENS_WORDS[m[1]] + (m[2] ? UNIT_WORDS[m[2]] : 0) : (m[3] === 'one' && !m[4] ? null : NUMBER_WORDS[m[3]] ?? UNIT_WORDS[m[3]])
+    if (base == null) continue
+    out.push(m[4] ? base * SCALE_WORDS[m[4]] : base)
+  }
+  return out
+}
 // `x` is a multiplier claim ("3x faster", "10x"), counted as its number: it used to be read as a digit glued to a
 // letter, so an invented "10x" was invisible to the guard on both sides. Ordinals (1st, 3rd) are deliberately NOT
 // counted: "3rd-party" / "third-party" would flag an honest rewrite.
@@ -1045,7 +1063,7 @@ function numbersIn(text, { words = true } = {}) {
     // "2M" is the VALUE 2,000,000 — the bare 2 is not a separate figure.
     out.add(m[2] ? base * MULT[m[2].toLowerCase()] : base)
   }
-  if (words) for (const m of t.toLowerCase().matchAll(/\b(two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|hundred|dozen)\b/g)) out.add(NUMBER_WORDS[m[1]])
+  if (words) for (const n of spelledNumbers(t.toLowerCase())) out.add(n)
   return out
 }
 
@@ -1160,7 +1178,8 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   const name = cleanLine(resumeData?.name, 80)
   if (name && !text.trim().toLowerCase().endsWith(name.toLowerCase())) hard.push(`the very last line must be the candidate's name, exactly "${name}"`)
   // Figures: digits are checked everywhere; spelled-out numbers only when they are a claim about years.
-  const claims = tenureClaims(text)
+  // Years the POSTING asks for, restated in the letter ("your posting asks for five years"), are not a claim about the applicant.
+  const claims = tenureClaims(text, { posting: new Set(tenureClaims(jdText)) })
   const bad = [...numbersIn(withoutTenureClaims(text), { words: false })].filter(n => !allowedNumbers.has(n))
   for (const n of claims) if (!tenureClaimOk(n, facts, haveNumbers)) bad.push(n)
   if (bad.length) hard.push(`it used figures that are not in the resume (${[...new Set(bad)].slice(0, 5).join(', ')}) - remove them; years of experience may be stated only up to ${typeof facts?.years === 'number' ? facts.years : 'none stated'}`)

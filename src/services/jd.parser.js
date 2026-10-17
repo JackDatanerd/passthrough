@@ -15,7 +15,7 @@ function isBlockedHost(hostname) {
 const MAX_BYTES = 500_000
 const MAX_REDIRECTS = 3
 const { stripPlatformBoilerplate, isKnownUnreliablePlatform } = require('./jdBoilerplate')
-const { safeSlice } = require('../lib/safeText')
+const { safeSlice, cleanText } = require('../lib/safeText')
 const { checkUrlIsSafeToFetch } = require('../lib/ssrfGuard')
 const { decodeHtmlEntities } = require('../lib/htmlEntities')
 
@@ -216,7 +216,7 @@ function htmlToText(html) {
   // the entire body that (per HTML nesting) sits after it.
   for (const tag of ['head', 'nav', 'header', 'footer', 'aside'])
     t = stripBlocks(t, new RegExp(`<${tag}(?=[\\s/>])`, 'gi'), new RegExp(`<\\/${tag}\\s*>`, 'gi'), false)
-  return tidyLines(decodeHtmlEntities(stripTags(t)))
+  return cleanText(tidyLines(decodeHtmlEntities(stripTags(t))))
 }
 
 // ── Structured job data (schema.org JobPosting, JSON-LD) ─────────────────────
@@ -300,7 +300,7 @@ function extractJobPostingText(html) {
     fieldText(p.experienceRequirements) && `Experience: ${htmlToText(fieldText(p.experienceRequirements))}`,
     fieldText(p.educationRequirements) && `Education: ${htmlToText(fieldText(p.educationRequirements))}`,
   ].filter(Boolean)
-  const text = tidyLines(parts.join('\n'))
+  const text = cleanText(tidyLines(parts.join('\n')))
   return text.length >= 200 ? text : null
 }
 

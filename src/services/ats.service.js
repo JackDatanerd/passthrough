@@ -899,6 +899,7 @@ function bulletLinesOutsideListSections(text) {
 // run-on bullets instead of only about missing keywords.
 const WEAK_OPENER = /^(?:responsible for|responsibilities included|helped|assisted with|assisted in|worked on|worked with|tasked with|duties (?:included|include)|in charge of|participated in|involved in|was responsible|exposure to)\b/i
 const BUZZWORDS = /\b(?:team player|hard[- ]?working|results[- ]driven|self[- ]starter|go[- ]getter|detail[- ]oriented|passionate|dynamic|synergy|proven track record|think outside the box|utiliz(?:e|ed|ing)|leverag(?:e|ed|ing))\b/gi
+const { FIRST_PERSON } = require('../lib/firstPerson')
 function craftSignals(bullets, bulletText, fullText) {
   const texts = bullets.map(bulletText)
   const openers = texts.map(t => (t.toLowerCase().match(/^[a-z]+/) || [''])[0]).filter(Boolean)
@@ -910,7 +911,7 @@ function craftSignals(bullets, bulletText, fullText) {
     repeatedOpeners: repeated.slice(0, 4),
     longBullets: texts.filter(t => t.split(/\s+/).length > 35).length,
     buzzwords: [...new Set((String(fullText || '').match(BUZZWORDS) || []).map(w => w.toLowerCase()))].slice(0, 6),
-    firstPerson: texts.filter(t => /\b(?:I|my|me)\b/.test(t)).length
+    firstPerson: texts.filter(t => FIRST_PERSON.test(t)).length
   }
 }
 
@@ -992,7 +993,7 @@ function scoreContent(resumeText) {
       actionVerbRate: nonEnglish ? null : actionCount / total,
       quantifiedCount,
       language: nonEnglish ? 'other' : 'en',
-      unquantified: { count: unquantified.length, total: bullets.length, examples: unquantified.slice(0, 5).map(b => bulletText(b).slice(0, 160)) },
+      unquantified: { count: unquantified.length, total: bullets.length, examples: unquantified.slice(0, 5).map(b => safeSlice(bulletText(b), 160)) },
       craft: craftSignals(bullets, bulletText, resumeText),
       issues: nonEnglish ? ['The action-verb check only reads English, so it was skipped for this resume'] : []
     }

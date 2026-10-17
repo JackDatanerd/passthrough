@@ -5,8 +5,8 @@
 // is never flagged (it would be an unfixable complaint and a pointless retry).
 
 const BAD_OPENERS = /^(?:responsible for|responsibilities (?:included|include)|helped|assisted with|worked on|tasked with|duties (?:included|include|were)|in charge of)\b/i
-const BUZZ = /\b(?:team player|hard[- ]?working|self[- ]starter|go[- ]getter|proven track record|synergy|synergies|leverag(?:e|ed|es|ing)|utili[sz](?:e|ed|es|ing)|various|etc\.?|results[- ]driven|detail[- ]oriented|dynamic|passionate)\b/i
-const FIRST_PERSON = /\b(?:I|me|my|mine|myself|I'm|I've|I'd)\b/
+const BUZZ = /\b(?:team player|hard[- ]?working|self[- ]starter|go[- ]getter|proven track record|synergy|synergies|leverag(?:e|ed|es|ing)|utili[sz](?:e|ed|es|ing)|various|etc\.?|results[- ]driven|detail[- ]oriented|dynamic(?!\s+(?:pricing|programming|content|range|routing|typing|allocation|analysis|web|dns|memory|data|dashboards?|forms?|pages?|reports?|schema|systems?|scaling|sql|languages?|libraries|linking|simulation|modeling|modelling|ads?|creative|signage|rendering|provisioning|queries|query|tables?|views?|workflows?))|passionate)\b/i
+const { FIRST_PERSON } = require('./firstPerson')
 const MAX_WORDS = 28   // the prompt says 25; the slack is for hyphenations and figures counted as words
 
 const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim()
