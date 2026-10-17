@@ -1,0 +1,23 @@
+APPLICANT-FACING DOCUMENTS - round 4 (base: upstream d43a44d; findings of the fourth and fifth independent passes)
+No migration, no new dependency.
+
+Bugs fixed
+- B1  GET /api/scan/:id/cover-letter-pdf was mounted on `pdfRegen`, the budget of the PAID regenerate-pdf route: eight letter
+      downloads while tweaking a letter locked the buyer out of regenerating their resume PDF (the fate-sharing the draft PDF was
+      just split out of). Own limiter, rl.coverLetterPdf (rl:coverletterpdf, 8 per 15 min).
+- B2  A phone written "(+254) 712 345 678" was not linked in either format (the plus was only accepted at the very start). The plus
+      now counts anywhere before the first digit and is kept in the tel: link; digit-count and shape guards unchanged.
+
+Gaps closed
+- G1  The Word files now look like the PDF's set. The DOCX (resume and cover letter) was always fixed navy while the PDF follows the
+      user's palette (30 palettes). generateAtsDocx / generateCoverLetterDocx take `accent` (a 6-digit hex; anything else falls
+      back to the template blue #1E40AF, which is also what the saved-profile PDF uses, so profile files match too). Every delivered
+      DOCX site (updateDeliveredResume, generateFix candidates + final, generateBadge, free draft, cover letter) passes
+      accentFor(scan) - the same design tokens the PDF is rendered from.
+
+Open / not verifiable here
+- Chromium and Word behaviour (margin-box footers, PDF text order, template fonts on Cloudflare's Chromium).
+- Owner decisions: embedding fonts in the template; refunded/disputed purchases keep downloadable files; in-app preview.
+- Operational: delivered files embed the credential URL as it was when they were made (passthrough.dev before the domain move);
+  the 301 redirect and api.passthrough.dev from the cutover runbook must stay live indefinitely.
+- Low: cover letters over ~390 words spill a few lines onto page 2 of the PDF; no right-to-left layout.

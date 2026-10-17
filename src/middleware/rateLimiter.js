@@ -711,6 +711,15 @@ const coverLetterDownload = makeLimiter({
   message: msg('Too many requests. Please wait a moment.')
 })
 
+// APPLICANT DOCS PASS 5 (bug): GET /scan/:id/cover-letter-pdf (a headless-browser render) was mounted on `pdfRegen`, the budget of
+// the PAID regenerate-pdf route - eight letter downloads while tweaking a letter locked the buyer out of regenerating their
+// resume PDF (the same fate-sharing the draft PDF was just split out of). Own bucket, same size.
+const coverLetterPdf = makeLimiter({
+  keyBy: byAccount,
+  windowSeconds: 15 * 60, max: 8, keyPrefix: 'rl:coverletterpdf',
+  message: msg('Too many requests. Please wait a moment.')
+})
+
 // AUDIT FIX (Profile & Dashboard pass, bug): GET /profile/download-pdf and /download-docx ran through
 // pdfRegen / draftDownload — the same KV buckets as a scan's regenerate-pdf and draft downloads. Pulling
 // the main profile plus four extra profiles as PDF spent 5 of the 8 pdfRegen slots, leaving a paying
@@ -1171,7 +1180,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, coverLetterPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
   partnerRead, partnerProgram, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

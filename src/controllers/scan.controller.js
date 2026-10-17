@@ -1075,10 +1075,17 @@ function nameSlug(resumeData) { return fileStems.nameSlug(resumeData?.name) }
 function draftFileStem(resumeData) { return fileStems.draftStem(resumeData?.name) }
 function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resumeData?.name) }
 
+// The Word file is drawn in the same palette primary as the PDF (the design tokens are a pure function of user / scan / role /
+// posting), so an applicant's DOCX and PDF - and their letter in both formats - read as one set instead of an amber PDF next
+// to a navy Word file. undefined (the DOCX default blue) if the tokens cannot be built; the colour never fails a delivery.
+function accentFor(scan, id) {
+  try { return designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })?.palette?.primary } catch (_) { return undefined }
+}
+
 async function downloadDraft(ctx) {
   const { scan, res } = await loadDraftScan(ctx)
   if (res) return res
-  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: designService.detectPaper(scan.jobDescriptionText) })
+  const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: designService.detectPaper(scan.jobDescriptionText), accent: accentFor(scan) })
   ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(docxBytes)
@@ -1293,7 +1300,8 @@ async function updateDeliveredResume(ctx) {
   // Same procedure as generateFix's delivery: build with the credential wording, score the file
   // as delivered, and rebuild with the honest wording if it misses the bar.
   const paper = designService.detectPaper(jdText)
-  let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper })
+  const accent = accentFor(scan)
+  let docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper, accent })
   const text = await resumeParser.extractText(docxBytes, DOCX_MIME)
   let fixAtsScore, scored
   if (text && text.trim().length >= 100) { scored = await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume'); fixAtsScore = scored.score }
@@ -1301,7 +1309,7 @@ async function updateDeliveredResume(ctx) {
   const editReport = deliveredReport(scored)
   const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
   if (verificationUrl && !credentialVerified)
-    docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false, paper })
+    docxBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { verified: false, paper, accent })
 
   const version = cryptoLib.randomToken(6)
   const docxKey = storage.atsDocxKey(scan.id, version)
@@ -1460,13 +1468,14 @@ async function loadCoverLetter(ctx) {
   const date = paper === 'a4'
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
-  return { row, data, paper, date }
+  const accent = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })?.palette?.primary
+  return { row, data, paper, date, accent }
 }
 
 async function downloadCoverLetter(ctx) {
-  const { res, row, data, paper, date } = await loadCoverLetter(ctx)
+  const { res, row, data, paper, date, accent } = await loadCoverLetter(ctx)
   if (res) return res
-  const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name, { contact: data, date, paper })
+  const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name, { contact: data, date, paper, accent })
   ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.docx"`)
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(bytes)
@@ -2863,6 +2872,7 @@ async function generateFixRun(env, supabase, scanId) {
 
     const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
     const paper = designService.detectPaper(jdText)
+    const accent = accentFor(scan, scanId)
     // What the writer is told about the target (a prompt input, not a score input).
     const writerContext = { jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel, roleCategory: scan.roleCategory }
     const candidateFirstName = candidateFirstNameFrom(resumeData) ?? scan.candidateFirstName ?? null
@@ -2937,7 +2947,7 @@ async function generateFixRun(env, supabase, scanId) {
     let baselineHeld = false
     if (!isRetry) {
       try {
-        const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper })
+        const baseBytes = await docxService.generateAtsDocx(resumeData, verificationUrl, { paper, accent })
         const baseScored = await scoreLikeScan(env, await resumeParser.extractText(baseBytes, DOCX_MIME), jdText, 'generateFix (baseline)')
         bestScore = baseScored.score
         bestDocxBytes = baseBytes
@@ -3021,7 +3031,7 @@ async function generateFixRun(env, supabase, scanId) {
       const candidateQuantificationPrompts = rewriteResult.quantificationOpportunities || []
       // Score the REAL generated file, not a synthetic text approximation —
       // see the WYSIWYG comment above.
-      const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl, { paper })
+      const candidateDocxBytes = await docxService.generateAtsDocx(candidateData, verificationUrl, { paper, accent })
       const candidateText = await resumeParser.extractText(candidateDocxBytes, DOCX_MIME)
       const candidateScore = await scoreLikeScan(env, candidateText, jdText, 'generateFix')
       producedCandidate = true
@@ -3151,8 +3161,8 @@ async function generateFixRun(env, supabase, scanId) {
     // word of header text, so the stored score is deliberately NOT re-derived.
     const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
     const docxBytes = (verificationUrl && !credentialVerified)
-      ? await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper })
-      : (bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl, { paper }))
+      ? await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper, accent })
+      : (bestDocxBytes || await docxService.generateAtsDocx(finalData, verificationUrl, { paper, accent }))
 
     // Fresh key per generation: the previously delivered object stays intact
     // (and is what the public page keeps verifying) until the DB row is
@@ -3384,7 +3394,8 @@ async function generateBadgeRun(env, supabase, scanId) {
     progress.phase = 'rendering'
     await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
     const paper = designService.detectPaper(safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS))
-    let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { paper })
+    const accent = accentFor(scan, scanId)
+    let docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { paper, accent })
 
     // FEATURE GAP CLOSED (Scan/ATS pass): the badge used to certify the number the
     // FREE scan produced — fix_ats_score was copied from scan.atsScore — while the
@@ -3409,7 +3420,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     const credentialVerified = typeof fixAtsScore === 'number' && fixAtsScore >= c.ATS_BADGE_THRESHOLD
     if (!credentialVerified) {
       console.error(`[WARN] generateBadge ${scanId}: delivered document scored ${fixAtsScore} (< ${c.ATS_BADGE_THRESHOLD}) — issuing the honest, unverified wording`)
-      docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper })
+      docxBytes = await docxService.generateAtsDocx(finalData, verificationUrl, { verified: false, paper, accent })
       // The buyer paid for the CREDENTIAL and the file we can hand over doesn't earn it (the
       // free scan measured their upload; this is the regenerated, ATS-formatted document). They
       // get the honest wording AND a free fix credit — a Badge can't be retried, so the credit is

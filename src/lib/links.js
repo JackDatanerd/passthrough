@@ -16,13 +16,15 @@ const BARE   = /^(?:www\.)?(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,24}(?::
  */
 function hrefFor(text, { phone = false } = {}) {
   const t = String(text == null ? '' : text).trim()
-  if (!t || t.length > 300 || /\s/.test(t) && !(phone && /^\+?[\d\s().-]+$/.test(t))) return null
+  if (!t || t.length > 300 || /\s/.test(t) && !(phone && /^[\s(]*\+?[\d\s().-]+$/.test(t))) return null
   if (EMAIL.test(t)) return `mailto:${t}`
   if (SCHEME.test(t)) return t
   if (BARE.test(t)) return `https://${t}`
-  if (phone && /^\+?[\d\s().-]{7,24}$/.test(t)) {
+  // "+254 712 345 678", "(+254) 712 345 678", "+1 (415) 555-0100": the plus counts wherever it stands before the first digit
+  // (it used to be required at the very start, so "(+254) ..." was not linked at all).
+  if (phone && /^[\s(]*\+?[\s(]*\d[\d\s().-]{5,23}$/.test(t)) {
     const digits = t.replace(/\D/g, '')
-    if (digits.length >= 7 && digits.length <= 15) return `tel:${t.startsWith('+') ? '+' : ''}${digits}`
+    if (digits.length >= 7 && digits.length <= 15) return `tel:${/^[\s(]*\+/.test(t) ? '+' : ''}${digits}`
   }
   return null
 }

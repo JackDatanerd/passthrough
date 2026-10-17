@@ -858,7 +858,7 @@ describe('downloadDraft', () => {
     t = setup()
     await t.mod.downloadDraft(baseCtx())
     // the third argument is the page size taken from the posting (Letter unless it reads as UK)
-    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null, { paper: 'letter' }])
+    expect(t.getGenerateArgs()).toEqual([{ name: 'Jane' }, null, { paper: 'letter', accent: expect.stringMatching(/^#[0-9A-Fa-f]{6}$/) }])  // + the palette colour the PDF uses
   })
 })
 

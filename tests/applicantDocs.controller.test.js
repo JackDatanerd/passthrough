@@ -73,6 +73,30 @@ describe('downloadCoverLetterPdf', () => {
   })
 })
 
+describe('cover letter DOCX — palette accent, and a limiter of its own', () => {
+  it('draws the Word letter in the palette the PDF uses', async () => {
+    const seen = {}
+    const scan = { id: 's1', user_id: 'u1', cover_letter_text: 'Dear X,\n\nHi.', role_category: 'default', job_description_text: 'Join our team in Austin, Texas.', rewritten_resume_data: { name: 'Jane Doe' } }
+    const db = createFakeSupabase(q => { if (q.table === 'scans' && q.op === 'select') return { data: scan, error: null } })
+    const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+      'config/supabase.js': { getSupabase: () => db },
+      'services/docx.service.js': { generateCoverLetterDocx: async (text, name, opts) => { seen.opts = opts; return new Uint8Array([1]) }, generateAtsDocx: async () => new Uint8Array([1]) },
+    })
+    t = { restore }
+    await mod.downloadCoverLetter(ctxFor({ headers: {} }))
+    const design = require('../src/services/design.service.js')
+    expect(seen.opts.accent).toBe(design.getDesignTokens('u1', 's1', 'default', { jdText: scan.job_description_text }).palette.primary)
+  })
+  it('the PDF route has its own rate-limit bucket, not the paid regenerate-pdf one', async () => {
+    const rl = (await import('../src/middleware/rateLimiter.js')).default
+    expect(typeof rl.coverLetterPdf).toBe('function')
+    expect(rl.coverLetterPdf).not.toBe(rl.pdfRegen)
+    const routes = (await import('node:fs')).readFileSync(new URL('../src/routes/scan.routes.js', import.meta.url), 'utf8')
+    expect(routes).toMatch(/cover-letter-pdf',\s*auth,\s*rl\.coverLetterPdf,/)
+    expect(routes).not.toMatch(/cover-letter-pdf'[^\n]*pdfRegen/)
+  })
+})
+
 describe('saved-profile downloads', () => {
   function setup(resumeData) {
     const seen = { docxOpts: null, pdfOpts: null, html: null }

@@ -38,7 +38,11 @@ const pageSize = paper => (paper === 'a4' ? PAGES.a4 : PAGES.letter)
 // ATS safety is unchanged: single column, no tables / text boxes / images, real text, literal "•" bullets (a native list
 // is a documented parsing risk, see the note above the Document below), standard section names. A right-aligned date is a
 // tab stop (extracts as a tab between the title and the dates), which every parser reads as a separator.
-const NAVY = '1F3A5F', MUTED = '5B6470'
+const MUTED = '5B6470'
+// The accent (name, headings, rules) is the palette's primary - the same colour the PDF is drawn in - so the Word file and the PDF
+// read as a set. Anything that is not a 6-digit hex falls back to the template's default blue (also what the saved-profile PDF uses).
+const DEFAULT_ACCENT = '1E40AF'
+const accentHex = v => { const m = /^#?([0-9a-f]{6})$/i.exec(String(v == null ? '' : v).trim()); return m ? m[1].toUpperCase() : DEFAULT_ACCENT }
 const DENSITY = {
   normal:  { body: 21, name: 40, small: 18, jobGap: 150, entryGap: 100, bulletAfter: 30, headBefore: 230, headAfter: 80, marginTB: 1000, marginLR: 1080 },
   compact: { body: 20, name: 38, small: 17, jobGap: 100, entryGap: 70,  bulletAfter: 20, headBefore: 170, headAfter: 60, marginTB: 800,  marginLR: 960  },
@@ -63,22 +67,23 @@ function contactRuns(parts, size) {
   return runs
 }
 
-function buildStyles(d) {
+function buildStyles(d, color) {
   return {
     default: {
       document: { run: { font: 'Calibri', size: d.body }, paragraph: { spacing: { after: 0, line: 259 } } },
       heading2: {
-        run: { font: 'Calibri', size: d.body + 2, bold: true, color: NAVY, characterSpacing: 20 },
+        run: { font: 'Calibri', size: d.body + 2, bold: true, color, characterSpacing: 20 },
         paragraph: {
           spacing: { before: d.headBefore, after: d.headAfter }, keepNext: true, keepLines: true,
-          border: { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY, space: 2 } },
+          border: { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 2 } },
         },
       },
     },
   }
 }
 
-async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper } = {}) {
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent } = {}) {
+  const color = accentHex(accent)
   resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
   const size = pageSize(paper)
@@ -105,7 +110,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   // ── Header: name, contact line, credential line ──
   if (resumeData.name)
-    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color: NAVY })] }))
+    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color })] }))
 
   // addPart: [{ text }] — joined with " | " below. link detection is shared with the PDF (lib/links.js).
   const parts = []
@@ -223,7 +228,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     creator: resumeData.name || 'Passthrough',
     lastModifiedBy: 'Passthrough',
     description: 'ATS-friendly resume',
-    styles: buildStyles(d),
+    styles: buildStyles(d, color),
     sections: [{
       // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
       // separate, and a recruiter should be able to tell whose page 2 it is. The first page has an empty footer so a
@@ -248,7 +253,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 // in the same type and colour, so the two documents read as a set), the date, then the body - one paragraph per
 // blank-line-separated block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are
 // optional: called with just (text, name) the file is the plain letter it always was.
-async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper } = {}) {
+async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent } = {}) {
+  const color = accentHex(accent)
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const who = xmlSafe(name || '')
@@ -258,9 +264,9 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   const c = xmlSafe(contact || {})
   const parts = [[c.email, true], [c.phone, true], [c.location, false], [c.linkedin, true], [c.portfolio, true]]
     .map(([v, link]) => ({ text: String(v || '').trim(), link })).filter(x => x.text)
-  const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color: NAVY, space: 6 } }
+  const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 6 } }
   // The rule closes the letterhead: under the contact line, or under the name when there is no contact line.
-  if (who) head.push(new Paragraph({ spacing: { after: parts.length ? 40 : 280 }, border: parts.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color: NAVY })] }))
+  if (who) head.push(new Paragraph({ spacing: { after: parts.length ? 40 : 280 }, border: parts.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color })] }))
   if (parts.length) head.push(new Paragraph({ spacing: { after: 280 }, border: rule, children: contactRuns(parts, d.small) }))
   if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)) })] }))
   const children = [...head, ...blocks.map(b => new Paragraph({
@@ -272,10 +278,10 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    styles: buildStyles({ ...d, body: 22 }),
+    styles: buildStyles({ ...d, body: 22 }, color),
     sections: [{ properties: { page: { size, margin: { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })
   return Packer.toBuffer(doc)
 }
 
-module.exports = { generateAtsDocx, generateCoverLetterDocx, xmlSafe }
+module.exports = { generateAtsDocx, generateCoverLetterDocx, xmlSafe, accentHex }

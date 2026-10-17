@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import JSZip from 'jszip'
-import { generateAtsDocx, generateCoverLetterDocx } from '../src/services/docx.service.js'
+import { generateAtsDocx, generateCoverLetterDocx, accentHex } from '../src/services/docx.service.js'
 import { buildResumeHTML, buildCoverLetterHTML } from '../src/services/pdfTemplate.service.js'
 import { hrefFor, displayUrl } from '../src/lib/links.js'
 import { densityFor, estimateLoad } from '../src/lib/docFit.js'
@@ -356,5 +356,38 @@ describe('very long unbroken strings stay on the page', () => {
   it('sets overflow-wrap on the page body of the resume and the letter', () => {
     expect(buildResumeHTML({ name: 'A' }, {}, null)).toMatch(/overflow-wrap: anywhere/)
     expect(buildCoverLetterHTML('Hi', { name: 'A' }, {}, {})).toMatch(/overflow-wrap: anywhere/)
+  })
+})
+
+// ── pass 5 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('phone links', () => {
+  it('links a number with the plus anywhere before the first digit, and keeps the plus', () => {
+    for (const [i, o] of [['+254 712 345 678', 'tel:+254712345678'], ['(+254) 712 345 678', 'tel:+254712345678'], ['+(254) 712-345-678', 'tel:+254712345678'],
+      ['+1 (415) 555-0100', 'tel:+14155550100'], ['(415) 555-0100', 'tel:4155550100'], ['0712 345 678', 'tel:0712345678']])
+      expect(hrefFor(i, { phone: true })).toBe(o)
+    for (const bad of ['12345', '(+) 1234567', '2020 – 2022', '+', '(+254) call me', '1234567890123456789'])
+      expect(hrefFor(bad, { phone: true })).toBeNull()
+  })
+})
+
+describe('the Word files take the PDF\'s palette colour', () => {
+  const colorsIn = xml => [...xml.matchAll(/<w:color w:val="([0-9A-Fa-f]{6})"/g)].map(m => m[1].toUpperCase())
+  it('accentHex accepts a 6-digit hex with or without # and falls back to the template blue otherwise', () => {
+    expect(accentHex('#b45309')).toBe('B45309')
+    expect(accentHex('1e3a8a')).toBe('1E3A8A')
+    for (const bad of [undefined, null, '', 'red', '#12345', '#GGGGGG', 'javascript:1']) expect(accentHex(bad)).toBe('1E40AF')
+  })
+  it('colours the name, the headings and their rules in the resume', async () => {
+    const { doc, styles } = await parts(await generateAtsDocx(FULL, null, { accent: '#B45309' }))
+    expect(colorsIn(doc)).toContain('B45309')
+    expect(styles).toMatch(/w:styleId="Heading2"[\s\S]*?w:color w:val="B45309"[\s\S]*?<\/w:style>/)
+    expect(styles.match(/w:styleId="Heading2"[\s\S]*?<\/w:style>/)[0]).toMatch(/<w:bottom [^>]*w:color="B45309"/)
+    expect(doc).not.toMatch(/1F3A5F/i)
+  })
+  it('does the same for the cover letter, and defaults to the template blue', async () => {
+    const letter = await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: FULL, accent: '#0F766E' }))
+    expect(colorsIn(letter.doc)).toContain('0F766E')
+    expect(letter.doc).toMatch(/<w:bottom [^>]*w:color="0F766E"/)
+    expect(colorsIn((await parts(await generateAtsDocx(FULL, null))).doc)).toContain('1E40AF')
   })
 })
