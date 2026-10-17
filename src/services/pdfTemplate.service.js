@@ -16,6 +16,13 @@
 const { hrefFor, displayUrl } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
+const { contactRows, contactItems } = require('../lib/contactLayout')
+const { isSerifHeading } = require('../lib/typeface')
+
+// The credential's check mark is DRAWN, not typed: U+2713 is in neither Arial nor Liberation Sans, so on a container with only
+// the usual sans fonts it printed as an empty box in front of "Passthrough Verified" on every delivered PDF. (It also keeps a
+// stray symbol out of the text layer ATS software reads.)
+const CHECK_SVG = '<svg class="ck" viewBox="0 0 10 10" width="8" height="8" aria-hidden="true"><path d="M1.6 5.4l2.4 2.4 4.4-5.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>'
 
 // The divider under each heading is drawn from the palette's PRIMARY, lightened: the palette's `accent` is a pale tint
 // (contrast 1.1-1.4 against white on most palettes) and as a 1px rule it all but vanished on screen and on paper.
@@ -49,7 +56,7 @@ const str  = v => (typeof v === 'string' ? v.trim() : '')
 // the chosen pairing instead.
 function fontStacks(fonts) {
   const heading = String(fonts?.heading || '')
-  const serifHeading = /Merriweather|Playfair|Baskerville|Cormorant|Crimson/i.test(heading)
+  const serifHeading = isSerifHeading(heading)
   return {
     heading: serifHeading ? 'Georgia, "Times New Roman", serif' : '"Helvetica Neue", Arial, sans-serif',
     body:    '"Helvetica Neue", Arial, "Segoe UI", sans-serif',
@@ -63,6 +70,14 @@ const contactItem = (raw, link = true) => {
   if (!t) return ''
   const h = link ? hrefFor(t, { phone: true }) : null   // the location is never a link ("St.Louis" is a place, not a host)
   return h ? `<a href="${esc(h)}">${esc(t)}</a>` : esc(t)
+}
+
+// The contact details as one or two rows (lib/contactLayout.js). Each item is unbreakable and carries its separator, so a row
+// only ever wraps BETWEEN items - never inside a link, and never with a "|" stranded at the start of a line.
+function contactBlock(d) {
+  const rows = contactRows(contactItems(d))
+  return rows.map((row, ri) => `<p class="contact${ri < rows.length - 1 ? ' more' : ''}">` +
+    row.map((it, i) => `<span class="nw">${contactItem(it.text, it.link)}${i < row.length - 1 ? ' &nbsp;|' : ''}</span>`).join(' ') + '</p>').join('')
 }
 
 function buildResumeHTML(data, designTokens, verificationUrl, { verified = true } = {}) {
@@ -83,12 +98,12 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const bPt = bPtBase - (compact ? 0.5 : 0)
 
   // Contact details are links where they plainly are one (see contactItem above).
-  const contact = [contactItem(d.email), contactItem(d.phone), contactItem(d.location, false), contactItem(d.linkedin), contactItem(d.portfolio)].filter(Boolean)
+  const contact = contactBlock(d)
   const href = safeHref(verificationUrl)
   // The address is printed next to the credential: a printed or flattened PDF has no clickable link, and the point of the
   // credential is that a reader can check it. (The DOCX has always shown the full URL.)
   const credential = href
-    ? `<a class="cred" href="${esc(href)}">${verified ? '&#10003; Passthrough Verified' : 'Passthrough Scan Report'}</a> <a class="credurl" href="${esc(href)}">${esc(displayUrl(href))}</a>`
+    ? `<a class="cred" href="${esc(href)}">${verified ? CHECK_SVG + 'Passthrough Verified' : 'Passthrough Scan Report'}</a> <a class="credurl" href="${esc(href)}">${esc(displayUrl(href))}</a>`
     : ''
 
   const section = (title, inner) => inner ? `<section><h2>${esc(title)}</h2>${inner}</section>` : ''
@@ -188,9 +203,12 @@ p { margin: 0 }
 .link { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin-top: 2pt }
 a { color: inherit; text-decoration: none }
 .credurl { font-size: 7.5pt; opacity: .75 }
+.ck { width: 8pt; height: 8pt; vertical-align: -0.5pt; margin-right: 2.5pt }
+.nw { white-space: nowrap }
+.contact.more { margin-bottom: 1pt }
 </style></head><body><div class="page">
 <h1>${esc(d.name || '')}</h1>
-${contact.length ? `<p class="contact">${contact.join(' &nbsp;|&nbsp; ')}</p>` : ''}
+${contact}
 ${credential ? `<p>${credential}</p>` : ''}
 ${summary ? section('Summary', summary) : ''}${body}
 </div></body></html>`
@@ -207,7 +225,7 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
   const hPt = Number(fonts.hPt) || 23
   const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + 0.5
   const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '268mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
-  const contact = [contactItem(d.email), contactItem(d.phone), contactItem(d.location, false), contactItem(d.linkedin), contactItem(d.portfolio)].filter(Boolean)
+  const contact = contactBlock(d)
   const blocks = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const body = blocks.map(b => `<p class="block">${b.split('\n').map(l => esc(l.trim())).join('<br>')}</p>`).join('')
   return `<!DOCTYPE html>
@@ -225,9 +243,11 @@ h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 3pt; color:
 .date { margin: 0 0 14pt }
 .block { margin: 0 0 11pt; orphans: 3; widows: 3 }
 a { color: inherit; text-decoration: none }
+.nw { white-space: nowrap }
+.contact.more { margin: 0 0 2pt; padding-bottom: 0; border-bottom: 0 }
 </style></head><body><div class="page">
 ${d.name ? `<h1>${esc(d.name)}</h1>` : ''}
-${contact.length ? `<p class="contact">${contact.join(' &nbsp;|&nbsp; ')}</p>` : ''}
+${contact}
 ${date ? `<p class="date">${esc(date)}</p>` : ''}
 ${body}
 </div></body></html>`

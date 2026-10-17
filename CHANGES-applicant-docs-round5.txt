@@ -1,0 +1,22 @@
+APPLICANT-FACING DOCUMENTS - round 5 (base: upstream f2a4246; findings of the sixth independent pass)
+No migration, no new dependency.
+
+Bugs fixed
+- B1  The credential's check mark was the U+2713 character. It is in neither Arial nor Liberation Sans, so on a container with only the
+      usual sans fonts it printed as an empty box in front of "Passthrough Verified" on every delivered PDF (reproduced with a
+      Liberation-only fontconfig). It is now an inline SVG tick (no font dependency, and no stray symbol in the text layer).
+
+Gaps closed
+- G1  Long contact lines no longer wrap in the middle of a link. lib/contactLayout.js: one row when the details fit (~100 chars);
+      otherwise two - email / phone / location, then profile and portfolio links - in the PDF template, the cover letter PDF, the
+      DOCX and the DOCX letter. In the PDF each item is unbreakable and carries its separator, so a row only wraps between items and
+      never starts with a "|". Text order is unchanged for extraction.
+- G2  The Word files use the PDF's heading face too: Georgia for the serif palettes (Merriweather, Playfair, Baskerville, Cormorant,
+      Crimson - lib/typeface.js, shared with the template's font stack), Calibri otherwise, for headings and the name, in the resume
+      and the letter. scan.controller.js lookFor() passes {accent, serif} from the same design tokens the PDF is rendered from.
+
+Open / not verifiable here
+- Chromium and Word behaviour (margin-box footers, PDF text order, template fonts on Cloudflare's Chromium).
+- Owner decisions: embedding fonts in the template; refunded/disputed purchases keep downloadable files; in-app preview.
+- Operational: delivered files embed the credential URL as it was when they were made; the old-domain redirect must stay live.
+- Low: cover letters over ~390 words spill a few lines onto page 2 of the PDF; no right-to-left layout.

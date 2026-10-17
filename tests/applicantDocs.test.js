@@ -8,6 +8,8 @@ import { resumeStem, draftStem, coverLetterStem } from '../src/lib/fileStems.js'
 import { paperForLocation, PAPER } from '../src/services/design.service.js'
 import { extractText } from '../src/services/resume.parser.js'
 import { stripBullet } from '../src/lib/bulletText.js'
+import { contactRows, contactItems } from '../src/lib/contactLayout.js'
+import { isSerifHeading } from '../src/lib/typeface.js'
 import { checkRenderedPdf, allowedPages } from '../src/lib/pdfQa.js'
 import { buildPdf, resumePage } from './helpers/pdfBuilder.js'
 
@@ -389,5 +391,73 @@ describe('the Word files take the PDF\'s palette colour', () => {
     expect(colorsIn(letter.doc)).toContain('0F766E')
     expect(letter.doc).toMatch(/<w:bottom [^>]*w:color="0F766E"/)
     expect(colorsIn((await parts(await generateAtsDocx(FULL, null))).doc)).toContain('1E40AF')
+  })
+})
+
+// ── pass 6 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+const SHORT = { name: 'A B', email: 'a@b.co', phone: '+254 712 345 678', location: 'Nairobi', linkedin: 'linkedin.com/in/ab', summary: 'S.', skills: ['x'] }
+const LONG = { ...SHORT, email: 'wanjiru.mwangi.analytics@gmail.com', location: 'Nairobi, Kenya (open to relocation)', linkedin: 'linkedin.com/in/wanjirumwangi-data-analyst', portfolio: 'wanjiru-mwangi.portfolio.dev/projects' }
+
+describe('contact rows', () => {
+  it('one row when it fits, two (details, then links) when it would not, never an empty row', () => {
+    expect(contactRows(contactItems(SHORT))).toHaveLength(1)
+    const rows = contactRows(contactItems(LONG))
+    expect(rows).toHaveLength(2)
+    expect(rows[0].map(i => i.text)).toEqual([LONG.email, LONG.phone, LONG.location])
+    expect(rows[1].map(i => i.text)).toEqual([LONG.linkedin, LONG.portfolio])
+    // all-details or all-links stay on one row however long
+    expect(contactRows(contactItems({ email: 'x'.repeat(60) + '@mail.com', phone: '+254 712 345 678', location: 'y'.repeat(40) }))).toHaveLength(1)
+    expect(contactRows(contactItems({ linkedin: 'linkedin.com/in/' + 'a'.repeat(60), portfolio: 'b'.repeat(60) + '.dev' }))).toHaveLength(1)
+    expect(contactRows([])).toEqual([])
+    expect(contactRows(null)).toEqual([])
+    expect(contactItems({ location: 'St.Louis' })[0].link).toBe(false)
+  })
+  it('PDF template: whole items only, the separator stays with the item before it', () => {
+    const one = buildResumeHTML(SHORT, { paper: 'a4' }, null)
+    expect(one.match(/<p class="contact/g)).toHaveLength(1)
+    const two = buildResumeHTML(LONG, { paper: 'a4' }, null)
+    expect(two).toMatch(/<p class="contact more">/)
+    expect(two.match(/<p class="contact/g)).toHaveLength(2)
+    expect(two).toMatch(/<span class="nw"><a href="mailto:[^"]+">[^<]+<\/a> &nbsp;\|<\/span> <span class="nw"><a href="tel:/)
+    expect(two).toMatch(/\.nw \{ white-space: nowrap \}/)
+    expect(two).not.toMatch(/<span class="nw">\s*&nbsp;\|/)         // no separator at the start of an item
+    expect(buildCoverLetterHTML('Hi', LONG, { paper: 'a4' }, {}).match(/<p class="contact/g)).toHaveLength(2)
+  })
+  it('DOCX and the Word letter: the links go on a second line, text order unchanged', async () => {
+    const text = await extractText(await generateAtsDocx(LONG, null), DOCX)
+    expect(text).toContain(`${LONG.email} | ${LONG.phone} | ${LONG.location}\n${LONG.linkedin} | ${LONG.portfolio}`)
+    const short = await extractText(await generateAtsDocx(SHORT, null), DOCX)
+    expect(short).toContain('a@b.co | +254 712 345 678 | Nairobi | linkedin.com/in/ab')
+    const letter = await extractText(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: LONG }), DOCX)
+    expect(letter).toContain(`${LONG.location}\n${LONG.linkedin} | ${LONG.portfolio}`)
+  })
+})
+
+describe('the credential check mark is drawn, not typed', () => {
+  it('uses an inline SVG and no U+2713 in the template', () => {
+    const html = buildResumeHTML(SHORT, { paper: 'a4' }, 'https://usepassthrough.com/verify/AB12', { verified: true })
+    expect(html).toContain('class="ck"')
+    expect(html).toMatch(/<a class="cred"[^>]*><svg[^>]*aria-hidden="true">[\s\S]*<\/svg>Passthrough Verified<\/a>/)
+    expect(html).not.toMatch(/&#10003;|✓|\u2713/)
+    const unverified = buildResumeHTML(SHORT, { paper: 'a4' }, 'https://usepassthrough.com/verify/AB12', { verified: false })
+    expect(unverified).not.toContain('class="ck"')
+    expect(unverified).toContain('Passthrough Scan Report')
+  })
+})
+
+describe('the Word heading face follows the PDF', () => {
+  it('isSerifHeading matches the template\'s serif palettes only', () => {
+    for (const n of ['Merriweather', 'Playfair Display', 'Libre Baskerville', 'Cormorant Garamond', 'Crimson Text']) expect(isSerifHeading(n)).toBe(true)
+    for (const n of ['Raleway', 'Inter', 'Montserrat', '', null, undefined]) expect(isSerifHeading(n)).toBe(false)
+  })
+  it('Georgia headings and name when serif, Calibri otherwise, in the resume and the letter', async () => {
+    const serif = await parts(await generateAtsDocx(FULL, null, { serif: true }))
+    expect(serif.styles.match(/w:styleId="Heading2"[\s\S]*?<\/w:style>/)[0]).toMatch(/Georgia/)
+    expect(serif.doc).toMatch(/Georgia/)
+    const sans = await parts(await generateAtsDocx(FULL, null))
+    expect(sans.styles.match(/w:styleId="Heading2"[\s\S]*?<\/w:style>/)[0]).toMatch(/Calibri/)
+    expect(sans.doc).not.toMatch(/Georgia/)
+    const letter = await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: SHORT, serif: true }))
+    expect(letter.doc).toMatch(/Georgia/)
   })
 })

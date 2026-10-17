@@ -2,6 +2,7 @@ const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopTyp
 const { hrefFor } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
+const { contactRows, contactItems } = require('../lib/contactLayout')
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
 // NOT verificationCode — avoids hardcoded domain
@@ -67,12 +68,15 @@ function contactRuns(parts, size) {
   return runs
 }
 
-function buildStyles(d, color) {
+// The heading face follows the PDF's: Georgia where the palette sets its headings in a serif, Calibri otherwise.
+const headingFontOf = serif => (serif ? 'Georgia' : 'Calibri')
+
+function buildStyles(d, color, headFont = 'Calibri') {
   return {
     default: {
       document: { run: { font: 'Calibri', size: d.body }, paragraph: { spacing: { after: 0, line: 259 } } },
       heading2: {
-        run: { font: 'Calibri', size: d.body + 2, bold: true, color, characterSpacing: 20 },
+        run: { font: headFont, size: d.body + 2, bold: true, color, characterSpacing: 20 },
         paragraph: {
           spacing: { before: d.headBefore, after: d.headAfter }, keepNext: true, keepLines: true,
           border: { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 2 } },
@@ -82,8 +86,9 @@ function buildStyles(d, color) {
   }
 }
 
-async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent } = {}) {
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false } = {}) {
   const color = accentHex(accent)
+  const headFont = headingFontOf(serif)
   resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
   const size = pageSize(paper)
@@ -110,17 +115,17 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   // ── Header: name, contact line, credential line ──
   if (resumeData.name)
-    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color })] }))
+    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color, font: headFont })] }))
 
-  // addPart: [{ text }] — joined with " | " below. link detection is shared with the PDF (lib/links.js).
-  const parts = []
-  for (const [v, link] of [[resumeData.email, true], [resumeData.phone, true], [resumeData.location, false], [resumeData.linkedin, true], [resumeData.portfolio, true]])
-    if (v) parts.push({ text: String(v), link })
+  // The contact details: one row, or two when they would not fit one (lib/contactLayout.js - a single long line wrapped in the
+  // middle of a profile URL). link detection is shared with the PDF (lib/links.js).
+  const rows = contactRows(contactItems(resumeData))
   // The credential line: a real link to the verification page, on its own line (it used to trail the contact line and
   // wrap awkwardly). Omitted entirely (not just left blank) when there's no verification link for this tier — see
   // FIX_PLAIN in scan.controller.js's generateFix. The label stays plain text so it extracts as before.
-  if (parts.length)
-    children.push(new Paragraph({ spacing: { after: verificationUrl ? 20 : 60 }, children: contactRuns(parts, d.small) }))
+  rows.forEach((row, ri) => children.push(new Paragraph({
+    spacing: { after: ri < rows.length - 1 || verificationUrl ? 20 : 60 }, children: contactRuns(row, d.small),
+  })))
   if (verificationUrl) {
     const label = `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: `
     const href = hrefFor(verificationUrl)
@@ -228,7 +233,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     creator: resumeData.name || 'Passthrough',
     lastModifiedBy: 'Passthrough',
     description: 'ATS-friendly resume',
-    styles: buildStyles(d, color),
+    styles: buildStyles(d, color, headFont),
     sections: [{
       // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
       // separate, and a recruiter should be able to tell whose page 2 it is. The first page has an empty footer so a
@@ -253,8 +258,9 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 // in the same type and colour, so the two documents read as a set), the date, then the body - one paragraph per
 // blank-line-separated block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are
 // optional: called with just (text, name) the file is the plain letter it always was.
-async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent } = {}) {
+async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent, serif = false } = {}) {
   const color = accentHex(accent)
+  const headFont = headingFontOf(serif)
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const who = xmlSafe(name || '')
@@ -262,12 +268,14 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   const size = pageSize(paper)
   const head = []
   const c = xmlSafe(contact || {})
-  const parts = [[c.email, true], [c.phone, true], [c.location, false], [c.linkedin, true], [c.portfolio, true]]
-    .map(([v, link]) => ({ text: String(v || '').trim(), link })).filter(x => x.text)
+  const rows = contactRows(contactItems(c))
   const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 6 } }
   // The rule closes the letterhead: under the contact line, or under the name when there is no contact line.
-  if (who) head.push(new Paragraph({ spacing: { after: parts.length ? 40 : 280 }, border: parts.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color })] }))
-  if (parts.length) head.push(new Paragraph({ spacing: { after: 280 }, border: rule, children: contactRuns(parts, d.small) }))
+  if (who) head.push(new Paragraph({ spacing: { after: rows.length ? 40 : 280 }, border: rows.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color, font: headFont })] }))
+  rows.forEach((row, ri) => {
+    const last = ri === rows.length - 1
+    head.push(new Paragraph({ spacing: { after: last ? 280 : 20 }, border: last ? rule : undefined, children: contactRuns(row, d.small) }))
+  })
   if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)) })] }))
   const children = [...head, ...blocks.map(b => new Paragraph({
     spacing: { after: 180 },
@@ -278,7 +286,7 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    styles: buildStyles({ ...d, body: 22 }, color),
+    styles: buildStyles({ ...d, body: 22 }, color, headFont),
     sections: [{ properties: { page: { size, margin: { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })
   return Packer.toBuffer(doc)
