@@ -135,7 +135,7 @@ export default function PartnerTerms() {
         </Section>
 
         <p className="text-sm text-gray-500">
-          Questions? Contact <a href="mailto:support@passthrough.dev" className="text-blue-700 hover:underline">support@passthrough.dev</a>.
+          Questions? Contact <a href="mailto:support@usepassthrough.com" className="text-blue-700 hover:underline">support@usepassthrough.com</a>.
         </p>
       </main>
       <Footer />

@@ -157,7 +157,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
-    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev', ...envExtra }
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://usepassthrough.com', ...envExtra }
   const c = (over = {}) => {
     const waits = []
     return {
@@ -742,8 +742,8 @@ describe('createLead — acknowledgement to the submitter', () => {
     t = setup()
     await submit(valid())
     const { confirmUrl, removeUrl } = t.state.ackLinks[0]
-    expect(confirmUrl).toMatch(/^https:\/\/passthrough\.dev\/employer\/confirm\?token=[\w.-]+$/)
-    expect(removeUrl).toMatch(/^https:\/\/passthrough\.dev\/employer\/remove\?token=[\w.-]+$/)
+    expect(confirmUrl).toMatch(/^https:\/\/usepassthrough\.com\/employer\/confirm\?token=[\w.-]+$/)
+    expect(removeUrl).toMatch(/^https:\/\/usepassthrough\.com\/employer\/remove\?token=[\w.-]+$/)
     const { verifyLeadToken } = await import('../src/lib/leadTokens.js')
     const confirmTok = new URL(confirmUrl).searchParams.get('token')
     const removeTok = new URL(removeUrl).searchParams.get('token')
@@ -1404,9 +1404,9 @@ describe('G4 — one-click unsubscribe', () => {
   it('hands the acknowledgement a one-click URL built from the request origin', async () => {
     t = setup()
     const ctx = t.c({ body: valid() })
-    ctx.req.url = 'https://api.passthrough.dev/api/employer-leads'
+    ctx.req.url = 'https://api.usepassthrough.com/api/employer-leads'
     await t.mod.createLead(ctx); await Promise.all(ctx._waits)
-    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.passthrough\.dev\/api\/employer-leads\/unsubscribe\?token=/)
+    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.usepassthrough\.com\/api\/employer-leads\/unsubscribe\?token=/)
   })
   it('API_ORIGIN overrides the request origin; with neither, the email just goes without the header', async () => {
     t = setup()
@@ -1705,21 +1705,21 @@ describe('R6-G1 — adminNotifyCandidates', () => {
 
 
 describe('R7 — independent audit round 7', () => {
-  const ctxWith = (query, env = { FRONTEND_URL: 'https://passthrough.dev/' }) => ({
+  const ctxWith = (query, env = { FRONTEND_URL: 'https://usepassthrough.com/' }) => ({
     env, req: { query: k => query[k] }, redirect: (url, status) => ({ redirected: true, url, status }) })
 
   it('GET /unsubscribe hands a plain link-follower to the remove page (and removes nobody)', async () => {
     t = setup({ leads: [mkLead({ email: 'dana@acme.com' })] })
     const token = await tokenFor('remove', 'dana@acme.com')
     const res = t.mod.unsubscribeRedirect(ctxWith({ token }))
-    expect(res).toEqual({ redirected: true, status: 302, url: `https://passthrough.dev/employer/remove?token=${encodeURIComponent(token)}` })
+    expect(res).toEqual({ redirected: true, status: 302, url: `https://usepassthrough.com/employer/remove?token=${encodeURIComponent(token)}` })
     expect(t.state.leads).toHaveLength(1)
     expect(t.state.suppressed.size).toBe(0)
   })
   it('GET /unsubscribe with a missing or absurd token still lands on the remove page, without echoing it', () => {
     t = setup()
-    expect(t.mod.unsubscribeRedirect(ctxWith({})).url).toBe('https://passthrough.dev/employer/remove')
-    expect(t.mod.unsubscribeRedirect(ctxWith({ token: 'x'.repeat(701) })).url).toBe('https://passthrough.dev/employer/remove')
+    expect(t.mod.unsubscribeRedirect(ctxWith({})).url).toBe('https://usepassthrough.com/employer/remove')
+    expect(t.mod.unsubscribeRedirect(ctxWith({ token: 'x'.repeat(701) })).url).toBe('https://usepassthrough.com/employer/remove')
     expect(t.mod.unsubscribeRedirect(ctxWith({ token: 'a&b=c#d.e-f-ghij' })).url).toContain('token=a%26b%3Dc%23d.e-f-ghij')
   })
 
@@ -1944,11 +1944,11 @@ describe('R8 — an address removed while its lead is being created does not kee
 
 describe('R8 — FRONTEND_URL with a trailing slash', () => {
   it('does not put "//" in the emailed confirm and remove links', async () => {
-    t = setup({ envExtra: { FRONTEND_URL: 'https://passthrough.dev/' } })
+    t = setup({ envExtra: { FRONTEND_URL: 'https://usepassthrough.com/' } })
     await submit(valid())
     const { confirmUrl, removeUrl } = t.state.ackLinks[0]
-    expect(confirmUrl.startsWith('https://passthrough.dev/employer/confirm?token=')).toBe(true)
-    expect(removeUrl.startsWith('https://passthrough.dev/employer/remove?token=')).toBe(true)
+    expect(confirmUrl.startsWith('https://usepassthrough.com/employer/confirm?token=')).toBe(true)
+    expect(removeUrl.startsWith('https://usepassthrough.com/employer/remove?token=')).toBe(true)
   })
 })
 

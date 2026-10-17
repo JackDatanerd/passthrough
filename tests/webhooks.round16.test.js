@@ -136,7 +136,7 @@ describe('G1: contest finishes a fraud-claim dispute (evidence id) and declines 
     }
     return { world, calls, ...load(world, { 'services/paystack.service.js': paystack }) }
   }
-  const env = { FRONTEND_URL: 'https://passthrough.dev' }
+  const env = { FRONTEND_URL: 'https://usepassthrough.com' }
   const evidence = mod => mod.submitDisputeEvidence(ctx({ env, params: { reference: 'ref1' }, body: { customerPhone: '+254 700 000000' } }))
   const contest = mod => mod.contestPaymentDispute(ctx({ env, params: { reference: 'ref1' } }))
 

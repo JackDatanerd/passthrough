@@ -105,9 +105,9 @@ describe('securityHeaders', () => {
 })
 
 describe('validateEnv', () => {
-  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://passthrough.dev', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {}, NODE_ENV: 'production', RESEND_WEBHOOK_SECRET: 'whsec_x',
+  const good = { SUPABASE_URL: 'https://x.supabase.co', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'a'.repeat(48), RESEND_API_KEY: 'r', PAYSTACK_SECRET_KEY: 'p', ANTHROPIC_API_KEY: 'a', EMAIL_FROM: 'x <x@y.z>', FRONTEND_URL: 'https://usepassthrough.com', RATE_LIMIT_KV: {}, RATE_LIMIT_DO: {}, RESUMES_BUCKET: {}, FIX_QUEUE: {}, BROWSER: {}, NODE_ENV: 'production', RESEND_WEBHOOK_SECRET: 'whsec_x',
     // Round 3: the alert inbox and the Paystack redirect are expected configuration, not optional extras.
-    OWNER_ALERT_EMAIL: 'owner@passthrough.dev', PAYSTACK_CALLBACK_URL: 'https://passthrough.dev/payment/success' }
+    OWNER_ALERT_EMAIL: 'owner@usepassthrough.com', PAYSTACK_CALLBACK_URL: 'https://usepassthrough.com/payment/success' }
   it('ROUND 5 (G1): a missing RESEND_WEBHOOK_SECRET is warned about at startup (the endpoint would answer 500)', () => {
     const env = { ...good }; delete env.RESEND_WEBHOOK_SECRET
     const r = validateEnv(env)
@@ -129,8 +129,8 @@ describe('validateEnv', () => {
     expect(validateEnv({ ...good, JWT_SECRET: 'replace_with_minimum_32_char_random_string' }).warnings.join(' ')).toContain('placeholder')
   })
   it('flags a FRONTEND_URL trailing slash and a missing scheme', () => {
-    expect(validateEnv({ ...good, FRONTEND_URL: 'https://passthrough.dev/' }).warnings.join(' ')).toContain('trailing slash')
-    expect(validateEnv({ ...good, FRONTEND_URL: 'passthrough.dev' }).warnings.join(' ')).toContain('http')
+    expect(validateEnv({ ...good, FRONTEND_URL: 'https://usepassthrough.com/' }).warnings.join(' ')).toContain('trailing slash')
+    expect(validateEnv({ ...good, FRONTEND_URL: 'usepassthrough.com' }).warnings.join(' ')).toContain('http')
   })
   it('flags missing feature secrets and bindings without failing', () => {
     const env = { ...good }; delete env.RESEND_API_KEY; delete env.FIX_QUEUE

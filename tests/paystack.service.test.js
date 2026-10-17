@@ -8,7 +8,7 @@ import { initializeTransaction, verifyTransaction, listRefunds, createRefund } f
 // never actually exercised by any test. This drives the real functions
 // against a mocked global fetch instead of a stub.
 
-const env = { PAYSTACK_SECRET_KEY: 'sk_test_123', PAYSTACK_CALLBACK_URL: 'https://passthrough.dev/cb' }
+const env = { PAYSTACK_SECRET_KEY: 'sk_test_123', PAYSTACK_CALLBACK_URL: 'https://usepassthrough.com/cb' }
 
 function mockFetch(status, json) {
   global.fetch = vi.fn(async () => ({
@@ -37,7 +37,7 @@ describe('initializeTransaction', () => {
     const body = JSON.parse(opts.body)
     expect(body).toMatchObject({
       email: 'a@b.com', amount: 2900, currency: 'USD', reference: 'ref-1',
-      callback_url: 'https://passthrough.dev/cb',
+      callback_url: 'https://usepassthrough.com/cb',
       metadata: { userId: 'u1', scanId: 's1', fixTier: 'FIX', custom_fields: [] },
     })
   })

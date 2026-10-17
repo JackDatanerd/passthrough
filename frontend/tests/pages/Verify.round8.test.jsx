@@ -32,7 +32,7 @@ describe('Verify — round 8: report a problem', () => {
     await openForm()
     expect(screen.getByLabelText(/what looks wrong/i)).toBeTruthy()
     const fallback = screen.getByRole('link', { name: /or email support/i })
-    expect(fallback.getAttribute('href')).toMatch(/^mailto:support@passthrough\.dev/)
+    expect(fallback.getAttribute('href')).toMatch(/^mailto:support@usepassthrough\.com/)
   })
   it('asks for a reason before sending anything', async () => {
     const send = await openForm()

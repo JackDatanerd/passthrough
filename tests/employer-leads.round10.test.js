@@ -150,7 +150,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
-    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev', ...envExtra }
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://usepassthrough.com', ...envExtra }
   const c = (over = {}) => {
     const waits = []
     return {
@@ -450,8 +450,8 @@ describe('sweepUnacknowledgedLeads', () => {
   })
   it('carries the one-click unsubscribe header only when API_ORIGIN is configured', async () => {
     t = setup({ leads: [lead()] })
-    await sweep({ API_ORIGIN: 'https://api.passthrough.dev/' })
-    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.passthrough\.dev\/api\/employer-leads\/unsubscribe\?token=/)
+    await sweep({ API_ORIGIN: 'https://api.usepassthrough.com/' })
+    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.usepassthrough\.com\/api\/employer-leads\/unsubscribe\?token=/)
     t.state.leads[0].last_ack_at = null; t.state.leads[0].last_ack_attempt_at = null
     await sweep({ API_ORIGIN: undefined })
     expect(t.state.ackLinks[1].unsubscribeUrl).toBeNull()

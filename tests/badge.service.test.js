@@ -66,7 +66,7 @@ describe('hashBytes', () => {
 
 describe('buildVerificationUrl', () => {
   it('builds a /v/:code URL off env.FRONTEND_URL', () => {
-    expect(buildVerificationUrl({ FRONTEND_URL: 'https://passthrough.dev' }, 'ABC123'))
-      .toBe('https://passthrough.dev/v/ABC123')
+    expect(buildVerificationUrl({ FRONTEND_URL: 'https://usepassthrough.com' }, 'ABC123'))
+      .toBe('https://usepassthrough.com/v/ABC123')
   })
 })

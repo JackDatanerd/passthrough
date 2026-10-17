@@ -370,7 +370,7 @@ wrangler secret put TURNSTILE_SECRET_KEY
 # carried one (remembered for 60 days, only an https address under FRONTEND_URL's domain) — set this to
 # make that certain. The interview follow-up email is sent by the same hourly cron, so it relies on this too:
 # without a known origin it still goes out, just without the one-click header.
-#   https://api.passthrough.dev
+#   https://api.usepassthrough.com
 wrangler secret put API_ORIGIN
 
 # Optional but recommended (migration 0068). Key for the employer do-not-contact list. The list stores
@@ -385,7 +385,7 @@ wrangler secret put SUPPRESSION_HASH_KEY_PREVIOUS
 
 # Extra browser origins allowed by CORS in addition to FRONTEND_URL (comma-separated,
 # no trailing slashes) — the www variant, a staging site, a Pages preview.
-#   https://www.passthrough.dev,https://staging.passthrough.dev
+#   https://www.usepassthrough.com,https://staging.usepassthrough.com
 wrangler secret put CORS_EXTRA_ORIGINS
 
 # How long one rate-limit Durable Object call may take before the limiter gives up on it and fails
@@ -496,12 +496,12 @@ Your Worker is now live at `https://passthrough-api.YOUR_SUBDOMAIN.workers.dev`
 ### Set a custom domain (recommended)
 
 In Cloudflare Dashboard → Workers & Pages → passthrough-api → Settings →
-Custom Domains → Add custom domain → `api.passthrough.dev`.
+Custom Domains → Add custom domain → `api.usepassthrough.com`.
 
 Update `wrangler.toml` `[vars]` if you haven't already:
 ```toml
-FRONTEND_URL          = "https://passthrough.dev"
-PAYSTACK_CALLBACK_URL = "https://passthrough.dev/payment/success"
+FRONTEND_URL          = "https://usepassthrough.com"
+PAYSTACK_CALLBACK_URL = "https://usepassthrough.com/payment/success"
 ```
 Then redeploy (CI).
 
@@ -567,8 +567,8 @@ health check reports the schema as behind.
 
    | Variable | Value |
    |----------|-------|
-   | `VITE_API_URL` | `https://api.passthrough.dev/api` |
-   | `API_URL`      | `https://api.passthrough.dev/api` |
+   | `VITE_API_URL` | `https://api.usepassthrough.com/api` |
+   | `API_URL`      | `https://api.usepassthrough.com/api` |
    | `VERIFY_PREVIEW_KEY` | *(optional)* same value as the Worker secret of that name — see "Optional secrets" |
    | `VITE_TURNSTILE_SITE_KEY` | *(optional)* Turnstile site key; pair with the Worker's `TURNSTILE_SECRET_KEY`. Baked in at build time. Cloudflare's always-passes test key for trying it: `1x00000000000000000000AA` (secret `1x0000000000000000000000000000000AA`) |
    | `VITE_PUBLIC_SITE_URL` | *(optional)* public site origin the admin partner page builds referral links from; defaults to the origin the admin is browsing from. Baked in at build time. |
@@ -579,7 +579,7 @@ health check reports the schema as behind.
    consumers now append `/api` themselves if it is missing
    (`frontend/src/lib/apiUrl.js` and `frontend/functions/v/[code].js`), so the
    bare host also works, but writing the full URL here avoids any doubt. (This
-   table previously said `https://api.passthrough.dev` with no suffix, which on
+   table previously said `https://api.usepassthrough.com` with no suffix, which on
    its own would have sent every production request to a 404, and silently
    broken the share-preview Function.) `VITE_API_URL` is baked into the client
    bundle at build time and used by the React app in the browser.
@@ -602,7 +602,7 @@ Every push to `main` triggers an automatic rebuild and deploy.
 1. Paystack Dashboard → Settings → API Keys & Webhooks.
 2. Webhook URL:
    ```
-   https://api.passthrough.dev/api/webhooks/paystack
+   https://api.usepassthrough.com/api/webhooks/paystack
    ```
 3. Save. Test with "Send test event" and check logs:
    ```bash
@@ -696,8 +696,8 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 - [ ] `EMAIL_FROM` is an address on your verified Resend domain
 - [ ] `OWNER_ALERT_EMAIL` is YOUR inbox — the repo ships the maintainer's, so a fork's critical alerts
       (failed jobs, schema behind, webhook signature failures) would otherwise go to someone else
-- [ ] `FRONTEND_URL=https://passthrough.dev`
-- [ ] `PAYSTACK_CALLBACK_URL=https://passthrough.dev/payment/success`
+- [ ] `FRONTEND_URL=https://usepassthrough.com`
+- [ ] `PAYSTACK_CALLBACK_URL=https://usepassthrough.com/payment/success`
 - [ ] KV namespace `id` is filled in (not placeholder text)
 - [ ] `PROMO_ENDS_AT` is set to your real launch-week end time, not the
       placeholder date shipped in the repo — the placeholder is a real UTC
@@ -713,7 +713,7 @@ Each action is written to the admin audit log as `lead.auto_suppressed` (no acto
 - [ ] Every migration applied; `GET /api/admin/health` shows the schema `ok`
 - [ ] "Pre-launch verification" below completed
 - [ ] Worker deployed: `wrangler deploy` ran without errors
-- [ ] Custom domain set: `api.passthrough.dev` resolves
+- [ ] Custom domain set: `api.usepassthrough.com` resolves
 - [ ] Frontend deployed with `VITE_API_URL` env var set
 - [ ] Paystack webhook URL registered and test event received
 
@@ -743,7 +743,7 @@ purchases, prove the limits hold on YOUR plan:
 5. Re-run this after changing `max_concurrency`, the Claude model, or the PDF template.
 
 ### Seed leftovers (must all be "none")
-- [ ] No `admin@passthrough.dev` / `demo@passthrough.dev` rows in `users` (earlier versions of
+- [ ] No `admin@usepassthrough.com` / `demo@usepassthrough.com` rows in `users` (earlier versions of
       `seed.js` created them with a password that was in this public repository — if either
       exists in production, delete it or set a new password and rotate any session)
 - [ ] No scan with `verification_code = 'DEMO01'` (the forged demo credential) — delete it
@@ -971,7 +971,47 @@ go back to Section 2 and run everything in `supabase/migrations/`, in order.
 
 ---
 
-*For support: support@passthrough.dev*
+## 12. Domain migration: passthrough.dev -> usepassthrough.com
+
+The code reads its public address from `FRONTEND_URL` (and the API's own origin from the request or
+`API_ORIGIN`), so the move is configuration plus DNS. **Keep passthrough.dev alive** (see step 7): every
+verification link (`/v/CODE`) already printed on a delivered resume, and every badge embed
+(`/api/verify/CODE/badge.svg|png` on the API host), points at the old domain.
+
+Order matters; do these in sequence:
+
+1. **DNS / Cloudflare**: add `usepassthrough.com` to the same Cloudflare account (zone active).
+2. **Email first**: in Resend, add and verify `usepassthrough.com` (SPF, DKIM, and a DMARC record), and set up
+   inbound for `support@usepassthrough.com` and `hello@usepassthrough.com` (Cloudflare Email Routing or your
+   mailbox provider). Do not switch `EMAIL_FROM` until Resend shows the domain as verified, or every
+   transactional email will bounce.
+3. **Frontend**: Pages project -> Custom domains -> add `usepassthrough.com` (and `www`). Rebuild with
+   `VITE_API_URL` and `API_URL` = `https://api.usepassthrough.com/api`.
+4. **API**: Worker -> Custom Domains -> add `api.usepassthrough.com`. **Do not remove** `api.passthrough.dev`
+   from the Worker; both hostnames serve the same Worker so old badge embeds keep rendering.
+5. **Worker vars** (`wrangler.toml`, already updated in the repo): `FRONTEND_URL=https://usepassthrough.com`,
+   `PAYSTACK_CALLBACK_URL=https://usepassthrough.com/payment/success`,
+   `EMAIL_FROM="Passthrough <hello@usepassthrough.com>"`. If you set `CORS_EXTRA_ORIGINS` or `API_ORIGIN`
+   as secrets/vars in the dashboard, update them too. Deploy the Worker.
+6. **Third parties**: Paystack dashboard -> webhook URL `https://api.usepassthrough.com/api/webhooks/paystack`
+   (keep the old one until a test event succeeds on the new one) and any allowed callback/domain list;
+   Cloudflare Turnstile -> add `usepassthrough.com` to the widget's hostnames; Google Search Console ->
+   add the new property and submit `https://usepassthrough.com/sitemap.xml`.
+7. **Old domain**: keep `passthrough.dev` registered. Add a Cloudflare Redirect Rule (301, preserve path and
+   query string) from `passthrough.dev/*` and `www.passthrough.dev/*` to `https://usepassthrough.com/${1}`,
+   so `/v/CODE` links, employer confirm/remove links and password-reset emails already in inboxes still land.
+   Leave `api.passthrough.dev` as a second custom domain on the Worker (no redirect: image requests and
+   webhooks do not follow it reliably).
+8. **Smoke test**: `BASE=https://usepassthrough.com ./smoke-test.sh`, then one real checkout end to end
+   (scan -> pay -> callback -> receipt email) and open an old-domain `/v/CODE` link to confirm the redirect.
+
+Deliberately unchanged: the `deleted-<id>@passthrough.dev` placeholder written when an account is deleted
+(migration `scrub_account_data` and `auth.controller.js`). It is an internal tombstone identifier, never
+mailed to, and changing it would orphan the email-log purge for every account already deleted.
+
+---
+
+*For support: support@usepassthrough.com*
 
 ## Optional tuning variables
 
@@ -979,7 +1019,7 @@ All optional plain `[vars]` values (none is a secret); each has a safe default.
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `SUPPORT_EMAIL` | `support@passthrough.dev` | Reply/contact address shown in transactional emails. |
+| `SUPPORT_EMAIL` | `support@usepassthrough.com` | Reply/contact address shown in transactional emails. |
 | `REFERRAL_MIN_PRICE_PCT` | `10` | A partner custom price below this % of the standard price is refused. |
 | `REFERRAL_VELOCITY_ALERT` | `10` (`0` = off) | Owner is emailed once when one referral code converts this many times in an hour. |
 | `ARCHIVED_LEAD_PURGE_SUPPRESSES` | `false` | `true` makes the archived-lead purge add each purged address to the do-not-contact list. |

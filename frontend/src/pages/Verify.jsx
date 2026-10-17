@@ -17,7 +17,7 @@ import { isRoleCategory, roleLabel } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
 
-const SUPPORT_EMAIL = 'support@passthrough.dev'
+const SUPPORT_EMAIL = 'support@usepassthrough.com'
 
 // ROUND-3 AUDIT (feature gap): a reader who suspects a page is fake, or a candidate whose page
 // is wrong, had no way to say so from here. Prefills the code so the report needs no typing.

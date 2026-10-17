@@ -60,7 +60,7 @@ RESEND_API_KEY=re_...
 # Old Paystack key, ONLY while rotating PAYSTACK_SECRET_KEY (so retried webhooks still verify).
 # PAYSTACK_SECRET_KEY_PREVIOUS=
 # Extra browser origins CORS allows besides FRONTEND_URL (comma-separated, no trailing slashes).
-# CORS_EXTRA_ORIGINS=https://www.passthrough.dev
+# CORS_EXTRA_ORIGINS=https://www.usepassthrough.com
 # Partner payouts: minimum payout in cents, refund-window hold in days, payout-details hold in hours (default 48).
 # COMMISSION_MIN_PAYOUT_CENTS=0
 # COMMISSION_HOLD_DAYS=0
@@ -76,7 +76,7 @@ RESEND_API_KEY=re_...
 # TESTING ONLY: IPs (comma-separated) that skip every rate limit. Delete before real traffic.
 # RATE_LIMIT_BYPASS_IPS=
 # Optional tuning (all have defaults; see DEPLOYMENT.md "Optional tuning variables").
-# SUPPORT_EMAIL=support@passthrough.dev
+# SUPPORT_EMAIL=support@usepassthrough.com
 # REFERRAL_MIN_PRICE_PCT=10
 # REFERRAL_VELOCITY_ALERT=10
 # ARCHIVED_LEAD_PURGE_SUPPRESSES=false

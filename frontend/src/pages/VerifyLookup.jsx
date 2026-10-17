@@ -100,7 +100,7 @@ export default function VerifyLookup() {
           <div className="flex items-start gap-3 flex-wrap">
             <input
               type="text" value={codeText} onChange={e => { setCodeText(e.target.value); setCodeError('') }}
-              aria-label="Verification link or code" placeholder="passthrough.dev/v/… or AB3XY7K2PQ"
+              aria-label="Verification link or code" placeholder="usepassthrough.com/v/… or AB3XY7K2PQ"
               autoComplete="off" spellCheck={false}
               className="flex-1 min-w-[14rem] rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
             />

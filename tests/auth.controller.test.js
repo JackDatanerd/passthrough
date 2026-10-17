@@ -2326,9 +2326,9 @@ describe('Auth round 8 — reserved placeholder addresses cannot be taken (B5)',
       t.restore()
     }
   })
-  it('ordinary passthrough.dev and lookalike addresses are still fine', async () => {
+  it('ordinary usepassthrough.com and lookalike addresses are still fine', async () => {
     t = await setup()
-    expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'ada@passthrough.dev', password: 'longenough', acceptTerms: true } }))).status).toBe(201)
+    expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'ada@usepassthrough.com', password: 'longenough', acceptTerms: true } }))).status).toBe(201)
     t.restore()
     t = await setup()
     expect((await t.mod.register(t.c({ body: { name: 'Ada', email: 'deleted-ada@passthrough.dev', password: 'longenough', acceptTerms: true } }))).status).toBe(201)

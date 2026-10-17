@@ -19,7 +19,7 @@ function setup({ supply = [], leads = [], state = null, rpcError = null, leadErr
     'services/email.service.js': { sendOwnerNotice: async (env, subject, message) => { notices.push({ subject, message }); return delivered } },
   })
   const kv = { get: async k => store.get(k) ?? null, put: async (k, v) => { store.set(k, v) } }
-  const env = { RATE_LIMIT_KV: kv, FRONTEND_URL: 'https://passthrough.dev' }
+  const env = { RATE_LIMIT_KV: kv, FRONTEND_URL: 'https://usepassthrough.com' }
   return { mod, restore, notices, store, db, env, saved: () => JSON.parse(store.get('leadmatch:state')) }
 }
 const sup = (cat, n) => ({ role_category: cat, candidate_count: String(n) })
@@ -49,7 +49,7 @@ describe('runLeadMatchSweep', () => {
     expect(r).toEqual({ announced: 1, pending: 0 })
     expect(t.notices).toHaveLength(1)
     expect(t.notices[0].message).toContain('Sales: 2 confirmed open leads · 2 verified candidates')
-    expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=sales&status=OPEN')
+    expect(t.notices[0].message).toContain('https://usepassthrough.com/admin/leads?field=sales&status=OPEN')
     expect(t.notices[0].message).not.toContain('Design')
     expect(t.saved()).toEqual({ supply: { sales: 2 }, sentAt: NOW, uncategorised: 0 })
   })
@@ -128,7 +128,7 @@ describe('runLeadMatchSweep — leads nobody has given a field', () => {
     expect(t.notices).toHaveLength(1)
     expect(t.notices[0].subject).toBe('Employer leads need a field')
     expect(t.notices[0].message).toContain('Confirmed open leads with no field: 3 (+2 unconfirmed).')
-    expect(t.notices[0].message).toContain('https://passthrough.dev/admin/leads?field=none&status=OPEN&confirmed=yes')
+    expect(t.notices[0].message).toContain('https://usepassthrough.com/admin/leads?field=none&status=OPEN&confirmed=yes')
     expect(t.saved().uncategorised).toBe(3)
   })
   it('does not repeat while the number has not grown, and announces again when it does', async () => {

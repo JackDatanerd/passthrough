@@ -24,7 +24,7 @@ describe('V-1: a stranger\'s text cannot ping or phish through the alert webhook
     expect(out.replace(/​/g, '')).toBe(HOSTILE)   // only zero-width characters were added
   })
   it('leaves ordinary alert text alone (an e-mail address, a plain URL, numbers)', () => {
-    const s = 'verification code: AB3XY7K2PQ\nreason: FAKE\nnote: mail jane@example.com about https://passthrough.dev/v/AB3XY7K2PQ (2 of 3)'
+    const s = 'verification code: AB3XY7K2PQ\nreason: FAKE\nnote: mail jane@example.com about https://usepassthrough.com/v/AB3XY7K2PQ (2 of 3)'
     expect(neutralizeChatMarkup(s)).toBe(s)
     expect(neutralizeChatMarkup(null)).toBe('')
   })

@@ -256,7 +256,7 @@ describe('send() honours the suppression list (G4)', () => {
       'config/email.js': { sendViaResend: async (env, msg) => { sent.push(msg); return { id: 'x' } } },
       'config/supabase.js': { getSupabase: () => db },
     })
-    return { mod, restore, sent, db, env: { FRONTEND_URL: 'https://passthrough.dev', EMAIL_FROM: 'P <h@p.dev>', RATE_LIMIT_KV: kv() } }
+    return { mod, restore, sent, db, env: { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <h@p.dev>', RATE_LIMIT_KV: kv() } }
   }
   const logs = db => db.calls.filter(q => q.table === 'email_logs' && q.op === 'insert').map(q => q.values)
   it('skips non-security mail to a suppressed address, logs it as suppressed, and spends no throttle slot', async () => {
@@ -306,7 +306,7 @@ describe('email service (B5, B8)', () => {
       'config/email.js': { sendViaResend: async (env, msg) => { if (flags.fail) throw new Error('Resend down'); sent.push(msg); return { id: 'x' } } },
       'config/supabase.js': { getSupabase: () => db },
     })
-    return { mod, restore, sent, flags, db, env: { FRONTEND_URL: 'https://passthrough.dev', EMAIL_FROM: 'P <h@p.dev>', OWNER_ALERT_EMAIL: 'owner@example.com', RATE_LIMIT_KV: kv() } }
+    return { mod, restore, sent, flags, db, env: { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <h@p.dev>', OWNER_ALERT_EMAIL: 'owner@example.com', RATE_LIMIT_KV: kv() } }
   }
   it('B5: a FAILED alert send gives its dedupe slot back, so the next occurrence still emails', async () => {
     t = setup()

@@ -46,7 +46,7 @@ function Ticket({ exact, hash, issued }) {
       <div className="bg-white rounded-t-2xl" style={{ WebkitMask: maskMain, WebkitMaskComposite: 'source-in', mask: maskMain, maskComposite: 'intersect' }}>
         <div aria-hidden="true" className="flex items-center gap-2 px-4 py-3 bg-gray-50 border-b border-gray-200 rounded-t-2xl">
           {[0, 1, 2].map(i => <i key={i} className="w-2.5 h-2.5 rounded-full bg-gray-300" />)}
-          <span className="flex-1 ml-2 bg-white border border-gray-200 rounded-md px-2.5 py-1 font-mono text-xs text-gray-500 truncate">passthrough.dev/v/<b className="text-gray-900">{SAMPLE_VERIFICATION.code}</b></span>
+          <span className="flex-1 ml-2 bg-white border border-gray-200 rounded-md px-2.5 py-1 font-mono text-xs text-gray-500 truncate">usepassthrough.com/v/<b className="text-gray-900">{SAMPLE_VERIFICATION.code}</b></span>
         </div>
         <div className="px-4 sm:px-6 pt-5 pb-8">
           <div className="flex items-center gap-3.5">
@@ -90,7 +90,7 @@ function Ticket({ exact, hash, issued }) {
 }
 
 function PlacementMock({ id }) {
-  const link = `passthrough.dev/v/${SAMPLE_VERIFICATION.code}`
+  const link = `usepassthrough.com/v/${SAMPLE_VERIFICATION.code}`
   const frame = 'bg-white border border-gray-200 rounded-xl px-4 py-3.5 text-sm shadow-sm'
   if (id === 'email') return (
     <div className={frame}>
@@ -108,7 +108,7 @@ function PlacementMock({ id }) {
         <span aria-hidden="true" className="w-[52px] h-[52px] rounded-lg bg-green-100 border border-green-200 flex items-center justify-center shrink-0">
           <svg width="24" height="24" viewBox="0 0 26 26" fill="none"><path d="m6 13.5 4.8 4.8L20 8.6" stroke="#15803d" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" /></svg>
         </span>
-        <div><b className="block text-sm">Verified resume · ATS score {SAMPLE_VERIFICATION.score}</b><span className="text-[12.5px] text-gray-500">passthrough.dev</span></div>
+        <div><b className="block text-sm">Verified resume · ATS score {SAMPLE_VERIFICATION.score}</b><span className="text-[12.5px] text-gray-500">usepassthrough.com</span></div>
       </div>
     </div>
   )

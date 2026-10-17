@@ -4,7 +4,7 @@
 # style-src needs 'unsafe-inline' for React style={{}} attributes. connect-src is
 # `https:` rather than the exact API origin because VITE_API_URL is a per-deploy
 # build setting; to tighten it, replace `https:` with your API origin
-# (e.g. https://api.passthrough.dev). Paystack checkout: ScanResult.jsx opens it with
+# (e.g. https://api.usepassthrough.com). Paystack checkout: ScanResult.jsx opens it with
 # @paystack/inline-js (bundled, so script-src needs nothing), which embeds Paystack's checkout
 # page in an IFRAME - frame-src must allow checkout.paystack.com (and standard.paystack.co, the
 # package's other production host) or the buyer sees "This content is blocked" and cannot pay.

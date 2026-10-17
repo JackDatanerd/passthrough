@@ -8,4 +8,4 @@ Disallow: /partner/dashboard
 Disallow: /partner/payout-details
 Disallow: /partner/recover
 Disallow: /employer/
-Sitemap: https://passthrough.dev/sitemap.xml
+Sitemap: https://usepassthrough.com/sitemap.xml

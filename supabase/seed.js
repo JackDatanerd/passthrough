@@ -69,7 +69,7 @@ async function main() {
   const demoPw  = passwordFor('SEED_DEMO_PASSWORD')
 
   const admin = await upsertUser({
-    email: 'admin@passthrough.dev',
+    email: 'admin@usepassthrough.com',
     name:  'Passthrough Admin',
     role:  'ADMIN',
     emailVerified: true,
@@ -78,7 +78,7 @@ async function main() {
   console.log('✓ admin user')
 
   const seeker = await upsertUser({
-    email: 'demo@passthrough.dev',
+    email: 'demo@usepassthrough.com',
     name:  'Demo User',
     emailVerified: true,
     password: demoPw.value
@@ -148,8 +148,8 @@ async function main() {
 
   console.log('\nSeed complete.')
   // Existing accounts keep their own passwords; only a freshly generated one is shown (once).
-  if (adminPw.generated) console.log(`Admin: admin@passthrough.dev / ${adminPw.value}   (generated — shown once)`)
-  if (demoPw.generated)  console.log(`Demo:  demo@passthrough.dev  / ${demoPw.value}   (generated — shown once)`)
+  if (adminPw.generated) console.log(`Admin: admin@usepassthrough.com / ${adminPw.value}   (generated — shown once)`)
+  if (demoPw.generated)  console.log(`Demo:  demo@usepassthrough.com  / ${demoPw.value}   (generated — shown once)`)
 }
 
 main().catch(e => { console.error(e); process.exit(1) })

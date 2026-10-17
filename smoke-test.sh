@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Smoke test for passthrough-api — run this from your machine, not the sandbox
-# (the sandbox can't reach passthrough.dev / workers.dev).
+# (the sandbox can't reach usepassthrough.com / workers.dev).
 #
 # Usage:
 #   chmod +x smoke-test.sh
@@ -12,7 +12,7 @@
 
 set -uo pipefail
 
-BASE="${BASE:-https://passthrough.dev}"
+BASE="${BASE:-https://usepassthrough.com}"
 API="$BASE/api"
 PASS=0
 FAIL=0

@@ -70,7 +70,7 @@ describe('next step card', () => {
 
 describe('rows', () => {
   it('shows the stage tracker, the message and the right action for a delivered, verified scan', async () => {
-    wire({ scans: [scan('v', { status: 'FIX_DELIVERED', atsScore: 48, fixPurchased: true, fixAtsScore: 88, verificationCode: 'ABC', verificationUrl: 'https://passthrough.dev/v/ABC' })] })
+    wire({ scans: [scan('v', { status: 'FIX_DELIVERED', atsScore: 48, fixPurchased: true, fixAtsScore: 88, verificationCode: 'ABC', verificationUrl: 'https://usepassthrough.com/v/ABC' })] })
     renderIndex()
     const row = await screen.findByTestId('scan-row')
     expect(within(row).getAllByText('✓ Verified')).toHaveLength(2)   // the last stage, and the status tag
@@ -152,12 +152,12 @@ describe('Proof page', () => {
   const renderProof = () => render(<MemoryRouter><Proof /></MemoryRouter>)
   it('lists Verified links with copy buttons and the scans that are close', async () => {
     wire({ scans: [
-      scan('v', { status: 'FIX_DELIVERED', fixPurchased: true, fixAtsScore: 88, verificationCode: 'ABC', verificationUrl: 'https://passthrough.dev/v/ABC' }),
+      scan('v', { status: 'FIX_DELIVERED', fixPurchased: true, fixAtsScore: 88, verificationCode: 'ABC', verificationUrl: 'https://usepassthrough.com/v/ABC' }),
       scan('revoked', { status: 'FIX_DELIVERED', fixPurchased: true, fixAtsScore: 90, verificationCode: 'XYZ', verificationStatus: 'REVOKED' }),
       scan('near', { status: 'COMPLETE_PASS', atsScore: 78 }),
     ] })
     renderProof()
-    expect(await screen.findByText('https://passthrough.dev/v/ABC')).toBeInTheDocument()
+    expect(await screen.findByText('https://usepassthrough.com/v/ABC')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Copy link' })).toHaveLength(1)
     expect(screen.getByRole('button', { name: 'Copy badge HTML' })).toBeInTheDocument()
     expect(screen.getByRole('link', { name: 'View as an employer' })).toHaveAttribute('href', '/v/ABC')

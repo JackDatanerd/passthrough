@@ -24,7 +24,7 @@ function setup(opts = {}) {
       sendPartnerDashboardLinkRegenerated: async () => true,
     },
   })
-  const env = { FRONTEND_URL: 'https://passthrough.dev' }
+  const env = { FRONTEND_URL: 'https://usepassthrough.com' }
   const c = () => ({
     env,
     req: { param: () => 'p1' },
@@ -50,7 +50,7 @@ describe('adminResendPayoutLink', () => {
     const res = await t.mod.adminResendPayoutLink(t.c())
     expect(res.body.success).toBe(false)
     // The stored token is a hash, so a resend mints a NEW token (0087) and returns that link as the fallback.
-    expect(res.body.payoutUrl).toMatch(/^https:\/\/passthrough\.dev\/partner\/payout-details\?token=[0-9a-f]{20,}$/)
+    expect(res.body.payoutUrl).toMatch(/^https:\/\/usepassthrough\.com\/partner\/payout-details\?token=[0-9a-f]{20,}$/)
     expect(t.state.patches.some(p => /^[0-9a-f]{64}$/.test(p.payout_token_hash) && p.payout_details_token === null)).toBe(true)
   })
 
@@ -67,7 +67,7 @@ describe('adminRegeneratePayoutLink', () => {
     t = setup({ partner: { name: 'Coach K', email: 'k@x.co' } })
     const res = await t.mod.adminRegeneratePayoutLink(t.c())
     expect(res.body.success).toBe(true)
-    expect(res.body.payoutUrl).toMatch(/^https:\/\/passthrough\.dev\/partner\/payout-details\?token=.+/)
+    expect(res.body.payoutUrl).toMatch(/^https:\/\/usepassthrough\.com\/partner\/payout-details\?token=.+/)
   })
 
   it('still returns payoutUrl even when the notification email fails', async () => {
@@ -423,7 +423,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async (...a) => { state.emailed.push(a); if (opts.emailThrows) throw new Error('mail down') } },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => opts.body ?? { name: 'Coach K', email: 'k@x.co' } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c, db }
   }
 
@@ -465,7 +465,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => ({ name: 'Coach K2', email: 'K@X.CO' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreatePartner(c)
     expect(res.status).toBe(400)
     expect(res.body.success).toBe(false)
@@ -490,7 +490,7 @@ describe('adminCreatePartner', () => {
       'services/email.service.js': { sendPartnerPayoutDetailsRequest: async () => {} },
       'lib/crypto.js': { randomToken: () => 'tok-fixed', sha256: async s => 'h:' + s },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { json: async () => ({ name: 'Coach', email: 'john_smith@x.co' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     await mod.adminCreatePartner(c)
     expect(seen[0]).toBe('john\\_smith@x.co')
     restore()
@@ -516,7 +516,7 @@ describe('adminUpdatePartner', () => {
         sendPartnerRateChanged:     async (...a) => state.notifications.push({ type: 'rateChanged', to: a[2], from: a[4], toRate: a[5] }),
       },
     })
-    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
+    const c = (over = {}) => ({ env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => over.body ?? {} }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
     return { mod, restore, state, c }
   }
 
@@ -833,7 +833,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async (...a) => state.emailed.push(a) },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => opts.body ?? { code: 'coach20', tierPrices: { FIX: 1900 } } }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     return { mod, restore, state, c }
   }
 
@@ -884,7 +884,7 @@ describe('adminCreateReferralCode', () => {
       'config/supabase.js': { getSupabase: () => db },
       'services/email.service.js': { sendReferralCodeCreated: async () => { throw new Error('mail down') } },
     })
-    const c = { env: { FRONTEND_URL: 'https://passthrough.dev' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
+    const c = { env: { FRONTEND_URL: 'https://usepassthrough.com' }, req: { param: () => 'p1', json: async () => ({ code: 'coach20', tierPrices: { FIX: 1900 } }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) }
     const res = await mod.adminCreateReferralCode(c)
     expect(res.body.success).toBe(true)
     restore()
@@ -1166,7 +1166,7 @@ describe('partner admin actions — audit trail', () => {
       },
     })
     const c = (over = {}) => ({
-      env: { FRONTEND_URL: 'https://passthrough.dev' },
+      env: { FRONTEND_URL: 'https://usepassthrough.com' },
       get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
       req: { param: () => 'p1', json: async () => over.body ?? {} },
       header: () => {}, json: (body, status = 200) => ({ body, status }),

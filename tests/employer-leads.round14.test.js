@@ -12,7 +12,7 @@ const uid = (n) => `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`
 const mk = (id, email, over = {}) => ({ id, name: 'N', company: 'B', email, status: 'NEW', notes: null, contacted_at: null,
   role_category: 'sales', role_title: null, source: 'homepage', submission_count: 1, extra_role_categories: [],
   candidates_notified_fields: {}, confirmed_at: TS, created_at: TS, updated_at: TS, last_submitted_at: TS, ...over })
-const ENV = { RATE_LIMIT_KV: { get: async () => null, put: async () => {} }, JWT_SECRET: 'x'.repeat(40), FRONTEND_URL: 'https://passthrough.dev' }
+const ENV = { RATE_LIMIT_KV: { get: async () => null, put: async () => {} }, JWT_SECRET: 'x'.repeat(40), FRONTEND_URL: 'https://usepassthrough.com' }
 const ctx = (body) => ({ env: ENV, get: () => ({ id: 'admin' }), executionCtx: { waitUntil: () => {} },
   req: { json: async () => body, param: () => undefined, query: () => undefined }, json: (b, s = 200) => ({ b, s }) })
 

@@ -58,7 +58,7 @@ describe('a delivered fix', () => {
   })
 
   it('past the line: the road says so, above the existing verified copy', async () => {
-    setup(delivered({ fixAtsScore: 84, fixProgress: fp({ scores: [71, 84] }), verificationUrl: 'https://passthrough.dev/v/abc' }))
+    setup(delivered({ fixAtsScore: 84, fixProgress: fp({ scores: [71, 84] }), verificationUrl: 'https://usepassthrough.com/v/abc' }))
     expect(await screen.findByTestId('delivered-summary')).toHaveTextContent('84 out of 100, past the 80 line.')
     expect(screen.getByText(/Your Passthrough Verified resume is ready/)).toBeTruthy()
   })

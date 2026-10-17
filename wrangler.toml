@@ -87,14 +87,14 @@ crons = ["0 * * * *"]
 # `.dev.vars` (local, gitignored). See .dev.vars.example for the full list.
 [vars]
 NODE_ENV               = "production"
-FRONTEND_URL            = "https://passthrough.dev"
+FRONTEND_URL            = "https://usepassthrough.com"
 PAYSTACK_CURRENCY       = "USD"
-PAYSTACK_CALLBACK_URL   = "https://passthrough.dev/payment/success"
+PAYSTACK_CALLBACK_URL   = "https://usepassthrough.com/payment/success"
 # A second successful payment for a scan another payment already delivered is refunded automatically.
 # Set to "false" to go back to alert-only (you then refund duplicates by hand in Paystack / Admin).
 AUTO_REFUND_DUPLICATES  = "true"
 ANTHROPIC_MODEL         = "claude-sonnet-4-6"
-EMAIL_FROM              = "Passthrough <hello@passthrough.dev>"
+EMAIL_FROM              = "Passthrough <hello@usepassthrough.com>"
 JWT_EXPIRES_IN_SECONDS  = "604800"   # 7 days, replaces JWT_EXPIRES_IN="7d"
 # Critical-failure alert destination (queue job crashes, webhook signature
 # mismatches) — see services/email.service.js's sendOwnerAlert. Change this

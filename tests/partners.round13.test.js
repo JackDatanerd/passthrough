@@ -12,7 +12,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://passthrough.dev', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', ...(over.env || {}) },
   get: k => (k === 'user' ? { id: 'admin-1', email: 'a@x.co' } : undefined),
   req: {
     param: () => A, query: () => undefined,
@@ -97,7 +97,7 @@ describe('gap — admin can re-send the dashboard link', () => {
     t = loadController(db, { sendPartnerLinksRecovery: async (...a) => { sent.push(a); return true }, sendPartnerPayoutDetailsRequest: async () => { throw new Error('wrong link') } })
     const out = await t.mod.adminResendPayoutLink(ctxOf({ body: { scope: 'dashboard' } }))
     expect(out.body.success).toBe(true)
-    expect(sent[0][4]).toBe('https://passthrough.dev/partner/dashboard?token=dtok')
+    expect(sent[0][4]).toBe('https://usepassthrough.com/partner/dashboard?token=dtok')
   })
   it('a failed send hands back the dashboard URL as a fallback, and no scope still sends the payout link', async () => {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: PARTNER, error: null } : { data: null, error: null }))

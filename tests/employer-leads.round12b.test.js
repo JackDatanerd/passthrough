@@ -163,7 +163,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
-    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev', ...envExtra }
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://usepassthrough.com', ...envExtra }
   const c = (over = {}) => {
     const waits = []
     return {

@@ -63,7 +63,7 @@ describe('EmployerLeadRejoin', () => {
     renderAt()
     await fill(user)
     await user.click(screen.getByRole('button', { name: 'Add me back to the list' }))
-    expect(await screen.findByText(/Contact support@passthrough.dev/)).toBeInTheDocument()
+    expect(await screen.findByText(/Contact support@usepassthrough.com/)).toBeInTheDocument()
   })
   it('shows the server message for an invalid link (400) with no retry', async () => {
     const user = userEvent.setup()

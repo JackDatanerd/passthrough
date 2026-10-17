@@ -126,7 +126,7 @@ describe('G1: contest a dispute with a proof of delivery', () => {
     }
     return { world, log, ...load(world, { 'services/paystack.service.js': paystack }) }
   }
-  const run = (mod, body = {}) => mod.contestPaymentDispute(ctx({ env: { FRONTEND_URL: 'https://passthrough.dev' }, params: { reference: 'ref1' }, body }))
+  const run = (mod, body = {}) => mod.contestPaymentDispute(ctx({ env: { FRONTEND_URL: 'https://usepassthrough.com' }, params: { reference: 'ref1' }, body }))
   it('uploads a real PDF, then declines quoting the stored file name; the payment itself is untouched', async () => {
     const { mod, world, log, audit } = rig()
     const out = await run(mod, { note: 'delivered on 29 Sep' })
@@ -136,7 +136,7 @@ describe('G1: contest a dispute with a proof of delivery', () => {
     const bytes = log[1][2]
     const text = new TextDecoder().decode(bytes)
     expect(text.startsWith('%PDF-1.4')).toBe(true)
-    expect(text).toMatch(/ref1/); expect(text).toMatch(/29 Sep/); expect(text).toMatch(/passthrough\.dev\/v\/ABCD1234/)
+    expect(text).toMatch(/ref1/); expect(text).toMatch(/29 Sep/); expect(text).toMatch(/usepassthrough\.com\/v\/ABCD1234/)
     expect(log[1][3]).toBe('application/pdf')
     expect(log[2][2]).toEqual({ message: 'delivered on 29 Sep', refundAmount: 2900, uploadedFilename: 'stored-proof-ref1.pdf' })
     expect(world.t.payments[0].status).toBe('DISPUTED')

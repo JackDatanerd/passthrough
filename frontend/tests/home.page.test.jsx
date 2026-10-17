@@ -235,7 +235,7 @@ describe('verification section', () => {
   it('turns a pasted link into the right verification page', async () => {
     renderHome()
     await ready()
-    fireEvent.change(screen.getByLabelText('Verification code or link'), { target: { value: 'https://passthrough.dev/v/k7m2-qx9p4a' } })
+    fireEvent.change(screen.getByLabelText('Verification code or link'), { target: { value: 'https://usepassthrough.com/v/k7m2-qx9p4a' } })
     fireEvent.click(screen.getByRole('button', { name: 'Check' }))
     expect(await screen.findByTestId('verify-page')).toBeInTheDocument()
   })

@@ -32,7 +32,7 @@ beforeEach(() => { cleanup(); vi.clearAllMocks() })
 describe('VerifyLookup — look up by link or code (round 5, G2)', () => {
   it('a pasted verification link opens that page', async () => {
     renderPage()
-    await userEvent.setup().type(screen.getByLabelText(/verification link or code/i), 'https://passthrough.dev/v/ab3xy7k2pq')
+    await userEvent.setup().type(screen.getByLabelText(/verification link or code/i), 'https://usepassthrough.com/v/ab3xy7k2pq')
     await userEvent.setup().click(screen.getByRole('button', { name: /open page/i }))
     expect((await screen.findByTestId('landing')).textContent).toMatch(/^\/v\/AB3XY7K2PQ\|/)
     expect(api.get).not.toHaveBeenCalled()   // no API round trip for a typed code: the page itself answers

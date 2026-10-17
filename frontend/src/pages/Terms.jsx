@@ -95,8 +95,8 @@ export default function Terms() {
             refunds automatically where we can; if one cannot be started automatically we will do
             it by hand. Your bank may take several business days to show a refund. For anything
             else that went wrong on our end, contact{' '}
-            <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
-              support@passthrough.dev
+            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
+              support@usepassthrough.com
             </a>{' '}
             with your payment reference and we'll make it right.
           </p>
@@ -136,7 +136,7 @@ export default function Terms() {
         <Section title="7. Verification Links">
           <p>
             A purchased Fix or Credential includes a public verification link
-            (passthrough.dev/v/CODE) that anyone with the link — including an employer — can visit
+            (usepassthrough.com/v/CODE) that anyone with the link — including an employer — can visit
             to see your ATS score, integrity status, and basic role/seniority category. This link is
             public by design; it's meant to be shared with employers. Don't purchase a verification
             credential for content you don't want a third party to potentially view via that link.
@@ -191,8 +191,8 @@ export default function Terms() {
         <Section title="13. Contact">
           <p>
             Questions about these terms:{' '}
-            <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
-              support@passthrough.dev
+            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
+              support@usepassthrough.com
             </a>
           </p>
         </Section>

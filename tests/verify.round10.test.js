@@ -35,7 +35,7 @@ function harness(rows, { stubs = {} } = {}) {
     const out = {}
     const hdr = { 'cf-connecting-ip': ip, 'user-agent': ua }
     return {
-      env: { RESUMES_BUCKET: bucket(files), RATE_LIMIT_KV: KV, NODE_ENV: 'production', FRONTEND_URL: 'https://passthrough.dev' },
+      env: { RESUMES_BUCKET: bucket(files), RATE_LIMIT_KV: KV, NODE_ENV: 'production', FRONTEND_URL: 'https://usepassthrough.com' },
       req: { method: 'GET', param: () => code, query: k => query[k], header: n => hdr[n.toLowerCase()], url: `https://api.example/api/verify/${code}`, json: async () => { if (body === undefined) throw new Error('no body'); return body } },
       get: () => null, executionCtx: { waitUntil: () => {} },
       header: (k, v) => { out[k] = v },

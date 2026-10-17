@@ -1409,7 +1409,7 @@ describe('generateFix', () => {
       },
       'services/badge.service.js': {
         generateShortCode: async () => 'NEWCODE1',
-        buildVerificationUrl: (env2, code) => `https://passthrough.dev/v/${code}`,
+        buildVerificationUrl: (env2, code) => `https://usepassthrough.com/v/${code}`,
         hashBytes: async () => 'hash123',
       },
       'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
@@ -1461,7 +1461,7 @@ describe('generateFix', () => {
   })
 
   it('a retry (fixRetryCount > 0) rewrites from the previously delivered rewrittenResumeData, not the original', async () => {
-    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://usepassthrough.com/v/EXIST01' } })
     await t.mod.generateFix(t.env, t.db, 's1')
     expect(t.rewriteCalls[0][1]).toEqual({ name: 'Previously Rewritten' })
   })
@@ -1482,7 +1482,7 @@ describe('generateFix', () => {
       globalThis.caches = fakeCaches()
       let deleted = null
       globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
-      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Original' }, rewritten_resume_data: { name: 'Previously Rewritten' }, fix_retry_count: 1, fix_ats_score: 60, fix_tier: 'FIX', verification_code: 'EXIST01', verification_url: 'https://usepassthrough.com/v/EXIST01' } })
       await t.mod.generateFix(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
     })
@@ -1514,7 +1514,7 @@ describe('generateFix', () => {
   })
 
   it('reuses an existing verification code/url rather than minting a new one (idempotent redelivery)', async () => {
-    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX', fix_retry_count: 0, verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+    t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, fix_tier: 'FIX', fix_retry_count: 0, verification_code: 'EXIST01', verification_url: 'https://usepassthrough.com/v/EXIST01' } })
     await t.mod.generateFix(t.env, t.db, 's1')
     const finalUpdate = t.state.scanUpdates.find(u => u.status === 'FIX_DELIVERED')
     expect(finalUpdate.verification_code).toBe('EXIST01')
@@ -2047,7 +2047,7 @@ describe('generateBadge', () => {
       'services/claude.service.js': { generateBeautifulResumeHTML: async () => opts.htmlResult ?? { success: false } },
       'services/badge.service.js': {
         generateShortCode: async () => 'NEWCODE1',
-        buildVerificationUrl: (env2, code) => `https://passthrough.dev/v/${code}`,
+        buildVerificationUrl: (env2, code) => `https://usepassthrough.com/v/${code}`,
         hashBytes: async () => 'hash123',
       },
       'services/pdf.service.js': { generateResumePDF: opts.pdfImpl ?? (async () => Buffer.from('fake-pdf')) },
@@ -2092,7 +2092,7 @@ describe('generateBadge', () => {
       globalThis.caches = fakeCaches()
       let deleted = null
       globalThis.caches.default.delete = async req => { if (!req.url.endsWith('.png')) deleted = req.url }   // round 6: a purge now clears the SVG and the PNG entry; these tests are about WHICH code, so look at the SVG key (the PNG is covered in verify.round6.test.js)
-      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, verification_code: 'EXIST01', verification_url: 'https://passthrough.dev/v/EXIST01' } })
+      t = setup({ scan: { id: 's1', user_id: 'u1', input_mode: 'brain_dump', original_resume_data: { name: 'Jane' }, ats_score: 85, verification_code: 'EXIST01', verification_url: 'https://usepassthrough.com/v/EXIST01' } })
       await t.mod.generateBadge(t.env, t.db, 's1')
       expect(deleted).toBe(badgeCacheKeyForCode('EXIST01').url)
     })

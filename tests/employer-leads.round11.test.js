@@ -164,7 +164,7 @@ function setup({ leads = [], supply, kv = {}, suppressed = [], ackResult = true,
     },
   })
   const env = { RATE_LIMIT_KV: { get: async k => state.kv[k] ?? null, put: async (k, v) => { state.kv[k] = v } },
-    JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev', ...envExtra }
+    JWT_SECRET: SECRET, FRONTEND_URL: 'https://usepassthrough.com', ...envExtra }
   const c = (over = {}) => {
     const waits = []
     return {
@@ -301,7 +301,7 @@ describe('G4 — a person who removed themselves can come back', () => {
     expect(res.body.success).toBe(true)
     expect(t.state.leads).toHaveLength(0)
     expect(t.state.rejoins).toHaveLength(1)
-    expect(t.state.rejoins[0].links.rejoinUrl).toMatch(/^https:\/\/passthrough\.dev\/employer\/rejoin\?token=/)
+    expect(t.state.rejoins[0].links.rejoinUrl).toMatch(/^https:\/\/usepassthrough\.com\/employer\/rejoin\?token=/)
     expect(t.state.rejoins[0].links.removeUrl).toMatch(/\/employer\/remove\?token=/)
   })
   it('an admin block, a complaint, a bounce or an entry of unknown origin is never offered a way back', async () => {
@@ -480,9 +480,9 @@ describe('G9 — the hourly retry keeps the one-click unsubscribe header', () =>
   const old = '2026-01-01T00:00:00.000Z'
   const NOW = Date.parse('2026-01-02T00:00:00.000Z')
   it('uses the origin a real request carried', async () => {
-    t = setup({ kv: { 'leads:api-origin': 'https://api.passthrough.dev' }, leads: [mkLead({ email: 'a@acme.com', created_at: old, ack_attempts: 0, last_ack_at: null, confirmed_at: null })] })
+    t = setup({ kv: { 'leads:api-origin': 'https://api.usepassthrough.com' }, leads: [mkLead({ email: 'a@acme.com', created_at: old, ack_attempts: 0, last_ack_at: null, confirmed_at: null })] })
     await t.mod.sweepUnacknowledgedLeads(t.env, t.db, NOW)
-    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.passthrough\.dev\/api\/employer-leads\/unsubscribe\?token=/)
+    expect(t.state.ackLinks[0].unsubscribeUrl).toMatch(/^https:\/\/api\.usepassthrough\.com\/api\/employer-leads\/unsubscribe\?token=/)
   })
   it('prefers API_ORIGIN', async () => {
     t = setup({ envExtra: { API_ORIGIN: 'https://edge.example.dev/' }, leads: [mkLead({ email: 'a@acme.com', created_at: old, ack_attempts: 0, last_ack_at: null, confirmed_at: null })] })
@@ -497,9 +497,9 @@ describe('G9 — the hourly retry keeps the one-click unsubscribe header', () =>
   it('a request that carries an https origin under the frontend domain remembers it', async () => {
     t = setup()
     const ctx = t.c({ body: { name: 'D', company: 'A', email: 'd@acme.com' } })
-    ctx.req.url = 'https://api.passthrough.dev/api/employer-leads'
+    ctx.req.url = 'https://api.usepassthrough.com/api/employer-leads'
     await t.mod.createLead(ctx); await Promise.all(ctx._waits)
-    expect(t.state.kv['leads:api-origin']).toBe('https://api.passthrough.dev')
+    expect(t.state.kv['leads:api-origin']).toBe('https://api.usepassthrough.com')
   })
   it('an address that bounced is closed out at once instead of retried every six hours', async () => {
     t = setup({ ackResult: 'suppressed', leads: [mkLead({ email: 'a@acme.com', created_at: old, ack_attempts: 0, last_ack_at: null, confirmed_at: null })] })

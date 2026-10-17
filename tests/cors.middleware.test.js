@@ -8,8 +8,8 @@ import errorHandler from '../src/middleware/errorHandler.js'
 // The site and the API are different origins in production, so every response header outside the
 // CORS-safelisted set is hidden from the SPA unless it is exposed — losing Retry-After or
 // X-Export-Parts from the list fails silently in production and nowhere else.
-const GOOD = { SUPABASE_URL: 'u', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'j'.repeat(40), FRONTEND_URL: 'https://passthrough.dev' }
-const SITE = 'https://passthrough.dev'
+const GOOD = { SUPABASE_URL: 'u', SUPABASE_SERVICE_ROLE_KEY: 'k', JWT_SECRET: 'j'.repeat(40), FRONTEND_URL: 'https://usepassthrough.com' }
+const SITE = 'https://usepassthrough.com'
 // Same order as src/index.js: cors BEFORE the early-exit middleware.
 function app() {
   const a = new Hono()
@@ -47,9 +47,9 @@ describe('CORS middleware', () => {
   })
 
   it('a trailing slash on FRONTEND_URL still matches; CORS_EXTRA_ORIGINS adds more', async () => {
-    const env = { ...GOOD, FRONTEND_URL: 'https://passthrough.dev/', CORS_EXTRA_ORIGINS: 'https://www.passthrough.dev/, https://staging.passthrough.dev' }
-    expect(allowedOrigins(env)).toEqual(['https://passthrough.dev', 'https://www.passthrough.dev', 'https://staging.passthrough.dev'])
-    for (const origin of [SITE, 'https://www.passthrough.dev', 'https://staging.passthrough.dev']) {
+    const env = { ...GOOD, FRONTEND_URL: 'https://usepassthrough.com/', CORS_EXTRA_ORIGINS: 'https://www.usepassthrough.com/, https://staging.usepassthrough.com' }
+    expect(allowedOrigins(env)).toEqual(['https://usepassthrough.com', 'https://www.usepassthrough.com', 'https://staging.usepassthrough.com'])
+    for (const origin of [SITE, 'https://www.usepassthrough.com', 'https://staging.usepassthrough.com']) {
       envCheck._reset()
       const r = await app().request('/api/x', { method: 'POST', headers: { origin, 'content-type': 'application/json' }, body: '{}' }, env)
       expect(r.headers.get('access-control-allow-origin')).toBe(origin)
@@ -91,9 +91,9 @@ describe('bodyLimit + errorHandler through a real Hono app', () => {
 
 describe('envCheck.normalizeEnv', () => {
   it('strips trailing slashes from FRONTEND_URL in place', () => {
-    const env = { FRONTEND_URL: 'https://passthrough.dev//' }
+    const env = { FRONTEND_URL: 'https://usepassthrough.com//' }
     envCheck.normalizeEnv(env)
-    expect(env.FRONTEND_URL).toBe('https://passthrough.dev')
+    expect(env.FRONTEND_URL).toBe('https://usepassthrough.com')
     envCheck.normalizeEnv({}); envCheck.normalizeEnv(undefined)   // never throws
   })
 })

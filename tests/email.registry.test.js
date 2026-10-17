@@ -20,7 +20,7 @@ function setup({ failSend, renderThrows } = {}) {
     ...(renderThrows ? { 'templates/emails.js': { render: () => { throw new Error(renderThrows) } } } : {}),
   })
   const db = { from: () => ({ insert: async row => { logs.push(row); return { error: null } } }) }
-  const env = { FRONTEND_URL: 'https://passthrough.dev', EMAIL_FROM: 'P <hello@passthrough.dev>', OWNER_ALERT_EMAIL: 'o@x.y', PAYSTACK_CURRENCY: 'USD', RATE_LIMIT_KV: {} }
+  const env = { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <hello@usepassthrough.com>', OWNER_ALERT_EMAIL: 'o@x.y', PAYSTACK_CURRENCY: 'USD', RATE_LIMIT_KV: {} }
   return { svc: t.mod, sent, refunds, logs, db, env }
 }
 
@@ -31,7 +31,7 @@ const CALLS = {
   sendNewSignInAlert: ['u@x.y', 'Ann', { ip: '1.2.3.4', when: Date.UTC(2026, 9, 5, 23, 30) }],
   sendScanFail: ['u@x.y', 'Ann', 60, { keywordScore: 1, formatScore: 2, sectionsScore: 3, contentScore: 4 }], sendScanPass: ['u@x.y', 'Ann', 85],
   sendAnonScanResult: ['u@x.y', 'Ann', 'sid', 'tok', 85, true], sendFixDelivered: ['u@x.y', 'Ann', 'ABC', 'https://v', true],
-  sendVerificationReported: ['u@x.y', 'Ann', { code: 'AB3XY7K2PQ', phrase: 'that something on it is wrong', pageUrl: 'https://passthrough.dev/v/AB3XY7K2PQ' }],
+  sendVerificationReported: ['u@x.y', 'Ann', { code: 'AB3XY7K2PQ', phrase: 'that something on it is wrong', pageUrl: 'https://usepassthrough.com/v/AB3XY7K2PQ' }],
   sendFixDeliveredPlain: ['u@x.y', 'Ann'], sendFixFailed: ['u@x.y', 'Ann'], sendOutcomeFollowUp: ['u@x.y', 'Ann'],
   sendPaymentReceipt: ['u@x.y', 'Ann', { fixTier: 'FIX', amountCents: 4900, currency: 'USD', reference: 'ref1', createdAt: '2026-10-05T23:30:00Z' }],
   sendPaymentReversed: ['u@x.y', 'Ann', { amountCents: 4900, currency: 'USD', reference: 'ref1', reason: 'REFUND', verificationRevoked: true }],

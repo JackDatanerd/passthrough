@@ -129,7 +129,7 @@ describe('docx.service', () => {
   const data = { name: 'Jane Doe', email: 'j@x.com', linkedin: 'linkedin.com/in/jane', skills: ['Python'], experience: [], education: [] }
 
   it('carries a title/creator (not "Un-named") and real hyperlinks for contact + verification link', async () => {
-    const z = await JSZip.loadAsync(await docx.generateAtsDocx(data, 'https://passthrough.dev/v/abc'))
+    const z = await JSZip.loadAsync(await docx.generateAtsDocx(data, 'https://usepassthrough.com/v/abc'))
     const core = await z.file('docProps/core.xml').async('string')
     expect(core).toContain('<dc:title>Jane Doe — Resume</dc:title>')
     expect(core).not.toContain('Un-named')
@@ -138,13 +138,13 @@ describe('docx.service', () => {
     const rels = await z.file('word/_rels/document.xml.rels').async('string')
     expect(rels).toContain('mailto:j@x.com')
     expect(rels).toContain('https://linkedin.com/in/jane')
-    expect(rels).toContain('https://passthrough.dev/v/abc')
+    expect(rels).toContain('https://usepassthrough.com/v/abc')
   })
   it('the text still extracts in reading order with links inline (ATS-safe)', async () => {
     const rp = require('../src/services/resume.parser.js')
-    const text = await rp.extractText(await docx.generateAtsDocx(data, 'https://passthrough.dev/v/abc'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+    const text = await rp.extractText(await docx.generateAtsDocx(data, 'https://usepassthrough.com/v/abc'), 'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
     // The credential sits on its own line under the contact line (applicant docs pass); the order and the links are unchanged.
-    expect(text).toContain('j@x.com | linkedin.com/in/jane\nPassthrough Verified: https://passthrough.dev/v/abc')
+    expect(text).toContain('j@x.com | linkedin.com/in/jane\nPassthrough Verified: https://usepassthrough.com/v/abc')
   })
   it('builds a cover letter document', async () => {
     const buf = await docx.generateCoverLetterDocx('Dear Hiring Manager,\n\nPara one.\n\nSincerely,\nJane', 'Jane Doe')
@@ -268,7 +268,7 @@ describe('updateDeliveredResume', () => {
       id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'FIX', fix_retry_count: 1,
       job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: { name: 'Jane', skills: ['Old'] },
       resume_ats_path: 'old.docx', resume_pdf_path: 'old.pdf', resume_hash: 'oldhash', resume_pdf_hash: 'oldpdf',
-      verification_code: 'CODE1', verification_url: 'https://passthrough.dev/v/CODE1', verified_at: '2026-01-01',
+      verification_code: 'CODE1', verification_url: 'https://usepassthrough.com/v/CODE1', verified_at: '2026-01-01',
       quantification_prompts: [{ bullet: 'Built APIs', suggestion: 'add a number' }, { bullet: 'Removed bullet', suggestion: 'add a number' }],
       cover_letter_text: 'old letter',
     }

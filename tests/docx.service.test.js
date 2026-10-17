@@ -48,10 +48,10 @@ describe('generateAtsDocx', () => {
   })
 
   it('labels the verification link "Verified" when verified=true (default) and "Scan Report" when verified=false', async () => {
-    const verifiedText   = await extractText(await generateAtsDocx(MINIMAL, 'https://passthrough.dev/v/ABC123'))
-    const unverifiedText = await extractText(await generateAtsDocx(MINIMAL, 'https://passthrough.dev/v/ABC123', { verified: false }))
+    const verifiedText   = await extractText(await generateAtsDocx(MINIMAL, 'https://usepassthrough.com/v/ABC123'))
+    const unverifiedText = await extractText(await generateAtsDocx(MINIMAL, 'https://usepassthrough.com/v/ABC123', { verified: false }))
     expect(verifiedText).toContain('Passthrough Verified')
-    expect(verifiedText).toContain('https://passthrough.dev/v/ABC123')
+    expect(verifiedText).toContain('https://usepassthrough.com/v/ABC123')
     expect(unverifiedText).toContain('Passthrough Scan Report')
     expect(unverifiedText).not.toContain('Passthrough Verified:')
   })

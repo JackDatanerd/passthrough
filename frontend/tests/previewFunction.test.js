@@ -9,7 +9,7 @@ const HAD = { fetch: globalThis.fetch, caches: globalThis.caches, HTMLRewriter: 
 
 function ctx(code = CODE, env = { API_URL: 'https://api.example/api' }) {
   return {
-    params: { code }, env, request: { url: `https://passthrough.dev/v/${code}` },
+    params: { code }, env, request: { url: `https://usepassthrough.com/v/${code}` },
     next: async () => new Response('<html><head><title>x</title></head></html>'),
     waitUntil: p => { pending.push(p) },
   }

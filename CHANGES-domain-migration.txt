@@ -1,0 +1,22 @@
+Domain migration: passthrough.dev -> usepassthrough.com
+=======================================================
+
+Changed (76 files): every reference to passthrough.dev and api.passthrough.dev now points at
+usepassthrough.com and api.usepassthrough.com.
+- wrangler.toml: FRONTEND_URL, PAYSTACK_CALLBACK_URL, EMAIL_FROM
+- src: SUPPORT_EMAIL fallbacks (email.service.js), email footer + support copy (templates/emails.js),
+  customer-facing payment messages (payments.controller.js)
+- frontend: index.html (og:url, og:image, twitter:image, JSON-LD), robots.txt, sitemap.xml, support
+  mailto links and legal pages (Terms, Privacy, PartnerTerms, Pricing, PaymentSuccess, Footer, Verify,
+  VerifyLookup, VerifySection), code comments in api.js / apiUrl.js / _headers
+- .dev.vars.example, DEPLOYMENT.md (+ new section 12: cutover runbook), smoke-test.sh, supabase/seed.js
+- tests updated to match
+
+NOT changed, on purpose:
+- supabase/migrations/*: applied migrations are history; editing them changes nothing in the database.
+- deleted-<id>@passthrough.dev (scrub_account_data, auth.controller.js, and the tests that assert it): an
+  internal tombstone value, never emailed. Changing it would break the email-log purge for accounts that
+  are already deleted.
+- CHANGES-*.txt history files.
+
+No migration, no schema change, no new env vars.

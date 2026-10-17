@@ -229,7 +229,7 @@ export default function Pricing() {
               {pricing.autoRefundUndeliverable && (
                 <li>Paid but we couldn't deliver (the resume or account no longer exists)? That payment is refunded automatically too.</li>
               )}
-              <li>Anything else, email <a href="mailto:support@passthrough.dev" className="text-blue-700 hover:underline">support@passthrough.dev</a> with your payment reference.</li>
+              <li>Anything else, email <a href="mailto:support@usepassthrough.com" className="text-blue-700 hover:underline">support@usepassthrough.com</a> with your payment reference.</li>
             </ul>
           </div>
         )}

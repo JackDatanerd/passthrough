@@ -260,7 +260,7 @@ export default function PaymentSuccess() {
               {reference && <p className="text-xs text-gray-400 mb-4 font-mono break-all">Reference: {reference}</p>}
               <div className="flex items-center justify-center gap-4">
                 {scanId && <a href={`/scan/${scanId}`} className="text-sm font-medium text-blue-600 hover:underline">Go to your resume</a>}
-                <a href="mailto:support@passthrough.dev" className="text-sm text-blue-600 hover:underline">Email support</a>
+                <a href="mailto:support@usepassthrough.com" className="text-sm text-blue-600 hover:underline">Email support</a>
               </div>
             </>
           )}
@@ -270,7 +270,7 @@ export default function PaymentSuccess() {
               <h1 className="text-xl font-bold text-gray-900 mb-2">A refund was issued on this payment</h1>
               <p className="text-sm text-gray-500 mb-4">
                 Paystack shows a refund on this payment. If it was a partial refund, your resume is unaffected. If the whole
-                payment was refunded, the sale is (or shortly will be) closed on our side. Questions? Email support@passthrough.dev with the reference below.
+                payment was refunded, the sale is (or shortly will be) closed on our side. Questions? Email support@usepassthrough.com with the reference below.
               </p>
               {reference && <p className="text-xs text-gray-400 mb-4 font-mono break-all">Reference: {reference}</p>}
               <div className="flex items-center justify-center gap-4">
@@ -285,7 +285,7 @@ export default function PaymentSuccess() {
               <h1 className="text-xl font-bold text-gray-900 mb-2">This payment is under review</h1>
               <p className="text-sm text-gray-500 mb-4">
                 Your resume was delivered, but this payment has been disputed with your card issuer, so it is on hold while it is
-                reviewed. Nothing is lost on your side. Questions? Email support@passthrough.dev with the reference below.
+                reviewed. Nothing is lost on your side. Questions? Email support@usepassthrough.com with the reference below.
               </p>
               {reference && <p className="text-xs text-gray-400 mb-4 font-mono break-all">Reference: {reference}</p>}
               <div className="flex items-center justify-center gap-4">
@@ -332,7 +332,7 @@ export default function PaymentSuccess() {
               <h1 className="text-xl font-bold text-gray-900 mb-2">We couldn't find a payment to check</h1>
               <p className="text-sm text-gray-500 mb-4">
                 This page needs the payment reference Paystack adds to the link. If you just paid, your payment is safe —
-                open your dashboard to see it, or email support@passthrough.dev.
+                open your dashboard to see it, or email support@usepassthrough.com.
               </p>
               <div className="flex items-center justify-center gap-4">
                 <a href="/dashboard/payments" className="text-sm font-medium text-blue-600 hover:underline">View my payments</a>
@@ -366,7 +366,7 @@ export default function PaymentSuccess() {
                 {supportMessage || 'We received your payment but could not complete your order automatically. We have been notified.'}
               </p>
               <div className="flex items-center justify-center gap-4">
-                <a href="mailto:support@passthrough.dev" className="text-sm text-blue-600 hover:underline">Email support</a>
+                <a href="mailto:support@usepassthrough.com" className="text-sm text-blue-600 hover:underline">Email support</a>
                 <a href="/dashboard" className="text-sm text-blue-600 hover:underline">Go to dashboard</a>
               </div>
             </>
@@ -389,7 +389,7 @@ export default function PaymentSuccess() {
               <div className="text-red-500 text-5xl mb-4">✕</div>
               <h1 className="text-xl font-bold text-gray-900 mb-2">Verification failed</h1>
               <p className="text-sm text-gray-500 mb-4">
-                Your payment may still have gone through. Try again, check your dashboard, or email us at support@passthrough.dev.
+                Your payment may still have gone through. Try again, check your dashboard, or email us at support@usepassthrough.com.
               </p>
               <div className="flex items-center justify-center gap-4">
                 <button type="button" onClick={() => verify()} className="text-sm text-blue-600 hover:underline">

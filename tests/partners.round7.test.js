@@ -9,7 +9,7 @@ let t
 afterEach(() => t?.restore())
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://passthrough.dev', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', ...(over.env || {}) },
   get: k => (k === 'user' ? { id: 'admin-1' } : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? A,
@@ -154,7 +154,7 @@ describe('recoverPartnerLinks', () => {
     const res = await t.mod.recoverPartnerLinks(ctxOf({ body: { email: ' K@X.co ' } }))
     await new Promise(r => setTimeout(r, 0))
     expect(res.status).toBe(200)
-    expect(t.st.sent).toEqual([['k@x.co', 'Coach K', 'https://passthrough.dev/partner/dashboard?token=DTOK']])
+    expect(t.st.sent).toEqual([['k@x.co', 'Coach K', 'https://usepassthrough.com/partner/dashboard?token=DTOK']])
     expect(JSON.stringify(t.st.sent)).not.toContain('payout-details')
   })
   it('gives the identical answer for an address that is not a partner, and sends nothing', async () => {
@@ -316,7 +316,7 @@ describe('routes and templates', () => {
   })
   it('the recovery email template exists and carries only the dashboard link', () => {
     const { render } = require('../src/templates/emails.js')
-    const html = render('partner_links_recovery', { NAME: 'K', DASHBOARD_URL: 'https://d.test/x', FRONTEND_URL: 'https://passthrough.dev' })
+    const html = render('partner_links_recovery', { NAME: 'K', DASHBOARD_URL: 'https://d.test/x', FRONTEND_URL: 'https://usepassthrough.com' })
     expect(html).toContain('https://d.test/x')
     expect(html).not.toContain('{{')
   })

@@ -25,7 +25,7 @@ afterEach(() => { for (const [k, v] of Object.entries(HAD)) { if (v === undefine
 async function run(data, staticMetas) {
   globalThis.fetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({ success: true, data }), { status: 200 }))
   await onRequestGet({
-    params: { code: CODE }, env: { API_URL: 'https://api.example/api' }, request: { url: `https://passthrough.dev/v/${CODE}` },
+    params: { code: CODE }, env: { API_URL: 'https://api.example/api' }, request: { url: `https://usepassthrough.com/v/${CODE}` },
     next: async () => new Response('<html></html>'), waitUntil: () => {},
   })
   metas = staticMetas.map(fakeEl)

@@ -84,7 +84,7 @@ function setup({ leads = [], suppressed = {}, logs = [], supply = [{ role_catego
       sendEmployerCandidatesAvailable: async (env, sb, to, name, field, count, links) => { state.candidateMails.push({ to, links }); return true },
     },
   })
-  const env = { RATE_LIMIT_KV: { get: async () => null, put: async () => {} }, JWT_SECRET: SECRET, FRONTEND_URL: 'https://passthrough.dev' }
+  const env = { RATE_LIMIT_KV: { get: async () => null, put: async () => {} }, JWT_SECRET: SECRET, FRONTEND_URL: 'https://usepassthrough.com' }
   const c = (over = {}) => ({
     env, get: (k) => k === 'user' ? { id: 'admin-1', role: 'ADMIN' } : undefined, executionCtx: { waitUntil: () => {} },
     req: { json: async () => over.body, param: k => (over.params || {})[k], query: k => (over.query || {})[k] },

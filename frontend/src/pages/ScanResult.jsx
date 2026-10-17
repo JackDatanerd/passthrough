@@ -481,7 +481,7 @@ export default function ScanResult() {
                 setPaymentOutcome({ tone: 'amber', text: "You'd already paid for this resume, so that payment bought nothing extra and your resume is unaffected. " +
                   (vres.data.data.refund === 'QUEUED'
                     ? "We've started refunding the extra payment to your original payment method — it can take a few business days to appear."
-                    : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email support@passthrough.dev with reference " + reference + '.') })
+                    : "We couldn't start the refund automatically, but we've been alerted and will refund it. You can also email support@usepassthrough.com with reference " + reference + '.') })
               }
             } catch (verifyErr) {
               // Most failures are still swallowed — the webhook will confirm the payment independently

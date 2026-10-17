@@ -12,7 +12,7 @@ afterEach(() => t?.restore())
 const read = rel => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8')
 
 const ctxOf = (over = {}) => ({
-  env: { FRONTEND_URL: 'https://passthrough.dev', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
+  env: { FRONTEND_URL: 'https://usepassthrough.com', PAYSTACK_CURRENCY: 'USD', ...(over.env || {}) },
   get: k => (k === 'user' ? (over.user || { id: 'admin-1', email: 'a@x.co' }) : undefined),
   req: {
     param: k => (over.params || {})[k ?? 'id'] ?? 'p1',

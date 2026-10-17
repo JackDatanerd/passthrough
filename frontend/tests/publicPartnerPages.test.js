@@ -25,12 +25,12 @@ describe('robots.txt', () => {
     expect(blockedByRobots('/dashboard/settings')).toBe(true)
   })
   it('points at the sitemap that now exists', () => {
-    expect(robots).toMatch(/^Sitemap:\s*https:\/\/passthrough\.dev\/sitemap\.xml/m)
+    expect(robots).toMatch(/^Sitemap:\s*https:\/\/usepassthrough\.com\/sitemap\.xml/m)
   })
 })
 
 describe('sitemap.xml', () => {
-  const urls = [...sitemap.matchAll(/<loc>https:\/\/passthrough\.dev(\/[^<]*)<\/loc>/g)].map(m => m[1])
+  const urls = [...sitemap.matchAll(/<loc>https:\/\/usepassthrough\.com(\/[^<]*)<\/loc>/g)].map(m => m[1])
   it('is a urlset with entries', () => {
     expect(sitemap).toMatch(/<urlset[^>]+sitemaps\.org/)
     expect(urls.length).toBeGreaterThan(3)

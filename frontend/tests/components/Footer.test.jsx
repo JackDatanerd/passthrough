@@ -24,7 +24,7 @@ describe('Footer', () => {
 
   it('offers a mailto support link', () => {
     renderFooter()
-    expect(screen.getByRole('link', { name: 'Support' })).toHaveAttribute('href', 'mailto:support@passthrough.dev')
+    expect(screen.getByRole('link', { name: 'Support' })).toHaveAttribute('href', 'mailto:support@usepassthrough.com')
   })
 
   it('shows the current year in the copyright line', () => {

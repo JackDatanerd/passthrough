@@ -24,8 +24,8 @@ export default function Privacy() {
           <p>
             Passthrough is operated by Saltern Studio. For any privacy question or request,
             contact{' '}
-            <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
-              support@passthrough.dev
+            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
+              support@usepassthrough.com
             </a>.
           </p>
         </Section>
@@ -129,7 +129,7 @@ export default function Privacy() {
         <Section title="6. Verification Links Are Public">
           <p>
             If you purchase a Fix or Credential, a public verification page is generated
-            (passthrough.dev/v/CODE) showing your ATS score, integrity status, the field and level of
+            (usepassthrough.com/v/CODE) showing your ATS score, integrity status, the field and level of
             the job description your resume was scored against, the date it was verified, how many times the page has been viewed, the
             fingerprints (SHA-256 hashes) of the files we delivered, and your first name — unless you
             choose to hide it. Anyone with that link can view this page; it's designed to be shared
@@ -167,8 +167,8 @@ export default function Privacy() {
             If you have an account, you can do most of this yourself: “Download my data” and
             “Delete account” are in Settings, and each scan on your dashboard can be deleted.
             For anything else — including employer inquiries, or if you don't have an account — email{' '}
-            <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
-              support@passthrough.dev
+            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
+              support@usepassthrough.com
             </a>. We'll respond within a reasonable timeframe — if you're in a jurisdiction with a
             legally mandated response window (e.g. GDPR's 30 days), let us know and we'll honor it.
           </p>
@@ -200,8 +200,8 @@ export default function Privacy() {
         <Section title="11. Contact">
           <p>
             Privacy questions or requests:{' '}
-            <a href="mailto:support@passthrough.dev" className="text-blue-600 underline">
-              support@passthrough.dev
+            <a href="mailto:support@usepassthrough.com" className="text-blue-600 underline">
+              support@usepassthrough.com
             </a>
           </p>
         </Section>

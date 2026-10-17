@@ -126,7 +126,7 @@ describe('G4 — the designed PDF must still say what the resume says', () => {
     education: [{ institution: 'University of Nairobi', degree: 'BSc Computer Science', dates: '2013 - 2017' }],
     skills: ['Node.js', 'PostgreSQL', 'Docker', 'Kubernetes'], certifications: [], projects: [], languages: [], awards: [], publications: [], volunteer: [],
   }
-  const url = 'https://passthrough.dev/v/AB12CD'
+  const url = 'https://usepassthrough.com/v/AB12CD'
   const page = pdfTemplate.buildResumeHTML(data, {}, url, { verified: true })
   it('the deterministic template passes its own data (no false positives)', () => {
     expect(claude.checkHtmlFidelity(data, page, { verificationUrl: url })).toEqual({ ok: true, reasons: [] })

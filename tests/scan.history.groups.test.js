@@ -57,11 +57,11 @@ describe('getScanHistory — retries used and the public link', () => {
   })
 
   it('returns the public verification link so the dashboard can copy it, null when there is none', async () => {
-    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: [row({ verification_url: 'https://passthrough.dev/v/ABC' }), row({ id: 's2' })], error: null, count: 2 } : undefined))
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: [row({ verification_url: 'https://usepassthrough.com/v/ABC' }), row({ id: 's2' })], error: null, count: 2 } : undefined))
     const loaded = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     t = loaded
     const { scans } = (await loaded.mod.getScanHistory(ctx())).body.data
     expect(db.calls[0].cols).toContain('verification_url')
-    expect(scans.map(s => s.verificationUrl)).toEqual(['https://passthrough.dev/v/ABC', null])
+    expect(scans.map(s => s.verificationUrl)).toEqual(['https://usepassthrough.com/v/ABC', null])
   })
 })

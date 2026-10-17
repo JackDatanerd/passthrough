@@ -32,7 +32,7 @@ function harness(row, { tables = {}, stubs = {} } = {}) {
     const out = {}
     const hdr = { 'cf-connecting-ip': ip, 'user-agent': ua }
     return {
-      env: { RESUMES_BUCKET: bucket(files), RATE_LIMIT_KV: KV, NODE_ENV: 'production', FRONTEND_URL: 'https://passthrough.dev', ...env },
+      env: { RESUMES_BUCKET: bucket(files), RATE_LIMIT_KV: KV, NODE_ENV: 'production', FRONTEND_URL: 'https://usepassthrough.com', ...env },
       req: { method: 'GET', param: () => code, query: k => query[k], header: n => hdr[n.toLowerCase()], url: `https://api.example/api/verify/${code}`, json: async () => { if (body === undefined) throw new Error('no body'); return body } },
       get: () => null, executionCtx: { waitUntil: () => {} },
       header: (k, v) => { out[k] = v },
@@ -187,7 +187,7 @@ describe('gap: the page owner is told their page was reported', () => {
     expect(s.sent).toHaveLength(1)
     const [, , to, name, info] = s.sent[0]
     expect(to).toBe('ada@example.com'); expect(name).toBe('Ada')
-    expect(info.code).toBe(CODE); expect(info.pageUrl).toBe(`https://passthrough.dev/v/${CODE}`)
+    expect(info.code).toBe(CODE); expect(info.pageUrl).toBe(`https://usepassthrough.com/v/${CODE}`)
     expect(JSON.stringify([to, name, info])).not.toMatch(/secret reporter words|reader@example\.com/)
   })
   it('is limited to one notice per page per 3 days', async () => {
@@ -208,12 +208,12 @@ describe('gap: the page owner is told their page was reported', () => {
 
 describe('gap: QR code for the page link', () => {
   it('SVG: a real QR (one path, quiet zone, white background)', () => {
-    const svg = renderQrSvg(`https://passthrough.dev/v/${CODE}`)
+    const svg = renderQrSvg(`https://usepassthrough.com/v/${CODE}`)
     expect(svg).toMatch(/^<svg /); expect(svg).toContain('viewBox="0 0 37 37"')   // 29 modules + 2 x 4 quiet
     expect(svg).toContain('fill="#fff"'); expect(svg.match(/<path /g)).toHaveLength(1)
   })
   it('PNG: valid signature, 1-bit grayscale, square, scale 8', () => {
-    const png = Buffer.from(renderQrPng(`https://passthrough.dev/v/${CODE}`))
+    const png = Buffer.from(renderQrPng(`https://usepassthrough.com/v/${CODE}`))
     expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a')
     expect(png.readUInt32BE(16)).toBe(37 * 8); expect(png.readUInt32BE(20)).toBe(37 * 8)
     expect(png[24]).toBe(1); expect(png[25]).toBe(0)
@@ -223,7 +223,7 @@ describe('gap: QR code for the page link', () => {
     const png = t.mod.getQrPng(t.ctx())
     expect(png.headers['Content-Type']).toBe('image/png'); expect(png.headers['Cache-Control']).toBe('public, max-age=86400')
     expect(Buffer.from(png.data).subarray(1, 4).toString()).toBe('PNG')
-    const svg = t.mod.getQrSvg(t.ctx({ code: CODE.toLowerCase(), env: { FRONTEND_URL: 'https://passthrough.dev/' } }))
+    const svg = t.mod.getQrSvg(t.ctx({ code: CODE.toLowerCase(), env: { FRONTEND_URL: 'https://usepassthrough.com/' } }))
     expect(svg.headers['Content-Type']).toMatch(/svg/); expect(svg.data).toContain('<svg')
     expect(t.mod.getQrPng(t.ctx({ code: `../${CODE}` })).status).toBe(404)
     expect(t.mod.getQrSvg(t.ctx({ code: 'nope' })).status).toBe(404)
@@ -233,7 +233,7 @@ describe('gap: QR code for the page link', () => {
     const routesPath = require.resolve('../src/routes/verify.routes.js')
     delete require.cache[routesPath]
     const app = new Hono(); app.route('/api/verify', require(routesPath))
-    const env = { NODE_ENV: 'production', FRONTEND_URL: 'https://passthrough.dev' }
+    const env = { NODE_ENV: 'production', FRONTEND_URL: 'https://usepassthrough.com' }
     for (const [ext, type] of [['png', 'image/png'], ['svg', 'image/svg+xml; charset=utf-8']]) {
       const res = await app.request(`/api/verify/${CODE}/qr.${ext}`, {}, env)
       expect(res.status).toBe(200); expect(res.headers.get('content-type')).toBe(type)

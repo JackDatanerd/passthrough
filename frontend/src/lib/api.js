@@ -14,7 +14,7 @@ export { getErrorMessage } from './errors'
 export { SESSION_ENDED_EVENT } from './session'
 
 // Dev:  Vite proxy handles /api -> localhost:4000
-// Prod: VITE_API_URL=https://api.passthrough.dev  (with or without the trailing
+// Prod: VITE_API_URL=https://api.usepassthrough.com  (with or without the trailing
 //       /api — resolveApiBase() normalises both; every Worker route lives under /api)
 const api = axios.create({
   baseURL: resolveApiBase(import.meta.env.VITE_API_URL),

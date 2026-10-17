@@ -363,7 +363,7 @@ async function sendEmailChangeCompleted(env, supabase, oldEmail, name, newEmail)
   return send(env, supabase, oldEmail, 'Your Passthrough account email was changed', 'email_change_completed', {
     NAME:          name,
     NEW_EMAIL:     newEmail,
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@passthrough.dev'
+    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com'
   })
 }
 
@@ -943,7 +943,7 @@ async function sendEmployerLeadAck(env, supabase, email, name, fieldLabel, { con
   return send(env, supabase, email, 'Confirm your email for Passthrough early access', 'employer_lead_ack', {
     NAME:          name,
     FIELD_PHRASE:  fieldLabel ? ` in ${fieldLabel}` : '',
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@passthrough.dev',
+    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     CONFIRM_URL:   confirmUrl,
     REMOVE_URL:    removeUrl,
     PREFS_URL:     prefsUrl
@@ -970,7 +970,7 @@ async function sendEmployerCandidatesAvailable(env, supabase, email, name, field
     NAME:          name,
     FIELD:         fieldLabel,
     COUNT_PHRASE:  n === 1 ? 'there is 1 Verified candidate' : `there are ${n} Verified candidates`,
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@passthrough.dev',
+    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     REMOVE_URL:    removeUrl,
     PREFS_URL:     prefsUrl
   }, {
@@ -992,7 +992,7 @@ async function sendEmployerCandidatesAvailable(env, supabase, email, name, field
 async function sendEmployerLeadRejoin(env, supabase, email, { rejoinUrl, removeUrl, unsubscribeUrl, outcome } = {}) {
   if (!rejoinUrl || !removeUrl) throw new Error('sendEmployerLeadRejoin needs rejoinUrl and removeUrl')
   return send(env, supabase, email, 'Do you want to hear from Passthrough again?', 'employer_lead_rejoin', {
-    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@passthrough.dev',
+    SUPPORT_EMAIL: env.SUPPORT_EMAIL || 'support@usepassthrough.com',
     REJOIN_URL:    rejoinUrl,
     REMOVE_URL:    removeUrl
   }, {

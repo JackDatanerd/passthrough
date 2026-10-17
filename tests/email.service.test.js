@@ -13,7 +13,7 @@ function setup({ sendFails = false, logInsertError = null } = {}) {
     'config/email.js': { sendViaResend: async (env, msg) => { if (sendFails) throw new Error('Resend down'); sent.push(msg); return { id: 'x' } } },
     'config/supabase.js': { getSupabase: () => db },
   })
-  const env = { FRONTEND_URL: 'https://passthrough.dev', EMAIL_FROM: 'P <hello@passthrough.dev>', OWNER_ALERT_EMAIL: 'owner@example.com', RATE_LIMIT_KV: kv() }
+  const env = { FRONTEND_URL: 'https://usepassthrough.com', EMAIL_FROM: 'P <hello@usepassthrough.com>', OWNER_ALERT_EMAIL: 'owner@example.com', RATE_LIMIT_KV: kv() }
   return { mod, restore, sent, db, env }
 }
 const logs = (db, table = 'email_logs') => db.calls.filter(q => q.table === table && q.op === 'insert').map(q => q.values)
@@ -104,8 +104,8 @@ describe('email send — content', () => {
     t = setup()
     await t.mod.sendVerification(t.env, t.db, 'a@b.co', 'Ada', 'abc123')
     const m = t.sent[0]
-    expect(m.html).toContain('href="https://passthrough.dev/verify-email?token=abc123"')
-    expect(m.text).toContain('https://passthrough.dev/verify-email?token=abc123')
+    expect(m.html).toContain('href="https://usepassthrough.com/verify-email?token=abc123"')
+    expect(m.text).toContain('https://usepassthrough.com/verify-email?token=abc123')
     expect(m.text).not.toMatch(/<[a-z]/i)
     expect(m.text).not.toContain('{{')
   })
@@ -131,7 +131,7 @@ describe('email send — content', () => {
     await t.mod.sendEmailChangedOldAddress(t.env, t.db, 'old@b.co', 'A', 'new@b.co')
     await t.mod.sendAccountDeleted(t.env, t.db, 'a@b.co', 'A')
     for (const m of t.sent) expect(m.html).not.toMatch(/{{\w+}}/)
-    expect(t.sent[0].html).toContain('href="https://passthrough.dev"')      // welcome link follows FRONTEND_URL, not a hard-coded prod URL
+    expect(t.sent[0].html).toContain('href="https://usepassthrough.com"')      // welcome link follows FRONTEND_URL, not a hard-coded prod URL
   })
   it('a user-supplied display name is escaped, and never re-interpreted as a placeholder', () => {
     const html = render('welcome', { NAME: '<img src=x onerror=1> {{FRONTEND_URL}} $&', FRONTEND_URL: 'https://p.dev' })
@@ -267,7 +267,7 @@ describe('sendOwnerNotice — employer leads', () => {
 })
 
 describe('sendEmployerLeadAck', () => {
-  const links = { confirmUrl: 'https://passthrough.dev/employer/confirm?token=C.T', removeUrl: 'https://passthrough.dev/employer/remove?token=R.T', prefsUrl: 'https://passthrough.dev/employer/preferences?token=P.T' }
+  const links = { confirmUrl: 'https://usepassthrough.com/employer/confirm?token=C.T', removeUrl: 'https://usepassthrough.com/employer/remove?token=R.T', prefsUrl: 'https://usepassthrough.com/employer/preferences?token=P.T' }
 
   it('sends the confirmation with the name, field, both signed links, support address and both content and plain-text parts', async () => {
     t = setup()
@@ -279,12 +279,12 @@ describe('sendEmployerLeadAck', () => {
     expect(m.html).not.toContain('Dana')
     expect(m.text).not.toContain('Dana')
     expect(m.html).toContain('in Sales')
-    expect(m.html).toContain('href="https://passthrough.dev/employer/confirm?token=C.T"')
-    expect(m.html).toContain('href="https://passthrough.dev/employer/remove?token=R.T"')
-    expect(m.html).toContain('support@passthrough.dev')
+    expect(m.html).toContain('href="https://usepassthrough.com/employer/confirm?token=C.T"')
+    expect(m.html).toContain('href="https://usepassthrough.com/employer/remove?token=R.T"')
+    expect(m.html).toContain('support@usepassthrough.com')
     expect(m.html).not.toMatch(/{{/)                     // no unfilled placeholder
-    expect(m.text).toContain('https://passthrough.dev/employer/confirm?token=C.T')
-    expect(m.text).toContain('https://passthrough.dev/employer/remove?token=R.T')
+    expect(m.text).toContain('https://usepassthrough.com/employer/confirm?token=C.T')
+    expect(m.text).toContain('https://usepassthrough.com/employer/remove?token=R.T')
     expect(logs(t.db).map(l => l.status)).toEqual(['sent'])
   })
   it('omits the field phrase when none was given', async () => {

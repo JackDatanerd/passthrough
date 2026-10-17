@@ -4,7 +4,7 @@
 // further down (see lib/env.js for what counts as fatal).
 const { validateEnv } = require('../lib/env')
 
-// "https://passthrough.dev/" would break CORS and put a double slash in every emailed link —
+// "https://usepassthrough.com/" would break CORS and put a double slash in every emailed link —
 // strip trailing slashes in place (cron and queue entry points call this too, since they
 // build emailed links without ever passing through the HTTP middleware).
 function normalizeEnv(env) {
