@@ -29,7 +29,7 @@ const wordsRegex = (list, flags = 'i') => new RegExp(`\\b(?:${buzzAlternation(li
 
 // Per-prompt versions, so a change in one prompt can be told apart from a change in another in the interview-outcome
 // numbers (scans.prompt_version / scans.letter_prompt_version, migration 0094). Bump the one you changed.
-const PROMPT_VERSIONS = { score: 4, rewrite: 4, extract: 4, letter: 4 }
+const PROMPT_VERSIONS = { score: 4, rewrite: 5, extract: 4, letter: 5 }
 const FIX_PROMPT_VERSION = `docgen-rewrite${PROMPT_VERSIONS.rewrite}.score${PROMPT_VERSIONS.score}.extract${PROMPT_VERSIONS.extract}`
 const LETTER_PROMPT_VERSION = `docgen-letter${PROMPT_VERSIONS.letter}`
 

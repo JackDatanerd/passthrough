@@ -52,6 +52,7 @@ router.post('/:id/retry-scan',     rl.anonScan, validateUuidParam(), c.retryScan
 // Owner edits to the DELIVERED resume (both files rebuilt and re-scored), and its cover letter.
 router.patch('/:id/delivered-resume', auth, rl.resumeEdit, validateUuidParam(), c.updateDeliveredResume)
 router.post('/:id/cover-letter',   auth, rl.coverLetter, validateUuidParam(), c.generateCoverLetter)
+router.patch('/:id/cover-letter',  auth, rl.coverLetter, validateUuidParam(), c.saveCoverLetter)
 router.get( '/:id/cover-letter',   auth, rl.coverLetterDownload, validateUuidParam(), c.downloadCoverLetter)
 router.get( '/:id/cover-letter-pdf', auth, rl.coverLetterPdf, validateUuidParam(), c.downloadCoverLetterPdf)
 

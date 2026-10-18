@@ -259,25 +259,28 @@ describe('rewrite — summary decided in code, level at true scope, provenance a
 
 // ── letters ───────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('letter prompt — three shapes chosen in code, length from the shared constants', () => {
-  it('picks the model letter from what is known: early career, one honest gap, or strong fit', () => {
-    expect(pickLetterKind({ hasJobs: false, years: null, knownGaps: [] })).toBe('early')
-    expect(pickLetterKind({ hasJobs: true, years: 1, knownGaps: ['x'] })).toBe('early')
-    expect(pickLetterKind({ hasJobs: true, years: 6, knownGaps: ['Kubernetes'] })).toBe('gap')
-    expect(pickLetterKind({ hasJobs: true, years: 6, knownGaps: [] })).toBe('strong')
+  it('picks the model letter from what is known: early career, a need to bridge, or strong fit', () => {
+    expect(pickLetterKind({ hasJobs: false, years: null, unprovenNeeds: [] })).toBe('early')
+    expect(pickLetterKind({ hasJobs: true, years: 1, unprovenNeeds: ['x'] })).toBe('early')
+    expect(pickLetterKind({ hasJobs: true, years: 6, unprovenNeeds: ['Kubernetes'] })).toBe('bridge')
+    expect(pickLetterKind({ hasJobs: true, years: 6, unprovenNeeds: [] })).toBe('strong')
     expect(pickLetterKind({ hasJobs: true, years: 6 })).toBe('strong')
   })
   it('the three model letters really differ in shape (different openings, different closing moves)', () => {
     const body = k => LETTER_EXAMPLES[k].split('\n\n')
     const firstWords = k => body(k)[1].split(/\s+/).slice(0, 4).join(' ')
-    expect(new Set(['strong', 'gap', 'early'].map(firstWords)).size).toBe(3)
-    expect(LETTER_EXAMPLES.gap).toMatch(/I have not worked in/); expect(LETTER_EXAMPLES.strong).not.toMatch(/I have not worked in/)
+    expect(new Set(['strong', 'bridge', 'early'].map(firstWords)).size).toBe(3)
+    // no model letter confesses a weakness: the model copies what it is shown
+    for (const k of ['strong', 'bridge', 'early']) expect(LETTER_EXAMPLES[k]).not.toMatch(/I (?:have not|do not yet|am yet to|lack)|\bnot yet\b|still learning/i)
   })
   it('states the length from prompts/constants.js and tells the model the code writes the salutation and sign-off', () => {
     const sys = letterSystemFor('strong')
     expect(sys).toContain(`${K.LETTER_WORDS.min}-${K.LETTER_WORDS.max} words`)
     expect(sys).toContain(`${K.LETTER_WORDS.ceiling} is a hard ceiling`)
     expect(sys).toMatch(/software replaces the salutation and the sign-off/)
-    expect(sys).toMatch(/<known_gaps>/)
+    expect(sys).toMatch(/<strongest_matches>/)
+    expect(sys).toMatch(/<unproven_needs>/)
+    expect(sys).toMatch(/NEVER names a weakness/)
   })
 })
 

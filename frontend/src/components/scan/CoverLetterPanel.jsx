@@ -28,10 +28,27 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   const [recipient, setRecipient] = useState('')
   const [lead, setLead] = useState('')
   const [tone, setTone] = useState('warm')
+  // The person's own edit of the letter: the .docx and .pdf are built from the saved text, so an edit only counts once saved.
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [confirmNew, setConfirmNew] = useState(false)
   const letter = scan.coverLetterText
 
+  async function save() {
+    setSaving(true); setError('')
+    try {
+      const res = await api.patch(`/scan/${scan.id}/cover-letter`, { text: draft })
+      onUpdated({ coverLetterText: res.data.data.coverLetterText })
+      setEditing(false)
+    } catch (err) {
+      setError(getErrorMessage(err, 'We couldn\'t save your changes — try again.'))
+    }
+    setSaving(false)
+  }
+
   async function generate() {
-    setBusy(true); setError('')
+    setBusy(true); setError(''); setConfirmNew(false); setEditing(false)
     try {
       const body = {}
       if (company.trim()) body.company = company.trim()
@@ -77,12 +94,15 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
           <h3 className="font-semibold text-gray-900">Cover letter for this job</h3>
           <p className="text-sm text-gray-500 mt-0.5">
             Written from your delivered resume and this job description only — it won't claim anything your resume doesn't.
-            Read it through and make it yours before you send it.
+            Read it through and edit it until it sounds like you before you send it.
           </p>
         </div>
-        <Button variant={letter ? 'secondary' : 'primary'} size="sm" onClick={generate} loading={busy}>
-          {letter ? 'Write a new one' : 'Write my cover letter'}
-        </Button>
+        {!confirmNew && (
+          <Button variant={letter ? 'secondary' : 'primary'} size="sm" loading={busy}
+            onClick={() => (letter ? setConfirmNew(true) : generate())}>
+            {letter ? 'Write a new one' : 'Write my cover letter'}
+          </Button>
+        )}
       </div>
       <div className="mt-3">
         <button type="button" onClick={() => setTailor(t => !t)} aria-expanded={tailor}
@@ -104,14 +124,37 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
         )}
       </div>
       <Alert className="mt-3">{error}</Alert>
+      {confirmNew && (
+        <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="cover-letter-confirm">
+          <p>A new letter replaces the one below, including any changes you made to it. Copy it first if you want to keep it.</p>
+          <div className="flex gap-2 mt-2">
+            <Button size="sm" onClick={generate} loading={busy}>Replace it</Button>
+            <Button variant="secondary" size="sm" onClick={() => setConfirmNew(false)}>Keep this one</Button>
+          </div>
+        </div>
+      )}
       {letter && (
         <div className="mt-4">
-          <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-md p-4">{letter}</pre>
-          <div className="flex gap-2 mt-3">
-            <CopyButton text={letter} label="Copy text" />
-            <Button variant="secondary" size="sm" onClick={download}>Download (.docx)</Button>
-            <Button variant="secondary" size="sm" onClick={downloadPdf} loading={pdfBusy}>Download (.pdf)</Button>
-          </div>
+          {editing ? (
+            <>
+              <Textarea label="Your letter" rows={16} value={draft} onChange={e => setDraft(e.target.value)} maxLength={4000} showCount
+                hint="Change anything you like. The Word and PDF files use the saved text." />
+              <div className="flex gap-2 mt-3">
+                <Button size="sm" onClick={save} loading={saving} disabled={draft.trim().length < 50}>Save changes</Button>
+                <Button variant="secondary" size="sm" onClick={() => { setEditing(false); setError('') }}>Cancel</Button>
+              </div>
+            </>
+          ) : (
+            <>
+              <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-md p-4">{letter}</pre>
+              <div className="flex gap-2 mt-3 flex-wrap">
+                <CopyButton text={letter} label="Copy text" />
+                <Button variant="secondary" size="sm" onClick={() => { setDraft(letter); setEditing(true); setError('') }}>Edit</Button>
+                <Button variant="secondary" size="sm" onClick={download}>Download (.docx)</Button>
+                <Button variant="secondary" size="sm" onClick={downloadPdf} loading={pdfBusy}>Download (.pdf)</Button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

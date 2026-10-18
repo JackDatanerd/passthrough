@@ -11,6 +11,8 @@ const { LETTER_SYSTEM, letterSystemFor, pickLetterKind } = require('../prompts/l
 const { STRUCTURE_SYSTEM, FREEFORM_SYSTEM, STRUCTURE_EXTRAS, FREEFORM_EXTRAS } = require('../prompts/extract')
 const { computeChecklistScore, normalizeRequirements, mergeJudgement, canon: canonText, quoteInResume, tokenSet: tokenSetOf, mostlyIn } = require('../lib/atsChecklist')
 const { findRewriteStyleProblems, findProvenanceProblems, findRenameProblems } = require('../lib/rewriteStyle')
+const claimGuard = require('../lib/claimGuard')
+const { SKILL_ALIASES, foldWord, wordsOf } = claimGuard
 
 // Stamped on every delivered fix and cover letter (scans.prompt_version / letter_prompt_version, migration 0094) so
 // the outcomes people report (interview / no interview) can be compared across prompt generations. Bump it on ANY
@@ -364,6 +366,8 @@ async function scoreResumeWithAI(env, resumeText, jdText, opts = {}) {
     data: JSON.stringify({
       aiScore: computed.score,
       missingKeywords: computed.missingKeywords,
+      missingMust: computed.missingMust,
+      metMust: computed.metMust,
       checklist: {
         coverage: Math.round(computed.coverage * 100) / 100, requirements: computed.rows, discarded: computed.discarded,
         downgraded: computed.downgraded, cueDowngraded: computed.cueDowngraded, years: computed.years, requirementsCached: req.cached,
@@ -649,6 +653,10 @@ function summaryWorthWriting(resumeData) {
 // `scoreFeedback`: { score, threshold, weakAreas[] } for a retry round or the baseline read of the very first attempt
 // (`baseline: true`), or { score: null, weakAreas[] } for a guard rejection.
 async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = null, baseline = resumeData, context = {}, internal = {}) {
+  // The target line says \"summary: keep\" when there is too little to summarise; the ATS feedback must not tell the writer
+  // the opposite (\"there is no professional summary - write one\"). Code decided; the feedback follows it.
+  if (scoreFeedback && Array.isArray(scoreFeedback.weakAreas) && !summaryWorthWriting(baseline || resumeData))
+    scoreFeedback = { ...scoreFeedback, weakAreas: scoreFeedback.weakAreas.filter(w => !/no professional summary/i.test(String(w))) }
   const feedbackBlock = feedbackFor(scoreFeedback)
   const { line, hasJobs, years } = targetLine(baseline || resumeData, jdText, context)
   const result = await callClaude(
@@ -689,6 +697,11 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
     return { success: false, data: null, error: 'FABRICATION_DETECTED' }
   if (contentLost(baseline || resumeData, rewritten))
     return { success: false, data: null, error: 'CONTENT_LOST' }
+  // Claims the prompt forbids and no other guard saw: leadership/ownership the resume does not state, a tool or name added
+  // inside a bullet or the summary, a result the input never gave, a rank word in the summary. These touch the truth (and a
+  // fabricated tool is credited by the scorer), so they are HARD: one corrective pass names them, and a rewrite that still
+  // makes them is rejected like any other fabrication, with the specifics handed back as feedback (`detail`).
+  const claimProblems = claimGuard.findClaimProblems(baseline || resumeData, rewritten, { source: sourceText(baseline || resumeData), renames: envelope.skillRenames })
 
   // Defensive filter — malformed entries from the model (missing/wrong-typed
   // fields) are dropped rather than allowed to crash the frontend list render.
@@ -699,6 +712,7 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
   // exactly what to fix; if that pass fails for any reason the first (truthful, merely less polished) rewrite ships.
   if (!internal.styleRetry) {
     const problems = [
+      ...claimProblems,
       ...findRewriteStyleProblems(baseline || resumeData, rewritten),
       ...findProvenanceProblems(resumeData, rewritten, envelope.provenance),
       ...findRenameProblems(resumeData, envelope.skillRenames),
@@ -709,7 +723,11 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
         { score: null, weakAreas: ['the previous attempt broke the rules. Fix exactly these and change nothing else that was fine: ' + problems.slice(0, 8).join('; ')] },
         baseline, context, { styleRetry: true })
       if (second.success) return second
+      // The corrective pass did not produce a clean, truthful rewrite: a draft that makes a forbidden claim never ships.
+      if (claimProblems.length) return { success: false, data: null, error: 'FABRICATION_DETECTED', detail: claimProblems.slice(0, 6) }
     }
+  } else if (claimProblems.length) {
+    return { success: false, data: null, error: 'FABRICATION_DETECTED', detail: claimProblems.slice(0, 6) }
   }
 
   return { success: true, data: rewritten, quantificationOpportunities, error: null }
@@ -1112,23 +1130,7 @@ function sourceText(r) {
   return out.join('\n')
 }
 
-// Tool names people write interchangeably. Anything not here must match literally.
-const SKILL_ALIASES = [
-  ['js', 'javascript'], ['ts', 'typescript'], ['k8s', 'kubernetes'], ['postgres', 'postgresql'],
-  ['golang', 'go'], ['ml', 'machine'], ['ai', 'artificial'], ['aws', 'amazon'], ['gcp', 'google'],
-  ['cicd', 'ci', 'cd'], ['ux', 'user'], ['qa', 'quality'], ['bi', 'business'], ['seo', 'search'],
-  ['crm', 'customer'], ['erp', 'enterprise'], ['sql', 'database'], ['nosql', 'database'],
-]
 const SKILL_FILLER = new Set(['and', 'or', 'the', 'of', 'for', 'with', 'in', 'on', 'to', 'a', 'an', 'skills', 'tools', 'basic', 'advanced', 'general', 'strong'])
-const foldWord = w => {
-  const f = w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w
-  // crude stem so manage/managed/management and engineer/engineering agree
-  return f.length >= 7 ? f.slice(0, 5) : f
-}
-const wordsOf = t => String(t || '').toLowerCase()
-  .replace(/c\+\+/g, 'cplusplus').replace(/c#/g, 'csharp').replace(/\.net\b/g, 'dotnet')
-  .replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(Boolean)
-
 // Skills in `rewritten` sharing NOT ONE word with anything in the original text.
 // Deliberately lenient on wording (a rewrite may tidy "node" into "Node.js", or
 // "management" into "Project Management") and strict on invention: a tool or
@@ -1300,7 +1302,7 @@ const LETTER_CLICHES = new RegExp(`\\b(?:i am writing to (?:apply|express)|i am 
 
 // -> { hard: [...], soft: [...] }. Hard problems are integrity or shape failures (never delivered); soft ones are style,
 // retried once or twice and then accepted rather than failing a paying customer over a cliché.
-function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts, haveNumbers, corpus }) {
+function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts, haveNumbers, corpus, unprovenNeeds = [] }) {
   const hard = [], soft = []
   if (!/^Dear\b/.test(text)) hard.push('it must start with the salutation (no preamble)')
   if (!/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Yours faithfully|Respectfully),?\s*\n/i.test(text)) hard.push('it must end with a sign-off line ("Sincerely,") followed by the candidate\'s name')
@@ -1309,7 +1311,13 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   // Figures: digits are checked everywhere; spelled-out numbers only when they are a claim about years.
   // Years the POSTING asks for, restated in the letter ("your posting asks for five years"), are not a claim about the applicant.
   const claims = tenureClaims(text, { posting: new Set(tenureClaims(jdText)) })
-  const bad = [...numbersIn(withoutTenureClaims(text), { words: false })].filter(n => !allowedNumbers.has(n))
+  // Spelled-out counts are claims too (\"a team of eleven analysts\" used to pass: only digits were read). A plan's time
+  // horizon (\"in the first 90 days\") promises the future and claims nothing about the past, so it is set aside first.
+  // Small spelled counts (\"two things\", \"three vendors\") are ordinary prose and stay tolerated (a deliberate earlier
+  // decision, pinned by a test); a spelled count of ten or more (\"eleven analysts\", \"forty workshops\") is a metric.
+  const prose = claimGuard.withoutHorizons(withoutTenureClaims(text))
+  const digitFigures = numbersIn(prose, { words: false })
+  const bad = [...numbersIn(prose)].filter(n => !allowedNumbers.has(n) && (digitFigures.has(n) || n >= 10))
   for (const n of claims) if (!tenureClaimOk(n, facts, haveNumbers)) bad.push(n)
   if (bad.length) hard.push(`it used figures that are not in the resume (${[...new Set(bad)].slice(0, 5).join(', ')}) - remove them; years of experience may be stated only up to ${typeof facts?.years === 'number' ? facts.years : 'none stated'}`)
   const holes = findPlaceholders(text)
@@ -1317,6 +1325,31 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   // The words inside a placeholder ("[Company Name]") are already reported above; they are not invented names.
   const names = unknownNames(holes.reduce((t, h) => t.split(h).join(' '), text), corpus)
   if (names.length) hard.push(`it named things that are not in the resume, the posting or the application details (${names.slice(0, 6).join(', ')}) - remove them; never add an employer, school, credential or tool`)
+  // Leadership and ownership the resume does not state (\"I led the team\" from \"Helped the team\"), and technologies the
+  // resume never mentions. The posting's own words are allowed for the second (a plan may name the posting's tools).
+  const source = sourceText(resumeData || {})
+  const titles = listOf(resumeData?.experience).map(e => textOf(e?.title)).join(' ')
+  const own = claimGuard.letterOwnershipProblem(text, source, titles)
+  if (own) hard.push(`it claims \"${own}\", which the resume does not say - keep the person's own level and say only what they did`)
+  const techFolded = new Set(claimGuard.TECH_TERMS.map(claimGuard.foldWord))
+  const tech = claimGuard.unknownTerms(text, claimGuard.haveSet(corpus)).filter(w => techFolded.has(claimGuard.foldWord(w.toLowerCase())))
+  if (tech.length) hard.push(`it names tools the resume and the posting never mention (${tech.slice(0, 4).join(', ')}) - remove them`)
+  // A letter NEVER names a weakness (product decision): it majors on strengths. Any statement of what the candidate lacks,
+  // has not done or is new to is rejected, whatever the scorer found missing - a missing requirement is bridged with the
+  // closest real strength (see the prompt), never confessed.
+  const lacks = claimGuard.confessions(text)
+  if (lacks.length)
+    hard.push(`it says the candidate lacks or has not done something (\"${lacks[0]}\") - state no weakness anywhere; write only what they bring and would do`)
+  // ...and never claims the missing thing itself either: a distinctive word of an unproven need that the resume does not
+  // contain, used by the letter as if the person had it, is soft feedback (a plan may legitimately name the posting's tool).
+  const resumeHave = claimGuard.haveSet(source)
+  const lower = text.toLowerCase()
+  for (const need of (Array.isArray(unprovenNeeds) ? unprovenNeeds : [])) {
+    const words = claimGuard.wordsOf(need).filter(w => w.length >= 4 && !/^\d/.test(w) && !SKILL_FILLER.has(w) && !claimGuard.foldWord(w).startsWith('year') && !claimGuard.foldWord(w).startsWith('experi'))
+    const absent = words.filter(w => !resumeHave.has(claimGuard.foldWord(w)))
+    if (absent.length && absent.every(w => lower.includes(w)))
+      soft.push(`it mentions "${need}" - the resume does not show it, so do not present it as something the person has done or used`)
+  }
   if (text.split(/\s+/).length > LETTER_WORDS.ceiling) soft.push(`it is too long - ${LETTER_WORDS.min}-${LETTER_WORDS.max} words, never over ${LETTER_WORDS.ceiling}`)
   const cliche = text.match(LETTER_CLICHES)
   if (cliche) soft.push(`it used the cliche "${cliche[0]}" - replace it with a specific fact`)
@@ -1371,7 +1404,7 @@ function checkLetterEvidence(evidence, { resumeText, jdText }) {
   return soft.slice(0, 3)
 }
 
-// opts = { company, recipient, role, lead, tone, jobTitle, seniority, knownGaps } - all optional, all clipped here.
+// opts = { company, recipient, role, lead, tone, jobTitle, seniority, strongMatches, unprovenNeeds } - all optional, all clipped here.
 async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   const source = { ...resumeData }
   const details = {
@@ -1384,17 +1417,22 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
   const facts = careerFacts(source)
   // What the posting asks for that the resume does not show (the scorer's genuinely-missing requirements): data from our
   // own pipeline, not something the model decides. At most three, shortest first-class: the letter names at most one.
-  const knownGaps = (Array.isArray(opts.knownGaps) ? opts.knownGaps : []).map(g => cleanLine(g, 60)).filter(Boolean).slice(0, 3)
+  const unprovenNeeds = (Array.isArray(opts.unprovenNeeds) ? opts.unprovenNeeds : []).map(g => cleanLine(g, 60)).filter(Boolean).slice(0, 3)
+  // The essential requirements the resume clearly shows: paragraph 2 is built from the best of them.
+  const strongMatches = (Array.isArray(opts.strongMatches) ? opts.strongMatches : []).map(g => cleanLine(g, 60)).filter(Boolean).slice(0, 3)
   const hasJobs = Array.isArray(source.experience) && source.experience.length > 0
-  const letterBase = letterSystemFor(pickLetterKind({ hasJobs, years: facts.years, knownGaps }))
+  const letterBase = letterSystemFor(pickLetterKind({ hasJobs, years: facts.years, unprovenNeeds }))
   const system = letterBase + '\n' + toneLine
   const uk = isUkSpelling(jdText)
   const resumeCorpus = [sourceText(source), stringLeaves(source).join(' ')].join('\n')
   const haveNumbers = numbersIn(sourceText(source))
   // Figures may come from the resume, the posting (a "40-person team" the letter answers) or the typed details; but
   // a claim about the candidate's OWN years of experience is checked against the resume's dates alone.
-  const allowedNumbers = new Set([...haveNumbers, ...numbersIn(String(jdText || '')), ...numbersIn(Object.values(details).join(' '))])
-  const corpus = [sourceText(source), stringLeaves(source).join(' '), String(jdText || ''), Object.values(details).join(' ')].join('\n')
+  // `lead` is what the applicant wants EMPHASISED, not a source of facts: a figure or employer typed there counts only if
+  // the resume (or the posting) also has it, so the panel's promise - the letter claims nothing the resume does not - holds.
+  const factual = Object.entries(details).filter(([k]) => k !== 'lead').map(([, v]) => v).join(' ')
+  const allowedNumbers = new Set([...haveNumbers, ...numbersIn(String(jdText || '')), ...numbersIn(factual)])
+  const corpus = [sourceText(source), stringLeaves(source).join(' '), String(jdText || ''), factual].join('\n')
   const detailLines = [
     details.role && `role: ${details.role}`, details.company && `company: ${details.company}`,
     details.recipient && `hiring manager: ${details.recipient}`, details.lead && `lead with: ${details.lead}`,
@@ -1405,16 +1443,23 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
     `spelling: ${uk ? 'UK' : 'US'}`,
   ].filter(Boolean)
   const MAX_ATTEMPTS = 3
+  // The request runs inside one HTTP call the browser abandons at 150s: three 90s attempts could outlast it, and the work
+  // would finish unseen (then be paid for again on the retry). The whole letter gets one budget; each attempt gets what is left.
+  const LETTER_BUDGET_MS = 140000
+  const startedAt = Date.now()
   let feedback = ''
   let lastProblem = 'FABRICATION_DETECTED'
+  let bestSoft = null   // a draft with no integrity problem, only style ones: better than failing a paying customer
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const left = LETTER_BUDGET_MS - (Date.now() - startedAt)
+    if (attempt > 1 && left < 25000) break
     const result = await callClaude(
       env,
       system,
-      `<target>${targetBits.join(' | ')}</target>\n<application_details>\n${detailLines.join('\n') || '(none given)'}\n</application_details>\n<known_gaps>\n${knownGaps.join('\n') || '(none)'}\n</known_gaps>\n` +
+      `<target>${targetBits.join(' | ')}</target>\n<application_details>\n${detailLines.join('\n') || '(none given)'}\n</application_details>\n<strongest_matches>\n${strongMatches.join('\n') || '(none)'}\n</strongest_matches>\n<unproven_needs>\n${unprovenNeeds.join('\n') || '(none)'}\n</unproven_needs>\n` +
       `<resume_data>\n${jsonForPrompt(resumeData)}\n</resume_data>\n\n<job_description>\n${stripPromptTags(jdText)}\n</job_description>${feedback}`,
       1400,
-      { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'cover_letter', stableSystemChars: letterBase.length }
+      { timeoutMs: Math.max(20000, Math.min(LONG_CALL_TIMEOUT_MS, left)), label: 'cover_letter', stableSystemChars: letterBase.length }
     )
     if (!result.success) return result
     if (result.stopReason === 'max_tokens') return { success: false, data: null, error: 'RESPONSE_TRUNCATED' }
@@ -1427,12 +1472,14 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
     // The model never gets to choose the salutation or sign-off (no guessed honorific, UK vs US closing).
     let text = applyLetterFrame(reply.letter, { recipient: details.recipient, name: cleanLine(resumeData?.name, 80), uk })
     if (text.length < 120) return { success: false, data: null, error: 'PARSE_FAIL' }
-    const { hard, soft } = checkLetter(text, { resumeData: source, jdText, details, allowedNumbers, facts, haveNumbers, corpus })
+    const { hard, soft } = checkLetter(text, { resumeData: source, jdText, details, allowedNumbers, facts, haveNumbers, corpus, unprovenNeeds })
     soft.push(...checkLetterEvidence(reply.evidence, { resumeText: resumeCorpus, jdText }))
     if (!hard.length && (!soft.length || attempt === MAX_ATTEMPTS)) return { success: true, data: text.slice(0, 4000), error: null }
-    lastProblem = hard.some(h => /figures|named things/.test(h)) ? 'FABRICATION_DETECTED' : hard.some(h => /placeholders/.test(h)) ? 'PLACEHOLDER_DETECTED' : hard.length ? 'LETTER_SHAPE' : lastProblem
+    if (!hard.length) bestSoft = text
+    lastProblem = hard.some(h => /figures|named things|claims "|names tools/.test(h)) ? 'FABRICATION_DETECTED' : hard.some(h => /placeholders/.test(h)) ? 'PLACEHOLDER_DETECTED' : hard.length ? 'LETTER_SHAPE' : lastProblem
     feedback = `\n\nIMPORTANT — the previous draft was rejected: ${[...hard, ...soft].join('; ')}. Write the letter again fixing exactly that, and keep everything else the rules above ask for.`
   }
+  if (bestSoft) return { success: true, data: bestSoft.slice(0, 4000), error: null }
   return { success: false, data: null, error: lastProblem }
 }
 

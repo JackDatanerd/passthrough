@@ -203,7 +203,18 @@ function computeChecklistScore(parsed, { resumeText, jdText, now = new Date() })
     .filter(k => k.length <= 60)
     .slice(0, 15)
 
-  return { ok: true, score, coverage, missingKeywords, rows, discarded, downgraded, cueDowngraded, years: candYears }
+  // The requirements the posting calls ESSENTIAL that the resume does not show, nothing else. Only these may ever be named in
+  // a cover letter: a missing nice-to-have is not a reason to tell an employer what the candidate lacks.
+  const missingMust = rows
+    .filter(r => r.status === 'missing' && r.priority === 'must' && !allTokensIn(r.requirement, resumeSet))
+    .map(r => r.requirement)
+    .filter(k => k.length <= 60)
+    .slice(0, 3)
+
+  // The essential requirements the resume clearly shows (stated, not downgraded): what a cover letter should build on.
+  const metMust = rows.filter(r => r.status === 'met' && r.priority === 'must').map(r => r.requirement).filter(k => k.length <= 60).slice(0, 3)
+
+  return { ok: true, score, coverage, missingKeywords, missingMust, metMust, rows, discarded, downgraded, cueDowngraded, years: candYears }
 }
 
 module.exports = { computeChecklistScore, normalizeRequirements, mergeJudgement, quoteInResume, canon, tokenSet, mostlyIn, cueOk, genericYears, WEIGHT, CREDIT, SHARE, MIN_REQUIREMENTS }

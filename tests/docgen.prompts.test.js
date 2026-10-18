@@ -305,15 +305,44 @@ describe('cover letter v2', () => {
     vi.stubGlobal('fetch', captureFetch(broken, broken, broken))
     expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(false)     // never delivers raw JSON
   })
-  it('the gaps list comes from the scorer, picks the model letter, and is clipped; no list means no gap talk is requested', async () => {
+  it('the scorer\'s strongest matches and unproven needs are data in the prompt, clipped, and pick the model letter; none means none', async () => {
     const f = captureFetch(letter()); vi.stubGlobal('fetch', f)
-    await claude.generateCoverLetter(opts, base, jd, { knownGaps: ['Kubernetes <b>', 'Terraform', 'Go', 'extra fourth'] })
-    expect(f.bodies[0].messages[0].content).toMatch(/<known_gaps>\nKubernetes b\nTerraform\nGo\n<\/known_gaps>/)
-    expect(f.bodies[0].system).toMatch(/one honest gap/)
+    await claude.generateCoverLetter(opts, base, jd, { strongMatches: ['SQL <b>', 'Reporting', 'Vendors', 'extra fourth'], unprovenNeeds: ['Kubernetes <b>', 'Terraform', 'Go', 'extra fourth'] })
+    expect(f.bodies[0].messages[0].content).toMatch(/<strongest_matches>\nSQL b\nReporting\nVendors\n<\/strongest_matches>/)
+    expect(f.bodies[0].messages[0].content).toMatch(/<unproven_needs>\nKubernetes b\nTerraform\nGo\n<\/unproven_needs>/)
+    expect(f.bodies[0].system).toMatch(/does not show one essential requirement directly/)
     const f2 = captureFetch(letter()); vi.stubGlobal('fetch', f2)
     await claude.generateCoverLetter(opts, base, jd)
-    expect(f2.bodies[0].messages[0].content).toMatch(/<known_gaps>\n\(none\)\n<\/known_gaps>/)
+    expect(f2.bodies[0].messages[0].content).toMatch(/<unproven_needs>\n\(none\)\n<\/unproven_needs>/)
     expect(f2.bodies[0].system).toMatch(/strong fit/)
+  })
+  it('a letter never names a weakness, whatever the scorer found missing, and never presents a missing need as the person\'s own', async () => {
+    const lack = letter('I have not worked with Kubernetes, but I learn quickly and the weekly reporting pack shows it, and vendor queries dropped. '.repeat(2))
+    vi.stubGlobal('fetch', captureFetch(lack, lack, lack))
+    const r = await claude.generateCoverLetter(opts, base, jd, { unprovenNeeds: ['Kubernetes'] })
+    expect(r.success).toBe(false)
+    const newbie = letter('I am still learning the vendor side, and the weekly reporting pack shows how I work. '.repeat(2))
+    vi.stubGlobal('fetch', captureFetch(newbie, newbie, newbie))
+    expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(false)
+    const bridged = letter('The closest thing I can show to your reporting need is the weekly pack that management used to chase, now in one place. '.repeat(2))
+    vi.stubGlobal('fetch', captureFetch(bridged))
+    expect((await claude.generateCoverLetter(opts, base, jd, { unprovenNeeds: ['Kubernetes'] })).success).toBe(true)
+  })
+  it('leadership, large spelled counts and tools the resume never names are rejected in a letter', async () => {
+    for (const mid of ['At Acme Ltd I led the logistics team and owned the vendor strategy end to end, which is why weekly reporting stayed on time. '.repeat(2),
+      'I trained eleven analysts and ran forty workshops on the weekly reporting pack, and vendor queries dropped. '.repeat(2),
+      'I built the weekly reporting pack in Tableau and Snowflake, and vendor queries dropped because of it. '.repeat(2)]) {
+      const bad = letter(mid); vi.stubGlobal('fetch', captureFetch(bad, bad, bad))
+      expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(false)
+    }
+    // "Managed vendor relationships" is in the resume, so "managed ... the logistics team" is the person's own level
+    const ok = letter(); vi.stubGlobal('fetch', captureFetch(ok))
+    expect((await claude.generateCoverLetter(opts, base, jd)).success).toBe(true)
+  })
+  it('a typed "lead with" is emphasis, not a source of facts: a figure typed there does not license it in the letter', async () => {
+    const fig = letter('Over the years I cut reporting time by 45 percent with the weekly pack, and vendor queries dropped. '.repeat(2))
+    vi.stubGlobal('fetch', captureFetch(fig, fig, fig))
+    expect((await claude.generateCoverLetter(opts, base, jd, { lead: 'cut reporting time by 45 percent' })).success).toBe(false)
   })
   it('placeholders are still retried and rejected', async () => {
     const bad = letter('I would love to join [Company Name] and bring weekly reporting that management can trust to your team. '.repeat(2))

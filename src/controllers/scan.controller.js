@@ -88,6 +88,8 @@ const rateLimiter          = require('../middleware/rateLimiter')
 const { clientIp, rateKeyIp } = require('../lib/clientIp')
 const { must, warnOnError, isRangeError } = require('../lib/db')
 const { deriveJobTitle } = require('../lib/jobTitle')
+const { companyFromPosting } = require('../lib/jobCompany')
+const { pickWinner } = require('../lib/readerQuality')
 const { sanitizeSearch, applyScanFilters, applyScanSort } = require('../lib/scanSearch')
 const { publicFirstName } = require('../lib/text')
 const { failureMessage, isRetryable } = require('../lib/scanFailure')
@@ -841,6 +843,8 @@ async function fetchAiScore(env, text, jdText, logLabel, ruleScore = null) {
 function blendAiScore(ruleScore, aiResult, logLabel) {
   let finalScore = ruleScore
   let aiMissingKeywords = []
+  let aiMissingMust = []
+  let aiMetMust = []
   let aiPartialKeywords = []
   let aiBlended = false
   if (aiResult.success) {
@@ -857,6 +861,12 @@ function blendAiScore(ruleScore, aiResult, logLabel) {
       if (Array.isArray(parsed.missingKeywords))
         aiMissingKeywords = parsed.missingKeywords
           .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 15)
+      if (Array.isArray(parsed.metMust))
+        aiMetMust = parsed.metMust
+          .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 3)
+      if (Array.isArray(parsed.missingMust))
+        aiMissingMust = parsed.missingMust
+          .filter(k => typeof k === 'string' && k.trim() && k.length <= 60).map(k => k.trim()).slice(0, 3)
     } catch (parseErr) {
       // Non-fatal by design - falls back to a rule-only score - but log it
       // so a silent AI-scoring degradation is at least visible in tail.
@@ -867,7 +877,7 @@ function blendAiScore(ruleScore, aiResult, logLabel) {
     console.error(`${logLabel} scored without the AI half - held below the credential threshold`)
     finalScore = Math.min(finalScore, c.ATS_BADGE_THRESHOLD - 1)
   }
-  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords, aiPartialKeywords, aiBlended }
+  return { finalScore: Math.max(0, Math.min(100, finalScore)), aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords, aiBlended }
 }
 
 async function getScan(ctx) {
@@ -1475,14 +1485,16 @@ async function generateCoverLetter(ctx) {
     tone:      z.enum(['warm', 'direct', 'formal']).optional(),
   }).safeParse(rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {})
   if (!steer.success) return ctx.json({ success: false, message: 'Those letter options are not valid.' }, 400)
-  // What the posting asks for that the DELIVERED resume does not show (the scorer's genuinely-missing requirements, most
-  // important first), so the letter addresses at most one real gap - and none when there is none - instead of the model
-  // deciding on its own that the candidate lacks something.
-  const gapSource = Array.isArray(scan.fixAtsReport?.aiMissingKeywords) && scan.fixAtsReport.aiMissingKeywords.length
-    ? scan.fixAtsReport.aiMissingKeywords : scan.fullAtsReport?.aiMissingKeywords
+  // A letter never names a weakness, so a missing requirement is not "a gap to confess" - it is a need to bridge with the
+  // closest real strength, and the requirements the delivered resume DOES show are what the letter is built on. Only the
+  // ESSENTIAL ones (priority "must") are passed, from the DELIVERED resume's own report (never the original upload's: gaps the
+  // fix already closed used to be handed over). A report written before these fields existed carries none: the safe default.
+  const report = scan.fixAtsReport || {}
+  const names = v => (Array.isArray(v) ? v.filter(g => typeof g === 'string') : [])
   const result = await claudeService.generateCoverLetter(ctx.env, data, jdText, {
-    ...steer.data, jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel,
-    knownGaps: Array.isArray(gapSource) ? gapSource.filter(g => typeof g === 'string').slice(0, 3) : [],
+    ...steer.data, company: steer.data.company || companyFromPosting(jdText) || undefined,
+    jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel,
+    strongMatches: names(report.aiMetMust).slice(0, 3), unprovenNeeds: names(report.aiMissingMust).slice(0, 1),
   })
   if (!result.success) {
     console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
@@ -1502,6 +1514,36 @@ async function generateCoverLetter(ctx) {
   // before the migration still delivers the letter.
   try { await supabase.from('scans').update({ letter_prompt_version: claudeService.LETTER_PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
   return ctx.json({ success: true, data: { coverLetterText: result.data } })
+}
+
+// PATCH /api/scan/:id/cover-letter - the person's own edit of the letter. The panel tells them to "make it yours", but the
+// .docx and .pdf are rendered from the STORED text, so an edit made on screen never reached the files they send. The edit is
+// theirs: it is not run through the model guards (those police what the MODEL may claim), only cleaned and size-limited.
+async function saveCoverLetter(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan || scan.userId !== user.id) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+  if (!scan.fixPurchased || scan.status !== 'FIX_DELIVERED')
+    return ctx.json({ success: false, message: 'Your resume must be delivered before a cover letter can be saved.' }, 400)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(PURCHASE_REVERSED, 403)
+  let raw = {}
+  try { raw = await ctx.req.json() } catch (_) { raw = {} }
+  const parsed = z.object({ text: z.string().max(8000) }).safeParse(raw && typeof raw === 'object' && !Array.isArray(raw) ? raw : {})
+  if (!parsed.success) return ctx.json({ success: false, message: 'That letter is not valid.' }, 400)
+  const text = parsed.data.text.replace(/\r\n?/g, '\n').replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '').replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim()
+  if (text.length < 50) return ctx.json({ success: false, message: 'A cover letter needs at least a few sentences.' }, 400)
+  if (text.length > 4000) return ctx.json({ success: false, message: 'That letter is too long - keep it under 4,000 characters.' }, 400)
+  let q = supabase.from('scans').update({ cover_letter_text: text })
+    .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', scan.fixRetryCount ?? 0)
+  q = scan.resumeAtsPath ? q.eq('resume_ats_path', scan.resumeAtsPath) : q.is('resume_ats_path', null)
+  const { data: updated, error: updErr } = await q.select('id')
+  if (updErr) throw updErr
+  if (Array.isArray(updated) && updated.length === 0)
+    return ctx.json({ success: false, message: 'Your resume changed while you were editing. Please reload and try again.' }, 409)
+  return ctx.json({ success: true, data: { coverLetterText: text } })
 }
 
 function safeTimeZone(tz) {
@@ -2776,14 +2818,14 @@ async function computeFormattedScore(env, resumeData, jdText, label) {
 async function scoreLikeScan(env, text, jdText, logLabel) {
   const rule = atsService.scoreResume(text, jdText)
   const aiResult = await fetchAiScore(env, text, jdText, logLabel, rule.score)
-  const { finalScore, aiMissingKeywords, aiPartialKeywords } = blendAiScore(rule.score, aiResult, logLabel)
-  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiPartialKeywords }
+  const { finalScore, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords } = blendAiScore(rule.score, aiResult, logLabel)
+  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords }
 }
 
 // The breakdown persisted as scans.fix_ats_report for a DELIVERED file (same shape as
 // full_ats_report, so buildAtsDetail renders both).
 function deliveredReport(scored) {
-  return { ...(scored?.detail || {}), aiMissingKeywords: scored?.aiMissingKeywords || [] }
+  return { ...(scored?.detail || {}), aiMissingKeywords: scored?.aiMissingKeywords || [], aiMissingMust: scored?.aiMissingMust || [], aiMetMust: scored?.aiMetMust || [] }
 }
 
 // Renders the designed PDF for a delivered resume and stores it. Shared by
@@ -3041,7 +3083,7 @@ async function generateFixRun(env, supabase, scanId) {
       // Rule-based only on purpose: this is just to regenerate the weak-areas text.
       const startingScore = atsService.scoreResume(startingText, jdText)
       // Scans delivered before fix_ats_report existed: derive the breakdown the same cheap way.
-      if (!bestReport) bestReport = { ...startingScore.detail, aiMissingKeywords: [] }
+      if (!bestReport) bestReport = { ...startingScore.detail, aiMissingKeywords: [], aiMissingMust: [], aiMetMust: [] }
       lastFeedback = {
         score: scan.fixAtsScore,
         threshold: c.ATS_BADGE_THRESHOLD,
@@ -3073,7 +3115,8 @@ async function generateFixRun(env, supabase, scanId) {
           lastFeedback = {
             score: null,
             threshold: c.ATS_BADGE_THRESHOLD,
-            weakAreas: ['Previous attempt changed facts it must not: it added or dropped a company, institution or project, gave a job a higher or different title, changed employment/education dates, upgraded a degree, added a certification, added skills or tools the person never mentioned, or put in numbers that are not in their resume. Rewrite using ONLY the employers, institutions, titles, dates, degrees, certifications, skills and figures already present — do not add, remove, or alter any.']
+            weakAreas: ['Previous attempt changed facts it must not: it added or dropped a company, institution or project, gave a job a higher or different title, changed employment/education dates, upgraded a degree, added a certification, added skills or tools the person never mentioned, or put in numbers that are not in their resume. Rewrite using ONLY the employers, institutions, titles, dates, degrees, certifications, skills and figures already present — do not add, remove, or alter any.'
+              + (Array.isArray(rewriteResult.detail) && rewriteResult.detail.length ? ' Specifically: ' + rewriteResult.detail.join('; ') : '')]
           }
           continue
         }
@@ -3110,7 +3153,9 @@ async function generateFixRun(env, supabase, scanId) {
       progress.scores.push(candidateScore.score); progress.phase = 'scoring'
       await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
 
-      if (candidateScore.score > bestScore || (baselineHeld && candidateScore.score === bestScore)) {
+      // Inside a small band of ATS points the document that READS better wins (lib/readerQuality.js); outside it the score
+      // decides, and a candidate that would drop a credential-clearing document under the line is never chosen.
+      if (pickWinner({ candScore: candidateScore.score, bestScore, candData: candidateData, bestData, baselineHeld, threshold: c.ATS_BADGE_THRESHOLD })) {
         baselineHeld = false
         bestScore = candidateScore.score
         bestData = candidateData
@@ -3639,6 +3684,6 @@ module.exports = {
   __test,
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
   updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
-  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
+  structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge, revertBadgeUpgrade  // exported for webhook + payments + cron
 }

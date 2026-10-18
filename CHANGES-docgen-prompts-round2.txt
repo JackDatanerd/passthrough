@@ -1,0 +1,60 @@
+Document generation prompts — round 2 (fresh independent audit of the rewrite / cover-letter / extraction prompts and the guards around them)
+Base: 6892109 "Scan/ATS fix round: exact k/m/b scaling in the fabrication guard ..."
+
+NO MIGRATION. Nothing to apply before deploying.
+Prompt versions: rewrite 4 -> 5, letter 4 -> 5 (stamps on delivered fixes / letters change; nothing else reads them).
+Reports written by the NEXT scoring carry two new fields (aiMissingMust, aiMetMust). A delivered fix scored before this
+ships has neither, and its cover letter is then written without "strongest matches" or a bridge: the safe default.
+
+PRODUCT DECISION (from the owner): a cover letter NEVER names a weakness. It majors on strengths; where an essential
+requirement is not directly shown it is BRIDGED with the closest real strength, framed as what the person brings.
+
+GAPS
+G1  The fix loop picked its winner on ATS score alone. lib/readerQuality.js scores how the document reads to a person
+    (summary, figures, openers, run-ons, filler, skills shown in the work, keyword walls). Inside a 2-point ATS band the
+    better-reading document wins; outside it the score decides; a candidate that would drop a credential-clearing
+    document under the line is never chosen (pickWinner).
+G2  The letter confessed weaknesses (the gap kind, fed every missing requirement with its priority stripped, nice-to-haves
+    included, scorer false-"missings" included). Removed. The letter now receives <strongest_matches> (essential
+    requirements the delivered resume clearly shows; paragraph 2 is built from them) and <unproven_needs> (essential
+    requirements it does not show; at most one is bridged, never confessed). The "gap" model letter is now a "bridge"
+    letter, and the "early" model letter no longer states two weaknesses (the model copied what it was shown).
+    The old fallback to the ORIGINAL upload's gaps when the delivered resume had none is gone.
+G3  The letter was read-only. New PATCH /api/scan/:id/cover-letter saves the person's own edit (cleaned, 50-4000 chars,
+    pinned to the delivery); the panel gets Edit / Save / Cancel, and "Write a new one" asks before replacing a letter.
+    The Word and PDF files are built from the saved text, so an edit now reaches them.
+G4  The company is taken from the posting when the person did not type it (lib/jobCompany.js: an explicit "Company:" line,
+    or a phrase confirmed by a second mention; otherwise null -> "your team" as before).
+G5  Rewrite prompt: cut or merge the bullets least relevant to the posting first, older roles before recent ones.
+    NOT BUILT: a "what to emphasise" input for the resume rewrite (the letter has one). It needs a column, an endpoint and
+    UI on the retry path; left for the owner's call.
+
+BUGS
+B1  Ownership inflation was unenforced: "Helped/Assisted/Supported" -> "Led/Owned/Directed" passed every guard, in
+    bullets, the summary and letters. lib/claimGuard.js: ownership words must be in the role's own source text or carried
+    by a rank title ("Team Lead"); letters check against the whole resume.
+B2  Tools / names / results added INSIDE a bullet passed (only the skills list was checked), and the scorer credits a
+    fabricated tool as "met", so it could lift a score over the credential line. Names and ~170 lowercase technology
+    terms, and results (reduced / improved / saved / "resulting in") the input never gave, are now rejected. Judged only on
+    text the model wrote; a declared skill rename is allowed.
+B3  The summary (most-read sentence) accepted "Senior Data Engineer ... leading data teams" and "fluent in Snowflake and
+    dbt" for a support analyst. Rank words, leadership and tools are now checked against the resume.
+    B1-B3 are HARD: one corrective pass names the problem; a draft that still makes the claim is rejected as
+    FABRICATION_DETECTED and the specifics are handed back to the next attempt as feedback.
+B4  Letters: "a team of eleven analysts" / "forty workshops" (spelled counts) passed. Spelled counts of ten or more are now
+    figures (two..nine stay ordinary prose, an earlier deliberate decision). A plan's time horizon ("in the first 90 days")
+    is no longer treated as a claim about the past.
+B5  The model letters contradicted the prompt (they stated weaknesses the prompt said to omit) - see G2.
+B6  "Lead with" text was allowed as a source of figures and names ("used as stated"), breaking the panel's promise. It is
+    emphasis only now; its figures/employers count only if the resume or posting also has them.
+B7  Feedback told the writer to "write a summary" when the code had decided "summary: keep". The contradictory line is dropped.
+B8  A letter could take 3 x 90s against the browser's 150s limit and finish unseen (then be paid for again). One 140s
+    budget for the whole letter; a draft with only style problems is returned instead of failing after a bad last attempt.
+
+FILES
+ src/lib/claimGuard.js (new), src/lib/readerQuality.js (new), src/lib/jobCompany.js (new)
+ src/services/claude.service.js, src/prompts/{letter,rewrite,constants}.js, src/lib/atsChecklist.js
+ src/controllers/scan.controller.js, src/routes/scan.routes.js
+ frontend/src/components/scan/CoverLetterPanel.jsx
+ tests/docgen.claims.test.js (new), tests/docgen.prompts.test.js, tests/prompts.close.test.js, tests/prompts.quality.test.js
+ frontend/tests/components/coverLetterEdit.test.jsx (new)
