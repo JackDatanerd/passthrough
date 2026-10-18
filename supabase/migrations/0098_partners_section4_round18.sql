@@ -33,10 +33,10 @@ revoke execute on function increment_referral_sub_clicks(text, text) from public
 grant  execute on function increment_referral_sub_clicks(text, text) to service_role;
 
 -- Always the LAST statements of a migration: the ledger row, then how far this database has been migrated.
-insert into applied_migrations (version, name) values (96, '0096_partners_section4_round18')
+insert into applied_migrations (version, name) values (98, '0098_partners_section4_round18')
 on conflict (version) do nothing;
 
 insert into system_state (key, value)
-values ('schema_version', jsonb_build_object('version', 96, 'applied_at', now()))
+values ('schema_version', jsonb_build_object('version', 98, 'applied_at', now()))
 on conflict (key) do update set value = excluded.value, updated_at = now()
-  where coalesce((system_state.value ->> 'version')::int, 0) < 96;   -- never move the version BACKWARDS (a re-run of an older file)
+  where coalesce((system_state.value ->> 'version')::int, 0) < 98;   -- never move the version BACKWARDS (a re-run of an older file)

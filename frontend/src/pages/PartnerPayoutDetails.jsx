@@ -143,7 +143,7 @@ export default function PartnerPayoutDetails() {
               </p>
               {holdUntil && (
                 <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 mb-4" data-testid="payout-hold-note">
-                  Because these details changed, your next payout is on hold until about {formatDateTime(holdUntil)}.
+                  Because these details were added or changed, your next payout is on hold until about {formatDateTime(holdUntil)}.
                   This protects you if someone else ever got hold of your link.
                 </p>
               )}

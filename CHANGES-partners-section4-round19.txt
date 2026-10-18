@@ -1,0 +1,36 @@
+Partners / Referral program - section 4, round 19 (independent pass over round 18)
+
+BUGS
+ B1  Round 18 had put back parseInt/Number for COMMISSION_HOLD_DAYS, PAYOUT_DETAILS_HOLD_HOURS, COMMISSION_MIN_PAYOUT_CENTS and
+     REFERRAL_MIN_PRICE_PCT (undoing cross-cutting round 14): "0.5" hours turned the payout hold OFF, a blank price floor
+     turned the guard OFF, "7d" read as 7. Strict numEnv parsing restored (tests/stepUpMinutes.test.js passes again).
+ B2  Migration numbering: the round 18 file was renamed 0098 but still recorded version 96 / name 0096 and EXPECTED_SCHEMA_VERSION
+     was 96 while 0097 exists. The file now records 98 / 0098_partners_section4_round18 and EXPECTED_SCHEMA_VERSION is 98.
+ B3  The terms notice (which round 18 widened to PAUSED partners) also matched ERASED partners (left PAUSED with a placeholder
+     address). They are never mailed or marked notified, so "remaining" never reached 0 and enough of them at the head of the
+     batch blocked everyone behind. Erased partners are excluded in the query.
+ B4  "Missing commissions" listed payments that earn no commission BY DESIGN (duplicate of another payment, no scan, missing scan,
+     deleted account) with a Retry that can never succeed, and read only the newest 500 payments while saying "Nothing missing".
+     Those are filtered out, up to 2000 payments are checked (paged) and the screen says when it was cut short.
+ B5  Partners saw the raw ledger code ("Refunded - ADMIN_REVERSED / REFUND / DISPUTE"), and a rejected sale was called a refund.
+     Codes now map to words. adminReverseSale reported emailed:true whatever happened; notifyPartnerReversal now returns the
+     result.
+ B6  A returning visitor arriving through ANOTHER channel tag of the same code counted nowhere (visits per channel were
+     undercounted while the sale was credited to that channel). The hook sends a channel-only click (subOnly) and the server counts
+     it without touching the code's own click counter.
+ B7  PartnerPayoutDetails still said "these details changed" after a first save (round 18 only fixed the dashboard banner).
+
+FEATURE GAPS
+ G1  Approving an application can now set the first code's usage limit and expiry (the API already accepted both).
+ G2  The 30-day attribution window is one server constant (REFERRAL_ATTRIBUTION_DAYS), used by the sign-up count and the account
+     attribution, next to the frontend's ATTRIBUTION_WINDOW_DAYS.
+
+NOT DONE
+ - Self-referral is still an email-only check (a stronger signal needs a policy decision).
+
+OPERATIONS
+ - Apply migration 0098 (it was 0096 in round 18's notes). Without it channel clicks log an error; nothing else breaks.
+
+TESTS
+ - tests/partners.round19.test.js, frontend/tests/useReferralCapture.round19.test.jsx, frontend/tests/partnerDashboard.round19.test.jsx
+   (new); partners.round18 updated for the stricter missing-commissions list.

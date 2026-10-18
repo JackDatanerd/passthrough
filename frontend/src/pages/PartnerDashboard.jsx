@@ -35,6 +35,15 @@ const SHARE_PAGES = [['', 'Home page'], ['pricing', 'Pricing page']]
 // Round 16 (gap): an optional channel tag (`&sub=newsletter`) so a partner who shares one code in several places can see which
 // placement earned each sale (Sales by channel below). Same rule as the server: 1-32 of a-z 0-9 _ -, shown lower-case.
 const SUB_TAG_RE = /^[a-z0-9_-]{1,32}$/
+// Round 19: the ledger stores a reason CODE (REFUND / DISPUTE / ADMIN_REVERSED). It used to be printed as-is after "Refunded —",
+// so partners read "Refunded — ADMIN_REVERSED", and a sale an admin rejected was called a refund although the buyer was not refunded.
+const REVERSAL_LABELS = {
+  REFUND: 'Refunded',
+  DISPUTE: 'Reversed — the payment was disputed',
+  ADMIN_REVERSED: 'Reversed by Passthrough',
+}
+function reversalLabel(reason) { return REVERSAL_LABELS[reason] || 'Reversed' }
+
 function ShareLink({ code }) {
   const [page, setPage] = useState('')
   const [tag, setTag] = useState('')
@@ -264,7 +273,7 @@ function ConversionRow({ conversion, currency }) {
         )}
         {conversion.isReversal && (
           <div className="text-xs text-red-600 mt-0.5">
-            Refunded{conversion.reversalReason ? ` — ${conversion.reversalReason}` : ''}
+            {reversalLabel(conversion.reversalReason)}
           </div>
         )}
       </div>

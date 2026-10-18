@@ -7,11 +7,15 @@
 // into the ESM entry point without issue.
 
 module.exports = {
+  // Referral attribution window (days): a visitor is credited to a partner this long after their latest click. Mirrors
+  // frontend/src/lib/partnerTerms.js ATTRIBUTION_WINDOW_DAYS, which is what partners are told.
+  REFERRAL_ATTRIBUTION_DAYS: 30,
+
   // The highest supabase/migrations number this code expects the database to have applied. Every
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 96,
+  EXPECTED_SCHEMA_VERSION: 98,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as

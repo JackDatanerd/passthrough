@@ -102,12 +102,14 @@ describe('adminReverseSale (round 18)', () => {
 describe('adminListUnrecordedCommissions (round 18)', () => {
   it('lists successful code payments that have no commission row', async () => {
     const pays = [
-      { id: 'a', paystack_ref: 'ref_a', amount_cents: 5000, currency: 'USD', created_at: '2026-10-01T00:00:00Z', referral_codes: { code: 'ANN10', partners: { id: 'p1', name: 'Ann' } } },
-      { id: 'b', paystack_ref: 'ref_b', amount_cents: 5000, currency: 'USD', created_at: '2026-10-02T00:00:00Z', referral_codes: { code: 'ANN10', partners: { id: 'p1', name: 'Ann' } } },
+      { id: 'a', scan_id: 's1', paystack_ref: 'ref_a', amount_cents: 5000, currency: 'USD', created_at: '2026-10-01T00:00:00Z', referral_codes: { code: 'ANN10', partners: { id: 'p1', name: 'Ann' } } },
+      { id: 'b', scan_id: 's2', paystack_ref: 'ref_b', amount_cents: 5000, currency: 'USD', created_at: '2026-10-02T00:00:00Z', referral_codes: { code: 'ANN10', partners: { id: 'p1', name: 'Ann' } } },
     ]
     t = load(q => {
       if (q.table === 'payments') return { data: pays, error: null }
       if (q.table === 'commission_ledger') return { data: [{ payment_id: 'b' }], error: null }
+      if (q.table === 'scans') return { data: [{ id: 's1', user_id: 'u1', fix_payment_id: 'a' }, { id: 's2', user_id: 'u1', fix_payment_id: 'b' }], error: null }
+      if (q.table === 'users') return { data: [{ id: 'u1', deleted_at: null }], error: null }
       return undefined
     })
     const out = await t.mod.adminListUnrecordedCommissions(ctxOf())

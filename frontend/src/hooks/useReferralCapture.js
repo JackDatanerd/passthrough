@@ -148,13 +148,13 @@ function rejectCode(code) {
   else storageRemove()
 }
 
-function trackClick(code) {
+function trackClick(code, subOnly = false) {
   // Fire-and-forget — a failed click log should never block navigation or surface an error to the visitor.
   // `valid` is only ever acted on when it is exactly false: an older/failed response keeps the code, as before.
   // Round 18: the channel tag travels with the click so the partner sees visits per channel. A repeat visit with no tag
   // sends none (the stored tag is only trusted when it belongs to this code).
   const rec = readStoredRecord()
-  api.post('/partners/track-click', { code, ...(rec?.code === code && rec.sub ? { sub: rec.sub } : {}) })
+  api.post('/partners/track-click', { code, ...(rec?.code === code && rec.sub ? { sub: rec.sub } : {}), ...(subOnly ? { subOnly: true } : {}) })
     .then(res => { if (res?.data?.valid === false) rejectCode(code); else { const rec = readStoredRecord(); syncToAccount(code, rec?.code === code ? rec.capturedAt : undefined, rec?.code === code ? rec.sub : undefined) } })
     .catch(() => {})
 }
@@ -215,15 +215,24 @@ export function useReferralCapture() {
     if (!code || rejectedThisSession.has(code)) return
 
     const previous = readStored()
+    const newSub = subFromSearch(location.search)
+    // Round 19: a returning visitor who comes back through ANOTHER channel tag of the same code is a visit to that channel (and
+    // the tag that will be credited, last click wins) — it used to count nowhere, so a channel could show sales with no visits.
+    const subChanged = !!newSub && previous === code && readStoredRecord()?.sub !== newSub
+    const subKey = `${code}#${newSub}`
     // Remember what this visit replaces (unless the synchronous capture already did) so a code the server calls
     // invalid can be undone. A repeat visit with the SAME code replaces nothing worth restoring.
     if (previous !== code && !previousRawFor.has(code)) previousRawFor.set(code, storageGet())
-    writeStored(code, 'link', Date.now(), subFromSearch(location.search))   // also refreshes the attribution window on every ?ref= visit, even a repeat one
+    writeStored(code, 'link', Date.now(), newSub)   // also refreshes the attribution window on every ?ref= visit, even a repeat one
     lastSyncedSearch = location.search
 
     if ((previous !== code || pendingClicks.has(code)) && !trackedThisSession.has(code)) {
       trackedThisSession.add(code)
+      trackedThisSession.add(subKey)
       trackClick(code)
+    } else if (subChanged && !trackedThisSession.has(subKey)) {
+      trackedThisSession.add(subKey)
+      trackClick(code, true)
     } else if (previous === code && !refreshSyncedThisSession.has(code)) {
       // Section 4 round 13 (bug): a repeat ?ref= visit slid the BROWSER's 30-day window forward (writeStored above) but never
       // told the account, so on another device (or after clearing site data) the account's older referred_at expired first.

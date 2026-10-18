@@ -71,8 +71,8 @@ function pendingCents(ledgerRows) {
 // land before money leaves. Reversal rows are never held (they must net
 // immediately).
 function holdDaysFor(env) {
-  const n = parseInt(env?.COMMISSION_HOLD_DAYS, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "7d" / "1e3" -> default 0, never a prefix
+  return numEnv(env?.COMMISSION_HOLD_DAYS, 0, NUMERIC_ENV.COMMISSION_HOLD_DAYS)
 }
 // A commission on a payment that is currently DISPUTED (a chargeback is open) is
 // held regardless of the age window: if the dispute is lost the sale is reversed
@@ -112,15 +112,13 @@ function voidedPairIds(ledgerRows) {
 // Optional minimum payout (env COMMISSION_MIN_PAYOUT_CENTS, default 0 = off).
 // Payable commission below it is "carried forward" rather than shown as ready.
 function payoutDetailsHoldHoursFor(env) {
-  const raw = env?.PAYOUT_DETAILS_HOLD_HOURS
-  if (raw === undefined || raw === null || String(raw).trim() === '') return 48
-  const n = parseInt(raw, 10)
-  return Number.isFinite(n) && n >= 0 ? n : 48
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "0.5" used to parse as 0 = hold OFF; now malformed -> 48
+  return numEnv(env?.PAYOUT_DETAILS_HOLD_HOURS, 48, NUMERIC_ENV.PAYOUT_DETAILS_HOLD_HOURS)
 }
 
 function minPayoutFor(env) {
-  const n = parseInt(env?.COMMISSION_MIN_PAYOUT_CENTS, 10)
-  return Number.isFinite(n) && n > 0 ? n : 0
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')   // strict: "2000c" / "1e3" -> default 0 (off), never a prefix
+  return numEnv(env?.COMMISSION_MIN_PAYOUT_CENTS, 0, NUMERIC_ENV.COMMISSION_MIN_PAYOUT_CENTS)
 }
 function payoutReadiness(ledgerRows, holdDays, minPayout) {
   const payable = payableCents(ledgerRows, holdDays)
@@ -188,7 +186,7 @@ async function attachSignupCounts(supabase, codes) {
       // through this code" and never decayed, although the dashboard describes live attribution.
       const { count, error } = await supabase.from('users')
         .select('id', { count: 'exact', head: true }).eq('referred_by_code', rc.code)
-        .gte('referred_at', new Date(Date.now() - 30 * 24 * 3600 * 1000).toISOString())
+        .gte('referred_at', new Date(Date.now() - c.REFERRAL_ATTRIBUTION_DAYS * 24 * 3600 * 1000).toISOString())
       if (error) throw error
       return { ...rc, signups: count ?? 0 }
     } catch (err) {
@@ -937,8 +935,9 @@ const tierPricesSchema = z.object({
 // admin passes confirmLowPrice; a price that is not below standard comes back as a warning. Judged against the
 // platform currency's STANDARD table (never the promo) so it is stable while a promo runs.
 function referralMinPricePct(env) {
-  const n = Number(env && env.REFERRAL_MIN_PRICE_PCT)
-  return Number.isFinite(n) && n >= 0 && n <= 100 ? n : 10
+  // Strict (lib/numEnv): Number('') is 0, which silently switched the guard OFF for a blank variable; "0x10" read as 16.
+  const { numEnv, NUMERIC_ENV } = require('../lib/numEnv')
+  return numEnv(env && env.REFERRAL_MIN_PRICE_PCT, 10, NUMERIC_ENV.REFERRAL_MIN_PRICE_PCT)
 }
 function priceGuardrails(env, tierPrices) {
   const out = { tooLow: [], noDiscount: [] }
@@ -2102,8 +2101,12 @@ async function trackClick(ctx) {
     console.error('trackClick lookup:', err.message)
   }
   if (valid === false) return ctx.json({ success: true, valid: false })
-  const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
-  if (error) console.error('trackClick:', error.message)
+  // Round 19: `subOnly` is a returning visitor arriving through a DIFFERENT channel tag of the same code. The code's own click
+  // counter is for new attributions, so it is left alone; only the channel's visit is counted.
+  if (body.subOnly !== true) {
+    const { error } = await supabase.rpc('increment_referral_code_clicks', { p_code: code })
+    if (error) console.error('trackClick:', error.message)
+  }
   // Round 18 (feature gap): the channel tag is counted per code too, so the partner sees visits and conversion by channel.
   const sub = normalizeSub(body.sub)
   if (sub) {
@@ -2869,6 +2872,9 @@ async function adminSendTermsNotice(ctx) {
     .select('id, name, email, dashboard_token', { count: 'exact' })
     // PAUSED partners are told too: the terms page promises an email before a change, and they may be reactivated.
     .in('status', ['ACTIVE', 'PAUSED'])
+    // Erased partners are left PAUSED with a placeholder address: they can never be mailed or marked notified, so they
+    // must not count towards `remaining` or sit at the head of the batch (round 19).
+    .not('email', 'ilike', `%@${REMOVED_EMAIL_DOMAIN}`)
     .or(`terms_version.is.null,terms_version.neq.${version}`)
     .or(`terms_notified_version.is.null,terms_notified_version.neq.${version}`)
   if (skipIds.length) q = q.not('id', 'in', `(${skipIds.join(',')})`)
@@ -2919,8 +2925,7 @@ async function adminReverseSale(ctx) {
     { ledgerId: row.id, paymentId: row.payment_id, commissionCents: out.commissionCents, alreadyPaidOut: out.alreadyPaidOut, reason: body.reason })
   let emailed = false
   try {
-    await require('../services/referral.service').notifyPartnerReversal(ctx.env, supabase, row.partner_id, out.commissionCents, out.currency)
-    emailed = true
+    emailed = (await require('../services/referral.service').notifyPartnerReversal(ctx.env, supabase, row.partner_id, out.commissionCents, out.currency)) === true
   } catch (err) { console.error('adminReverseSale notify:', err.message) }
   return ctx.json({ success: true, alreadyPaidOut: out.alreadyPaidOut, commissionCents: out.commissionCents, emailed })
 }
@@ -2929,17 +2934,27 @@ async function adminReverseSale(ctx) {
 // recordConversion failures are retried by the sweeps and announced by an owner alert, but nothing let an admin SEE what
 // was still missing. Read-only: a successful payment that used a partner code, older than 15 minutes (the normal path
 // finishes in seconds), with no commission row. Recovery is the existing POST /payments/:reference/reconcile.
+const UNRECORDED_PAGE = 500, UNRECORDED_MAX_PAGES = 4
 async function adminListUnrecordedCommissions(ctx) {
   const supabase = getSupabase(ctx.env)
   const since = new Date(Date.now() - 90 * 24 * 3600 * 1000).toISOString()
   const settleBefore = new Date(Date.now() - 15 * 60 * 1000).toISOString()
-  const { data: pays, error } = await supabase.from('payments')
-    .select('id, paystack_ref, amount_cents, currency, created_at, referral_code_id, referral_codes(code, partners(id, name))')
-    .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
-    .gte('created_at', since).lte('created_at', settleBefore)
-    .order('created_at', { ascending: false }).limit(500)
-  if (error) throw error
-  const ids = (pays || []).map(p => p.id)
+  // Paged (round 19): a single 500-row read hid everything older while the screen said "Nothing missing".
+  const pays = []
+  let truncated = false
+  for (let page = 0; page < UNRECORDED_MAX_PAGES; page += 1) {
+    const { data, error } = await supabase.from('payments')
+      .select('id, paystack_ref, amount_cents, currency, created_at, scan_id, referral_code_id, referral_codes(code, partners(id, name))')
+      .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
+      .gte('created_at', since).lte('created_at', settleBefore)
+      .order('created_at', { ascending: false }).order('id', { ascending: true })
+      .range(page * UNRECORDED_PAGE, (page + 1) * UNRECORDED_PAGE - 1)
+    if (error) throw error
+    pays.push(...(data || []))
+    if (!data || data.length < UNRECORDED_PAGE) break
+    if (page === UNRECORDED_MAX_PAGES - 1) truncated = true
+  }
+  const ids = pays.map(p => p.id)
   const recorded = new Set()
   for (let i = 0; i < ids.length; i += 100) {
     const { data: led, error: lErr } = await supabase.from('commission_ledger')
@@ -2947,12 +2962,40 @@ async function adminListUnrecordedCommissions(ctx) {
     if (lErr) throw lErr
     for (const l of led || []) recorded.add(l.payment_id)
   }
-  const missing = (pays || []).filter(p => !recorded.has(p.id)).slice(0, 100).map(p => ({
+  let candidates = pays.filter(p => !recorded.has(p.id))
+
+  // Round 19 (bug): reconcile deliberately records NO commission for a payment with no scan, a missing scan, a deleted
+  // account or a DUPLICATE (another payment owns the scan). Those have no commission row by design, so listing them
+  // gave an endless "missing" row whose Retry can never succeed. Only payments that could earn one stay.
+  if (candidates.length) {
+    const scanIds = [...new Set(candidates.map(p => p.scan_id).filter(Boolean))]
+    const scans = new Map()
+    for (let i = 0; i < scanIds.length; i += 100) {
+      const { data, error } = await supabase.from('scans').select('id, user_id, fix_payment_id').in('id', scanIds.slice(i, i + 100))
+      if (error) throw error
+      for (const sc of data || []) scans.set(sc.id, sc)
+    }
+    const userIds = [...new Set([...scans.values()].map(sc => sc.user_id).filter(Boolean))]
+    const gone = new Set(), known = new Set()
+    for (let i = 0; i < userIds.length; i += 100) {
+      const { data, error } = await supabase.from('users').select('id, deleted_at').in('id', userIds.slice(i, i + 100))
+      if (error) throw error
+      for (const u of data || []) { known.add(u.id); if (u.deleted_at) gone.add(u.id) }
+    }
+    candidates = candidates.filter(p => {
+      const sc = scans.get(p.scan_id)
+      if (!sc) return false
+      if (sc.fix_payment_id && sc.fix_payment_id !== p.id) return false
+      if (sc.user_id && (!known.has(sc.user_id) || gone.has(sc.user_id))) return false
+      return true
+    })
+  }
+  const missing = candidates.slice(0, 100).map(p => ({
     paymentId: p.id, reference: p.paystack_ref, amountCents: p.amount_cents, currency: p.currency, paidAt: p.created_at,
     code: p.referral_codes?.code || null, partnerId: p.referral_codes?.partners?.id || null,
     partnerName: p.referral_codes?.partners?.name || null,
   }))
-  return ctx.json({ success: true, data: missing, checked: ids.length })
+  return ctx.json({ success: true, data: missing, checked: ids.length, truncated })
 }
 
 module.exports = {

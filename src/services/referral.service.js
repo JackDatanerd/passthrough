@@ -628,7 +628,7 @@ const CODE_FORMAT_RE = /^[A-Z0-9_-]{2,50}$/
 // account's fresh timestamp was then adopted by the next device with a new 30 days). The window now keeps its original
 // start: a future/garbage value falls back to now, an older-than-window one is refused, and a code the account already
 // holds is never moved BACKWARDS in time by a stale push.
-const ATTRIBUTION_WINDOW_MS = 30 * 24 * 3600 * 1000
+const ATTRIBUTION_WINDOW_MS = c.REFERRAL_ATTRIBUTION_DAYS * 24 * 3600 * 1000
 async function setUserAttribution(supabase, user, rawCode, capturedAt, rawSub) {
   if (rawCode == null || String(rawCode).trim() === '') {
     const { error } = await supabase.from('users').update({ referred_by_code: null, referred_at: null, referred_sub: null }).eq('id', user.id)
@@ -714,12 +714,13 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
   try {
     const { data: partner } = await supabase.from('partners')
       .select('name, email, dashboard_token, status').eq('id', partnerId).maybeSingle()
-    if (!partner?.email || !partner?.dashboard_token) return
+    if (!partner?.email || !partner?.dashboard_token) return false
     const emailService = require('./email.service')
     const dashboardUrl = `${env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
-    await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
+    const ok = await emailService.sendPartnerCommissionReversed(env, supabase, partner.email, partner.name,
       commissionCents, currency || c.activeCurrency(env), dashboardUrl)
-  } catch (_) {}
+    return ok === true || ok === undefined
+  } catch (_) { return false }
 }
 
 module.exports = {

@@ -240,13 +240,13 @@ function PayoutsLog() {
 // (the same reconcile call the payment screens use). Read-only until a row's Retry is pressed.
 function UnrecordedCommissions() {
   const toast = useToast()
-  const [state, setState] = useState({ rows: [], loading: true, error: false, checked: 0 })
+  const [state, setState] = useState({ rows: [], loading: true, error: false, checked: 0, truncated: false })
   const [busy, setBusy] = useState(null)
   const load = () => {
     setState(s => ({ ...s, loading: true, error: false }))
     api.get('/partners/unrecorded-commissions')
-      .then(r => setState({ rows: r.data.data || [], checked: r.data.checked || 0, loading: false, error: false }))
-      .catch(() => setState({ rows: [], checked: 0, loading: false, error: true }))
+      .then(r => setState({ rows: r.data.data || [], checked: r.data.checked || 0, truncated: !!r.data.truncated, loading: false, error: false }))
+      .catch(() => setState({ rows: [], checked: 0, truncated: false, loading: false, error: true }))
   }
   useEffect(() => { load() }, [])
   async function retry(row) {
@@ -263,7 +263,8 @@ function UnrecordedCommissions() {
   return (
     <div className="flex flex-col gap-2" data-testid="unrecorded-commissions">
       <p className="text-xs text-gray-500">
-        Successful payments from the last 90 days that used a partner code and have no commission row (checked {state.checked}; payments under 15 minutes old are skipped).
+        Successful payments from the last 90 days that used a partner code and have no commission row (checked {state.checked}; payments under 15 minutes old, duplicates and payments with no deliverable scan are skipped).
+        {state.truncated && ' Only the newest payments were checked — older ones are not covered by this list.'}
       </p>
       {state.rows.length === 0
         ? <p className="text-sm text-gray-500">Nothing missing.</p>

@@ -105,6 +105,8 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
   const [fix, setFix] = useState('')
   const [badge, setBadge] = useState('')
   const [plain, setPlain] = useState('')
+  const [usageLimit, setUsageLimit] = useState('')
+  const [expiresOn, setExpiresOn] = useState('')
   const [confirmLow, setConfirmLow] = useState(false)
   const { loading: saving, error, execute } = useApi()
 
@@ -123,7 +125,12 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
       }
       if (code.trim().length < 2) return fail('Enter a code (at least 2 characters).')
       if (Object.keys(tierPrices).length === 0) return fail('Give at least one tier a price for the code.')
-      body.referralCode = { code: code.trim(), tierPrices, ...(confirmLow ? { confirmLowPrice: true } : {}) }
+      const limit = String(usageLimit).trim() === '' ? null : Number(usageLimit)
+      if (limit !== null && (!Number.isInteger(limit) || limit < 1)) return fail('Usage limit must be a whole number of at least 1.')
+      // End of the chosen day (UTC), so a code "valid until 30 June" still works on the 30th.
+      const expiresAt = expiresOn ? new Date(`${expiresOn}T23:59:59.000Z`).toISOString() : null
+      if (expiresAt && Date.parse(expiresAt) <= Date.now()) return fail('The expiry date must be in the future.')
+      body.referralCode = { code: code.trim(), tierPrices, ...(limit !== null ? { usageLimit: limit } : {}), ...(expiresAt ? { expiresAt } : {}), ...(confirmLow ? { confirmLowPrice: true } : {}) }
     }
     try {
       const data = await execute(() => api.post(`/partners/applications/${app.id}/approve`, body), { fallback: 'Failed to approve application.' })
@@ -156,6 +163,10 @@ function ApproveApplicationModal({ app, onClose, onDone }) {
               <Input label="Fix price" type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
               <Input label="Badge price" type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
               <Input label="Plain fix" type="number" step="0.01" value={plain} onChange={e => setPlain(e.target.value)} />
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Input label="Usage limit (optional)" type="number" min="1" step="1" value={usageLimit} onChange={e => setUsageLimit(e.target.value)} />
+              <Input label="Expires on (optional)" type="date" value={expiresOn} onChange={e => setExpiresOn(e.target.value)} />
             </div>
             <p className="text-xs text-gray-400">Prices in the platform currency. Leave a tier blank and buyers pay its normal price there — the partner still earns commission on it.</p>
           </div>
