@@ -1,0 +1,21 @@
+APPLICANT-FACING DOCUMENTS - round 6 (base: upstream 5e52184; findings of the seventh independent pass)
+No migration, no new dependency.
+
+Gaps closed
+- G1  The Word files take the PDF's body-text colour too. The PDF sets body copy in each palette's `text` (a deliberate dark tint,
+      9:1 or better against white); the DOCX body was plain black. generateAtsDocx / generateCoverLetterDocx accept `text` (6-digit hex,
+      else Word's automatic colour) as the document-default run colour; headings, links and the muted dates keep their own colours.
+      scan.controller.js lookFor() / loadCoverLetter pass {accent, serif, text} from the same design tokens the PDF is rendered from.
+- G2  A cover letter just over one page is tightened instead of leaving a signature alone on page 2. Since the letter became
+      editable (up to 4,000 characters) that is easy to reach. lib/docFit.js letterDensityFor (by word count, measured against real
+      renders on A4: PDF letter holds ~405 words normal / ~465 compact, DOCX ~505 / ~600; set at the safe end): compact is a smaller
+      type size, tighter leading and paragraph spacing (PDF) / 10.5pt, tighter spacing and margins (DOCX). A clearly longer letter is
+      left alone. Verified: PDF letters up to 440 words and DOCX letters up to 560 words now fit one page (PDF spilled from 420,
+      DOCX from ~510).
+
+Open / not verifiable here
+- Chromium and Word behaviour (margin-box footers, PDF text order, template fonts on Cloudflare's Chromium).
+- Owner decisions: embedding fonts in the template; refunded/disputed purchases keep downloadable files; in-app preview; a
+  downloadable scan report.
+- Operational: delivered files embed the credential URL as it was when they were made; the old-domain redirect must stay live.
+- Low: no right-to-left layout.

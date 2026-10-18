@@ -85,7 +85,9 @@ describe('cover letter DOCX — palette accent, and a limiter of its own', () =>
     t = { restore }
     await mod.downloadCoverLetter(ctxFor({ headers: {} }))
     const design = require('../src/services/design.service.js')
-    expect(seen.opts.accent).toBe(design.getDesignTokens('u1', 's1', 'default', { jdText: scan.job_description_text }).palette.primary)
+    const tokens = design.getDesignTokens('u1', 's1', 'default', { jdText: scan.job_description_text })
+    expect(seen.opts.accent).toBe(tokens.palette.primary)
+    expect(seen.opts.text).toBe(tokens.palette.text)
   })
   it('the PDF route has its own rate-limit bucket, not the paid regenerate-pdf one', async () => {
     const rl = (await import('../src/middleware/rateLimiter.js')).default

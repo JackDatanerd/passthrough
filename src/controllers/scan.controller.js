@@ -1120,14 +1120,14 @@ function nameSlug(resumeData) { return fileStems.nameSlug(resumeData?.name) }
 function draftFileStem(resumeData) { return fileStems.draftStem(resumeData?.name) }
 function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resumeData?.name) }
 
-// The Word file is drawn in the same palette primary - and the same heading face (serif or not) - as the PDF (the design tokens are
+// The Word file is drawn in the same palette primary, heading face (serif or not) and body colour as the PDF (the design tokens are
 // a pure function of user / scan / role / posting), so an applicant's DOCX and PDF, and their letter in both formats, read as one
 // set instead of an amber, serif PDF next to a navy sans Word file. {} (the DOCX defaults) if the tokens cannot be built; the
 // look never fails a delivery.
 function lookFor(scan, id) {
   try {
     const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
-    return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading) }
+    return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading), text: t?.palette?.text }
   } catch (_) { return {} }
 }
 
@@ -1576,7 +1576,7 @@ async function loadCoverLetter(ctx) {
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
   const tokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })
-  const look = { accent: tokens?.palette?.primary, serif: isSerifHeading(tokens?.fonts?.heading) }
+  const look = { accent: tokens?.palette?.primary, serif: isSerifHeading(tokens?.fonts?.heading), text: tokens?.palette?.text }
   return { row, data, paper, date, chosenPaper, look }
 }
 

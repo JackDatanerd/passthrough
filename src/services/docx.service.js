@@ -3,6 +3,7 @@ const { hrefFor } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
 const { contactRows, contactItems } = require('../lib/contactLayout')
+const { letterDensityFor } = require('../lib/docFit')
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
 // NOT verificationCode — avoids hardcoded domain
@@ -42,6 +43,9 @@ const pageSize = paper => (paper === 'a4' ? PAGES.a4 : PAGES.letter)
 const MUTED = '5B6470'
 // The accent (name, headings, rules) is the palette's primary - the same colour the PDF is drawn in - so the Word file and the PDF
 // read as a set. Anything that is not a 6-digit hex falls back to the template's default blue (also what the saved-profile PDF uses).
+// The body copy colour is the palette's `text` (a deliberately dark tint, 9:1 or better against white) - the colour the PDF's body is set in.
+// Not a 6-digit hex -> no colour set, i.e. Word's automatic black.
+const textHex = v => { const m = /^#?([0-9a-f]{6})$/i.exec(String(v == null ? '' : v).trim()); return m ? m[1].toUpperCase() : undefined }
 const DEFAULT_ACCENT = '1E40AF'
 const accentHex = v => { const m = /^#?([0-9a-f]{6})$/i.exec(String(v == null ? '' : v).trim()); return m ? m[1].toUpperCase() : DEFAULT_ACCENT }
 const DENSITY = {
@@ -71,10 +75,10 @@ function contactRuns(parts, size) {
 // The heading face follows the PDF's: Georgia where the palette sets its headings in a serif, Calibri otherwise.
 const headingFontOf = serif => (serif ? 'Georgia' : 'Calibri')
 
-function buildStyles(d, color, headFont = 'Calibri') {
+function buildStyles(d, color, headFont = 'Calibri', bodyColor) {
   return {
     default: {
-      document: { run: { font: 'Calibri', size: d.body }, paragraph: { spacing: { after: 0, line: 259 } } },
+      document: { run: { font: 'Calibri', size: d.body, ...(bodyColor ? { color: bodyColor } : {}) }, paragraph: { spacing: { after: 0, line: 259 } } },
       heading2: {
         run: { font: headFont, size: d.body + 2, bold: true, color, characterSpacing: 20 },
         paragraph: {
@@ -86,8 +90,9 @@ function buildStyles(d, color, headFont = 'Calibri') {
   }
 }
 
-async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false } = {}) {
+async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false, text: bodyText } = {}) {
   const color = accentHex(accent)
+  const bodyColor = textHex(bodyText)
   const headFont = headingFontOf(serif)
   resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
@@ -233,7 +238,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     creator: resumeData.name || 'Passthrough',
     lastModifiedBy: 'Passthrough',
     description: 'ATS-friendly resume',
-    styles: buildStyles(d, color, headFont),
+    styles: buildStyles(d, color, headFont, bodyColor),
     sections: [{
       // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
       // separate, and a recruiter should be able to tell whose page 2 it is. The first page has an empty footer so a
@@ -258,8 +263,9 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 // in the same type and colour, so the two documents read as a set), the date, then the body - one paragraph per
 // blank-line-separated block, line breaks kept inside a block (the salutation / sign-off). `contact` and `date` are
 // optional: called with just (text, name) the file is the plain letter it always was.
-async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent, serif = false } = {}) {
+async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent, serif = false, text: bodyText, density } = {}) {
   const color = accentHex(accent)
+  const bodyColor = textHex(bodyText)
   const headFont = headingFontOf(serif)
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
@@ -277,8 +283,10 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
     head.push(new Paragraph({ spacing: { after: last ? 280 : 20 }, border: last ? rule : undefined, children: contactRuns(row, d.small) }))
   })
   if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)) })] }))
+  // Just over a page -> a little tighter (lib/docFit.js); a clearly longer letter is left alone.
+  const compact = (density === 'compact' || density === 'normal' ? density : letterDensityFor(body, paper === 'a4' ? 'a4' : 'letter', 'docx')) === 'compact'
   const children = [...head, ...blocks.map(b => new Paragraph({
-    spacing: { after: 180 },
+    spacing: { after: compact ? 130 : 180 },
     children: b.split('\n').flatMap((line, i) => [new TextRun({ text: line, break: i > 0 ? 1 : 0 })]),
   }))]
   if (!children.length) children.push(new Paragraph({ text: '' }))
@@ -286,10 +294,10 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    styles: buildStyles({ ...d, body: 22 }, color, headFont),
-    sections: [{ properties: { page: { size, margin: { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
+    styles: buildStyles({ ...d, body: compact ? 21 : 22 }, color, headFont, bodyColor),
+    sections: [{ properties: { page: { size, margin: compact ? { top: 1000, bottom: 1000, left: 1150, right: 1150 } : { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })
   return Packer.toBuffer(doc)
 }
 
-module.exports = { generateAtsDocx, generateCoverLetterDocx, xmlSafe, accentHex }
+module.exports = { generateAtsDocx, generateCoverLetterDocx, xmlSafe, accentHex, textHex }

@@ -14,7 +14,7 @@
 // the headless browser fetch anything.
 
 const { hrefFor, displayUrl } = require('../lib/links')
-const { densityFor } = require('../lib/docFit')
+const { densityFor, letterDensityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { isSerifHeading } = require('../lib/typeface')
@@ -223,8 +223,10 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
   const fonts   = designTokens?.fonts || {}
   const stack   = fontStacks(fonts)
   const hPt = Number(fonts.hPt) || 23
-  const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + 0.5
-  const paper = designTokens?.paper === 'a4' ? { css: 'A4', width: '210mm', minHeight: '268mm' } : { css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm', minHeight: '268mm' } : { key: 'letter', css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  // A letter only just over a page gets a slightly denser layout instead of a signature alone on page 2 (lib/docFit.js).
+  const compact = (designTokens?.density === 'compact' || designTokens?.density === 'normal' ? designTokens.density : letterDensityFor(text, paper.key, 'pdf')) === 'compact'
+  const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + (compact ? 0 : 0.5)
   const contact = contactBlock(d)
   const blocks = String(text || '').replace(/\r\n?/g, '\n').split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
   const body = blocks.map(b => `<p class="block">${b.split('\n').map(l => esc(l.trim())).join('<br>')}</p>`).join('')
@@ -236,12 +238,12 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
 html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; overflow-wrap: anywhere; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
-  font-family: ${stack.body}; font-size: ${bPt}pt; line-height: 1.55 }
+  font-family: ${stack.body}; font-size: ${bPt}pt; line-height: ${compact ? 1.42 : 1.55} }
 .page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 20mm 0 22mm; border-left: 4px solid ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 3pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 2, 8)}pt; margin: 0 0 18pt; padding-bottom: 8pt; border-bottom: 1px solid ${ruleColor(palette.primary)} }
 .date { margin: 0 0 14pt }
-.block { margin: 0 0 11pt; orphans: 3; widows: 3 }
+.block { margin: 0 0 ${compact ? 8 : 11}pt; orphans: 3; widows: 3 }
 a { color: inherit; text-decoration: none }
 .nw { white-space: nowrap }
 .contact.more { margin: 0 0 2pt; padding-bottom: 0; border-bottom: 0 }

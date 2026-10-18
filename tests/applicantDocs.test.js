@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest'
 import JSZip from 'jszip'
-import { generateAtsDocx, generateCoverLetterDocx, accentHex } from '../src/services/docx.service.js'
+import { generateAtsDocx, generateCoverLetterDocx, accentHex, textHex } from '../src/services/docx.service.js'
 import { buildResumeHTML, buildCoverLetterHTML } from '../src/services/pdfTemplate.service.js'
 import { hrefFor, displayUrl } from '../src/lib/links.js'
-import { densityFor, estimateLoad } from '../src/lib/docFit.js'
+import { densityFor, estimateLoad, letterDensityFor, LETTER_WORDS } from '../src/lib/docFit.js'
 import { resumeStem, draftStem, coverLetterStem } from '../src/lib/fileStems.js'
 import { paperForLocation, PAPER } from '../src/services/design.service.js'
 import { extractText } from '../src/services/resume.parser.js'
@@ -459,5 +459,50 @@ describe('the Word heading face follows the PDF', () => {
     expect(sans.doc).not.toMatch(/Georgia/)
     const letter = await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: SHORT, serif: true }))
     expect(letter.doc).toMatch(/Georgia/)
+  })
+})
+
+// ── pass 7 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('the Word body copy takes the PDF\'s text colour', () => {
+  it('textHex: a 6-digit hex with or without #, otherwise none (automatic black)', () => {
+    expect(textHex('#14532d')).toBe('14532D')
+    expect(textHex('111827')).toBe('111827')
+    for (const bad of [undefined, null, '', 'black', '#12345', 'rgb(0,0,0)']) expect(textHex(bad)).toBeUndefined()
+  })
+  it('sets it as the document default in the resume and the letter, and sets nothing without one', async () => {
+    const def = xml => xml.match(/<w:docDefaults>[\s\S]*?<\/w:docDefaults>/)[0]
+    expect(def((await parts(await generateAtsDocx(FULL, null, { text: '#14532D' }))).styles)).toMatch(/w:color w:val="14532D"/)
+    expect(def((await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A B', { contact: FULL, text: '#451A03' }))).styles)).toMatch(/w:color w:val="451A03"/)
+    expect(def((await parts(await generateAtsDocx(FULL, null))).styles)).not.toMatch(/w:color/)
+    expect(def((await parts(await generateAtsDocx(FULL, null, { text: 'nope' }))).styles)).not.toMatch(/w:color/)
+  })
+  it('headings, links and the muted dates keep their own colours', async () => {
+    const { doc, styles } = await parts(await generateAtsDocx(FULL, null, { accent: '#B45309', text: '#451A03' }))
+    expect(styles.match(/w:styleId="Heading2"[\s\S]*?<\/w:style>/)[0]).toMatch(/w:color w:val="B45309"/)
+    expect(doc).toMatch(/w:color w:val="0563C1"/)
+    expect(doc).toMatch(/w:color w:val="5B6470"/)
+  })
+})
+
+describe('a cover letter that is only just over a page is tightened', () => {
+  const words = n => Array.from({ length: n }, (_, i) => 'word' + (i % 97)).join(' ')
+  it('letterDensityFor: normal up to the page, compact for a modest overflow, normal again when two pages are honest', () => {
+    for (const [n, target, want] of [[300, 'pdf', 'normal'], [391, 'pdf', 'compact'], [440, 'pdf', 'compact'], [520, 'pdf', 'normal'],
+      [450, 'docx', 'normal'], [471, 'docx', 'compact'], [560, 'docx', 'compact'], [700, 'docx', 'normal']])
+      expect(letterDensityFor(words(n), 'a4', target)).toBe(want)
+    expect(letterDensityFor(words(380), 'letter', 'pdf')).toBe('compact')          // Letter holds less than A4
+    expect(letterDensityFor('', 'a4')).toBe('normal')
+    expect(letterDensityFor(null, 'a4', 'docx')).toBe('normal')
+    expect(LETTER_WORDS.pdf.normal).toBeLessThan(LETTER_WORDS.docx.normal)
+  })
+  it('the PDF letter and the Word letter pick the denser layout by themselves, and honour an explicit density', async () => {
+    const body = n => `Dear X,\n\n${words(n)}.\n\nSincerely,\nA B`
+    expect(buildCoverLetterHTML(body(420), SHORT, { paper: 'a4' }, {})).toMatch(/line-height: 1\.42/)
+    expect(buildCoverLetterHTML(body(300), SHORT, { paper: 'a4' }, {})).toMatch(/line-height: 1\.55/)
+    expect(buildCoverLetterHTML(body(300), SHORT, { paper: 'a4', density: 'compact' }, {})).toMatch(/line-height: 1\.42/)
+    const sz = async (n, o = {}) => (await parts(await generateCoverLetterDocx(body(n), 'A B', { contact: SHORT, paper: 'a4', ...o }))).doc.match(/<w:pgMar[^>]*w:left="(\d+)"/)[1]
+    expect(await sz(300)).toBe('1300')
+    expect(await sz(520)).toBe('1150')
+    expect(await sz(300, { density: 'compact' })).toBe('1150')
   })
 })
