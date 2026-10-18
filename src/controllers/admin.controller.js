@@ -225,7 +225,8 @@ async function adminDashboardStats(ctx) {
       newLeads:             newLeadsCount || 0,
       openDisputes:         disputes.count,
       nextDisputeDueAt:     disputes.nextDueAt,
-      overdueDisputes:      disputes.overdue
+      overdueDisputes:      disputes.overdue,
+      answeredDisputes:     disputes.answered || 0
     },
     recentAlerts: (recentAlerts || []).map(a => ({
       id: a.id, subject: a.subject, message: a.message, emailed: a.emailed, createdAt: a.created_at

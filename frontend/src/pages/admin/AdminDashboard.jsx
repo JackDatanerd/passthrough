@@ -130,6 +130,9 @@ export default function AdminDashboard() {
             <div className={cn('text-xl font-bold', openItems.openDisputes > 0 ? 'text-red-600' : 'text-gray-900')}>
               {openItems.openDisputes || 0}
             </div>
+            {openItems.answeredDisputes > 0 && openItems.openDisputes > 0 && (
+              <div className="text-xs mt-0.5 text-gray-500">{openItems.answeredDisputes} answered, waiting on Paystack / the bank</div>
+            )}
             {openItems.nextDisputeDueAt && (
               <div className={cn('text-xs mt-0.5', openItems.overdueDisputes > 0 ? 'text-red-600' : 'text-amber-700')}>
                 {openItems.overdueDisputes > 0 ? `${openItems.overdueDisputes} past deadline` : `next due ${formatDate(openItems.nextDisputeDueAt)}`}

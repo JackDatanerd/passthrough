@@ -1,0 +1,11 @@
+WEBHOOKS — round 20 (fresh independent audit, 3 bugs; no migration)
+
+B1  computeWebhookHealth counted the hourly dispute sweep's own inbox rows as "the last event received", so one sweep cleared the red
+    "deliveries are being refused" notice and the delivery-health clock while nothing real had got through. Sweep rows are now flagged
+    (payload.swept, note "caught up by the dispute sweep…") and skipped when finding the newest delivery.
+B2  A live charge.dispute.create handled while the payment was PENDING left an empty inbox note; the sweep that later marked DISPUTED found the row
+    'done' and never annotated it, so after an admin used Clear dispute the next sweep re-marked DISPUTED. The sweep now records "marked DISPUTED" on that row.
+B3  openDisputeSummary (dashboard "Open disputes") counted an answered/contested dispute as "past deadline" and let its stale deadline hide the next
+    real one. Only disputes still awaiting us feed nextDueAt/overdue; new `answered` count (admin.controller answeredDisputes, shown on AdminDashboard).
+    Falls back to the old behaviour without migration 0097.
+Tests: tests/webhooks.round20.test.js.

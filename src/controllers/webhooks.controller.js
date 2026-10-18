@@ -1885,8 +1885,12 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         // would re-mark a payment this sweep just cleared (round 5 B1, reintroduced by the sweep).
         if (d.id != null) {
           try {
-            const rec = await recordEvent(supabase, { eventKey: eventKeyFor(event, ''), eventType: type, reference: d.transaction.reference, payload: redactEvent(event) })
-            if (rec.mode !== 'done') await markEvent(supabase, rec, 'PROCESSED', `caught up by the dispute sweep${outcome.note ? ` — ${outcome.note}` : ''}`)
+            const rec = await recordEvent(supabase, { eventKey: eventKeyFor(event, ''), eventType: type, reference: d.transaction.reference, payload: { ...redactEvent(event), swept: true } })
+            if (rec.mode !== 'done') await markEvent(supabase, rec, 'PROCESSED', `${SWEEP_NOTE}${outcome.note ? ` — ${outcome.note}` : ''}`)
+            // Webhooks round 20 (B2): a LIVE create that was already PROCESSED (it ran while the payment was still PENDING, so its note is empty) comes back
+            // 'done' and was never annotated — so the guard above ("this create already marked DISPUTED") could not recognise the sweep's own marking, and
+            // after an admin used Clear dispute the next hourly run put the payment straight back to DISPUTED. Record the marking on the existing row.
+            else if (rec.id && /marked DISPUTED/.test(String(outcome.note || ''))) await updateEvent(supabase, rec.id, { note: `${SWEEP_NOTE} — ${outcome.note}` })
           } catch (err) { console.error('dispute sweep: inbox record failed:', err && err.message) }
         }
         result.actioned.push({ reference: d.transaction.reference, dispute: d.id ?? null, type, note: outcome.note || null })
@@ -1999,16 +2003,32 @@ const HEALTH_MAX_PAYMENTS = 200
 // ROUND-13 (G1): how many payments sit DISPUTED right now and which deadline is nearest — the dashboard card. Best effort:
 // without migration 0083 (dispute_due_at) the count still works and the deadline is simply absent. Never throws.
 async function openDisputeSummary(supabase) {
-  const out = { count: 0, nextDueAt: null, overdue: 0 }
+  const out = { count: 0, nextDueAt: null, overdue: 0, answered: 0 }
   try {
     const { count, error } = await supabase.from('payments').select('id', { count: 'exact', head: true }).eq('status', 'DISPUTED')
     if (error) throw error
     out.count = count || 0
     if (!out.count) return out
-    const { data, error: dueErr } = await supabase.from('payments').select('dispute_due_at')
-      .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null).order('dispute_due_at', { ascending: true }).limit(200)
-    if (dueErr) return out                       // column missing (0083 not applied): the count above is still right
-    const times = (data || []).map(r => Date.parse(r.dispute_due_at)).filter(Number.isFinite)
+    // Webhooks round 20 (B3): a dispute already answered (contested / accepted here, or resolved and waiting on a person) is past our turn —
+    // its stored deadline is history, yet it was counted "past deadline" and, being the oldest, hid the next REAL deadline. Only disputes
+    // still awaiting us feed nextDueAt / overdue. dispute_answered_at is migration 0097: without it every dispute counts as awaiting.
+    let rows = null, answeredKnown = true
+    {
+      const r = await supabase.from('payments').select('dispute_due_at, dispute_answered_at')
+        .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null).order('dispute_due_at', { ascending: true }).limit(200)
+      if (!r.error) rows = r.data
+      else {
+        answeredKnown = false
+        const r2 = await supabase.from('payments').select('dispute_due_at')
+          .eq('status', 'DISPUTED').not('dispute_due_at', 'is', null).order('dispute_due_at', { ascending: true }).limit(200)
+        if (r2.error) return out                  // column missing (0083 not applied): the count above is still right
+        rows = r2.data
+      }
+    }
+    const list = rows || []
+    const awaiting = answeredKnown ? list.filter(r => !r.dispute_answered_at) : list
+    if (answeredKnown) out.answered = list.length - awaiting.length
+    const times = awaiting.map(r => Date.parse(r.dispute_due_at)).filter(Number.isFinite)
     if (times.length) {
       out.nextDueAt = new Date(Math.min(...times)).toISOString()
       out.overdue = times.filter(t => t <= Date.now()).length
@@ -2017,15 +2037,26 @@ async function openDisputeSummary(supabase) {
   return out
 }
 
+// A webhook_events row the dispute sweep wrote (see sweepDisputes): flagged in its payload, and its note starts "caught up by the dispute sweep".
+const SWEEP_NOTE = 'caught up by the dispute sweep'
+const SWEEP_LOOKBACK = 50
+function isSweepRow(r) {
+  return !!(r && ((r.payload && r.payload.swept === true) || /^caught up by the dispute sweep/i.test(String(r.note || ''))))
+}
+
 async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
   const out = { available: true, lastEventAt: null, lastChargeSuccessAt: null, paidChecked: 0, paidWithoutEvent: 0, missingReferences: [], unrecovered: 0, unrecoveredReferences: [], lastResendEventAt: null, lastRejected: { paystack: null, resend: null }, rejectedSinceLastEvent: [] }
   try {
+    // Webhooks round 20 (B1): the hourly dispute sweep writes its own inbox rows (stamped `swept` / "caught up by the dispute sweep") — they
+    // are this app talking to Paystack, not Paystack reaching this app. Counting them as the "last event received" made one sweep clear the
+    // red "deliveries are being refused" notice and the delivery-health clock while nothing real had got through. Look past them.
     const latest = async type => {
-      let q = supabase.from('webhook_events').select('received_at').eq('provider', 'paystack')   // Resend events have their own stamp below
+      let q = supabase.from('webhook_events').select('received_at, note, payload').eq('provider', 'paystack')   // Resend events have their own stamp below
       if (type) q = q.eq('event_type', type)
-      const { data, error } = await q.order('received_at', { ascending: false }).limit(1)
+      const { data, error } = await q.order('received_at', { ascending: false }).limit(SWEEP_LOOKBACK)
       if (error) throw error
-      return data && data[0] ? data[0].received_at : null
+      const real = (data || []).find(r => !isSweepRow(r))
+      return real ? real.received_at : null
     }
     out.lastEventAt = await latest(null)
     out.lastChargeSuccessAt = await latest('charge.success')
