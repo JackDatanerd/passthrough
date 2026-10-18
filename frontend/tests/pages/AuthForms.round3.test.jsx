@@ -105,7 +105,10 @@ describe('Register — Turnstile (G1) and password toggles (G2)', () => {
   })
   it('both password fields have their own Show/Hide toggle', () => {
     renderAt('/register', <Register />, '/register')
-    expect(screen.getAllByRole('button', { name: 'Show password' })).toHaveLength(2)
+    // Shared frontend round 15 names a toggle after its field when the label isn't just "Password", so two toggles on one form
+    // are no longer two identical buttons for a screen reader.
+    expect(screen.getByRole('button', { name: 'Show password' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Show password: Confirm password' })).toBeTruthy()
   })
 })
 

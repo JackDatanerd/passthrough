@@ -3,7 +3,7 @@ import { resolveApiBase } from './apiUrl'
 import { normalizeBlobError, shouldRetryRequest } from './errors'
 import {
   TOKEN_KEY, USER_KEY, SESSION_ENDED_EVENT,
-  classifyAuthFailure, isProtectedPath, failureScope,
+  classifyAuthFailure, isProtectedPath, failureScope, tokenSessionId,
 } from './session'
 import { getToken, getDeviceId, storageRemove } from './storage'
 import { setFlash, FLASH_ADMIN_DENIED } from './flash'
@@ -151,11 +151,28 @@ function dropStaleAuthHeaders(config) {
 // is already stored), false if they chose to discard their changes. Concurrent failures share one prompt.
 let sessionResumePrompt = null, sessionResumePending = null
 export function setSessionResumePrompt(fn) { sessionResumePrompt = fn }
+// Section 11 (round 16, B2): the sessions the person re-opened in place, keyed by session id (or the raw token when it carries
+// none). A request still in flight under the OLD token that fails 401 AFTER the new sign-in has landed is classified 'stale'
+// (the held token is a different session now) and used to surface a raw auth error even though the person is signed in.
+// Those stragglers are replayed once under the new token instead. Safe across accounts: the prompt only resolves true for the
+// SAME account, and a request the server refused with 401 was never processed, so the replay cannot double-apply.
+const resumedSessions = new Set()
+const sessionKey = token => tokenSessionId(token) || token
 function resumeSession() {
   if (!sessionResumePending) {
+    const before = getToken()
     sessionResumePending = Promise.resolve()
       .then(() => sessionResumePrompt())
-      .then(ok => { if (ok) clearStepUp(); return !!ok }, () => false)   // an elevation belongs to the session that ended
+      .then(ok => {
+        if (ok) {
+          clearStepUp()                                   // an elevation belongs to the session that ended
+          if (before) {
+            resumedSessions.add(sessionKey(before))
+            if (resumedSessions.size > 20) resumedSessions.delete(resumedSessions.values().next().value)
+          }
+        }
+        return !!ok
+      }, () => false)
       .finally(() => { sessionResumePending = null })
   }
   return sessionResumePending
@@ -166,6 +183,7 @@ let sessionEnding = false
 function endSession(reason) {
   if (sessionEnding) return            // several in-flight requests can all fail at once
   sessionEnding = true
+  resumedSessions.clear()
   clearStepUp()                         // an elevation belongs to the session that just ended
   storageRemove(TOKEN_KEY)
   storageRemove(USER_KEY)
@@ -240,7 +258,15 @@ api.interceptors.response.use(
     // the current session — ending it would log the new account out.
     if (verdict) {
       const scope = failureScope(config.__token, getToken())
-      if (scope === 'stale') return Promise.reject(err)
+      if (scope === 'stale') {
+        if (verdict === 'expired' && !config.__resumeTried && config.__token && getToken()
+            && resumedSessions.has(sessionKey(config.__token))) {
+          config.__resumeTried = true
+          dropStaleAuthHeaders(config)
+          return api.request(config)
+        }
+        return Promise.reject(err)
+      }
       if (scope === 'probe') {
         // An older token of this same session failed while a newer one is held (see failureScope). Don't
         // sign the person out on that alone — ask the server about the token held NOW; if the session

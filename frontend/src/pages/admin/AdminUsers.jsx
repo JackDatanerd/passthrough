@@ -14,6 +14,7 @@ import { formatDate } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
 import EmptyState from '../../components/ui/EmptyState'
 import useLatestRequest from '../../hooks/useLatestRequest'
+import useDebouncedState from '../../hooks/useDebouncedState'
 
 const PAGE_SIZE = 25
 
@@ -22,12 +23,16 @@ export default function AdminUsers() {
   const [users, setUsers] = useState([])
   const [total, setTotal] = useState(0)
   const [page, setPage] = useState(1)
-  const [search, setSearch] = useState('')
   const [status, setStatus] = useState('')
   const [loading, setLoading] = useState(true)
   const [busyId, setBusyId] = useState(null)
   const [pendingAction, setPendingAction] = useState(null)
   const [bouncedOnly, setBouncedOnly] = useState(false)   // Webhooks round 14 (G1)
+
+  // Section 11 (round 16): the box updates per keystroke but the request only follows once typing pauses. Before this each
+  // character was a request against the 100 / 15 min general limiter. Page resets to 1 in the same tick as the new text.
+  const searchBox = useDebouncedState('', 350, () => setPage(1))
+  const search = searchBox.committed.trim()
 
   const begin = useLatestRequest()
 
@@ -88,8 +93,9 @@ export default function AdminUsers() {
       <h1 className="text-2xl font-bold text-gray-900">Users</h1>
 
       <div className="flex gap-3 flex-wrap items-end">
-        <Input label="Search" placeholder="Email or name" value={search}
-          onChange={e => { setPage(1); setSearch(e.target.value) }} wrapperClassName="w-64" />
+        <Input label="Search" placeholder="Email or name" value={searchBox.value}
+          onChange={e => searchBox.setValue(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') searchBox.commitNow() }} wrapperClassName="w-64" />
         <Select label="Status" value={status} onChange={e => { setPage(1); setStatus(e.target.value) }}>
           <option value="">All</option>
           <option value="ACTIVE">Active</option>

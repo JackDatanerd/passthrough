@@ -63,7 +63,12 @@ export default function Menu({
     list.current?.querySelectorAll('[role="menuitem"]').forEach(el => el.setAttribute('tabindex', '-1'))
     const all = items()
     const target = focusOn.current === 'last' ? all[all.length - 1] : all[0]
-    target?.focus()
+    // Section 11 (round 16): this effect runs BEFORE the layout effect has moved the list to its fixed, possibly flipped position,
+    // so the first item is still laid out below the trigger. A plain focus() scrolls it into view when the trigger sits near the
+    // bottom of the viewport (the last table row), and the capture-phase scroll listener above closes the menu on any scroll that
+    // does not start in the list - so the menu opened and shut in the same breath. The list is position: fixed once placed, so
+    // there is nothing to scroll to.
+    target?.focus({ preventScroll: true })
     // eslint-disable-next-line react-hooks/exhaustive-deps -- only when it opens: a parent re-render must not steal focus back to item 1
   }, [open])
 
