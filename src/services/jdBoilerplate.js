@@ -77,10 +77,14 @@ function truncateAtFirstAnchor(text) {
 // since they're never part of genuine job description prose.
 const FORM_FIELD_PATTERNS = [
   /\bindicates a required field\b/gi,
-  /\bfirst name\s*\*?/gi,
-  /\blast name\s*\*?/gi,
-  /\bresume\/cv\s*\*?/gi,
-  /\bcover letter\s*\*?/gi,
+  // SCAN/ATS (fix round): these four are also real posting content ("normalise first name and last name fields",
+  // "review each cover letter" for a recruiter / career-coach / data role), and were stripped from prose as well as
+  // from the form. They are form labels only when marked required (`*`), alone on their line, or followed by the
+  // next label of the form, so a phrase inside a sentence is kept.
+  /\bfirst name\b\s*\*?(?=\s*(?:\*|$|(?:first name|last name|resume\/cv|cover letter|email|phone|apply for this job|attach)\b))/gim,
+  /\blast name\b\s*\*?(?=\s*(?:\*|$|(?:first name|last name|resume\/cv|cover letter|email|phone|apply for this job|attach)\b))/gim,
+  /\bresume\/cv\b\s*\*?(?=\s*(?:\*|$|(?:first name|last name|resume\/cv|cover letter|email|phone|apply for this job|attach)\b))/gim,
+  /\bcover letter\b\s*\*?(?=\s*(?:\*|$|(?:first name|last name|resume\/cv|cover letter|email|phone|apply for this job|attach)\b))/gim,
   /\bshare this job\b/gi,
   /\bapply for this job\s*\*?/gi,
   /\bpowered by greenhouse\b/gi,

@@ -792,7 +792,9 @@ function scoreSections(resumeText) {
   // resume that has one. Widened to 20 lines, still well short of where
   // real body content (Experience/Education) would start.
   const lines20  = lower.split('\n').slice(0, 20).join(' ')
-  const hasEmail = /[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}/.test(lines20)
+  // Bounded (an address has at most 64 + 255 characters around the @) and skipped without an '@': the open-ended form
+  // backtracked from every start of one very long unbroken token, ~2s of CPU on 40,000 characters.
+  const hasEmail = lines20.includes('@') && /[a-z0-9._%+\-]{1,64}@[a-z0-9.\-]{1,255}\.[a-z]{2,}/.test(lines20)
 
   // AUDIT FIX (Auth/Scan round): every section used to be detected with
   // lower.includes('experience') / ('education') / ('skills') / ('profile') /
@@ -1074,15 +1076,17 @@ const SENIORITY_PATTERNS = [
   ['executive', /\b(?:vp|vice president|cto|ceo|coo|cfo|cmo|chief)\b/],
   // "staff" is a level only in front of a technical/managerial title ("Staff Engineer"); "Staff
   // Nurse" / "Staff Accountant" / "staff of 40" are not.
-  ['lead',      /\b(?:head of|director|principal|lead)\b(?!\s+gen)|\bstaff\s+(?:\w+\s+)?(?:engineer|developer|scientist|designer|architect|researcher|programmer|swe|sre|product|program|data|machine|software)\b/],
+  ['lead',      /\b(?:head of|director|lead)\b(?!\s+gen)|\bprincipal\b(?!\s+(?:responsibilit|dut|accountabilit|function|activit|task|objective|purpose|focus|area|contact))|\bstaff\s+(?:\w+\s+)?(?:engineer|developer|scientist|designer|architect|researcher|programmer|swe|sre|product|program|data|machine|software)\b/],
   ['senior',    /\b(?:senior|sr)\b/],
   // "Associate" is a junior level in most fields but a mid/senior rank for attorneys, professors
   // and partners, so those never read as junior.
-  ['junior',    /\b(?:junior|jr|entry.?level|intern(?:ship)?|graduate|trainee|apprentice)\b|\bassociate\b(?!\s+(?:attorney|lawyer|counsel|professor|dean|partner|general|vice|principal|director|judge|justice))/],
+  ['junior',    /\b(?:junior|jr|entry.?level|intern(?:ship)?|trainee|apprentice)\b|\bgraduate\b(?!\s+(?:degree|school|studies|student|level))|\bassociate\b(?!\s+(?:attorney|lawyer|counsel|professor|dean|partner|general|vice|principal|director|judge|justice))/],
 ]
 // "reports to the VP of Sales" / "works closely with the Director of X" name
 // somebody ELSE's level, not the role's own.
-const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with)\b[^.;\n]{0,60}/g
+// SCAN/ATS (fix round): "led by our CEO", "founded by the former CTO", "under the Chief Financial Officer" name
+// someone else's level too.
+const OTHER_PERSON_CLAUSE = /\b(?:report(?:s|ing)?(?:\s+directly)?\s+to|(?:work(?:s|ing)?|partner(?:s|ing)?|collaborat\w+)(?:\s+closely)?\s+with|(?:led|founded|run|headed|owned|backed|chaired)\s+by|under\s+(?:the\s+)?(?=(?:vp|vice president|c[tefmo]o|chief|director|head of)\b))\b[^.;\n]{0,60}/g
 // Years-of-experience requirement, read only where it is plainly a requirement:
 // "N years" (or "N-M years", "N+ years") followed by experience wording, or
 // introduced by minimum / at least / requires. The first "N years" anywhere used
@@ -1103,9 +1107,24 @@ function requiredYears(lower) {
   }
   return null
 }
+// SCAN/ATS (fix round): the level used to be read from the first 200 characters whatever they were, so a posting whose
+// opening lines are prose ("Principal responsibilities include...", "...lead generation...", "...under the Chief
+// Financial Officer", "a recent graduate or a seasoned pro?") was labelled lead / executive / junior. The level now comes
+// from where a title actually is: the first line, the next few lines only if they are short title-like lines (no
+// sentence punctuation, no label), and an explicit "Job title: ..." line. The level steers how the resume is written
+// (levelGuidance) and is shown on the public verification page, so a wrong one is not cosmetic.
+function seniorityTitleArea(lower) {
+  const lines = lower.split(/\r?\n/).map(l => l.trim()).filter(Boolean)
+  if (!lines.length) return ''
+  const parts = [lines[0].slice(0, 160)]
+  for (const l of lines.slice(1, 4))
+    if (l.length <= 70 && !/[.?!;:]/.test(l.replace(/\b(?:sr|jr)\./g, 'sr'))) parts.push(l)
+  for (const m of lower.slice(0, 1500).matchAll(/^[ \t]*(?:job[ \t]*)?(?:title|position|role|opening)[ \t]*[:\u2013-][ \t]*(.{1,100})$/gm)) parts.push(m[1])
+  return parts.join('\n')
+}
 function detectSeniority(jdText) {
   const lower = String(jdText || '').toLowerCase()
-  const title = lower.trim().slice(0, 200).replace(OTHER_PERSON_CLAUSE, ' ')
+  const title = seniorityTitleArea(lower).replace(OTHER_PERSON_CLAUSE, ' ')
   for (const [level, re] of SENIORITY_PATTERNS) if (re.test(title)) return level
   const y = requiredYears(lower)
   if (y) {

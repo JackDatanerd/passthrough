@@ -1172,14 +1172,25 @@ function spelledNumbers(lower) {
 const MULT = { x: 1, k: 1e3, thousand: 1e3, m: 1e6, mm: 1e6, million: 1e6, b: 1e9, bn: 1e9, billion: 1e9 }
 // Numeric VALUES in a text: "2M", "2,000,000" and "2 million" are all 2000000. A
 // digit glued to a letter (S3, EC2, B2B, Web3) is a name, not a figure.
+// SCAN/ATS (fix round): "$4.1M" was computed as 4.1 * 1e6 = 4099999.9999999995, which is not the 4100000 of "4,100,000", so
+// an honest rewrite that abbreviated a figure the person wrote out in full (or the reverse) was reported as an invented
+// number and thrown away (also 8.3M, 16.1k, 65.1k ... about one in thirty two-decimal figures). toPrecision(15) drops the
+// binary noise; no genuine figure has more than 15 significant digits.
+const scaled = (base, mult) => (mult === 1 ? base : Number((base * mult).toPrecision(15)))
+// "24x7" / "24-7" / "24/7(/365)" is one claim written three ways. A digit glued to a letter was read as a name, so the
+// source's "24x7" counted for nothing while a rewrite's "24/7" counted as 24 and 7, both "invented".
+const ALWAYS_ON = /(?<![\p{L}\p{N}])24\s*[x\u00d7/-]\s*7(?:\s*[x\u00d7/-]\s*365)?(?![\p{L}\p{N}])/giu
 function numbersIn(text, { words = true } = {}) {
   const out = new Set()
-  const t = String(text || '')
+  let t = String(text || '')
+  if (ALWAYS_ON.test(t)) { out.add(24); out.add(7) }
+  ALWAYS_ON.lastIndex = 0
+  t = t.replace(ALWAYS_ON, ' ')
   for (const m of t.matchAll(/(?<![\p{L}\p{N}.])(\d[\d,]*(?:\.\d+)?)\s*(thousand|million|billion|bn|mm|k|m|b|x)?(?![\p{L}\p{N}])/giu)) {
     const base = parseFloat(m[1].replace(/,/g, ''))
     if (!Number.isFinite(base)) continue
     // "2M" is the VALUE 2,000,000 — the bare 2 is not a separate figure.
-    out.add(m[2] ? base * MULT[m[2].toLowerCase()] : base)
+    out.add(m[2] ? scaled(base, MULT[m[2].toLowerCase()]) : base)
   }
   if (words) for (const n of spelledNumbers(t.toLowerCase())) out.add(n)
   return out
