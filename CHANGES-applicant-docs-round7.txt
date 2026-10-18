@@ -1,0 +1,35 @@
+APPLICANT-FACING DOCUMENTS - round 7 (base: upstream 7e7f7bb; the eighth pass, with a real Chromium)
+No migration. New files: lib/embeddedFonts.js (generated), lib/textClean.js, scripts/build-embedded-fonts.cjs. No new npm dependency.
+
+How the pass was verified: a real headless Chromium (HeadlessChrome 153, from the @sparticuz/chromium npm package) was run in the
+sandbox with the production page.pdf options (A4/Letter, 14mm top+bottom, print media, JS off, request interception). Checked there:
+the running footer (page 2 only), text order, 44 page breaks with no orphaned heading, no blank trailing page on A4 and Letter,
+paper sizes, link annotations, and the fit calibration of resumes and letters.
+
+Decisions made (the owner's open list)
+- Fonts: EMBED. The template used system stacks only, so every PDF depended on whichever fonts the Chromium container had, and the fit
+  calibration held for only one answer to that. Inter (400/700) and Source Serif 4 (700) Latin subsets (SIL OFL), ~70 KB, as data
+  URIs inside the page (the render allowlist already permits data:). Families are named "DocSans"/"DocSerif" and lead the stacks;
+  system fonts still supply any glyph outside the subset. Recalibrated in Chromium with the embedded fonts: the resume fit
+  constants (capacity 48, squeeze limit x1.17) hold on A4 and Letter; the letter PDF constants were too generous and are now
+  365 words / x1.17 (letters up to 420 words fit one page).
+- Refund/dispute downloads: NO CHANGE. Already a deliberate, documented policy (purchaseIsLive: reversal stops anything that costs us a
+  call; files already delivered stay downloadable, and the credential page is revoked). Revoking static files would only hurt legitimate
+  refunds.
+- In-app preview, downloadable scan report: NOT BUILT. Mobile Chrome on Android cannot show a PDF in an iframe (most of the audience),
+  and the verification page already is the shareable report.
+- Right-to-left: BUILT, it was cheap. PDF: each block takes its own direction (unicode-bidi: plaintext) and list items carry dir="auto"
+  so the bullet moves to the right with Arabic/Hebrew text. DOCX: Arabic/Hebrew bullets and paragraphs are set right-to-left; English
+  paragraphs are untouched. (Section headings stay English.)
+
+Bug fixed
+- Ligature code points (U+FB00-FB06, "ﬁ" "ﬂ" "ﬃ"...) passed through PDF text extraction untouched - LaTeX-made resumes do this by default - so
+  "finance" arrived as "ﬁnance" and an ATS keyword match failed, in our scan of the upload and in the delivered file. lib/textClean.js
+  turns those seven characters back into letters in PDF ingest (pdf.inspect.js), the DOCX text and the PDF template. NFKC is deliberately
+  not used (it would rewrite superscripts, trademark signs, full-width forms).
+
+Open / not verifiable here
+- Word itself (LibreOffice and python-docx stand in): a screenshot of the DOCX in Word would close it.
+- Cloudflare's own Chromium image (the sandbox Chromium is the same engine; with the fonts now embedded the font set no longer matters
+  for Latin text; non-Latin scripts still use whatever system font exists).
+- Operational: delivered files embed the credential URL as it was when they were made; the old-domain redirect must stay live.

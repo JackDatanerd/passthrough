@@ -15,6 +15,7 @@
 //
 // Never throws: a PDF it cannot read comes back as `{ failure: { code } }`.
 
+const { unligature } = require('../lib/textClean')
 const MAX_PDF_PAGES = 12
 // Pages inspected for layout / colour / images. A resume's layout is the same on page 3 as on page 1.
 const LAYOUT_PAGES = 3
@@ -160,7 +161,8 @@ async function analyzePdf(bytes) {
       }
     }
 
-    const text = pageTexts.join('\n\n')
+    // Ligature code points ("ﬁ") are letters again before anything scans or parses the text (lib/textClean.js).
+    const text = unligature(pageTexts.join('\n\n'))
     const hidden = hiddenChars + (darkFill ? 0 : whiteChars)
     return {
       failure: null,

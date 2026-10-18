@@ -60,9 +60,9 @@ function densityFor(data, paper = 'letter', target = 'pdf') {
 // The same idea for a letter, by word count (a letter is plain paragraphs). Since the letter became editable (up to 4,000
 // characters) a letter a few lines over one page is easy to reach: the last paragraph and the signature land alone on page 2.
 // Capacities are measured against real renders (LETTER_WORDS, below); a letter clearly longer than a page is left alone.
-// Measured on A4 with 7-character stand-in words (real prose averages ~6, so these are the safe end): the PDF letter holds ~405 words
-// at normal density and ~465 compact; the DOCX letter ~505 and ~600.
-const LETTER_WORDS = { pdf: { normal: 390, limit: 1.15 }, docx: { normal: 470, limit: 1.2 } }
+// Measured on A4 with 7-character stand-in words (real prose averages ~6, so these are the safe end). PDF: in real Chromium with the
+// embedded faces the letter holds ~370 words at normal density and ~430 compact. DOCX (LibreOffice, Calibri-metric Carlito): ~505 / ~600.
+const LETTER_WORDS = { pdf: { normal: 365, limit: 1.17 }, docx: { normal: 470, limit: 1.2 } }
 const wordCount = t => (String(t || '').trim().match(/\S+/g) || []).length
 
 /** letterDensityFor(text, 'a4'|'letter', 'pdf'|'docx') -> 'normal' | 'compact' */

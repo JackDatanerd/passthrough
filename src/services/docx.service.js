@@ -2,6 +2,7 @@ const { Document, Packer, Paragraph, TextRun, ExternalHyperlink, Tab, TabStopTyp
 const { hrefFor } = require('../lib/links')
 const { densityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
+const { unligature } = require('../lib/textClean')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { letterDensityFor } = require('../lib/docFit')
 
@@ -20,7 +21,7 @@ const { letterDensityFor } = require('../lib/docFit')
 // string is cleaned before it is used.
 function xmlSafe(v) {
   if (typeof v === 'string')
-    return v.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    return unligature(v).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
       .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '')
   if (Array.isArray(v)) return v.map(xmlSafe)
   if (v && typeof v === 'object') return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, xmlSafe(x)]))
@@ -41,6 +42,10 @@ const pageSize = paper => (paper === 'a4' ? PAGES.a4 : PAGES.letter)
 // is a documented parsing risk, see the note above the Document below), standard section names. A right-aligned date is a
 // tab stop (extracts as a tab between the title and the dates), which every parser reads as a separator.
 const MUTED = '5B6470'
+// Right-to-left scripts (Arabic, Hebrew, Syriac, Thaana, N'Ko, Arabic presentation forms): such a paragraph is set right-to-left so it is aligned and
+// indented from the right and its bullet sits on the right. Everything else is untouched.
+const RTL = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/
+const isRtl = t => RTL.test(String(t || ''))
 // The accent (name, headings, rules) is the palette's primary - the same colour the PDF is drawn in - so the Word file and the PDF
 // read as a set. Anything that is not a 6-digit hex falls back to the template's default blue (also what the saved-profile PDF uses).
 // The body copy colour is the palette's `text` (a deliberately dark tint, 9:1 or better against white) - the colour the PDF's body is set in.
@@ -103,8 +108,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   const heading = text => new Paragraph({ text, heading: 'Heading2' })
   const bullet = text => new Paragraph({
-    keepLines: true, indent: BULLET_INDENT, spacing: { after: d.bulletAfter },
-    children: [new TextRun({ children: ['•', new Tab(), stripBullet(text)] })],
+    keepLines: true, indent: BULLET_INDENT, spacing: { after: d.bulletAfter }, bidirectional: isRtl(text),
+    children: [new TextRun({ children: ['•', new Tab(), stripBullet(text)], rightToLeft: isRtl(text) })],
   })
   // A title line with the dates (or tech list) right-aligned on the same line. keepNext: a title is never stranded at the
   // bottom of a page away from its first bullet.
@@ -116,7 +121,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
       ...(right ? [new TextRun({ children: [new Tab(), right], color: MUTED, size: d.body - 1 })] : []),
     ],
   })
-  const plain = (text, extra = {}) => new Paragraph({ ...extra, children: [new TextRun({ text })] })
+  const plain = (text, extra = {}) => new Paragraph({ ...extra, bidirectional: isRtl(text), children: [new TextRun({ text, rightToLeft: isRtl(text) })] })
 
   // ── Header: name, contact line, credential line ──
   if (resumeData.name)

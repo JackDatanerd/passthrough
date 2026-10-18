@@ -10,6 +10,8 @@ import { extractText } from '../src/services/resume.parser.js'
 import { stripBullet } from '../src/lib/bulletText.js'
 import { contactRows, contactItems } from '../src/lib/contactLayout.js'
 import { isSerifHeading } from '../src/lib/typeface.js'
+import { FONT_FACE_CSS } from '../src/lib/embeddedFonts.js'
+import { unligature } from '../src/lib/textClean.js'
 import { checkRenderedPdf, allowedPages } from '../src/lib/pdfQa.js'
 import { buildPdf, resumePage } from './helpers/pdfBuilder.js'
 
@@ -244,10 +246,10 @@ describe('stripBullet', () => {
     expect(text).toMatch(/^•\tAWS$/m)
     expect(text).not.toMatch(/•\t[•*-]/)
     const html = buildResumeHTML(rd, {}, null)
-    expect(html).toContain('<li>Pasted bullet</li>')
-    expect(html).toContain('<li>Dash bullet</li>')
-    expect(html).toContain('<li>AWS</li>')
-    expect(html).toContain('<li>Desc</li>')
+    expect(html).toContain('<li dir="auto">Pasted bullet</li>')
+    expect(html).toContain('<li dir="auto">Dash bullet</li>')
+    expect(html).toContain('<li dir="auto">AWS</li>')
+    expect(html).toContain('<li dir="auto">Desc</li>')
   })
 })
 
@@ -487,10 +489,11 @@ describe('the Word body copy takes the PDF\'s text colour', () => {
 describe('a cover letter that is only just over a page is tightened', () => {
   const words = n => Array.from({ length: n }, (_, i) => 'word' + (i % 97)).join(' ')
   it('letterDensityFor: normal up to the page, compact for a modest overflow, normal again when two pages are honest', () => {
-    for (const [n, target, want] of [[300, 'pdf', 'normal'], [391, 'pdf', 'compact'], [440, 'pdf', 'compact'], [520, 'pdf', 'normal'],
+    for (const [n, target, want] of [[300, 'pdf', 'normal'], [380, 'pdf', 'compact'], [425, 'pdf', 'compact'], [470, 'pdf', 'normal'],
       [450, 'docx', 'normal'], [471, 'docx', 'compact'], [560, 'docx', 'compact'], [700, 'docx', 'normal']])
       expect(letterDensityFor(words(n), 'a4', target)).toBe(want)
-    expect(letterDensityFor(words(380), 'letter', 'pdf')).toBe('compact')          // Letter holds less than A4
+    expect(letterDensityFor(words(350), 'letter', 'pdf')).toBe('compact')          // Letter holds less than A4 (350 is normal on A4)
+    expect(letterDensityFor(words(350), 'a4', 'pdf')).toBe('normal')
     expect(letterDensityFor('', 'a4')).toBe('normal')
     expect(letterDensityFor(null, 'a4', 'docx')).toBe('normal')
     expect(LETTER_WORDS.pdf.normal).toBeLessThan(LETTER_WORDS.docx.normal)
@@ -504,5 +507,69 @@ describe('a cover letter that is only just over a page is tightened', () => {
     expect(await sz(300)).toBe('1300')
     expect(await sz(520)).toBe('1150')
     expect(await sz(300, { density: 'compact' })).toBe('1150')
+  })
+})
+
+// ── pass 8 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('embedded fonts', () => {
+  const faces = [...FONT_FACE_CSS.matchAll(/@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);[^}]*src: url\(data:font\/woff2;base64,([A-Za-z0-9+/=]+)\)/g)]
+  it('are three real woff2 faces carried as data URIs (no remote font request), within a size budget', () => {
+    expect(faces.map(f => `${f[1]} ${f[2]}`)).toEqual(['DocSans 400', 'DocSans 700', 'DocSerif 700'])
+    let total = 0
+    for (const f of faces) { const bytes = Buffer.from(f[3], 'base64'); total += bytes.length; expect(bytes.subarray(0, 4).toString('latin1')).toBe('wOF2') }
+    expect(total).toBeLessThan(120 * 1024)
+    expect(FONT_FACE_CSS).not.toMatch(/https?:\/\//)
+  })
+  it('lead the font stacks of the resume and the letter, and never mention the product name', () => {
+    const sans = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Raleway' } }, null)
+    expect(sans.match(/@font-face/g)).toHaveLength(3)
+    expect(sans).toContain('font-family: "DocSans", "Helvetica Neue", Arial')
+    expect(sans).not.toMatch(/Passthrough/)
+    const serif = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Merriweather' } }, null)
+    expect(serif).toContain('font-family: "DocSerif", Georgia')
+    const letter = buildCoverLetterHTML('Hi', { name: 'A' }, { paper: 'a4' }, {})
+    expect(letter.match(/@font-face/g)).toHaveLength(3)
+    expect(letter).toContain('"DocSans"')
+  })
+})
+
+describe('right-to-left text', () => {
+  const AR = { name: 'وانجيرو مويانجي', summary: 'محلل بيانات لديه خمس سنوات من الخبرة.', skills: ['SQL', 'بايثون'], experience: [{ title: 'محلل', company: 'سفاري', dates: '2022', bullets: ['بنيت لوحة معلومات.', 'Built a dashboard.'] }] }
+  it('PDF template: each block takes its own direction, and list markers follow their item', () => {
+    const html = buildResumeHTML(AR, { paper: 'a4' }, null)
+    expect(html).toMatch(/unicode-bidi: plaintext/)
+    expect(html.match(/<li dir="auto">/g).length).toBeGreaterThanOrEqual(2)
+  })
+  it('DOCX: Arabic bullets and paragraphs are right-to-left, English ones are untouched', async () => {
+    const { doc } = await parts(await generateAtsDocx(AR, null))
+    const paras = doc.match(/<w:p>[\s\S]*?<\/w:p>/g)
+    const ar = paras.find(p => p.includes('بنيت لوحة'))
+    const en = paras.find(p => p.includes('Built a dashboard.'))
+    expect(ar).toMatch(/<w:bidi\/>/)
+    expect(ar).toMatch(/<w:rtl\/>/)
+    expect(en).not.toMatch(/<w:bidi\/>/)
+    expect(en).not.toMatch(/<w:rtl\/>/)
+    expect(paras.find(p => p.includes('محلل بيانات'))).toMatch(/<w:bidi\/>/)
+    expect((await parts(await generateAtsDocx(FULL, null))).doc).not.toMatch(/<w:bidi\/>/)
+  })
+})
+
+describe('ligature code points are letters again', () => {
+  it('unligature expands the seven ligature characters and nothing else', () => {
+    expect(unligature('\uFB01nance \uFB02ow o\uFB03ce \uFB00 \uFB04 \uFB05 \uFB06')).toBe('finance flow office ff ffl st st')
+    expect(unligature('5² ™ ½ é ＡＢ plain')).toBe('5² ™ ½ é ＡＢ plain')
+    expect(unligature(null)).toBeNull()
+    expect(unligature(42)).toBe(42)
+  })
+  it('the Word file and the PDF template never carry one (an ATS matching "finance" would miss "\uFB01nance")', async () => {
+    const rd = { name: 'A', summary: '\uFB01nance o\uFB03ce', skills: ['\uFB02ow'], experience: [{ title: 'Of\uFB01cer', company: 'X', bullets: ['e\uFB03cient \uFB01x'] }] }
+    const text = await extractText(await generateAtsDocx(rd, null), DOCX)
+    expect(text).not.toMatch(/[\uFB00-\uFB06]/)
+    expect(text).toContain('finance office')
+    expect(text).toContain('efficient fix')
+    const html = buildResumeHTML(rd, { paper: 'a4' }, null)
+    expect(html.replace(/<style>[\s\S]*?<\/style>/, '')).not.toMatch(/[\uFB00-\uFB06]/)
+    expect(html).toContain('finance office')
+    expect(buildCoverLetterHTML('o\uFB03ce', rd, { paper: 'a4' }, {})).not.toMatch(/[\uFB00-\uFB06]/)
   })
 })

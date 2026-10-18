@@ -18,6 +18,8 @@ const { densityFor, letterDensityFor } = require('../lib/docFit')
 const { stripBullet } = require('../lib/bulletText')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { isSerifHeading } = require('../lib/typeface')
+const { FONT_FACE_CSS } = require('../lib/embeddedFonts')
+const { unligature } = require('../lib/textClean')
 
 // The credential's check mark is DRAWN, not typed: U+2713 is in neither Arial nor Liberation Sans, so on a container with only
 // the usual sans fonts it printed as an empty box in front of "Passthrough Verified" on every delivered PDF. (It also keeps a
@@ -36,7 +38,7 @@ const ruleColor = hex => {
 // A CSS string literal from arbitrary text (the name in the page footer).
 const cssStr = v => String(v ?? '').replace(/[\\"\n\r\f<>&]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80)
 
-const esc = v => String(v ?? '')
+const esc = v => unligature(String(v ?? ''))
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 
@@ -58,8 +60,9 @@ function fontStacks(fonts) {
   const heading = String(fonts?.heading || '')
   const serifHeading = isSerifHeading(heading)
   return {
-    heading: serifHeading ? 'Georgia, "Times New Roman", serif' : '"Helvetica Neue", Arial, sans-serif',
-    body:    '"Helvetica Neue", Arial, "Segoe UI", sans-serif',
+    // The embedded faces (lib/embeddedFonts.js) lead; the system fonts that follow only ever supply glyphs the Latin subset lacks.
+    heading: serifHeading ? '"DocSerif", Georgia, "Times New Roman", serif' : '"DocSans", "Helvetica Neue", Arial, sans-serif',
+    body:    '"DocSans", "Helvetica Neue", Arial, "Segoe UI", sans-serif',
   }
 }
 
@@ -116,7 +119,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     const bullets = list(job?.bullets).map(str).filter(Boolean)
     if (!head && !dates && !bullets.length) return ''
     return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
-      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
+      (bullets.length ? `<ul>${bullets.map(b => `<li dir="auto">${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
   }).join('')
 
   const education = list(d.education).map(e => {
@@ -132,7 +135,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const skillsHtml = skills.length ? `<p class="skills">${skills.map(esc).join(' &middot; ')}</p>` : ''
 
   const certs = list(d.certifications).map(str).filter(Boolean)
-  const certsHtml = certs.length ? `<ul>${certs.map(c => `<li>${esc(stripBullet(c))}</li>`).join('')}</ul>` : ''
+  const certsHtml = certs.length ? `<ul>${certs.map(c => `<li dir="auto">${esc(stripBullet(c))}</li>`).join('')}</ul>` : ''
 
   const projects = list(d.projects).map(p => {
     const name = str(p?.name)
@@ -142,7 +145,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     if (!name && !desc) return ''
     const l = hrefFor(link)
     return `<div class="entry"><div class="row"><span class="strong">${esc(name)}</span>${tech.length ? `<span class="dates">${tech.map(esc).join(', ')}</span>` : ''}</div>` +
-      (desc ? `<ul><li>${esc(stripBullet(desc))}</li></ul>` : '') +
+      (desc ? `<ul><li dir="auto">${esc(stripBullet(desc))}</li></ul>` : '') +
       (link ? `<p class="link">${l ? `<a href="${esc(l)}">${esc(link)}</a>` : esc(link)}</p>` : '') + `</div>`
   }).join('')
 
@@ -152,9 +155,9 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
     const bullets = list(v?.bullets).map(str).filter(Boolean)
     if (!head && !dates && !bullets.length) return ''
     return `<div class="entry"><div class="row"><span class="strong">${head}</span>${dates ? `<span class="dates">${esc(dates)}</span>` : ''}</div>` +
-      (bullets.length ? `<ul>${bullets.map(b => `<li>${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
+      (bullets.length ? `<ul>${bullets.map(b => `<li dir="auto">${esc(stripBullet(b))}</li>`).join('')}</ul>` : '') + `</div>`
   }).join('')
-  const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li>${esc(stripBullet(i))}</li>`).join('')}</ul>` : '' }
+  const plainList = v => { const items = list(v).map(str).filter(Boolean); return items.length ? `<ul>${items.map(i => `<li dir="auto">${esc(stripBullet(i))}</li>`).join('')}</ul>` : '' }
   const languages = list(d.languages).map(str).map(stripBullet).map(str).filter(Boolean)
   const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(' &middot; ')}</p>` : ''
 
@@ -173,6 +176,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>
 <style>
+${FONT_FACE_CSS}
 /* Top/bottom page margins belong to the PRINT ENGINE (pdf.service.js passes the same 14mm), not to
    the container: padding on one tall box only pads its first top and last bottom edge, so on a
    2-page resume page 1 ran to the bottom edge and page 2 started at the top edge. */
@@ -206,6 +210,8 @@ a { color: inherit; text-decoration: none }
 .ck { width: 8pt; height: 8pt; vertical-align: -0.5pt; margin-right: 2.5pt }
 .nw { white-space: nowrap }
 .contact.more { margin-bottom: 1pt }
+/* Right-to-left text (Arabic, Hebrew) takes its own direction block by block: aligned and indented from the right, bullets on the right. */
+p, li, h1, .row > *, .summary, .skills { unicode-bidi: plaintext }
 </style></head><body><div class="page">
 <h1>${esc(d.name || '')}</h1>
 ${contact}
@@ -233,6 +239,7 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><title>${esc(d.name ? `${d.name} - Cover letter` : 'Cover letter')}</title>
 <style>
+${FONT_FACE_CSS}
 @page { size: ${paper.css}; margin: 14mm 0 }
 * { box-sizing: border-box }
 html, body { margin: 0; padding: 0 }
