@@ -24,7 +24,19 @@ const FLAG_WINDOW_MS = 7 * 24 * 3600 * 1000
 // Paystack: x-paystack-signature is a 128-char hex HMAC-SHA512. Anything else is not a Paystack delivery.
 const looksLikePaystackSignature = sig => /^[0-9a-f]{128}$/i.test(String(sig || '').trim())
 // Resend/Svix: all three svix-* headers present.
-const looksLikeSvixDelivery = headers => !!(headers.id && headers.timestamp && headers.signature)
+// Webhooks round 21 (B2): "has the headers" let ANY request with a made-up 128-hex signature (or three arbitrary svix-* values) raise the
+// admin "deliveries are being refused" notice, which stays up until the next real delivery. A signature cannot prove who sent it - a wrong
+// key and a forged one fail identically - so the shape is checked harder instead: a real Svix delivery has an msg_ id, an epoch-seconds
+// timestamp and a `v1,<base64>` signature; a real Paystack delivery has a JSON body with a string `event` and an object `data`.
+const looksLikeSvixDelivery = headers => !!(headers && typeof headers.id === 'string' && /^msg_\w+$/.test(headers.id.trim())
+  && /^\d{9,11}$/.test(String(headers.timestamp || '').trim())
+  && /(^|\s)v1,[A-Za-z0-9+/]{20,}={0,2}(\s|$)/.test(String(headers.signature || '')))
+function looksLikePaystackEvent(bytes) {
+  try {
+    const e = JSON.parse(new TextDecoder().decode(bytes))
+    return !!e && typeof e.event === 'string' && !!e.data && typeof e.data === 'object'
+  } catch (_) { return false }
+}
 
 async function recordRejection(env, provider, reason, supabase) {   // `supabase`: the caller's client (this module holds no config of its own)
   try {
@@ -82,4 +94,4 @@ function rejectedSinceLastEvent(rejections, lastAcceptedAt, now = Date.now()) {
   return out
 }
 
-module.exports = { recordRejection, readRejections, rejectedSinceLastEvent, looksLikePaystackSignature, looksLikeSvixDelivery, KEY_PREFIX, FLAGGED_KEY_PREFIX, REASONS }
+module.exports = { recordRejection, readRejections, rejectedSinceLastEvent, looksLikePaystackSignature, looksLikePaystackEvent, looksLikeSvixDelivery, KEY_PREFIX, FLAGGED_KEY_PREFIX, REASONS }

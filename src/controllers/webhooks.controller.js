@@ -766,6 +766,22 @@ async function markDisputeAnswered(supabase, payment, kind) {
     return true
   } catch (err) { console.error('dispute answer not stored:', err && err.message); return false }
 }
+// Webhooks round 21 (G1/B1): Paystack sends no event when the merchant answers a dispute in ITS dashboard (the very step the alerts
+// recommend); the dispute just moves to `awaiting-bank-feedback`. Nothing recorded that, so the payment kept looking unanswered:
+// the dashboard card and Admin -> Payments counted it overdue once the response deadline passed (for the weeks the bank takes) and kept
+// offering Contest / Accept that Paystack would refuse. Stamps it as answered ('contested' - the only way a dispute reaches the bank).
+// Only a still-unanswered DISPUTED payment is touched. Best effort, column-tolerant (0097), never throws. true = a row was stamped.
+async function markDisputeAnsweredOutside(supabase, payment) {
+  try {
+    if (!payment || (!payment.id && !payment.paystack_ref)) return false
+    let q = supabase.from('payments').update({ dispute_answered_at: new Date().toISOString(), dispute_answer: 'contested' })
+      .eq('status', 'DISPUTED').is('dispute_answered_at', null)
+    q = payment.id ? q.eq('id', payment.id) : q.eq('paystack_ref', payment.paystack_ref)
+    const { data, error } = await q.select('id')
+    if (error) { if (!isColumnMissing(error)) console.error('dispute answer (dashboard) not stored:', error.message); return false }
+    return Array.isArray(data) && data.length > 0
+  } catch (err) { console.error('dispute answer (dashboard) not stored:', err && err.message); return false }
+}
 async function resetDisputeAnswer(supabase, payment) {
   try {
     if (!payment || !payment.id) return false
@@ -944,7 +960,8 @@ async function handlePaystack(c) {
         `If Paystack changed its outbound IPs, every webhook is failing until the list is updated (payments are still recovered by the buyer's return visit and the hourly sweeps, ` +
         `but refunds and disputes are not). Update it: wrangler secret put PAYSTACK_WEBHOOK_IPS — or delete it to rely on the signature alone. ` +
         `Further occurrences in the next 30 minutes are logged but not emailed.`)
-    noteRejected(c, 'paystack', sigOk ? 'ip' : (rejections.looksLikePaystackSignature(givenSig) ? 'signature' : 'unsigned'))
+    // Round 21 (B2): a bad signature from outside the allow-list cannot be Paystack, so it is scanner noise, not a flagged refusal.
+    noteRejected(c, 'paystack', sigOk ? 'ip' : 'unsigned')
     return c.text('Forbidden', 403)
   }
   if (!sigOk) {
@@ -955,7 +972,7 @@ async function handlePaystack(c) {
         `A request to /api/webhooks/paystack failed HMAC verification.\nsource IP: ${c.req.header('cf-connecting-ip') || '(unknown)'}\n\n` +
         `Either PAYSTACK_SECRET_KEY is wrong/rotated (real payments will not fulfil until fixed) or someone is probing the endpoint. ` +
         `Further mismatches in the next 30 minutes are logged but not emailed.`)
-    noteRejected(c, 'paystack', rejections.looksLikePaystackSignature(givenSig) ? 'signature' : 'unsigned')
+    noteRejected(c, 'paystack', rejections.looksLikePaystackSignature(givenSig) && rejections.looksLikePaystackEvent(bodyBytes) ? 'signature' : 'unsigned')
     return c.text('Invalid signature', 401)
   }
 
@@ -1816,7 +1833,7 @@ async function fetchOldOpenDisputes(env, supabase, now, alreadyListed = new Set(
 }
 
 async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date.now(), list = null } = {}) {
-  const result = { checked: 0, actioned: [], failed: [], needsHuman: [], error: null }
+  const result = { checked: 0, actioned: [], failed: [], needsHuman: [], answeredElsewhere: [], error: null }
   try {
     if (!env.PAYSTACK_SECRET_KEY) return result
     // ROUND-11 (G4): the default fetch pages through Paystack's list (it used to read the first 100 only, silently dropping the
@@ -1899,6 +1916,12 @@ async function sweepDisputes(env, ctx, supabase = getSupabase(env), { now = Date
         result.failed.push({ reference: d.transaction.reference, error: err && err.message })
       }
     }
+    // Webhooks round 21 (G1): a dispute Paystack lists as awaiting the BANK was answered by the merchant (in its dashboard); record that on the payment.
+    for (const d of disputes) {
+      if (disputeIsResolved(d) || String(d.status || '').toLowerCase() !== 'awaiting-bank-feedback') continue
+      if (!statusOf.has(d.transaction.reference)) continue
+      if (await markDisputeAnsweredOutside(supabase, { paystack_ref: d.transaction.reference })) result.answeredElsewhere.push(d.transaction.reference)
+    }
     for (const n of result.needsHuman) {
       if (!(await alertAllowed(env, `webhook-alert-cooldown:dispute-partial:${n.dispute ?? n.reference}`, 7 * 24 * 3600))) continue
       alert(c, 'Partially accepted dispute needs a decision',
@@ -1943,12 +1966,13 @@ function disputeWarnMs(env) {
 // Paystack's own view: once a dispute is past the merchant's turn (answered in the dashboard, with the bank, or closed) the deadline
 // page is noise. Any doubt (no key, Paystack down, an unfamiliar status) means "still ours" — an extra page beats a missed one.
 const PAST_MERCHANT_TURN = new Set(['awaiting-bank-feedback', 'resolved', 'archived'])
-async function disputeNoLongerAwaitingUs(env, disputeId) {
+async function disputeStatusOf(env, disputeId) {
   try {
     const json = await paystackService.fetchDispute(env, disputeId)
-    return PAST_MERCHANT_TURN.has(String(json && json.data && json.data.status || '').toLowerCase())
-  } catch (_) { return false }
+    return String(json && json.data && json.data.status || '').toLowerCase()
+  } catch (_) { return '' }
 }
+async function disputeNoLongerAwaitingUs(env, disputeId) { return PAST_MERCHANT_TURN.has(await disputeStatusOf(env, disputeId)) }
 async function checkDisputeDeadlines(env, ctx, supabase = getSupabase(env), { now = Date.now() } = {}) {
   const result = { checked: 0, alerted: [], error: null }
   try {
@@ -1972,7 +1996,14 @@ async function checkDisputeDeadlines(env, ctx, supabase = getSupabase(env), { no
       const due = Date.parse(p.dispute_due_at)
       if (!Number.isFinite(due)) continue
       if (p.dispute_answered_at) { result.answered = (result.answered || 0) + 1; continue }
-      if (p.dispute_id && await disputeNoLongerAwaitingUs(env, p.dispute_id)) { result.answered = (result.answered || 0) + 1; continue }
+      if (p.dispute_id) {
+        const st = await disputeStatusOf(env, p.dispute_id)
+        if (PAST_MERCHANT_TURN.has(st)) {
+          // Round 21 (G1): remember it, so the dashboard card and Admin -> Payments stop treating it as unanswered.
+          if (st === 'awaiting-bank-feedback') await markDisputeAnsweredOutside(supabase, p)
+          result.answered = (result.answered || 0) + 1; continue
+        }
+      }
       if (!(await alertAllowed(env, `webhook-alert-cooldown:dispute-deadline:${p.id}`, 3 * 3600))) continue
       result.alerted.push(p.paystack_ref)
       const line = disputeDeadlineLine({ due_at: p.dispute_due_at }, now).trim()
@@ -2280,4 +2311,4 @@ async function getWebhookHealth(c) {
   return c.json({ success: true, data: await computeWebhookHealth(getSupabase(c.env)) })
 }
 
-module.exports = { buildSelfTest, getWebhookSelfTest, checkDisputeDeadlines, disputeWarnMs, workWasDelivered, STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }
+module.exports = { markDisputeAnsweredOutside, buildSelfTest, getWebhookSelfTest, checkDisputeDeadlines, disputeWarnMs, workWasDelivered, STALE_COL_RETRY_MS, closeUnreadableStored, checkRetiredSecret, claimEvent, acceptPaymentDispute, contestPaymentDispute, submitDisputeEvidence, getPaymentTimeline, pruneWebhookEvents, recordDisputeId, SLOW_EVENT_MS, recordEvent, markEvent, updateEvent, storedKind, closeUnrunnableReceived, computeWebhookHealth, getWebhookHealth, checkWebhookDelivery, deliveryProblem, disputeDeadlineLine, recordDisputeDeadline, openDisputeSummary, handlePaystack, listWebhookEvents, getWebhookEvent, replayWebhookEvent, dismissWebhookEvent, disputeEventProcessed, redriveStaleEvents, sweepDisputes, closeResolvedHeldEvents, scrubUnactionablePayloads, isActionableEvent, eventKeyFor, refundIsAmbiguous, redactEvent, MAX_BODY_BYTES }

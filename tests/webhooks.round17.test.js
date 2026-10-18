@@ -102,7 +102,7 @@ describe('G1: webhookRejections helper', () => {
       expect(lib.looksLikePaystackSignature('a'.repeat(128))).toBe(true)
       expect(lib.looksLikePaystackSignature('abc')).toBe(false)
       expect(lib.looksLikePaystackSignature('')).toBe(false)
-      expect(lib.looksLikeSvixDelivery({ id: 'm', timestamp: '1', signature: 'v1,x' })).toBe(true)
+      expect(lib.looksLikeSvixDelivery({ id: 'msg_abc123', timestamp: '1760000000', signature: 'v1,' + 'A'.repeat(44) })).toBe(true)
       expect(lib.looksLikeSvixDelivery({ id: 'm' })).toBe(false)
     })
   })
@@ -205,7 +205,7 @@ describe('G1: handleResend records what it refuses', () => {
     return { res, row: row && row.value }
   }
   it('bad signature with svix headers → 401 + "signature"', async () => {
-    const { res, row } = await fire({ headers: { 'svix-id': 'msg_1', 'svix-timestamp': String(Math.floor(Date.now() / 1000)), 'svix-signature': 'v1,AAAA' } })
+    const { res, row } = await fire({ headers: { 'svix-id': 'msg_abc123xyz', 'svix-timestamp': String(Math.floor(Date.now() / 1000)), 'svix-signature': 'v1,' + 'A'.repeat(44) } })
     expect(res.status).toBe(401)
     expect(row.last_reason).toBe('signature')
   })

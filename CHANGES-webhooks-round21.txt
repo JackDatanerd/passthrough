@@ -1,0 +1,14 @@
+WEBHOOKS — round 21 (fresh independent audit: 1 feature gap + its dashboard symptom, 1 bug; no migration)
+
+G1/B1  A dispute answered in Paystack's OWN dashboard (the step every dispute alert recommends) is never reported by a webhook — the dispute just
+       moves to `awaiting-bank-feedback`. Nothing recorded it, so the payment kept looking unanswered: the dashboard "Open disputes" card and
+       Admin -> Payments counted it OVERDUE once the response deadline passed (for the weeks the bank takes) and kept offering Contest / Accept.
+       checkDisputeDeadlines already asked Paystack but threw the answer away. Now both it and sweepDisputes stamp such a payment
+       (dispute_answer 'contested', dispute_answered_at; migration 0097 columns, no new migration) through markDisputeAnsweredOutside, which
+       only touches a still-unanswered DISPUTED payment and never overwrites an existing answer. sweepDisputes reports `answeredElsewhere`.
+B2     Anyone could raise the red "deliveries are being refused" notice (Admin -> Webhooks, self-test) with a made-up 128-hex x-paystack-signature
+       (or three arbitrary svix-* headers); it stays up until the next real delivery. A signature cannot prove its sender (a rotated key and a
+       forged one fail the same way), so the shape is checked harder: flagged only if the body is a Paystack event (JSON `event` string + `data`
+       object) / the svix headers have a real shape (msg_ id, epoch timestamp, v1,<base64>); a bad signature from OUTSIDE PAYSTACK_WEBHOOK_IPS can
+       never be Paystack and is no longer flagged. The notice wording now admits a probing explanation. A rotated-key delivery still flags.
+Tests: tests/webhooks.round21.test.js; two fixtures in webhooks.round17 / resend-webhook tests now use realistic svix headers.

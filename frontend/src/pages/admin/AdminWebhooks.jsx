@@ -242,7 +242,7 @@ export default function AdminWebhooks() {
             const r = health.lastRejected?.[provider]
             const why = r?.reason === 'ip' ? 'its source IP is not in the allow-list (PAYSTACK_WEBHOOK_IPS)'
               : r?.reason === 'not-configured' ? 'the signing secret is not configured on the Worker'
-              : 'the signature did not verify — the signing key here does not match the one in the dashboard'
+              : 'the signature did not verify — the signing key here does not match the one in the dashboard (or someone is probing the endpoint with a made-up signature; a real delivery clears this)'
             return (
               <div key={provider}>
                 <strong>{provider === 'resend' ? 'Resend' : 'Paystack'} deliveries are being refused</strong>

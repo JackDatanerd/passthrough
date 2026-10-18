@@ -138,7 +138,7 @@ describe('POST /api/webhooks/resend', () => {
   it('ROUND 5 (G1): a signature failure pages the owner once (not per request) and still answers 401', async () => {
     const env = { RESEND_WEBHOOK_SECRET: SECRET, RATE_LIMIT_KV: kv() }
     t = setup({ leads: [lead], envExtra: env })
-    const bad = { 'svix-signature': 'v1,AAAA' }
+    const bad = { 'svix-signature': 'v1,' + 'A'.repeat(44) }
     const r1 = await t.call(complaint(), { headers: bad, envOver: env })
     await t.call(complaint(), { headers: bad, envOver: env }); await t.call(complaint(), { headers: bad, envOver: env })
     expect(r1.status).toBe(401)
@@ -152,7 +152,7 @@ describe('POST /api/webhooks/resend', () => {
   })
   it('rejects a bad signature with 401 and changes nothing', async () => {
     t = setup({ leads: [lead] })
-    const res = await t.call(complaint(), { headers: { 'svix-signature': 'v1,AAAA' } })
+    const res = await t.call(complaint(), { headers: { 'svix-signature': 'v1,' + 'A'.repeat(44) } })
     expect(res.status).toBe(401)
     expect(t.state.leads).toHaveLength(1)
     expect(t.state.suppressed.size).toBe(0)
@@ -273,7 +273,7 @@ describe('round 6 — G2: any verified event stamps "last Resend event"', () => 
   })
   it('a bad signature never stamps "last Resend event" (round 17: it is recorded as a refusal instead)', async () => {
     t = setup()
-    await t.call(complaint(), { headers: { 'svix-signature': 'v1,AAAA' } })
+    await t.call(complaint(), { headers: { 'svix-signature': 'v1,' + 'A'.repeat(44) } })
     expect(t.state.stamps.filter(s => s.key === 'resend_webhook')).toHaveLength(0)
     expect(t.state.stamps.filter(s => s.key === 'webhook_rejected_flagged:resend')).toHaveLength(1)
   })
