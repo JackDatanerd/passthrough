@@ -821,6 +821,13 @@ async function processDispute(c, supabase, event) {
   }
   // create (just marked) and remind (a re-sent, possibly extended deadline) both carry due_at; the guarded update only
   // touches a payment that is DISPUTED right now.
+  // Webhooks round 22 (B1): a create for a DIFFERENT dispute id on a payment that is already DISPUTED (a second dispute opened while the
+  // first is unresolved) is a new dispute that nobody has answered, yet it overwrote the stored deadline and id and kept the first
+  // dispute's `dispute_answered_at` - so the deadline pages and the overdue count skipped it. A redelivery of the SAME create (same id) is
+  // left alone. Only when a stored id exists can the two be told apart (migration 0086).
+  if (event.event === 'charge.dispute.create' && !marked && payment && payment.status === 'DISPUTED' && payment.dispute_id && d.id != null
+      && String(d.id).trim() !== '' && String(d.id).trim() !== String(payment.dispute_id))
+    await resetDisputeAnswer(supabase, payment)
   if ((event.event === 'charge.dispute.create' || event.event === 'charge.dispute.remind') && payment && (marked || payment.status === 'DISPUTED'))
     { await recordDisputeDeadline(supabase, payment, d); await recordDisputeId(supabase, payment, d) }
 

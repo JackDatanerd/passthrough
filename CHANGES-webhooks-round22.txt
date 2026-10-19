@@ -1,0 +1,21 @@
+Webhooks section 8 — round 22 (independent pass; no migration)
+
+B1  charge.dispute.create for a DIFFERENT dispute id on a payment that is already DISPUTED
+    (a second dispute opened while the first is unresolved) overwrote dispute_due_at / dispute_id
+    but kept the first dispute's dispute_answered_at / dispute_answer, so the deadline pages and the
+    overdue count skipped a dispute nobody had answered. processDispute now resets the answer when the
+    stored dispute id differs from the event's. A redelivery of the same create (same id) is untouched;
+    without a stored id (pre-0086) the two cannot be told apart, so nothing changes.
+    File: src/controllers/webhooks.controller.js
+
+B2  (reconcile.service.js, traced from section 8) sweepStalledRefunds emailed "Partial refunds Paystack has
+    PROCESSED that this app has not recorded (the webhook was lost or failed)" for a refund that DID arrive:
+    processRefund deliberately leaves an ambiguous refund event (no id, no refund_reference) out of
+    payment_refunds, so Paystack's total stayed ahead of ours. A Paystack refund whose amount is already covered
+    by a payment_refunds row OR a PROCESSED refund.processed inbox row for that reference is no longer reported.
+    A genuinely lost webhook is still reported. If the inbox cannot be read it behaves as before.
+    File: src/services/reconcile.service.js
+
+Tests: tests/webhooks.round22.test.js (the B1 test and the covered-by-inbox B2 test fail without the fix).
+Full backend suite: 4900 passed; the only failure (scan.ats.round10.text, a real-Postgres test that times out at 5 s in
+the sandbox) fails identically on an untouched checkout. Lint: 801 files clean.

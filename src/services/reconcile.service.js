@@ -697,6 +697,7 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
     const when = it => Date.parse(it.updated_at || it.updatedAt || it.created_at || it.createdAt || '')
     const live = s => ['pending', 'processing', 'needs-attention', 'processed'].includes(s)
     const processedSum = new Map()               // payment id -> Paystack's processed total in the payment's own currency
+    const processedAmounts = new Map()           // payment id -> each processed refund's amount (webhooks round 22, B2)
     for (const [ref, its] of refs) {
       const p = known.get(ref)
       if (!p) continue
@@ -707,7 +708,11 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
         const age = Number.isFinite(at) ? now - at : null
         const amount = Number.isFinite(Number(it.amount)) ? Number(it.amount) : null
         if (status === 'processed') {
-          if (amount != null && (!it.currency || it.currency === p.currency)) processedSum.set(p.id, (processedSum.get(p.id) || 0) + amount)
+          if (amount != null && (!it.currency || it.currency === p.currency)) {
+            processedSum.set(p.id, (processedSum.get(p.id) || 0) + amount)
+            if (!processedAmounts.has(p.id)) processedAmounts.set(p.id, [])
+            processedAmounts.get(p.id).push(amount)
+          }
           continue
         }
         let why = null
@@ -726,15 +731,39 @@ async function sweepStalledRefunds(env, supabase, { now = Date.now(), alert = tr
     }).map(([id]) => id)
     if (partialIds.length) {
       const ours = new Map()
+      const ourRows = []
       for (let i = 0; i < partialIds.length; i += 100) {
         const { data, error } = await supabase.from('payment_refunds').select('payment_id, amount_cents').in('payment_id', partialIds.slice(i, i + 100))
         if (error) throw error
-        for (const r of data || []) ours.set(r.payment_id, (ours.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0))
+        for (const r of data || []) { ours.set(r.payment_id, (ours.get(r.payment_id) || 0) + (Number(r.amount_cents) || 0)); ourRows.push(r) }
       }
+      // Webhooks round 22 (B2): processRefund deliberately does NOT record an ambiguous refund event (no id, no refund_reference) in
+      // payment_refunds - a duplicate delivery could not be told from a second refund. Such a refund DID reach this app (its inbox row is
+      // PROCESSED and it was alerted as a partial refund), but payment_refunds stayed short, so this sweep reported it as "the webhook was lost or
+      // failed" - every time Paystack's total moved. A Paystack refund whose amount is already covered by a recorded refund OR by a PROCESSED
+      // refund.processed inbox row for that reference is therefore not reported. Best effort: if the inbox cannot be read, behaves as before.
+      const covered = new Map()                  // payment id -> Set of amounts this app has seen
+      for (const id of partialIds) covered.set(id, new Set())
+      for (const r of ourRows) { const set = covered.get(r.payment_id); if (set) set.add(Number(r.amount_cents)) }
+      try {
+        const refByPayment = new Map(partialIds.map(id => [[...known.values()].find(x => x.id === id).paystack_ref, id]))
+        const refList = [...refByPayment.keys()]
+        for (let i = 0; i < refList.length; i += 100) {
+          const { data, error } = await supabase.from('webhook_events').select('reference, payload')
+            .eq('provider', 'paystack').eq('event_type', 'refund.processed').eq('status', 'PROCESSED').in('reference', refList.slice(i, i + 100))
+          if (error) throw error
+          for (const row of data || []) {
+            const amt = Number(row.payload && row.payload.data && row.payload.data.amount)
+            const set = covered.get(refByPayment.get(row.reference))
+            if (set && Number.isFinite(amt)) set.add(amt)
+          }
+        }
+      } catch (err) { console.error('stalled-refund sweep: inbox lookup failed (reporting without it):', err && err.message) }
       for (const id of partialIds) {
         const p = [...known.values()].find(x => x.id === id)
         const theirs = processedSum.get(id), mine = ours.get(id) || 0
-        if (theirs > mine) result.missedPartial.push({ reference: p.paystack_ref, scanId: p.scan_id, paystack: theirs, recorded: mine, paid: p.amount_cents, currency: p.currency })
+        const seen = covered.get(id) || new Set()
+        if (theirs > mine && (processedAmounts.get(id) || []).some(a => !seen.has(a))) result.missedPartial.push({ reference: p.paystack_ref, scanId: p.scan_id, paystack: theirs, recorded: mine, paid: p.amount_cents, currency: p.currency })
       }
     }
 
