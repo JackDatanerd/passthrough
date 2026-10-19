@@ -730,7 +730,7 @@ async function downloadProfileDocx(c) {
   // No posting to read the paper from: the applicant's own location line decides (Letter when it says nothing).
   const paper = designService.paperForLocation(rd?.location) || 'letter'
   const bytes = await docxService.generateAtsDocx(rd, null, { paper })
-  c.header('Content-Disposition', `attachment; filename="${profileFileStem(rd)}.docx"`)
+  c.header('Content-Disposition', fileStems.disposition('resume', rd?.name, 'docx'))
   c.header('Content-Type', DOCX_MIME)
   return c.body(bytes)
 }
@@ -745,7 +745,7 @@ async function downloadProfilePdf(c) {
     console.error('downloadProfilePdf:', err.message)
     return c.json({ success: false, message: "We couldn't generate the PDF just now. Please try again in a minute — the .docx is still available." }, 502)
   }
-  c.header('Content-Disposition', `attachment; filename="${profileFileStem(rd)}.pdf"`)
+  c.header('Content-Disposition', fileStems.disposition('resume', rd?.name, 'pdf'))
   c.header('Content-Type', 'application/pdf')
   return c.body(bytes)
 }

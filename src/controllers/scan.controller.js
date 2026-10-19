@@ -1135,7 +1135,7 @@ async function downloadDraft(ctx) {
   const { scan, res } = await loadDraftScan(ctx)
   if (res) return res
   const docxBytes = await docxService.generateAtsDocx(scan.originalResumeData, null, { paper: paperFor(scan, scan.jobDescriptionText), ...lookFor(scan) })
-  ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.docx"`)
+  ctx.header('Content-Disposition', fileStems.disposition('draft', scan.originalResumeData?.name, 'docx'))
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(docxBytes)
 }
@@ -1157,7 +1157,7 @@ async function downloadDraftPdf(ctx) {
     console.error(`downloadDraftPdf ${scan.id}:`, err.message)
     return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute — the .docx draft is still available.' }, 502)
   }
-  ctx.header('Content-Disposition', `attachment; filename="${draftFileStem(scan.originalResumeData)}.pdf"`)
+  ctx.header('Content-Disposition', fileStems.disposition('draft', scan.originalResumeData?.name, 'pdf'))
   ctx.header('Content-Type', 'application/pdf')
   return ctx.body(pdfBytes)
 }
@@ -1584,7 +1584,7 @@ async function downloadCoverLetter(ctx) {
   const { res, row, data, paper, date, look } = await loadCoverLetter(ctx)
   if (res) return res
   const bytes = await docxService.generateCoverLetterDocx(row.cover_letter_text, data?.name, { contact: data, date, paper, ...look })
-  ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.docx"`)
+  ctx.header('Content-Disposition', fileStems.disposition('letter', data?.name, 'docx'))
   ctx.header('Content-Type', DOCX_MIME)
   return ctx.body(bytes)
 }
@@ -1606,7 +1606,7 @@ async function downloadCoverLetterPdf(ctx) {
     console.error(`downloadCoverLetterPdf ${row.id}:`, err.message)
     return ctx.json({ success: false, message: 'We couldn\'t generate the PDF just now. Please try again in a minute — the .docx letter is still available.' }, 502)
   }
-  ctx.header('Content-Disposition', `attachment; filename="${coverLetterFileStem(data)}.pdf"`)
+  ctx.header('Content-Disposition', fileStems.disposition('letter', data?.name, 'pdf'))
   ctx.header('Content-Type', 'application/pdf')
   return ctx.body(pdfBytes)
 }
@@ -2062,13 +2062,13 @@ async function downloadFile(ctx) {
   if (type !== 'ats' && type !== 'pdf')
     return ctx.json({ success: false, message: 'type must be "ats" or "pdf".' }, 400)
   const fileKey  = type === 'ats' ? scan.resumeAtsPath : scan.resumePdfPath
-  const filename = `${deliveredFileStem(scan.rewrittenResumeData || scan.originalResumeData)}.${type === 'ats' ? 'docx' : 'pdf'}`
+  const disposition = fileStems.disposition('resume', (scan.rewrittenResumeData || scan.originalResumeData)?.name, type === 'ats' ? 'docx' : 'pdf')
   if (!fileKey) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
 
   const obj = await ctx.env.RESUMES_BUCKET.get(fileKey)
   if (!obj) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
 
-  ctx.header('Content-Disposition', `attachment; filename="${filename}"`)
+  ctx.header('Content-Disposition', disposition)
   ctx.header('Content-Type', type === 'ats'
     ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     : 'application/pdf')

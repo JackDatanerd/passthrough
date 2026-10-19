@@ -1,0 +1,24 @@
+APPLICANT-FACING DOCUMENTS - round 9 (base: upstream ec979ab; findings of the tenth independent pass, checked in real Chromium)
+No migration, no new npm dependency.
+
+Gaps closed
+- G1  Applicants whose names are not Latin got an identical generic filename: Cyrillic, Greek, CJK, Arabic, Amharic names all downloaded as
+      "Resume.pdf" / "cover-letter.docx", and a mixed name like "Анна Smith" became "Smith-Resume". lib/fileStems.js disposition() now sends
+      the ASCII fallback (accents folded, exactly as before) AND, only when folding cannot reach a letter, an RFC 5987 filename* with the real
+      name ("Анна-Иванова-Resume.pdf"; percent-encoded; only letters, numbers and combining marks of any script survive - no quotes, slashes,
+      controls or header breaks; 40 characters). The frontend's filenameFromDisposition already preferred filename*. Used by every document
+      download: delivered DOCX/PDF, free draft DOCX/PDF, cover letter DOCX/PDF, saved-profile DOCX/PDF. Latin names keep the old header byte for byte.
+- G2  Cyrillic and Greek text fell back to a system font mid-line (seen in real Chromium with Russian, Greek and Ukrainian text). The embedded
+      fonts now include those two alphabets (15 faces, each with its own unicode-range: Latin, Latin Extended, Vietnamese, Cyrillic, Greek x
+      Inter 400/700 + Source Serif 4 700; ~225 KB of woff2). Re-verified in Chromium: a Russian/Greek/Ukrainian sample renders in Inter throughout;
+      CJK, Arabic and Hebrew remain on system fonts (too large to embed).
+- G3  The accent stripe stopped where the content ended on continuation pages. It is now one fixed element (body::before) that Chromium
+      repeats on every page at the same height as page 1 (measured: identical 14mm-to-14mm extent on page 1, page 2 and a Letter page), and the
+      box-height hack it needed (a .page min-height just under the page height, which could itself tip into a blank last page) is gone from
+      the resume and the letter. The text keeps its position (4px of padding replaces the border).
+
+Verified in real Chromium after the change: no fit mis-calibration across the 56-size grid, no extra or blank pages on A4 and Letter.
+
+Open / not verifiable here
+- Word with round 8 (screenshot of the two Word-check files pending); Cloudflare's own Chromium container.
+- Operational: delivered files embed the credential URL as it was when they were made; the old-domain redirect must stay live.

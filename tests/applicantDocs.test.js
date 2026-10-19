@@ -4,8 +4,8 @@ import { generateAtsDocx, generateCoverLetterDocx, accentHex, textHex } from '..
 import { buildResumeHTML, buildCoverLetterHTML } from '../src/services/pdfTemplate.service.js'
 import { hrefFor, displayUrl } from '../src/lib/links.js'
 import { densityFor, estimateLoad, letterDensityFor, LETTER_WORDS } from '../src/lib/docFit.js'
-import { resumeStem, draftStem, coverLetterStem } from '../src/lib/fileStems.js'
-import { paperForLocation, PAPER } from '../src/services/design.service.js'
+import { resumeStem, draftStem, coverLetterStem, disposition } from '../src/lib/fileStems.js'
+import { paperForLocation } from '../src/services/design.service.js'
 import { extractText } from '../src/services/resume.parser.js'
 import { stripBullet } from '../src/lib/bulletText.js'
 import { contactRows, contactItems } from '../src/lib/contactLayout.js'
@@ -192,9 +192,7 @@ describe('buildResumeHTML — links, credential, fit, print rules', () => {
   })
   it('keeps headings with their section and the page box under the printable height', () => {
     expect(html).toMatch(/break-after: avoid/)
-    expect(html).toMatch(/min-height: 268mm/)
-    expect(buildResumeHTML(FULL, { paper: 'letter' }, null)).toMatch(/min-height: 9\.85in/)
-    expect(PAPER.a4.minHeight).toBe('268mm')
+    expect(html).not.toMatch(/\.page \{[^}]*min-height/)
   })
   it('goes denser only when the resume is just over a page, and honours an explicit density', () => {
     const none = buildResumeHTML({ name: 'A', experience: [JOB(1)] }, { paper: 'a4' }, null)
@@ -513,31 +511,33 @@ describe('a cover letter that is only just over a page is tightened', () => {
 // ── pass 8 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('embedded fonts', () => {
   const faces = [...FONT_FACE_CSS.matchAll(/@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);[^}]*src: url\(data:font\/woff2;base64,([A-Za-z0-9+/=]+)\) format\("woff2"\); unicode-range: ([^}]+?) \}/g)]
-  it('are nine real woff2 faces (Latin, Latin Extended, Vietnamese x Sans 400/700 and Serif 700) as data URIs, each with its own unicode-range, within a size budget', () => {
-    expect(faces).toHaveLength(9)
+  it('are fifteen real woff2 faces (Latin, Latin Extended, Vietnamese, Cyrillic, Greek x Sans 400/700 and Serif 700) as data URIs, each with its own unicode-range, within a size budget', () => {
+    expect(faces).toHaveLength(15)
     const names = faces.map(f => `${f[1]} ${f[2]}`)
-    expect(names.filter(n => n === 'DocSans 400')).toHaveLength(3)
-    expect(names.filter(n => n === 'DocSans 700')).toHaveLength(3)
-    expect(names.filter(n => n === 'DocSerif 700')).toHaveLength(3)
+    expect(names.filter(n => n === 'DocSans 400')).toHaveLength(5)
+    expect(names.filter(n => n === 'DocSans 700')).toHaveLength(5)
+    expect(names.filter(n => n === 'DocSerif 700')).toHaveLength(5)
     let total = 0
     for (const f of faces) { const bytes = Buffer.from(f[3], 'base64'); total += bytes.length; expect(bytes.subarray(0, 4).toString('latin1')).toBe('wOF2') }
-    expect(total).toBeLessThan(200 * 1024)
+    expect(total).toBeLessThan(260 * 1024)
     expect(FONT_FACE_CSS).not.toMatch(/https?:\/\//)
     // a face without a unicode-range would claim every character and shadow the others: the three subsets must have three different ranges
-    for (const fam of ['DocSans', 'DocSerif']) expect(new Set(faces.filter(f => f[1] === fam).map(f => f[4])).size).toBe(3)
+    for (const fam of ['DocSans', 'DocSerif']) expect(new Set(faces.filter(f => f[1] === fam).map(f => f[4])).size).toBe(5)
     expect(faces.find(f => /U\+0000-00FF/.test(f[4]))).toBeTruthy()   // Latin
     expect(faces.find(f => /U\+0100-02BA/.test(f[4]))).toBeTruthy()   // Latin Extended: Polish, Czech, Turkish, Romanian ...
     expect(faces.find(f => /U\+1EA0-1EF9/.test(f[4]))).toBeTruthy()   // Vietnamese
+    expect(faces.find(f => /U\+0400-045F/.test(f[4]))).toBeTruthy()   // Cyrillic: Russian, Ukrainian, Bulgarian, Serbian ...
+    expect(faces.find(f => /U\+0370-0377/.test(f[4]))).toBeTruthy()   // Greek
   })
   it('lead the font stacks of the resume and the letter, and never mention the product name', () => {
     const sans = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Raleway' } }, null)
-    expect(sans.match(/@font-face/g)).toHaveLength(9)
+    expect(sans.match(/@font-face/g)).toHaveLength(15)
     expect(sans).toContain('font-family: "DocSans", "Helvetica Neue", Arial')
     expect(sans).not.toMatch(/Passthrough/)
     const serif = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Merriweather' } }, null)
     expect(serif).toContain('font-family: "DocSerif", Georgia')
     const letter = buildCoverLetterHTML('Hi', { name: 'A' }, { paper: 'a4' }, {})
-    expect(letter.match(/@font-face/g)).toHaveLength(9)
+    expect(letter.match(/@font-face/g)).toHaveLength(15)
     expect(letter).toContain('"DocSans"')
   })
 })
@@ -613,5 +613,46 @@ describe('Word does not mark the applicant\'s own details as spelling errors', (
     expect(para(doc, 'Wanjiru Mwangi')).toMatch(/<w:noProof\/>/)
     expect(para(doc, 'w@mail.com')).toMatch(/<w:noProof\/>/)
     expect(para(doc, 'We optimise the colour.')).not.toMatch(/<w:noProof\/>/)
+  })
+})
+
+// ── pass 10 ────────────────────────────────────────────────────────────────────────────────────────────────────────
+describe('download filenames keep the applicant\'s own script', () => {
+  it('Latin names (accents folded) keep the plain ASCII header exactly as before', () => {
+    expect(disposition('resume', 'José Núñez', 'pdf')).toBe('attachment; filename="Jose-Nunez-Resume.pdf"')
+    expect(disposition('draft', 'Zoë Müller', 'docx')).toBe('attachment; filename="zoe-muller-resume-draft.docx"')
+    expect(disposition('letter', 'Jane Doe', 'pdf')).toBe('attachment; filename="jane-doe-cover-letter.pdf"')
+    expect(disposition('resume', '', 'pdf')).toBe('attachment; filename="Resume.pdf"')
+    expect(disposition('resume', null, 'docx')).toBe('attachment; filename="Resume.docx"')
+  })
+  it('names with letters folding cannot reach also carry an RFC 5987 filename*', () => {
+    const dec = h => decodeURIComponent(/filename\*=UTF-8''([^;]+)/.exec(h)[1])
+    const cyr = disposition('resume', 'Анна Иванова', 'pdf')
+    expect(cyr).toMatch(/^attachment; filename="Resume\.pdf"; filename\*=UTF-8''/)
+    expect(dec(cyr)).toBe('Анна-Иванова-Resume.pdf')
+    expect(dec(disposition('resume', 'Анна Smith', 'docx'))).toBe('Анна-Smith-Resume.docx')
+    expect(dec(disposition('resume', '李雷', 'pdf'))).toBe('李雷-Resume.pdf')
+    expect(dec(disposition('letter', 'Νίκος Π.', 'docx'))).toBe('νίκος-π-cover-letter.docx')
+    expect(dec(disposition('draft', 'وانجيرو مويانجي', 'pdf'))).toBe('وانجيرو-مويانجي-resume-draft.pdf')
+    expect(disposition('resume', 'Анна Smith', 'docx')).toContain('filename="Smith-Resume.docx"')
+  })
+  it('never lets a name carry quotes, slashes, controls or a header break into the header, and caps the length', () => {
+    const h = disposition('resume', 'Анна "Q"; filename=evil.exe\r\nX-Injected: 1/../../etc', 'pdf')
+    expect(h).not.toMatch(/[\r\n]/)
+    const star = /filename\*=UTF-8''([^;]+)$/.exec(h)[1]
+    expect(star).toMatch(/^[A-Za-z0-9%._-]+$/)
+    expect(decodeURIComponent(star)).not.toMatch(/[\\/"';:\r\n]/)
+    expect([...decodeURIComponent(/filename\*=UTF-8''([^;]+)/.exec(disposition('resume', 'Я'.repeat(200), 'pdf'))[1])].length).toBeLessThanOrEqual(40 + '-Resume.pdf'.length)
+  })
+})
+
+describe('the accent stripe is on every page', () => {
+  it('is one fixed element carried through the print margins, not a border that ends with the content', () => {
+    for (const html of [buildResumeHTML(FULL, { paper: 'a4' }, null), buildResumeHTML(FULL, { paper: 'letter' }, null), buildCoverLetterHTML('Hi', FULL, { paper: 'a4' }, {})]) {
+      expect(html).toMatch(/body::before \{ content: ""; position: fixed; left: 0; top: -14mm; bottom: -14mm; width: 4px; background: #[0-9A-Fa-f]{6} \}/)
+      expect(html).not.toMatch(/\.page \{[^}]*border-left/)
+      expect(html).not.toMatch(/\.page \{[^}]*min-height/)
+      expect(html).toMatch(/\.page \{ width: [^;]+; padding: 0 \d+mm 0 calc\(\d+mm \+ 4px\) \}/)    // the text stays where it was, 4px stripe included
+    }
   })
 })

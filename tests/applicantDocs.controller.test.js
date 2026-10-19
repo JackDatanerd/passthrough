@@ -52,6 +52,13 @@ describe('downloadCoverLetterPdf', () => {
     expect(t.seen.html).toMatch(/size: Letter/)
     expect(t.seen.html).toMatch(/[A-Z][a-z]+ \d{1,2}, \d{4}/)
   })
+  it('names the file in the applicant\'s own script when it is not Latin (RFC 5987 filename* beside the ASCII fallback)', async () => {
+    t = setup({ ...SCAN, rewritten_resume_data: { name: 'Анна Иванова', email: 'a@x.ru' } })
+    const headers = {}
+    await t.mod.downloadCoverLetterPdf(ctxFor({ headers }))
+    expect(headers['Content-Disposition']).toMatch(/^attachment; filename="cover-letter\.pdf"; filename\*=UTF-8''/)
+    expect(decodeURIComponent(/filename\*=UTF-8''(.+)$/.exec(headers['Content-Disposition'])[1])).toBe('анна-иванова-cover-letter.pdf')
+  })
   it('dates the letter for the applicant\'s day, not UTC\'s (Nairobi is ahead; an unknown zone is UTC)', async () => {
     vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-16T22:30:00Z'))
     const dateFor = async query => { t?.restore(); t = setup(SCAN); await t.mod.downloadCoverLetterPdf(ctxFor({ headers: {}, query })); return t.seen.html }

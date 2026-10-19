@@ -91,9 +91,7 @@ function buildResumeHTML(data, designTokens, verificationUrl, { verified = true 
   const hPt = Number(fonts.hPt) || 23
   const bPtBase = Number(fonts.bPt) || 10.5
   // US Letter unless the tokens say A4 (see design.service.js detectPaper) - the customers apply to US and UK employers.
-  // min-height stays a hair UNDER the printable height (page minus the 14mm top and bottom margins): a box exactly as tall as the
-  // page area can tip a few sub-pixels over it and print a blank trailing page.
-  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm', minHeight: '268mm' } : { key: 'letter', css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm' } : { key: 'letter', css: 'Letter', width: '8.5in' }
   // A resume that is only just over one page gets a slightly denser layout instead of a nearly empty second page (lib/docFit.js
   // estimates the length from the data; a clearly longer resume is left alone). designTokens.density forces either.
   const density = designTokens?.density === 'compact' || designTokens?.density === 'normal' ? designTokens.density : densityFor(d, paper.key)
@@ -188,7 +186,11 @@ html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; overflow-wrap: anywhere; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: ${compact ? 1.36 : 1.45} }
-.page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 16mm 0 18mm; border-left: 4px solid ${esc(palette.primary)} }
+.page { width: ${paper.width}; padding: 0 16mm 0 calc(18mm + 4px) }
+/* The accent stripe is a FIXED element: Chromium repeats it on every printed page and the negative offsets carry it through the 14mm print
+   margins, so it runs edge to edge on page 1, page 2 and every page after (a border on .page stopped where the content ended on
+   continuation pages, and needed a box just under the page height, which could itself tip over into a blank last page). */
+body::before { content: ""; position: fixed; left: 0; top: -14mm; bottom: -14mm; width: 4px; background: ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 2pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 1.5, 8)}pt; margin: 0 0 3pt }
 .cred { font-size: 8pt; font-variant: small-caps; color: ${esc(palette.primary)}; text-decoration: none }
@@ -229,7 +231,7 @@ function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
   const fonts   = designTokens?.fonts || {}
   const stack   = fontStacks(fonts)
   const hPt = Number(fonts.hPt) || 23
-  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm', minHeight: '268mm' } : { key: 'letter', css: 'Letter', width: '8.5in', minHeight: '9.85in' }
+  const paper = designTokens?.paper === 'a4' ? { key: 'a4', css: 'A4', width: '210mm' } : { key: 'letter', css: 'Letter', width: '8.5in' }
   // A letter only just over a page gets a slightly denser layout instead of a signature alone on page 2 (lib/docFit.js).
   const compact = (designTokens?.density === 'compact' || designTokens?.density === 'normal' ? designTokens.density : letterDensityFor(text, paper.key, 'pdf')) === 'compact'
   const bPt = Math.max(Number(fonts.bPt) || 10.5, 10.5) + (compact ? 0 : 0.5)
@@ -246,7 +248,8 @@ html, body { margin: 0; padding: 0 }
 html { background: ${esc(palette.bg)} }
 body { -webkit-print-color-adjust: exact; print-color-adjust: exact; overflow-wrap: anywhere; background: ${esc(palette.bg)}; color: ${esc(palette.text)};
   font-family: ${stack.body}; font-size: ${bPt}pt; line-height: ${compact ? 1.42 : 1.55} }
-.page { width: ${paper.width}; min-height: ${paper.minHeight}; padding: 0 20mm 0 22mm; border-left: 4px solid ${esc(palette.primary)} }
+.page { width: ${paper.width}; padding: 0 20mm 0 calc(22mm + 4px) }
+body::before { content: ""; position: fixed; left: 0; top: -14mm; bottom: -14mm; width: 4px; background: ${esc(palette.primary)} }
 h1 { font-family: ${stack.heading}; font-size: ${hPt}pt; margin: 0 0 3pt; color: ${esc(palette.primary)}; letter-spacing: .2pt }
 .contact { font-size: ${Math.max(bPt - 2, 8)}pt; margin: 0 0 18pt; padding-bottom: 8pt; border-bottom: 1px solid ${ruleColor(palette.primary)} }
 .date { margin: 0 0 14pt }
