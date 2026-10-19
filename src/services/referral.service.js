@@ -371,6 +371,12 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
     }
     const partner = partnerRes.data
     if (!partner) return { ok: true, recorded: false, reason: 'partner-not-found' }
+    // An erased partner has no payout details and can never be paid; a checkout that began before the removal must not
+    // pile commission onto the record (it would block re-running the removal). The buyer's sale itself is unaffected.
+    if (require('../lib/removedPartner').isRemovedEmail(partner.email)) {
+      await releaseCodeReservation(supabase, payment.referral_reservation_id)
+      return { ok: true, recorded: false, reason: 'partner-removed' }
+    }
 
     // Number(null) is 0, which would silently record a $0 commission for a
     // partner whose rate is simply missing — treat null/undefined as invalid,

@@ -1,0 +1,12 @@
+Partners / referral (section 4) — fresh independent pass, round 21
+
+BUG  adminAnonymizePartner left tax_id / tax_country on the erased row. Both are now nulled.
+GAP  Payout-details page: tax details can now be saved on their own (no account number retyped) and the tax ID can be removed.
+     Server: POST /partners/payout-details with no payoutMethod is a tax-only save (strict taxCountry / taxId only; '' clears).
+     Page: tax-only save when details are on file and the number was not retyped; "Remove the tax ID we have on file" checkbox.
+LOW  recordConversion: a partner whose data was erased earns no commission from a late checkout; the reserved slot is released
+     (reason 'partner-removed'). adminListUnrecordedCommissions no longer lists those payments as missing.
+LOW  adminVoidPayout: no "payout voided" email to an erased partner's placeholder address.
+
+Tests: tests/partners.round21.test.js (5), frontend/tests/partnersRound21.test.jsx (5). Backend tests fail without the fixes.
+Not changed: PAUSED partners still earn on a checkout that started before the pause (left as is).

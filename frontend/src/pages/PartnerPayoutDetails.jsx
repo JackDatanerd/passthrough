@@ -51,6 +51,8 @@ export default function PartnerPayoutDetails() {
   const [taxIdOnFile, setTaxIdOnFile] = useState('')
 
   const [saved,  setSaved ] = useState(false)
+  const [clearTaxId, setClearTaxId] = useState(false)
+  const [taxSaved, setTaxSaved] = useState(false)
   const [holdUntil, setHoldUntil] = useState(null)
   const { loading: saving, error, execute } = useApi()
 
@@ -89,14 +91,34 @@ export default function PartnerPayoutDetails() {
       .finally(() => setLoading(false))
   }, [token])
 
+  const fail0 = msg => execute(() => Promise.reject(new Error(msg)), { fallback: msg }).catch(() => {})
+
   async function handleSubmit() {
+    // Tax-only save: details are already on file and the partner has not retyped the account number, so only the
+    // tax fields are sent (the server leaves the payout destination untouched).
+    const numberBlank = method === 'BANK' ? !accountNumber.trim() : !phoneNumber.trim()
+    if (onFile && numberBlank && !confirmNumber.trim() && (clearTaxId || taxId.trim() || taxCountry.trim().toUpperCase() !== taxCountryLoaded)) {
+      const c = taxCountry.trim().toUpperCase()
+      if (c && !/^[A-Z]{2}$/.test(c)) return fail0('Use the 2-letter country code for your tax country, e.g. KE.')
+      if (taxId.trim() && taxId.trim().length < 3) return fail0('That tax ID looks too short — enter it in full, or leave it blank.')
+      const patch = { ...(c !== taxCountryLoaded ? { taxCountry: c } : {}), ...(clearTaxId ? { taxId: '' } : taxId.trim() ? { taxId: taxId.trim() } : {}) }
+      try {
+        await execute(() => api.post('/partners/payout-details', patch, partnerAuth(token)), { fallback: 'Something went wrong — please try again.' })
+        setTaxCountryLoaded(c)
+        if (clearTaxId) setTaxIdOnFile('')
+        else if (taxId.trim()) setTaxIdOnFile(`\u2026${taxId.trim().replace(/\s+/g, '').slice(-4)}`)
+        setTaxId(''); setClearTaxId(false); setTaxSaved(true)
+      } catch (_) { /* captured by useApi */ }
+      return
+    }
+    setTaxSaved(false)
     const body = method === 'BANK'
       ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim() }
       : { payoutMethod: 'MOBILE_MONEY', provider: provider.trim(), accountName: accountName.trim(), phoneNumber: phoneNumber.trim() }
 
     // Tax details are optional and only sent when touched: a blank ID keeps the one on file; a changed country (even to blank) is sent.
     const country = taxCountry.trim().toUpperCase()
-    const taxExtra = { ...(country !== taxCountryLoaded ? { taxCountry: country } : {}), ...(taxId.trim() ? { taxId: taxId.trim() } : {}) }
+    const taxExtra = { ...(country !== taxCountryLoaded ? { taxCountry: country } : {}), ...(clearTaxId ? { taxId: '' } : taxId.trim() ? { taxId: taxId.trim() } : {}) }
     const missing = Object.values(body).some(v => !v)
     if (missing) {
       await execute(() => Promise.reject(new Error('Please fill in every field.')),
@@ -220,7 +242,14 @@ export default function PartnerPayoutDetails() {
                   <Input label="Country of tax residence (2-letter code)" value={taxCountry} maxLength={2} autoComplete="off"
                     onChange={e => setTaxCountry(e.target.value.toUpperCase())} placeholder="KE" />
                   <Input label="Tax ID" value={taxId} autoComplete="off" maxLength={40} onChange={e => setTaxId(e.target.value)}
-                    placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} />
+                    placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} disabled={clearTaxId} />
+                  {taxIdOnFile && (
+                    <label className="flex items-center gap-2 text-xs text-gray-600">
+                      <input type="checkbox" checked={clearTaxId} onChange={e => { setClearTaxId(e.target.checked); if (e.target.checked) setTaxId('') }} />
+                      Remove the tax ID we have on file
+                    </label>
+                  )}
+                  {taxSaved && <p role="status" className="text-sm text-green-700" data-testid="tax-saved">Tax details saved.</p>}
                 </fieldset>
 
                 {error && <p role="alert" className="text-sm text-red-600">{error}</p>}

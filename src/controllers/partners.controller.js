@@ -1679,7 +1679,23 @@ async function submitPayoutDetails(ctx) {
   const token = partnerTokenOf(ctx)
   if (!token) return ctx.json({ success: false, message: 'Missing token.' }, 400)
 
-  const body = payoutDetailsSchema.parse(await ctx.req.json())
+  const rawBody = await ctx.req.json()
+  // Tax-only save: no payoutMethod in the body means "leave my payout destination alone, just update the tax details".
+  if (rawBody && typeof rawBody === 'object' && rawBody.payoutMethod === undefined) {
+    const tax = z.object(taxFields).strict().parse(rawBody)
+    const taxOnly = {}
+    if (tax.taxCountry !== undefined) taxOnly.tax_country = tax.taxCountry || null
+    if (tax.taxId !== undefined)      taxOnly.tax_id = tax.taxId || null
+    if (!Object.keys(taxOnly).length) return ctx.json({ success: false, message: 'Nothing to save.' }, 400)
+    const supabaseTax = getSupabase(ctx.env)
+    const { data: owner, error: taxErr } = await supabaseTax.from('partners')
+      .update({ ...taxOnly, updated_at: new Date().toISOString() })
+      .eq('payout_token_hash', await cryptoLib.sha256(token)).select('id').maybeSingle()
+    if (taxErr) throw taxErr
+    if (!owner) return ctx.json({ success: false, message: 'Invalid or expired link.' }, 404)
+    return ctx.json({ success: true, unchanged: true, message: 'Tax details saved.' })
+  }
+  const body = payoutDetailsSchema.parse(rawBody)
   const { payoutMethod, taxCountry, taxId, ...details } = body
   const taxPatch = {}
   if (taxCountry !== undefined) taxPatch.tax_country = taxCountry || null
@@ -2469,7 +2485,7 @@ async function adminVoidPayout(ctx) {
     })
     if (body.notifyPartner !== false) {
       const { data: partner } = await supabase.from('partners').select('name, email').eq('id', partnerId).maybeSingle()
-      if (partner) await emailService.sendPartnerPayoutVoided(ctx.env, supabase, partner.email, partner.name,
+      if (partner && !isRemovedEmail(partner.email)) await emailService.sendPartnerPayoutVoided(ctx.env, supabase, partner.email, partner.name,
         payout.amount_cents, payout.currency, null).catch(() => {})
     }
   }
@@ -2755,6 +2771,7 @@ async function adminAnonymizePartner(ctx) {
   const { error: rowErr } = await supabase.from('partners').update({
     name: 'Removed partner', email: `partner-${partnerId}@${REMOVED_EMAIL_DOMAIN}`, status: 'PAUSED',
     payout_method: null, payout_details: null, payout_details_submitted_at: null,
+    tax_country: null, tax_id: null,
     website: null, audience: null, notify_conversions: false, internal_notes: null,
     ...(await payoutTokenFields(cryptoLib.randomToken(32))), dashboard_token: cryptoLib.randomToken(32),
     previous_emails: [],
@@ -3047,7 +3064,7 @@ async function adminListUnrecordedCommissions(ctx) {
   let truncated = false
   for (let page = 0; page < UNRECORDED_MAX_PAGES; page += 1) {
     const { data, error } = await supabase.from('payments')
-      .select('id, paystack_ref, amount_cents, currency, created_at, scan_id, referral_code_id, referral_codes(code, partners(id, name))')
+      .select('id, paystack_ref, amount_cents, currency, created_at, scan_id, referral_code_id, referral_codes(code, partners(id, name, email))')
       .eq('status', 'SUCCESS').not('referral_code_id', 'is', null)
       .gte('created_at', since).lte('created_at', settleBefore)
       .order('created_at', { ascending: false }).order('id', { ascending: true })
@@ -3065,7 +3082,7 @@ async function adminListUnrecordedCommissions(ctx) {
     if (lErr) throw lErr
     for (const l of led || []) recorded.add(l.payment_id)
   }
-  let candidates = pays.filter(p => !recorded.has(p.id))
+  let candidates = pays.filter(p => !recorded.has(p.id) && !isRemovedEmail(p.referral_codes?.partners?.email))
 
   // Round 19 (bug): reconcile deliberately records NO commission for a payment with no scan, a missing scan, a deleted
   // account or a DUPLICATE (another payment owns the scan). Those have no commission row by design, so listing them
