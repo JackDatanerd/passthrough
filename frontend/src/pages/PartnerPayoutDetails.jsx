@@ -45,6 +45,8 @@ export default function PartnerPayoutDetails() {
   // Round 9: the server returns the saved account / phone as its last four digits only (the link is a bearer
   // credential), so what is on file is shown as a reference and the number has to be typed again to save.
   const [onFile, setOnFile] = useState('')
+  // What the server has for the payout destination (apart from the number), so an edit to it is noticed — see handleSubmit.
+  const [loadedPayout, setLoadedPayout] = useState(null)
   // Round 20: optional tax details. They are kept with the payout details but are not part of them, so changing them never pauses a payout.
   const [taxCountry, setTaxCountry] = useState('')
   const [taxCountryLoaded, setTaxCountryLoaded] = useState('')   // what the server has, so an untouched field is never re-sent
@@ -74,6 +76,7 @@ export default function PartnerPayoutDetails() {
           setBankName(d.bankName || '')
           setAccountName(d.accountName || '')
           setProvider(d.provider || '')
+          setLoadedPayout({ method: p.payoutMethod, bankName: d.bankName || '', accountName: d.accountName || '', provider: d.provider || '' })
           if (p.payoutDetailsMasked) {
             setOnFile(`${p.payoutMethod === 'BANK' ? 'Bank account' : 'Mobile money'} ${d.accountNumber || d.phoneNumber || ''}`.trim())
           } else {
@@ -98,7 +101,18 @@ export default function PartnerPayoutDetails() {
     // Tax-only save: details are already on file and the partner has not retyped the account number, so only the
     // tax fields are sent (the server leaves the payout destination untouched).
     const numberBlank = method === 'BANK' ? !accountNumber.trim() : !phoneNumber.trim()
-    if (onFile && numberBlank && !confirmNumber.trim() && (clearTaxId || taxId.trim() || taxCountry.trim().toUpperCase() !== taxCountryLoaded)) {
+    const taxChanged = clearTaxId || taxId.trim() || taxCountry.trim().toUpperCase() !== taxCountryLoaded
+    if (onFile && numberBlank && !confirmNumber.trim()) {
+      // Round 22: a tax-only save used to swallow edits to the bank / provider / account name (and a switch of method) — it saved
+      // the tax fields, said "Tax details saved", and left the edited text on screen as if it had been kept. A change to the
+      // payout destination needs the number typed again, so say that instead of dropping it.
+      const edited = !!loadedPayout && (
+        method !== loadedPayout.method ||
+        accountName.trim() !== loadedPayout.accountName ||
+        (method === 'BANK' ? bankName.trim() !== loadedPayout.bankName : provider.trim() !== loadedPayout.provider))
+      if (edited) return fail0(`Re-enter your ${method === 'BANK' ? 'account number' : 'phone number'} (twice) to save the change to your payout details.`)
+    }
+    if (onFile && numberBlank && !confirmNumber.trim() && taxChanged) {
       const c = taxCountry.trim().toUpperCase()
       if (c && !/^[A-Z]{2}$/.test(c)) return fail0('Use the 2-letter country code for your tax country, e.g. KE.')
       if (taxId.trim() && taxId.trim().length < 3) return fail0('That tax ID looks too short — enter it in full, or leave it blank.')
@@ -183,9 +197,16 @@ export default function PartnerPayoutDetails() {
                   This protects you if someone else ever got hold of your link.
                 </p>
               )}
-              <Link to={`/partner/dashboard?token=${encodeURIComponent(dashboardToken || token)}`} className="text-sm text-blue-600 hover:underline">
-                View your dashboard →
-              </Link>
+              {dashboardToken ? (
+                <Link to={`/partner/dashboard?token=${encodeURIComponent(dashboardToken)}`} className="text-sm text-blue-600 hover:underline">
+                  View your dashboard →
+                </Link>
+              ) : (
+                // Never put this page's write-capable token into a dashboard URL — ask for the dashboard link by email instead.
+                <Link to="/partner/recover" className="text-sm text-blue-600 hover:underline">
+                  Email me my dashboard link →
+                </Link>
+              )}
             </div>
           ) : (
             <>
@@ -198,7 +219,7 @@ export default function PartnerPayoutDetails() {
                   : "Tell us where to send your payouts. We'll email you every time one goes out."}
               </p>
 
-              {onFile && (
+              {onFile && loadedPayout && method === loadedPayout.method && (
                 <p className="text-sm text-gray-600 mb-4 rounded-md bg-gray-50 border border-gray-200 px-3 py-2" data-testid="payout-on-file">
                   On file: <span className="font-medium">{onFile}</span>. For your security the full number isn't shown —
                   re-enter it below to save any change.

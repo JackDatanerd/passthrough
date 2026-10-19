@@ -239,16 +239,14 @@ describe('G1 — read-only dashboard token vs write-capable payout token', () =>
     expect(res.body.data.dashboardToken).toBe('DASH')
     expect(JSON.stringify(res.body)).not.toContain('WRITE')
   })
-  it('admin links endpoint returns both URLs (no-store) and audit-logs the view', async () => {
+  it('admin links endpoint returns the dashboard URL only (read-only since round 22) and audit-logs the view', async () => {
     const db = createFakeSupabase(q => (q.table === 'partners' ? { data: { email: 'k@x.co', dashboard_token: 'DASH' }, error: null } : undefined))
     t = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
     const res = await t.mod.adminGetPartnerLinks(ctxOf({}))
     expect(res.body.data.dashboardUrl).toBe('https://app.test/partner/dashboard?token=DASH')
-    // the payout token is stored hashed (0087): the link shown is a freshly issued one whose hash is what got stored
-    const raw = res.body.data.payoutUrl.split('token=')[1]
-    expect(raw).toMatch(/^[0-9a-f]{20,}$/)
-    const upd = db.calls.find(q => q.table === 'partners' && q.op === 'update')
-    expect(upd.patch).toMatchObject({ payout_details_token: null, payout_token_hash: require('node:crypto').createHash('sha256').update(raw).digest('hex') })
+    // the payout token is stored hashed, so showing it would mean replacing it — a GET must not do that
+    expect(res.body.data.payoutUrl).toBeUndefined()
+    expect(db.calls.some(q => q.table === 'partners' && q.op === 'update')).toBe(false)
     expect(db.calls.some(q => q.op === 'insert' && /audit/i.test(q.table))).toBe(true)
   })
   it('admin links endpoint with scope=dashboard never rotates the payout link', async () => {

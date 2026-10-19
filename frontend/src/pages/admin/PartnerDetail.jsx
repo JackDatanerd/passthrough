@@ -259,9 +259,15 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
       if (audience.trim() !== (partner.audience || ''))      patch.audience = audience.trim()
       if (notes.trim()    !== (partner.internalNotes || '')) patch.internalNotes = notes.trim()
       if (Object.keys(patch).length === 0) { onClose(); return }
-      await execute(() => api.patch(`/partners/${partner.id}`, patch),
+      const out = await execute(() => api.patch(`/partners/${partner.id}`, patch),
         { fallback: 'Failed to update partner.' })
-      toast({ message: 'Partner updated.', type: 'success' })
+      // Round 22: an email change replaces both links and mails them to the NEW address only — say so when that mail did not go.
+      if (out?.linksEmailed === false) {
+        const copied = await copyToClipboard([out.dashboardUrl, out.payoutUrl].filter(Boolean).join('\n'))
+        toast({ message: `Partner updated, but the new links could not be emailed to the new address.${copied ? ' Both links are copied to your clipboard — send them yourself.' : ' Use Regenerate link on this page.'}`, type: 'warning' })
+      } else {
+        toast({ message: 'Partner updated.', type: 'success' })
+      }
       onSaved()
       onClose()
     } catch (_) { /* error already captured by useApi */ }
@@ -1163,8 +1169,21 @@ export default function PartnerDetail() {
   // partner payload), audit-logged server-side, and copied straight to the clipboard.
   async function copyLink(which) {
     try {
-      const res = await api.get(`/partners/${id}/links${which === 'dashboard' ? '?scope=dashboard' : ''}`)
-      const url = which === 'dashboard' ? res.data.data.dashboardUrl : res.data.data.payoutUrl
+      // Round 22: GET /links only reads (the dashboard link). The payout link is stored hashed, so "copying" it means issuing a
+      // new one — that is a POST (regenerate-link), which also emails the partner the replacement.
+      let url
+      if (which === 'dashboard') {
+        const res = await api.get(`/partners/${id}/links?scope=dashboard`)
+        url = res.data.data.dashboardUrl
+      } else {
+        const res = await api.post(`/partners/${id}/regenerate-link`, { scope: 'payout' })
+        url = res.data.payoutUrl
+        if (res.data.emailed === false) {
+          const copiedAnyway = url ? await copyToClipboard(url) : false
+          toast({ message: `New payout link issued, but the notice email to the partner did not send.${copiedAnyway ? ' The link is copied — send it to them yourself.' : ''}`, type: 'warning' })
+          return
+        }
+      }
       const ok = await copyToClipboard(url)
       toast({ message: ok ? `${which === 'dashboard' ? 'Dashboard' : 'Payout-details'} link copied.` : 'Could not copy — your browser blocked clipboard access.', type: ok ? 'success' : 'warning' })
     } catch (_) {

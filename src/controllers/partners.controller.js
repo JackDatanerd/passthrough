@@ -484,12 +484,17 @@ async function adminUpdatePartner(ctx) {
   // silently redirecting (or killing) all future partner comms previously
   // left no paper trail at all. Best-effort, like every other notification
   // in this file — never blocks or fails the save itself.
+  // Round 22: the old links died with the address change and the new ones go ONLY to the new address, so a failed send used to
+  // leave the partner with no working link while the admin saw a plain success. The outcome is reported (and the links handed
+  // back on failure, like create/approve do) so the admin can pass them on by hand.
+  let linksEmailed = true
   if (rotatedToken) {
-    await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, data.email, data.name,
-      `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${rotatedToken}`).catch(() => {})
+    const payoutLinkSent = await emailService.sendPartnerLinkRegenerated(ctx.env, supabase, data.email, data.name,
+      `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${rotatedToken}`).catch(() => false)
     // Round 11 (gap): the dashboard link was rotated too, but only the payout link reached the new address.
-    await emailService.sendPartnerDashboardLinkRegenerated(ctx.env, supabase, data.email, data.name,
-      `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${rotatedDashToken}`).catch(() => {})
+    const dashLinkSent = await emailService.sendPartnerDashboardLinkRegenerated(ctx.env, supabase, data.email, data.name,
+      `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${rotatedDashToken}`).catch(() => false)
+    linksEmailed = payoutLinkSent !== false && dashLinkSent !== false
   }
   if (rateChanging) {
     await emailService.sendPartnerRateChanged(ctx.env, supabase, data.email, data.name,
@@ -563,7 +568,12 @@ async function adminUpdatePartner(ctx) {
     })
   }
 
-  return ctx.json({ success: true, data: partnerRowToCamel(data) })
+  return ctx.json({ success: true, data: partnerRowToCamel(data),
+    ...(rotatedToken ? { linksEmailed } : {}),
+    ...(rotatedToken && !linksEmailed ? {
+      payoutUrl: `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${rotatedToken}`,
+      dashboardUrl: `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${rotatedDashToken}`
+    } : {}) })
 }
 
 // ── Admin: list all partners + a light cycle summary + pending balance ─────
@@ -834,9 +844,12 @@ async function adminResendPayoutLink(ctx) {
   // Round 6: the write-token URL is only handed back when the email did NOT go (so the admin can pass it on by
   // hand) — it used to be returned, and copied to the admin's clipboard, on every successful resend too. And a
   // false from the sender includes the per-partner cap of 4 emails an hour, which "send failed" didn't say.
+  // Round 22: the stored token is a hash, so minting this link already replaced the one the partner was emailed earlier. When the
+  // email did not go, that is the one thing the admin must know: their previous link is dead and the copied one is the only way in.
+  // (Restoring the old hash instead would make the link handed back here dead, which defeats the fallback.)
   return ctx.json({ success: sent,
-    message: sent ? 'Link re-sent.' : 'Email not sent — it failed or hit this partner\'s 4-per-hour limit. Check logs, or copy the link instead.',
-    ...(sent ? {} : { payoutUrl }) })
+    message: sent ? 'Link re-sent.' : 'Email not sent — it failed or hit this partner\'s 4-per-hour limit. Their previous payout link no longer works, so send them the new link yourself (or Resend again later).',
+    ...(sent ? {} : { payoutUrl, previousLinkRevoked: true }) })
 }
 
 // ── Admin: ROTATE a partner's payout-details link ───────────────────────────
@@ -869,7 +882,7 @@ async function adminRegeneratePayoutLink(ctx) {
 
   const { data: partner, error } = await supabase
     .from('partners')
-    .update({ ...(rotatePayout ? await payoutTokenFields(newPayoutToken) : {}), ...(rotateDash ? { dashboard_token: newDashToken } : {}) })
+    .update({ ...(rotatePayout ? await payoutTokenFields(newPayoutToken) : {}), ...(rotateDash ? { dashboard_token: newDashToken } : {}), updated_at: new Date().toISOString() })
     .eq('id', partnerId)
     .select('name, email')
     .maybeSingle()
@@ -901,8 +914,8 @@ async function adminRegeneratePayoutLink(ctx) {
 
 // Round 4 (feature gap): there was no way for an admin to get a partner's DASHBOARD
 // link at all (only the payout link could be re-sent), so "can you check what my
-// dashboard shows" meant guessing. Returns both links; admin-only and audit-logged
-// because they are bearer credentials.
+// dashboard shows" meant guessing. Returns the dashboard link; admin-only and audit-logged
+// because it is a bearer credential. (Round 22: read-only — the payout link comes from the POST routes.)
 async function adminGetPartnerLinks(ctx) {
   const partnerId = ctx.req.param('id')
   const supabase = getSupabase(ctx.env)
@@ -912,33 +925,19 @@ async function adminGetPartnerLinks(ctx) {
   if (!partner) return ctx.json({ success: false, message: 'Partner not found.' }, 404)
   if (isRemovedEmail(partner.email)) return partnerRemovedResponse(ctx)
   ctx.header('Cache-Control', 'no-store')
-  // ?scope=dashboard reads the (plain-stored) dashboard link only. Otherwise the payout link is wanted too, and it is
-  // stored hashed — so it is re-issued here (the previously emailed payout link stops working).
-  const dashboardOnly = ctx.req.query && ctx.req.query('scope') === 'dashboard'
-  const payoutToken = dashboardOnly ? null : await issuePayoutToken(supabase, partnerId)
-  await logAdminAction(ctx, supabase, 'partner.links_viewed', 'partner', partnerId, { payoutRotated: !dashboardOnly })
-  // Round 16: copying the payout link REPLACES it, so the link the partner was emailed earlier is dead from this moment. Tell the
-  // partner (best effort — same notice as the admin Regenerate button, carrying the new link) so that a "copy" click never leaves
-  // them holding a link that quietly stopped working. The admin UI also asks for confirmation before calling this.
-  if (payoutToken) {
-    runInBackground(ctx, emailService.sendPartnerLinkRegenerated(ctx.env, supabase, partner.email, partner.name,
-      `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${payoutToken}`).catch(() => false))
-  }
+  // Round 22: this is a GET, so it only READS. It used to mint a new payout token on every call (the payout token is stored hashed,
+  // so "showing" it meant replacing it), which made a repeated or retried request kill the link the partner held. The payout link
+  // is now issued only by the explicit POST routes (regenerate-link / resend-link). `?scope` is accepted and ignored.
+  await logAdminAction(ctx, supabase, 'partner.links_viewed', 'partner', partnerId, { payoutRotated: false })
   return ctx.json({ success: true, data: {
-    dashboardUrl: `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`,
-    ...(payoutToken ? { payoutUrl: `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${payoutToken}` } : {})
+    dashboardUrl: `${ctx.env.FRONTEND_URL}/partner/dashboard?token=${partner.dashboard_token}`
   } })
 }
 
-// Database round 5 (bug): no upper bound here, and the CHECK allowed 10 digits, but payments.amount_cents is a 4-byte integer —
-// a mistyped price passed every check and then failed every checkout. 100,000,000 minor units (1,000,000.00) is far above any
-// real price and far below the column's limit (the same typo guard manual ledger adjustments use).
-const MAX_TIER_PRICE_CENTS = 100000000
-const tierPrice = z.number().int().positive().max(MAX_TIER_PRICE_CENTS, 'That price is larger than the allowed maximum.')
 const tierPricesSchema = z.object({
-  FIX:       tierPrice.optional(),
-  BADGE:     tierPrice.optional(),
-  FIX_PLAIN: tierPrice.optional()
+  FIX:       z.number().int().positive().optional(),
+  BADGE:     z.number().int().positive().optional(),
+  FIX_PLAIN: z.number().int().positive().optional()
 }).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.')
 
 // Round 10 (feature gap): tier_prices were free-typed cents with no sense of the product's price. $49.00 typed as

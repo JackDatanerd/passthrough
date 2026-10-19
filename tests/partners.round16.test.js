@@ -81,15 +81,15 @@ describe('requestPayoutLink: a failed email never strands the partner (round 16)
   })
 })
 
-describe('adminGetPartnerLinks (round 16)', () => {
-  it('tells the partner when copying the payout link replaced theirs', async () => {
+describe('adminGetPartnerLinks (round 16, read-only since round 22)', () => {
+  it('never rotates the payout link and never emails the partner, whatever the scope', async () => {
     t = load()
     const out = await t.mod.adminGetPartnerLinks(ctxOf())
-    expect(out.body.data.payoutUrl).toContain('/partner/payout-details?token=')
+    expect(out.body.data.dashboardUrl).toContain('/partner/dashboard?token=d1')
+    expect(out.body.data.payoutUrl).toBeUndefined()
     await new Promise(r => setTimeout(r, 0))
-    const mail = t.st.emails.find(e => e[0] === 'regenerated')
-    expect(mail).toBeTruthy()
-    expect(mail[1][4]).toContain('/partner/payout-details?token=')
+    expect(t.st.updates).toHaveLength(0)
+    expect(t.st.emails).toHaveLength(0)
   })
   it('the dashboard-only scope rotates nothing and sends nothing', async () => {
     t = load()

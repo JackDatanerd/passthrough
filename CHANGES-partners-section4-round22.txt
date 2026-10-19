@@ -1,0 +1,23 @@
+Partners / referral (section 4) — fresh independent pass, round 22
+
+BUG  GET /partners/:id/links replaced the partner's live payout link on every call (the token is stored hashed, so "showing" it
+     meant minting a new one). A repeated or retried request killed the link the partner held. The GET is now read-only: it returns
+     the dashboard link only. The admin "Copy payout-details link" button (behind its existing confirm dialog) now POSTs
+     /partners/:id/regenerate-link {scope:'payout'}, which issues the link, emails the partner the replacement, and returns it.
+BUG  adminUpdatePartner: an email change replaced both partner links and mailed them to the NEW address only, but every send was
+     swallowed and the admin saw a plain success. The response now carries linksEmailed; when a send failed it also hands back
+     payoutUrl and dashboardUrl, and the Edit-partner modal warns and copies both. (No change to the audit-log detail.)
+BUG  Payout-details page: with details on file and the number not retyped, a tax edit took the tax-only path and silently dropped
+     any edit to bank name / provider / account name / method, then said "Tax details saved" with the edited text still on screen.
+     That case now asks the partner to re-enter the number to save the change; an untouched payout section still saves tax alone.
+LOW  adminResendPayoutLink: when the email did not go, the new link is still the only working one (restoring the old hash would
+     make the link handed back dead). The response now says plainly that the previous link no longer works and sets
+     previousLinkRevoked, so the admin knows to deliver the copied link.
+LOW  Payout-details page: the "On file: Bank account …1234" line only shows for the method that is on file (it stayed after
+     switching method). The post-save dashboard link no longer falls back to the page's write token when dashboardToken is missing;
+     it points at /partner/recover instead.
+LOW  adminRegeneratePayoutLink did not set updated_at.
+
+Tests: tests/partners.round22.test.js (7), frontend/tests/partnersRound22.test.jsx (7). Updated to the new behaviour:
+tests/partners.round4/round5/round16.test.js, frontend/tests/partnerDetail.round16.test.jsx.
+Not changed: resend-link still rotates the payout token before sending (needed so the fallback link works).

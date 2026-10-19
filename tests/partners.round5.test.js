@@ -197,7 +197,7 @@ describe('G3 — link rotation scope and token transport', () => {
   it('scope "dashboard" rotates only the dashboard token', async () => {
     t = setup()
     const res = await t.mod.adminRegeneratePayoutLink(ctxOf({ body: { scope: 'dashboard' } }))
-    expect(Object.keys(t.st.updates[0])).toEqual(['dashboard_token'])
+    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['dashboard_token', 'updated_at'])
     expect(res.body.dashboardUrl).toMatch(/\/partner\/dashboard\?token=/)
     expect(res.body.payoutUrl).toBeUndefined()
     expect(t.st.emails).toEqual([['dash-link']])
@@ -205,11 +205,11 @@ describe('G3 — link rotation scope and token transport', () => {
   it('scope "both" rotates and emails both; the default stays payout-only', async () => {
     t = setup()
     const both = await t.mod.adminRegeneratePayoutLink(ctxOf({ body: { scope: 'both' } }))
-    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['dashboard_token', 'payout_details_token', 'payout_token_hash'])
+    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['dashboard_token', 'payout_details_token', 'payout_token_hash', 'updated_at'])
     expect(both.body.payoutUrl && both.body.dashboardUrl).toBeTruthy()
     t.restore(); t = setup()
     await t.mod.adminRegeneratePayoutLink(ctxOf())
-    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['payout_details_token', 'payout_token_hash'])
+    expect(Object.keys(t.st.updates[0]).sort()).toEqual(['payout_details_token', 'payout_token_hash', 'updated_at'])
   })
   it('the dashboard reads the token from X-Partner-Token (no query string), drops partnerId and hides voided payouts', async () => {
     const row = {
