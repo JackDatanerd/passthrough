@@ -4,17 +4,33 @@ import { ATS_PASS_THRESHOLD } from './scoreThresholds'
 // Date-only strings ("2026-09-01") are parsed as LOCAL dates. `new Date("2026-09-01")`
 // is UTC midnight, so in any timezone behind UTC (the whole Americas) it rendered
 // as the previous day. Timestamps (with a time / offset) are unaffected.
-function parseDate(input) {
+function parseDate(input, utc = false) {
   if (input instanceof Date) return input
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(input))
-  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : new Date(input)
+  if (!m) return new Date(input)
+  const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
+  return utc ? new Date(Date.UTC(y, mo, d)) : new Date(y, mo, d)
 }
 
-export function formatDate(dateStr) {
+// `{ utc: true }` for a value that stands for a CALENDAR DAY stored as a UTC instant, not for a moment: a partner code's "expires on"
+// date is saved as `YYYY-MM-DDT23:59:59.999Z`. Shown in the viewer's own zone that read as the NEXT day anywhere east of UTC
+// ("Dec 31" typed, "Jan 1" listed, in Nairobi), while the date field that edits it (which slices the UTC string) said Dec 31.
+// A true moment (a created-at, a paid-at) keeps the default: the viewer's local day.
+export function formatDate(dateStr, opts) {
   if (!dateStr) return '—'
-  const d = parseDate(dateStr)
+  const utc = !!(opts && opts.utc)
+  const d = parseDate(dateStr, utc)
   if (Number.isNaN(d.getTime())) return '—'      // was: the literal text "Invalid Date"
-  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', ...(utc ? { timeZone: 'UTC' } : {}) })
+}
+
+// Today's date as YYYY-MM-DD in the VIEWER's zone, for file names. `new Date().toISOString().slice(0, 10)` is the UTC day, so a file
+// exported at 02:00 in Nairobi (or at 8 pm in New York) was named for the wrong day.
+export function dateStamp(date = new Date()) {
+  const d = date instanceof Date ? date : new Date(date)
+  if (Number.isNaN(d.getTime())) return ''
+  const pad = n => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
 }
 
 // Auth section, feature-gap-closing pass: formatDate() above drops the time
@@ -52,6 +68,15 @@ export function formatMoney(cents, { decimals = 2, currency = 'USD' } = {}) {
 // Currency-aware (upstream's Admin-panel requirement): non-USD amounts render as
 // "12.00 KES" rather than being mislabelled with a dollar sign.
 export const formatCents = (cents, currency = 'USD') => formatMoney(cents, { currency })
+
+// A USD amount already in DOLLARS (a cost estimate kept as a float, not cents): grouped like formatMoney, and a missing / non-numeric
+// value is "unknown" ('—'), never "$NaN". `decimals` for amounts that are fractions of a cent per call.
+export function formatUsd(dollars, { decimals = 2 } = {}) {
+  if (dollars === null || dollars === undefined || typeof dollars === 'boolean' || (typeof dollars === 'string' && dollars.trim() === '') || !Number.isFinite(Number(dollars))) return '—'
+  const value = Number(dollars)
+  const abs = Math.abs(value).toLocaleString('en-US', { minimumFractionDigits: decimals, maximumFractionDigits: decimals })
+  return `${value < 0 && /[1-9]/.test(abs) ? '-' : ''}$${abs}`
+}
 
 // ── Scores ───────────────────────────────────────────────────────────────────
 // Pass mark comes from the single shared module (mirrors backend

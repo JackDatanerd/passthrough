@@ -12,7 +12,7 @@ import DataTable from '../../components/ui/DataTable'
 import Checkbox from '../../components/ui/Checkbox'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatRate, formatDate, downloadCsv, csvText, withinHours } from '../../lib/utils'
+import { formatCents, formatRate, formatDate, downloadCsv, csvText, withinHours, dateStamp } from '../../lib/utils'
 import EmptyState from '../../components/ui/EmptyState'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import PartnersLookupPanel, { OverviewStrip } from './AdminPartnersLookup'
@@ -341,7 +341,7 @@ function exportPayoutRun(partners, holdHours = 0) {
       p.payoutDetailsSubmittedAt || ''
     ])
   }
-  downloadCsv(`payout-run-${new Date().toISOString().slice(0, 10)}.csv`, rows)
+  downloadCsv(`payout-run-${dateStamp()}.csv`, rows)
   return { exported: payable.length, heldBack }
 }
 

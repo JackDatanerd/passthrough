@@ -28,7 +28,7 @@ const mount = over => {
   return render(<MemoryRouter initialEntries={['/admin/partners/p1']}><Routes><Route path="/admin/partners/:id" element={<PartnerDetail />} /></Routes></MemoryRouter>)
 }
 const openPayModal = async () => {
-  fireEvent.click(await screen.findByRole('button', { name: /cycles & payouts/i }))
+  fireEvent.click(await screen.findByRole('tab', { name: /cycles & payouts/i }))
   fireEvent.click(await screen.findByRole('button', { name: /^Pay \$10\.00$/ }))
   return screen.findByRole('dialog')
 }

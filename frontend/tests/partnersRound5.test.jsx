@@ -44,7 +44,7 @@ describe('admin partner page', () => {
   it('Pay on a cycle includes refund credit from OTHER cycles — the amount the server will settle', async () => {
     load(partner({ cyclesSummary: [cycle({ outsideCreditCents: -300 })] }))
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: /cycles & payouts/i }))
+    fireEvent.click(await screen.findByRole('tab', { name: /cycles & payouts/i }))
     expect(await screen.findByRole('button', { name: /^Pay \$7\.00$/ })).toBeTruthy()
     expect(screen.getByText(/refund credit/i)).toBeTruthy()
   })
@@ -53,7 +53,7 @@ describe('admin partner page', () => {
     load(partner())
     api.post.mockResolvedValue({ data: { success: true, message: 'Payout voided — its commission is owed again.' } })
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: /cycles & payouts/i }))
+    fireEvent.click(await screen.findByRole('tab', { name: /cycles & payouts/i }))
     fireEvent.click(await screen.findByRole('button', { name: /^Void$/ }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.change(within(dialog).getByLabelText(/reason/i), { target: { value: 'Wrong cycle' } })
@@ -65,7 +65,7 @@ describe('admin partner page', () => {
   it('a voided payout is shown struck through with its reason and has no Void button', async () => {
     load(partner({ payouts: [{ id: 'po1', amountCents: 5000, currency: 'USD', paidAt: '2026-09-20T00:00:00Z', voidedAt: '2026-09-21T00:00:00Z', voidReason: 'Wrong cycle' }] }))
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: /cycles & payouts/i }))
+    fireEvent.click(await screen.findByRole('tab', { name: /cycles & payouts/i }))
     expect(await screen.findByText(/Wrong cycle/)).toBeTruthy()
     expect(screen.queryByRole('button', { name: /^Void$/ })).toBeNull()
   })

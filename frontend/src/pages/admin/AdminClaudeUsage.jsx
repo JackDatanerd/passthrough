@@ -5,20 +5,19 @@ import DataTable from '../../components/ui/DataTable'
 import Select from '../../components/ui/Select'
 import { useToast } from '../../components/ui/Toast'
 import useLatestRequest from '../../hooks/useLatestRequest'
-import { formatNumber } from '../../lib/utils'
+import { formatNumber, formatUsd } from '../../lib/utils'
 
 // DATABASE AUDIT (feature gap): the Claude cost ledger (claude_usage, migration 0072) was written on every call
 // and read by nothing. This is the read side: tokens per day and per kind of call, and — only when the owner
 // has set CLAUDE_USD_PER_MTOK_INPUT / _OUTPUT — an estimated spend. The ledger is purged after 400 days.
 const WINDOWS = [7, 30, 90, 365]
 const fmt = n => formatNumber(n)
-const usd = n => (n == null ? '—' : `$${Number(n).toFixed(2)}`)
 
 const NUM_COLS = [
   { key: 'calls', header: 'Calls', className: 'text-right', cell: r => fmt(r.calls) },
   { key: 'in', header: 'Input', className: 'text-right', cell: r => fmt(r.inputTokens) },
   { key: 'out', header: 'Output', className: 'text-right', cell: r => fmt(r.outputTokens) },
-  { key: 'usd', header: 'Est. $', className: 'text-right', cell: r => usd(r.estimatedUsd) },
+  { key: 'usd', header: 'Est. $', className: 'text-right', cell: r => formatUsd(r.estimatedUsd) },
 ]
 
 function Tile({ label, value, hint }) {
@@ -82,7 +81,7 @@ export default function AdminClaudeUsage() {
             <Tile label="Input tokens" value={fmt(data.totals.inputTokens)} />
             <Tile label="Output tokens" value={fmt(data.totals.outputTokens)} />
             <Tile label="Tokens per scan" value={fmt(data.totals.tokensPerScan)} hint={`${fmt(data.totals.scans)} scans`} />
-            <Tile label="Estimated spend" value={usd(data.totals.estimatedUsd)}
+            <Tile label="Estimated spend" value={formatUsd(data.totals.estimatedUsd)}
               hint={data.priced ? 'from your per-million-token prices' : 'set CLAUDE_USD_PER_MTOK_INPUT / _OUTPUT'} />
           </div>
 

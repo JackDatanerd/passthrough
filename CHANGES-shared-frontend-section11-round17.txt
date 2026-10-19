@@ -1,0 +1,22 @@
+Shared frontend (Section 11) - round 17 (independent audit; fixes for the bugs and gaps it found)
+
+BUGS
+- Menu: the list is clamped inside the viewport and scrolls inside itself on a short window (phone held sideways); it
+  no longer opens partly off-screen near the bottom edge.
+- formatDate: new { utc: true } option shows the calendar day a UTC instant names. Calendar-day expiries
+  (YYYY-MM-DDT23:59:59.999Z) showed one day late east of UTC (e.g. Nairobi). Partner code expiry (PartnerDetail badge,
+  AdminPartners, AdminPartnersLookup, PartnerDashboard) now uses it.
+- Modal: closing a dialog opened while <body> held focus now hands focus to <main> (was: nowhere useful).
+- Modal scroll lock: body padding does not move fixed elements, so Toast and TermsUpdateBanner jumped when the scrollbar
+  vanished. Modal publishes --scroll-lock-gap on <html>; both now add it to their offset.
+- CSV export file names used the UTC day (dateStamp() = viewer's local day).
+- PartnerDetail: tab strip is now real Tabs/TabPanel (roles, arrow keys) instead of plain buttons.
+
+FEATURE GAPS
+- formatUsd() shared helper (AdminClaudeUsage's private usd() removed).
+- AdminLayout "need attention" toggle: type="button", aria-expanded, aria-controls.
+- Hand-rolled controls moved to the shared Input/Select/Textarea (16px on phones, accessible names):
+  PartnerDashboard share-link controls, admin date fields, AdminPayments evidence description.
+
+TESTS
+- frontend/tests/sharedFrontend.round17.test.jsx (new); partner tests updated for role="tab".

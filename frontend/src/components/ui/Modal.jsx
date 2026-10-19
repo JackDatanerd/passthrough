@@ -43,6 +43,11 @@ function lockScroll() {
     const gap = cw > 0 ? Math.max(0, window.innerWidth - cw) : 0   // no layout (jsdom): nothing to compensate
     savedPaddingRight = document.body.style.paddingRight
     if (gap > 0) document.body.style.paddingRight = `${gap + (parseFloat(getComputedStyle(document.body).paddingRight) || 0)}px`
+    // Section 11 (round 17 audit, bug): the body padding keeps IN-FLOW content still, but anything fixed to the viewport edge
+    // (the toast stack, the terms banner) is placed against the viewport, which just grew by the scrollbar's width: with a classic
+    // scrollbar every one of them jumped sideways when a dialog opened and back when it closed. The gap is published so those can
+    // add it to their own offset (var(--scroll-lock-gap)).
+    document.documentElement.style.setProperty('--scroll-lock-gap', `${gap}px`)
     document.body.style.overflow = 'hidden'
   }
   lockCount++
@@ -52,6 +57,7 @@ function unlockScroll() {
   if (lockCount === 0) {
     document.body.style.overflow = ''
     document.body.style.paddingRight = savedPaddingRight
+    document.documentElement.style.removeProperty('--scroll-lock-gap')
   }
 }
 
@@ -169,8 +175,12 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       document.removeEventListener('keydown', onKeyDown)
       modalStack = modalStack.filter(x => x !== id)
       unlockScroll()
-      if (previouslyFocused && typeof previouslyFocused.focus === 'function' && document.contains(previouslyFocused)) {
-        previouslyFocused.focus()
+      // <body> / <html> count as "no opener": that is what document.activeElement is when the opener could not hold focus (a button
+      // clicked in Safari or Firefox on a Mac, a dialog opened from a timer or a request). Focusing it does nothing, and it used to
+      // satisfy this test, so the <main> fallback below never ran and a keyboard user was left at the top of the document.
+      const opener = previouslyFocused && previouslyFocused !== document.body && previouslyFocused !== document.documentElement ? previouslyFocused : null
+      if (opener && typeof opener.focus === 'function' && document.contains(opener)) {
+        opener.focus()
       } else {
         // The element that opened the dialog is gone (confirming a delete removed its own row, say): hand focus to the page's
         // <main> rather than dropping a keyboard user on <body>, where the next Tab starts from the top of the document.

@@ -8,7 +8,7 @@ import DataTable from '../../components/ui/DataTable'
 import Input from '../../components/ui/Input'
 import Checkbox from '../../components/ui/Checkbox'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, downloadCsv } from '../../lib/utils'
+import { formatCents, formatDate, downloadCsv, dateStamp } from '../../lib/utils'
 
 // Cross-partner views (round 5). The partner list deliberately ships no codes or payout
 // history (scale), which left "who owns code X?" and "what did we pay in September?" needing
@@ -108,7 +108,7 @@ function CodeLookup() {
               cell: r => (
                 <>
                   {r.active ? <Badge variant="green">Active</Badge> : <Badge variant="gray">Inactive</Badge>}
-                  {r.expiresAt && <span className="text-xs text-gray-400 ml-2">expires {formatDate(r.expiresAt)}</span>}
+                  {r.expiresAt && <span className="text-xs text-gray-400 ml-2">expires {formatDate(r.expiresAt, { utc: true })}</span>}
                 </>
               ),
             },
@@ -165,7 +165,7 @@ function PayoutsLog() {
           p.periodStart || '', p.periodEnd || '', p.voidedAt ? 'VOIDED' : 'PAID', p.note || '', p.internalNote || ''])
         if (r.data.data.length < 200) break
       }
-      downloadCsv(`payouts-${new Date().toISOString().slice(0, 10)}.csv`, out)
+      downloadCsv(`payouts-${dateStamp()}.csv`, out)
       toast({ message: `Exported ${out.length - 1} payout(s).`, type: 'success' })
     } catch (_) { toast({ message: 'Export failed.', type: 'error' }) }
     finally { setExporting(false) }
@@ -176,12 +176,10 @@ function PayoutsLog() {
       <div className="flex items-center gap-4 flex-wrap text-sm">
         <Checkbox label="Show voided" checked={includeVoided} onChange={e => { setIncludeVoided(e.target.checked); setOffset(0) }} />
         <label className="flex items-center gap-2 text-gray-600">From
-          <input type="date" value={from} max={to || undefined} onChange={e => { setFrom(e.target.value); setOffset(0) }} aria-label="Paid from"
-            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+          <Input type="date" size="sm" wrapperClassName="w-40" value={from} max={to || undefined} onChange={e => { setFrom(e.target.value); setOffset(0) }} aria-label="Paid from" />
         </label>
         <label className="flex items-center gap-2 text-gray-600">To
-          <input type="date" value={to} min={from || undefined} onChange={e => { setTo(e.target.value); setOffset(0) }} aria-label="Paid to"
-            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+          <Input type="date" size="sm" wrapperClassName="w-40" value={to} min={from || undefined} onChange={e => { setTo(e.target.value); setOffset(0) }} aria-label="Paid to" />
         </label>
         {(from || to) && <button type="button" onClick={() => { setFrom(''); setTo(''); setOffset(0) }} className="text-xs text-gray-400 hover:text-gray-600">Clear dates</button>}
         <Button size="sm" variant="secondary" loading={exporting} onClick={exportAll}>Export CSV</Button>

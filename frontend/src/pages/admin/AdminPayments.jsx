@@ -10,6 +10,7 @@ import Select from '../../components/ui/Select'
 import ConfirmDialog from '../../components/ui/ConfirmDialog'
 import Modal from '../../components/ui/Modal'
 import Input from '../../components/ui/Input'
+import Textarea from '../../components/ui/Textarea'
 import { useToast } from '../../components/ui/Toast'
 import { formatDate, formatCents } from '../../lib/utils'
 import usePageClamp from '../../hooks/usePageClamp'
@@ -551,12 +552,9 @@ export default function AdminPayments() {
             <Input label="Buyer's phone number (required by Paystack)" inputMode="tel" maxLength={40}
               value={evidenceDialog.phone} disabled={sendingEvidence}
               onChange={e => setEvidenceDialog(d => ({ ...d, phone: e.target.value, error: '' }))} />
-            <label className="text-sm text-gray-700 flex flex-col gap-1">
-              Service description (optional — written from the order if blank)
-              <textarea className="border border-gray-300 rounded-md p-2 text-sm" rows={4} maxLength={1500}
-                value={evidenceDialog.details} disabled={sendingEvidence}
-                onChange={e => setEvidenceDialog(d => ({ ...d, details: e.target.value }))} />
-            </label>
+            <Textarea label="Service description (optional — written from the order if blank)" rows={4} maxLength={1500}
+              value={evidenceDialog.details} disabled={sendingEvidence}
+              onChange={e => setEvidenceDialog(d => ({ ...d, details: e.target.value }))} />
             {evidenceDialog.error && <p role="alert" className="text-sm text-red-600">{evidenceDialog.error}</p>}
             <div className="mt-2 flex justify-end gap-2">
               <Button variant="secondary" size="sm" onClick={() => setEvidenceDialog(null)} disabled={sendingEvidence}>Cancel</Button>

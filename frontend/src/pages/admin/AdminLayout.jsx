@@ -64,14 +64,15 @@ function TopStrip() {
           </span>
         </div>
         {openCount > 0 && (
-          <button onClick={() => setExpanded(e => !e)}
+          <button type="button" onClick={() => setExpanded(e => !e)}
+            aria-expanded={expanded} aria-controls="admin-attention-panel"
             className="text-amber-600 font-semibold hover:underline">
             {openCount} item{openCount === 1 ? '' : 's'} need attention {expanded ? '▲' : '▼'}
           </button>
         )}
       </div>
       {expanded && openCount > 0 && (
-        <div className="flex flex-wrap gap-4 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
+        <div id="admin-attention-panel" className="flex flex-wrap gap-4 bg-amber-50 border border-amber-200 rounded-md px-3 py-2 text-xs">
           {erroredScansThisWeek > 0 && (
             <Link to="/admin/scans?status=ERROR" className="text-amber-800 hover:underline">
               {erroredScansThisWeek} errored scan{erroredScansThisWeek === 1 ? '' : 's'} (7d) →

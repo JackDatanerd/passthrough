@@ -1,11 +1,13 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime, formatNumber } from '../lib/utils'
+import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime, formatNumber, dateStamp } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
 import Switch from '../components/ui/Switch'
+import Input from '../components/ui/Input'
+import Select from '../components/ui/Select'
 import Disclosure from '../components/ui/Disclosure'
 import PartnerLayout from '../components/partner/PartnerLayout'
 import EmptyState from '../components/ui/EmptyState'
@@ -53,19 +55,18 @@ function ShareLink({ code }) {
 
   return (
     <div className="flex items-center gap-2 mt-2 flex-wrap">
-      <select value={page} onChange={e => setPage(e.target.value)} aria-label="Page the link opens"
-        className="text-sm text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5">
+      {/* The shared fields: their text is 16px on a phone (a 14px field makes iOS zoom the page in on focus - partners open this on
+          their phones), and the link field now has a name (it had none). */}
+      <Select size="sm" value={page} onChange={e => setPage(e.target.value)} aria-label="Page the link opens">
         {SHARE_PAGES.map(([value, label]) => <option key={value || 'home'} value={value}>{label}</option>)}
-      </select>
-      <input readOnly value={url}
-        onFocus={e => e.target.select()}
-        className="text-sm text-gray-600 bg-gray-50 border border-gray-200 rounded-md px-2 py-1.5 flex-1 font-mono" />
+      </Select>
+      <Input size="sm" readOnly value={url} aria-label="Your referral link" wrapperClassName="flex-1 min-w-[12rem]" className="font-mono"
+        onFocus={e => e.target.select()} />
       <CopyButton variant="link" text={url} label="Copy link" copiedLabel="Copied ✓"
         className="text-sm font-medium text-blue-700 hover:underline whitespace-nowrap" />
       <div className="basis-full flex items-center gap-2 flex-wrap">
-        <input value={tag} onChange={e => setTag(e.target.value)} maxLength={40} placeholder="Channel tag (optional), e.g. newsletter"
-          aria-label="Channel tag for this link" data-testid="share-sub-input"
-          className="text-sm text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5 w-64 max-w-full" />
+        <Input size="sm" value={tag} onChange={e => setTag(e.target.value)} maxLength={40} placeholder="Channel tag (optional), e.g. newsletter"
+          aria-label="Channel tag for this link" data-testid="share-sub-input" wrapperClassName="w-64 max-w-full" />
         <span className={`text-xs ${cleanTag && !tagOk ? 'text-amber-700' : 'text-gray-400'}`} data-testid="share-sub-hint">
           {cleanTag && !tagOk
             ? 'Use 1–32 letters, digits, - or _ — the tag is left off the link until it fits.'
@@ -395,7 +396,7 @@ function ConversionsSection({ token, initial, total, currency, payouts = [] }) {
       // Round 15 (gap): hitting the page cap used to stop silently, so a long history produced a CSV that looked complete.
       if (!complete) setNotice(`The CSV holds your ${formatNumber(rows.length)} most recent entries — older ones are not included.`)
       const unique = [...new Map(rows.map(r => [r.id, r])).values()]
-      downloadCsv(`passthrough-conversions-${new Date().toISOString().slice(0, 10)}.csv`, [
+      downloadCsv(`passthrough-conversions-${dateStamp()}.csv`, [
         ['Date (UTC)', 'Code', 'Type', 'Sale', 'Commission rate', 'Commission', 'Status', 'Paid on (UTC)', 'Note', 'Currency', 'Channel tag'],
         ...unique.map(r => [
           String(r.createdAt || '').slice(0, 10), r.code || '',
@@ -832,7 +833,7 @@ export default function PartnerDashboard() {
                     {/* Round 18: a payout record to keep for tax and bookkeeping (the conversions CSV above holds sales only). */}
                     {data.payouts.length > 0 && (
                       <button type="button" className="text-sm text-blue-600 hover:underline" data-testid="payouts-csv"
-                        onClick={() => downloadCsv(`passthrough-payouts-${new Date().toISOString().slice(0, 10)}.csv`, [
+                        onClick={() => downloadCsv(`passthrough-payouts-${dateStamp()}.csv`, [
                           ['Paid on (UTC)', 'Amount', 'Currency', 'Method', 'Sales from (UTC)', 'Sales to (UTC)', 'Note'],
                           ...data.payouts.map(p => [
                             String(p.paidAt || '').slice(0, 10), (p.amountCents || 0) / 100, p.currency || data.currency || '',

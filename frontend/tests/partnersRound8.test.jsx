@@ -83,7 +83,7 @@ describe('adjust balance', () => {
 
   it('shows adjustments in the ledger with their reason, labelled as an adjustment not a code', async () => {
     mountDetail({ commissionLedger: [{ id: 'l1', kind: 'ADJUSTMENT', adjustmentReason: 'Clawback: fraud', commissionAmountCents: -700, grossAmountCents: 0, commissionRate: 0, createdAt: '2026-10-01T00:00:00Z', payoutId: null, currency: 'USD' }] })
-    fireEvent.click(await screen.findByRole('button', { name: /conversions/i }))
+    fireEvent.click(await screen.findByRole('tab', { name: /conversions/i }))
     expect(await screen.findByText('Clawback: fraud')).toBeTruthy()
     expect(screen.getByText('Adjustment')).toBeTruthy()
   })

@@ -18,6 +18,7 @@ import EmptyState from '../../components/ui/EmptyState'
 import Checkbox from '../../components/ui/Checkbox'
 import Textarea from '../../components/ui/Textarea'
 import Select from '../../components/ui/Select'
+import { Tabs, TabPanel } from '../../components/ui/Tabs'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
 function PayoutDetailsFields({ method, details }) {
@@ -756,11 +757,18 @@ function ReferralCodesTab({ partner, onChanged }) {
                     {code.stats.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks converted`}
                   </div>
                 )}
-                {code.expiresAt && (
-                  <div className={cn('text-xs mt-0.5', new Date(code.expiresAt) < new Date() ? 'text-red-500' : 'text-gray-400')}>
-                    {new Date(code.expiresAt) < new Date() ? 'Expired' : 'Expires'} {formatDate(code.expiresAt)}
-                  </div>
-                )}
+                {code.expiresAt && (() => {
+                  // Date.parse + isNaN, like the partner's own dashboard: `new Date(bad) < new Date()` is always false, so an unreadable
+                  // date read as "never expires". The date is a CALENDAR DAY saved as a UTC instant (see dateToExpiresAt), so it is shown
+                  // as that day - in the viewer's zone it read as the next day anywhere east of UTC.
+                  const ms = Date.parse(code.expiresAt)
+                  const expired = Number.isNaN(ms) || ms < Date.now()
+                  return (
+                    <div className={cn('text-xs mt-0.5', expired ? 'text-red-500' : 'text-gray-400')}>
+                      {expired ? 'Expired' : 'Expires'} {formatDate(code.expiresAt, { utc: true })}
+                    </div>
+                  )
+                })()}
               </div>
               <div className="flex items-center gap-2">
                 <button onClick={() => copyLink(code)} className="text-xs text-blue-600 hover:underline">Copy link</button>
@@ -1255,15 +1263,16 @@ export default function PartnerDetail() {
         )}
       </div>
 
-      <div className="border-b border-gray-200 flex gap-4 overflow-x-auto">
-        {TABS.map(t => (
-          <button key={t.key} onClick={() => setTab(t.key)}
-            className={cn('px-1 pb-2 text-sm font-medium border-b-2 whitespace-nowrap',
-              tab === t.key ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700')}>
-            {t.label}
-          </button>
-        ))}
-      </div>
+      {/* The shared Tabs: role="tab" + aria-selected, one tab stop, arrow / Home / End keys. The strip used to be bare buttons, so the
+          selected one was shown by colour alone and a screen reader heard four unrelated buttons. */}
+      <Tabs
+        idPrefix="partner-detail" ariaLabel="Partner sections" value={tab} onChange={setTab}
+        tabs={TABS.map(t => ({ id: t.key, label: t.label }))}
+        className="border-b border-gray-200 flex gap-4 overflow-x-auto"
+        tabClassName={on => cn('px-1 pb-2 text-sm font-medium border-b-2 whitespace-nowrap rounded-t focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500',
+          on ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700')}
+      />
+      <TabPanel idPrefix="partner-detail" value={tab} className="flex flex-col gap-4">
 
       {tab === 'overview' && (
         <div className="flex flex-col gap-4">
@@ -1299,6 +1308,7 @@ export default function PartnerDetail() {
       {tab === 'cycles' && <CyclesTab partner={partner} onChanged={reload} />}
       {tab === 'conversions' && <ConversionsTab partner={partner} onChanged={reload} />}
       {tab === 'codes' && <ReferralCodesTab partner={partner} onChanged={reload} />}
+      </TabPanel>
 
       {showEdit && <EditPartnerModal partner={partner} onClose={() => setShowEdit(false)} onSaved={reload} />}
       {showAdjust && <AdjustBalanceModal partner={partner} onClose={() => setShowAdjust(false)} onAdjusted={reload} />}

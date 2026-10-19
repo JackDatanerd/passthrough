@@ -52,7 +52,7 @@ describe('PartnerDetail', () => {
   it('B4: a PAYOUT_DETAILS_CHANGED conflict reloads silently — the modal stays open and shows why nothing was recorded', async () => {
     api.post.mockRejectedValue({ response: { data: { success: false, code: 'PAYOUT_DETAILS_CHANGED', message: 'The partner changed their payout details — review them and try again.' } } })
     mount()
-    fireEvent.click(await screen.findByRole('button', { name: /cycles & payouts/i }))
+    fireEvent.click(await screen.findByRole('tab', { name: /cycles & payouts/i }))
     fireEvent.click(await screen.findByRole('button', { name: /^Pay \$10\.00$/ }))
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /mark paid & notify/i }))

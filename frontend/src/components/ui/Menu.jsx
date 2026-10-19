@@ -31,23 +31,31 @@ export default function Menu({
 
   // The list is positioned against the VIEWPORT (position: fixed), not its parent: inside a scrolling wrapper (a DataTable's
   // overflow-x-auto, a modal body) an absolutely-positioned list is clipped or drags a scrollbar in, worst on the last row.
-  // It flips above the trigger when there is no room below, and closes when anything scrolls or the window resizes.
+  // It flips above the trigger when there is no room below, is clamped inside the viewport (and scrolls inside itself when the viewport
+  // is shorter than the list - a phone held sideways), re-places itself when the window resizes, and closes when anything else scrolls.
   useLayoutEffect(() => {
     if (!open) { setPos(null); return undefined }
     const place = () => {
       const r = btn.current?.getBoundingClientRect(); if (!r) return
-      const h = list.current?.offsetHeight || 0
+      const MARGIN = 8
+      const vh = window.innerHeight
+      // Section 11 (round 17 audit, bug): with room neither above nor below the trigger (a short viewport - a phone held sideways)
+      // the list was left hanging off the bottom edge: its lower items could not be clicked, and arrowing to one made the browser
+      // scroll the PAGE to reveal it, which this component's own scroll listener reads as "something scrolled" and closes. The list
+      // is now kept inside the viewport and scrolls inside itself when it is taller than the viewport allows.
+      const avail = Math.max(0, vh - 2 * MARGIN)
+      const h = Math.min(list.current?.offsetHeight || 0, avail)
       const below = r.bottom + 4
-      const top = below + h > window.innerHeight && r.top - 4 - h >= 0 ? r.top - 4 - h : below
+      const wanted = below + h > vh && r.top - 4 - h >= 0 ? r.top - 4 - h : below
+      const top = Math.max(MARGIN, Math.min(wanted, vh - h))
       // Clamped so the list never spills past either viewport edge (it is min-w-56 wide, anchored to one side of the trigger).
       const vw = document.documentElement.clientWidth
       const w = list.current?.offsetWidth || 0
-      const MARGIN = 8
       const maxLeft = Math.max(MARGIN, vw - w - MARGIN)
-      if (align === 'left') setPos({ top, left: Math.min(Math.max(MARGIN, r.left), maxLeft) })
+      if (align === 'left') setPos({ top, left: Math.min(Math.max(MARGIN, r.left), maxLeft), maxHeight: avail })
       else {
         const left = Math.min(Math.max(MARGIN, r.right - w), maxLeft)
-        setPos({ top, left })
+        setPos({ top, left, maxHeight: avail })
       }
     }
     place()
@@ -126,7 +134,7 @@ export default function Menu({
           // remembers the trigger (still on the page) as where to return focus — not the item that is about to unmount.
           onClickCapture={e => { if (e.target instanceof Element && e.target.closest(ITEM)) close() }}
           style={pos ? { position: 'fixed', ...pos } : undefined}
-          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 rounded-lg border border-gray-200 bg-white p-1 shadow-lg', !pos && (align === 'left' ? 'left-0' : 'right-0'), menuClassName)}
+          className={cn(!pos && 'absolute top-9', 'z-30 min-w-56 overflow-y-auto rounded-lg border border-gray-200 bg-white p-1 shadow-lg', !pos && (align === 'left' ? 'left-0' : 'right-0'), menuClassName)}
         >{children}</div>
       )}
     </div>

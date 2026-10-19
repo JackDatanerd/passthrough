@@ -62,7 +62,7 @@ export default function TermsUpdateBanner() {
   }
 
   return (
-    <div ref={bannerRef} role="region" aria-label="Updated terms"
+    <div ref={bannerRef} role="region" aria-label="Updated terms" style={{ paddingRight: 'var(--scroll-lock-gap, 0px)' }}
       className="fixed bottom-0 inset-x-0 z-40 bg-white border-t border-gray-200 shadow-lg">
       <div className="max-w-3xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <p className="text-sm text-gray-700">

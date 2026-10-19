@@ -149,10 +149,10 @@ export function ToastProvider({ children }) {
       {children}
       <div
         ref={stackRef}
-        className="fixed right-4 z-[60] flex flex-col gap-2 pointer-events-none"
+        className="fixed z-[60] flex flex-col gap-2 pointer-events-none"
         // Sits above anything fixed to the bottom edge (the Terms banner publishes
         // its height as --bottom-inset) so toasts never cover its button.
-        style={{ bottom: 'calc(1rem + var(--bottom-inset, 0px))' }}
+        style={{ bottom: 'calc(1rem + var(--bottom-inset, 0px))', right: 'calc(1rem + var(--scroll-lock-gap, 0px))' }}
         aria-live="polite"
         aria-atomic="false"
         onMouseEnter={pause}
