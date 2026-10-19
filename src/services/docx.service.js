@@ -59,8 +59,16 @@ const DENSITY = {
 }
 const BULLET_INDENT = { left: 400, hanging: 260 }   // the glyph sits at 140, the text (and every wrapped line) at 400
 
-const linkRun = (text, size = 18) => new TextRun({ text, size, color: '0563C1', underline: {} })
-const plainRun = (text, size) => new TextRun({ text, size })
+// Word underlines anything its dictionary does not know with a red squiggle, and the file's owner sees that when they open it: their own
+// name, LinkedIn handle, portfolio URL, employer names and skills (jargon) all came out marked as errors. `noProof` exempts a run from
+// spelling and grammar checking; it is set on names, addresses, links, title lines, skills and the like - never on prose (summary, bullets,
+// details), so the applicant still gets real typo help where it matters.
+const linkRun = (text, size = 18) => new TextRun({ text, size, color: '0563C1', underline: {}, noProof: true })
+const plainRun = (text, size) => new TextRun({ text, size, noProof: true })
+
+// The document language, so Word does not judge British spelling ("optimise", "honours") by US rules or the reverse: the same paper
+// heuristic the rest of the file uses - A4 (UK / Kenya / Europe) is en-GB, Letter (US) en-US.
+const langOf = paper => (paper === 'a4' ? 'en-GB' : 'en-US')
 
 // A contact detail run: a real link where it plainly is one (an address, a profile URL, a phone number). Word does not
 // turn typed URLs into links when it opens a file, so plain text meant the profile links on a delivered resume could not
@@ -80,10 +88,10 @@ function contactRuns(parts, size) {
 // The heading face follows the PDF's: Georgia where the palette sets its headings in a serif, Calibri otherwise.
 const headingFontOf = serif => (serif ? 'Georgia' : 'Calibri')
 
-function buildStyles(d, color, headFont = 'Calibri', bodyColor) {
+function buildStyles(d, color, headFont = 'Calibri', bodyColor, lang = 'en-US') {
   return {
     default: {
-      document: { run: { font: 'Calibri', size: d.body, ...(bodyColor ? { color: bodyColor } : {}) }, paragraph: { spacing: { after: 0, line: 259 } } },
+      document: { run: { font: 'Calibri', size: d.body, language: { value: lang }, ...(bodyColor ? { color: bodyColor } : {}) }, paragraph: { spacing: { after: 0, line: 259 } } },
       heading2: {
         run: { font: headFont, size: d.body + 2, bold: true, color, characterSpacing: 20 },
         paragraph: {
@@ -107,9 +115,9 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   const children = []
 
   const heading = text => new Paragraph({ text, heading: 'Heading2' })
-  const bullet = text => new Paragraph({
+  const bullet = (text, { noProof = false } = {}) => new Paragraph({
     keepLines: true, indent: BULLET_INDENT, spacing: { after: d.bulletAfter }, bidirectional: isRtl(text),
-    children: [new TextRun({ children: ['•', new Tab(), stripBullet(text)], rightToLeft: isRtl(text) })],
+    children: [new TextRun({ children: ['•', new Tab(), stripBullet(text)], rightToLeft: isRtl(text), noProof })],
   })
   // A title line with the dates (or tech list) right-aligned on the same line. keepNext: a title is never stranded at the
   // bottom of a page away from its first bullet.
@@ -117,15 +125,15 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     keepNext: true, keepLines: true, spacing: { before: gap },
     tabStops: right ? [{ type: TabStopType.RIGHT, position: textWidth }] : undefined,
     children: [
-      new TextRun({ text: left, bold: true }),
-      ...(right ? [new TextRun({ children: [new Tab(), right], color: MUTED, size: d.body - 1 })] : []),
+      new TextRun({ text: left, bold: true, noProof: true }),
+      ...(right ? [new TextRun({ children: [new Tab(), right], color: MUTED, size: d.body - 1, noProof: true })] : []),
     ],
   })
-  const plain = (text, extra = {}) => new Paragraph({ ...extra, bidirectional: isRtl(text), children: [new TextRun({ text, rightToLeft: isRtl(text) })] })
+  const plain = (text, extra = {}, { noProof = false } = {}) => new Paragraph({ ...extra, bidirectional: isRtl(text), children: [new TextRun({ text, rightToLeft: isRtl(text), noProof })] })
 
   // ── Header: name, contact line, credential line ──
   if (resumeData.name)
-    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color, font: headFont })] }))
+    children.push(new Paragraph({ spacing: { after: 40 }, children: [new TextRun({ text: resumeData.name, bold: true, size: d.name, color, font: headFont, noProof: true })] }))
 
   // The contact details: one row, or two when they would not fit one (lib/contactLayout.js - a single long line wrapped in the
   // middle of a profile URL). link detection is shared with the PDF (lib/links.js).
@@ -175,13 +183,13 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 
   if (resumeData.skills?.length) {
     sec.skills.push(heading('SKILLS'))
-    sec.skills.push(plain(resumeData.skills.map(stripBullet).filter(x => String(x).trim()).join(' · ')))
+    sec.skills.push(plain(resumeData.skills.map(stripBullet).filter(x => String(x).trim()).join(' · '), {}, { noProof: true }))
   }
 
   if (resumeData.certifications?.length) {
     sec.certifications.push(heading('CERTIFICATIONS'))
     // A literal bullet like every other list (it was a "✓", a glyph some fonts and parsers drop).
-    for (const cert of resumeData.certifications) sec.certifications.push(bullet(cert))
+    for (const cert of resumeData.certifications) sec.certifications.push(bullet(cert, { noProof: true }))
   }
 
   if (resumeData.projects?.length) {
@@ -195,7 +203,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
         const href = hrefFor(p.link)
         out.push(new Paragraph({
           indent: { left: BULLET_INDENT.left },
-          children: [href ? new ExternalHyperlink({ link: href, children: [linkRun(p.link, d.body - 1)] }) : new TextRun({ text: p.link, size: d.body - 1, color: MUTED })],
+          children: [href ? new ExternalHyperlink({ link: href, children: [linkRun(p.link, d.body - 1)] }) : new TextRun({ text: p.link, size: d.body - 1, color: MUTED, noProof: true })],
         }))
       }
     }
@@ -214,11 +222,11 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   for (const [title, key] of [['AWARDS', 'awards'], ['PUBLICATIONS', 'publications']]) {
     if (!resumeData[key]?.length) continue
     sec[key].push(heading(title))
-    for (const item of resumeData[key]) sec[key].push(bullet(item))
+    for (const item of resumeData[key]) sec[key].push(bullet(item, key === 'awards' ? { noProof: true } : {}))
   }
   if (resumeData.languages?.length) {
     sec.languages.push(heading('LANGUAGES'))
-    sec.languages.push(plain(resumeData.languages.map(stripBullet).filter(x => String(x).trim()).join(' · ')))
+    sec.languages.push(plain(resumeData.languages.map(stripBullet).filter(x => String(x).trim()).join(' · '), {}, { noProof: true }))
   }
 
   // Section order. With job history: Experience > Projects > Education (the usual US/UK order). Without any (a student,
@@ -243,7 +251,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     creator: resumeData.name || 'Passthrough',
     lastModifiedBy: 'Passthrough',
     description: 'ATS-friendly resume',
-    styles: buildStyles(d, color, headFont, bodyColor),
+    styles: buildStyles(d, color, headFont, bodyColor, langOf(paper)),
     sections: [{
       // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
       // separate, and a recruiter should be able to tell whose page 2 it is. The first page has an empty footer so a
@@ -253,7 +261,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
       footers: {
         default: new Footer({ children: [new Paragraph({
           alignment: AlignmentType.CENTER,
-          children: [new TextRun({ children: [resumeData.name ? `${resumeData.name}  ·  Page ` : 'Page ', PageNumber.CURRENT, ' of ', PageNumber.TOTAL_PAGES], size: 16, color: MUTED })],
+          children: [new TextRun({ children: [resumeData.name ? `${resumeData.name}  ·  Page ` : 'Page ', PageNumber.CURRENT, ' of ', PageNumber.TOTAL_PAGES], size: 16, color: MUTED, noProof: true })],
         })] }),
         first: new Footer({ children: [new Paragraph({ children: [] })] }),
       },
@@ -282,7 +290,7 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   const rows = contactRows(contactItems(c))
   const rule = { bottom: { style: BorderStyle.SINGLE, size: 6, color, space: 6 } }
   // The rule closes the letterhead: under the contact line, or under the name when there is no contact line.
-  if (who) head.push(new Paragraph({ spacing: { after: rows.length ? 40 : 280 }, border: rows.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color, font: headFont })] }))
+  if (who) head.push(new Paragraph({ spacing: { after: rows.length ? 40 : 280 }, border: rows.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color, font: headFont, noProof: true })] }))
   rows.forEach((row, ri) => {
     const last = ri === rows.length - 1
     head.push(new Paragraph({ spacing: { after: last ? 280 : 20 }, border: last ? rule : undefined, children: contactRuns(row, d.small) }))
@@ -299,7 +307,7 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
     lastModifiedBy: 'Passthrough',
-    styles: buildStyles({ ...d, body: compact ? 21 : 22 }, color, headFont, bodyColor),
+    styles: buildStyles({ ...d, body: compact ? 21 : 22 }, color, headFont, bodyColor, langOf(paper)),
     sections: [{ properties: { page: { size, margin: compact ? { top: 1000, bottom: 1000, left: 1150, right: 1150 } : { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })
   return Packer.toBuffer(doc)

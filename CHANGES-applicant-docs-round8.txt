@@ -1,0 +1,27 @@
+APPLICANT-FACING DOCUMENTS - round 8 (base: upstream 29e59ad; findings of the ninth pass, with the owner's Word screenshots)
+No migration, no new dependency.
+
+What the Word screenshots confirmed (real Word, not a stand-in): no "[Compatibility Mode]"; Georgia name and headings with the rules;
+tinted body colour; two-row contact line with the credential link below; dates flush right; hanging bullets; the Arabic bullet's marker on
+the right and English bullets untouched; "Name · Page 2 of 2" on page 2 only; the letterhead, rule and date of the letter; and
+"Accessibility: Good to go".
+
+Gaps closed
+- G1  Word marked the applicant's own details as spelling errors (red squiggles under the LinkedIn handle, the portfolio and project URLs,
+      "Optimiser", "Honours", the name in the footer). Two causes, both fixed in docx.service.js:
+      - no document language: Word judged British spelling by its US default. The language now follows the paper (A4 -> en-GB, Letter ->
+        en-US), in the resume and the letter.
+      - nothing exempted proper nouns and jargon: `noProof` is now set on the name, the contact and credential lines (text and links), the
+        footer, job/degree/project/role title lines and their dates or tech lists, skills, languages, certifications, awards and the project
+        link. The prose - summary, bullets, education details, project descriptions, the letter body - is still checked, so the
+        applicant keeps real typo help where it matters.
+- G2  Letters outside basic Latin fell back to a system font in the middle of a word (Ł, ż, ś, ę, ř, ğ, ș, ễ ... rendered in a different
+      face from their neighbours - seen in real Chromium with Polish, Czech, Turkish, Romanian and Vietnamese text). The embedded fonts now
+      carry the Latin Extended and Vietnamese subsets as well (nine faces, each with its own unicode-range read from the package CSS so
+      the browser picks the right file per character): ~70 KB -> ~178 KB raw. Re-verified in Chromium: those names render in Inter
+      throughout, and the fit calibration of the 56-size grid is unchanged.
+
+Open / not verifiable here
+- Cloudflare's own Chromium image (the sandbox Chromium is the same engine; with the fonts embedded the container's fonts no longer
+  matter for Latin, Latin Extended and Vietnamese text; other scripts - Cyrillic, Greek, CJK, Arabic - still use system fonts).
+- Operational: delivered files embed the credential URL as it was when they were made; the old-domain redirect must stay live.

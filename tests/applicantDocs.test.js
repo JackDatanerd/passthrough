@@ -512,23 +512,32 @@ describe('a cover letter that is only just over a page is tightened', () => {
 
 // ── pass 8 ─────────────────────────────────────────────────────────────────────────────────────────────────────────
 describe('embedded fonts', () => {
-  const faces = [...FONT_FACE_CSS.matchAll(/@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);[^}]*src: url\(data:font\/woff2;base64,([A-Za-z0-9+/=]+)\)/g)]
-  it('are three real woff2 faces carried as data URIs (no remote font request), within a size budget', () => {
-    expect(faces.map(f => `${f[1]} ${f[2]}`)).toEqual(['DocSans 400', 'DocSans 700', 'DocSerif 700'])
+  const faces = [...FONT_FACE_CSS.matchAll(/@font-face \{ font-family: "([^"]+)"; font-weight: (\d+);[^}]*src: url\(data:font\/woff2;base64,([A-Za-z0-9+/=]+)\) format\("woff2"\); unicode-range: ([^}]+?) \}/g)]
+  it('are nine real woff2 faces (Latin, Latin Extended, Vietnamese x Sans 400/700 and Serif 700) as data URIs, each with its own unicode-range, within a size budget', () => {
+    expect(faces).toHaveLength(9)
+    const names = faces.map(f => `${f[1]} ${f[2]}`)
+    expect(names.filter(n => n === 'DocSans 400')).toHaveLength(3)
+    expect(names.filter(n => n === 'DocSans 700')).toHaveLength(3)
+    expect(names.filter(n => n === 'DocSerif 700')).toHaveLength(3)
     let total = 0
     for (const f of faces) { const bytes = Buffer.from(f[3], 'base64'); total += bytes.length; expect(bytes.subarray(0, 4).toString('latin1')).toBe('wOF2') }
-    expect(total).toBeLessThan(120 * 1024)
+    expect(total).toBeLessThan(200 * 1024)
     expect(FONT_FACE_CSS).not.toMatch(/https?:\/\//)
+    // a face without a unicode-range would claim every character and shadow the others: the three subsets must have three different ranges
+    for (const fam of ['DocSans', 'DocSerif']) expect(new Set(faces.filter(f => f[1] === fam).map(f => f[4])).size).toBe(3)
+    expect(faces.find(f => /U\+0000-00FF/.test(f[4]))).toBeTruthy()   // Latin
+    expect(faces.find(f => /U\+0100-02BA/.test(f[4]))).toBeTruthy()   // Latin Extended: Polish, Czech, Turkish, Romanian ...
+    expect(faces.find(f => /U\+1EA0-1EF9/.test(f[4]))).toBeTruthy()   // Vietnamese
   })
   it('lead the font stacks of the resume and the letter, and never mention the product name', () => {
     const sans = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Raleway' } }, null)
-    expect(sans.match(/@font-face/g)).toHaveLength(3)
+    expect(sans.match(/@font-face/g)).toHaveLength(9)
     expect(sans).toContain('font-family: "DocSans", "Helvetica Neue", Arial')
     expect(sans).not.toMatch(/Passthrough/)
     const serif = buildResumeHTML({ name: 'A', skills: ['x'] }, { paper: 'a4', fonts: { heading: 'Merriweather' } }, null)
     expect(serif).toContain('font-family: "DocSerif", Georgia')
     const letter = buildCoverLetterHTML('Hi', { name: 'A' }, { paper: 'a4' }, {})
-    expect(letter.match(/@font-face/g)).toHaveLength(3)
+    expect(letter.match(/@font-face/g)).toHaveLength(9)
     expect(letter).toContain('"DocSans"')
   })
 })
@@ -571,5 +580,38 @@ describe('ligature code points are letters again', () => {
     expect(html.replace(/<style>[\s\S]*?<\/style>/, '')).not.toMatch(/[\uFB00-\uFB06]/)
     expect(html).toContain('finance office')
     expect(buildCoverLetterHTML('o\uFB03ce', rd, { paper: 'a4' }, {})).not.toMatch(/[\uFB00-\uFB06]/)
+  })
+})
+
+describe('Word does not mark the applicant\'s own details as spelling errors', () => {
+  const lang = xml => (xml.match(/<w:lang w:val="([^"]+)"/) || [])[1]
+  const para = (doc, needle) => doc.match(/<w:p>[\s\S]*?<\/w:p>/g).find(p => p.includes(needle))
+  const RD = { name: 'Wanjiru Mwangi', email: 'w@mail.com', linkedin: 'linkedin.com/in/wanjirumwangi-data', summary: 'We optimise the colour programme.',
+    skills: ['SQL', 'dbt'], languages: ['Swahili'], certifications: ['AWS Cloud Practitioner'], awards: ['Safaricom Innovation Award'],
+    experience: [{ title: 'Analyst', company: 'Safaricom', dates: '2020', bullets: ['Optimised the pricing model.'] }],
+    education: [{ degree: 'BSc', institution: 'University of Nairobi', dates: '2014', details: 'Dissertation on forecasting.' }],
+    projects: [{ name: 'Matatu Optimiser', technologies: ['OR-Tools'], description: 'Route tool.', link: 'github.com/w/matatu' }] }
+  it('sets the document language from the paper: A4 is en-GB, Letter is en-US', async () => {
+    expect(lang((await parts(await generateAtsDocx(RD, null, { paper: 'a4' }))).styles)).toBe('en-GB')
+    expect(lang((await parts(await generateAtsDocx(RD, null, { paper: 'letter' }))).styles)).toBe('en-US')
+    expect(lang((await parts(await generateAtsDocx(RD, null))).styles)).toBe('en-US')
+    expect(lang((await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A', { paper: 'a4' }))).styles)).toBe('en-GB')
+    expect(lang((await parts(await generateCoverLetterDocx('Dear X,\n\nHi.', 'A', { paper: 'letter' }))).styles)).toBe('en-US')
+  })
+  it('exempts names, links, title lines, skills, certifications and awards - and still checks the prose', async () => {
+    const { doc } = await parts(await generateAtsDocx(RD, 'https://usepassthrough.com/verify/AB12', { paper: 'a4' }))
+    for (const needle of ['Wanjiru Mwangi', 'w@mail.com', 'linkedin.com/in/wanjirumwangi-data', 'verify/AB12', 'Safaricom', 'University of Nairobi', 'Matatu Optimiser', 'OR-Tools', 'github.com/w/matatu', 'dbt', 'Swahili', 'AWS Cloud Practitioner', 'Safaricom Innovation Award'])
+      expect(para(doc, needle), needle).toMatch(/<w:noProof\/>/)
+    for (const needle of ['We optimise the colour programme.', 'Optimised the pricing model.', 'Dissertation on forecasting.', 'Route tool.'])
+      expect(para(doc, needle), needle).not.toMatch(/<w:noProof\/>/)
+  })
+  it('exempts the page footer and the letterhead of the letter, not the letter itself', async () => {
+    const z = await JSZip.loadAsync(await generateAtsDocx(RD, null))
+    const footers = await Promise.all(Object.keys(z.files).filter(n => /word\/footer\d+\.xml$/.test(n)).map(n => z.file(n).async('string')))
+    expect(footers.find(x => /PAGE/.test(x))).toMatch(/<w:noProof\/>/)
+    const { doc } = await parts(await generateCoverLetterDocx('Dear X,\n\nWe optimise the colour.', 'Wanjiru Mwangi', { contact: RD }))
+    expect(para(doc, 'Wanjiru Mwangi')).toMatch(/<w:noProof\/>/)
+    expect(para(doc, 'w@mail.com')).toMatch(/<w:noProof\/>/)
+    expect(para(doc, 'We optimise the colour.')).not.toMatch(/<w:noProof\/>/)
   })
 })
