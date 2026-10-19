@@ -34,14 +34,16 @@ beforeAll(async () => {
 afterAll(async () => { await db?.close() })
 
 describe('0099: channel tags are capped per code', () => {
-  it('keeps at most 50 distinct tags; a 51st new tag is dropped', async () => {
+  // 0100 supersedes 0099's "a 51st new tag is dropped": a full code now EVICTS its quietest unattributed tag for a new one, so 50
+  // random tags can no longer lock a partner's real channels out. The cap itself (50 distinct tags) is unchanged.
+  it('keeps at most 50 distinct tags (0100: a newer tag displaces the quietest instead of being dropped)', async () => {
     for (let i = 0; i < 60; i++) await sub('ANN10', `junk${i}`)
     expect((await q(`select count(*)::int n from referral_sub_clicks`))[0].n).toBe(50)
-    expect((await q(`select count(*)::int n from referral_sub_clicks where sub = 'junk55'`))[0].n).toBe(0)
+    expect((await q(`select count(*)::int n from referral_sub_clicks where sub = 'junk59'`))[0].n).toBe(1)
   })
   it('a tag that is already stored keeps counting after the cap is reached', async () => {
-    await sub('ANN10', 'junk0'); await sub('ANN10', 'junk0')
-    expect((await q(`select clicks from referral_sub_clicks where sub = 'junk0'`))[0].clicks).toBe(3)
+    await sub('ANN10', 'junk59'); await sub('ANN10', 'junk59')
+    expect((await q(`select clicks from referral_sub_clicks where sub = 'junk59'`))[0].clicks).toBe(3)
   })
   it('the cap is per code, not global', async () => {
     await sub('PAUSED10', 'fresh')

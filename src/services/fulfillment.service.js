@@ -599,8 +599,18 @@ async function reverseCommission(supabase, paymentId, reason) {
     reverses_ledger_id:    original.id,
     reversal_reason:       reason,
   })
+  // Database round 5 (bug): the usage release below is best-effort, and a redelivered refund lands here with the reversal already in —
+  // so a transient failure leaked the slot for good (retrying was unsafe: the RPC decremented on every call). The RPC is now
+  // idempotent (commission_ledger.usage_released_at, migration 0100), so BOTH paths run it.
+  const releaseUsage = async () => {
+    if (!original.referral_code_id || typeof supabase.rpc !== 'function') return
+    try {
+      const { error: decErr } = await supabase.rpc('release_referral_code_usage_for_ledger', { p_ledger_id: original.id })
+      if (decErr) console.error('reverseCommission usage release:', decErr.message)
+    } catch (err) { console.error('reverseCommission usage release:', err.message) }
+  }
   if (insErr) {
-    if (insErr.code === '23505') return { reversed: false, reason: 'already-reversed' }
+    if (insErr.code === '23505') { await releaseUsage(); return { reversed: false, reason: 'already-reversed' } }
     throw insErr
   }
   // The sale no longer counts: free the usage slot it consumed on a limited code.
@@ -610,12 +620,7 @@ async function reverseCommission(supabase, paymentId, reason) {
   // skipped the decrement and the slot leaked for good. The decision is now taken in SQL under the original
   // row's lock, AFTER the reversal is in — increment_referral_code_usage refuses to count a reversed sale, so
   // the two always net to zero. Best-effort: a failed release must never undo or fail the reversal.
-  if (original.referral_code_id && typeof supabase.rpc === 'function') {
-    try {
-      const { error: decErr } = await supabase.rpc('release_referral_code_usage_for_ledger', { p_ledger_id: original.id })
-      if (decErr) console.error('reverseCommission usage release:', decErr.message)
-    } catch (err) { console.error('reverseCommission usage release:', err.message) }
-  }
+  await releaseUsage()
   return { reversed: true, alreadyPaidOut: !!original.payout_id, commissionCents: original.commission_amount_cents,
     partnerId: original.partner_id, currency: original.currency ?? null }
 }

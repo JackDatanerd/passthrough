@@ -683,6 +683,37 @@ async function adminClaudeUsage(ctx) {
   })
 }
 
+// GET /api/admin/prompt-outcomes
+//
+// DATABASE ROUND 5 (feature gap): every delivered fix and cover letter is stamped with the prompt generation that wrote it
+// (scans.prompt_version / letter_prompt_version, 0094), and the people who got an interview (or not) answer a follow-up
+// (scan_outcomes) — so whether a prompt change helped is answerable. The view that answers it existed and could only be read
+// with hand-written SQL, and the cover-letter generation was stamped but had no view at all (0100 adds it). The aggregation
+// stays in the database; this just reads it. Small samples are flagged, not hidden: the prompt versions are few and an
+// owner comparing two of them needs to see "4 answers" next to "75%".
+const PROMPT_OUTCOME_MIN_RESPONSES = 20
+async function adminPromptOutcomes(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const [fix, letter] = await Promise.all([
+    supabase.from('prompt_outcome_rates').select('prompt_version, responses, interviews, interview_pct'),
+    supabase.from('letter_prompt_outcome_rates').select('prompt_version, responses, interviews, interview_pct'),
+  ])
+  const err = fix.error || letter.error
+  if (err) {
+    if (/does not exist|PGRST205|42P01/i.test(`${err.code || ''} ${err.message || ''}`))
+      return ctx.json({ success: false, message: 'Apply migration 0100 to see prompt outcomes.' }, 503)
+    throw err
+  }
+  const shape = rows => (rows || []).map(r => ({
+    version: r.prompt_version || null,
+    responses: Number(r.responses) || 0,
+    interviews: Number(r.interviews) || 0,
+    interviewPct: r.interview_pct === null || r.interview_pct === undefined ? null : Number(r.interview_pct),
+    smallSample: (Number(r.responses) || 0) < PROMPT_OUTCOME_MIN_RESPONSES,
+  })).sort((a, b) => b.responses - a.responses || String(a.version).localeCompare(String(b.version)))
+  return ctx.json({ success: true, data: { fix: shape(fix.data), letter: shape(letter.data), minResponses: PROMPT_OUTCOME_MIN_RESPONSES } })
+}
+
 // POST /api/admin/scans/:id/requeue-fix
 //
 // The manual escape hatch for a customer who PAID and whose fix failed to
@@ -873,5 +904,5 @@ module.exports = {
   adminListUsers, adminGetUserDetail, adminUpdateUser,
   adminListScans, adminSetVerification, adminListPayments,
   adminListEmailLogs, adminListAlerts, adminListAuditLog, adminClaudeUsage,
-  adminHealth, adminCheckEmailSuppression, adminLiftEmailSuppression
+  adminHealth, adminPromptOutcomes, adminCheckEmailSuppression, adminLiftEmailSuppression
 }

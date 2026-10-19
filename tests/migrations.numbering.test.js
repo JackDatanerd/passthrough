@@ -24,6 +24,11 @@ describe('migrations', () => {
       expect(sql, f).toMatch(new RegExp(`insert into applied_migrations[\\s\\S]{0,80}\\(\\s*${num(f)}\\s*,\\s*'${name}'\\s*\\)`, 'i'))
     }
   })
+  it('LEDGER_NAMES (what /health compares recorded names against) lists exactly the migration files from 0082 on', async () => {
+    const { LEDGER_NAMES } = (await import('../src/config/migrationLedger.js')).default ? (await import('../src/config/migrationLedger.js')).default : await import('../src/config/migrationLedger.js')
+    const want = Object.fromEntries(files.filter(f => num(f) >= 82).map(f => [num(f), f.replace(/\.sql$/, '')]))
+    expect(LEDGER_NAMES).toEqual(want)
+  })
   it('EXPECTED_SCHEMA_VERSION equals the newest migration number', () => {
     expect(constants.EXPECTED_SCHEMA_VERSION).toBe(num(files[files.length - 1]))
   })

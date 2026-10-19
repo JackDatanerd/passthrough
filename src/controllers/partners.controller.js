@@ -930,10 +930,15 @@ async function adminGetPartnerLinks(ctx) {
   } })
 }
 
+// Database round 5 (bug): no upper bound here, and the CHECK allowed 10 digits, but payments.amount_cents is a 4-byte integer —
+// a mistyped price passed every check and then failed every checkout. 100,000,000 minor units (1,000,000.00) is far above any
+// real price and far below the column's limit (the same typo guard manual ledger adjustments use).
+const MAX_TIER_PRICE_CENTS = 100000000
+const tierPrice = z.number().int().positive().max(MAX_TIER_PRICE_CENTS, 'That price is larger than the allowed maximum.')
 const tierPricesSchema = z.object({
-  FIX:       z.number().int().positive().optional(),
-  BADGE:     z.number().int().positive().optional(),
-  FIX_PLAIN: z.number().int().positive().optional()
+  FIX:       tierPrice.optional(),
+  BADGE:     tierPrice.optional(),
+  FIX_PLAIN: tierPrice.optional()
 }).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.')
 
 // Round 10 (feature gap): tier_prices were free-typed cents with no sense of the product's price. $49.00 typed as

@@ -30,6 +30,8 @@ const DELIBERATELY_UNMAPPED = {
   // admin/partner API never needs (partners.controller.js reads it directly for the erasure).
   // 0086: reversal_notice_sent_at is the claim that makes the buyer's reversal email go out once; dispute_id is Paystack's id, read only by the admin dispute actions.
   payments: ['reversal_notice_sent_at', 'dispute_id', 'dispute_evidence_id'],   // 0088: dispute_evidence_id is '<disputeId>:<evidenceId>', read only by the admin contest action
+  // usage_released_at (0100): stamps that a sale's referral-code slot was given back (so a retried release is a no-op) - bookkeeping only the usage RPCs read.
+  commission_ledger: ['usage_released_at'],
   partners: ['payout_details_token', 'payout_token_hash', 'dashboard_token', 'previous_emails'],
 }
 

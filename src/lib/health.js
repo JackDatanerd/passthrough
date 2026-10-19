@@ -9,6 +9,7 @@
 
 const c = require('../config/constants')
 const { validateEnv } = require('./env')
+const { LEDGER_NAMES } = require('../config/migrationLedger')
 
 const SCHEMA_KEY = 'schema_version'
 // applied_migrations (migration 0082) records one row per migration from this version on. schema_version is a single
@@ -50,15 +51,27 @@ async function recordCronHeartbeat(supabase, now = new Date()) {
 // problem; ahead is reported as a note.
 async function missingFromLedger(supabase, expected) {
   try {
-    const { data, error } = await supabase.from('applied_migrations').select('version').gte('version', LEDGER_FROM_VERSION)
+    // `name` too (database round 5): a version number alone cannot tell which FILE ran — see config/migrationLedger.js.
+    const { data, error } = await supabase.from('applied_migrations').select('version, name').gte('version', LEDGER_FROM_VERSION)
     if (error) throw error
-    const have = new Set((data || []).map(r => Number(r.version)))
-    const versions = []
-    for (let v = LEDGER_FROM_VERSION; v <= expected; v++) if (!have.has(v)) versions.push(v)
-    return { versions }
+    const have = new Map((data || []).map(r => [Number(r.version), r.name]))
+    const versions = [], renamed = []
+    for (let v = LEDGER_FROM_VERSION; v <= expected; v++) {
+      if (!have.has(v)) { versions.push(v); continue }
+      const want = LEDGER_NAMES[v]
+      if (want && have.get(v) && have.get(v) !== want) renamed.push({ version: v, expected: want, recorded: have.get(v) })
+    }
+    return { versions, renamed }
   } catch (err) {
-    return { versions: [], error: err.message }
+    return { versions: [], renamed: [], error: err.message }
   }
+}
+
+// A recorded name that is not the one this code expects. NOT a failure (an operator who applied an older-numbered copy of a file
+// that was later renumbered legitimately has the old name) — but it is exactly where a skipped migration hides, so it is reported.
+function renamedDetail(renamed) {
+  if (!renamed || !renamed.length) return null
+  return `ledger names differ from this code for ${renamed.map(r => `${String(r.version).padStart(4, '0')} (recorded "${r.recorded}", expected "${r.expected}")`).join(', ')} — confirm that migration really ran (DEPLOYMENT.md has a catalog probe)`
 }
 
 async function checkSchema(supabase) {
@@ -72,20 +85,39 @@ async function checkSchema(supabase) {
       return { expected, actual, ok: false, ahead: false, detail: `the database is at migration ${actual} but this code expects ${expected} — apply every migration above ${actual}, in order` }
     // The ledger says which migrations actually ran. Only versions this code expects are required (a database AHEAD of
     // the code legitimately holds more), and only from the version the ledger started at.
+    let renamed = []
     if (expected >= LEDGER_FROM_VERSION) {
       const missing = await missingFromLedger(supabase, expected)
+      renamed = missing.renamed || []
       if (missing.error)
         return { expected, actual, ok: false, ahead: false, detail: `could not read applied_migrations (${missing.error}) — apply migration 0082 and every one after it, in order` }
       if (missing.versions.length)
         return { expected, actual, ok: false, ahead: false, missing: missing.versions,
           detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — it was skipped; apply it, then every migration after it, in order (the files from 0082 on can be re-run as a range; each one only ever moves schema_version forward)` }
     }
+    const renamedNote = renamedDetail(renamed)
     if (actual > expected)
-      return { expected, actual, ok: true, ahead: true, detail: `the database is at migration ${actual}, ahead of this code (${expected}) — expected between applying a migration and deploying, or after a rollback` }
-    return { expected, actual, ok: true, ahead: false, detail: null }
+      return { expected, actual, ok: true, ahead: true, renamed, renamedNote, detail: `the database is at migration ${actual}, ahead of this code (${expected}) — expected between applying a migration and deploying, or after a rollback` }
+    return { expected, actual, ok: true, ahead: false, renamed, renamedNote, detail: null }
   } catch (err) {
     // A missing table is exactly "migration 0059 has not been applied".
     return { expected, actual: null, ok: false, ahead: false, detail: `could not read schema_version (${err.message}) — apply migration 0059 and every one after it` }
+  }
+}
+
+// Database round 5 (feature gap): referral_codes.uses_so_far is a counter DERIVED from the commission ledger, bumped and released by
+// separate best-effort calls, and nothing ever compared it with what the ledger says. A leaked slot silently shortens a limited code
+// (or, the other way, lets it be over-used). referral_usage_drift() (0100) returns the codes where the two disagree. Best-effort and
+// never fatal: a missing function (0100 not applied yet) is simply "unknown".
+async function checkReferralUsage(supabase) {
+  try {
+    if (!supabase || typeof supabase.rpc !== 'function') return { ok: true, drift: [], unknown: true }
+    const { data, error } = await supabase.rpc('referral_usage_drift')
+    if (error) return { ok: true, drift: [], unknown: true, detail: error.message }
+    const drift = (Array.isArray(data) ? data : []).map(r => ({ code: r.code, usesSoFar: Number(r.uses_so_far), expected: Number(r.expected) }))
+    return { ok: drift.length === 0, drift }
+  } catch (err) {
+    return { ok: true, drift: [], unknown: true, detail: err.message }
   }
 }
 
@@ -200,7 +232,7 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
     if (error && !/system_state|relation|does not exist|schema cache/i.test(error.message || '')) throw error
   } catch (err) { db = { ok: false, detail: err.message } }
 
-  const [schema, cron, email, storage, webhooks, limiter] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env), checkWebhookDeliveryHealth(supabase, nowMs), checkRateLimiter(env)])
+  const [schema, cron, email, storage, webhooks, limiter, referralUsage] = await Promise.all([checkSchema(supabase), checkCron(supabase, nowMs), checkEmailDelivery(supabase, nowMs), checkStorage(env), checkWebhookDeliveryHealth(supabase, nowMs), checkRateLimiter(env), checkReferralUsage(supabase)])
   const problems = []
   const notes = []
   if (config.fatal.length) problems.push(...config.fatal.map(f => `config: ${f}`))
@@ -208,21 +240,24 @@ async function computeHealth(env, supabase, { nowMs = Date.now() } = {}) {
   if (!db.ok) problems.push(`database: ${db.detail}`)
   if (!schema.ok) problems.push(`schema: ${schema.detail || `expected ${schema.expected}, found ${schema.actual}`}`)
   else if (schema.ahead) notes.push(`schema: ${schema.detail}`)
+  if (schema.ok && schema.renamedNote) notes.push(`schema: ${schema.renamedNote}`)
   if (!cron.ok) problems.push(`cron: ${cron.detail}`)
   if (!email.ok) problems.push(`email: ${email.detail}`)
   if (!storage.ok) problems.push(`storage: ${storage.detail}`)
   if (!limiter.ok) problems.push(`rate limiter: ${limiter.detail}`)
   if (!webhooks.ok) problems.push(`webhooks: ${webhooks.detail} — check the webhook URL and signing key in the Paystack dashboard`)
+  if (!referralUsage.ok)
+    notes.push(`referral codes: ${referralUsage.drift.length} code(s) whose use count disagrees with the commission ledger (${referralUsage.drift.slice(0, 5).map(d => `${d.code}: counter ${d.usesSoFar}, ledger ${d.expected}`).join('; ')}) — a limited code may be shortened or over-used`)
   if (!(env && env.ALERT_WEBHOOK_URL)) notes.push('alerts: ALERT_WEBHOOK_URL is not set — owner alerts travel only by email, the same provider whose outage they would report')
   return {
     ok: problems.length === 0,
     problems,
     notes,
-    schema, cron, db, email, storage, webhooks, limiter,
+    schema, cron, db, email, storage, webhooks, limiter, referralUsage,
     bindings,
     config: { fatal: config.fatal, warnings: config.warnings },
     checkedAt: new Date(nowMs).toISOString(),
   }
 }
 
-module.exports = { computeHealth, checkRateLimiter, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkCron, CRON_STALE_MINUTES, LEDGER_FROM_VERSION, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }
+module.exports = { computeHealth, checkRateLimiter, checkWebhookDeliveryHealth, checkEmailDelivery, checkStorage, recordCronHeartbeat, checkSchema, checkReferralUsage, checkCron, CRON_STALE_MINUTES, LEDGER_FROM_VERSION, SCHEMA_KEY, HEARTBEAT_KEY, BASELINE_KEY }

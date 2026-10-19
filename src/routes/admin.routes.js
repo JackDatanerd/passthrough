@@ -70,5 +70,6 @@ router.get('/audit-log',  c.adminListAuditLog)
 
 // Database audit (0077): the Claude cost ledger, aggregated in the database.
 router.get('/claude-usage', c.adminClaudeUsage)
+router.get('/prompt-outcomes', c.adminPromptOutcomes)
 
 module.exports = router

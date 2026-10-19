@@ -63,6 +63,7 @@ const AdminLeads         = lazyWithRetry(() => import('./pages/admin/AdminLeads'
 const AdminSystemHealth  = lazyWithRetry(() => import('./pages/admin/AdminSystemHealth'))
 const AdminAuditLog      = lazyWithRetry(() => import('./pages/admin/AdminAuditLog'))
 const AdminClaudeUsage   = lazyWithRetry(() => import('./pages/admin/AdminClaudeUsage'))
+const AdminPromptOutcomes = lazyWithRetry(() => import('./pages/admin/AdminPromptOutcomes'))
 const AdminStories       = lazyWithRetry(() => import('./pages/admin/AdminStories'))
 
 // Sends a signed-out visitor to /login, remembering where they were headed so
@@ -170,6 +171,7 @@ function RoutedApp() {
             <Route path="stories"      element={<AdminStories />} />
             <Route path="audit-log"    element={<AdminAuditLog />} />
             <Route path="claude-usage" element={<AdminClaudeUsage />} />
+            <Route path="prompt-outcomes" element={<AdminPromptOutcomes />} />
           </Route>
 
           {/* Catch-all: a real 404 page instead of a silent redirect home */}

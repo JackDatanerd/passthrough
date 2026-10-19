@@ -1,0 +1,6 @@
+Database layer (section 10), round 5. Migration 0100 + Worker changes.
+G1 ledger names in /health | G2 Admin Prompt Outcomes page (+ letter view) | G3 referral_usage_drift in /health
+B1 concurrent logins could exceed the session cap | B2 junk channel tags locked real ones out | B3 tier price above int4 passed the CHECK, failed every checkout
+B4 release of a code slot was not idempotent and not retried on a redelivered refund | B5 prompt_outcome_rates ran as its owner | B6 three functions without a pinned search_path
+B7 grant_upgrade_credit_once burned its marker for a missing user.
+Tests: database.round5, migrations.0100.pglite, partners.round3 (23505 retry), numbering (ledger names), mapper guard (usage_released_at).

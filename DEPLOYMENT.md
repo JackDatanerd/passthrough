@@ -1089,3 +1089,15 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * partners.payout_details_token can only be NULL (the token has been stored hashed since 0087).
 #   * Dropped: decrement_referral_code_usage() (no caller since 0071), idx_scans_user_id and payment_refunds_payment_idx (each served by another index).
 ```
+
+# DATABASE ROUND 5 (migration 0100 — apply BEFORE deploying this Worker; EXPECTED_SCHEMA_VERSION is now 100. The Worker tolerates 0100 being absent for the
+# new admin page / drift check (503 / "unknown"), but /api/admin/health stays red on the schema version until it is applied.)
+#   * create_user_session serialises per user (advisory lock) so concurrent logins can no longer exceed the 3-session cap.
+#   * increment_referral_sub_clicks: a code whose 50 channel tags are all in use now EVICTS its quietest tag not tied to any payment/signup, so junk tags
+#     cannot lock real channels out; tags that carry attribution are never evicted.
+#   * referral_tier_prices_valid also refuses prices above 2147483647 (payments.amount_cents is int4); the admin API caps a price at 100,000,000 minor units.
+#   * commission_ledger.usage_released_at: release_referral_code_usage_for_ledger is idempotent (a redelivered refund can retry it safely, and
+#     reverseCommission now does). New referral_usage_drift() feeds a note on /api/admin/health listing codes whose counter disagrees with the ledger.
+#   * prompt_outcome_rates is security_invoker; new letter_prompt_outcome_rates view; Admin -> Prompt Outcomes shows both.
+#   * set_updated_at / employer_leads_set_mailbox_key / lead_mailbox_key pin search_path; grant_upgrade_credit_once no longer burns its marker for a missing user.
+#   * /api/admin/health now notes a ledger row whose recorded NAME differs from the file this code expects for that version (a different file took the number).

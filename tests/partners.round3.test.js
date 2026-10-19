@@ -323,9 +323,18 @@ describe('reverseCommission — usage slot', () => {
     const { rpcs } = await run(original({ referral_code_id: null }))
     expect(rpcs).toHaveLength(0)
   })
-  it('an already-reversed sale (23505) frees nothing a second time', async () => {
+  // Database round 5: the release used to run ONLY for the call that inserted the reversal, so a transient failure of that one
+  // best-effort RPC leaked the slot for good (a redelivered refund hit the 23505 and returned without retrying). The RPC is
+  // idempotent now (0100: commission_ledger.usage_released_at), so the already-reversed path asks again — a no-op in SQL when
+  // the slot was already given back, the repair when it was not.
+  it('an already-reversed sale (23505) retries the release, which is now idempotent in SQL', async () => {
     const { r, rpcs } = await run(original(), { code: '23505', message: 'dup' })
-    expect(r.reversed).toBe(false)
+    expect(r).toMatchObject({ reversed: false, reason: 'already-reversed' })
+    expect(rpcs.map(x => x.name)).toEqual(['release_referral_code_usage_for_ledger'])
+    expect(rpcs[0].args).toEqual({ p_ledger_id: 'led1' })
+  })
+  it('an already-reversed sale with no referral code asks for nothing', async () => {
+    const { rpcs } = await run(original({ referral_code_id: null }), { code: '23505', message: 'dup' })
     expect(rpcs).toHaveLength(0)
   })
 })
