@@ -43,7 +43,14 @@ function PayoutDetailsSummary({ partner }) {
   if (!partner.payoutMethod) {
     return <span className="text-sm text-gray-400 italic">Not submitted yet</span>
   }
-  return <PayoutDetailsFields method={partner.payoutMethod} details={partner.payoutDetails} />
+  return (
+    <>
+      <PayoutDetailsFields method={partner.payoutMethod} details={partner.payoutDetails} />
+      {(partner.taxCountry || partner.taxId) && (
+        <div className="text-xs text-gray-500 mt-1" data-testid="partner-tax">Tax: {partner.taxCountry || '—'}{partner.taxId ? ` · ${partner.taxId}` : ''}</div>
+      )}
+    </>
+  )
 }
 
 // AUDIT FIX (feature gap): payoutDetailsSnapshot — the account a payout
@@ -273,7 +280,7 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
         <div className="flex flex-col gap-1">
           <label className="text-sm font-medium text-gray-700">Status</label>
           <div className="flex gap-2">
-            {['ACTIVE', 'PAUSED'].map(s => (
+            {['ACTIVE', 'PAUSED', 'ENDED'].map(s => (
               <button key={s} type="button" onClick={() => setStatus(s)}
                 className={cn('px-3 py-1.5 rounded-md text-sm border',
                   status === s ? 'bg-blue-50 border-blue-300 text-blue-700' : 'border-gray-300 text-gray-600')}>
@@ -281,6 +288,12 @@ function EditPartnerModal({ partner, onClose, onSaved }) {
               </button>
             ))}
           </div>
+          {status === 'ENDED' && (
+            <p className="text-xs text-gray-500" data-testid="ended-hint">
+              Ends the membership: links stop discounting and earning, and the partner is emailed. Commission already earned is still paid.
+              Unlike Paused, they are left out of terms notices. You can set Active again later.
+            </p>
+          )}
         </div>
         <Input label="Website / channel" value={website} maxLength={300} onChange={e => setWebsite(e.target.value)} />
         <Input showCount label="Audience" value={audience} maxLength={1000} onChange={e => setAudience(e.target.value)} />
@@ -1200,7 +1213,7 @@ export default function PartnerDetail() {
             <div className="text-sm text-gray-500">{partner.email}</div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant={partner.status === 'ACTIVE' ? 'green' : 'gray'}>{partner.status}</Badge>
+            <Badge variant={partner.status === 'ACTIVE' ? 'green' : partner.status === 'ENDED' ? 'red' : 'gray'}>{partner.status}</Badge>
             <Button size="sm" variant="secondary" onClick={() => setShowEdit(true)}>Edit</Button>
           </div>
         </div>

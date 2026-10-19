@@ -24,6 +24,11 @@ export function formatDate(dateStr, opts) {
   return d.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', ...(utc ? { timeZone: 'UTC' } : {}) })
 }
 
+// Round 20: partner payout cycles, the earnings trend and the CSV exports are all UTC, but a bare formatDate renders in the viewer's own
+// timezone — so for a partner east of UTC (Nairobi, UTC+3) a sale at 22:00 UTC on the 15th was listed as the 16th while being counted in
+// the 1st-15th cycle. Used wherever a partner sees a moment that belongs to a cycle.
+export function formatDateUtc(dateStr) { return formatDate(dateStr, { utc: true }) }
+
 // Today's date as YYYY-MM-DD in the VIEWER's zone, for file names. `new Date().toISOString().slice(0, 10)` is the UTC day, so a file
 // exported at 02:00 in Nairobi (or at 8 pm in New York) was named for the wrong day.
 export function dateStamp(date = new Date()) {

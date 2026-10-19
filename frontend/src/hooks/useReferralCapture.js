@@ -39,10 +39,15 @@ const refreshSyncedThisSession = new Set()
 // survives in-app navigation even where nothing persists across loads. localStorage stays the
 // source of truth whenever it works.
 let memoryRaw = null
+// Round 20 (bug): `getItem(...) ?? memoryRaw` also fell back to the in-memory copy when storage WORKED and simply had no value —
+// a code removed in another tab, expired and cleared there, or wiped with the browser's site data came straight back in a tab
+// that still held it in memory, and was sent at checkout. The memory copy now stands in only when storage itself is unavailable.
+let storageBlocked = false   // a write threw: some in-app browsers let getItem return null but refuse every setItem
 function storageGet() {
-  try { return localStorage.getItem(STORAGE_KEY) ?? memoryRaw } catch (_) { return memoryRaw }
+  if (storageBlocked) return memoryRaw
+  try { return localStorage.getItem(STORAGE_KEY) } catch (_) { return memoryRaw }
 }
-function storageSet(value) { memoryRaw = value; try { localStorage.setItem(STORAGE_KEY, value) } catch (_) {} }
+function storageSet(value) { memoryRaw = value; try { localStorage.setItem(STORAGE_KEY, value) } catch (_) { storageBlocked = true } }
 function storageRemove()   { memoryRaw = null;  try { localStorage.removeItem(STORAGE_KEY) } catch (_) {} }
 
 function readStored() {

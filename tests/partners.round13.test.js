@@ -113,20 +113,22 @@ describe('gap — admin can re-send the dashboard link', () => {
 
 describe('gap — per-code sign-up count', () => {
   const ROW = { id: A, name: 'Coach', email: 'k@x.co', status: 'ACTIVE', commission_rate: 0.2, referral_codes: [{ id: 'c1', partner_id: A, code: 'K20', clicks: 10, uses_so_far: 1, active: true, tier_prices: { FIX: 3900 } }, { id: 'c2', partner_id: A, code: 'K30', clicks: 0, uses_so_far: 0, active: true, tier_prices: { FIX: 3900 } }], commission_ledger: [], payouts: [] }
-  const run = async usersResult => {
+  // Round 20: one grouped RPC (referral_signup_counts) answers for every code instead of one COUNT query per code.
+  const run = async rpcResult => {
     const asked = []
     const db = createFakeSupabase(q => {
+      if (q.op === 'rpc' && q.name === 'referral_signup_counts') { asked.push(q.args); return rpcResult }
       if (q.table === 'partners') return { data: ROW, error: null }
-      if (q.table === 'users') { asked.push(q.filters.find(f => f[1] === 'referred_by_code')?.[2]); return typeof usersResult === 'function' ? usersResult(asked[asked.length - 1]) : usersResult }
       return { data: [], error: null }
     })
     t = loadController(db)
     const out = await t.mod.adminGetPartner(ctxOf())
     return { codes: out.body.data.referralCodes, asked }
   }
-  it('adds an aggregate signups count to each code, queried by the code text', async () => {
-    const { codes, asked } = await run(code => ({ count: code === 'K20' ? 7 : 0, data: null, error: null }))
-    expect(asked.sort()).toEqual(['K20', 'K30'])
+  it('adds an aggregate signups count to each code, from ONE call carrying every code text', async () => {
+    const { codes, asked } = await run({ data: [{ code: 'K20', signups: 7 }], error: null })
+    expect(asked).toHaveLength(1)
+    expect([...asked[0].p_codes].sort()).toEqual(['K20', 'K30'])
     expect(codes.find(c => c.code === 'K20').signups).toBe(7)
     expect(codes.find(c => c.code === 'K30').signups).toBe(0)
   })

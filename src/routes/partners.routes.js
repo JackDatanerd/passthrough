@@ -50,6 +50,7 @@ router.get( '/applications',                    admin, c.adminListApplications)
 // STEP-UP (round 10): approving mints a partner (email + commission rate + payout link), same as creating one below.
 router.post('/applications/:id/approve',        admin, admin.stepUp, validateUuidParam(), c.adminApproveApplication)
 router.post('/applications/:id/reject',         admin, validateUuidParam(), c.adminRejectApplication)
+router.post('/applications/:id/reopen',         admin, validateUuidParam(), c.adminReopenApplication)
 
 // Admin only
 router.post( '/',                          admin, admin.stepUp, c.adminCreatePartner)
@@ -59,6 +60,7 @@ router.get(  '/',                          admin, c.adminListPartners)
 router.get(  '/overview',                  admin, c.adminPartnersOverview)
 router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
+router.get(  '/ledger',                    admin, c.adminListLedger)
 // Round 18: paid sales that used a code but have no commission row (declared before '/:id').
 router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissions)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).

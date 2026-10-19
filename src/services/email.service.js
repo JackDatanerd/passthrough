@@ -615,6 +615,14 @@ async function sendPartnerPayoutVoided(env, supabase, email, name, amountCents, 
 }
 
 async function sendPartnerStatusChanged(env, supabase, email, name, status) {
+  // Round 20: ENDED is a membership that is over (partner terms §7), not a pause that may be lifted.
+  if (status === 'ENDED') {
+    return send(env, supabase, email, 'Your Passthrough partner membership has ended', 'partner_status_changed', {
+      NAME:    name,
+      HEADING: 'Your partner membership has ended',
+      BODY:    'your Passthrough partner membership has ended. Your referral links no longer apply discounts or earn commission. Commission you earned before today is still paid, less any reversals, and your dashboard link keeps working so you can see it.'
+    })
+  }
   const paused = status === 'PAUSED'
   return send(env, supabase, email,
     paused ? 'Your Passthrough partner account has been paused' : 'Your Passthrough partner account is active again',
@@ -625,6 +633,26 @@ async function sendPartnerStatusChanged(env, supabase, email, name, status) {
         ? "your Passthrough partner account has been paused. Your referral links won't apply discounts or earn commission until it's reactivated."
         : 'your Passthrough partner account is active again \u2014 your referral links are back to applying discounts and earning commission.'
     })
+}
+
+// Round 20: an admin changed one of the partner's codes. `changes` is [{ field, to }] from describeCodeChanges (only real changes).
+const CODE_TIER_LABELS = { FIX: 'Fix + Credential', BADGE: 'Credential only', FIX_PLAIN: 'Fix only' }
+async function sendPartnerCodeChanged(env, supabase, email, name, code, changes, currency) {
+  const parts = []
+  for (const ch of changes || []) {
+    if (ch.field === 'active') parts.push(ch.to ? 'it is active again and applies its discount to new checkouts' : "it has been switched off, so it no longer applies a discount to new checkouts and won't earn commission on new sales")
+    else if (ch.field === 'tierPrices') {
+      const list = Object.entries(ch.to || {}).map(([tier, cents]) => `${CODE_TIER_LABELS[tier] || tier} ${fmtMoney(cents, currency)}`).join(', ')
+      parts.push(list ? `its prices are now ${list} (plans not listed sell at their normal price, and you still earn commission on them)` : 'it no longer sets a special price on any plan, so buyers pay normal prices (you still earn commission)')
+    }
+    else if (ch.field === 'usageLimit') parts.push(ch.to == null ? 'it no longer has a usage limit' : `its usage limit is now ${ch.to}`)
+    else if (ch.field === 'expiresAt') parts.push(ch.to == null ? 'it no longer expires' : `it now expires on ${new Date(ch.to).toISOString().slice(0, 10)} (UTC)`)
+  }
+  if (!parts.length) return false
+  return send(env, supabase, email, `Your referral code ${code} was changed`, 'partner_status_changed', {
+    NAME: name, HEADING: `${code} was updated`,
+    BODY: `we changed your referral code ${code}: ${parts.join('; ')}. Sales already made are unaffected. If this surprises you, reply to this email.`
+  })
 }
 
 // Sent when an admin rejects a partner application (see adminRejectApplication). `reason`
@@ -1018,7 +1046,7 @@ module.exports = {
   sendOwnerAlert, sendOwnerNotice,
   sendPartnerPayoutDetailsRequest, sendPartnerApplicationReceived, sendPayoutSent, sendReferralCodeCreated,
   sendPayoutDetailsChanged, sendPartnerLinkRegenerated, sendPartnerEmailChanged, sendPartnerConversionEarned,
-  sendPartnerStatusChanged, sendPartnerRateChanged, sendPartnerCommissionReversed,
+  sendPartnerStatusChanged, sendPartnerCodeChanged, sendPartnerRateChanged, sendPartnerCommissionReversed,
   sendPartnerBalanceAdjusted, sendPartnerTermsUpdate, sendPartnerApplicationRejected,
   sendPartnerDashboardLinkRegenerated, sendPartnerPayoutVoided, sendPartnerLinksRecovery
 }

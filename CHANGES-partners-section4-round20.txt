@@ -1,0 +1,46 @@
+PARTNERS / REFERRAL PROGRAM — section 4, round 20
+=================================================
+Independent pass over: partners.controller.js, partners.routes.js, referral.service.js, badge.service.js, PartnerDashboard.jsx,
+PartnerPayoutDetails.jsx, AdminPartners.jsx, useReferralCapture.js (+ what they depend on). Everything below was found by reading the
+code as if no earlier comment existed. Gaps first, then bugs. Both closed in this round.
+
+APPLY ORDER: run migration 0099 BEFORE deploying the Worker. The Worker reads tax_country / tax_id on the payout page and calls the new
+referral_signup_counts function; /health reports schema_version 99 once it is applied.
+
+FEATURE GAPS CLOSED
+ 1. Partner is told when an admin changes a code. adminUpdateReferralCode now emails the partner exactly what changed (switched off /
+    on, new prices, usage limit, expiry). Only REAL changes are reported, only to an ACTIVE, mail-able partner; best-effort.
+    (email.service sendPartnerCodeChanged; describeCodeChanges in the controller; response carries `notified`.)
+ 2. Held money shows WHEN it frees up. buildCyclesSummary returns heldUntil (end of the age hold) and heldDisputeCents; the dashboard
+    says "held until <date> (refund window)" and "held until a payment dispute is resolved" instead of the vague line.
+ 3. Signup counts in ONE call (referral_signup_counts) instead of one COUNT per code per dashboard / partner-detail load.
+    NOT done, on purpose: the totals/cycles/trend are still computed from the ledger rows in the Worker. They depend on the voided-pair,
+    hold, dispute and credit rules in JS; re-implementing those in SQL would create a second copy of money logic that can drift.
+    The cheap per-code query storm is gone; revisit only if a single partner's ledger grows past a few thousand rows.
+ 4. Commission ledger export across ALL partners (GET /partners/ledger, paged; "Commission ledger" tab -> CSV with date range).
+ 5. Reopen a rejected application (POST /partners/applications/:id/reopen; "Reopen" on the Rejected tab). Same application returns to
+    the waiting list; nothing is emailed; 409 if the applicant already has another pending one.
+ 6. ENDED membership status (terms §7). Partner status ACTIVE | PAUSED | ENDED. ENDED = no discount, no commission, no clicks, partner
+    emailed, left out of terms notices; earned commission is still paid; the dashboard says so. Admin Edit-partner has the third
+    button, the list has a "Membership ended" filter, "Paused" now means PAUSED only.
+ 7. Tax details with the payout details: optional country (2 letters) and tax ID. Kept in their own columns, NOT in payout_details, so
+    they never restart the payout hold. The partner's own link shows the ID as its last four characters only. Admin sees them on the
+    partner and in the payout-run CSV (Tax country / Tax ID columns). The page only sends tax fields it was asked to change.
+
+BUGS FIXED
+ 1. Channel-tag flood (low-medium). track-click is public and codes are public, so anyone could create unlimited (code, tag) rows;
+    past PostgREST's 1,000-row cap the dashboard silently lost real channels. 0099 caps distinct tags at 50 per code (existing tags keep
+    counting, serialised per code with an advisory lock) and the dashboard read is ordered by visits and limited.
+ 2. Removed code resurrected (low). useReferralCapture treated "storage has no value" like "storage is blocked" and fell back to the
+    in-memory copy, so a code removed in another tab / by clearing site data came back at checkout. The memory copy is now used only when
+    storage throws or refuses writes.
+ 3. Dates one day off (low). Partner-facing sale / payout dates used the viewer's timezone while cycles, trend and CSV are UTC (Nairobi:
+    a sale at 22:00 UTC on the 15th was listed as the 16th inside the 1st-15th cycle). They now render in UTC (formatDateUtc) and the
+    page says so.
+
+FILES
+ supabase/migrations/0099_partners_section4_round20.sql   EXPECTED_SCHEMA_VERSION 98 -> 99
+ src/controllers/partners.controller.js, src/routes/partners.routes.js, src/lib/mappers.js, src/services/email.service.js
+ frontend: PartnerDashboard, PartnerPayoutDetails, AdminPartners, AdminPartnersLookup, PartnerDetail, useReferralCapture, lib/utils
+ tests: partners.round20 (22), migrations.0099.pglite (9, real Postgres), frontend partnersRound20 (13) + hook (4);
+        partners.round13 (signup test now asserts the single RPC), email.registry (new sender).

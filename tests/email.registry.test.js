@@ -38,7 +38,7 @@ const CALLS = {
   sendPartnerPayoutDetailsRequest: ['p@x.y', 'P', 'https://u'], sendPayoutSent: ['p@x.y', 'P', 1000, 'USD'], sendReferralCodeCreated: ['p@x.y', 'P', 'CODE', 'https://d'],
   sendPayoutDetailsChanged: ['p@x.y', 'P', 'BANK'], sendPartnerLinkRegenerated: ['p@x.y', 'P', 'https://u'], sendPartnerEmailChanged: ['p@x.y', 'P', 'o@x.y', 'n@x.y'],
   sendPartnerConversionEarned: ['p@x.y', 'P', 'CODE', 500, 'USD', 'https://d'],
-  sendPartnerLinksSelfReset: ['p@x.y', 'P', 'https://d', 'https://u'], sendPartnerCodeLimitReached: ['p@x.y', 'P', 'CODE', 10], sendPartnerCodeExpiring: ['p@x.y', 'P', 'CODE', '2026-11-01T00:00:00Z'], sendPartnerTermsAccepted: ['p@x.y', 'P', '2026-10'], sendPartnerStatusChanged: ['p@x.y', 'P', 'PAUSED'], sendPartnerApplicationRejected: ['p@x.y', 'P', 'Not a fit yet.'], sendPartnerApplicationReceived: ['p@x.y', 'P'],
+  sendPartnerLinksSelfReset: ['p@x.y', 'P', 'https://d', 'https://u'], sendPartnerCodeLimitReached: ['p@x.y', 'P', 'CODE', 10], sendPartnerCodeExpiring: ['p@x.y', 'P', 'CODE', '2026-11-01T00:00:00Z'], sendPartnerTermsAccepted: ['p@x.y', 'P', '2026-10'], sendPartnerStatusChanged: ['p@x.y', 'P', 'PAUSED'], sendPartnerCodeChanged: ['p@x.y', 'P', 'CODE', [{ field: 'active', to: false }], 'USD'], sendPartnerApplicationRejected: ['p@x.y', 'P', 'Not a fit yet.'], sendPartnerApplicationReceived: ['p@x.y', 'P'],
   sendPartnerRateChanged: ['p@x.y', 'P', 0.2, 0.25], sendPartnerCommissionReversed: ['p@x.y', 'P', 500, 'USD', 'https://d'],
   sendPartnerLinksRecovery: ['p@x.y', 'P', 'https://d'],
   sendPartnerBalanceAdjusted: ['p@x.y', 'P', -500, 'USD', 'Self-referral via a second account', 'https://d'],

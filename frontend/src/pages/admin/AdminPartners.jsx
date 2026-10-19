@@ -232,6 +232,8 @@ function ApplicationsPanel({ onApproved }) {
   const [approving, setApproving] = useState(null)
   const [rejecting, setRejecting] = useState(null)
   const [cooldownDays, setCooldownDays] = useState(30)
+  const [reopening, setReopening] = useState(null)
+  const toast = useToast()
   const latestTab = useRef(tab)
 
   // Round 7 (feature gap): the list used to stop at 200 rows with no way to reach older ones, and the "waiting"
@@ -260,6 +262,17 @@ function ApplicationsPanel({ onApproved }) {
   useEffect(() => { latestTab.current = tab; load(tab) }, [tab])
 
   const refresh = () => { load(tab); if (tab !== 'PENDING') load('PENDING') }
+  // Round 20: a rejection can be taken back — the same application returns to the waiting list (nothing is emailed).
+  async function reopen(app) {
+    setReopening(app.id)
+    try {
+      await api.post(`/partners/applications/${app.id}/reopen`)
+      toast({ message: `${app.name}'s application is back in the waiting list.`, type: 'success' })
+      refresh()
+    } catch (err) {
+      toast({ message: err?.response?.data?.message || 'Could not reopen that application.', type: 'error' })
+    } finally { setReopening(null) }
+  }
   const expanded = open || pendingCount > 0
 
   if (!expanded) {
@@ -296,6 +309,11 @@ function ApplicationsPanel({ onApproved }) {
               <Link to={`/admin/partners/${app.partnerId}`} className="text-xs text-blue-600 hover:underline">Open partner →</Link>
             )}
           </div>
+          {app.status === 'REJECTED' && (
+            <div className="flex gap-2 shrink-0">
+              <Button size="sm" variant="secondary" loading={reopening === app.id} onClick={() => reopen(app)}>Reopen</Button>
+            </div>
+          )}
           {app.status === 'PENDING' && (
             <div className="flex gap-2 shrink-0">
               <Button size="sm" variant="secondary" onClick={() => setRejecting(app)}>Reject</Button>
@@ -332,13 +350,13 @@ function exportPayoutRun(partners, holdHours = 0) {
   const all = partners.filter(isPayable)
   const payable = all.filter(p => !isHeld(p, holdHours))
   const heldBack = all.length - payable.length
-  const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted']]
+  const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted', 'Tax country', 'Tax ID']]
   for (const p of payable) {
     const d = p.payoutDetails || {}
     rows.push([
       p.name, p.email, p.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
       csvText(d.accountNumber || d.phoneNumber || ''), ((p.readyToPayCents || 0) / 100).toFixed(2), p.currency || '',
-      p.payoutDetailsSubmittedAt || ''
+      p.payoutDetailsSubmittedAt || '', p.taxCountry || '', csvText(p.taxId || '')
     ])
   }
   downloadCsv(`payout-run-${dateStamp()}.csv`, rows)
@@ -465,7 +483,8 @@ const isRemovedPartner = p => String(p.email || '').endsWith('@removed.invalid')
 export const PARTNER_FILTERS = {
   all:        { label: 'All partners',                 test: () => true },
   active:     { label: 'Active',                       test: p => p.status === 'ACTIVE' && !isRemovedPartner(p) },
-  paused:     { label: 'Paused',                       test: p => p.status !== 'ACTIVE' && !isRemovedPartner(p) },
+  paused:     { label: 'Paused',                       test: p => p.status === 'PAUSED' && !isRemovedPartner(p) },
+  ended:      { label: 'Membership ended',             test: p => p.status === 'ENDED' && !isRemovedPartner(p) },
   ready:      { label: 'Ready to pay',                 test: p => (p.readyToPayCents || 0) > 0 },
   noDetails:  { label: 'No payout details yet',        test: p => !p.payoutMethod && !isRemovedPartner(p) },
   terms:      { label: 'Terms not accepted',           test: p => p.termsCurrent === false && !isRemovedPartner(p) },
@@ -642,7 +661,7 @@ export default function AdminPartners() {
               header: 'Status',
               cell: p => (
                 <>
-                  <Badge variant={p.status === 'ACTIVE' ? 'green' : 'gray'}>{p.status}</Badge>
+                  <Badge variant={p.status === 'ACTIVE' ? 'green' : p.status === 'ENDED' ? 'red' : 'gray'}>{p.status}</Badge>
                 </>
               ),
             },

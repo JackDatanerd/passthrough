@@ -8,7 +8,7 @@ import DataTable from '../../components/ui/DataTable'
 import Input from '../../components/ui/Input'
 import Checkbox from '../../components/ui/Checkbox'
 import { useToast } from '../../components/ui/Toast'
-import { formatCents, formatDate, downloadCsv, dateStamp } from '../../lib/utils'
+import { formatCents, formatDate, downloadCsv, dateStamp, csvText } from '../../lib/utils'
 
 // Cross-partner views (round 5). The partner list deliberately ships no codes or payout
 // history (scale), which left "who owns code X?" and "what did we pay in September?" needing
@@ -283,22 +283,70 @@ function UnrecordedCommissions() {
   )
 }
 
+// Round 20 (feature gap): every sale, refund and adjustment across ALL partners in one file, for month-end reconciliation against
+// Paystack and the books. Dates are UTC (cycles are UTC). A date-only "to" runs through the end of that day.
+const LEDGER_PAGE = 200
+const LEDGER_MAX_PAGES = 100   // 20,000 rows; the screen says when the file was cut short
+function LedgerExport() {
+  const toast = useToast()
+  const [from, setFrom] = useState('')
+  const [to, setTo] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [note, setNote] = useState('')
+  async function run() {
+    setBusy(true); setNote('')
+    try {
+      const out = [['Date (UTC)', 'Partner', 'Email', 'Code', 'Type', 'Payment ref', 'Sale', 'Rate', 'Commission', 'Currency', 'Status', 'Paid on (UTC)', 'Reason', 'Channel tag']]
+      let complete = false
+      for (let page = 0; page < LEDGER_MAX_PAGES; page++) {
+        const r = await api.get('/partners/ledger', { params: { limit: LEDGER_PAGE, offset: page * LEDGER_PAGE, ...(from ? { from } : {}), ...(to ? { to } : {}) } })
+        for (const l of r.data.data) out.push([
+          String(l.createdAt || '').slice(0, 10), l.partnerName || '', l.partnerEmail || '', l.code || '', l.type, csvText(l.paymentRef || ''),
+          (l.grossAmountCents || 0) / 100, l.commissionRate == null ? '' : `${+(l.commissionRate * 100).toFixed(2)}%`,
+          (l.commissionAmountCents || 0) / 100, l.currency || '', l.paid ? 'Paid' : 'Unpaid', String(l.paidAt || '').slice(0, 10), l.reason || '', l.sub || ''])
+        if (r.data.data.length < LEDGER_PAGE) { complete = true; break }
+      }
+      downloadCsv(`commission-ledger-${dateStamp()}.csv`, out)
+      if (!complete) setNote(`The file holds the newest ${(out.length - 1).toLocaleString('en-US')} entries — narrow the dates to get the rest.`)
+      toast({ message: `Exported ${out.length - 1} ledger entr${out.length === 2 ? 'y' : 'ies'}.`, type: complete ? 'success' : 'warning' })
+    } catch (_) { toast({ message: 'Export failed.', type: 'error' }) }
+    finally { setBusy(false) }
+  }
+  return (
+    <div className="flex flex-col gap-3" data-testid="ledger-export">
+      <p className="text-xs text-gray-500">Every sale, refund reversal and manual adjustment for every partner, newest first. Dates are UTC.</p>
+      <div className="flex items-center gap-4 flex-wrap text-sm">
+        <label className="flex items-center gap-2 text-gray-600">From
+          <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} aria-label="Ledger from"
+            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+        </label>
+        <label className="flex items-center gap-2 text-gray-600">To
+          <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} aria-label="Ledger to"
+            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
+        </label>
+        <Button size="sm" variant="secondary" loading={busy} onClick={run}>Export CSV</Button>
+      </div>
+      {note && <p role="status" className="text-xs text-amber-700" data-testid="ledger-truncated">{note}</p>}
+    </div>
+  )
+}
+
 export default function PartnersLookupPanel() {
   const [open, setOpen] = useState(false)
   const [tab, setTab] = useState('codes')
   if (!open) {
-    return <button type="button" onClick={() => setOpen(true)} className="self-start text-xs text-gray-400 hover:text-gray-600">Find a code · Payout history · Missing commissions →</button>
+    return <button type="button" onClick={() => setOpen(true)} className="self-start text-xs text-gray-400 hover:text-gray-600">Find a code · Payout history · Commission ledger · Missing commissions →</button>
   }
   return (
     <div className="border border-gray-200 rounded-lg p-4 bg-white flex flex-col gap-3" data-testid="partners-lookup">
       <div className="flex items-center gap-4 text-sm">
-        {[['codes', 'Referral codes'], ['payouts', 'Payout history'], ['missing', 'Missing commissions']].map(([k, l]) => (
+        {[['codes', 'Referral codes'], ['payouts', 'Payout history'], ['ledger', 'Commission ledger'], ['missing', 'Missing commissions']].map(([k, l]) => (
           <button key={k} type="button" onClick={() => setTab(k)}
             className={tab === k ? 'font-medium text-blue-700 underline underline-offset-4' : 'text-gray-500 hover:text-gray-700'}>{l}</button>
         ))}
         <button type="button" onClick={() => setOpen(false)} className="ml-auto text-xs text-gray-400 hover:text-gray-600">Close</button>
       </div>
-      {tab === 'codes' ? <CodeLookup /> : tab === 'payouts' ? <PayoutsLog /> : <UnrecordedCommissions />}
+      {tab === 'codes' ? <CodeLookup /> : tab === 'payouts' ? <PayoutsLog /> : tab === 'ledger' ? <LedgerExport /> : <UnrecordedCommissions />}
     </div>
   )
 }

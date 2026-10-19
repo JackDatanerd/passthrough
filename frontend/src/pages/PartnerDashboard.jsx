@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import api from '../lib/api'
-import { formatCents, formatRate, downloadCsv, formatDate, formatDateTime, formatNumber, dateStamp } from '../lib/utils'
+import { formatCents, formatRate, downloadCsv, formatDateUtc, formatDateTime, formatNumber, dateStamp } from '../lib/utils'
 import CopyButton from '../components/ui/CopyButton'
 import Spinner from '../components/ui/Spinner'
 import StatCard from '../components/ui/StatCard'
@@ -156,8 +156,8 @@ const TIER_LABEL = { FIX: 'Fix + Credential', BADGE: 'Credential only', FIX_PLAI
 
 // Why a code is not live (null when it is). Drives the badge so it can't
 // say "Active" next to a caption saying the link isn't working.
-function codeInactiveReason(code, partnerActive) {
-  if (!partnerActive) return 'Paused'
+function codeInactiveReason(code, partnerActive, status) {
+  if (!partnerActive) return status === 'ENDED' ? 'Ended' : 'Paused'
   if (!code.active) return 'Inactive'
   if (code.expiresAt) {
     const expiresMs = Date.parse(code.expiresAt)
@@ -185,7 +185,7 @@ function isCodeLive(code, partnerActive) {
   return true
 }
 
-function CodeCard({ code, partnerActive, currency }) {
+function CodeCard({ code, partnerActive, partnerStatus, currency }) {
   const prices = Object.entries(code.tierPrices || {})
   const live = isCodeLive(code, partnerActive)
   return (
@@ -194,7 +194,7 @@ function CodeCard({ code, partnerActive, currency }) {
         <div className="font-mono text-lg font-bold text-blue-700">{code.code}</div>
         <span className={`text-xs px-2 py-0.5 rounded-full ${
           live ? 'bg-green-100 text-green-700' : 'bg-gray-100 text-gray-500'}`}>
-          {live ? 'Active' : codeInactiveReason(code, partnerActive)}
+          {live ? 'Active' : codeInactiveReason(code, partnerActive, partnerStatus)}
         </span>
       </div>
       <ShareLink code={code.code} />
@@ -222,7 +222,10 @@ function CodeCard({ code, partnerActive, currency }) {
           people the code <span className="font-mono">{code.code}</span> directly — there's a
           "have a code?" box at checkout too.</>
         ) : !partnerActive ? (
-          <>Your partner account is currently paused, so this link is not applying the discount or
+          partnerStatus === 'ENDED'
+            ? <>Your partner membership has ended, so this link no longer applies a discount or earns commission.
+            Commission you earned before then is still paid.</>
+            : <>Your partner account is currently paused, so this link is not applying the discount or
           earning commission right now — contact us if you weren't expecting that.</>
         ) : (
           <>This code isn't live anymore — links using it will fall back to standard pricing and
@@ -257,7 +260,7 @@ function ConversionRow({ conversion, currency }) {
     <li className="text-sm text-gray-700 bg-white border border-gray-200 rounded-md px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
       <div>
         <div>
-          {formatDate(conversion.createdAt)}
+          {formatDateUtc(conversion.createdAt)}
           {conversion.code && <> · <span className="font-mono text-xs">{conversion.code}</span></>}
           {conversion.sub && <> · <span className="text-xs text-gray-500" data-testid="conversion-sub">#{conversion.sub}</span></>}
           {conversion.isAdjustment && <> · <span className="text-xs font-medium text-gray-600">Balance adjustment</span></>}
@@ -302,6 +305,15 @@ function ConversionRow({ conversion, currency }) {
 // admin side (PartnerDetail.jsx's CyclesTab) already showing exactly this
 // breakdown from the same underlying data. Read-only here (no payout
 // actions — those stay admin-only), mirroring CyclesTab's per-cycle shape.
+// Round 20: say WHEN held money frees up. An age hold ends holdDays after the last held sale; an open dispute has no date.
+function heldText(cycle, currency) {
+  const dispute = cycle.heldDisputeCents || 0
+  const parts = []
+  if (cycle.heldUntil) parts.push(`${fmtCents(cycle.heldCents - dispute, currency)} — held until ${formatDateUtc(cycle.heldUntil)} (refund window)`)
+  if (dispute !== 0) parts.push(`${fmtCents(dispute, currency)} — held until a payment dispute is resolved`)
+  return parts.length ? parts.join(' · ') : `${fmtCents(cycle.heldCents, currency)} — held (refund window or an open dispute)`
+}
+
 function CycleRow({ cycle, currency }) {
   return (
     <div className="border border-gray-200 rounded-xl bg-white px-4 py-3 flex items-center justify-between gap-3 flex-wrap">
@@ -328,7 +340,7 @@ function CycleRow({ cycle, currency }) {
               {cycle.unpaidCents - cycle.heldCents > 0 && (
                 <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents - cycle.heldCents, currency)} — ready to pay · </span>
               )}
-              {fmtCents(cycle.heldCents, currency)} — held (refund window or an open dispute)
+              {heldText(cycle, currency)}
             </span>
           ) : (
             <span className="font-semibold text-amber-600">{fmtCents(cycle.unpaidCents, currency)} — ready to pay</span>
@@ -520,7 +532,7 @@ function PayoutStatement({ token, payout, currency }) {
           <ul className="flex flex-col gap-1">
             {rows.map(r => (
               <li key={r.id} className="text-xs text-gray-700 flex justify-between gap-3">
-                <span>{formatDate(r.createdAt)}{r.code ? ` · ${r.code}` : ''}{r.isAdjustment ? ' · adjustment' : r.isReversal ? ' · refund' : ''}</span>
+                <span>{formatDateUtc(r.createdAt)}{r.code ? ` · ${r.code}` : ''}{r.isAdjustment ? ' · adjustment' : r.isReversal ? ' · refund' : ''}</span>
                 <span className={r.commissionAmountCents < 0 ? 'text-red-600' : ''}>{fmtCents(r.commissionAmountCents, currency)}</span>
               </li>
             ))}
@@ -716,9 +728,10 @@ export default function PartnerDashboard() {
                   paused partner had no indication anywhere on their own
                   dashboard that their links had stopped working. */}
               {!data.active && (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
-                  Your partner account is currently paused. Your links won't apply discounts or earn
-                  commission until it's reactivated — contact us if you weren't expecting that.
+                <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800" data-testid={data.status === 'ENDED' ? 'account-ended' : 'account-paused'}>
+                  {data.status === 'ENDED'
+                    ? "Your partner membership has ended. Your links no longer apply discounts or earn commission. Commission you earned before then is still paid, less any reversals — it stays visible here."
+                    : "Your partner account is currently paused. Your links won't apply discounts or earn commission until it's reactivated — contact us if you weren't expecting that."}
                 </div>
               )}
 
@@ -787,7 +800,7 @@ export default function PartnerDashboard() {
                   ) : (
                     <div className="flex flex-col gap-3">
                       {data.referralCodes.map(code => (
-                        <CodeCard key={code.id} code={code} partnerActive={data.active} currency={data.currency} />
+                        <CodeCard key={code.id} code={code} partnerActive={data.active} partnerStatus={data.status} currency={data.currency} />
                       ))}
                     </div>
                   )}
@@ -803,7 +816,8 @@ export default function PartnerDashboard() {
                 <section id="earnings" className="scroll-mt-24 flex flex-col gap-8">
                   {data.cyclesSummary?.length > 0 && (
                     <div>
-                      <h2 className="text-lg font-semibold text-gray-900 mb-3">Payout cycles</h2>
+                      <h2 className="text-lg font-semibold text-gray-900 mb-1">Payout cycles</h2>
+                      <p className="text-xs text-gray-400 mb-3">Cycles and the dates in the lists below are in UTC.</p>
                       <div className="flex flex-col gap-2">
                         {data.cyclesSummary.map(cycle => (
                           <CycleRow key={cycle.key} cycle={cycle} currency={data.currency} />
@@ -852,11 +866,11 @@ export default function PartnerDashboard() {
                       {data.payouts.map(p => (
                         <li key={p.id} className="text-sm text-gray-700 bg-white border border-gray-200 rounded-xl px-4 py-3">
                           <div className="flex justify-between">
-                            <span>{formatDate(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
+                            <span>{formatDateUtc(p.paidAt)}{p.note ? ` — ${p.note}` : ''}</span>
                             <span className="font-medium">{fmtCents(p.amountCents, p.currency)}</span>
                           </div>
                           <div className="flex items-center gap-3 mt-0.5">
-                            {p.periodStart && <span className="text-xs text-gray-400">Sales {formatDate(p.periodStart)} – {formatDate(p.periodEnd)}</span>}
+                            {p.periodStart && <span className="text-xs text-gray-400">Sales {formatDateUtc(p.periodStart)} – {formatDateUtc(p.periodEnd)}</span>}
                             <button type="button" className="text-xs text-blue-600 hover:underline"
                               onClick={() => setStatementId(id => (id === p.id ? null : p.id))}>
                               {statementId === p.id ? 'Hide sales' : 'Sales in this payout'}

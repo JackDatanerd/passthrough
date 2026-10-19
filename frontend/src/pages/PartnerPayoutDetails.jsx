@@ -44,6 +44,11 @@ export default function PartnerPayoutDetails() {
   // Round 9: the server returns the saved account / phone as its last four digits only (the link is a bearer
   // credential), so what is on file is shown as a reference and the number has to be typed again to save.
   const [onFile, setOnFile] = useState('')
+  // Round 20: optional tax details. They are kept with the payout details but are not part of them, so changing them never pauses a payout.
+  const [taxCountry, setTaxCountry] = useState('')
+  const [taxCountryLoaded, setTaxCountryLoaded] = useState('')   // what the server has, so an untouched field is never re-sent
+  const [taxId, setTaxId] = useState('')
+  const [taxIdOnFile, setTaxIdOnFile] = useState('')
 
   const [saved,  setSaved ] = useState(false)
   const [holdUntil, setHoldUntil] = useState(null)
@@ -57,6 +62,9 @@ export default function PartnerPayoutDetails() {
         setPartnerName(p.name)
         setAlreadySubmittedAt(p.payoutDetailsSubmittedAt)
         setDashboardToken(p.dashboardToken || null)
+        setTaxCountry(p.taxCountry || '')
+        setTaxCountryLoaded(p.taxCountry || '')
+        setTaxIdOnFile(p.taxIdMasked || '')
         if (p.payoutMethod) {
           setMethod(p.payoutMethod)
           const d = p.payoutDetails || {}
@@ -86,6 +94,9 @@ export default function PartnerPayoutDetails() {
       ? { payoutMethod: 'BANK', bankName: bankName.trim(), accountName: accountName.trim(), accountNumber: accountNumber.trim() }
       : { payoutMethod: 'MOBILE_MONEY', provider: provider.trim(), accountName: accountName.trim(), phoneNumber: phoneNumber.trim() }
 
+    // Tax details are optional and only sent when touched: a blank ID keeps the one on file; a changed country (even to blank) is sent.
+    const country = taxCountry.trim().toUpperCase()
+    const taxExtra = { ...(country !== taxCountryLoaded ? { taxCountry: country } : {}), ...(taxId.trim() ? { taxId: taxId.trim() } : {}) }
     const missing = Object.values(body).some(v => !v)
     if (missing) {
       await execute(() => Promise.reject(new Error('Please fill in every field.')),
@@ -99,11 +110,13 @@ export default function PartnerPayoutDetails() {
       return fail('That account number doesn\'t look right — use 4–34 letters, digits, spaces or dashes.')
     if (method === 'MOBILE_MONEY' && !PHONE_RE.test(body.phoneNumber))
       return fail('That phone number doesn\'t look right — include the country code, e.g. +254 712 345 678.')
+    if (country && !/^[A-Z]{2}$/.test(country)) return fail('Use the 2-letter country code for your tax country, e.g. KE.')
+    if (taxId.trim() && taxId.trim().length < 3) return fail('That tax ID looks too short — enter it in full, or leave it blank.')
     if (squash(number) !== squash(confirmNumber))
       return fail(`The two ${method === 'BANK' ? 'account numbers' : 'phone numbers'} don't match — please re-enter to confirm.`)
 
     try {
-      const out = await execute(() => api.post('/partners/payout-details', body, partnerAuth(token)),
+      const out = await execute(() => api.post('/partners/payout-details', { ...body, ...taxExtra }, partnerAuth(token)),
         { fallback: 'Something went wrong — please try again.' })
       // Round 8: a CHANGE pauses payouts for a while (a safeguard if the link was ever leaked). Say so now,
       // not when the partner wonders later why a payout has not arrived.
@@ -200,6 +213,15 @@ export default function PartnerPayoutDetails() {
                     <Input label="Re-enter phone number" value={confirmNumber} onChange={e => setConfirmNumber(e.target.value)} inputMode="tel" autoComplete="off" />
                   </>
                 )}
+
+                <fieldset className="flex flex-col gap-4 border-t border-gray-100 pt-4" data-testid="tax-details">
+                  <legend className="text-sm font-medium text-gray-700 pr-2">Tax details (optional)</legend>
+                  <p className="text-xs text-gray-500 -mt-2">Some countries require us to collect these before paying you. Adding or changing them does not pause your payouts.</p>
+                  <Input label="Country of tax residence (2-letter code)" value={taxCountry} maxLength={2} autoComplete="off"
+                    onChange={e => setTaxCountry(e.target.value.toUpperCase())} placeholder="KE" />
+                  <Input label="Tax ID" value={taxId} autoComplete="off" maxLength={40} onChange={e => setTaxId(e.target.value)}
+                    placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} />
+                </fieldset>
 
                 {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
 
