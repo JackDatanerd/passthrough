@@ -1,0 +1,15 @@
+SHARED FRONTEND (section 11) — round 19
+Base: f240e4d. Frontend only, no migration.
+
+Feature gaps: none found (no hand-rolled copies of the shared pieces remain; no className override in the app conflicts with a base class).
+
+Bugs fixed
+1. lib/utils.js parseDate — an impossible date-only string rolled over ("2026-02-30" -> "Mar 2, 2026", "2026-13-01" -> "Jan 1, 2027").
+   It now has to read back as the same y/m/d (local or UTC), otherwise it is invalid and formatDate / formatDateUtc / formatDateTime show "—".
+2. components/ui/Pagination.jsx — Prev/Next used native `disabled`, which disabled the focused button when the person reached either end
+   (focus lost / dead control for keyboard and screen-reader users). The end button now stays focusable with aria-disabled and its click is a no-op. 11 call sites.
+3. components/ui/Menu.jsx — Space did nothing on a router <Link role="menuitem"> (ScanRow's "Scan this resume against another job"); Enter/Space now
+   click any item the browser does not activate natively. Escape from the trigger while open now closes the menu; Tab from the trigger closes it.
+
+Tests: tests/sharedFrontend.round19.test.jsx (new, 8), tests/components/Pagination.test.jsx (aria-disabled assertions + 2 new).
+Full frontend suite: 236/237 files pass. The one failure (homepage.round2 "renders all six pull-quotes…") fails identically on the untouched base.

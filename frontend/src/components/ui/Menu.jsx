@@ -89,6 +89,10 @@ export default function Menu({
   }, [open])
 
   function onTriggerKeyDown(e) {
+    // SHARED FRONTEND (section 11, round 19, bug): focus can be back on the trigger while the menu is open (a screen reader's
+    // virtual cursor, a click that lands on the trigger's edge). Escape did nothing from there and Tab left the list hanging open.
+    if (open && e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return }
+    if (open && e.key === 'Tab') { setOpen(false); return }
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
       focusOn.current = e.key === 'ArrowUp' ? 'last' : 'first'
@@ -107,6 +111,15 @@ export default function Menu({
     else if (e.key === 'End') next = all[all.length - 1]
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); return }
     else if (e.key === 'Tab') { close(); return }       // focus goes to the trigger FIRST, so Tab carries on from there
+    else if ((e.key === ' ' || e.key === 'Enter') && at >= 0) {
+      // SHARED FRONTEND (section 11, round 19, bug): the WAI-ARIA menu pattern activates an item on Enter AND Space. A <button>
+      // does both natively, but a router <Link role="menuitem"> (ScanRow's "Scan this resume against another job") answers only
+      // Enter — Space did nothing (and scrolled the page). Anything that is not natively activated by this key is clicked here.
+      const el = all[at]
+      const native = el.tagName === 'BUTTON' || (el.tagName === 'A' && el.hasAttribute('href') && e.key === 'Enter')
+      if (!native) { e.preventDefault(); el.click() }
+      return
+    }
     else if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey && e.key !== ' ') {
       const ch = e.key.toLowerCase()
       const order = [...all.slice(at + 1), ...all.slice(0, at + 1)]

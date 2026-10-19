@@ -9,7 +9,14 @@ function parseDate(input, utc = false) {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(input))
   if (!m) return new Date(input)
   const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
-  return utc ? new Date(Date.UTC(y, mo, d)) : new Date(y, mo, d)
+  const date = utc ? new Date(Date.UTC(y, mo, d)) : new Date(y, mo, d)
+  // SHARED FRONTEND (section 11, round 19, bug): the Date constructor rolls an impossible calendar day over instead of
+  // refusing it — "2026-02-30" printed "Mar 2, 2026" and "2026-13-01" printed "Jan 1, 2027", a confident wrong date where
+  // formatDate promises "—". A date-only value must read back as the same year, month and day it was built from.
+  const same = utc
+    ? date.getUTCFullYear() === y && date.getUTCMonth() === mo && date.getUTCDate() === d
+    : date.getFullYear() === y && date.getMonth() === mo && date.getDate() === d
+  return same ? date : new Date(NaN)
 }
 
 // `{ utc: true }` for a value that stands for a CALENDAR DAY stored as a UTC instant, not for a moment: a partner code's "expires on"
