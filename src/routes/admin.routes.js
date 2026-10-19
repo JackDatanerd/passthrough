@@ -5,6 +5,7 @@ const c     = require('../controllers/admin.controller')
 const rl    = require('../middleware/rateLimiter')
 const wh    = require('../controllers/webhooks.controller')
 const stories = require('../controllers/admin-stories.controller')
+const hotCategories = require('../controllers/admin-hot-categories.controller')
 
 const router = new Hono()
 
@@ -57,6 +58,11 @@ router.get('/payments/:reference/webhook-events', wh.getPaymentTimeline)
 // Customer stories: nothing reaches the public homepage until approved here.
 router.get('/stories', stories.adminListStories)
 router.post('/stories/:id/moderate', validateUuidParam(), stories.adminModerateStory)
+
+// Homepage "Hot categories": nothing is published by hand. GET shows the real counts against the threshold; the POST is a
+// read-only what-if (it computes a ranking from the real counts plus the numbers in the body and stores nothing).
+router.get('/hot-categories', hotCategories.adminHotCategories)
+router.post('/hot-categories/simulate', hotCategories.adminSimulateHotCategories)
 
 router.get('/email-logs', c.adminListEmailLogs)
 router.get('/alerts',     c.adminListAlerts)

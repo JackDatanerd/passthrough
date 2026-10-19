@@ -65,6 +65,7 @@ const AdminAuditLog      = lazyWithRetry(() => import('./pages/admin/AdminAuditL
 const AdminClaudeUsage   = lazyWithRetry(() => import('./pages/admin/AdminClaudeUsage'))
 const AdminPromptOutcomes = lazyWithRetry(() => import('./pages/admin/AdminPromptOutcomes'))
 const AdminStories       = lazyWithRetry(() => import('./pages/admin/AdminStories'))
+const AdminHotCategories = lazyWithRetry(() => import('./pages/admin/AdminHotCategories'))
 
 // Sends a signed-out visitor to /login, remembering where they were headed so
 // login can return them there (Login validates ?next= via safeNext).
@@ -169,6 +170,7 @@ function RoutedApp() {
             <Route path="leads"        element={<AdminLeads />} />
             <Route path="health"       element={<AdminSystemHealth />} />
             <Route path="stories"      element={<AdminStories />} />
+            <Route path="hot-categories" element={<AdminHotCategories />} />
             <Route path="audit-log"    element={<AdminAuditLog />} />
             <Route path="claude-usage" element={<AdminClaudeUsage />} />
             <Route path="prompt-outcomes" element={<AdminPromptOutcomes />} />

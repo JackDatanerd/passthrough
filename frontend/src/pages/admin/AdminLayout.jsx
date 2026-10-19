@@ -16,6 +16,7 @@ const NAV = [
   { to: '/admin/webhooks',  label: 'Webhooks' },
   { to: '/admin/leads',     label: 'Leads' },
   { to: '/admin/stories',   label: 'Stories' },
+  { to: '/admin/hot-categories', label: 'Hot Categories' },
   { to: '/admin/health',    label: 'System Health' },
   { to: '/admin/audit-log', label: 'Audit Log' },
   { to: '/admin/claude-usage', label: 'Claude Usage' },

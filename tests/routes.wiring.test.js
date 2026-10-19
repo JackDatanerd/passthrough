@@ -359,6 +359,20 @@ describe('homepage evidence routes', () => {
     expect((await call(a, 'POST', `/stories/${ID}/moderate`, {})).json.handler).toBe('adminModerateStory')
     expect((await call(a, 'POST', '/stories/nope/moderate', {})).status).toBe(400)
   })
+  it('hot-categories review is admin-only (401 anonymous, 403 user) and reaches the right handlers', async () => {
+    const a = mount('routes/admin.routes.js', 'controllers/admin-hot-categories.controller.js', {
+      'controllers/admin.controller.js': marker(), 'controllers/webhooks.controller.js': marker(), 'controllers/admin-stories.controller.js': marker(),
+    })
+    for (const [m, p] of [['GET', '/hot-categories'], ['POST', '/hot-categories/simulate']]) {
+      current = undefined
+      expect((await call(a, m, p, {})).status, `${m} ${p} anonymous`).toBe(401)
+      current = { id: 'u1', role: 'USER' }
+      expect((await call(a, m, p, {})).status, `${m} ${p} user`).toBe(403)
+    }
+    current = { id: 'a1', role: 'ADMIN' }
+    expect((await call(a, 'GET', '/hot-categories')).json.handler).toBe('adminHotCategories')
+    expect((await call(a, 'POST', '/hot-categories/simulate', {})).json.handler).toBe('adminSimulateHotCategories')
+  })
 })
 
 // Payments & Pricing round 11 (B1): resolve, and recheck when it ACCEPTS an amount mismatch, ask for the same
