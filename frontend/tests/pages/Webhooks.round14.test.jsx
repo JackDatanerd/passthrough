@@ -98,6 +98,6 @@ describe('AdminUsers — undeliverable email (G1)', () => {
     wrap(<AdminUsers />)
     expect(await screen.findByText('spam complaint')).toBeTruthy()
     await user.click(screen.getByLabelText('Email undeliverable'))
-    expect(api.get).toHaveBeenLastCalledWith('/admin/users', { params: expect.objectContaining({ bounced: '1' }) })
+    expect(api.get).toHaveBeenLastCalledWith('/admin/users', expect.objectContaining({ params: expect.objectContaining({ bounced: '1' }) }))
   })
 })

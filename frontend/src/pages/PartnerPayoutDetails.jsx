@@ -6,6 +6,7 @@ import { useApi } from '../hooks/useApi'
 import Button from '../components/ui/Button'
 import Form from '../components/ui/Form'
 import Input from '../components/ui/Input'
+import Checkbox from '../components/ui/Checkbox'
 import Spinner from '../components/ui/Spinner'
 import PartnerLayout from '../components/partner/PartnerLayout'
 import { formatDateTime } from '../lib/utils'
@@ -244,10 +245,8 @@ export default function PartnerPayoutDetails() {
                   <Input label="Tax ID" value={taxId} autoComplete="off" maxLength={40} onChange={e => setTaxId(e.target.value)}
                     placeholder={taxIdOnFile ? `On file: ${taxIdOnFile} — type a new one to replace it` : ''} disabled={clearTaxId} />
                   {taxIdOnFile && (
-                    <label className="flex items-center gap-2 text-xs text-gray-600">
-                      <input type="checkbox" checked={clearTaxId} onChange={e => { setClearTaxId(e.target.checked); if (e.target.checked) setTaxId('') }} />
-                      Remove the tax ID we have on file
-                    </label>
+                    <Checkbox label="Remove the tax ID we have on file" checked={clearTaxId}
+                      onChange={e => { setClearTaxId(e.target.checked); if (e.target.checked) setTaxId('') }} />
                   )}
                   {taxSaved && <p role="status" className="text-sm text-green-700" data-testid="tax-saved">Tax details saved.</p>}
                 </fieldset>

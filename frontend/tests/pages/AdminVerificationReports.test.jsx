@@ -27,7 +27,7 @@ describe('admin: open verification reports', () => {
     expect(screen.getByText('Looks fake / misleading')).toBeTruthy()
     expect(screen.getByText('Not the person')).toBeTruthy()
     expect(screen.getByText(/a@b\.co/)).toBeTruthy()
-    expect(api.get).toHaveBeenCalledWith('/admin/verification-reports', { params: { status: 'OPEN', pageSize: 25 } })
+    expect(api.get).toHaveBeenCalledWith('/admin/verification-reports', expect.objectContaining({ params: { status: 'OPEN', pageSize: 25 } }))
   })
   it('Dismiss closes it server-side and drops it from the list', async () => {
     // The panel re-fetches after a dismiss (round 10: the queue refills past the page size), and the server no longer

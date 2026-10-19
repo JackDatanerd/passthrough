@@ -32,7 +32,7 @@ export default function AdminStories() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/stories', { params: { status, page, pageSize: PAGE_SIZE } })
+      const res = await api.get('/admin/stories', { signal: isCurrent.signal, params: { status, page, pageSize: PAGE_SIZE } })
       if (!isCurrent()) return
       setStories(res.data.data.stories)
       setTotal(res.data.data.total)

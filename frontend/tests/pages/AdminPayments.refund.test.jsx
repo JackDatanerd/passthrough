@@ -102,7 +102,7 @@ describe('AdminPayments — round 5', () => {
     expect(link.getAttribute('href')).toBe('/admin/webhooks?reference=ref1')
     await user.type(screen.getByLabelText('Payment reference'), ' ref1 ')
     await user.click(screen.getByRole('button', { name: 'Search' }))
-    await vi.waitFor(() => expect(api.get).toHaveBeenLastCalledWith('/admin/payments', { params: { page: 1, pageSize: 25, status: undefined, reference: 'ref1' } }))
+    await vi.waitFor(() => expect(api.get).toHaveBeenLastCalledWith('/admin/payments', expect.objectContaining({ params: { page: 1, pageSize: 25, status: undefined, reference: 'ref1' } })))
   })
 
   it('does not offer a webhook-events link for a free-credit redemption', async () => {

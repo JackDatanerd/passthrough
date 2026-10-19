@@ -1,0 +1,14 @@
+Shared frontend (section 11) round 18 — independent pass at HEAD 8c802bf
+
+Bugs
+- lib/announce.js: the delayed first fill of the live region could land after, and over, a newer message sent inside the first 50ms. A newer announcement now cancels the pending fill.
+- AdminSystemHealth: the two Pagination navs shared the name "Pagination"; now "Email delivery log pages" / "Alert history pages".
+- PartnerPayoutDetails (traced, other section): a raw checkbox (added by partners round 20/21) broke the existing "no raw radios or checkboxes outside components/ui" guard; now the shared Checkbox.
+
+Feature gaps closed
+- Hand-rolled inputs moved to the shared Input: VerifyLookup code field (16px on phones, no iOS zoom), AdminPartnersLookup ledger From/To dates. ScanResult badge Markdown field gained an accessible name.
+- useLatestRequest now exposes isCurrent.signal and aborts the superseded/unmounted load, so a stale request is cancelled instead of only ignored. Adopted in AdminPayments, AdminUsers, AdminScans, AdminStories, AdminAuditLog, AdminWebhooks, AdminClaudeUsage, AdminSystemHealth, VerificationReports, PartnerDetail, PaymentHistory.
+
+Tests
+- New: frontend/tests/sharedFrontend.round18.test.jsx.
+- Exact-argument loader assertions in adminStories, AdminVerificationReports, AdminAuditLog, PaymentHistory, AdminPayments.refund and Webhooks.round14 now use expect.objectContaining so they tolerate the signal option.

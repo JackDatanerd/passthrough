@@ -26,7 +26,7 @@ export default function VerificationReports({ onChanged }) {
     const isCurrent = begin()
     if (!silent) setLoading(true)
     try {
-      const res = await api.get('/admin/verification-reports', { params: { status: 'OPEN', pageSize: 25 } })
+      const res = await api.get('/admin/verification-reports', { signal: isCurrent.signal, params: { status: 'OPEN', pageSize: 25 } })
       if (!isCurrent()) return
       setReports(res.data.data)
       setTotal(res.data.meta.total)

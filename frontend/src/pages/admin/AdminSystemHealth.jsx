@@ -25,7 +25,7 @@ function EmailLogsSection() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/email-logs', { params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
+      const res = await api.get('/admin/email-logs', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
       if (!isCurrent()) return
       setLogs(res.data.data)
       setTotal(res.data.meta.total)
@@ -73,7 +73,7 @@ function EmailLogsSection() {
         </div>
       )}
       {totalPages > 1 && (
-        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} compact className="flex items-center justify-center gap-3 mt-3" />
+        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} compact ariaLabel="Email delivery log pages" className="flex items-center justify-center gap-3 mt-3" />
       )}
     </div>
   )
@@ -92,7 +92,7 @@ function AlertsSection() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/alerts', { params: { page, pageSize: PAGE_SIZE } })
+      const res = await api.get('/admin/alerts', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE } })
       if (!isCurrent()) return
       setAlerts(res.data.data)
       setTotal(res.data.meta.total)
@@ -136,7 +136,7 @@ function AlertsSection() {
         </div>
       )}
       {totalPages > 1 && (
-        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} compact className="flex items-center justify-center gap-3 mt-3" />
+        <Pagination page={page} totalPages={totalPages} onChange={p => setPage(p)} compact ariaLabel="Alert history pages" className="flex items-center justify-center gap-3 mt-3" />
       )}
     </div>
   )

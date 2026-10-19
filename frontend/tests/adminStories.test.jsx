@@ -24,7 +24,7 @@ describe('AdminStories', () => {
     api.get.mockResolvedValue(list([story()]))
     render(<AdminStories />)
     expect(await screen.findByText('Amara O.')).toBeInTheDocument()
-    expect(api.get).toHaveBeenCalledWith('/admin/stories', { params: { status: 'PENDING', page: 1, pageSize: 25 } })
+    expect(api.get).toHaveBeenCalledWith('/admin/stories', expect.objectContaining({ params: { status: 'PENDING', page: 1, pageSize: 25 } }))
     expect(screen.getByText(/The full story text/)).toBeInTheDocument()
     expect(screen.getByText('44 → 90')).toBeInTheDocument()
     expect(screen.getByText('Links live credential')).toBeInTheDocument()
@@ -68,7 +68,7 @@ describe('AdminStories', () => {
     render(<AdminStories />)
     await screen.findByText('Nothing here.')
     fireEvent.change(screen.getByLabelText('Filter stories by status'), { target: { value: 'REJECTED' } })
-    await waitFor(() => expect(api.get).toHaveBeenLastCalledWith('/admin/stories', { params: { status: 'REJECTED', page: 1, pageSize: 25 } }))
+    await waitFor(() => expect(api.get).toHaveBeenLastCalledWith('/admin/stories', expect.objectContaining({ params: { status: 'REJECTED', page: 1, pageSize: 25 } })))
   })
   it('reports a load failure instead of an empty list that looks like "nothing to review"', async () => {
     api.get.mockRejectedValue(new Error('down'))

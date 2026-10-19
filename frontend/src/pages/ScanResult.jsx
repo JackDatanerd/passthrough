@@ -1141,6 +1141,7 @@ export default function ScanResult() {
                           />
                           <input
                             readOnly
+                            aria-label="Badge Markdown snippet"
                             value={badgeUrls().markdown}
                             onFocus={e => e.target.select()}
                             className="text-xs text-gray-600 bg-white border border-gray-200 rounded-md px-2 py-1.5 flex-1 min-w-[200px] font-mono"

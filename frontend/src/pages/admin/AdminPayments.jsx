@@ -65,7 +65,7 @@ export default function AdminPayments() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/payments', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined } })
+      const res = await api.get('/admin/payments', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined } })
       if (!isCurrent()) return
       setPayments(res.data.data)
       setTotal(res.data.meta.total)

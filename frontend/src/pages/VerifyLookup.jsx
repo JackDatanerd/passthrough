@@ -3,6 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import api from '../lib/api'
 import FileUpload from '../components/ui/FileUpload'
 import Spinner from '../components/ui/Spinner'
+import Input from '../components/ui/Input'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import usePageTitle from '../hooks/usePageTitle'
@@ -98,11 +99,10 @@ export default function VerifyLookup() {
             Paste the verification link, or type the code printed next to “Passthrough Verified” on the resume.
           </p>
           <div className="flex items-start gap-3 flex-wrap">
-            <input
+            <Input
               type="text" value={codeText} onChange={e => { setCodeText(e.target.value); setCodeError('') }}
               aria-label="Verification link or code" placeholder="usepassthrough.com/v/… or AB3XY7K2PQ"
-              autoComplete="off" spellCheck={false}
-              className="flex-1 min-w-[14rem] rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              autoComplete="off" spellCheck={false} wrapperClassName="flex-1 min-w-[14rem]"
             />
             <button type="submit" className="rounded-lg bg-blue-700 hover:bg-blue-800 text-white text-sm font-medium px-4 py-2 transition-colors">
               Open page

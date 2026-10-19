@@ -315,15 +315,9 @@ function LedgerExport() {
   return (
     <div className="flex flex-col gap-3" data-testid="ledger-export">
       <p className="text-xs text-gray-500">Every sale, refund reversal and manual adjustment for every partner, newest first. Dates are UTC.</p>
-      <div className="flex items-center gap-4 flex-wrap text-sm">
-        <label className="flex items-center gap-2 text-gray-600">From
-          <input type="date" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} aria-label="Ledger from"
-            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
-        </label>
-        <label className="flex items-center gap-2 text-gray-600">To
-          <input type="date" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} aria-label="Ledger to"
-            className="text-sm border border-gray-300 rounded-md px-2 py-1" />
-        </label>
+      <div className="flex items-end gap-4 flex-wrap text-sm">
+        <Input type="date" size="sm" label="From" aria-label="Ledger from" wrapperClassName="w-fit" value={from} max={to || undefined} onChange={e => setFrom(e.target.value)} />
+        <Input type="date" size="sm" label="To" aria-label="Ledger to" wrapperClassName="w-fit" value={to} min={from || undefined} onChange={e => setTo(e.target.value)} />
         <Button size="sm" variant="secondary" loading={busy} onClick={run}>Export CSV</Button>
       </div>
       {note && <p role="status" className="text-xs text-amber-700" data-testid="ledger-truncated">{note}</p>}

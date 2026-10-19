@@ -41,6 +41,7 @@ export default function AdminUsers() {
     setLoading(true)
     try {
       const res = await api.get('/admin/users', {
+        signal: isCurrent.signal,
         params: { page, pageSize: PAGE_SIZE, search: search || undefined, status: status || undefined, bounced: bouncedOnly ? '1' : undefined }
       })
       if (!isCurrent()) return

@@ -98,7 +98,7 @@ export default function AdminWebhooks() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/webhook-events', { params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined, provider: providerQ || undefined, from: fromQ || undefined, to: toQ || undefined } })
+      const res = await api.get('/admin/webhook-events', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE, status: status || undefined, reference: referenceQ || undefined, type: typeQ || undefined, provider: providerQ || undefined, from: fromQ || undefined, to: toQ || undefined } })
       if (!isCurrent()) return
       setEvents(res.data.data)
       setTotal(res.data.meta.total)

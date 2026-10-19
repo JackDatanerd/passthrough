@@ -53,7 +53,7 @@ export default function AdminAuditLog() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/audit-log', { params: { page, pageSize: PAGE_SIZE, targetType: targetType || undefined } })
+      const res = await api.get('/admin/audit-log', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE, targetType: targetType || undefined } })
       if (!isCurrent()) return
       setEntries(res.data.data)
       setTotal(res.data.meta.total)

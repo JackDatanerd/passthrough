@@ -29,7 +29,7 @@ describe('PaymentHistory', () => {
     api.get.mockResolvedValue(respond([pay(1)]))
     renderPage()
     await screen.findByText('Fix + Credential')
-    expect(api.get).toHaveBeenCalledWith('/payments/history', { params: { page: 1, pageSize: 20, includeAbandoned: undefined } })
+    expect(api.get).toHaveBeenCalledWith('/payments/history', expect.objectContaining({ params: { page: 1, pageSize: 20, includeAbandoned: undefined } }))
   })
 
   it('B1: shows pagination when there are more than 20 payments, and Next requests page 2', async () => {
@@ -39,7 +39,7 @@ describe('PaymentHistory', () => {
     expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await screen.findByText('Page 2 of 3')
-    expect(api.get).toHaveBeenLastCalledWith('/payments/history', { params: { page: 2, pageSize: 20, includeAbandoned: undefined } })
+    expect(api.get).toHaveBeenLastCalledWith('/payments/history', expect.objectContaining({ params: { page: 2, pageSize: 20, includeAbandoned: undefined } }))
   })
 
   it('a single page shows no pagination controls', async () => {
@@ -57,7 +57,7 @@ describe('PaymentHistory', () => {
     await screen.findByText('Page 2 of 3')
     await user.click(screen.getByLabelText('Show unfinished checkouts'))
     await screen.findByText('Page 1 of 3')
-    expect(api.get).toHaveBeenLastCalledWith('/payments/history', { params: { page: 1, pageSize: 20, includeAbandoned: 1 } })
+    expect(api.get).toHaveBeenLastCalledWith('/payments/history', expect.objectContaining({ params: { page: 1, pageSize: 20, includeAbandoned: 1 } }))
   })
 
   it('shows the empty state', async () => {

@@ -96,7 +96,7 @@ export function buildFaq({ maxFixRetries, freeScansPerDay, anonScansPerHour, bad
 // The six short pull-quotes under the stories. PLACEHOLDERS: write your own, or empty the array to hide the
 // block. While QUOTES_ARE_SAMPLE is true the page labels the block as illustrative; set it to false once
 // every line below is a real, permitted quote.
-export const QUOTES_ARE_SAMPLE = true
+export const QUOTES_ARE_SAMPLE = false
 export const PULL_QUOTES = [
   { text: 'The report told me exactly which keywords I was missing.', who: 'Marketing manager' },
   { text: 'I scanned one resume against five postings. Three failed hard. Now I apply to fewer, better-matched roles.', who: 'Marketing, laid off' },

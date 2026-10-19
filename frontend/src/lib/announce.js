@@ -6,6 +6,7 @@
 let node = null
 let flip = false
 let clearTimer = null
+let fillTimer = null
 
 function region() {
   if (node && node.isConnected) return { el: node, fresh: false }
@@ -25,8 +26,11 @@ export function announce(message) {
   // The same text twice in a row (copy, wait, copy again) alternates a trailing no-break space so it is spoken again.
   flip = !flip
   const text = `${message}${flip ? ' ' : ''}`
-  const put = () => { el.textContent = text }
-  if (fresh) setTimeout(put, 50); else put()
+  const put = () => { fillTimer = null; el.textContent = text }
+  // A fill still waiting from the very first announcement must not land after (and over) this newer message.
+  clearTimeout(fillTimer)
+  fillTimer = null
+  if (fresh) fillTimer = setTimeout(put, 50); else put()
   clearTimeout(clearTimer)
   clearTimer = setTimeout(() => { if (el.isConnected) el.textContent = '' }, 5000)
 }

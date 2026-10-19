@@ -33,7 +33,7 @@ export default function AdminScans() {
     const isCurrent = begin()
     setLoading(true)
     try {
-      const res = await api.get('/admin/scans', { params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
+      const res = await api.get('/admin/scans', { signal: isCurrent.signal, params: { page, pageSize: PAGE_SIZE, status: status || undefined } })
       if (!isCurrent()) return
       setScans(res.data.data)
       setTotal(res.data.meta.total)

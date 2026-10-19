@@ -71,6 +71,7 @@ export default function PaymentHistory() {
     setLoading(true)
     setError('')
     return api.get('/payments/history', {
+      signal: isCurrent.signal,
       params: { page, pageSize: PAGE_SIZE, includeAbandoned: showAbandoned ? 1 : undefined },
     })
       .then(res => {

@@ -43,7 +43,7 @@ export default function AdminClaudeUsage() {
     setLoading(true)
     setNotReady(false)
     try {
-      const res = await api.get('/admin/claude-usage', { params: { days } })
+      const res = await api.get('/admin/claude-usage', { signal: isCurrent.signal, params: { days } })
       if (!isCurrent()) return
       setData(res.data.data)
     } catch (err) {

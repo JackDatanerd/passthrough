@@ -25,7 +25,7 @@ describe('AdminAuditLog', () => {
     api.get.mockResolvedValue(respond([entry(1)]))
     renderPage()
     expect(await screen.findByText('user.update')).toBeInTheDocument()
-    expect(api.get).toHaveBeenCalledWith('/admin/audit-log', { params: { page: 1, pageSize: 20, targetType: undefined } })
+    expect(api.get).toHaveBeenCalledWith('/admin/audit-log', expect.objectContaining({ params: { page: 1, pageSize: 20, targetType: undefined } }))
     expect(screen.getByText(/user · t-1/)).toBeInTheDocument()
     expect(screen.getByText(/boss@x\.co/)).toBeInTheDocument()
   })
@@ -62,7 +62,7 @@ describe('AdminAuditLog', () => {
     expect(await screen.findByText('Page 1 of 3')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Next' }))
     await screen.findByText('Page 2 of 3')
-    expect(api.get).toHaveBeenLastCalledWith('/admin/audit-log', { params: { page: 2, pageSize: 20, targetType: undefined } })
+    expect(api.get).toHaveBeenLastCalledWith('/admin/audit-log', expect.objectContaining({ params: { page: 2, pageSize: 20, targetType: undefined } }))
   })
 
   it('a single page of results shows no pagination controls', async () => {
@@ -82,7 +82,7 @@ describe('AdminAuditLog', () => {
     api.get.mockResolvedValue(respond([entry(9, { action: 'payment.reversed', targetType: 'payment' })], 1))
     await user.selectOptions(screen.getByLabelText('Filter audit log by target type'), 'payment')
     expect(await screen.findByText('payment.reversed')).toBeInTheDocument()
-    expect(api.get).toHaveBeenLastCalledWith('/admin/audit-log', { params: { page: 1, pageSize: 20, targetType: 'payment' } })
+    expect(api.get).toHaveBeenLastCalledWith('/admin/audit-log', expect.objectContaining({ params: { page: 1, pageSize: 20, targetType: 'payment' } }))
   })
 
   it('a load failure shows an error toast instead of crashing', async () => {

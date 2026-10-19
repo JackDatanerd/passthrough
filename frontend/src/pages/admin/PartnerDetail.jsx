@@ -1121,7 +1121,7 @@ export default function PartnerDetail() {
     const isCurrent = beginLoad()
     if (!silent) setLoading(true)
     try {
-      const res = await api.get(`/partners/${id}`)
+      const res = await api.get(`/partners/${id}`, { signal: isCurrent.signal })
       if (!isCurrent()) return
       setPartner(res.data.data)
     } catch (_) {
