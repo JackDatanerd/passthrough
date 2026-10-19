@@ -2315,6 +2315,15 @@ async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {})
 
 async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   let scanForRefund = null
+  // Marks THIS run's scan as failed - but only while it is still waiting / running, exactly like the catch block at the
+  // bottom. A blind write let a late or taken-over run flip a scan that had already finished (or been paid for) to ERROR,
+  // and the caller then refunded a slot a second time. Returns true when this call really failed the scan (so the caller
+  // refunds), false when the row had already moved on (nothing to refund).
+  const failScan = async patch => {
+    const { data, error } = await supabase.from('scans').update({ status: 'ERROR', ...patch })
+      .eq('id', scanId).in('status', ['PENDING', 'SCANNING']).select('id')
+    return !!error || !Array.isArray(data) || data.length > 0
+  }
   // Only the queue consumer passes structureTimeoutMs: it has no 30s wall-clock cap, so
   // structuring a long background may use the long budget. The waitUntil fallback keeps the
   // default (20s) that fits under its cap.
@@ -2348,7 +2357,14 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
         }
       }
     }
-    if (claimErr) console.error('runAtsScan: mark SCANNING:', claimErr.message)
+    if (claimErr) {
+      // The claim write itself failed (a transient database error): the row is still PENDING. Carrying on used to spend
+      // the whole parse + Claude bill and then drop the result (the final write only lands on a SCANNING row) while
+      // reporting success, so the queue acked the job and the scan sat PENDING. Report it as "not started" instead: the
+      // queue consumer retries an inProgress outcome after a delay, and nothing has been spent yet.
+      console.error('runAtsScan: mark SCANNING:', claimErr.message)
+      return { success: false, inProgress: true, error: `could not claim the scan: ${claimErr.message}` }
+    }
     else if (Array.isArray(claimed) && claimed.length === 0) {
       console.log(`runAtsScan: scan ${scanId} is not waiting to be scanned (already handled, or deleted) — skipping`)
       return { success: true, skipped: true }
@@ -2385,8 +2401,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
         resumeData = structured.resumeData
         if (parseError || !resumeData) {
           const structErrorCode = /could not structure/i.test(parseErrorMessage || '') ? 'STRUCTURE_FAILED' : 'NEEDS_MORE_DETAIL'
-          await supabase.from('scans').update({
-            status: 'ERROR',
+          const failedHere = await failScan({
             full_ats_report: {
               error: parseErrorMessage || 'Could not structure background.',
               errorCode: structErrorCode
@@ -2394,11 +2409,11 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
             // "Tell us more" cannot be retried with the same text (retry-scan refuses it), so the pasted background has no
             // further use: it is not kept in the row for the life of the account. A retryable failure keeps it.
             ...(isRetryable(structErrorCode) ? {} : { raw_brain_dump_text: null })
-          }).eq('id', scanId)
+          })
           // Only a failure of OUR structuring call is refunded — "tell us more"
           // (too little text) is the person's to fix, and refunding those would
           // make an unlimited free retry loop.
-          if (/could not structure/i.test(parseErrorMessage || '')) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (structure failure)', anonRlKey, ipSlotKey)
+          if (failedHere && /could not structure/i.test(parseErrorMessage || '')) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (structure failure)', anonRlKey, ipSlotKey)
           return { success: false, error: parseErrorMessage || 'Could not structure background.' }
         }
       }
@@ -2437,11 +2452,8 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       // straight to text for scoring, reusing the same deterministic
       // serializer brain-dump mode uses after its own structuring step.
       if (!scan.originalResumeData) {
-        await supabase.from('scans').update({
-          status: 'ERROR',
-          full_ats_report: { error: 'Saved profile data missing.' }
-        }).eq('id', scanId)
-        await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (saved profile missing)', anonRlKey, ipSlotKey)
+        const failedHere = await failScan({ full_ats_report: { error: 'Saved profile data missing.' } })
+        if (failedHere) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (saved profile missing)', anonRlKey, ipSlotKey)
         return { success: false, error: 'Saved profile data missing.' }
       }
       // AUDIT FIX (bug): same WYSIWYG fix as the brain_dump branch above —
@@ -2480,15 +2492,15 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     const thinButReal = !!structuredData && hasResumeContent(structuredData)
     if (uploadFailure || !rawResumeText || (rawResumeText.trim().length < 100 && !thinButReal)) {
       const code = uploadFailure?.code || (structuredData ? 'NEEDS_MORE_DETAIL' : 'TOO_SHORT')
-      await supabase.from('scans').update({
-        status: 'ERROR', full_ats_report: { error: failureMessage(code), errorCode: code },
+      const failedHere = await failScan({
+        full_ats_report: { error: failureMessage(code), errorCode: code },
         // A failure that retrying cannot fix leaves nothing to retry from: drop the pasted background (see the structuring
         // failure above).
         ...(scan.inputMode === 'brain_dump' && !isRetryable(code) ? { raw_brain_dump_text: null } : {})
-      }).eq('id', scanId)
+      })
       // No Claude scoring call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.
-      await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey, ipSlotKey)
+      if (failedHere) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey, ipSlotKey)
       return { success: false, error: failureMessage(code), errorCode: code }
     }
 

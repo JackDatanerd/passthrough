@@ -1364,7 +1364,9 @@ function applyLetterFrame(text, { recipient, name, uk }) {
   let body = lines.join('\n')
   if (name) {
     const close = uk ? (recipient ? 'Yours sincerely' : 'Yours faithfully') : 'Sincerely'
-    const m = body.match(/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Yours faithfully|Respectfully),?\s*\n[^\n]*\s*$/i)
+    // The sign-off and whatever follows it (a name, maybe a title line or two) are replaced as one block; matching just one
+    // trailing line left a second, duplicate sign-off when the model wrote more than the name.
+    const m = body.match(/\n\s*(?:Sincerely|Best regards|Kind regards|Regards|Yours sincerely|Yours faithfully|Respectfully),?[ \t]*\n[^\n]*(?:\n[^\n]*){0,3}\s*$/i)
     body = (m ? body.slice(0, m.index) : body.replace(/\s+$/, '')) + `\n\n${close},\n${name}`
   }
   return body

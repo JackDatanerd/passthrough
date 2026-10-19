@@ -189,7 +189,9 @@ export default function ScanResult() {
         const stillUnconfirmed = ['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(data.status) && Date.now() < awaitingDeadlineRef.current
         if (!stillUnconfirmed) { awaitingPaymentRef.current = false; setConfirmingPayment(false) }
       }
-      if (POLLING_STOP.includes(data.status) && !awaitingPaymentRef.current) {
+      // A paid scan that reads ERROR is not terminal: the server re-queues failed paid builds and the page tells the person
+      // so, but polling used to stop here, so the recovered delivery never appeared without a manual reload.
+      if (POLLING_STOP.includes(data.status) && !(data.status === 'ERROR' && data.fixPurchased) && !awaitingPaymentRef.current) {
         pollRef.current?.stop()
       }
       return true
