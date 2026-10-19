@@ -1,7 +1,7 @@
 const STEPS = [
   { title: 'Upload & scan', free: true, body: 'Upload your resume and paste the job description. Your score lands in about 30 seconds, with a full breakdown.' },
   { title: "See what's wrong", free: true, body: 'Keyword gaps, formatting problems, missing sections, weak content — specific and fixable, not one vague number.' },
-  { title: 'Fix & verify', free: false, body: 'An AI-rewritten resume, an ATS-ready .docx and PDF, and a Verified link employers can check.' },
+  { title: 'Fix & verify', free: false, body: 'An AI-rewritten resume, an ATS-ready .docx and PDF, a tailored cover letter for the same job, and a Verified link employers can check.' },
 ]
 
 export default function HowItWorks() {

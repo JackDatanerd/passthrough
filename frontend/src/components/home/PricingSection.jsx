@@ -113,7 +113,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             {rec === 'badge' && <FitPill />}
             <Price tier={badge} currency={currency} />
             <p className="text-sm text-gray-500 mb-4">Already scoring {badgeThreshold}+? Prove it.</p>
-            <Features items={[[true, 'Passthrough Verified link & badge'], [true, 'Integrity check for employers'], [false, 'No rewrite']]} />
+            <Features items={[[true, 'Passthrough Verified link & badge'], [true, 'Integrity check for employers'], [true, 'Bonus: tailored cover letter'], [false, 'No rewrite']]} />
             {locked && <p className="text-[12.5px] font-bold text-amber-800 mb-2.5">Unlocks at a score of {badgeThreshold}+</p>}
             {locked
               ? <span aria-disabled="true" className="mt-auto block text-center font-semibold rounded-lg border border-gray-200 bg-gray-100 text-gray-500 px-4 py-2.5 cursor-not-allowed">Needs a score of {badgeThreshold}+</span>
@@ -130,6 +130,7 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             {premium > 0 && <p className="text-xs text-blue-800 bg-blue-100 rounded-lg px-2.5 py-2 mb-3.5">Only {fmtPrice(premium, currency)} more than Fix only — and it adds the link employers can check.</p>}
             <Features items={[
               [true, 'AI rewrite, re-scored against the job'], [true, 'ATS-ready .docx + PDF'], [true, 'Passthrough Verified link & badge'],
+              [true, 'Bonus: tailored cover letter'],
               [true, `${maxFixRetries} free retries + a free-credit safety net`],
             ]} />
             <a href="#scan-form" className="mt-auto block text-center font-semibold rounded-lg bg-blue-700 text-white px-4 py-3 hover:bg-blue-800 shadow">Fix &amp; verify my resume →</a>
@@ -139,12 +140,20 @@ export default function PricingSection({ pricing, byTier, refresh, clockOffsetMs
             <div className="text-sm font-semibold text-gray-500 mb-1.5">Fix only</div>
             <Price tier={plain} currency={currency} />
             <p className="text-sm text-gray-500 mb-4">Just the rewrite.</p>
-            <Features items={[[true, 'AI rewrite + ATS .docx + PDF'], [true, 'Any starting score'], [false, 'No verification link']]} />
+            <Features items={[[true, 'AI rewrite + ATS .docx + PDF'], [true, 'Bonus: tailored cover letter'], [true, 'Any starting score'], [false, 'No verification link']]} />
             <a href="#scan-form" className={ghostBtn}>Fix only</a>
           </div>
         </div>
 
-        <div className="mt-8 grid sm:grid-cols-[auto_1fr] gap-4 items-start bg-blue-700 text-white rounded-xl p-6">
+        <div className="mt-8 flex flex-col sm:flex-row sm:items-center gap-3 sm:gap-4 bg-white border-2 border-dashed border-blue-300 rounded-xl p-5">
+          <span className="self-start font-mono text-[11px] font-bold uppercase tracking-wide bg-blue-700 text-white px-2 py-0.5 rounded whitespace-nowrap">New · bonus</span>
+          <div>
+            <h3 className="text-lg font-bold text-gray-900">A tailored cover letter comes with every paid plan.</h3>
+            <p className="text-sm text-gray-600">Written from your delivered resume and the job you scanned against. Pick the tone and who it&apos;s addressed to, edit it, then download it as .docx or PDF. No extra charge.</p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid sm:grid-cols-[auto_1fr] gap-4 items-start bg-blue-700 text-white rounded-xl p-6">
           <div aria-hidden="true" className="w-11 h-11 rounded-xl bg-white/15 flex items-center justify-center">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M12 2.5 4.5 5.3v5.4c0 4.6 3.2 8.2 7.5 10.8 4.3-2.6 7.5-6.2 7.5-10.8V5.3L12 2.5Z" stroke="#fff" strokeWidth="1.8" strokeLinejoin="round" /><path d="m8.6 12 2.4 2.4 4.4-4.6" stroke="#fff" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </div>

@@ -154,6 +154,13 @@ describe('pricing section', () => {
     expect(screen.queryByRole('timer')).toBeNull()
     expect(screen.getByText(/Only \$10 more than Fix only/)).toBeInTheDocument()   // 49 − 39: the framing is true at standard prices too
   })
+  it('says the cover letter bonus comes with every paid plan, on each paid card and in the bonus strip and FAQ', async () => {
+    renderHome()
+    await ready()
+    expect(screen.getAllByText('Bonus: tailored cover letter')).toHaveLength(3)   // Credential only, Full fix, Fix only; not the free card
+    expect(screen.getByText(/A tailored cover letter comes with every paid plan/)).toBeInTheDocument()
+    expect(document.getElementById('faq-coverletter')).toBeTruthy()
+  })
   it('falls back to the standard prices when /api/pricing is down', async () => {
     pricingData = new Error('down')
     renderHome()

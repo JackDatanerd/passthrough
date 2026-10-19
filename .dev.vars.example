@@ -22,6 +22,10 @@ PAYSTACK_SECRET_KEY=sk_test_...
 # Resend (replaces SMTP/Nodemailer)
 RESEND_API_KEY=re_...
 
+npx wrangler secret put PAYSTACK_PUBLIC_KEY
+npx wrangler secret put PAYSTACK_SECRET_KEY
+
+
 # Local-only overrides (optional — leave unset to use wrangler.toml [vars])
 # FRONTEND_URL=http://localhost:3000
 # PAYSTACK_CALLBACK_URL=http://localhost:3000/payment/success

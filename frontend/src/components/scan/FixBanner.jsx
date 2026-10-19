@@ -190,7 +190,7 @@ export default function FixBanner({
           <OfferCard
             title="Fix only"
             price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-            points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [false, 'No Verified credential']]}
+            points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
           >
             <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
               Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />
@@ -261,7 +261,7 @@ export default function FixBanner({
             featured
             title="Verified credential"
             price={<PriceTag tier="BADGE" byTier={byTier} currency={currency} />}
-            points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], [false, 'No rewrite']]}
+            points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], [true, 'Bonus: tailored cover letter'], [false, 'No rewrite']]}
           >
             <Button onClick={() => onPay('BADGE')} disabled={payLoading} loading={payingTier === 'BADGE'}>
               Verified Credential only — <PriceTag tier="BADGE" byTier={byTier} currency={currency} />
@@ -271,7 +271,7 @@ export default function FixBanner({
         <OfferCard
           title="Fix only"
           price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
-          points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [false, 'No Verified credential']]}
+          points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
         >
           <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
             Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />

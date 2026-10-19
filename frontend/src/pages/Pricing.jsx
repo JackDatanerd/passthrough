@@ -155,7 +155,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('BADGE')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Score {badgeThreshold}+ required (for an uploaded file, its ATS-formatted version must reach it too) · no content changes</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF'].map(f => (
+              {['Passthrough Verified credential','Employer-checkable verification','Cryptographic integrity check','ATS-optimised .docx','Beautiful PDF','Bonus: tailored cover letter'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -173,7 +173,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('FIX_PLAIN')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score · no verification link</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF',`${maxFixRetries} free retries toward the ${badgeThreshold}+ target score`,'No Passthrough Verified link — just your documents'].map(f => (
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Bonus: tailored cover letter',`${maxFixRetries} free retries toward the ${badgeThreshold}+ target score`,'No Passthrough Verified link — just your documents'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
@@ -194,7 +194,7 @@ export default function Pricing() {
             <PriceBlock tier={byTier('FIX')} currency={pricing?.currency} />
             <p className="text-sm text-gray-500 mb-6">Any score</p>
             <ul className="flex flex-col gap-2 text-sm text-gray-600 mb-8 flex-1">
-              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(f => (
+              {['Full AI rewrite','ATS-optimised .docx','Beautiful designer PDF','Bonus: tailored cover letter','Passthrough Verified credential','Cryptographic integrity check','Employer-checkable verification'].map(f => (
                 <li key={f} className="flex items-start gap-2">
                   <span className="text-green-500 mt-0.5">✓</span>{f}
                 </li>
