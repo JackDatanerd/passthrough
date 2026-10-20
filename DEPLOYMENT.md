@@ -1110,3 +1110,14 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #     ink picked from the PERSON, not the scan, so one person's documents read as a set. No model is involved.
 #   * To change the look later, ADD a version (new design.service.js branch, new default, raise the check constraint) - never edit version 1 or 2.
 #     tests/docTemplate.test.js pins version 1 and checks the migration default equals design.service.js LATEST_LOOK.
+
+# DOCUMENT LOOK 3 — THE SIGNATURE PDF (migration 0102 — deploy the Worker FIRST, then apply the migration; EXPECTED_SCHEMA_VERSION is now 102.)
+#   * Look 3 is a new PDF skeleton (src/services/pdfSignature.service.js): the credential as a designed seal in the header, role / employer / dates
+#     as three levels, a distinct header and heading treatment for each of the four presets, and spacing that follows how full the page is.
+#     Looks 1 and 2 still render on the ORIGINAL skeleton (pdfTemplate.service.js, byte-for-byte; tests/docLook3.test.js pins it), so no document already
+#     delivered changes. The Word file is not part of look 3: it is the ATS-first file and keeps its layout.
+#   * scans.doc_template_version: existing scans keep 1 (or 2 for scans created since 0101); new scans get 3 (the column default).
+#   * ORDER: an older Worker does not know the value 3 and reads it as 1, so apply the migration only after this Worker is live.
+#   * IMPORTANT: scan.controller.js passes the scan's look to all seven render sites (`version: scan.docTemplateVersion` / `row.doc_template_version`).
+#     A copy of that file taken before 4da7fee drops those arguments and silently renders every document on look 1 again -
+#     tests/docTemplate.test.js ("every render site in the scan controller passes the scan's version") fails if that ever happens.

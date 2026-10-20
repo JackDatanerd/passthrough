@@ -1,0 +1,36 @@
+DOCUMENT LOOK 3 — the signature PDF (resume and cover letter)
+Base: d401683. Migration 0102 (additive, idempotent). EXPECTED_SCHEMA_VERSION 102. Deploy the Worker first, then apply the migration.
+
+REGRESSION FOUND AND FIXED FIRST
+- The Scan/ATS push (2124535) shipped a scan.controller.js that dropped `version: scan.docTemplateVersion` (and the row.* form) from ALL SEVEN
+  getDesignTokens call sites that 4da7fee had added. Effect in production: look versioning was inert - every document, including those of scans
+  stamped look 2, was drawn on look 1 again. Restored at all seven sites. tests/docTemplate.test.js already guards this; it failed on the fresh clone.
+  (That session worked from a copy of scan.controller.js older than 4da7fee. Anything else it touched in that file should be re-checked the same way.)
+
+WHAT WAS WRONG WITH THE LOOK
+Rendered and looked at: tidy and ATS-safe but not covetable. The credential (what the customer pays for) was a tiny grey line; the four
+presets differed only in colour; role, employer and city ran together in one bold line; the left-edge stripe read as a glitch; a short resume left the
+bottom third bare.
+
+WHAT CHANGED (look 3, src/services/pdfSignature.service.js; looks 1 and 2 untouched)
+1. Credential seal in the header: outlined (tinted for Creative) mark with a drawn check, "PASSTHROUGH VERIFIED" and the verify address printed in it. A
+   Scan Report (not Verified) gets a plain grey seal and honest wording. No seal when there is no link.
+2. Role (bold) / employer (ink colour, semibold) · location (muted) / dates (right, tabular figures). DOM order stays role, employer, dates.
+3. Four different designs on one skeleton:
+     Traditional  centred letterhead, double rule, serif small caps-style headings with a hairline
+     Professional left letterhead, hairline, sans headings with a short accent bar
+     Modern       top rule, square-marker headings running into a rule
+     Creative     large serif name with accent bar, tinted pill seal, serif title-case headings, italic employer
+4. Spacing follows the page: up to +30% room for a short resume (docFit.airinessFor), tightened when just over a page (look-3 capacity calibrated by
+   rendering 96 resumes at both paper sizes: capacity 48 A4 / 44.9 Letter, squeeze 12%).
+5. Symmetric margins; the edge stripe is gone; bullets and dates use the ink; cover letter uses the same letterhead.
+6. ATS safety is by construction: one column, no tables, images or scripts, real text, parser order name -> contact -> credential.
+7. design.service.js: LATEST_LOOK 3 (same presets and the same ink a person already had); migration 0102 widens the check to 1..3 and defaults new scans to 3.
+
+NOT CHANGED
+- The Word file (ATS-first; its layout is deliberately plain). Looks 1 and 2. The credential wording, links and verification page.
+
+CAVEAT
+- Rendered and checked with WeasyPrint here, not the production browser renderer; spacing may differ slightly. Capacity numbers are set at the safe end.
+
+Tests: tests/docLook3.test.js (new), tests/migrations.0102.pglite.test.js (new), tests/docTemplate.test.js and migrations.0101 test updated for look 3.

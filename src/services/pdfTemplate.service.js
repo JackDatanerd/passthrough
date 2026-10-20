@@ -84,6 +84,9 @@ function contactBlock(d) {
 }
 
 function buildResumeHTML(data, designTokens, verificationUrl, { verified = true } = {}) {
+  // Look 3 (migration 0102) is a different skeleton in its own file; looks 1 and 2 are rendered by the code below, unchanged, so a
+  // document delivered with them comes back exactly as it left.
+  if (Number(designTokens?.version) >= 3) return require('./pdfSignature.service').buildSignatureResumeHTML(data, designTokens, verificationUrl, { verified }, helpers)
   const d = data || {}
   const palette = designTokens?.palette || { bg: '#FFFFFF', primary: '#1E40AF', accent: '#E2E8F0', text: '#1F2937' }
   const fonts   = designTokens?.fonts || {}
@@ -226,6 +229,7 @@ ${summary ? section('Summary', summary) : ''}${body}
 // `text` is the plain letter (blank-line-separated blocks, line breaks kept inside a block); `date` is already formatted.
 // Pure and escaped like buildResumeHTML — no scripts, no images, no remote resources.
 function buildCoverLetterHTML(text, data, designTokens, { date = null } = {}) {
+  if (Number(designTokens?.version) >= 3) return require('./pdfSignature.service').buildSignatureCoverLetterHTML(text, data, designTokens, { date }, helpers)
   const d = data || {}
   const palette = designTokens?.palette || { bg: '#FFFFFF', primary: '#1E40AF', accent: '#E2E8F0', text: '#1F2937' }
   const fonts   = designTokens?.fonts || {}
@@ -264,5 +268,8 @@ ${date ? `<p class="date">${esc(date)}</p>` : ''}
 ${body}
 </div></body></html>`
 }
+
+// What the look-3 builders share with this file (escaping, links, fonts) - one definition of each, so a fix to escaping lands in both.
+const helpers = { esc, safeHref, list, str, cssStr, ruleColor, fontStacks, contactItem }
 
 module.exports = { buildResumeHTML, buildCoverLetterHTML }

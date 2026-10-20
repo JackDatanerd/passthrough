@@ -14,28 +14,35 @@ const CPL_BULLET = 98    // ...and per indented bullet line
 // the PDF capacity is set at the low, safe end: compacting a little early costs nothing, compacting too late leaves a spill.
 const CAPACITY_A4 = { docx: 58.5, pdf: 48 }
 const SQUEEZE_LIMIT = { docx: 1.08, pdf: 1.17 } // beyond this much overflow a second page is the honest answer
+// Look 3 (the signature PDF skeleton). Measured like the figures above: resumes of many sizes rendered, real page counts against the estimate.
+const SIG = { header: 4.4, section: 3.0, entryHead: 2.3, entryGap: 0.9, projectHead: 1.7 }
+const CAPACITY_A4_SIG = { pdf: 48 }
+const SQUEEZE_LIMIT_SIG = { pdf: 1.12 }
 const str = v => (typeof v === 'string' ? v.trim() : '')
 const arr = v => (Array.isArray(v) ? v : [])
 const wrapLines = (s, cpl) => { const t = str(s); return t ? Math.max(1, Math.ceil(t.length / cpl)) : 0 }
 
-function estimateLoad(d) {
+// `look` 3 is the signature skeleton (pdfSignature.service.js): a taller header (name, contact, credential seal), roomier section headings
+// and an entry head of TWO lines (role and dates, then employer) where looks 1 and 2 print one. Anything else is the original estimate.
+function estimateLoad(d, look = 1) {
   d = d && typeof d === 'object' ? d : {}
-  let n = 3.2                                                       // name, contact line, credential line
-  const section = rows => (rows > 0 ? 2.5 + rows : 0)               // heading + its rule and margins
+  const sig = Number(look) >= 3
+  let n = sig ? SIG.header : 3.2                                    // name, contact line, credential line
+  const section = rows => (rows > 0 ? (sig ? SIG.section : 2.5) + rows : 0)   // heading + its rule and margins
   n += section(wrapLines(d.summary, CPL_FULL))
   const entries = (items, headKeys, bulletKey = 'bullets') => {
     let rows = 0
     for (const it of arr(items)) {
       if (!it || typeof it !== 'object') continue
-      rows += (headKeys.some(k => str(it[k])) ? 1.4 : 0)
+      rows += (headKeys.some(k => str(it[k])) ? (sig ? SIG.entryHead : 1.4) : 0)
       for (const b of arr(it[bulletKey])) rows += wrapLines(b, CPL_BULLET)
       if (str(it.details)) rows += wrapLines(it.details, CPL_FULL)
-      rows += 0.5
+      rows += sig ? SIG.entryGap : 0.5
     }
     return rows
   }
   n += section(entries(d.experience, ['title', 'company']))
-  n += section(arr(d.projects).reduce((s, p) => s + (p && typeof p === 'object' ? 1.4 + wrapLines(p.description, CPL_BULLET) + (str(p.link) ? 1 : 0) + 0.5 : 0), 0))
+  n += section(arr(d.projects).reduce((s, p) => s + (p && typeof p === 'object' ? (sig ? SIG.projectHead : 1.4) + wrapLines(p.description, CPL_BULLET) + (str(p.link) ? 1 : 0) + 0.5 : 0), 0))
   n += section(entries(d.education, ['degree', 'institution']))
   n += section(wrapLines(arr(d.skills).map(str).filter(Boolean).join(' · '), CPL_FULL))
   n += section(arr(d.certifications).reduce((s, c) => s + wrapLines(c, CPL_BULLET), 0))
@@ -46,14 +53,23 @@ function estimateLoad(d) {
   return n
 }
 
-// The printable height of Letter is 94% of A4's, so its capacity is too.
-const capacityFor = (paper, target = 'pdf') => (CAPACITY_A4[target] || CAPACITY_A4.pdf) * (paper === 'letter' ? 0.935 : 1)
+// The printable height of Letter is 94% of A4's, so its capacity is too. `look` 3 has its own measured capacity (CAPACITY_A4_SIG).
+const capacityFor = (paper, target = 'pdf', look = 1) => ((Number(look) >= 3 && target !== 'docx' ? CAPACITY_A4_SIG.pdf : (CAPACITY_A4[target] || CAPACITY_A4.pdf)) * (paper === 'letter' ? 0.935 : 1))
 
-/** densityFor(data, 'a4'|'letter', 'pdf'|'docx') -> 'normal' | 'compact' (paper uses design.service.js's lower-case keys) */
-function densityFor(data, paper = 'letter', target = 'pdf') {
+/** densityFor(data, 'a4'|'letter', 'pdf'|'docx', look) -> 'normal' | 'compact' (paper uses design.service.js's lower-case keys) */
+function densityFor(data, paper = 'letter', target = 'pdf', look = 1) {
   const t = target === 'docx' ? 'docx' : 'pdf'
-  const load = estimateLoad(data), cap = capacityFor(paper, t)
-  return load > cap && load <= cap * SQUEEZE_LIMIT[t] ? 'compact' : 'normal'
+  const sig = Number(look) >= 3 && t === 'pdf'
+  const load = estimateLoad(data, sig ? 3 : 1), cap = capacityFor(paper, t, sig ? 3 : 1)
+  return load > cap && load <= cap * (sig ? SQUEEZE_LIMIT_SIG.pdf : SQUEEZE_LIMIT[t]) ? 'compact' : 'normal'
+}
+
+/** How much room a short page is given, as a spacing multiplier: 1 once a page is mostly full, up to 1.3 for a nearly empty one. */
+function airinessFor(load, cap) {
+  const r = Number(load) / Number(cap)
+  if (!Number.isFinite(r) || r >= 0.85) return 1
+  if (r <= 0.5) return 1.3
+  return Math.round((1 + (0.85 - r) / 0.35 * 0.3) * 100) / 100
 }
 
 // ── cover letter ────────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -72,4 +88,4 @@ function letterDensityFor(text, paper = 'letter', target = 'pdf') {
   return words > cap && words <= cap * t.limit ? 'compact' : 'normal'
 }
 
-module.exports = { letterDensityFor, LETTER_WORDS, estimateLoad, densityFor, capacityFor, CAPACITY_A4, SQUEEZE_LIMIT }
+module.exports = { airinessFor, letterDensityFor, LETTER_WORDS, estimateLoad, densityFor, capacityFor, CAPACITY_A4, SQUEEZE_LIMIT }

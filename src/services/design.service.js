@@ -102,8 +102,11 @@ const isUkSpelling = jdText => (String(jdText || '').match(/\b(?:organis\w+|prog
 // edited once a document has been delivered with them - change the look by adding a version.
 //   1  the original free draw from PALETTES x FONTS (frozen below: PALETTES, FONTS and INDUSTRY above are version 1's tables,
 //      and tests/docTemplate.test.js pins what they produce)
-//   2  the signature presets: one fixed skeleton (pdfTemplate.service.js / docx.service.js), a handful of designed looks
-const LATEST_LOOK = 2
+//   2  the signature presets: four designed inks and type pairings on the original skeleton (pdfTemplate.service.js)
+//   3  the signature skeleton: the same four presets, but the PDF is drawn by pdfSignature.service.js - a designed header with the
+//      credential seal, role / employer / dates hierarchy, a distinct header and heading treatment per preset, and spacing that
+//      follows how full the page is. Looks 1 and 2 still render on the original skeleton, so nothing delivered moves.
+const LATEST_LOOK = 3
 
 // Version 2. A preset fixes the type (pairing and size) and the range of inks; the role category - already detected from the
 // posting and stored on the scan - decides which preset a document gets, so nothing here is random per document and nothing
@@ -135,17 +138,19 @@ function resolveLook(v) {
 
 function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null, version = 1 } = {}) {
   const look = resolveLook(version)
-  if (look === 2) {
+  if (look >= 2) {
+    // Looks 2 and 3 share the presets (the ink and type are the same); look 3 differs in the skeleton the PDF is drawn on.
     const id = presetFor(industry)
     const preset = PRESETS[id]
     const palettes = preset.palettes.map(pid => PALETTES.find(p => p.id === pid))
     const font = FONTS.find(f => f.id === preset.font)
     return {
+      // The seed stays "look2" for look 3: a person keeps the ink their earlier documents were set in.
       palette: palettes[djb2(`look2:${id}:${userId || scanId || 'anon'}`) % palettes.length],
       fonts:   font,
       paper:   resolvePaper(paper, jdText),
       preset:  id,
-      version: 2
+      version: look
     }
   }
   // Version 1 - FROZEN. Do not edit this branch or the tables it reads.

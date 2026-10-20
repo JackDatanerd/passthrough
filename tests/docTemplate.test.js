@@ -45,8 +45,8 @@ describe('version 1 is frozen: a scan delivered before the column renders exactl
 
 describe('resolveLook', () => {
   it('keeps a known version and sends everything else to 1', () => {
-    expect([1, 2, '2', '1'].map(resolveLook)).toEqual([1, 2, 2, 1])
-    expect([undefined, null, 0, -1, 3, 1.5, NaN, 'x', {}].map(resolveLook)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1])
+    expect([1, 2, 3, '2', '1'].map(resolveLook)).toEqual([1, 2, 3, 2, 1])
+    expect([undefined, null, 0, -1, LATEST_LOOK + 1, 1.5, NaN, 'x', {}].map(resolveLook)).toEqual([1, 1, 1, 1, 1, 1, 1, 1, 1])
   })
 })
 
@@ -159,8 +159,8 @@ describe('migration 0101 and design.service.js agree', () => {
     expect(defaults.at(-1)).toBe(LATEST_LOOK)
   })
   it('the check constraint allows exactly the versions the code knows', () => {
-    const m = /doc_template_version between 1 and (\d+)/.exec(sql)
-    expect(Number(m[1])).toBe(LATEST_LOOK)
+    const all = [...sql.matchAll(/doc_template_version between 1 and (\d+)/g)].map(m => Number(m[1]))
+    expect(all.at(-1)).toBe(LATEST_LOOK)
   })
   it('the column is accounted for in the migration/mapper ledger (internal, never sent to the browser)', () => {
     const src = fs.readFileSync(path.join(root, 'src/lib/mappers.js'), 'utf8')

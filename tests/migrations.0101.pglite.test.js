@@ -30,7 +30,7 @@ beforeAll(async () => {
   for (const f of files.filter(f => f < MIG)) await db.exec(read(f))
   await db.exec(`insert into users (id, name, email, password_hash) values ('${U1}', 'U', 'u@x.co', 'h')`)
   await db.exec(`insert into scans (id, user_id, status) values ('${OLD}', '${U1}', 'FIX_DELIVERED')`)   // delivered before the column existed
-  for (const f of files.filter(f => f >= MIG)) await db.exec(read(f))
+  await db.exec(read(MIG))                                  // 0101 only: later look migrations have their own test
   await db.exec(`insert into scans (id, user_id, status) values ('${NEW}', '${U1}', 'COMPLETE_PASS')`)   // created afterwards, no version named
 }, 180000)
 afterAll(async () => { await db?.close() })

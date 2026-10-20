@@ -26,6 +26,7 @@ const LEDGER_NAMES = {
   99: '0099_partners_section4_round20',
   100: '0100_database_round5',
   101: '0101_doc_template_version',
+  102: '0102_doc_look_3',
 }
 
 module.exports = { LEDGER_NAMES }
