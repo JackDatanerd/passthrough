@@ -1101,3 +1101,12 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * prompt_outcome_rates is security_invoker; new letter_prompt_outcome_rates view; Admin -> Prompt Outcomes shows both.
 #   * set_updated_at / employer_leads_set_mailbox_key / lead_mailbox_key pin search_path; grant_upgrade_credit_once no longer burns its marker for a missing user.
 #   * /api/admin/health now notes a ledger row whose recorded NAME differs from the file this code expects for that version (a different file took the number).
+
+# SIGNATURE DOCUMENT LOOK (migration 0101 — apply BEFORE or AFTER this Worker, either order is safe; EXPECTED_SCHEMA_VERSION is now 101.)
+#   * scans.doc_template_version names the rules that colour and set the type of a scan's resume, cover letter and Word files. Every scan that
+#     exists keeps 1 (the original free draw, frozen); every scan created from now on gets 2 (the column default), so there is no insert-site change.
+#     A Worker that predates the column reads every scan as version 1, which is exactly what every existing row is.
+#   * Version 2 = four designed presets (Traditional, Professional, Modern, Creative) chosen from the role category already stored on the scan, with the
+#     ink picked from the PERSON, not the scan, so one person's documents read as a set. No model is involved.
+#   * To change the look later, ADD a version (new design.service.js branch, new default, raise the check constraint) - never edit version 1 or 2.
+#     tests/docTemplate.test.js pins version 1 and checks the migration default equals design.service.js LATEST_LOOK.

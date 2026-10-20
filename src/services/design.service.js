@@ -96,17 +96,69 @@ function paperForLocation(location) {
 function resolvePaper(explicit, jdText) { return cleanPaperChoice(explicit) || detectPaper(jdText) }
 const isUkSpelling = jdText => (String(jdText || '').match(/\b(?:organis\w+|programme\w*|colour\w*|centre\w*|specialis\w+|licence|behaviour\w*|analyse\w*|optimis\w+|prioritis\w+|judgement|whilst)\b/gi) || []).length >= 2
 
-function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null } = {}) {
+// ── Look versions ────────────────────────────────────────────────────────────────────────────────────────────────
+// A document's colours and type are re-derived every time it is rendered, so the rules that derive them are part of every
+// delivered file. They are therefore VERSIONED (scans.doc_template_version, migration 0101) and a version's rules are never
+// edited once a document has been delivered with them - change the look by adding a version.
+//   1  the original free draw from PALETTES x FONTS (frozen below: PALETTES, FONTS and INDUSTRY above are version 1's tables,
+//      and tests/docTemplate.test.js pins what they produce)
+//   2  the signature presets: one fixed skeleton (pdfTemplate.service.js / docx.service.js), a handful of designed looks
+const LATEST_LOOK = 2
+
+// Version 2. A preset fixes the type (pairing and size) and the range of inks; the role category - already detected from the
+// posting and stored on the scan - decides which preset a document gets, so nothing here is random per document and nothing
+// asks a model. Inside a preset the ink is chosen from the PERSON (their id), so one person's resume and cover letters, and
+// every scan they run, read as the same set, while two people in one field do not all share a colour.
+const PRESETS = {
+  // Law, finance, education: serif headings, restrained ink.
+  traditional:  { label: 'Traditional',  font: 'classic',   palettes: ['navy', 'slate', 'midnight', 'graphite', 'charcoal'] },
+  // The default: clean sans headings, calm blues and greens. Healthcare, operations, sales, product and anything undetected.
+  professional: { label: 'Professional', font: 'clean',     palettes: ['clinical', 'ocean', 'teal', 'navy', 'sage', 'slate'] },
+  // Engineering and data: a tighter technical sans.
+  modern:       { label: 'Modern',       font: 'tech',      palettes: ['ocean', 'teal', 'midnight', 'violet', 'charcoal'] },
+  // Design and marketing: serif headings, warmer ink.
+  creative:     { label: 'Creative',     font: 'editorial', palettes: ['plum', 'wine', 'coral', 'terracotta', 'rose', 'copper'] },
+}
+const PRESET_BY_CATEGORY = {
+  legal: 'traditional', finance: 'traditional', education: 'traditional',
+  software_engineering: 'modern', data_science: 'modern',
+  design: 'creative', marketing: 'creative',
+  healthcare: 'professional', operations: 'professional', sales: 'professional', product_management: 'professional',
+}
+const presetFor = industry => PRESET_BY_CATEGORY[industry] || 'professional'
+
+// The version a stored value means: 1 (the original look) for a scan from before the column, a missing or unknown value.
+function resolveLook(v) {
+  const n = Number(v)
+  return Number.isInteger(n) && n >= 1 && n <= LATEST_LOOK ? n : 1
+}
+
+function getDesignTokens(userId, scanId, industry = 'default', { jdText = '', paper = null, version = 1 } = {}) {
+  const look = resolveLook(version)
+  if (look === 2) {
+    const id = presetFor(industry)
+    const preset = PRESETS[id]
+    const palettes = preset.palettes.map(pid => PALETTES.find(p => p.id === pid))
+    const font = FONTS.find(f => f.id === preset.font)
+    return {
+      palette: palettes[djb2(`look2:${id}:${userId || scanId || 'anon'}`) % palettes.length],
+      fonts:   font,
+      paper:   resolvePaper(paper, jdText),
+      preset:  id,
+      version: 2
+    }
+  }
+  // Version 1 - FROZEN. Do not edit this branch or the tables it reads.
   const seed     = djb2((userId || 'anon') + scanId)
   const allowed  = INDUSTRY[industry] || null
   const filtered = allowed ? PALETTES.filter(p => allowed.includes(p.id)) : PALETTES
   return {
     palette: filtered[seed % filtered.length],
-    // A second, independent hash for the font: indexing both lists with the SAME number made the
-    // pair follow gcd(palettes, fonts) — only a fraction of palette/font combinations ever occurred.
+    // A second, independent hash for the font: indexing both lists with the SAME number made
+    // the pair follow gcd(palettes, fonts) — only a fraction of palette/font combinations ever occurred.
     fonts:   FONTS[djb2(`font:${userId || 'anon'}${scanId}`) % FONTS.length],
     paper:   resolvePaper(paper, jdText)
   }
 }
 
-module.exports = { getDesignTokens, detectPaper, paperForLocation, resolvePaper, cleanPaperChoice, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }
+module.exports = { getDesignTokens, resolveLook, presetFor, LATEST_LOOK, PRESETS, PRESET_BY_CATEGORY, PALETTES, FONTS, detectPaper, paperForLocation, resolvePaper, cleanPaperChoice, isUkSpelling, PAPER: { letter: { format: 'Letter', css: 'Letter', width: '8.5in', minHeight: '9.85in', docx: { width: 12240, height: 15840 } }, a4: { format: 'A4', css: 'A4', width: '210mm', minHeight: '268mm', docx: { width: 11906, height: 16838 } } } }

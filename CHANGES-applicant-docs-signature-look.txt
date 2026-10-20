@@ -1,0 +1,31 @@
+SIGNATURE DOCUMENT LOOK (applicant documents) — one fixed skeleton, four designed presets, versioned per scan
+Base: 40274ee. Migration 0101 (additive, idempotent; safe to apply before OR after the Worker). EXPECTED_SCHEMA_VERSION 101.
+
+What was true before
+- The PDF and Word layout is already one fixed skeleton (pdfTemplate.service.js / docx.service.js; the model-written layout is off by default).
+  What varied was the LOOK: getDesignTokens drew a palette (19) and a type pairing (8) from a hash of the user and scan ids, so two
+  scans of one person came out in different colours, and only five role categories were limited to restrained inks. Of the 8 "pairings"
+  only serif-or-sans reaches the files.
+- The look is not stored; it is re-derived on every render. Changing the rules would therefore silently re-colour every document already
+  delivered the next time it was regenerated, re-downloaded or used for a cover letter.
+
+What changed
+1. scans.doc_template_version (0101): every scan that exists keeps 1 (the original look, frozen); every scan created afterwards gets 2
+   (the column default - no insert-site change). NOT NULL, check 1..2. Mapped as docTemplateVersion (server-only, never sent to the browser).
+2. design.service.js: getDesignTokens takes { version }. Version 1 is the original code, untouched, and pinned by golden tests produced
+   from the pre-change file. Version 2 = four presets, chosen from the role category already stored on the scan (no model, no randomness):
+     Traditional  (legal, finance, education)                         serif headings, navy / slate / midnight / graphite / charcoal
+     Professional (healthcare, operations, sales, product, anything else)  sans headings, clinical / ocean / teal / navy / sage / slate
+     Modern       (software engineering, data science)                sans, tighter technical type, ocean / teal / midnight / violet / charcoal
+     Creative     (design, marketing)                                 serif headings, plum / wine / coral / terracotta / rose / copper
+   Inside a preset the ink is picked from the PERSON's id (not the scan), so one person's resume, cover letters and later scans read as one
+   set while two people in a field do not all share a colour. Every preset ink is at least 4.5:1 for headings and 7:1 for body text.
+3. All seven render sites in scan.controller.js (draft / delivered / regenerate / cover letter PDF and DOCX / badge / fix retry) pass the
+   scan's version, so a document is always rendered with the rules it was delivered with. The saved-profile download has no scan and keeps its neutral default.
+4. DEPLOYMENT.md note; migrationLedger.js entry.
+
+Not changed (deliberately)
+- The credential line, footer, page rules, ATS-safe structure: the skeleton is the signature and is untouched.
+- No annual redesign: a new look is a new VERSION (new branch + new default + raised constraint); versions already delivered never change.
+
+Tests: tests/docTemplate.test.js (31), tests/migrations.0101.pglite.test.js (5). Full backend suite: 225 of 228 files pass; the 3 that fail (database.round5 B4, employer-leads.controller R6-G3, scan.ats.round10.text) fail identically on the untouched base.

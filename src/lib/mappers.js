@@ -157,6 +157,8 @@ function scanRowToCamel(row) {
     verifiedAt:          row.verified_at,
     roleCategory:        row.role_category,
     seniorityLevel:      row.seniority_level,
+    // Which document look rules render this scan's files (migration 0101): 1 for every scan from before the column. Internal - not in CLIENT_SCAN_FIELDS.
+    docTemplateVersion:  row.doc_template_version ?? 1,
     userId:              row.user_id,
     // sha256 of the bearer token, never the token itself (migration 0045)
     anonTokenHash:       row.anon_token,
@@ -190,6 +192,7 @@ const SERVER_ONLY_SCAN_FIELDS = [
   'anonTokenHash',                                       // capability secret at rest (migration 0045)
   'fixJobLockUntil', 'fixCreditRound', 'upgradeCreditGrantedAt', 'fixErrorRecoveries', 'badgeUpgradedAt',   // job bookkeeping (migrations 0026 / 0057 / 0089)
   'scanSlotSpentAt',                                     // when the free-scan slot was spent — refund bookkeeping (0072)
+  'docTemplateVersion',                                  // which document look rules render this scan's files (0101) — the browser never needs it
 ]
 const CLIENT_SCAN_FIELDS = [
   'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',

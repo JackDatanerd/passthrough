@@ -1126,7 +1126,7 @@ function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resu
 // look never fails a delivery.
 function lookFor(scan, id) {
   try {
-    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
+    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, version: scan.docTemplateVersion })
     return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading), text: t?.palette?.text }
   } catch (_) { return {} }
 }
@@ -1379,7 +1379,7 @@ async function updateDeliveredResume(ctx) {
   let resumeHash, pdfKey, pdfHash
   try {
     resumeHash = await badgeService.hashBytes(docxBytes)
-    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice })
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice, version: scan.docTemplateVersion })
     ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
   } catch (renderErr) {
     await deleteSuperseded(ctx.env, [docxKey], [])
@@ -1575,7 +1575,7 @@ async function loadCoverLetter(ctx) {
   const date = paper === 'a4'
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
-  const tokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })
+  const tokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, version: row.doc_template_version })
   const look = { accent: tokens?.palette?.primary, serif: isSerifHeading(tokens?.fonts?.heading), text: tokens?.palette?.text }
   return { row, data, paper, date, chosenPaper, look }
 }
@@ -1597,7 +1597,7 @@ async function downloadCoverLetter(ctx) {
 async function downloadCoverLetterPdf(ctx) {
   const { res, row, data, paper, date, chosenPaper } = await loadCoverLetter(ctx)
   if (res) return res
-  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, paper: chosenPaper })
+  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, paper: chosenPaper, version: row.doc_template_version })
   let pdfBytes
   try {
     const html = pdfTemplate.buildCoverLetterHTML(row.cover_letter_text, data, designTokens, { date })
@@ -2658,7 +2658,7 @@ async function regeneratePdf(ctx) {
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
   const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
   const version = cryptoLib.randomToken(6)
   const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
   if (!pdfKey) {
@@ -3306,7 +3306,7 @@ async function generateFixRun(env, supabase, scanId) {
     })
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
@@ -3566,7 +3566,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: true })
 
     // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —
