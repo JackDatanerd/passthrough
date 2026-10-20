@@ -1,0 +1,22 @@
+Partners / referral program - Section 4, round 23
+
+BUGS
+1. submitPayoutDetails: a case-only correction (e.g. account name capitals) returned "saved" but stored nothing. It is now stored,
+   with no hold restart and no alerts (exact whitespace-collapsed, case-sensitive comparison decides "cosmetic").
+2. AdminPartners: the terms-notice count and the "Terms not accepted" filter counted ENDED partners, whom the server never emails.
+3. referral.service canonicalEmail: "+x@d" and "+y@d" both collapsed to "@d" and matched as the same buyer. A +tag is now only
+   stripped when a real local part remains.
+4. PartnerDashboard PayoutStatement: a payout of exactly 2,000 rows was reported as truncated; it now trusts the server total.
+
+GAPS
+G1. GET /partners no longer carries full account numbers / tax IDs (masked). The payout-run CSV reads them from the new
+    step-up route GET /partners/payout-export (audited as partner.payout_run_exported).
+G2. sweepPayoutDue: one follow-up owner alert when more commission becomes ready after the first alert for a cycle
+    (hold expired, details added). The sent-marker now stores what the first alert reported.
+G3. A referral code's text can be renamed (admin, step-up). Buyers (users.referred_by_code) and payments follow; undone if that
+    fails; 409 if taken; refused for removed partners; partner is emailed; old links stop working (stated in the UI).
+G4. Sign-ups on a code card are labelled "last 30 days" (partner dashboard and admin).
+
+TESTS: tests/partners.round23.test.js, frontend/tests/partnersRound23.test.jsx, plus updated/added cases in
+partners.controller, round7, round10, round11 and adminPartners.round13.
+No migration needed.

@@ -641,13 +641,17 @@ async function sweepPayoutDue(env, supabase) {
     if (!env || !env.OWNER_ALERT_EMAIL || !env.RATE_LIMIT_KV) return out
     const closed = recentCycles(2)[1]
     const key = `partner-payout-due:${closed.key}`
-    // Round 15 (bug): the marker used to be written even when nothing was ready yet. With COMMISSION_HOLD_DAYS > 0 the
-    // closed cycle's commission only becomes payable days later, so the one alert per cycle never fired. A "nothing ready"
-    // sweep now leaves only a short re-check marker (keeps the hourly cost down); only a sent alert closes the cycle.
     const checkedKey = `partner-payout-due-checked:${closed.key}`
-    if (await referralService.keySeen(env, key)) return out
     if (await referralService.keySeen(env, checkedKey)) return out
-    // Round 15 (bug): PAUSED partners were left out, but the terms (§7) say commission earned before a pause is still paid.
+    // Round 23: the value stored with the sent-marker is what the first alert reported, so a later sweep can tell when MORE
+    // became ready (a hold expired, a partner added payout details) and send one follow-up instead of staying silent.
+    const sentRaw = await referralService.keyGet(env, key)
+    let prev = null
+    if (sentRaw) {
+      try { prev = JSON.parse(sentRaw) } catch (_) { prev = null }
+      if (!prev || typeof prev.readyCents !== 'number') return out     // marker from before follow-ups: nothing more to do
+    }
+
     const { data: partners, error } = await supabase.from('partners').select('id, email, payout_method')
     if (error) throw error
     const live = (partners || []).filter(p => !isRemovedEmail(p.email))
@@ -663,8 +667,21 @@ async function sweepPayoutDue(env, supabase) {
       ready++; readyCents += r.readyToPayCents
     }
     out.ready = ready; out.readyCents = readyCents
-    if (ready > 0 || noDetails > 0) {
-      const cur = c.activeCurrency(env)
+    const cur = c.activeCurrency(env)
+    if (prev) {
+      if (readyCents > prev.readyCents) {
+        const more = await emailService.sendOwnerAlert(env, `More partner payouts are now ready (${closed.label})`,
+          `Since the first alert for cycle ${closed.label}, more commission became payable (a hold expired or a partner added payout details).\n` +
+          `ready to pay now: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur} (was ${(prev.readyCents / 100).toFixed(2)} ${cur})\n` +
+          (noDetails ? `ready but no payout details yet: ${noDetails} partner(s), ${(noDetailsCents / 100).toFixed(2)} ${cur}\n` : '') +
+          `Open Admin -> Partners -> Run payouts.`, { dedupeKey: `${closed.key}:more:${readyCents}` })
+        if (more !== false) {
+          out.sent = true
+          await referralService.keyMark(env, key, 20 * 24 * 3600, JSON.stringify({ ready, readyCents }))
+        } else return out
+      }
+      await referralService.keyMark(env, checkedKey, 6 * 3600)
+    } else if (ready > 0 || noDetails > 0) {
       const alertResult = await emailService.sendOwnerAlert(env, `Partner payouts are ready to run (${closed.label})`,
         `Cycle ${closed.label} has closed.\n` +
         `ready to pay: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur}\n` +
@@ -673,12 +690,37 @@ async function sweepPayoutDue(env, supabase) {
         `Open Admin -> Partners -> Run payouts.`, { dedupeKey: closed.key })
       out.sent = alertResult !== false
       if (!out.sent) return out            // not marked: the next hourly sweep tries again
-      await referralService.keyMark(env, key, 20 * 24 * 3600)
+      await referralService.keyMark(env, key, 20 * 24 * 3600, JSON.stringify({ ready, readyCents }))
+      await referralService.keyMark(env, checkedKey, 6 * 3600)
     } else {
       await referralService.keyMark(env, checkedKey, 6 * 3600)
     }
   } catch (err) { console.error('sweepPayoutDue:', err.message) }
   return out
+}
+
+// Round 23: the full payout details of every partner who is payable right now, for the payout-run CSV. It is the only
+// bulk read of full account numbers / tax IDs, so the route puts it behind the admin step-up.
+async function adminPayoutRunExport(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data, error } = await supabase.from('partners').select('*').not('payout_method', 'is', null)
+  if (error) throw error
+  const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
+  const holdDays = holdDaysFor(ctx.env), minPayout = minPayoutFor(ctx.env), currency = c.activeCurrency(ctx.env)
+  const rows = []
+  for (const row of data || []) {
+    if (isRemovedEmail(row.email)) continue
+    const ledger = ledgerByPartner.get(row.id) || []
+    const r = payoutReadiness(ledger, holdDays, minPayout)
+    if (r.readyToPayCents <= 0) continue
+    if (new Set(ledger.map(l => String(l.currency || currency).toUpperCase())).size > 1) continue
+    rows.push({ id: row.id, name: row.name, email: row.email, payoutMethod: row.payout_method, payoutDetails: row.payout_details || {},
+      payoutDetailsSubmittedAt: row.payout_details_submitted_at, taxCountry: row.tax_country ?? null, taxId: row.tax_id ?? null,
+      readyToPayCents: r.readyToPayCents, currency })
+  }
+  await logAdminAction(ctx, supabase, 'partner.payout_run_exported', 'partner', null, { partners: rows.length })
+  ctx.header('Cache-Control', 'no-store')
+  return ctx.json({ success: true, data: rows })
 }
 
 async function adminListPartners(ctx) {
@@ -706,6 +748,11 @@ async function adminListPartners(ctx) {
     const ledger = ledgerByPartner.get(row.id) || []
     // 'sent' | 'failed' | 'throttled' | 'suppressed' | null (never mailed / lookup failed). Only for partners
     // who still have no payout details on file.
+    // Round 23: the list never carries the full account number or tax ID (the payout-run export fetches them
+    // behind a step-up from /partners/payout-export).
+    camel.payoutDetails = maskedPayoutDetailsForOwner(row.payout_method, row.payout_details)
+    camel.taxId = row.tax_id ? last4Of(row.tax_id) : null
+    camel.detailsMasked = true
     camel.payoutLinkEmail = !row.payout_method ? (linkMail.get(String(row.email || '').toLowerCase()) || null) : null
     const cycles = buildCyclesSummary(ledger, 2, holdDays)  // [current, previous]
     const currentCycle = cycles.find(cyc => cyc.isCurrent)
@@ -1034,6 +1081,7 @@ async function adminCreateReferralCode(ctx) {
 // the identity of a code must stay stable for historical attribution.
 
 const updateReferralCodeSchema = z.object({
+  code:        z.string().trim().min(2).max(50).regex(/^[A-Za-z0-9_-]+$/, 'Code may only contain letters, numbers, hyphens and underscores.').optional(),
   active:      z.boolean().optional(),
   tierPrices:  tierPricesSchema.optional(),
   usageLimit:  z.number().int().positive().nullable().optional(),
@@ -1046,6 +1094,7 @@ const updateReferralCodeSchema = z.object({
 function describeCodeChanges(before, after) {
   if (!before || !after) return []
   const out = []
+  if (before.code && after.code && before.code !== after.code) out.push({ field: 'code', from: before.code, to: after.code })
   if (!!before.active !== !!after.active) out.push({ field: 'active', to: !!after.active })
   if (JSON.stringify(before.tier_prices || {}) !== JSON.stringify(after.tier_prices || {})) out.push({ field: 'tierPrices', to: after.tier_prices || {} })
   if ((before.usage_limit ?? null) !== (after.usage_limit ?? null)) out.push({ field: 'usageLimit', to: after.usage_limit ?? null })
@@ -1063,6 +1112,7 @@ async function adminUpdateReferralCode(ctx) {
   if (body.tierPrices !== undefined)  patch.tier_prices = body.tierPrices
   if (body.usageLimit !== undefined)  patch.usage_limit = body.usageLimit
   if (body.expiresAt !== undefined)   patch.expires_at = body.expiresAt
+  const newCode = body.code ? body.code.toUpperCase() : undefined
 
   const guard = body.tierPrices !== undefined ? priceGuardrails(ctx.env, body.tierPrices) : { tooLow: [], noDiscount: [] }
   if (guard.tooLow.length && !body.confirmLowPrice) return lowPriceResponse(ctx, guard)
@@ -1074,14 +1124,38 @@ async function adminUpdateReferralCode(ctx) {
     .select('partner_id, code, active, tier_prices, usage_limit, expires_at, partners(name, email, status)').eq('id', codeId).maybeSingle()
   if (ownerErr) throw ownerErr
   if (body.active !== false && owner && isRemovedEmail(owner.partners?.email)) return partnerRemovedResponse(ctx)
+  if (!owner && newCode) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
+
+  // Round 23: a code's text can be corrected. The old text stops working everywhere, so the buyers and payments that
+  // carry it are moved to the new text in the same call (and the rename is undone if that cannot be done).
+  const renaming = !!newCode && !!owner && newCode !== owner.code
+  if (renaming) {
+    if (isRemovedEmail(owner.partners?.email) || /^REMOVED-[0-9A-F]{8}$/.test(owner.code))
+      return ctx.json({ success: false, message: 'A removed partner\u2019s code cannot be renamed.' }, 409)
+    patch.code = newCode
+  }
+  if (!Object.keys(patch).length) return ctx.json({ success: false, message: 'Nothing to change.' }, 400)
 
   const { data, error } = await supabase.from('referral_codes')
     .update(patch).eq('id', codeId).select('*').maybeSingle()
+  if (error && error.code === '23505') return ctx.json({ success: false, message: 'That code is already in use - pick a different one.' }, 409)
   if (error) throw error
   if (!data) return ctx.json({ success: false, message: 'Referral code not found.' }, 404)
 
+  if (renaming) {
+    const undo = async () => { await supabase.from('referral_codes').update({ code: owner.code }).eq('id', codeId).then(() => {}, () => {}) }
+    const { error: uErr } = await supabase.from('users').update({ referred_by_code: newCode }).eq('referred_by_code', owner.code)
+    if (uErr) { await undo(); throw uErr }
+    const { error: pErr } = await supabase.from('payments').update({ referral_code: newCode }).eq('referral_code_id', codeId)
+    if (pErr) {
+      await supabase.from('users').update({ referred_by_code: owner.code }).eq('referred_by_code', newCode).then(() => {}, () => {})
+      await undo(); throw pErr
+    }
+  }
+
   await logAdminAction(ctx, supabase, 'partner.referral_code_updated', 'referral_code', codeId, {
-    partnerId: data.partner_id, codeId: data.id, changed: Object.keys(patch), lowPriceConfirmed: guard.tooLow.length > 0
+    partnerId: data.partner_id, codeId: data.id, changed: Object.keys(patch), lowPriceConfirmed: guard.tooLow.length > 0,
+    ...(renaming ? { renamedFrom: owner.code, renamedTo: newCode } : {})
   })
 
   // Round 20 (feature gap): a partner was told about every other change to their account (status, rate, email, balance, a voided
@@ -1097,7 +1171,7 @@ async function adminUpdateReferralCode(ctx) {
     }
   } catch (err) { console.error('adminUpdateReferralCode partner notice:', err.message) }
 
-  return ctx.json({ success: true, data: referralCodeRowToCamel(data), warnings: guardWarnings(guard), notified })
+  return ctx.json({ success: true, data: referralCodeRowToCamel(data), warnings: [...guardWarnings(guard), ...(renaming ? [`Renamed ${owner.code} to ${newCode}. Links and codes already shared with the old text no longer work.`] : [])], notified, ...(renaming ? { renamed: { from: owner.code, to: newCode } } : {}) })
 }
 
 // ── Admin: record a payout that has ALREADY been sent manually ─────────────
@@ -1649,6 +1723,12 @@ function normalizedPayoutDetails(method, details) {
     out[key] = String(details[key] ?? '').replace(/\s+/g, '').toLowerCase()
   return JSON.stringify([method || null, out])
 }
+// Round 23: spacing-collapsed but CASE-SENSITIVE comparison, to tell a cosmetic correction from a true re-submit.
+function exactPayoutDetailsEqual(a, b) {
+  const flat = d => JSON.stringify(Object.keys(d || {}).sort().map(k => [k,
+    /number$/i.test(k) ? String(d[k] ?? '').replace(/\s+/g, '') : String(d[k] ?? '').trim().replace(/\s+/g, ' ')]))
+  return flat(a) === flat(b)
+}
 function payoutDetailsEqual(methodA, detailsA, methodB, detailsB) {
   return !!methodA && normalizedPayoutDetails(methodA, detailsA) === normalizedPayoutDetails(methodB, detailsB)
 }
@@ -1718,11 +1798,17 @@ async function submitPayoutDetails(ctx) {
   // alert, and let a leaked link freeze a partner's payouts indefinitely by re-submitting the same details. An
   // identical submission is now a no-op (spacing is ignored, like the confirm-field check on the page).
   if (payoutDetailsEqual(previous.payout_method, previous.payout_details, payoutMethod, details)) {
-    if (Object.keys(taxPatch).length) {
-      const { error: taxErr } = await supabase.from('partners').update(taxPatch).eq('payout_token_hash', await cryptoLib.sha256(token))
+    // Round 23: "the same" ignores case and spacing so a re-submit cannot restart the payout hold, but a
+    // case/spacing-only correction (e.g. an account name's capital letters) must still be STORED. It keeps the
+    // original submitted-at (no hold, no alert), since it cannot move money anywhere new.
+    const cosmetic = !exactPayoutDetailsEqual(previous.payout_details, details)
+    const sameQuiet = { ...taxPatch, ...(cosmetic ? { payout_details: details } : {}) }
+    if (Object.keys(sameQuiet).length) {
+      const { error: taxErr } = await supabase.from('partners')
+        .update({ ...sameQuiet, ...(cosmetic ? { updated_at: new Date().toISOString() } : {}) }).eq('payout_token_hash', await cryptoLib.sha256(token))
       if (taxErr) throw taxErr
     }
-    return ctx.json({ success: true, unchanged: true, message: 'Payout details saved.' })
+    return ctx.json({ success: true, unchanged: !cosmetic, message: 'Payout details saved.' })
   }
 
   const changedAt = new Date().toISOString()
@@ -3127,7 +3213,7 @@ module.exports = {
   adminCreatePartner, adminUpdatePartner, adminListPartners, adminGetPartner,
   adminResendPayoutLink, adminRegeneratePayoutLink, adminGetPartnerLinks, adminRecordPayout,
   adminCreateReferralCode, adminUpdateReferralCode, adminVoidPayout, adminRecordPayoutBatch,
-  adminListReferralCodes, adminListPayouts, adminPartnersOverview,
+  adminListReferralCodes, adminListPayouts, adminPartnersOverview, adminPayoutRunExport,
   getPartnerByToken, submitPayoutDetails, getPartnerDashboard, getPartnerConversions, getProgramTerms, requestPayoutLink, updatePartnerNotifications, trackClick,
   applyAsPartner, adminListApplications, adminApproveApplication, adminRejectApplication,
   recoverPartnerLinks, adminAnonymizePartner,

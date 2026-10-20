@@ -43,12 +43,19 @@ describe('submitPayoutDetails — an unchanged resubmission is a no-op', () => {
   }
   const body = (over = {}) => ({ payoutMethod: 'BANK', bankName: 'Equity Bank', accountName: 'Coach K', accountNumber: '01234567 89', ...over })
 
-  it('does not write, restart the hold, or send either alert when nothing changed (spacing and case ignored)', async () => {
+  it('does not write, restart the hold, or send either alert when only spacing differs', async () => {
     t = setup({ payout_method: 'BANK', payout_details: stored })
-    const res = await t.mod.submitPayoutDetails(ctxOf({ token: 'tok', body: body({ bankName: 'equity  bank' }) }))
+    const res = await t.mod.submitPayoutDetails(ctxOf({ token: 'tok', body: body({ bankName: 'Equity   Bank' }) }))
     expect(res.status).toBe(200)
     expect(res.body).toMatchObject({ success: true, unchanged: true })
     expect(t.st).toEqual({ updates: 0, emails: 0, alerts: 0 })
+  })
+  it('a case-only correction is STORED (round 23) but restarts no hold and sends no alert', async () => {
+    t = setup({ payout_method: 'BANK', payout_details: stored })
+    const res = await t.mod.submitPayoutDetails(ctxOf({ token: 'tok', body: body({ accountName: 'coach k' }) }))
+    expect(res.status).toBe(200)
+    expect(res.body.unchanged).toBe(false)
+    expect(t.st).toEqual({ updates: 1, emails: 0, alerts: 0 })
   })
   it('a different account number is still a change: written, and both alerts fire', async () => {
     t = setup({ payout_method: 'BANK', payout_details: stored })

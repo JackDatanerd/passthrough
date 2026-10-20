@@ -640,7 +640,8 @@ const CODE_TIER_LABELS = { FIX: 'Fix + Credential', BADGE: 'Credential only', FI
 async function sendPartnerCodeChanged(env, supabase, email, name, code, changes, currency) {
   const parts = []
   for (const ch of changes || []) {
-    if (ch.field === 'active') parts.push(ch.to ? 'it is active again and applies its discount to new checkouts' : "it has been switched off, so it no longer applies a discount to new checkouts and won't earn commission on new sales")
+    if (ch.field === 'code') parts.push(`it is now called ${ch.to} (it was ${ch.from}) - links and codes that use the old text no longer work, so please share the new one`)
+    else if (ch.field === 'active') parts.push(ch.to ? 'it is active again and applies its discount to new checkouts' : "it has been switched off, so it no longer applies a discount to new checkouts and won't earn commission on new sales")
     else if (ch.field === 'tierPrices') {
       const list = Object.entries(ch.to || {}).map(([tier, cents]) => `${CODE_TIER_LABELS[tier] || tier} ${fmtMoney(cents, currency)}`).join(', ')
       parts.push(list ? `its prices are now ${list} (plans not listed sell at their normal price, and you still earn commission on them)` : 'it no longer sets a special price on any plan, so buyers pay normal prices (you still earn commission)')

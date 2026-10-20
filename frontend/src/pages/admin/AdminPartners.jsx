@@ -346,17 +346,21 @@ const isPayable = p => (p.readyToPayCents || 0) > 0 && p.payoutMethod && !p.mixe
 // destination, ready to be paid by hand, while the in-app run correctly held them back. Held partners are now left out of the
 // sheet and counted, so the toast can say so; they are paid from the in-app run after the admin confirms with the partner.
 const isHeld = (p, holdHours) => holdHours > 0 && withinHours(p.payoutDetailsSubmittedAt, holdHours)
-function exportPayoutRun(partners, holdHours = 0) {
+async function exportPayoutRun(partners, holdHours = 0) {
   const all = partners.filter(isPayable)
-  const payable = all.filter(p => !isHeld(p, holdHours))
-  const heldBack = all.length - payable.length
+  // Round 23: the list carries masked details only; the full account numbers come from a step-up-protected endpoint.
+  const res = await api.get('/partners/payout-export')
+  const full = new Map((res.data.data || []).map(r => [r.id, r]))
+  const payable = all.filter(p => !isHeld(p, holdHours) && full.has(p.id))
+  const heldBack = all.filter(p => isHeld(p, holdHours)).length
   const rows = [['Partner', 'Email', 'Method', 'Bank / provider', 'Account name', 'Account / phone', 'Amount', 'Currency', 'Details submitted', 'Tax country', 'Tax ID']]
   for (const p of payable) {
-    const d = p.payoutDetails || {}
+    const f = full.get(p.id)
+    const d = f.payoutDetails || {}
     rows.push([
-      p.name, p.email, p.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
-      csvText(d.accountNumber || d.phoneNumber || ''), ((p.readyToPayCents || 0) / 100).toFixed(2), p.currency || '',
-      p.payoutDetailsSubmittedAt || '', p.taxCountry || '', csvText(p.taxId || '')
+      p.name, p.email, f.payoutMethod, d.bankName || d.provider || '', d.accountName || '',
+      csvText(d.accountNumber || d.phoneNumber || ''), ((f.readyToPayCents || 0) / 100).toFixed(2), f.currency || p.currency || '',
+      f.payoutDetailsSubmittedAt || '', f.taxCountry || '', csvText(f.taxId || '')
     ])
   }
   downloadCsv(`payout-run-${dateStamp()}.csv`, rows)
@@ -487,7 +491,7 @@ export const PARTNER_FILTERS = {
   ended:      { label: 'Membership ended',             test: p => p.status === 'ENDED' && !isRemovedPartner(p) },
   ready:      { label: 'Ready to pay',                 test: p => (p.readyToPayCents || 0) > 0 },
   noDetails:  { label: 'No payout details yet',        test: p => !p.payoutMethod && !isRemovedPartner(p) },
-  terms:      { label: 'Terms not accepted',           test: p => p.termsCurrent === false && !isRemovedPartner(p) },
+  terms:      { label: 'Terms not accepted',           test: p => p.termsCurrent === false && p.status !== 'ENDED' && !isRemovedPartner(p) },
   mailFailed: { label: 'Setup mail problem',         test: p => !!p.payoutLinkEmail && p.payoutLinkEmail.status !== 'sent' && !p.payoutMethod },
   removed:    { label: 'Removed (erased)',             test: isRemovedPartner },
 }
@@ -534,7 +538,8 @@ export default function AdminPartners() {
   const payableCount = partners.filter(isPayable).length
   const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
   // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
-  const termsOutstanding = partners.filter(p => p.termsCurrent === false && !String(p.email || '').endsWith('@removed.invalid')).length
+  // Round 23: ENDED partners are never sent the notice (the server skips them), so they are not counted here either.
+  const termsOutstanding = partners.filter(p => p.termsCurrent === false && p.status !== 'ENDED' && !String(p.email || '').endsWith('@removed.invalid')).length
   const [confirmTerms, setConfirmTerms] = useState(false)
   const failedTermsIds = useRef(new Set())
   async function sendTermsNotice() {
@@ -561,9 +566,11 @@ export default function AdminPartners() {
         <h1 className="text-2xl font-bold text-gray-900">Partners</h1>
         <div className="flex gap-2">
           <Button variant="secondary" disabled={payableCount === 0}
-            onClick={() => {
-              const { exported, heldBack } = exportPayoutRun(partners, holdHours)
-              toast({ message: `Exported ${exported} payable partner(s).` + (heldBack ? ` ${heldBack} left out: payout details changed inside the ${holdHours}-hour hold.` : ''), type: heldBack ? 'warning' : 'success' })
+            onClick={async () => {
+              try {
+                const { exported, heldBack } = await exportPayoutRun(partners, holdHours)
+                toast({ message: `Exported ${exported} payable partner(s).` + (heldBack ? ` ${heldBack} left out: payout details changed inside the ${holdHours}-hour hold.` : ''), type: heldBack ? 'warning' : 'success' })
+              } catch (_) { toast({ message: 'Could not build the payout run export - try again.', type: 'error' }) }
             }}>
             Export payout run
           </Button>

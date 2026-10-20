@@ -61,6 +61,8 @@ router.get(  '/overview',                  admin, c.adminPartnersOverview)
 router.get(  '/codes',                     admin, c.adminListReferralCodes)
 router.get(  '/payouts',                   admin, c.adminListPayouts)
 router.get(  '/ledger',                    admin, c.adminListLedger)
+// Round 23: full payout details of everyone payable now, for the payout-run CSV (step-up: the one bulk read of account numbers).
+router.get(  '/payout-export',             admin, admin.stepUp, c.adminPayoutRunExport)
 // Round 18: paid sales that used a code but have no commission row (declared before '/:id').
 router.get(  '/unrecorded-commissions',     admin, c.adminListUnrecordedCommissions)
 // Round 6: record a whole payout run in one call (each item runs the single-payout checks).
@@ -96,7 +98,8 @@ router.post( '/:id/adjustments',          admin, admin.stepUp, validateUuidParam
 router.post( '/:id/ledger/:ledgerId/reverse', admin, admin.stepUp, validateUuidParam(), validateUuidParam('ledgerId'), c.adminReverseSale)
 // STEP-UP (round 10): a code's tier prices decide what a buyer pays and what the partner earns on it, so setting or changing
 // them is a money decision like the commission rate above. Switching a code off / changing its limit or expiry stays one click.
-const priceEdit = admin.stepUpWhen(body => !!body && body.tierPrices !== undefined)
+// Round 23: renaming a code changes every link already shared, so it takes the same step-up.
+const priceEdit = admin.stepUpWhen(body => !!body && (body.tierPrices !== undefined || body.code !== undefined))
 router.post( '/:id/referral-codes',        admin, priceEdit, validateUuidParam(), c.adminCreateReferralCode)
 router.patch('/referral-codes/:codeId',    admin, priceEdit, validateUuidParam('codeId'), c.adminUpdateReferralCode)
 

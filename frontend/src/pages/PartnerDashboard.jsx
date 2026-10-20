@@ -11,7 +11,7 @@ import Select from '../components/ui/Select'
 import Disclosure from '../components/ui/Disclosure'
 import PartnerLayout from '../components/partner/PartnerLayout'
 import EmptyState from '../components/ui/EmptyState'
-import { ATTRIBUTION_TERMS } from '../lib/partnerTerms'
+import { ATTRIBUTION_TERMS, ATTRIBUTION_WINDOW_DAYS } from '../lib/partnerTerms'
 import { partnerAuth } from '../lib/partnerApi'
 
 // AUDIT FIX (bug): this local formatter put the `$` before the number's own
@@ -212,7 +212,7 @@ function CodeCard({ code, partnerActive, partnerStatus, currency }) {
         )}
       </div>
       <div className="text-sm text-gray-500 mt-1">
-        {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'}` : ''} · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
+        {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'} (last ${ATTRIBUTION_WINDOW_DAYS} days)` : ''} · {code.usesSoFar || 0} redemption{code.usesSoFar === 1 ? '' : 's'}
         {code.usageLimit ? ` (limit ${code.usageLimit})` : ''}
         {code.stats?.conversionRate != null && ` · ${formatRate(code.stats.conversionRate)} of clicks bought`}
       </div>
@@ -511,8 +511,9 @@ function PayoutStatement({ token, payout, currency }) {
           const res = await api.get(`/partners/conversions?payoutId=${encodeURIComponent(payout.id)}&limit=200&offset=${offset}`, partnerAuth(token))
           const page = res.data.data || []
           all.push(...page)
-          more = page.length >= 200
-          if (!more) break
+          // Round 23: a full last page is only "truncated" if the server says rows remain (a payout of exactly 2,000 is complete).
+          more = typeof res.data.total === 'number' ? all.length < res.data.total : page.length >= 200
+          if (!more || page.length < 200) break
         }
         // The cap keeps a huge payout from hammering the read limiter. When it is hit the list is a PREFIX, so the sum of
         // it must not be presented as what the payout settled.

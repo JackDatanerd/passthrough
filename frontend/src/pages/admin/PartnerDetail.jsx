@@ -642,6 +642,7 @@ function CreateReferralCodeModal({ partner, onClose, onCreated }) {
 // brand new one, losing the original code string (already handed out) and
 // its accumulated clicks/uses.
 function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
+  const [codeText, setCodeText] = useState(codeRow.code)
   const toast = useToast()
   const tp = codeRow.tierPrices || {}
   const [fix, setFix] = useState(tp.FIX != null ? (tp.FIX / 100).toFixed(2) : '')
@@ -674,10 +675,18 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
 
     // Only send tierPrices when a price was actually edited: the server asks for a step-up and re-runs the low-price
     // guard on any request that carries them, so an unrelated limit/expiry edit must not (the route promises one click).
+    const cleanCode = codeText.trim().toUpperCase()
+    const codeChanged = cleanCode !== codeRow.code
+    if (codeChanged && !/^[A-Z0-9_-]{2,50}$/.test(cleanCode)) {
+      await execute(() => Promise.reject(new Error('Code must be 2-50 characters: letters, numbers, hyphens or underscores only.')),
+        { fallback: 'Invalid code.' }).catch(() => {})
+      return
+    }
     const pricesChanged = ['FIX', 'BADGE', 'FIX_PLAIN'].some(k => (tierPrices[k] ?? null) !== (tp[k] ?? null))
 
     try {
       const res = await execute(() => api.patch(`/partners/referral-codes/${codeRow.id}`, {
+        ...(codeChanged ? { code: cleanCode } : {}),
         ...(pricesChanged ? { tierPrices } : {}),
         ...(pricesChanged && confirmLow ? { confirmLowPrice: true } : {}),
         usageLimit: usageLimit ? Number(usageLimit) : null,
@@ -686,7 +695,7 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
         // expiration, same convention as usageLimit right above.
         ...(expiresChanged ? { expiresAt: expiresAt ? dateToExpiresAt(expiresAt) : null } : {})
       }), { fallback: 'Failed to update code.' })
-      toast({ message: `Code ${codeRow.code} updated.`, type: 'success' })
+      toast({ message: codeChanged ? `Code renamed to ${cleanCode}.` : `Code ${codeRow.code} updated.`, type: 'success' })
       for (const w of res?.warnings || []) toast({ message: w, type: 'warning' })
       onSaved()
       onClose()
@@ -697,8 +706,10 @@ function EditReferralCodeModal({ partner, codeRow, onClose, onSaved }) {
     <Modal open onClose={onClose} title={`Edit ${codeRow.code}`} dismissible={!saving}>
       <Form onSubmit={handleSave} className="flex flex-col gap-4">
         <p className="text-xs text-gray-400">
-          The code string itself, clicks, and usage history stay unchanged — only pricing and limits update.
+          Clicks and usage history always stay with the code. Changing the code text moves buyers and payments to the new text, but
+          links and codes already shared with the old text stop working.
         </p>
+        <Input label="Code" value={codeText} maxLength={50} onChange={e => setCodeText(e.target.value)} data-testid="edit-code-text" />
         <div className="grid grid-cols-3 gap-3">
           <Input label={`FIX (${partner.currency || 'USD'})`} type="number" step="0.01" value={fix} onChange={e => setFix(e.target.value)} />
           <Input label={`BADGE (${partner.currency || 'USD'})`} type="number" step="0.01" value={badge} onChange={e => setBadge(e.target.value)} />
@@ -763,7 +774,7 @@ function ReferralCodesTab({ partner, onChanged }) {
               <div>
                 <span className="font-mono font-medium">{code.code}</span>
                 <span className="text-gray-400 text-xs ml-2">
-                  {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'}` : ''} · {code.usesSoFar || 0} used{code.usageLimit ? ` / ${code.usageLimit}` : ''}
+                  {code.clicks || 0} clicks{code.signups != null ? ` · ${code.signups} sign-up${code.signups === 1 ? '' : 's'} (last 30 days)` : ''} · {code.usesSoFar || 0} used{code.usageLimit ? ` / ${code.usageLimit}` : ''}
                 </span>
                 <div className="text-xs text-gray-400 mt-0.5">
                   {['FIX', 'BADGE', 'FIX_PLAIN'].filter(t => code.tierPrices?.[t] != null).map(t =>

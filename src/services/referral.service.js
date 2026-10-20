@@ -139,7 +139,9 @@ function canonicalEmail(email) {
   const at = e.lastIndexOf('@')
   if (at < 1) return e
   let local = e.slice(0, at), domain = e.slice(at + 1)
-  local = local.split('+')[0]
+  // Round 23: only drop a +tag that follows a real local part; "+x@d" must not collapse to "@d" and match every other such address.
+  const base = local.split('+')[0]
+  if (base) local = base
   if (domain === 'googlemail.com') domain = 'gmail.com'
   if (domain === 'gmail.com') local = local.replace(/\./g, '')
   return `${local}@${domain}`
@@ -593,9 +595,13 @@ async function keySeen(env, key) {
   const kv = env && env.RATE_LIMIT_KV
   return !!(kv && await kv.get(key))
 }
-async function keyMark(env, key, ttlSeconds) {
+async function keyMark(env, key, ttlSeconds, value = '1') {
   const kv = env && env.RATE_LIMIT_KV
-  if (kv) await kv.put(key, '1', { expirationTtl: ttlSeconds })
+  if (kv) await kv.put(key, value, { expirationTtl: ttlSeconds })
+}
+async function keyGet(env, key) {
+  const kv = env && env.RATE_LIMIT_KV
+  return kv ? ((await kv.get(key)) || null) : null
 }
 const EXPIRY_SWEEP_PAGE = 100, EXPIRY_SWEEP_MAX_PAGES = 10
 async function sweepExpiringCodes(supabase, env) {
@@ -730,7 +736,7 @@ async function notifyPartnerReversal(env, supabase, partnerId, commissionCents, 
 }
 
 module.exports = {
-  canonicalEmail, keySeen, keyMark,
+  canonicalEmail, keySeen, keyMark, keyGet,
   notifyPartnerReversal,
   resolvePrice, resolvePricesForTiers, recordConversion, notifyConversionFailure, isCodeUsable, lookupCode,
   setUserAttribution, sweepExpiringCodes, afterConversionNotices, isSelfReferral,

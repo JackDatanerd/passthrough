@@ -683,6 +683,25 @@ describe('adminListPartners', () => {
     return { mod, restore, c }
   }
 
+  it('round 23: the list never carries a full account number or tax ID; the step-up export does', async () => {
+    const old = new Date(); old.setUTCMonth(old.getUTCMonth() - 2)
+    const row = {
+      id: 'p1', name: 'Coach K', email: 'k@x.co', status: 'ACTIVE', commission_rate: '0.2500', payouts: [], referral_codes: [],
+      payout_method: 'BANK', payout_details: { bankName: 'Equity', accountName: 'Coach K', accountNumber: '0123456789' },
+      payout_details_submitted_at: old.toISOString(), tax_country: 'KE', tax_id: 'A123456789B',
+      commission_ledger: [{ id: 'l1', partner_id: 'p1', gross_amount_cents: 4900, commission_amount_cents: 500, payout_id: null, created_at: old.toISOString() }],
+    }
+    t = setupList([row])
+    const listed = (await t.mod.adminListPartners(t.c)).body.data[0]
+    expect(JSON.stringify(listed)).not.toContain('0123456789')
+    expect(JSON.stringify(listed)).not.toContain('A123456789B')
+    expect(listed.payoutMethod).toBe('BANK')
+    const exp = (await t.mod.adminPayoutRunExport(t.c)).body.data
+    expect(exp).toHaveLength(1)
+    expect(exp[0]).toMatchObject({ id: 'p1', readyToPayCents: 500, taxId: 'A123456789B' })
+    expect(exp[0].payoutDetails.accountNumber).toBe('0123456789')
+  })
+
   it('an unpaid ledger row from a PRIOR cycle counts as ready-to-pay; one from the CURRENT cycle only counts as accruing', async () => {
     const old = new Date(); old.setUTCMonth(old.getUTCMonth() - 2)
     t = setupList([{
@@ -925,10 +944,39 @@ describe('adminUpdateReferralCode', () => {
     expect(t.state.patch).toEqual({ usage_limit: null, expires_at: null })
   })
 
-  it('never allows changing the code string itself (not in the schema at all)', async () => {
+  it('a code can be renamed: upper-cased, buyers and payments follow, and it is audited', async () => {
+    const calls = []
+    const db = createFakeSupabase(q => {
+      calls.push(q)
+      if (q.table === 'referral_codes' && q.op === 'select') return { data: { partner_id: 'p1', code: 'OLD1', active: true, partners: { name: 'A', email: 'a@x.co', status: 'ACTIVE' } }, error: null }
+      if (q.table === 'referral_codes' && q.op === 'update') return { data: { id: 'rc1', partner_id: 'p1', code: q.patch.code }, error: null }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    t = { restore }
+    const res = await mod.adminUpdateReferralCode({ env: {}, req: { param: () => 'rc1', json: async () => ({ code: 'new-2' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
+    expect(res.status).toBe(200)
+    expect(res.body.renamed).toEqual({ from: 'OLD1', to: 'NEW-2' })
+    expect(calls.find(q => q.table === 'users' && q.op === 'update').patch).toEqual({ referred_by_code: 'NEW-2' })
+    expect(calls.find(q => q.table === 'payments' && q.op === 'update').patch).toEqual({ referral_code: 'NEW-2' })
+  })
+
+  it('a rename onto a code already in use is a 409 and moves nothing', async () => {
+    const calls = []
+    const db = createFakeSupabase(q => {
+      calls.push(q)
+      if (q.table === 'referral_codes' && q.op === 'select') return { data: { partner_id: 'p1', code: 'OLD1', partners: { name: 'A', email: 'a@x.co', status: 'ACTIVE' } }, error: null }
+      if (q.table === 'referral_codes' && q.op === 'update') return { data: null, error: { code: '23505', message: 'dup' } }
+    })
+    const { mod, restore } = loadWithStubs('controllers/partners.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+    t = { restore }
+    const res = await mod.adminUpdateReferralCode({ env: {}, req: { param: () => 'rc1', json: async () => ({ code: 'TAKEN' }) }, header: () => {}, json: (body, status = 200) => ({ body, status }) })
+    expect(res.status).toBe(409)
+    expect(calls.some(q => q.table === 'users' || q.table === 'payments')).toBe(false)
+  })
+
+  it('a malformed code is refused by the schema', async () => {
     t = setupUpdateCode({ updated: { id: 'rc1' } })
-    await t.mod.adminUpdateReferralCode(t.c({ body: { active: true, code: 'HACKED' } }))
-    expect(t.state.patch.code).toBeUndefined()
+    await expect(t.mod.adminUpdateReferralCode(t.c({ body: { code: 'bad code!' } }))).rejects.toThrow()
   })
 })
 
