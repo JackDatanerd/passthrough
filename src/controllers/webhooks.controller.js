@@ -471,6 +471,18 @@ async function processChargeSuccess(c, supabase, event) {
     return { status: 'IGNORED', note: 'unknown reference' }
   }
 
+  // Webhooks round 23 (G1): the metadata Paystack echoes back is what this app sent at initialize. If it names a different scan or user than
+  // the payment row, something is wrong (a reused reference, a tampered row). The row stays authoritative (settlement is unchanged); the owner is told.
+  const meta = data.metadata && typeof data.metadata === 'object' ? data.metadata : null
+  if (meta) {
+    const diffs = []
+    if (meta.scanId != null && paymentRow.scan_id && String(meta.scanId) !== String(paymentRow.scan_id)) diffs.push(`scanId: metadata ${meta.scanId} vs payment ${paymentRow.scan_id}`)
+    if (meta.userId != null && paymentRow.user_id && String(meta.userId) !== String(paymentRow.user_id)) diffs.push(`userId: metadata ${meta.userId} vs payment ${paymentRow.user_id}`)
+    if (diffs.length && await alertAllowedFor(c.env, 'metadata-mismatch', reference))
+      alert(c, 'Paystack charge.success metadata does not match the payment row',
+        `reference: ${reference}\n${diffs.join('\n')}\n\nThe payment row was used (it is what this app recorded at checkout); nothing was changed because of this. Review the payment in Admin → Payments.`, reference)
+  }
+
   // A row that already settled (SUCCESS, or REFUNDED / DISPUTED which can only follow a SUCCESS) may have had an
   // overpayment accepted by an admin recheck, which keeps amount_cents at the expected price. A replayed or late
   // charge.success for it must not be re-held and re-alerted as "NOT fulfilled" (verifyPayment exempts the same way,
@@ -882,6 +894,11 @@ async function processDispute(c, supabase, event) {
           `partner commission reversed: ${done.ledger.reversed ? `yes${done.ledger.alreadyPaidOut ? ' (ALREADY PAID OUT — nets against their next payout)' : ''}` : done.ledger.reason}\n` +
           `public verification revoked: ${done.revoked ? 'yes' : 'no (not applicable / already revoked / another payment owns the scan)'}\n` +
           `Downloads were NOT revoked — delete the scan if you want the files gone.`
+      } else if (live && live.status === 'REFUNDED') {
+        // Webhooks round 23 (B2): an admin Accept (or the refund Paystack sends with it) can land refund.processed first, so the sale is
+        // already reversed. The generic text below told the owner to use Reverse on a payment that is already REFUNDED.
+        auto = 'dispute lost — payment already REFUNDED'
+        detail = `Resolution: ACCEPTED — the money went back to the customer, and the payment is already REFUNDED (the refund was processed first), so there is nothing left to do.`
       } else if (partialDispute)
         detail = `Resolution: ACCEPTED, but only ${disputed} of the ${payment.amount_cents} paid was disputed, so nothing was changed automatically. ${current}. Decide in Admin → Payments (Reverse if the whole sale should come back).`
       else
@@ -1795,7 +1812,9 @@ const DISPUTE_MAX_PAGES = 5
 const isoDay = ms => new Date(ms).toISOString().slice(0, 10)
 
 function disputeIsResolved(d) {
-  return !!d && (String(d.status || '').toLowerCase() === 'resolved' || !!d.resolution)
+  // Webhooks round 23 (B3): `archived` is closed too (checkDisputeDeadlines already treats it as past the merchant's turn); an archived
+  // dispute with no resolution must never be read as an open one and re-mark a settled payment DISPUTED.
+  return !!d && (['resolved', 'archived'].includes(String(d.status || '').toLowerCase()) || !!d.resolution)
 }
 
 // Round 19 (G1): the list above only reaches DISPUTE_LOOKBACK_MS back, and sweepReversedPayments only looks at payments created in

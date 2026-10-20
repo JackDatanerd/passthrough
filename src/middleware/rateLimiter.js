@@ -410,6 +410,15 @@ const webhook = makeLimiter({
   message: msg('Too many requests.')
 })
 
+// Webhooks round 23 (B1): Resend sends one event per email per state (sent / delivered / opened / bounced / complained) from a small
+// pool of Svix IPs, so a burst of mail (a launch-day wave of verification emails, an employer-lead notify run) can pass the Paystack-sized
+// 300-per-5-minutes bucket above. The 429s then hit the complaints and bounces too: Svix retries later, but suppression is delayed and a
+// complainer keeps being mailed meanwhile. Resend gets its own, much larger bucket; the Svix signature check in the handler is the real gate.
+const webhookResend = makeLimiter({
+  windowSeconds: 5 * 60, max: 5000, keyPrefix: 'rl:webhook-resend',
+  message: msg('Too many requests.')
+})
+
 // Dedicated polling limiter — ~1 request / 1.5s sustained, per IP. Still a
 // real ceiling (a runaway client or a scraper can't hammer the DB with
 // unbounded reads), just sized for how the app legitimately behaves.
@@ -1180,7 +1189,7 @@ async function forgetTrustedDevices(env, email, keepFor = null) {
 }
 
 module.exports = {
-  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, coverLetterPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, click,
+  general, scanPoll, anonScan, auth, authLogin, authRegister, authVerify, followUpOptOut, verifyQr, payment, paymentCancel, paymentVerify, paymentReceipt, pricingRef, fixQuote, resumeEdit, coverLetter, resumeStructure, pdfRegen, draftPdf, coverLetterPdf, draftDownload, coverLetterDownload, profilePdf, profileDocx, retryFix, redeemCredit, statsRead, clientError, outcomeWrite, adminElevate, employerLead, employerLeadLink, employerLeadOptOut, dataExport, historyPurge, profileEdit, webhook, webhookResend, click,
   partnerRead, partnerProgram, partnerWrite, partnerPrefs, partnerApply, partnerLinkRequest, partnerRecover, partnerReset, partnerExport, referralAttribution, verifyRead, verifyReport, isBypassed,
   isScanPollRequest, isHistoryPurgeRequest, checkAccountLockout, recordLoginFailure, recordLoginSuccess, rememberTrustedDevice, isTrustedDevice, forgetTrustedDevices, LOCKOUT_MINUTES,
   isVerifyMissLimited, recordVerifyMiss, VERIFY_MISS_MAX, VERIFY_BADGE_MISS_MAX, VERIFY_MISS_WINDOW_SECONDS,

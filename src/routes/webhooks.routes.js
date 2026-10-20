@@ -18,9 +18,9 @@ const router = new Hono()
 // already protected by HMAC signature verification inside the handler.
 router.post('/paystack', rl.webhook, c.handlePaystack)
 // Resend bounce / complaint events (Svix-signed) — feeds the employer do-not-contact list.
-router.post('/resend', rl.webhook, resend.handleResend)
+router.post('/resend', rl.webhookResend, resend.handleResend)
 // Round 14: Hono is strict about a trailing slash; a URL pasted into a provider dashboard with one used to 404 for ever.
 router.post('/paystack/', rl.webhook, c.handlePaystack)
-router.post('/resend/', rl.webhook, resend.handleResend)
+router.post('/resend/', rl.webhookResend, resend.handleResend)
 
 module.exports = router

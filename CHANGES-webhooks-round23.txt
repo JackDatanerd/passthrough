@@ -1,0 +1,13 @@
+WEBHOOKS ROUND 23 (section 8, independent pass)
+
+B1  Resend webhook shared the Paystack-sized per-IP limiter (300 / 5 min) that runs before signature verification. Resend sends one event per
+    email per state, so a burst of mail could 429 complaints and bounces (Svix retries later, but suppression was delayed).
+    -> rateLimiter.js: new `webhookResend` limiter (5000 / 5 min); routes/webhooks.routes.js uses it for /resend and /resend/.
+B2  charge.dispute.resolve (accepted) on a payment already REFUNDED told the owner to use Admin -> Payments -> Reverse. It now says the
+    payment is already REFUNDED and records the note 'dispute lost - payment already REFUNDED'. (webhooks.controller.js processDispute)
+B3  sweepDisputes read an `archived` dispute with no resolution as open and could re-mark a settled payment DISPUTED. disputeIsResolved now
+    treats `archived` as closed, consistent with checkDisputeDeadlines.
+G1  charge.success metadata (scanId / userId) that disagrees with the payment row now alerts the owner (throttled per reference). The payment
+    row stays authoritative; settlement is unchanged.
+
+Tests: tests/webhooks.round23.test.js. No migration.
