@@ -1,0 +1,26 @@
+WEBHOOKS ROUND 24 (section 8, independent pass)
+
+B1  A charge.dispute.* event that matched no payment was closed PROCESSED, so Replay answered 409 right after the owner alert said "repair the
+    payment row, then Replay", and no sweep could pick it up (the sweep only looks at known payments). It now ends IGNORED with the note
+    'payment not found', exactly like a refund with no payment. (webhooks.controller.js processDispute)
+B2  The stored copy of an event (payload, key, type, reference) is now cleaned of U+0000 and lone surrogates. Postgres refuses both in jsonb /
+    text, which answered a signed event 500 and made Paystack redeliver the same poison for ~72 hours. If the database still refuses a body,
+    recordEvent records the event without it (the live delivery is processed from memory). (redactEvent, recordEvent, minimalResendEvent)
+B3  The Resend "deliveries are being refused" notice compared a refusal with a health stamp the handler writes at most once per 10 minutes, so
+    a delivery that got through could sit behind a newer refusal and the notice said "nothing has got through since". For Resend a refusal now
+    counts once it is newer than the stamp by more than the stamp window; Paystack (exact, read from the inbox) is unchanged.
+    (webhookRejections.js RESEND_STAMP_WINDOW_SECONDS / STAMP_LAG_MS, resend-webhook.controller.js)
+B4  Delivery health compared payments.created_at (checkout start) with the webhook's received_at, and graced a sale from checkout. It uses
+    paid_at (falls back to created_at; retries without the column on a database older than 0064). (computeWebhookHealth)
+B5  The old-open-disputes sweep rotated through DISPUTED payments with last_reconciled_at - the marker sweepReversedPayments uses to skip a
+    payment for a while - so the lost-dispute backstop skipped every dispute that sweep had just looked at. It now has its own
+    payments.dispute_checked_at. (fetchOldOpenDisputes)
+G1  refund.failed was an email and nothing else. It now stamps payments.refund_failed_at (SUCCESS / DISPUTED only); Admin -> Payments shows
+    "Refund failed <date> - the buyer has not been paid back" on the row; the full refund that finally goes through clears it; a partial one
+    does not. Also: mappers.paymentRowToCamel (refundFailedAt), the webhook self-test probes both new columns.
+
+Migration 0103 (two nullable columns, safe in either order - see DEPLOYMENT.md).
+Tests: tests/webhooks.round24.test.js (34 tests; 22 fail on the pre-fix code). tests/mappers.migrations.test.js lists dispute_checked_at as
+deliberately unmapped (a sweep marker, not API shape).
+tests/migrations.0103.pglite.test.js runs the migration on real Postgres; tests/migrations.pglite.test.js keeps the two new columns on its retained-columns list.
+frontend/tests/pages/AdminPayments.round24.test.jsx covers the Admin -> Payments "Refund failed" line (SUCCESS / DISPUTED only).

@@ -20,6 +20,13 @@ const REASONS = ['signature', 'ip', 'unsigned', 'too-large', 'not-configured', '
 const FLAGGED_REASONS = new Set(['signature', 'ip', 'not-configured'])
 const STAMP_WINDOW_SECONDS = 60
 const FLAG_WINDOW_MS = 7 * 24 * 3600 * 1000
+// Webhooks round 24 (B3): Paystack's "last delivery that got through" is read from the inbox and is exact. Resend's is a system_state stamp the
+// handler writes at most once per RESEND_STAMP_WINDOW_SECONDS (a verified delivery inside the window leaves the stamp behind). A refusal newer
+// than the stamp could therefore sit BEHIND a delivery that did get through, and the notice said "nothing has got through since". For Resend a
+// refusal only counts once it is newer than the stamp by more than the window: a genuine outage shows after at most that long (the refusal
+// stamp keeps moving), a stale stamp can no longer raise a false one.
+const RESEND_STAMP_WINDOW_SECONDS = 10 * 60
+const STAMP_LAG_MS = { resend: RESEND_STAMP_WINDOW_SECONDS * 1000 }
 
 // Paystack: x-paystack-signature is a 128-char hex HMAC-SHA512. Anything else is not a Paystack delivery.
 const looksLikePaystackSignature = sig => /^[0-9a-f]{128}$/i.test(String(sig || '').trim())
@@ -88,10 +95,10 @@ function rejectedSinceLastEvent(rejections, lastAcceptedAt, now = Date.now()) {
     const at = Date.parse(r.at)
     if (!Number.isFinite(at) || now - at > FLAG_WINDOW_MS) continue
     const ok = Date.parse((lastAcceptedAt || {})[provider])
-    if (Number.isFinite(ok) && ok >= at) continue
+    if (Number.isFinite(ok) && ok + (STAMP_LAG_MS[provider] || 0) >= at) continue
     out.push(provider)
   }
   return out
 }
 
-module.exports = { recordRejection, readRejections, rejectedSinceLastEvent, looksLikePaystackSignature, looksLikePaystackEvent, looksLikeSvixDelivery, KEY_PREFIX, FLAGGED_KEY_PREFIX, REASONS }
+module.exports = { RESEND_STAMP_WINDOW_SECONDS, recordRejection, readRejections, rejectedSinceLastEvent, looksLikePaystackSignature, looksLikePaystackEvent, looksLikeSvixDelivery, KEY_PREFIX, FLAGGED_KEY_PREFIX, REASONS }

@@ -379,6 +379,10 @@ export default function AdminPayments() {
                       Partially refunded {formatCents(p.refundedCents, p.currency)} of {formatCents(p.amountCents, p.currency)}
                     </div>
                   )}
+                  {/* Webhooks round 24 (G1): Paystack said a refund of this payment FAILED and the buyer's money is still held. */}
+                  {['SUCCESS', 'DISPUTED'].includes(p.status) && p.refundFailedAt && (
+                    <div role="status" className="text-xs text-red-600 mt-0.5">Refund failed {formatDate(p.refundFailedAt)} — the buyer has not been paid back; refund it again or add their bank details in Paystack</div>
+                  )}
                   {p.status === 'DISPUTED' && p.disputedAt && (
                     <div className="text-xs text-gray-400 mt-0.5">{formatDate(p.disputedAt)}</div>
                   )}

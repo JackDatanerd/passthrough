@@ -142,6 +142,17 @@
 //     * B1: sweepDisputes no longer re-marks a payment DISPUTED after an admin cleared it (it asks the inbox first).
 //     * B3: a re-run that ends IGNORED is not announced as "recovered".   * B4: closeResolvedHeldEvents pages past a backlog.
 //
+// 15. ROUND-24 AUDIT (section 8, independent pass — migration 0103):
+//     * B1: a dispute event that matches no payment ends IGNORED (replayable), like a refund does — it used to be PROCESSED, so Replay answered
+//       409 right after the alert told the owner to repair the payment row and Replay.
+//     * B2: the stored payload, reference and key are cleaned of NUL / lone-surrogate characters (Postgres refuses them in jsonb/text, which
+//       would answer a signed event 500 for ever); a payload the database still refuses is dropped and the event processed without it.
+//     * B3: the Resend "deliveries refused" notice allows for the throttled Resend health stamp (see webhookRejections.RESEND_STAMP_LAG_MS).
+//     * B4: delivery health judges a sale by when it was PAID (paid_at), not when checkout began.
+//     * B5: the old-open-disputes sweep rotates on its own payments.dispute_checked_at instead of last_reconciled_at, which is the
+//       reversal sweep's skip marker.
+//     * G1: refund.failed stamps payments.refund_failed_at (Admin -> Payments shows it while the payment still holds the money); the full refund clears it.
+//
 // Idempotency lives in fulfillment.service (atomic status flip + scan claim),
 // not here — this file only decides WHAT happened and reports it.
 
@@ -158,6 +169,7 @@ const { buildProofPdf } = require('../lib/proofPdf')
 const { readBodyCapped } = require('../lib/readBody')
 const constants = require('../config/constants')
 const rejections = require('../lib/webhookRejections')
+const { stripNul } = require('../middleware/bodyLimit')
 // Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
 const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
 
@@ -248,16 +260,22 @@ function minimalDisputeEvent(ev) {
   }
   return { event: ev.event, data }
 }
+// ROUND-24 (B2): Postgres refuses U+0000 in text/jsonb and a lone surrogate in jsonb. A signed event carrying either in a field that is kept
+// (a refund note, a metadata value) made the inbox insert fail, the handler answer 500, and Paystack redeliver the same poison for ~72 hours.
+// bodyLimit already cleans ordinary request bodies this way; the stored copy of a webhook is cleaned the same way. Only what is STORED is changed.
+const cleanText = v => (typeof v === 'string' ? stripNul(v) : v)
 function redactEvent(event) {
   try {
     const copy = JSON.parse(JSON.stringify(event))
-    if (typeof copy?.event === 'string' && copy.event.startsWith('charge.dispute')) return minimalDisputeEvent(copy)
+    if (typeof copy?.event === 'string' && copy.event.startsWith('charge.dispute')) return stripNul(minimalDisputeEvent(copy))
     if (copy?.data && typeof copy.data === 'object') for (const k of STRIP_KEYS) delete copy.data[k]
     if (copy?.data?.transaction && typeof copy.data.transaction === 'object')
       for (const k of STRIP_KEYS) delete copy.data.transaction[k]
-    return copy
+    return stripNul(copy)
   } catch (_) { return null }
 }
+const DB_TEXT_REFUSED = new Set(['22021', '22P05', '22P02'])
+const isTextRefused = err => !!err && DB_TEXT_REFUSED.has(err.code) && /unicode|surrogate|byte sequence|type json|\\u0000/i.test(String(err.message || ''))
 
 // ROUND-6 (G3): the payload is only ever read back to re-run an event the handlers act on (Replay, the hourly
 // re-drive). Every other event type (transfer.*, subscription.*, dedicated-account events … whatever else this
@@ -360,9 +378,17 @@ const staleSelect = cols => (staleColumn() === 'last_attempt_at' ? `${cols}, las
 
 // mode: 'new' | 'retry' (seen before but not finished) | 'done' | 'unavailable'
 async function recordEvent(supabase, { eventKey, eventType, reference, payload, provider = 'paystack' }) {
-  const { data, error } = await supabase.from('webhook_events')
-    .insert({ provider, event_key: eventKey, event_type: eventType, reference, payload })
+  eventKey = cleanText(eventKey); eventType = cleanText(eventType); reference = cleanText(reference)
+  const insert = p => supabase.from('webhook_events')
+    .insert({ provider, event_key: eventKey, event_type: eventType, reference, payload: p })
     .select('id, attempts').single()
+  let { data, error } = await insert(payload)
+  if (error && payload != null && isTextRefused(error)) {
+    // Last resort (round 24, B2): still refused after cleaning. Record the event without its body rather than refuse it for ever; the live
+    // delivery is processed from memory, so only a later Replay is lost.
+    console.error('webhook_events payload refused by the database — recording the event without it:', error.message)
+    ;({ data, error } = await insert(null))
+  }
   if (!error) return { mode: 'new', id: data?.id, attempts: data?.attempts || 1 }
 
   if (error.code === '23505') {
@@ -545,6 +571,27 @@ async function paystackRefundTotal(env, payment, { strict = false } = {}) {
   }
 }
 
+// Round 24 (G1): the payment a failed refund belongs to carries the time of the failure. Only a payment that still holds the buyer's money
+// (SUCCESS / DISPUTED) is stamped - on a REFUNDED one the refund evidently went through another way. Best-effort, tolerant of migration 0103
+// not being applied; it can never change the HTTP answer.
+async function markRefundFailed(supabase, payment) {
+  try {
+    if (!payment || !payment.id) return false
+    const { data, error } = await supabase.from('payments').update({ refund_failed_at: new Date().toISOString() })
+      .eq('id', payment.id).in('status', ['SUCCESS', 'DISPUTED']).select('id')
+    if (error) { if (!isColumnMissing(error)) console.error('refund failure not stored:', error.message); return false }
+    return Array.isArray(data) && data.length > 0
+  } catch (err) { console.error('refund failure not stored:', err && err.message); return false }
+}
+async function clearRefundFailed(supabase, payment) {
+  try {
+    if (!payment || !payment.id || !payment.refund_failed_at) return false
+    const { error } = await supabase.from('payments').update({ refund_failed_at: null }).eq('id', payment.id)
+    if (error) { if (!isColumnMissing(error)) console.error('refund failure not cleared:', error.message); return false }
+    return true
+  } catch (err) { console.error('refund failure not cleared:', err && err.message); return false }
+}
+
 async function processRefund(c, supabase, event, eventId) {
   let payment = await fulfillment.findPaymentForEvent(supabase, event)
   const refundRef = event.data?.refund_reference || null
@@ -571,11 +618,13 @@ async function processRefund(c, supabase, event, eventId) {
     return { status: 'IGNORED', note: event.event }
 
   if (event.event === 'refund.failed') {
+    await markRefundFailed(supabase, payment)
     alert(c, 'Paystack refund.failed',
       `payment reference: ${payment?.paystack_ref || '(could not resolve)'}\nscanId: ${payment?.scan_id || '(could not resolve)'}\n\n` +
       `The refund did not go through (Paystack returns the money to your balance). The payment was NOT changed.\n\n` +
       `If this was the automatic refund of a duplicate / undeliverable payment, the hourly sweep retries it (up to 5 times) and pages you if it gives up. ` +
-      `Otherwise refund it again from Paystack or Admin → Payments → Refund — if Paystack says the customer's bank details are needed, supply them in the Paystack dashboard.`, incident)
+      `Otherwise refund it again from Paystack or Admin → Payments → Refund — if Paystack says the customer's bank details are needed, supply them in the Paystack dashboard. ` +
+      `The payment is marked "refund failed" in Admin → Payments until a refund of it goes through.`, incident)
     return { status: 'PROCESSED', note: 'refund failed — alerted' }
   }
 
@@ -684,6 +733,7 @@ async function processRefund(c, supabase, event, eventId) {
       return { status: 'PROCESSED', note: `payment is ${payment?.status || 'gone'}` }
   }
 
+  await clearRefundFailed(supabase, payment)
   const done = await fulfillment.reversePayment(supabase, payment, {
     reason: 'REFUND', refundReference: refundRef, env: c.env, defer: p => runInBackground(c, p),
   })
@@ -925,7 +975,10 @@ async function processDispute(c, supabase, event) {
   if (event.event === 'charge.dispute.create') detail += disputeDeadlineLine(d)
   alert(c, `Paystack ${event.event}`, `A "${event.event}" event was received.\n\n${summary}${detail}`,
     `${payment?.paystack_ref || fulfillment.referenceCandidates(event)[0] || d.id || ''}:${event.event}`)
-  return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (marked ? 'marked DISPUTED' : (payment ? undefined : 'payment not found'))) }
+  // Round 24 (B1): no payment matched → IGNORED, exactly like a refund with no payment (round 5, B2). The alert says "Replay once you have repaired
+  // the payment row"; a PROCESSED row answers Replay with 409. Replay re-runs it through this same handler.
+  if (!payment) return { status: 'IGNORED', note: 'payment not found' }
+  return { status: 'PROCESSED', note: auto || (alreadyResolved ? 'dispute already resolved — not re-marked' : (marked ? 'marked DISPUTED' : undefined)) }
 }
 
 async function processEvent(c, supabase, event, eventId) {
@@ -1820,7 +1873,7 @@ function disputeIsResolved(d) {
 // Round 19 (G1): the list above only reaches DISPUTE_LOOKBACK_MS back, and sweepReversedPayments only looks at payments created in
 // that window — but a bank chargeback can stay open far longer. A lost resolve webhook for such a dispute left the payment DISPUTED
 // for good (a lost sale never reversed, a won one never counted again). This walks DISPUTED payments OLDER than the window, a few per
-// run, oldest-checked first (last_reconciled_at rotates them), asks Paystack for each by its dispute id, and hands the answers to the
+// run, oldest-checked first (dispute_checked_at rotates them), asks Paystack for each by its dispute id, and hands the answers to the
 // same decision loop as the listed ones. A payment without a stored dispute id is looked up in Paystack's list around its disputed_at.
 const OLD_DISPUTES_PER_RUN = 10
 async function fetchOldOpenDisputes(env, supabase, now, alreadyListed = new Set()) {
@@ -1828,10 +1881,12 @@ async function fetchOldOpenDisputes(env, supabase, now, alreadyListed = new Set(
   try {
     const cutoff = new Date(now - DISPUTE_LOOKBACK_MS).toISOString()
     const cols = 'id, paystack_ref, dispute_id, disputed_at, paid_at, created_at'
-    let { data, error } = await supabase.from('payments').select(`${cols}, last_reconciled_at`)
+    // Round 24 (B5): this sweep rotates on its OWN marker. last_reconciled_at belongs to sweepReversedPayments (it skips a payment stamped
+    // recently), so stamping it here made the lost-dispute backstop skip every dispute this sweep had just looked at.
+    let { data, error } = await supabase.from('payments').select(`${cols}, dispute_checked_at`)
       .eq('status', 'DISPUTED')
       .or(`disputed_at.lt.${cutoff},and(disputed_at.is.null,created_at.lt.${cutoff})`)
-      .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(OLD_DISPUTES_PER_RUN)
+      .order('dispute_checked_at', { ascending: true, nullsFirst: true }).limit(OLD_DISPUTES_PER_RUN)
     let tracked = true
     if (error && isColumnMissing(error)) {
       tracked = false
@@ -1852,7 +1907,7 @@ async function fetchOldOpenDisputes(env, supabase, now, alreadyListed = new Set(
           }
         }
       } catch (err) { console.error(`old open dispute ${p.paystack_ref} not checked:`, err && err.message) }
-      if (tracked) { try { await supabase.from('payments').update({ last_reconciled_at: new Date(now).toISOString() }).eq('id', p.id) } catch (_) { /* rotation marker only */ } }
+      if (tracked) { try { await supabase.from('payments').update({ dispute_checked_at: new Date(now).toISOString() }).eq('id', p.id) } catch (_) { /* rotation marker only */ } }
     }
   } catch (err) { console.error('old open disputes error:', err && err.message) }
   return out
@@ -2118,15 +2173,22 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
     out.lastEventAt = await latest(null)
     out.lastChargeSuccessAt = await latest('charge.success')
 
-    const { data: pays, error: payErr } = await supabase.from('payments')
-      .select('paystack_ref, amount_cents, status, created_at')
+    // Round 24 (B4): a sale is judged by when it was PAID (paid_at, 0064), not when checkout began. A payment started before another one's webhook
+    // arrived but paid after it was compared with the wrong clock and never counted as missing its event; and a checkout opened an hour ago
+    // but paid a minute ago was held to a grace period it had long used up. Payments without paid_at fall back to created_at.
+    const payCols = 'paystack_ref, amount_cents, status, created_at'
+    const loadPays = cols => supabase.from('payments').select(cols)
       .in('status', ['SUCCESS', 'DISPUTED', 'REFUNDED'])
       .gte('created_at', new Date(now - HEALTH_WINDOW_MS).toISOString())
       .lt('created_at', new Date(now - HEALTH_GRACE_MS).toISOString())
       .order('created_at', { ascending: false }).limit(HEALTH_MAX_PAYMENTS)
+    let { data: pays, error: payErr } = await loadPays(`${payCols}, paid_at`)
+    if (payErr && isColumnMissing(payErr)) ({ data: pays, error: payErr } = await loadPays(payCols))
     if (payErr) throw payErr
+    const paidAtMs = p => { const t = Date.parse(p.paid_at || p.created_at); return Number.isFinite(t) ? t : Date.parse(p.created_at) }
     // Free-credit redemptions never touch Paystack, so they never have a webhook.
-    const paid = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:') && p.amount_cents > 0)
+    const paid = (pays || []).filter(p => p.paystack_ref && !String(p.paystack_ref).startsWith('credit:') && p.amount_cents > 0
+      && paidAtMs(p) <= now - HEALTH_GRACE_MS && paidAtMs(p) >= now - HEALTH_WINDOW_MS)
     const refs = paid.map(p => p.paystack_ref)
     out.paidChecked = refs.length
     if (refs.length) {
@@ -2144,7 +2206,7 @@ async function computeWebhookHealth(supabase, { now = Date.now() } = {}) {
       // ROUND-11 (G3): a sale older than the newest charge.success we DID receive for our own payments is history — webhooks have
       // reached this app since. Only sales newer than that still point at a delivery problem, so the alert (and /healthz) clear as
       // soon as webhooks flow again instead of staying red until the sale ages out of the 7-day window.
-      const unrecovered = missing.filter(p => !latestSeenMs || Date.parse(p.created_at) > latestSeenMs)
+      const unrecovered = missing.filter(p => !latestSeenMs || paidAtMs(p) > latestSeenMs)
       out.unrecovered = unrecovered.length
       out.unrecoveredReferences = unrecovered.slice(0, 5).map(p => p.paystack_ref)
     } else { out.unrecovered = 0; out.unrecoveredReferences = [] }
@@ -2231,6 +2293,7 @@ const SELFTEST_PROBES = [
   { table: 'payments', column: 'dispute_due_at', mig: '0083' }, { table: 'payments', column: 'dispute_id', mig: '0086' },
   { table: 'payments', column: 'dispute_evidence_id', mig: '0090' },
   { table: 'payments', column: 'dispute_answered_at', mig: '0097' }, { table: 'users', column: 'email_bounced_at', mig: '0086' },
+  { table: 'payments', column: 'refund_failed_at', mig: '0103' }, { table: 'payments', column: 'dispute_checked_at', mig: '0103' },
 ]
 async function svixRoundTrip(secret) {
   // Sign a sample exactly as Svix does and verify it with the code that checks real deliveries: proves the secret decodes and verifies.

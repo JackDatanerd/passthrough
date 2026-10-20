@@ -506,9 +506,18 @@ async function adminListPayments(ctx) {
     return q
   }
   // Webhooks round 19 (G2): dispute_answered_at / dispute_answer (migration 0097) come with the same fallback, one tier at a time.
-  let { data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at, dispute_answered_at, dispute_answer`)
-  if (error && (error.code === '42703' || /dispute_answer/i.test(error.message || ''))) ({ data, error, count } = await listPayments(`${PAYMENT_COLS}, dispute_due_at`))
-  if (error && (error.code === '42703' || /dispute_due_at/i.test(error.message || ''))) ({ data, error, count } = await listPayments(PAYMENT_COLS))
+  // Webhooks round 24 (G1): refund_failed_at (migration 0103) is the newest tier; every tier below is what an older database can answer.
+  const columnTiers = [
+    `${PAYMENT_COLS}, dispute_due_at, dispute_answered_at, dispute_answer, refund_failed_at`,
+    `${PAYMENT_COLS}, dispute_due_at, dispute_answered_at, dispute_answer`,
+    `${PAYMENT_COLS}, dispute_due_at`,
+    PAYMENT_COLS,
+  ]
+  let data, error, count
+  for (const cols of columnTiers) {
+    ;({ data, error, count } = await listPayments(cols))
+    if (!(error && (error.code === '42703' || error.code === 'PGRST204' || /column .* does not exist|could not find the '[^']+' column/i.test(error.message || '')))) break
+  }
   if (error) throw error
 
   // WEBHOOKS ROUND 5 (feature gap): what Paystack has confirmed as refunded so far (payment_refunds, 0053).
@@ -528,6 +537,8 @@ async function adminListPayments(ctx) {
     paystackRef: p.paystack_ref, fixTier: p.fix_tier, referralCode: p.referral_code,
     scanId: p.scan_id, userId: p.user_id, userEmail: p.users?.email || null,
     refundedAt: p.refunded_at, refundReference: p.refund_reference, disputedAt: p.disputed_at,
+    // Webhooks round 24 (G1): Paystack reported a refund of this payment as FAILED and the money is still with the merchant; only meaningful while SUCCESS / DISPUTED.
+    refundFailedAt: ['SUCCESS', 'DISPUTED'].includes(p.status) ? (p.refund_failed_at ?? null) : null,
     disputeDueAt: p.status === 'DISPUTED' ? (p.dispute_due_at ?? null) : null,
     disputeAnswer: p.status === 'DISPUTED' ? (p.dispute_answer ?? null) : null,
     disputeAnsweredAt: p.status === 'DISPUTED' ? (p.dispute_answered_at ?? null) : null,

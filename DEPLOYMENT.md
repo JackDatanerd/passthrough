@@ -1121,3 +1121,9 @@ Operator notes for the newest migrations. Apply each migration before deploying 
 #   * IMPORTANT: scan.controller.js passes the scan's look to all seven render sites (`version: scan.docTemplateVersion` / `row.doc_template_version`).
 #     A copy of that file taken before 4da7fee drops those arguments and silently renders every document on look 1 again -
 #     tests/docTemplate.test.js ("every render site in the scan controller passes the scan's version") fails if that ever happens.
+
+# WEBHOOKS ROUND 24 (migration 0103 — apply BEFORE or AFTER this Worker, either order is safe; EXPECTED_SCHEMA_VERSION is now 103.)
+#   * payments.refund_failed_at (nullable): stamped when Paystack reports a refund of a SUCCESS / DISPUTED payment as FAILED; Admin -> Payments shows
+#     "Refund failed" until the full refund goes through. payments.dispute_checked_at (nullable): the old-open-disputes sweep's own rotation marker.
+#   * Neither column has a default and nothing reads them unguarded: a Worker deployed before the migration skips the stamp / falls back a tier
+#     (Admin -> Payments, the dispute sweep and delivery health all retry without them), and the webhook self-test names 0103 until it is applied.

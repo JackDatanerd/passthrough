@@ -28,6 +28,7 @@ const emailService = require('../services/email.service')
 const { runInBackground } = require('../lib/background')
 const { hitQuota } = require('../middleware/rateLimiter')
 const rejections = require('../lib/webhookRejections')
+const { stripNul } = require('../middleware/bodyLimit')
 const { readBodyCapped } = require('../lib/readBody')
 // Best-effort, after the answer is decided: a refusal is stamped in the background and can never change or delay the HTTP response.
 const noteRejected = (c, provider, reason) => runInBackground(c, Promise.resolve().then(() => rejections.recordRejection(c.env, provider, reason, getSupabase(c.env))))
@@ -70,7 +71,7 @@ async function alertOnce(c, key, subject, message) {
 // Best-effort: never allowed to affect the answer.
 async function stampResendEvent(c, supabase, type) {
   try {
-    if (!(await hitQuota(c.env, 'resend-health-stamp', 1, 10 * 60))) return
+    if (!(await hitQuota(c.env, 'resend-health-stamp', 1, rejections.RESEND_STAMP_WINDOW_SECONDS))) return
     const at = new Date().toISOString()
     const { error } = await supabase.from('system_state')
       .upsert({ key: 'resend_webhook', value: { last_event_at: at, last_event_type: type }, updated_at: at }, { onConflict: 'key' })
@@ -91,7 +92,8 @@ function minimalResendEvent(event) {
   if (d.bounce && typeof d.bounce.type === 'string') data.bounce = { type: d.bounce.type }
   const reason = d.failed?.reason
   if (typeof reason === 'string') data.failed = { reason: reason.slice(0, 200) }
-  return { type: event.type, created_at: typeof event.created_at === 'string' ? event.created_at : undefined, data }
+  // Round 24 (B2): NUL / lone surrogates would make the jsonb insert fail (see webhooks.controller redactEvent).
+  return stripNul({ type: event.type, created_at: typeof event.created_at === 'string' ? event.created_at : undefined, data })
 }
 
 // Does a registered account use this address? Visibility only (G2): never throws, never changes the outcome.

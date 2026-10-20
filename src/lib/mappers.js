@@ -248,6 +248,8 @@ function paymentRowToCamel(row) {
     // Migration 0064 (Payments & Pricing round 8): when the money settled; null until then.
     paidAt:              row.paid_at ?? null,
     refundedAt:          row.refunded_at,
+    // Migration 0103 (webhooks round 24): when Paystack last reported a refund of this payment as failed; null once refunded or never.
+    refundFailedAt:      row.refund_failed_at ?? null,
     refundReference:     row.refund_reference,
     disputedAt:          row.disputed_at,
     // Migration 0083 (webhooks round 13): when Paystack auto-accepts the open dispute; only meaningful while DISPUTED.
