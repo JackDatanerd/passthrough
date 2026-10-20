@@ -1,0 +1,5 @@
+Partners round 24
+ B1 adminListPartners, adminPayoutRunExport and sweepPayoutDue read the partners table unpaged; past PostgREST's 1000-row cap
+    partners silently dropped out of the list, the payout CSV and the payout-due alert. New loadAllPartners pages them.
+ B2 sweepPayoutDue counted mixed-currency partners as ready while the export skips them; the alert now skips them too.
+ Not changed: dashboard/admin-detail ledger embed (totals correct; payload scales with history).

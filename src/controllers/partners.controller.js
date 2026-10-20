@@ -607,6 +607,21 @@ async function latestPayoutLinkEmailStatus(supabase, emails) {
   return out
 }
 
+// Every partner row, paged so PostgREST's row cap (1000) cannot silently drop partners from the admin list, the payout-run
+// export or the payout-due alert. `build` receives the bare table query and returns it with columns/filters applied.
+async function loadAllPartners(supabase, build) {
+  const out = []
+  const PAGE = 1000
+  for (let from = 0; ; from += PAGE) {
+    const { data, error } = await build(supabase.from('partners'))
+      .order('created_at', { ascending: false }).order('id', { ascending: true }).range(from, from + PAGE - 1)
+    if (error) throw error
+    out.push(...(data || []))
+    if (!data || data.length < PAGE) break
+  }
+  return out
+}
+
 // Every UNPAID ledger row, grouped by partner (paged so PostgREST's row cap can't truncate it). Shared by the
 // admin list and the payout-due reminder so both judge "ready to pay" from the same rows.
 async function loadUnpaidLedgerByPartner(supabase) {
@@ -652,17 +667,19 @@ async function sweepPayoutDue(env, supabase) {
       if (!prev || typeof prev.readyCents !== 'number') return out     // marker from before follow-ups: nothing more to do
     }
 
-    const { data: partners, error } = await supabase.from('partners').select('id, email, payout_method')
-    if (error) throw error
+    const partners = await loadAllPartners(supabase, t => t.select('id, email, payout_method'))
     const live = (partners || []).filter(p => !isRemovedEmail(p.email))
     const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
     const holdDays = holdDaysFor(env), minPayout = minPayoutFor(env)
     let ready = 0, readyCents = 0, noDetails = 0, noDetailsCents = 0, heldCents = 0
+    const cur0 = c.activeCurrency(env)
     for (const p of live) {
       const ledger = ledgerByPartner.get(p.id) || []
       const r = payoutReadiness(ledger, holdDays, minPayout)
       heldCents += Math.max(0, heldCentsOf(ledger, holdDays))
       if (r.readyToPayCents <= 0) continue
+      // A payout can only settle one currency: the payout-run export leaves such a partner out, so the alert does too.
+      if (new Set(ledger.map(l => String(l.currency || cur0).toUpperCase())).size > 1) continue
       if (!p.payout_method) { noDetails++; noDetailsCents += r.readyToPayCents; continue }
       ready++; readyCents += r.readyToPayCents
     }
@@ -703,8 +720,7 @@ async function sweepPayoutDue(env, supabase) {
 // bulk read of full account numbers / tax IDs, so the route puts it behind the admin step-up.
 async function adminPayoutRunExport(ctx) {
   const supabase = getSupabase(ctx.env)
-  const { data, error } = await supabase.from('partners').select('*').not('payout_method', 'is', null)
-  if (error) throw error
+  const data = await loadAllPartners(supabase, t => t.select('*').not('payout_method', 'is', null))
   const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
   const holdDays = holdDaysFor(ctx.env), minPayout = minPayoutFor(ctx.env), currency = c.activeCurrency(ctx.env)
   const rows = []
@@ -732,11 +748,7 @@ async function adminListPartners(ctx) {
   // so PostgREST's row cap can't silently truncate it. Payout history, codes and
   // per-code stats live behind adminGetPartner. (netConversions moved there too: it needs
   // paid rows, and no list column shows it.)
-  const { data, error } = await supabase
-    .from('partners')
-    .select('*')
-    .order('created_at', { ascending: false })
-  if (error) throw error
+  const data = await loadAllPartners(supabase, t => t.select('*'))
 
   const ledgerByPartner = await loadUnpaidLedgerByPartner(supabase)
 
