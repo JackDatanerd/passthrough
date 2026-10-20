@@ -369,6 +369,7 @@ async function analyzeUploadRaw(bytes, mimeType, { env } = {}) {
         // A scan: pdf.js finds no text layer. The model can read the page images, which lets the paid fix rebuild a
         // real text resume from it — and the score says plainly that the ORIGINAL is unreadable to an ATS.
         if (env?.ANTHROPIC_API_KEY && r.structure.pages <= OCR_MAX_PAGES && bytes.byteLength <= 5 * 1024 * 1024) {
+          structure.ocrAttempted = true   // a model call was spent on this file (the controller does not refund the slot for it)
           const ocr = await require('./claude.service').extractTextFromPdf(env, bytes)
           if (ocr.success && ocr.text.trim().length >= MIN_TEXT) { text = ocr.text; structure.imageOnly = true }
         }

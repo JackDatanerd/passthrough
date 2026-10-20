@@ -143,6 +143,9 @@ async function uploadResume(ctx, next) {
     // validates it). This field used to be missing here, so the form's "same resume" submit
     // reached createScan with nothing in it and was rejected as "no input".
     sourceScanId:       textField('sourceScanId',       64),
+    // Rescan: 'delivered' = scan the fixed (delivered) version of that earlier scan instead of its original.
+    // Missing here, the form's "Scan my improved version instead" box never reached createScan.
+    rescanVersion:      textField('rescanVersion',      20),
     // Manual entry: the structured resume the person typed into the form themselves (JSON).
     // Validated, size-capped and shape-checked by lib/resumeData.js in createScan.
     resumeDataJson:     textField('resumeDataJson',     MAX_RESUME_JSON_CHARS + 1),

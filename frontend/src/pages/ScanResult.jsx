@@ -833,7 +833,7 @@ export default function ScanResult() {
               <div className="mt-4">
                 <Alert className="mb-2">{retryScanError}</Alert>
                 <Button onClick={handleRetryScan} loading={retryScanLoading}>Retry this scan</Button>
-                <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. It counts as a scan, like the one that failed did.</p>
+                <p className="mt-2 text-xs text-red-600">Uses the same resume and job description — nothing to re-enter. A scan that failed on our side is given back, so retrying uses one scan, not two.</p>
               </div>
             )}
             {!scan.fixPurchased && <Link to={scan.inputMode === 'brain_dump' ? (keptDraft?.manual && !keptDraft?.text?.trim() ? '/?mode=manual' : '/?mode=brainDump') : scan.inputMode === 'saved_profile' ? '/?mode=savedProfile' : '/'} className="mt-3 inline-block text-sm text-blue-600 hover:underline">

@@ -852,9 +852,22 @@ function looksEnglish(text) {
 // already called those bullets quantified. Counted here: percentages, money, multipliers, magnitudes and plain counts;
 // not counted: years / date ranges, durations ("5 years"), list numbering, phone numbers and contact lines.
 const CONTACT_LINE_RE = /@|linkedin\.|github\.|\+?\d[\d\s().-]{8,}/i
+// Dates written as numbers (03/2019, 12/31/2020, 2019-03, 2019-21), a GPA and a version number are not achievements: their
+// digits used to be counted as figures (lifting the Content score for writing a date numerically), and a date range such as
+// "2019 - 2021" also looked like a phone number to CONTACT_LINE_RE, silently dropping every real figure on that line.
+function stripDateNoise(line) {
+  return line
+    .replace(/\b\d{1,2}\s*[\/.\-]\s*\d{1,2}\s*[\/.\-]\s*(?:\d{4}|\d{2})\b/g, ' ')
+    .replace(/\b\d{1,2}\s*[\/.\-]\s*(?:19|20)\d{2}\b/g, ' ')
+    .replace(/\b(?:19|20)\d{2}\s*[\/\-\u2013\u2014]\s*\d{1,2}\b(?!\s*(?:%|x\b|k\b|m\b|million|billion|thousand|\s[A-Za-z]{3,}))/g, ' ')
+    .replace(/\b(?:19|20)\d{2}\s*[\-\u2013\u2014]\s*(?:19|20)\d{2}\b/g, ' ')
+    .replace(/\bgpa\s*[:\-]?\s*\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?/gi, ' ')
+    .replace(/\bv(?:ersion)?\s*\.?\s*\d+(?:\.\d+)+/gi, ' ')
+}
 function countQuantifiedFigures(text) {
   let n = 0
-  for (const line of String(text || '').split('\n')) {
+  for (const rawLine of String(text || '').split('\n')) {
+    const line = stripDateNoise(rawLine)
     if (CONTACT_LINE_RE.test(line)) continue
     const l = line.replace(/^\s*\d+[.)]\s+/, '')
     for (const m of l.matchAll(/(\$\s*\d[\d,]*(?:\.\d+)?)|(?<![\w.$])(\d[\d,]*(?:\.\d+)?)(\s*(?:%|x\b|k\b|m\b|bn?\b|mm\b|million|billion|thousand)|\s+[A-Za-z]{3,})?/gi)) {
@@ -1231,5 +1244,5 @@ module.exports = {
   scoreResume, detectRoleCategory, detectSeniority, describeWeakAreas,
   // exported for tests
   extractKeywords, stem, tokenizeRaw, normalizeTechTerms, displayKeyword, scoreFormat, requiredYears,
-  resumeEvidenceZones, looksEnglish, stripLinkBlock
+  resumeEvidenceZones, looksEnglish, stripLinkBlock, countQuantifiedFigures
 }

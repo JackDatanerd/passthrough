@@ -286,6 +286,10 @@ async function createScan(ctx) {
       return ctx.json({ success: false, message: 'That scan has no improved version to reuse.' }, 400)
     if (wantDelivered && !(await purchaseIsLive(supabase, source)))
       return ctx.json({ success: false, message: 'That purchase was refunded or is under dispute, so its improved version cannot be reused.' }, 400)
+    // A rescan of a typed background is still "built from scratch" (it used to be relabelled "saved profile"
+    // everywhere it was shown), whichever version is reused. The structured data is already there, so the
+    // brain-dump pipeline reuses it instead of structuring again.
+    if (source.inputMode === 'brain_dump') rescanInputMode = 'brain_dump'
     if (deliveredData) {
       rescanData = deliveredData
     } else if (source.inputMode === 'file') {
@@ -302,10 +306,6 @@ async function createScan(ctx) {
       if (!source.originalResumeData)
         return ctx.json({ success: false, message: 'That scan has no resume content to reuse yet — wait for it to finish, or start a new one.' }, 400)
       rescanData = source.originalResumeData
-      // A rescan of a typed background is still "built from scratch" (it used to be relabelled
-      // "saved profile" everywhere it was shown). The structured data is already there, so the
-      // brain-dump pipeline reuses it instead of structuring again.
-      if (source.inputMode === 'brain_dump') rescanInputMode = 'brain_dump'
     }
   }
 
@@ -2500,7 +2500,9 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       })
       // No Claude scoring call was made and no result was produced — give the slot back
       // so the person can retry with a usable file.
-      if (failedHere) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey, ipSlotKey)
+      // Unless a model call WAS made to read it (a picture-only PDF): handing that slot back would make the call free,
+      // repeatable as often as the rate limit allows.
+      if (failedHere && !layoutStructure?.ocrAttempted) await refundScanSlot(env, supabase, scan, 'runAtsScan: quota refund (unparseable resume)', anonRlKey, ipSlotKey)
       return { success: false, error: failureMessage(code), errorCode: code }
     }
 
