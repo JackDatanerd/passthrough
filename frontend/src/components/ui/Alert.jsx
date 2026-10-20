@@ -1,4 +1,4 @@
-import { Children, useEffect, useRef } from 'react'
+import { Children, useEffect, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 
 // Inline notice box. The red "something failed" box was hand-written, with
@@ -29,6 +29,15 @@ export default function Alert({ variant = 'error', className, children, focusOnS
   useEffect(() => {
     if (focusOnShow && !empty) ref.current?.focus()
   }, [focusOnShow, empty])
+  // Round 21: a role="status" node that is inserted already holding its text is often NOT spoken (see OfflineBanner), so a "Saved" /
+  // warning / info notice that appears after an action was silent for many screen-reader users. role="alert" (the error variant) is
+  // special-cased by assistive tech and needs nothing. For the others the live region goes into the page EMPTY first and gets its
+  // message in the effect that follows, so the text arrives as a change to a region that already exists. (Content is in the DOM by
+  // the time any test or caller looks: the effect flushes inside the same act / tick.)
+  const live = variant !== 'error'
+  const [filled, setFilled] = useState(!live)
+  useEffect(() => { setFilled(!live || !empty) }, [live, empty])
+  if (!empty && live && !filled) return <div ref={ref} role="status" {...(focusOnShow ? { tabIndex: -1 } : {})} />
   if (empty) return null
   return (
     <div

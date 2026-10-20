@@ -7,11 +7,19 @@ import { ATS_PASS_THRESHOLD } from './scoreThresholds'
 // The Date constructor accepts almost any string: new Date('0') is the year 2000 and new Date('12') is December 2001, so a stray
 // "0" or "12" from a bad field printed a confident, wrong date where "—" is promised. A real date string always carries a four-digit year.
 function looksLikeDate(input) {
-  return typeof input !== 'string' || /\d{4}/.test(input)
+  if (typeof input === 'number') return Number.isFinite(input)
+  if (typeof input !== 'string') return false          // a boolean (new Date(true) is 1970) or any other non-date value
+  if (!/\d{4}/.test(input)) return false
+  // Round 21: the Date constructor also reads "foo 2026" as 1 Jan 2026. Words are allowed only where a real date string has them
+  // (the T / Z of an ISO timestamp, UTC / GMT, AM / PM, month and weekday names).
+  const stripped = input.replace(/\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec|mon|tue|wed|thu|fri|sat|sun)[a-z]*\b\.?/gi, '')
+    .replace(/\b(?:utc|gmt|am|pm|at)\b/gi, '').replace(/(\d)[TZ]/g, '$1').replace(/\([^)]*\)/g, '')
+  return !/[A-Za-z]{2,}/.test(stripped)
 }
 
 function parseDate(input, utc = false) {
   if (input instanceof Date) return input
+  if (typeof input === 'string') input = input.trim()
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(input))
   if (!m) return looksLikeDate(input) ? new Date(input) : new Date(NaN)
   const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
@@ -268,6 +276,11 @@ export function csvText(v) { return { __csvText: v == null ? '' : String(v) } }
 
 export function csvCell(v) {
   if (v === null || v === undefined) return ''
+  // Round 21: NaN / Infinity are not amounts — they were written as the words "NaN" / "Infinity" into a file people reconcile money from.
+  if (typeof v === 'number' && !Number.isFinite(v)) return ''
+  // A negative amount handed over as a string ("-12.00", from .toFixed(2)) is a number, not a formula: the apostrophe guard below
+  // turned it into the text '-12.00. Only a plain decimal qualifies, so "-1+1" and the like still get the guard.
+  if (typeof v === 'string' && /^-\d+(?:\.\d+)?$/.test(v)) return v
   if (typeof v === 'object' && typeof v.__csvText === 'string') {
     const raw = v.__csvText
     if (raw === '') return ''

@@ -149,6 +149,9 @@ export function ToastProvider({ children }) {
       {children}
       <div
         ref={stackRef}
+        // Marks the stack for <Modal>'s focus trap: a toast's Undo / Dismiss buttons sit outside any dialog, and were unreachable by
+        // keyboard for as long as a dialog was open.
+        data-toast-stack=""
         className="fixed z-[60] flex flex-col gap-2 pointer-events-none"
         // Sits above anything fixed to the bottom edge (the Terms banner publishes
         // its height as --bottom-inset) so toasts never cover its button.

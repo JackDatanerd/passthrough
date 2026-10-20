@@ -26,7 +26,8 @@ const api = axios.create({
 // Claude call up to 90s (claude.service LONG_CALL_TIMEOUT_MS) and /structure runs two of them back to
 // back (parse, then score), so the generic 30s cut the client off while the server was still working
 // and finished anyway — the person saw "timed out / check your connection", and a retry repeated the work.
-export const LONG_REQUEST_TIMEOUT_MS = 150_000
+// Round 21: /structure is two sequential Claude calls of up to 90s each (180s worst case); 150s cut the client off inside that window.
+export const LONG_REQUEST_TIMEOUT_MS = 190_000
 const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-pdf)(?:[?#]|$)/
 // SCAN/ATS ROUND 4: the same applies to two PATCHes the POST-only rule above missed. Saving an edit to a DELIVERED resume
 // re-scores it (a Claude call), re-generates the designed-PDF HTML (a second Claude call, up to 90s) and renders the PDF in
@@ -41,7 +42,11 @@ const LONG_RUNNING_GET = /^\/(?:scan\/[^/?#]+\/(?:download-draft-pdf|cover-lette
 // Routes that sit behind the Worker's step-up gate (middleware/adminOnly.js `stepUp`): the admin console, the
 // admin side of partners (payout runs, links, ledger adjustments) and payment refunds / resolutions.
 const STEP_UP_URL = /^\/(?:admin|partners|payments)(?:[/?#]|$)/
-export function isStepUpUrl(url) { return STEP_UP_URL.test(String(url || '')) }
+// Round 21: the prefixes above also hold routes that are NOT admin-gated — the partner's own token-authenticated portal and the
+// signed-in user's own payments — and the in-memory elevation token used to ride on those too. A route missing from this list
+// that turns out to be gated still works: the refusal is replayed WITH the elevation (see __stepUpTried).
+const NOT_STEP_UP = /^\/(?:partners\/(?:payout-details|dashboard|conversions|request-payout-link|recover-links|reset-links|attribution|notifications|accept-terms|track-click|program|apply)|payments\/(?:initialize|verify|history|pending|[^/?#]+\/(?:cancel|receipt)))(?:[/?#]|$)/
+export function isStepUpUrl(url) { const u = String(url || ''); return STEP_UP_URL.test(u) && !NOT_STEP_UP.test(u) }
 
 api.interceptors.request.use(config => {
   const token = getToken()

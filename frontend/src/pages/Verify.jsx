@@ -16,6 +16,7 @@ import { sha256Hex, classifyFingerprint, fileKindOf, extractSha256, MAX_CHECK_BY
 import { isRoleCategory, roleLabel } from '../lib/roleCategories'
 import { RoleFields, LeadConsentNote, LEAD_SENT_MESSAGE } from '../components/lead/LeadFormParts'
 import TurnstileWidget, { TURNSTILE_ENABLED } from '../components/lead/TurnstileWidget'
+import useFileDropGuard from '../hooks/useFileDropGuard'
 
 const SUPPORT_EMAIL = 'support@usepassthrough.com'
 
@@ -166,6 +167,8 @@ function ReportForm({ code, onClose }) {
 }
 
 export default function Verify() {
+  // Round 21: a file dropped just outside the check-a-file box used to open in the tab and replace this page.
+  useFileDropGuard()
   const { code } = useParams()
   // ROUND-5 AUDIT FIX (feature gap): /check hands over { code, hash, kind } for the file the reader looked up.
   const location = useLocation()
@@ -682,6 +685,7 @@ export default function Verify() {
                 just our stored copy — this is the only check that can catch a
                 candidate's edited copy. Runs entirely in your browser. */}
             <div
+              data-file-dropzone=""
               onDragOver={e => { e.preventDefault(); setDragging(true) }}
               onDragLeave={() => setDragging(false)}
               onDrop={handleDrop}

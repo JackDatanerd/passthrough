@@ -76,6 +76,9 @@ export default function SessionResumePrompt() {
           You were signed out, but what you typed on this page is still here. Sign in again to carry on and save it.
         </p>
         <p className="text-sm text-gray-700">Signed in as <span className="font-medium">{user?.email}</span></p>
+        {/* Round 21: a password manager fills a password only next to the username it belongs to; the email is shown above as text, so
+            it also rides along here (read-only, out of the Tab order, hidden from assistive tech — the line above already says it). */}
+        <input type="email" name="username" autoComplete="username" value={user?.email || ''} readOnly tabIndex={-1} aria-hidden="true" className="sr-only" />
         <PasswordInput label="Password" value={password} onChange={e => setPassword(e.target.value)}
           autoComplete="current-password" data-autofocus />
         <Alert>{error}</Alert>

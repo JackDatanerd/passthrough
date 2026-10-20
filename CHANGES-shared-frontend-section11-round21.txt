@@ -1,0 +1,38 @@
+SHARED FRONTEND (section 11) - round 21: independent audit, gaps built and bugs fixed
+(components/ui, components/layout, lib/api.js, lib/utils.js, hooks/useApi.js; traced into lib/errors.js, Verify.jsx)
+
+FEATURE GAPS CLOSED
+G1  Rate-limit errors never said how long to wait. The Worker sends Retry-After on every 429 and exposes it through CORS for exactly
+    this, but nothing read it. lib/errors.js: getRetryAfterSeconds(err) (seconds or HTTP date, plain object or AxiosHeaders), formatWait(s)
+    (rounded UP: "about 15 minutes"), and getErrorMessage appends "Try again in about N." to a 429 (skipped when the server's own message
+    already names a time). useApi() now returns `retryAfter` (seconds | null).
+G3  SessionResumePrompt: the form had a password field but no username, so password managers could not fill it. It now carries the
+    account email as a read-only, tab-skipped, aria-hidden autocomplete="username" input.
+G4  A toast raised inside a dialog (Undo / Retry / Dismiss) could not be reached by keyboard while the dialog was open: the toast stack is
+    outside the dialog and, being earlier in the DOM than the portaled dialog, native Tab never went there. Modal's Tab trap now hops
+    dialog -> toasts -> dialog (and back with Shift+Tab). Toast stack carries data-toast-stack.
+(G2, tailwind-merge for cn(), is a dependency decision and is NOT done here.)
+
+BUGS FIXED
+B1  ReferralCodeEntry: Apply / change / remove / Cancel unmounted the focused button and dropped keyboard focus on <body>. Focus now goes
+    to the control that replaces it (the "change" button once applied, the field when editing).
+B2  Switch: natively `disabled` while saving dropped focus in real browsers (PartnerDashboard's notification toggle). Now aria-disabled +
+    swallowed click, like Button loading / Pagination.
+B3  Alert (non-error variants): a role="status" node inserted already holding its text is often not spoken. The region now enters the
+    page empty and is filled in the effect that follows. Error variant (role="alert") unchanged. EmptyState left as is (static text).
+B4  csvCell: a negative amount passed as a string ("-12.00") was written as '-12.00; NaN / Infinity were written as words. Fixed.
+B5  formatDate / formatDateTime: junk containing a year ("foo 2026") printed 1 Jan 2026 and `true` printed 1970. Words are now allowed
+    only where real date strings have them; whitespace-padded date-only strings are trimmed. (No regex lookbehind: older Safari.)
+B6  useApi progress: documented as null when the size is unknown but stayed a determinate 0%. Now null until a real figure arrives; a
+    later event without a total never regresses a real figure.
+B7  The in-memory step-up elevation token rode on the partner portal and the user's own payment routes. isStepUpUrl now excludes the
+    non-gated /partners/* and /payments/* routes (a gated route missed by the list still works: the refusal is replayed with it).
+B8  /structure runs two Claude calls of up to 90s each; the 150s client timeout cut in before the 180s worst case. LONG_REQUEST_TIMEOUT_MS
+    is now 190s.
+B9  Verify.jsx: its own dropzone had no window-level drop guard (a file dropped just outside it opened in the tab). The guard is now a
+    shared hook (hooks/useFileDropGuard.js) used by FileUpload and Verify.
+    RouteAnnouncer: StrictMode's dev-only second effect run announced and moved focus on the initial load; now compares the last path.
+
+TESTS
+frontend/tests/sharedFrontend.round21.test.jsx (24) and frontend/tests/components/SessionResumePrompt.round21.test.jsx (1).
+Full frontend suite run before/after in a scratch harness: identical results apart from the 25 new passing tests.

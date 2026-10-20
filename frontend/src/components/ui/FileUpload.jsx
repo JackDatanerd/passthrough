@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from 'react'
 import { cn } from '../../lib/utils'
 import { validateUpload, normalizeUpload } from '../../lib/upload'
 import { announce } from '../../lib/announce'
+import useFileDropGuard from '../../hooks/useFileDropGuard'
 
 // Resume dropzone.
 //
@@ -47,25 +48,8 @@ export default function FileUpload({
   // file (a form reset, switching modes) it would otherwise linger under a different state.
   useEffect(() => { setError('') }, [value])
 
-  // A file dropped a little OUTSIDE the dropzone makes the browser open it in this tab, replacing the
-  // app — and with it everything typed into the scan form (pasted job description, the other fields).
-  // While this is mounted, a file drag anywhere else is cancelled (the cursor shows "not allowed") so a
-  // near-miss does nothing instead of destroying the page. Drags that are not files (text, links) and
-  // anything over the dropzone itself are left to their own handlers.
-  useEffect(() => {
-    const guard = e => {
-      const types = Array.from(e.dataTransfer?.types || [])
-      if (!types.includes('Files')) return
-      // Over ANY dropzone (not just this instance's): with two mounted, each one's guard used to cancel drops over the
-      // other's zone (dropEffect 'none'), so neither accepted a file.
-      if (e.target instanceof Element && e.target.closest('[data-file-dropzone]')) return
-      e.preventDefault()
-      if (e.type === 'dragover' && e.dataTransfer) e.dataTransfer.dropEffect = 'none'
-    }
-    window.addEventListener('dragover', guard)
-    window.addEventListener('drop', guard)
-    return () => { window.removeEventListener('dragover', guard); window.removeEventListener('drop', guard) }
-  }, [])
+  // A file dropped a little OUTSIDE the dropzone would make the browser open it in this tab, replacing the app (hooks/useFileDropGuard).
+  useFileDropGuard()
 
   const controlled = value !== undefined
   const file = controlled ? value : internalFile

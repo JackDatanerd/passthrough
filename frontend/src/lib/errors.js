@@ -34,6 +34,39 @@ export function isCancelError(err) {
   return !!err && (err.code === 'ERR_CANCELED' || err.name === 'CanceledError' || err.name === 'AbortError')
 }
 
+// How long the server asked the client to wait (the Retry-After header on a 429 / 503), in whole seconds, or null when the
+// response carries none. The header is either a number of seconds or an HTTP date; both are understood. The Worker sends it on
+// every 429 and exposes it through CORS (middleware/cors.js) precisely so the person can be told how long.
+export function getRetryAfterSeconds(err, now = Date.now()) {
+  const h = err?.response?.headers
+  if (!h) return null
+  let raw = null
+  try { raw = typeof h.get === 'function' ? h.get('retry-after') : (h['retry-after'] ?? h['Retry-After']) } catch (_) { raw = null }
+  if (raw === null || raw === undefined || String(raw).trim() === '') return null
+  const text = String(raw).trim()
+  const secs = /^\d+$/.test(text) ? Number(text) : Math.ceil((Date.parse(text) - now) / 1000)
+  return Number.isFinite(secs) && secs > 0 ? secs : null
+}
+
+// "about 15 minutes", "about 1 hour", "a few seconds" — rounded UP, so the person is never told to retry too early.
+export function formatWait(seconds) {
+  const s = Number(seconds)
+  if (!Number.isFinite(s) || s <= 0) return ''
+  if (s <= 60) return s <= 10 ? 'a few seconds' : `about ${Math.ceil(s / 5) * 5} seconds`
+  const mins = Math.ceil(s / 60)
+  if (mins < 60) return `about ${mins} minute${mins === 1 ? '' : 's'}`
+  const hours = Math.ceil(mins / 60)
+  return `about ${hours} hour${hours === 1 ? '' : 's'}`
+}
+
+// The sentence added to a 429 so the person knows when to come back. Skipped when the server's own message already names a time.
+function waitSentence(err, message) {
+  if (err?.response?.status !== 429) return ''
+  const secs = getRetryAfterSeconds(err)
+  if (!secs || /\b\d+\s*(?:second|minute|hour|min|sec|hr)s?\b/i.test(message || '')) return ''
+  return ` Try again in ${formatWait(secs)}.`
+}
+
 export function getErrorMessage(err, fallback = GENERIC) {
   if (fallback === null || fallback === undefined || fallback === '') fallback = GENERIC
   if (!err) return fallback
@@ -57,9 +90,12 @@ export function getErrorMessage(err, fallback = GENERIC) {
       // The Worker masks every UNHANDLED 5xx as exactly this text (middleware/errorHandler.js, GENERIC_ERROR_MESSAGE). It says
       // nothing and tells the person nothing to do, so for a 5xx it yields to the friendlier line below. Keep the two in sync.
       const masked = res.status >= 500 && data.message === 'An error occurred.'
-      if (typeof data.message === 'string' && data.message && data.message !== 'Validation failed' && !masked) return data.message
+      if (typeof data.message === 'string' && data.message && data.message !== 'Validation failed' && !masked) return data.message + waitSentence(err, data.message)
     }
-    if (res.status === 429) return 'Too many requests — please wait a moment and try again.'
+    if (res.status === 429) {
+      const base = 'Too many requests — please wait a moment and try again.'
+      return waitSentence(err, '') ? 'Too many requests.' + waitSentence(err, '') : base
+    }
     if (res.status === 413) return 'That file is too large.'
     if (res.status >= 500) return 'The server had a problem. Please try again in a moment.'
     return fallback

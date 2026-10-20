@@ -31,11 +31,14 @@ function focusIsSpoken(main) {
 export default function RouteAnnouncer() {
   const { pathname, hash } = useLocation()
   const [message, setMessage] = useState('')
-  const first = useRef(true)
+  // The path the last announcement was for. A ref flag (`first`) was flipped by StrictMode's dev-only second effect run, which then
+  // announced and moved focus on the INITIAL load; comparing paths is immune to that.
+  const lastPath = useRef(pathname)
   const flip = useRef(false)
 
   useEffect(() => {
-    if (first.current) { first.current = false; return undefined }
+    if (lastPath.current === pathname) return undefined
+    lastPath.current = pathname
     let cancelled = false
     let timer = null
     let tries = 0

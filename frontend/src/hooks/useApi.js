@@ -1,5 +1,5 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
-import { getErrorMessage, isCancelError } from '../lib/errors'
+import { getErrorMessage, getRetryAfterSeconds, isCancelError } from '../lib/errors'
 
 // Thin wrapper for "run an API call, track loading + error". It had real
 // flaws before being adopted more widely:
@@ -30,12 +30,17 @@ import { getErrorMessage, isCancelError } from '../lib/errors'
 // `onUploadProgress` that feeds `progress` (0-100, or null when nothing is uploading / the size is unknown). Render it
 // with <ProgressBar value={progress} />. Callers that do not pass the option see no change.
 //
-//   const { loading, error, progress, execute, reset } = useApi()
+// Rate limits: `retryAfter` is the number of seconds the server asked the client to wait after a 429 / 503 (its Retry-After header), or
+// null. `error` already says so in words; use the number to keep a button disabled (see useCooldown).
+//
+//   const { loading, error, retryAfter, progress, execute, reset } = useApi()
 //   const data = await execute(() => api.post('/scan', formData))   // returns res.data; rethrows on failure
 export function useApi() {
   const [pending, setPending] = useState(0)
   const [error, setError] = useState(null)
   const [progress, setProgress] = useState(null)
+  // Seconds the server asked us to wait after a 429 / 503 (Retry-After), or null — pair with <useCooldown> or show it next to `error`.
+  const [retryAfter, setRetryAfter] = useState(null)
   const mounted = useRef(true)
   const callId = useRef(0)
   // Which call the displayed `progress` belongs to. Progress used to follow "the newest call", so starting any other call
@@ -77,13 +82,17 @@ export function useApi() {
     }
     const controller = !keepAlive && typeof AbortController !== 'undefined' ? new AbortController() : null
     if (controller) controllers.current.set(id, controller)
-    if (mounted.current) { setPending(n => n + 1); setError(null); errorMark.current = -1; if (wantsProgress) { progressOwner.current = id; setProgress(0) } }
+    if (mounted.current) { setPending(n => n + 1); setError(null); setRetryAfter(null); errorMark.current = -1; if (wantsProgress) { progressOwner.current = id; setProgress(0) } }
     try {
       const callOptions = controller ? { signal: controller.signal } : {}
+      let known = false
       if (wantsProgress) {
         callOptions.onUploadProgress = e => {
-          if (mounted.current && id === progressOwner.current && e && e.total > 0)
-            setProgress(Math.min(100, Math.round((e.loaded / e.total) * 100)))
+          if (!mounted.current || id !== progressOwner.current || !e) return
+          if (e.total > 0) { known = true; setProgress(Math.min(100, Math.round((e.loaded / e.total) * 100))); return }
+          // Size unknown and no real figure yet: null (an indeterminate bar), as documented above — not a determinate bar stuck at
+          // 0%. Once a real figure has been shown, a stray event without a total leaves it where it was (it must not regress).
+          if (!known) setProgress(null)
         }
       }
       const res = await apiCall(callOptions)
@@ -99,7 +108,7 @@ export function useApi() {
       // A call cancelled on purpose (unmount, or replaced by a newer one) is not an error to display.
       // A FAILURE surfaces even from an earlier-started call (only one a `replace: true` call pushed aside is ignored): only a success is "latest wins" (above). Before,
       // a failed save was swallowed whenever a newer call (a reload) had started, so the person saw no error at all.
-      if (!isCancelError(err) && mounted.current && !superseded.current.has(id)) { errorMark.current = callId.current; setError(getErrorMessage(err, fallback)) }
+      if (!isCancelError(err) && mounted.current && !superseded.current.has(id)) { errorMark.current = callId.current; setError(getErrorMessage(err, fallback)); setRetryAfter(getRetryAfterSeconds(err)) }
       throw err
     } finally {
       if (progressOwner.current === id) { progressOwner.current = 0; if (mounted.current) setProgress(null) }
@@ -109,7 +118,7 @@ export function useApi() {
     }
   }, [])
 
-  const reset = useCallback(() => { errorMark.current = -1; setError(null) }, [])
+  const reset = useCallback(() => { errorMark.current = -1; setError(null); setRetryAfter(null) }, [])
 
-  return { loading: pending > 0, error, progress, execute, reset }
+  return { loading: pending > 0, error, retryAfter, progress, execute, reset }
 }

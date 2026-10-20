@@ -22,6 +22,16 @@ function tabbables(dialog) {
   return all.filter(el => el.getClientRects().length > 0)
 }
 
+// Round 21: the toast stack (components/ui/Toast) is rendered outside every dialog, so its Undo / Retry / Dismiss buttons were out of
+// reach of the Tab trap for as long as a dialog was open — a toast fired by a dialog's own action expired before a keyboard user could
+// press its button. The stack is treated as the last stop of the trap: Tab runs through the dialog, then the toasts, then wraps.
+function toastStack() { return typeof document === 'undefined' ? null : document.querySelector('[data-toast-stack]') }
+function toastStops() {
+  const stack = toastStack()
+  if (!stack) return []
+  return [...stack.querySelectorAll('button:not([disabled])')].filter(el => el.getClientRects().length > 0 || stack.getClientRects().length === 0)
+}
+
 // BUG FIX (audit): background-scroll locking used to save/restore
 // document.body.style.overflow per Modal instance — `previousOverflow` was
 // whatever it was when THAT instance mounted. If two modals were ever open
@@ -157,15 +167,28 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
         return
       }
       if (e.key !== 'Tab') return
-      const items = tabbables(dialog)
+      const own = tabbables(dialog)
+      const toasts = toastStops()
+      const items = own.concat(toasts)
       if (items.length === 0) { e.preventDefault(); dialog.focus(); return }
       const first = items[0], last = items[items.length - 1]
       const active = document.activeElement
+      const stack = toastStack()
       // Focus can end up OUTSIDE the dialog (on <body>) — e.g. after the backdrop
       // is clicked while the dialog is not dismissible, or when a focused button
       // is disabled mid-request. Only wrapping at the edges let Tab walk straight
       // into the page behind the overlay from there, so pull it back in first.
-      if (!dialog.contains(active)) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return }
+      if (!dialog.contains(active) && !(stack && stack.contains(active))) { e.preventDefault(); (e.shiftKey ? last : first).focus(); return }
+      // Toasts on screen: they are the last stops of the trap, reached by an explicit hop (the stack is NOT after the portaled dialog in
+      // document order, so the browser's own Tab would never go there). Between two toasts, native order is right.
+      if (toasts.length) {
+        if (!e.shiftKey) {
+          if (own.length && active === own[own.length - 1]) { e.preventDefault(); toasts[0].focus() }
+          else if (active === toasts[toasts.length - 1]) { e.preventDefault(); (own[0] || toasts[0]).focus() }
+        } else if (active === (own[0] || toasts[0]) || active === dialog) { e.preventDefault(); toasts[toasts.length - 1].focus() }
+        else if (active === toasts[0]) { e.preventDefault(); (own[own.length - 1] || toasts[toasts.length - 1]).focus() }
+        return
+      }
       if (e.shiftKey && (active === first || active === dialog)) { e.preventDefault(); last.focus() }
       else if (!e.shiftKey && active === last) { e.preventDefault(); first.focus() }
     }

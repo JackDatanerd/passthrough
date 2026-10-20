@@ -4,6 +4,9 @@ import { cn } from '../../lib/utils'
 // An on/off setting that takes effect immediately (a notification preference), as opposed to a Checkbox that is submitted with a
 // form. role="switch" + aria-checked, named by `label` (read by assistive tech; draw the visible text next to it yourself).
 // `onChange(next)` gets the NEW state; the parent owns `checked`, so a save that fails can leave the switch where it was.
+// `disabled` does NOT use the native attribute (round 21): a browser drops focus from a control that becomes disabled, so a keyboard user who
+// toggled a setting (which disables the switch while it saves) was left on <body> — the same defect <Button loading> and <Pagination> were
+// fixed for. It stays focusable and is marked aria-disabled; clicks (Space / Enter arrive as clicks) are swallowed.
 //
 //   <Switch label="Email me for each sale" checked={on} onChange={toggle} disabled={saving} />
 const Switch = forwardRef(function Switch({ checked, onChange, label, disabled = false, className, ...props }, ref) {
@@ -19,13 +22,13 @@ const Switch = forwardRef(function Switch({ checked, onChange, label, disabled =
       type="button"
       role="switch"
       aria-checked={on}
-      disabled={disabled}
+      aria-disabled={disabled || undefined}
       onClick={() => { if (!disabled) onChange?.(!on) }}
       className={cn(
         'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors motion-reduce:transition-none',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2',
         on ? 'bg-blue-600' : 'bg-gray-300',
-        'disabled:opacity-60 disabled:cursor-not-allowed',
+        'aria-disabled:opacity-60 aria-disabled:cursor-not-allowed',
         className
       )}
       {...props}

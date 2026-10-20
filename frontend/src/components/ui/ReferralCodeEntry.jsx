@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Input from './Input'
 import Button from './Button'
 
@@ -16,6 +16,21 @@ import Button from './Button'
 export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
   const [value, setValue] = useState(referralCode || '')
   const [editing, setEditing] = useState(!referralCode)
+  // Round 21: Apply / change / remove / Cancel swap the whole control for another one, which unmounts the button that held focus and
+  // dropped a keyboard user on <body>. After one of those actions, focus goes to the control that replaces it: the "change" button once a
+  // code is applied, the field when the box is back in editing mode. `actedAt` expires, so an unrelated later focus loss is never claimed.
+  const inputRef = useRef(null)
+  const changeRef = useRef(null)
+  const actedAt = useRef(0)
+  const acted = () => { actedAt.current = Date.now() }
+  useEffect(() => {
+    if (!actedAt.current) return
+    if (Date.now() - actedAt.current > 5000) { actedAt.current = 0; return }
+    const a = document.activeElement
+    if (a && a !== document.body && a !== document.documentElement) return   // focus is somewhere real; wait for the swap
+    const target = changeRef.current || inputRef.current
+    if (target) { target.focus(); actedAt.current = 0 }
+  })
 
   // The parent can set the code after mount (a ?ref= link captured late) or
   // normalise what was typed (trim / casing). Follow it so the field never keeps
@@ -31,11 +46,13 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   function handleApply() {
     const code = value.trim()
     if (!code || disabled) return
+    acted()
     onApply(code)
     setEditing(false)
   }
 
   function handleRemove() {
+    acted()
     setValue('')
     onApply('')
     setEditing(true)
@@ -54,7 +71,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
         {saves
           ? <>✓ Referral code <span className="font-mono">{referralCode}</span> applied —{' '}</>
           : <>✓ Referral code <span className="font-mono">{referralCode}</span> recognised — today's price is already as low as your code's, so it doesn't change what you pay.{' '}</>}
-        <button type="button" onClick={() => setEditing(true)} disabled={disabled}
+        <button ref={changeRef} type="button" onClick={() => { acted(); setEditing(true) }} disabled={disabled}
           className="underline font-normal text-emerald-700/80 hover:text-emerald-900 disabled:opacity-40 disabled:no-underline">
           change
         </button>
@@ -87,6 +104,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   return (
     <div className="mb-3 flex items-start gap-2 flex-wrap">
       <Input
+        ref={inputRef}
         aria-label="Referral code"
         placeholder="Have a referral code?"
         value={value}
@@ -108,7 +126,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
       </Button>
       {/* "change" had no way back: leaving the field untouched now returns to the applied code. */}
       {referralCode && pricing?.referralApplied && editing && (
-        <Button type="button" size="sm" variant="ghost" onClick={() => { setValue(referralCode); setEditing(false) }} disabled={disabled} className="mt-0.5">
+        <Button type="button" size="sm" variant="ghost" onClick={() => { acted(); setValue(referralCode); setEditing(false) }} disabled={disabled} className="mt-0.5">
           Cancel
         </Button>
       )}
