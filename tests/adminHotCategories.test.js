@@ -61,6 +61,13 @@ describe('lib/hotCategories — rank mirrors the SQL ordering, floor, limit and 
     expect(r.fields.find(f => f.category === 'legal')).toMatchObject({ current: 0, simulated: 10, qualifies: true })
     expect(r.publicRows.map(x => x.interviews)).toEqual([10, 10])
   })
+  it('pretend reports in the period before drive the arrow, and are reported separately from the real previous count', () => {
+    const r = hot.rank(bucket({ sales: { current: 12, previous: 2 } }), { minReports: 10, prevAdds: { sales: 8, legal: 20 } })
+    const sales = r.fields.find(f => f.category === 'sales')
+    expect(sales).toMatchObject({ previous: 10, simulatedPrevious: 8 })
+    expect(r.publicRows.find(x => x.category === 'sales').changePct).toBe(20)   // 12 now vs 10 before; the real 2 alone would quote nothing
+    expect(r.fields.find(f => f.category === 'legal')).toMatchObject({ current: 0, previous: 20, qualifies: false })   // a previous-only field is listed, never ranked
+  })
 })
 
 // ── controller ───────────────────────────────────────────────────────────────────────────────────
@@ -143,6 +150,14 @@ describe('POST /api/admin/hot-categories/simulate', () => {
     expect(d.perWindow[7].showsSample).toBe(false)
     expect(d.perWindow[30].showsSample).toBe(true)   // days30 was not simulated, and 4 is still under 10
   })
+  it('prev7 / prev30 simulate the period before each window, so the arrows can be tested', async () => {
+    freezeTime()
+    const { c } = setup([many('sales', 12)])
+    const d = (await c.adminSimulateHotCategories(ctxFor({ adds: [{ category: 'sales', prev7: 8, prev30: 6 }] }))).body.data
+    expect(d.hotCategories[7]).toEqual([{ category: 'sales', interviews: 12, changePct: 50 }])    // 12 vs 8
+    expect(d.hotCategories[30]).toEqual([{ category: 'sales', interviews: 12, changePct: 100 }])  // 12 vs 6
+    expect(d.perWindow[7].fields[0]).toMatchObject({ simulated: 0, simulatedPrevious: 8, previous: 8 })
+  })
   it('a lower threshold alone changes the outcome', async () => {
     freezeTime()
     const { c } = setup([[...many('sales', 4), ...many('legal', 3)]])
@@ -160,7 +175,7 @@ describe('POST /api/admin/hot-categories/simulate', () => {
   })
   it('refuses unknown fields and out-of-range numbers', async () => {
     const { c } = setup([[]])
-    for (const body of [{ minReports: 0 }, { minReports: 1001 }, { minReports: 2.5 }, { adds: [{ category: 'wizardry', days7: 1 }] }, { adds: [{ category: 'sales', days7: -1 }] }, { adds: [{ category: 'sales', days30: 10001 }] }]) {
+    for (const body of [{ minReports: 0 }, { minReports: 1001 }, { minReports: 2.5 }, { adds: [{ category: 'wizardry', days7: 1 }] }, { adds: [{ category: 'sales', days7: -1 }] }, { adds: [{ category: 'sales', days30: 10001 }] }, { adds: [{ category: 'sales', prev7: -1 }] }, { adds: [{ category: 'sales', prev30: 10001 }] }]) {
       const res = await c.adminSimulateHotCategories(ctxFor(body))
       expect(res.status, JSON.stringify(body)).toBe(400)
     }

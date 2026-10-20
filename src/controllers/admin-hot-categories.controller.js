@@ -34,7 +34,7 @@ async function loadReports(supabase, nowMs, windows) {
   return { rows, truncated }
 }
 
-async function build(ctx, { minReports, adds }) {
+async function build(ctx, { minReports, adds, prevAdds = {} }) {
   const supabase = getSupabase(ctx.env)
   const windows = constants.HOT_CATEGORY_WINDOWS
   const nowMs = Date.now()
@@ -44,7 +44,7 @@ async function build(ctx, { minReports, adds }) {
   const perWindow = {}
   const hotCategories = { minReports }
   for (const days of windows) {
-    const r = rank(tallies[days], { minReports, adds: adds[days] || {} })
+    const r = rank(tallies[days], { minReports, adds: adds[days] || {}, prevAdds: prevAdds[days] || {} })
     hotCategories[days] = r.publicRows
     perWindow[days] = {
       fields: r.fields, qualifying: r.qualifying, uncategorised: r.uncategorised, interviews: r.interviews,
@@ -65,14 +65,18 @@ const addSchema = z.object({
   category: z.enum(constants.ROLE_CATEGORIES),
   days7:  z.number().int().min(0).max(10000).optional(),
   days30: z.number().int().min(0).max(10000).optional(),
+  // Pretend reports in the period BEFORE each window (what the arrow compares against).
+  prev7:  z.number().int().min(0).max(10000).optional(),
+  prev30: z.number().int().min(0).max(10000).optional(),
 })
 const simulateSchema = z.object({
   minReports: z.number().int().min(1).max(1000).optional(),
   adds: z.array(addSchema).max(constants.ROLE_CATEGORIES.length).optional(),
 })
 
-// POST /api/admin/hot-categories/simulate   { minReports?, adds?: [{ category, days7?, days30? }] }
-// Same answer as the GET, with the what-if applied. `adds` are EXTRA current-window reports on top of the real ones.
+// POST /api/admin/hot-categories/simulate   { minReports?, adds?: [{ category, days7?, days30?, prev7?, prev30? }] }
+// Same answer as the GET, with the what-if applied. `days*` are EXTRA current-window reports on top of the real ones;
+// `prev*` are extra reports in the period before the window, so the arrows can be tested as well.
 async function adminSimulateHotCategories(ctx) {
   let body
   try { body = await ctx.req.json() } catch (_) { body = {} }
@@ -81,11 +85,13 @@ async function adminSimulateHotCategories(ctx) {
   const { minReports = constants.HOT_CATEGORY_MIN_REPORTS, adds = [] } = parsed.data
   const [w7, w30] = constants.HOT_CATEGORY_WINDOWS
   const byWindow = { [w7]: {}, [w30]: {} }
+  const prevByWindow = { [w7]: {}, [w30]: {} }
+  const put = (map, category, n) => { if (n) map[category] = (map[category] || 0) + n }
   for (const a of adds) {
-    if (a.days7)  byWindow[w7][a.category]  = (byWindow[w7][a.category]  || 0) + a.days7
-    if (a.days30) byWindow[w30][a.category] = (byWindow[w30][a.category] || 0) + a.days30
+    put(byWindow[w7], a.category, a.days7);   put(byWindow[w30], a.category, a.days30)
+    put(prevByWindow[w7], a.category, a.prev7); put(prevByWindow[w30], a.category, a.prev30)
   }
-  const data = await build(ctx, { minReports, adds: byWindow })
+  const data = await build(ctx, { minReports, adds: byWindow, prevAdds: prevByWindow })
   return ctx.json({ success: true, data: { ...data, simulated: true } })
 }
 

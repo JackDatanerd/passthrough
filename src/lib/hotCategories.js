@@ -43,16 +43,19 @@ function tally(rows, windows, nowMs) {
 }
 
 // One window's tally -> what the admin sees and what the public page would receive.
-//   adds: { [category]: extra current-window reports } — the simulation. Real counts are never altered, only reported
-//   next to the simulated ones.
-function rank(bucket, { minReports, adds = {} }) {
+//   adds:     { [category]: extra current-window reports }  — the simulation. Real counts are never altered, only reported
+//   prevAdds: { [category]: extra reports in the period BEFORE the window } — so the ▲/▼ arrows can be exercised too.
+function rank(bucket, { minReports, adds = {}, prevAdds = {} }) {
   const floor = Math.max(Number(minReports) || 0, 1)
-  const names = new Set([...Object.keys(bucket.fields), ...Object.keys(adds)])
+  const names = new Set([...Object.keys(bucket.fields), ...Object.keys(adds), ...Object.keys(prevAdds)])
+  const whole = (v) => Math.max(0, Math.floor(Number(v) || 0))
   const entries = [...names].map(category => {
     const f = bucket.fields[category] || { current: 0, previous: 0 }
-    const simulated = Math.max(0, Math.floor(Number(adds[category]) || 0))
+    const simulated = whole(adds[category])
+    const simulatedPrevious = whole(prevAdds[category])
     const effective = f.current + simulated
-    return { category, current: f.current, previous: f.previous, simulated, effective, qualifies: effective >= floor, needed: Math.max(0, floor - effective) }
+    // `previous` is what the arrow compares against: the real count plus any pretend reports in the period before.
+    return { category, current: f.current, previous: f.previous + simulatedPrevious, simulated, simulatedPrevious, effective, qualifies: effective >= floor, needed: Math.max(0, floor - effective) }
   })
   entries.sort((a, b) => (b.qualifies - a.qualifies) || (b.effective - a.effective) || (a.category < b.category ? -1 : a.category > b.category ? 1 : 0))
   const listed = entries.filter(e => e.qualifies).slice(0, MAX_LISTED)

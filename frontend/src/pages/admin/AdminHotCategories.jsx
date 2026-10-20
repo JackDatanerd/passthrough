@@ -7,9 +7,12 @@ import Button from '../../components/ui/Button'
 import DataTable from '../../components/ui/DataTable'
 import Input from '../../components/ui/Input'
 import Spinner from '../../components/ui/Spinner'
+import Switch from '../../components/ui/Switch'
 import { useToast } from '../../components/ui/Toast'
 import HotCategories from '../../components/home/HotCategories'
 import { mergeHomeData } from '../../hooks/useHomeData'
+import { readPreview, writePreview, clearPreview } from '../../hooks/useAdminHotPreview'
+import { randomSimulation } from '../../lib/hotSimulation'
 import { ROLE_CATEGORIES, roleLabel, isRoleCategory } from '../../lib/roleCategories'
 import useLatestRequest from '../../hooks/useLatestRequest'
 
@@ -19,7 +22,8 @@ const WINDOWS = [7, 30]
 // reports customers give in the follow-up email, and a field only appears once it has `threshold` reports in the window.
 // This screen shows how far every field is from that line, and a what-if: change the threshold or add pretend reports,
 // press Run, and the preview below is rendered by the real homepage component from the answer the real endpoint would
-// give. Nothing here is saved or sent to the public page — a simulation lives in this tab and in one read-only request.
+// give. A simulation is never saved on the server or shown to visitors: it lives in this tab, in one read-only request, and —
+// if "Show on my homepage" is on — in THIS browser's storage, so the signed-in admin can look at the real homepage with it.
 export default function AdminHotCategories() {
   const toast = useToast()
   const beginLoad = useLatestRequest()
@@ -31,6 +35,9 @@ export default function AdminHotCategories() {
   const [days, setDays] = useState(7)
   const [thresholdDraft, setThresholdDraft] = useState('')
   const [adds, setAdds] = useState({ 7: {}, 30: {} })   // draft inputs, as typed: { 7: { sales: '5' }, 30: {} }
+  const [prevAdds, setPrevAdds] = useState({ 7: {}, 30: {} })   // the same, for the period BEFORE each window (drives the arrows)
+  const [showOnHome, setShowOnHome] = useState(true)
+  const [homeActive, setHomeActive] = useState(() => !!readPreview())   // a simulation is currently on this browser's homepage
 
   const load = useCallback(async () => {
     const isCurrent = beginLoad()
@@ -51,22 +58,26 @@ export default function AdminHotCategories() {
   const intOrZero = (v) => { const n = parseInt(v, 10); return Number.isFinite(n) && n > 0 ? n : 0 }
   const draftThreshold = thresholdDraft === '' ? null : parseInt(thresholdDraft, 10)
   const thresholdInvalid = thresholdDraft !== '' && !(Number.isInteger(draftThreshold) && draftThreshold >= 1 && draftThreshold <= 1000)
-  const draftHasInput = thresholdDraft !== '' || WINDOWS.some(w => Object.values(adds[w]).some(v => intOrZero(v) > 0))
+  const draftHasInput = thresholdDraft !== '' || WINDOWS.some(w => Object.values(adds[w]).some(v => intOrZero(v) > 0) || Object.values(prevAdds[w]).some(v => intOrZero(v) > 0))
 
-  async function runSimulation() {
-    if (thresholdInvalid) return
+  // Send what is typed (or what Randomize just generated) to the read-only simulate endpoint.
+  async function execute({ thresholdValue, adds: a, prevAdds: p }) {
     const isCurrent = beginSim()
     setRunning(true)
     try {
       const payload = { adds: [] }
-      if (draftThreshold) payload.minReports = draftThreshold
+      if (thresholdValue) payload.minReports = thresholdValue
       for (const [category] of ROLE_CATEGORIES) {
-        const days7 = intOrZero(adds[7][category]), days30 = intOrZero(adds[30][category])
-        if (days7 || days30) payload.adds.push({ category, days7, days30 })
+        const entry = { category, days7: intOrZero(a[7][category]), days30: intOrZero(a[30][category]) }
+        const prev7 = intOrZero(p[7][category]), prev30 = intOrZero(p[30][category])
+        if (prev7) entry.prev7 = prev7
+        if (prev30) entry.prev30 = prev30
+        if (entry.days7 || entry.days30 || prev7 || prev30) payload.adds.push(entry)
       }
       const res = await api.post('/admin/hot-categories/simulate', payload, { signal: isCurrent.signal })
       if (!isCurrent()) return
       setSim(res.data.data)
+      if (showOnHome) putOnHomepage(res.data.data)
     } catch (err) {
       if (!isCurrent()) return
       toast({ message: getErrorMessage(err, 'Could not run the simulation.'), type: 'error' })
@@ -74,10 +85,37 @@ export default function AdminHotCategories() {
       if (isCurrent()) setRunning(false)
     }
   }
+  const runSimulation = () => { if (!thresholdInvalid) execute({ thresholdValue: draftThreshold, adds, prevAdds }) }
+
+  // Pretend reports on EVERY field, both windows, both periods — one click gives a new scenario to look at.
+  function randomize() {
+    if (thresholdInvalid || !real) return
+    const realCounts = { 7: {}, 30: {} }
+    for (const d of WINDOWS) for (const f of real.perWindow[d].fields) realCounts[d][f.category] = { current: f.current, previous: f.previous }
+    const r = randomSimulation({ categories: ROLE_CATEGORIES.map(([k]) => k), threshold: draftThreshold || real.defaultThreshold, real: realCounts })
+    const asText = (m) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v ? String(v) : '']))
+    const nextAdds = { 7: asText(r.adds[7]), 30: asText(r.adds[30]) }
+    const nextPrev = { 7: asText(r.prevAdds[7]), 30: asText(r.prevAdds[30]) }
+    setAdds(nextAdds); setPrevAdds(nextPrev)
+    execute({ thresholdValue: draftThreshold, adds: nextAdds, prevAdds: nextPrev })
+  }
+
+  function putOnHomepage(data) {
+    if (writePreview(data.hotCategories, data.threshold)) setHomeActive(true)
+    else toast({ message: 'This browser blocked saving the preview, so the homepage cannot show it.', type: 'error' })
+  }
+  function endHomepagePreview() { clearPreview(); setHomeActive(false) }
+  function toggleShowOnHome(next) {
+    setShowOnHome(next)
+    if (next && sim) putOnHomepage(sim)
+    if (!next) endHomepagePreview()
+  }
   function reset() {
-    setSim(null); setThresholdDraft(''); setAdds({ 7: {}, 30: {} })
+    setSim(null); setThresholdDraft(''); setAdds({ 7: {}, 30: {} }); setPrevAdds({ 7: {}, 30: {} })
+    endHomepagePreview()
   }
   const setAdd = (category, v) => setAdds(a => ({ ...a, [days]: { ...a[days], [category]: v } }))
+  const setPrevAdd = (category, v) => setPrevAdds(a => ({ ...a, [days]: { ...a[days], [category]: v } }))
 
   const view = sim || real
   // The homepage's own merge: with no qualifying field in a window it falls back to its labelled sample table, exactly as live.
@@ -91,7 +129,7 @@ export default function AdminHotCategories() {
   const known = new Set(w.fields.map(f => f.category))
   const rows = [
     ...w.fields,
-    ...ROLE_CATEGORIES.filter(([k]) => !known.has(k)).map(([category]) => ({ category, current: 0, previous: 0, simulated: 0, effective: 0, qualifies: false, needed: floor, rank: null, changePct: null })),
+    ...ROLE_CATEGORIES.filter(([k]) => !known.has(k)).map(([category]) => ({ category, current: 0, previous: 0, simulated: 0, simulatedPrevious: 0, effective: 0, qualifies: false, needed: floor, rank: null, changePct: null })),
   ]
   const realW = real.perWindow[days]
   const windowLabel = days === 7 ? 'the last 7 days' : 'the last 30 days'
@@ -127,7 +165,7 @@ export default function AdminHotCategories() {
         <div className="flex items-start justify-between gap-3 flex-wrap">
           <div>
             <h2 id="sim-h" className="font-semibold text-gray-900">Simulate</h2>
-            <p className="text-xs text-gray-600 mt-0.5 max-w-xl">Try a different threshold, or add pretend reports to a field in the table below, then press Run. Only this screen changes — the public homepage never sees a simulation.</p>
+            <p className="text-xs text-gray-600 mt-0.5 max-w-xl">Try a different threshold, or add pretend reports to a field in the table below (or press Randomize for a whole new scenario), then run it. Visitors never see a simulation: it shows in the preview below and, with the switch on, on the real homepage in this browser while you are signed in.</p>
           </div>
           {sim && <Badge variant="blue">Simulation on</Badge>}
         </div>
@@ -136,12 +174,18 @@ export default function AdminHotCategories() {
             placeholder={String(real.defaultThreshold)} wrapperClassName="w-44" error={thresholdInvalid ? 'Use 1–1000' : undefined}
             onChange={e => setThresholdDraft(e.target.value)} />
           <Button size="sm" onClick={runSimulation} loading={running} disabled={running || thresholdInvalid || (!draftHasInput && !sim)}>Run simulation</Button>
-          <Button size="sm" variant="secondary" onClick={reset} disabled={running || (!sim && !draftHasInput)}>Reset</Button>
+          <Button size="sm" variant="secondary" onClick={randomize} disabled={running || thresholdInvalid}>Randomize all fields</Button>
+          <Button size="sm" variant="secondary" onClick={reset} disabled={running || (!sim && !draftHasInput && !homeActive)}>Reset</Button>
+        </div>
+        <div className="mt-3 flex items-center gap-2 text-sm text-gray-800">
+          <Switch label="Show the simulation on my homepage" checked={showOnHome} onChange={toggleShowOnHome} />
+          <span>Show it on my homepage <span className="text-xs text-gray-500">(only you, signed in, in this browser)</span></span>
         </div>
         {sim && (
           <p className="mt-2 text-xs text-blue-900" data-testid="sim-summary">
             Simulating with a threshold of <b>{sim.threshold}</b>
-            {WINDOWS.map(d => { const n = sim.perWindow[d].fields.reduce((s, f) => s + f.simulated, 0); return n > 0 ? <span key={d}>, <b>+{n}</b> pretend reports in the {d}-day window</span> : null })}.
+            {WINDOWS.map(d => { const n = sim.perWindow[d].fields.reduce((s, f) => s + f.simulated, 0); return n > 0 ? <span key={d}>, <b>+{n}</b> pretend reports in the {d}-day window</span> : null })}
+            {WINDOWS.some(d => sim.perWindow[d].fields.some(f => f.simulatedPrevious > 0)) && <>, plus pretend reports in the period before (for the arrows)</>}.
             {' '}The {days}-day window would show {w.showsSample ? <b>the sample table</b> : <b>real data ({w.qualifying} field{w.qualifying === 1 ? '' : 's'})</b>}.
           </p>
         )}
@@ -156,7 +200,8 @@ export default function AdminHotCategories() {
           { key: 'field', header: 'Field', cellClassName: 'font-medium text-gray-900', cell: r => roleLabel(r.category) },
           { key: 'reports', header: 'Reports', className: 'text-right', cellClassName: 'tabular-nums',
             cell: r => <>{r.effective}{r.simulated > 0 && <span className="text-blue-700 text-xs"> (+{r.simulated})</span>}</> },
-          { key: 'before', header: 'Before', className: 'text-right', cellClassName: 'tabular-nums text-gray-500', cell: r => r.previous },
+          { key: 'before', header: 'Before', className: 'text-right', cellClassName: 'tabular-nums text-gray-500',
+            cell: r => <>{r.previous}{r.simulatedPrevious > 0 && <span className="text-blue-700 text-xs"> (+{r.simulatedPrevious})</span>}</> },
           { key: 'progress', header: `Toward ${floor}`, className: 'w-48', cell: r => (
             <>
               <div aria-hidden="true" className="h-2 rounded-full bg-gray-200 overflow-hidden">
@@ -176,15 +221,29 @@ export default function AdminHotCategories() {
               aria-label={`Pretend reports for ${roleLabel(r.category)}, ${windowLabel}`}
               value={adds[days][r.category] ?? ''} onChange={e => setAdd(r.category, e.target.value)} />
           ) },
+          { key: 'pretendBefore', header: '+ Before', cell: r => (
+            <Input size="sm" type="number" min={0} max={10000} inputMode="numeric" wrapperClassName="w-24" placeholder="0"
+              disabled={!isRoleCategory(r.category)}
+              aria-label={`Pretend reports for ${roleLabel(r.category)} in the period before ${windowLabel}`}
+              value={prevAdds[days][r.category] ?? ''} onChange={e => setPrevAdd(r.category, e.target.value)} />
+          ) },
         ]}
       />
-      <p className="text-xs text-gray-500">Pretend reports are added to the {days}-day window of the field you type them against. Switch the period above to set the other window; both are sent when you press Run.</p>
+      <p className="text-xs text-gray-500">Pretend reports are added to the {days}-day window of the field you type them against; “+ Before” adds to the period before it, which is what the ▲ / ▼ arrows compare with (an arrow only shows once that period has 5 or more). Switch the period above to set the other window; both are sent when you run it.</p>
 
       <section aria-labelledby="prev-h">
         <div className="flex items-center justify-between gap-3 flex-wrap mb-2">
           <h2 id="prev-h" className="font-semibold text-gray-900">{sim ? 'Preview of the simulation' : 'Preview of the live section'}</h2>
-          <Link to="/" target="_blank" rel="noopener noreferrer" className="text-sm text-blue-700 underline underline-offset-2">Open the live homepage ↗</Link>
+          <Link to="/#hot" target="_blank" rel="noopener noreferrer" className="text-sm text-blue-700 underline underline-offset-2">
+            {homeActive ? 'Open my homepage (shows the simulation) ↗' : 'Open the live homepage ↗'}
+          </Link>
         </div>
+        {homeActive && (
+          <p className="text-xs text-amber-900 bg-amber-50 border border-amber-200 rounded px-2.5 py-1.5 mb-2" data-testid="home-active">
+            A simulation is on <b>your</b> homepage right now, with a banner. Visitors still see the real data.{' '}
+            <button type="button" className="underline font-semibold" onClick={endHomepagePreview}>End it</button>
+          </p>
+        )}
         <div className="border border-gray-200 rounded-lg overflow-hidden" data-testid="preview">
           <HotCategories hot={preview.hot} minReports={preview.minReports} />
         </div>

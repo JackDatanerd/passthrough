@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useContext, useMemo, useState } from 'react'
 import Navbar from '../components/layout/Navbar'
 import Footer from '../components/layout/Footer'
 import HomeHero from '../components/home/HomeHero'
@@ -13,8 +13,11 @@ import EmployerSection from '../components/home/EmployerSection'
 import HomeFaq from '../components/home/HomeFaq'
 import FinalCta from '../components/home/FinalCta'
 import StickyScanCta from '../components/home/StickyScanCta'
+import AdminPreviewBanner from '../components/home/AdminPreviewBanner'
+import { AuthContext } from '../context/AuthContext'
 import { usePricing } from '../hooks/usePricing'
-import useHomeData from '../hooks/useHomeData'
+import useHomeData, { mergeHomeData } from '../hooks/useHomeData'
+import useAdminHotPreview from '../hooks/useAdminHotPreview'
 import { getStoredReferralCode } from '../hooks/useReferralCapture'
 import { ATS_BADGE_THRESHOLD, MAX_FIX_RETRIES, FREE_SCANS_PER_DAY, ANON_SCANS_PER_HOUR } from '../lib/scoreThresholds'
 import { ATS_NAMES, buildFaq } from '../lib/homeContent'
@@ -27,12 +30,18 @@ import { ATS_NAMES, buildFaq } from '../lib/homeContent'
 // all four, so it silently went stale the day any of them changed (Pricing.jsx already read them live).
 // The constants in lib/scoreThresholds.js are only the fallback for the moment before that answer lands.
 export default function Home() {
+  // An admin who ran the Hot categories simulator can see its result here, in their own browser only (see useAdminHotPreview).
+  const isAdmin = useContext(AuthContext)?.user?.role === 'ADMIN'
+  const { preview, clear: clearPreview } = useAdminHotPreview(isAdmin)
   // Seeded from storage while rendering (getStoredReferralCode also captures a ?ref= in the URL right
   // now), so a visitor from a partner's link sees the discounted prices on the very first paint — the
   // teaser used to ask for the public price and showed everyone the same numbers.
   const [referralCode] = useState(getStoredReferralCode())
   const { pricing, byTier, refresh, clockOffsetMs } = usePricing(referralCode)
   const data = useHomeData()
+  // The same merge the public page uses, so a simulation that leaves no field over the line falls back to the labelled sample
+  // table exactly as real visitors would see it.
+  const previewHot = useMemo(() => (preview ? mergeHomeData({ hotCategories: preview.hotCategories }) : null), [preview])
 
   const badgeThreshold   = pricing?.badgeThreshold   ?? ATS_BADGE_THRESHOLD
   const maxFixRetries    = pricing?.maxFixRetries    ?? MAX_FIX_RETRIES
@@ -46,6 +55,7 @@ export default function Home() {
     <div className="min-h-screen flex flex-col bg-white">
       <Navbar />
       <main className="flex-1">
+        {preview && <AdminPreviewBanner threshold={preview.threshold} onClear={clearPreview} />}
         <HomeHero data={data} badgeThreshold={badgeThreshold} />
 
         <div className="border-b border-gray-100 bg-gray-50 py-4">
@@ -59,7 +69,7 @@ export default function Home() {
         <BeforeAfter />
         <VerifySection badgeThreshold={badgeThreshold} />
         <Stories stories={data.stories} badgeThreshold={badgeThreshold} />
-        <HotCategories hot={data.hot} minReports={data.minReports} />
+        <HotCategories hot={previewHot ? previewHot.hot : data.hot} minReports={previewHot ? previewHot.minReports : data.minReports} />
         <HowItWorks />
         <PricingSection pricing={pricing} byTier={byTier} refresh={refresh} clockOffsetMs={clockOffsetMs}
           referralCode={referralCode} limits={limits} />
