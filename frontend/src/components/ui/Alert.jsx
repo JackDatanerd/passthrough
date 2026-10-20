@@ -1,4 +1,4 @@
-import { Children } from 'react'
+import { Children, useEffect, useRef } from 'react'
 import { cn } from '../../lib/utils'
 
 // Inline notice box. The red "something failed" box was hand-written, with
@@ -18,13 +18,24 @@ const variants = {
 // was silently ignored. The default size is dropped when the caller supplies their own.
 const TEXT_SIZE = /(?:^|\s)text-(?:xs|sm|base|lg|xl|2xl)(?:\s|$)/
 
-export default function Alert({ variant = 'error', className, children, ...props }) {
+// `focusOnShow`: for the message a FAILED SUBMIT leaves behind. role="alert" makes a screen reader speak it, but focus stayed
+// on the button that was pressed, so a keyboard user on a long form was never taken to the message (and a sighted one could have it
+// below the fold). With this the box takes focus (and scrolls into view) each time it goes from empty to showing a message —
+// clear the message when the next attempt starts and a repeat of the same text is brought into view again.
+export default function Alert({ variant = 'error', className, children, focusOnShow = false, ...props }) {
   // Several children that are ALL empty ({a}{b} with both falsy) used to draw an empty bordered box.
-  if (!Children.toArray(children).some(c => c !== '')) return null
+  const empty = !Children.toArray(children).some(c => c !== '')
+  const ref = useRef(null)
+  useEffect(() => {
+    if (focusOnShow && !empty) ref.current?.focus()
+  }, [focusOnShow, empty])
+  if (empty) return null
   return (
     <div
+      ref={ref}
       role={variant === 'error' ? 'alert' : 'status'}
-      className={cn('rounded-md border px-3 py-2', !TEXT_SIZE.test(className || '') && 'text-sm', variants[variant] || variants.error, className)}
+      {...(focusOnShow ? { tabIndex: -1 } : {})}
+      className={cn('rounded-md border px-3 py-2', !TEXT_SIZE.test(className || '') && 'text-sm', variants[variant] || variants.error, focusOnShow && 'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500', className)}
       {...props}
     >
       {children}

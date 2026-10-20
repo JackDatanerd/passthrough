@@ -4,10 +4,16 @@ import { ATS_PASS_THRESHOLD } from './scoreThresholds'
 // Date-only strings ("2026-09-01") are parsed as LOCAL dates. `new Date("2026-09-01")`
 // is UTC midnight, so in any timezone behind UTC (the whole Americas) it rendered
 // as the previous day. Timestamps (with a time / offset) are unaffected.
+// The Date constructor accepts almost any string: new Date('0') is the year 2000 and new Date('12') is December 2001, so a stray
+// "0" or "12" from a bad field printed a confident, wrong date where "—" is promised. A real date string always carries a four-digit year.
+function looksLikeDate(input) {
+  return typeof input !== 'string' || /\d{4}/.test(input)
+}
+
 function parseDate(input, utc = false) {
   if (input instanceof Date) return input
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(input))
-  if (!m) return new Date(input)
+  if (!m) return looksLikeDate(input) ? new Date(input) : new Date(NaN)
   const [y, mo, d] = [Number(m[1]), Number(m[2]) - 1, Number(m[3])]
   const date = utc ? new Date(Date.UTC(y, mo, d)) : new Date(y, mo, d)
   // SHARED FRONTEND (section 11, round 19, bug): the Date constructor rolls an impossible calendar day over instead of
@@ -54,6 +60,7 @@ export function formatDateTime(dateStr) {
   if (!dateStr) return '—'
   // A date-only value carries no time of day; showing it as "12:00 AM" would invent one.
   if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return formatDate(dateStr.trim())
+  if (!looksLikeDate(dateStr)) return '—'
   const d = new Date(dateStr)
   if (Number.isNaN(d.getTime())) return '—'
   return d.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
@@ -267,8 +274,12 @@ export function csvCell(v) {
     if (raw.length <= CSV_TEXT_FORMULA_MAX && /^[0-9A-Za-z+() -]+$/.test(raw) && /^[0-9+()-]/.test(raw)) return '"=""' + raw + '"""'
     return csvCell(raw)
   }
+  // A Date used to become String(date) — "Thu Jan 01 1970 03:00:00 GMT+0300 (East Africa Time)", in the exporter's own zone.
+  if (v instanceof Date) return Number.isNaN(v.getTime()) ? '' : v.toISOString()
   let s = String(v)
-  if (typeof v !== 'number' && /^[=+\-@\t\r]/.test(s)) s = `'${s}`
+  // Leading line breaks are skipped over when looking for the formula character: a cell that opens with a newline and then "=" is
+  // still read as a formula by some spreadsheet importers.
+  if (typeof v !== 'number' && /^[\t\r\n]*[=+\-@\t\r]/.test(s)) s = `'${s}`
   return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s
 }
 export function toCsv(rows) {

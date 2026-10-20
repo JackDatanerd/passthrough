@@ -78,7 +78,7 @@ export default function DeliveredResumeEditor({ scan, onSaved }) {
         <div className="mt-4 flex flex-col gap-5">
           <ResumeFieldsForm draft={draft} setDraft={setDraft} />
           <PaperSizeSelect value={paper} onChange={setPaper} disabled={saving} hint="Both files are rebuilt on this page size when you save." />
-          <Alert>{error}</Alert>
+          <Alert focusOnShow>{error}</Alert>
           <div className="flex gap-3">
             <Button onClick={save} loading={saving}>Save &amp; rebuild files</Button>
             <Button variant="ghost" onClick={() => (dirty ? setConfirmCancel(true) : setEditing(false))} disabled={saving}>Cancel</Button>

@@ -539,7 +539,7 @@ export default function ScanForm() {
 
       <PaperSizeSelect value={paperSize} onChange={setPaperSize} disabled={loading} />
 
-      <Alert>{error}</Alert>
+      <Alert focusOnShow>{error}</Alert>
 
       <Button type="submit" loading={loading} size="lg" className="w-full sm:w-auto">
         {submitLabel}

@@ -115,7 +115,7 @@ export default function SavedProfileEditor({ onSaved, onClose, onDirtyChange, pr
   return (
     <div className="mt-4 flex flex-col gap-5">
       <ResumeFieldsForm draft={draft} setDraft={setDraft} />
-      <Alert>{saveError}</Alert>
+      <Alert focusOnShow>{saveError}</Alert>
       <div className="flex flex-wrap gap-3">
         {conflict ? (
           <>

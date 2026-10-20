@@ -154,7 +154,7 @@ export default function ResumeDataEditor({ scan, anonToken, onUpdated }) {
         <div className="mt-4 flex flex-col gap-5">
           <ResumeFieldsForm draft={draft} setDraft={setDraft} />
 
-          <Alert>{saveError}</Alert>
+          <Alert focusOnShow>{saveError}</Alert>
           <div className="flex gap-3">
             <Button onClick={handleSave} loading={saving}>Save changes & rescore</Button>
             <Button variant="ghost" onClick={() => (dirty ? setConfirmCancel(true) : setEditing(false))} disabled={saving}>Cancel</Button>

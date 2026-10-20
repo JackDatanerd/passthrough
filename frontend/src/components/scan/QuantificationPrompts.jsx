@@ -71,7 +71,7 @@ function PromptRow({ prompt, scan, onSaved }) {
           {trimmed && !/\d/.test(trimmed) && (
             <p className="text-xs text-gray-500">Include the figure itself — for example "by 30%", "for 12 clients" or "in 2 weeks".</p>
           )}
-          <Alert>{error}</Alert>
+          <Alert focusOnShow>{error}</Alert>
           <div className="flex gap-2">
             <Button size="sm" onClick={save} loading={saving} disabled={!trimmed || unchanged}>Save and rebuild</Button>
             <Button size="sm" variant="secondary" onClick={() => { setEditing(false); setText(prompt.bullet); setError('') }} disabled={saving}>Cancel</Button>
