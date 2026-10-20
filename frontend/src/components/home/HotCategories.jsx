@@ -45,7 +45,7 @@ export default function HotCategories({ hot, minReports }) {
         </div>
         <div className="grid lg:grid-cols-[1.3fr_.7fr] gap-5 items-start">
           <div className="relative bg-white rounded-xl border border-gray-200 shadow-sm p-5">
-            {isSample && <span className="absolute top-2.5 right-3 text-[11px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>}
+            {/* // {isSample && <span className="absolute top-2.5 right-3 text-[11px] font-bold uppercase tracking-wide text-amber-800 bg-amber-50 border border-dashed border-amber-400 rounded px-1.5">Sample</span>} */}
             <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
               <h3 className="font-semibold text-gray-900 flex items-center gap-2">
                 <span aria-hidden="true" className="w-2 h-2 rounded-full bg-green-600 animate-pulse motion-reduce:animate-none" />Hot categories

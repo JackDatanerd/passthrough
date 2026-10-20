@@ -237,7 +237,7 @@ describe('updateResumeData / draft — uploaded files once structured', () => {
     })
     const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
       'config/supabase.js': { getSupabase: () => db },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: 80, missingKeywords: [] }) }), extractJson: x => JSON.parse(x) },
     })
     return { mod, restore }
   }
@@ -250,6 +250,24 @@ describe('updateResumeData / draft — uploaded files once structured', () => {
     t = setup({ id: 's1', user_id: 'u1', input_mode: 'file', status: 'COMPLETE_PASS', fix_purchased: false, original_resume_data: { name: 'J' }, job_description_text: 'JD ' + 'x'.repeat(60) })
     const r2 = await t.mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'J', skills: ['Python'] } } }))
     expect(r2.status).toBe(200)
+  })
+  it('an AI outage does not overwrite the scan\'s score with a rule-only one: 503, nothing written', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      const db = createFakeSupabase(q => {
+        if (q.table === 'scans' && q.op === 'select') return { data: { id: 's1', user_id: 'u1', input_mode: 'file', status: 'COMPLETE_PASS', fix_purchased: false, original_resume_data: { name: 'J' }, job_description_text: 'JD ' + 'x'.repeat(60) }, error: null }
+        if (q.table === 'scans' && q.op === 'update') { writes.push(q); return { data: [{ id: 's1' }], error: null } }
+      })
+      const writes = []
+      const { mod, restore } = loadWithStubs('controllers/scan.controller.js', {
+        'config/supabase.js': { getSupabase: () => db },
+        'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: false }) },
+      })
+      const res = await mod.updateResumeData(baseCtx({ body: { resumeData: { name: 'J', skills: ['Python'] } } }))
+      restore()
+      expect(res.status).toBe(503)
+      expect(writes).toEqual([])
+    } finally { console.error = realErr }
   })
   it('the free draft is available for a structured file scan, and refused (with a reason) before that', async () => {
     t = setup({ id: 's1', user_id: 'u1', input_mode: 'file', status: 'COMPLETE_PASS', original_resume_data: null })
@@ -281,7 +299,7 @@ describe('updateDeliveredResume', () => {
       'services/resume.parser.js': { extractText: async () => 'x'.repeat(200) },
       'services/docx.service.js': { generateAtsDocx: async (d, url, o) => { (state.docx ||= []).push(o?.verified === false ? 'unverified' : 'verified'); return Buffer.from('docx') } },
       'services/ats.service.js': { scoreResume: () => ({ score: opts.score ?? 90, detail: {} }), describeWeakAreas: () => [] },
-      'services/claude.service.js': { scoreResumeWithAI: async () => ({ success: true, data: JSON.stringify({ aiScore: opts.score ?? 90, missingKeywords: [] }) }), extractJson: x => JSON.parse(x), generateBeautifulResumeHTML: async () => ({ success: false }) },
+      'services/claude.service.js': { scoreResumeWithAI: async () => opts.aiDown ? ({ success: false }) : ({ success: true, data: JSON.stringify({ aiScore: opts.score ?? 90, missingKeywords: [] }) }), extractJson: x => JSON.parse(x), generateBeautifulResumeHTML: async () => ({ success: false }) },
       'services/badge.service.js': { hashBytes: async () => 'newhash' },
       'services/design.service.js': { getDesignTokens: () => ({}), detectPaper: () => 'letter' },
       'services/pdf.service.js': { generateResumePDF: async () => Buffer.from('pdf') },
@@ -312,6 +330,17 @@ describe('updateDeliveredResume', () => {
     const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
     expect(res.body.data.credentialVerified).toBe(false)
     expect(t.state.docx).toEqual(['verified', 'unverified'])
+  })
+  it('an AI outage never downgrades a delivered credential: 503, nothing written, nothing deleted', async () => {
+    const realErr = console.error; console.error = () => {}
+    try {
+      t = setup({ aiDown: true })
+      const res = await t.mod.updateDeliveredResume(baseCtx({ env: t.env, body: { resumeData: edit } }))
+      expect(res.status).toBe(503)
+      expect(t.state.updates).toEqual([])
+      expect(t.state.puts).toEqual([])
+      expect(t.state.deletes).toEqual([])
+    } finally { console.error = realErr }
   })
   it('G7: a credential-only (BADGE) edit is stored as the owner\'s edit and NEVER overwrites the scored upload (original_resume_data)', async () => {
     t = setup({ scan: { id: 's1', user_id: 'u1', status: 'FIX_DELIVERED', fix_purchased: true, fix_tier: 'BADGE', fix_retry_count: 0, job_description_text: 'JD ' + 'x'.repeat(60), original_resume_data: { name: 'Jane' }, rewritten_resume_data: null, resume_ats_path: 'old.docx', verification_code: 'C', verification_url: 'https://x/v/C' } })
@@ -434,6 +463,21 @@ describe('fix jobs: lease and once-only compensation', () => {
     expect(await t.mod.generateBadge({}, db, 's1')).toEqual({ success: true, skipped: true })
     expect(db.calls.filter(c => c.table === 'scans')).toEqual([])
     expect(db.calls.filter(c => c.name === 'release_fix_job')).toEqual([])
+  })
+  it('a job for a refunded or disputed purchase stands down: nothing generated, scan row untouched, lease released', async () => {
+    for (const status of ['REFUNDED', 'DISPUTED']) {
+      const db = createFakeSupabase(q => {
+        if (q.op === 'rpc' && q.name === 'claim_fix_job') return { data: true, error: null }
+        if (q.table === 'scans' && q.op === 'select') return { data: { fix_payment_id: 'p1' }, error: null }
+        if (q.table === 'payments' && q.op === 'select') return { data: { status }, error: null }
+      })
+      t = loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+      expect(await t.mod.generateFix({}, db, 's1')).toEqual({ success: true, skipped: true, reversed: true })
+      expect(await t.mod.generateBadge({}, db, 's1')).toEqual({ success: true, skipped: true, reversed: true })
+      expect(db.calls.filter(c => c.table === 'scans' && c.op === 'update')).toEqual([])
+      expect(db.calls.filter(c => c.name === 'release_fix_job').length).toBe(2)
+      t.restore()
+    }
   })
   it('the lease is released after the run, even when the run throws', async () => {
     const db = createFakeSupabase(q => {

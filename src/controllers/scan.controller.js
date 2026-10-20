@@ -1017,7 +1017,11 @@ async function updateResumeData(ctx) {
   const ruleResult = atsService.scoreResume(rawResumeText, jdText)
 
   const aiResult = await fetchAiScore(ctx.env, rawResumeText, jdText, 'updateResumeData', ruleResult.score)
-  const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
+  const { finalScore, aiMissingKeywords, aiBlended } = blendAiScore(ruleResult.score, aiResult, 'updateResumeData')
+  // A rule-only score (AI call failed) is held under the credential line and is not the same measurement as the blended
+  // number it would overwrite. Don't replace a good score with it - nothing has been written yet, so just ask for a retry.
+  if (!aiBlended)
+    return ctx.json({ success: false, message: 'We couldn\'t re-score your resume just now. Your earlier version is unchanged - please try again in a minute.' }, 503)
   const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
 
   // AUDIT FIX (Auth/Scan round): the write was keyed on id alone, but the
@@ -1126,7 +1130,7 @@ function coverLetterFileStem(resumeData) { return fileStems.coverLetterStem(resu
 // look never fails a delivery.
 function lookFor(scan, id) {
   try {
-    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, version: scan.docTemplateVersion })
+    const t = designService.getDesignTokens(scan.userId || id || scan.id, id || scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText })
     return { accent: t?.palette?.primary, serif: isSerifHeading(t?.fonts?.heading), text: t?.palette?.text }
   } catch (_) { return {} }
 }
@@ -1215,8 +1219,11 @@ async function structureResume(ctx) {
   if (formattedScore == null) {
     try {
       const f = await computeFormattedScore(ctx.env, data, safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS), 'structureResume')
-      formattedScore = f.finalScore
-      if (prior) report = { ...prior, formattedScore }
+      // An AI-less score is capped under the credential line; cached permanently it would hide the credential-only offer.
+      if (f.aiBlended) {
+        formattedScore = f.finalScore
+        if (prior) report = { ...prior, formattedScore }
+      } else console.error(`structureResume ${scan.id}: formatted score skipped (AI half unavailable)`)
     } catch (e) {
       // Informational only: never fail the structure preview because the preview score could not be made.
       console.error(`structureResume ${scan.id}: formatted score failed:`, e?.message || e)
@@ -1306,7 +1313,10 @@ async function retryScan(ctx) {
   }
 
   // Best-effort (see migration 0072): the refund rules key on when the slot was spent, not when the scan was created.
-  warnOnError(await supabase.from('scans').update({ scan_slot_spent_at: new Date().toISOString() }).eq('id', scan.id), 'retry-scan: stamp slot spent')
+  // An account retry that got past the daily limit only because the IP is bypassed spent NO slot: stamp it with a time the
+  // refund rules treat as long gone, so a later failure cannot hand back a slot that was never taken.
+  const slotStamp = ownerAccount && !spentAccountSlot ? new Date(0).toISOString() : new Date().toISOString()
+  warnOnError(await supabase.from('scans').update({ scan_slot_spent_at: slotStamp }).eq('id', scan.id), 'retry-scan: stamp slot spent')
 
   await dispatchAtsScan(ctx, supabase, scan.id, ownerAccount ? null : anonToken)
   return ctx.json({ success: true, data: { id: scan.id, status: 'PENDING' } })
@@ -1366,6 +1376,10 @@ async function updateDeliveredResume(ctx) {
   let fixAtsScore, scored
   if (text && text.trim().length >= 100) { scored = await scoreLikeScan(ctx.env, text, jdText, 'updateDeliveredResume'); fixAtsScore = scored.score }
   else return ctx.json({ success: false, message: 'That resume is too short to score. Add more detail and try again.' }, 400)
+  // No AI half = no verdict. Committing the capped rule-only score here would silently downgrade a verified credential
+  // (new files, new hash, old files deleted) over a transient outage. Nothing has been written yet.
+  if (!scored.aiBlended)
+    return ctx.json({ success: false, message: 'We couldn\'t re-score your resume just now. Your delivered resume is unchanged - please try again in a minute.' }, 503)
   const editReport = deliveredReport(scored)
   const credentialVerified = !isPlain && fixAtsScore >= c.ATS_BADGE_THRESHOLD
   if (verificationUrl && !credentialVerified)
@@ -1379,7 +1393,7 @@ async function updateDeliveredResume(ctx) {
   let resumeHash, pdfKey, pdfHash
   try {
     resumeHash = await badgeService.hashBytes(docxBytes)
-    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: paperChoice })
     ;({ pdfKey, pdfHash } = await renderDeliveredPdf(ctx.env, scan.id, resumeData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain }))
   } catch (renderErr) {
     await deleteSuperseded(ctx.env, [docxKey], [])
@@ -1575,7 +1589,7 @@ async function loadCoverLetter(ctx) {
   const date = paper === 'a4'
     ? now.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone })
     : now.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone })
-  const tokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, version: row.doc_template_version })
+  const tokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text })
   const look = { accent: tokens?.palette?.primary, serif: isSerifHeading(tokens?.fonts?.heading), text: tokens?.palette?.text }
   return { row, data, paper, date, chosenPaper, look }
 }
@@ -1597,7 +1611,7 @@ async function downloadCoverLetter(ctx) {
 async function downloadCoverLetterPdf(ctx) {
   const { res, row, data, paper, date, chosenPaper } = await loadCoverLetter(ctx)
   if (res) return res
-  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, paper: chosenPaper, version: row.doc_template_version })
+  const designTokens = designService.getDesignTokens(row.user_id || row.id, row.id, row.role_category, { jdText: row.job_description_text, paper: chosenPaper })
   let pdfBytes
   try {
     const html = pdfTemplate.buildCoverLetterHTML(row.cover_letter_text, data, designTokens, { date })
@@ -1757,7 +1771,7 @@ async function redeemCredit(ctx) {
       fix_purchased: true, status: 'FIX_PURCHASED', fix_tier: 'FIX', fix_payment_id: creditPaymentId
     }).eq('id', scan.id).eq('fix_purchased', false).select('id')
     if (scanUpdateErr) throw scanUpdateErr
-    if (!claimed || claimed.length === 0) throw new Error('Scan was purchased concurrently')
+    if (!claimed || claimed.length === 0) throw Object.assign(new Error('Scan was purchased concurrently'), { concurrent: true })
     claimObtained = true
 
     // FEATURE GAP CLOSED (Payments & Pricing pass 1 — G2): this claim used to
@@ -1793,11 +1807,13 @@ async function redeemCredit(ctx) {
       try { await supabase.from('payments').update({ status: 'FAILED' }).eq('id', creditPaymentId) } catch (_) {}
     }
     console.error(`[CRITICAL] redeemCredit fulfillment failed after credit consumed (user ${user.id}, scan ${scan.id}):`, err.message)
+    let creditRefunded = false
     try {
       // must(): supabase-js reports a failed RPC as `{ error }` and never
       // throws — without this the catch below (and its owner alert, which
       // already existed but could never fire) silently never ran.
       must(await supabase.rpc('increment_free_fix_credits', { p_user_id: user.id }), 'refund free fix credit')
+      creditRefunded = true
     } catch (refundErr) {
       // Refund itself failed — this is the one case that genuinely needs a
       // human, since the credit is stuck consumed with no automatic path
@@ -1810,6 +1826,8 @@ async function redeemCredit(ctx) {
         )
       } catch (_) {}
     }
+    // Losing the purchase race is an expected outcome (the credit is already back above), not a server fault.
+    if (err.concurrent && creditRefunded) return ctx.json({ success: false, message: 'This scan was just purchased, so your credit was not used.' }, 409)
     throw err
   }
 
@@ -2517,7 +2535,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
 
     // AI blend — 70% rule + 30% AI, never fail scan if AI unavailable
     const aiResult = await fetchAiScore(env, resumeText, jdText, 'runAtsScan', ruleResult.score)
-    const { finalScore, aiMissingKeywords } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
+    const { finalScore, aiMissingKeywords, aiBlended } = blendAiScore(ruleResult.score, aiResult, 'runAtsScan')
 
     // Checked: this is THE write that completes the scan. If it fails the
     // row stays SCANNING, so it must throw into the handler below (which
@@ -2533,7 +2551,7 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       content_score:   ruleResult.contentScore,
       // A typed / saved-profile scan is scored on the rendered document itself, so its score already
       // IS the formatted-file score; for an uploaded file it is computed on request (structureResume).
-      full_ats_report: { ...ruleResult.detail, aiMissingKeywords, ...(scan.inputMode !== 'file' ? { formattedScore: finalScore } : {}) },
+      full_ats_report: { ...ruleResult.detail, aiMissingKeywords, ...(aiBlended ? {} : { aiScored: false }), ...(scan.inputMode !== 'file' && aiBlended ? { formattedScore: finalScore } : {}) },
       role_category:   atsService.detectRoleCategory(jdText),
       seniority_level: atsService.detectSeniority(jdText),
       scan_completed_at: new Date().toISOString(),
@@ -2658,7 +2676,7 @@ async function regeneratePdf(ctx) {
   const isPlain = scan.fixTier === 'FIX_PLAIN'
   const verificationUrl = isPlain ? null : (scan.verificationUrl || null)
   const credentialVerified = !isPlain && typeof scan.fixAtsScore === 'number' && scan.fixAtsScore >= c.ATS_BADGE_THRESHOLD
-  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+  const designTokens = designService.getDesignTokens(scan.userId || scan.id, scan.id, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
   const version = cryptoLib.randomToken(6)
   const { pdfKey, pdfHash, error: pdfError } = await renderDeliveredPdf(ctx.env, scan.id, data, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
   if (!pdfKey) {
@@ -2816,8 +2834,8 @@ async function computeFormattedScore(env, resumeData, jdText, label) {
   const text = safeSlice(await renderStructuredResumeText(resumeData), c.MAX_RESUME_TEXT_CHARS)
   const rule = atsService.scoreResume(text, jdText)
   const ai = await fetchAiScore(env, text, jdText, label, rule.score)
-  const { finalScore, aiMissingKeywords } = blendAiScore(rule.score, ai, label)
-  return { finalScore, aiMissingKeywords, rule }
+  const { finalScore, aiMissingKeywords, aiBlended } = blendAiScore(rule.score, ai, label)
+  return { finalScore, aiMissingKeywords, aiBlended, rule }
 }
 
 
@@ -2832,8 +2850,10 @@ async function computeFormattedScore(env, resumeData, jdText, label) {
 async function scoreLikeScan(env, text, jdText, logLabel) {
   const rule = atsService.scoreResume(text, jdText)
   const aiResult = await fetchAiScore(env, text, jdText, logLabel, rule.score)
-  const { finalScore, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords } = blendAiScore(rule.score, aiResult, logLabel)
-  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords }
+  const { finalScore, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords, aiBlended } = blendAiScore(rule.score, aiResult, logLabel)
+  // aiBlended travels with the score: callers that WRITE a user-visible result must be able to tell a real blended
+  // number from the rule-only one held under the credential line when the AI call failed.
+  return { ...rule, score: finalScore, ruleScore: rule.score, aiMissingKeywords, aiMissingMust, aiMetMust, aiPartialKeywords, aiBlended }
 }
 
 // The breakdown persisted as scans.fix_ats_report for a DELIVERED file (same shape as
@@ -3306,7 +3326,7 @@ async function generateFixRun(env, supabase, scanId) {
     })
     const resumeHash = isPlain ? null : await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: !isPlain })
 
     // SECTION 7 AUDIT FIX (bug): a PDF render failure is deliberately non-fatal — the
@@ -3566,7 +3586,7 @@ async function generateBadgeRun(env, supabase, scanId) {
     })
     const resumeHash = await badgeService.hashBytes(docxBytes)
 
-    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize, version: scan.docTemplateVersion })
+    const designTokens = designService.getDesignTokens(scan.userId || scanId, scanId, scan.roleCategory, { jdText: scan.jobDescriptionText, paper: scan.paperSize })
     const { pdfKey, pdfHash } = await renderDeliveredPdf(env, scanId, finalData, designTokens, verificationUrl, credentialVerified, version, { hash: true })
 
     // SECTION 7 AUDIT FIX (bug): same class of bug as generateFix (see its own comment) —
@@ -3656,6 +3676,18 @@ async function generateBadgeRun(env, supabase, scanId) {
   }
 }
 
+// The HTTP endpoints refuse a refunded/disputed purchase (PURCHASE_REVERSED) but the queued jobs did not: a refund that
+// landed while a job was queued, running its first attempt, or while the scan sat in ERROR awaiting the sweep still got
+// the whole Claude bill, delivered files and a "your fix is ready" e-mail. The jobs now stand down. The scan row is left
+// as it is (the reversal path owns it), and the sweeps skip reversed payments so nothing re-queues it.
+async function purchaseReversedForJob(supabase, scanId) {
+  try {
+    const { data, error } = await supabase.from('scans').select('fix_payment_id').eq('id', scanId).maybeSingle()
+    if (error || !data) return false
+    return !(await purchaseIsLive(supabase, { fixPaymentId: data.fix_payment_id }))
+  } catch (_) { return false }
+}
+
 // Public entry points: take the scan's lease, run, give it back (see claimFixJob).
 async function generateFix(env, supabase, scanId) {
   const lease = await claimFixJob(supabase, scanId)
@@ -3663,7 +3695,12 @@ async function generateFix(env, supabase, scanId) {
     console.log(`generateFix: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
-  try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId)) }
+  try {
+    if (await purchaseReversedForJob(supabase, scanId)) {
+      console.log(`generateFix: purchase for scan ${scanId} was refunded or is disputed - not generating`)
+      return { success: true, skipped: true, reversed: true }
+    }
+    return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId)) }
   finally { await releaseFixJob(supabase, scanId, lease) }
 }
 async function generateBadge(env, supabase, scanId) {
@@ -3672,7 +3709,12 @@ async function generateBadge(env, supabase, scanId) {
     console.log(`generateBadge: scan ${scanId} already has a job in flight — duplicate, standing down`)
     return { success: true, skipped: true }
   }
-  try { return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateBadgeRun(tracked, supabase, scanId)) }
+  try {
+    if (await purchaseReversedForJob(supabase, scanId)) {
+      console.log(`generateBadge: purchase for scan ${scanId} was refunded or is disputed - not generating`)
+      return { success: true, skipped: true, reversed: true }
+    }
+    return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateBadgeRun(tracked, supabase, scanId)) }
   finally { await releaseFixJob(supabase, scanId, lease) }
 }
 

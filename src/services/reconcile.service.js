@@ -417,7 +417,7 @@ async function sweepFailedFixes(env, supabase, { now = Date.now(), alert = true 
 
   const { data: scans, error } = await supabase
     .from('scans')
-    .select('id, fix_tier, fix_error_recoveries, updated_at')
+    .select('id, fix_tier, fix_error_recoveries, updated_at, fix_payment_id')
     .eq('status', 'ERROR')
     .eq('fix_purchased', true)
     .gt('updated_at', new Date(now - FAILED_LOOKBACK_MS).toISOString())
@@ -427,8 +427,18 @@ async function sweepFailedFixes(env, supabase, { now = Date.now(), alert = true 
   if (error) { result.error = error.message; return result }
   result.candidates = scans?.length || 0
 
+  // A refunded / disputed purchase is not recovered: the generator would stand down anyway, and each pass would burn one of
+  // the scan's recoveries and then raise a false "exhausted" alert.
+  const reversed = new Set()
+  const payIds = [...new Set((scans || []).map(s => s.fix_payment_id).filter(Boolean))]
+  if (payIds.length) {
+    const { data: pays } = await supabase.from('payments').select('id, status').in('id', payIds)
+    for (const p of pays || []) if (['REFUNDED', 'DISPUTED'].includes(p.status)) reversed.add(p.id)
+  }
+
   let attempted = 0
   for (const s of scans || []) {
+    if (s.fix_payment_id && reversed.has(s.fix_payment_id)) continue
     if ((s.fix_error_recoveries ?? 0) >= MAX_AUTO_RECOVERIES) {
       if (now - Date.parse(s.updated_at) < EXHAUSTED_ALERT_MS) result.exhausted.push({ scanId: s.id })
       continue

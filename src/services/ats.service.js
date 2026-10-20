@@ -516,11 +516,37 @@ const shingles = (text, n = 5) => {
   for (let i = 0; i + n <= w.length; i++) out.add(w.slice(i, i + n).join(' '))
   return out
 }
+// A resume bigram must sit inside one phrase, like the JD side: "...merged raw data" at the end of one line and
+// "Analysis of churn" at the start of the next used to credit the JD's "data analysis". A newline only counts as a
+// phrase break when the line before it ended on its own: a PDF wraps mid-sentence at the column width, so a long line
+// with no terminal punctuation is joined to the next one (a real compound split by a wrap is still found), while a
+// short line, or one that ends a sentence, or a next line that starts a list item, is a boundary.
+const WRAP_MIN_LINE = 55
+const LIST_START = /^\s*(?:[-*\u2022\u00b7\u25aa\u25cf\u25e6\u2013\u2014>]|\d{1,2}[.)])\s/u
+function resumeChunks(text) {
+  const lines = String(text || '').split(/\r?\n/)
+  const chunks = []
+  let cur = ''
+  for (const line of lines) {
+    const t = line.trim()
+    if (!t) { if (cur) chunks.push(cur); cur = ''; continue }
+    if (cur && !LIST_START.test(t)) {
+      const prev = cur.slice(cur.lastIndexOf('\n') + 1)
+      if (prevWrapped(prev)) { cur += ' ' + t; continue }
+    }
+    if (cur) chunks.push(cur)
+    cur = t
+  }
+  if (cur) chunks.push(cur)
+  return chunks
+}
+const prevWrapped = line => line.length >= WRAP_MIN_LINE && !/[.!?:;]$/.test(line)
 const stemSets = text => {
-  const tokens = tokenizeRaw(text)
-  const stems = new Set(tokens.map(stem))
+  const stems = new Set(tokenizeRaw(text).map(stem))
   const bigrams = new Set()
-  for (let i = 0; i < tokens.length - 1; i++) bigrams.add(`${stem(tokens[i])} ${stem(tokens[i + 1])}`)
+  for (const chunk of resumeChunks(text))
+    for (const seg of tokenizeSegments(chunk))
+      for (let i = 0; i < seg.length - 1; i++) bigrams.add(`${stem(seg[i])} ${stem(seg[i + 1])}`)
   return { stems, bigrams }
 }
 const HIDDEN_TEXT_MIN = 20

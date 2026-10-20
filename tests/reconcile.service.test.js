@@ -498,10 +498,11 @@ describe('sweepPendingPayments (Section 8 audit — asks Paystack about non-SUCC
 })
 
 // ── paid-but-generation-failed recovery (Section 9/10) ──────────────────────
-function setupFailed({ scans = [], claim = true, claimError = null, queueError = null, selectError = null } = {}) {
+function setupFailed({ scans = [], claim = true, claimError = null, queueError = null, selectError = null, payments = [] } = {}) {
   const state = { queue: [], alerts: [], claims: [] }
   const db = createFakeSupabase(q => {
     if (q.table === 'scans' && q.op === 'select') return { data: scans, error: selectError }
+    if (q.table === 'payments' && q.op === 'select') return { data: payments, error: null }
     if (q.op === 'rpc' && q.name === 'claim_errored_fix') { state.claims.push(q.args); return { data: typeof claim === 'function' ? claim(q.args) : claim, error: claimError } }
     return undefined
   })
@@ -530,6 +531,19 @@ describe('sweepFailedFixes', () => {
     expect(q.filters.find(f => f[0] === 'eq' && f[1] === 'fix_purchased')[2]).toBe(true)
     expect(q.filters.some(f => f[0] === 'gt' && f[1] === 'updated_at')).toBe(true)
     expect(q.filters.some(f => f[0] === 'lt' && f[1] === 'updated_at')).toBe(true)
+  })
+  it('skips a scan whose purchase was refunded or disputed: no claim, no queue message, no exhausted alert', async () => {
+    t = setupFailed({
+      scans: [errScan({ fix_payment_id: 'p1' }), errScan({ id: 's2', fix_payment_id: 'p2', fix_error_recoveries: 2 })],
+      payments: [{ id: 'p1', status: 'REFUNDED' }, { id: 'p2', status: 'DISPUTED' }],
+    })
+    const r = await t.sweep()
+    expect(r.requeued).toHaveLength(0); expect(r.exhausted).toHaveLength(0)
+    expect(t.state.claims).toHaveLength(0); expect(t.state.queue).toHaveLength(0); expect(t.state.alerts).toHaveLength(0)
+  })
+  it('still recovers a scan whose payment is live', async () => {
+    t = setupFailed({ scans: [errScan({ fix_payment_id: 'p1' })], payments: [{ id: 'p1', status: 'SUCCESS' }] })
+    expect((await t.sweep()).requeued).toEqual([{ scanId: 's1', attempt: 1 }])
   })
   it('uses generateBadge for a BADGE-tier scan', async () => {
     t = setupFailed({ scans: [errScan({ fix_tier: 'BADGE' })] })

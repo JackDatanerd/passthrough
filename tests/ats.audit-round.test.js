@@ -102,3 +102,17 @@ describe('detectSeniority', () => {
   ]
   for (const [jd, lvl] of cases) it(`${lvl}: ${jd.slice(0, 50).replace(/\n/g, ' ')}`, () => expect(detectSeniority(jd)).toBe(lvl))
 })
+
+describe('resume bigrams stay inside one phrase (Scan/ATS freshpass 2)', () => {
+  const jd = 'Data Analyst\nWe need strong data analysis skills. You will do data analysis daily. Data analysis, SQL, Python, Tableau reporting.'
+  const mk = body => `Jane Doe\njane@x.com | 555-123-4567\nEXPERIENCE\nAnalyst — Acme — 2019-2023\n${body}\nEDUCATION\nBSc Statistics\nSKILLS\nSQL, Python`
+  const matched = body => scoreResume(mk(body), jd).detail.keywords.matched.includes('data analysis')
+  it('does not stitch the last word of one bullet to the first word of the next', () => {
+    expect(matched('• Cleaned and merged raw data\n• Analysis of churn reduced cost by 12%')).toBe(false)
+    expect(matched('Cleaned and merged raw data\nAnalysis of churn reduced cost by 12%')).toBe(false)
+  })
+  it('still finds the phrase on one line, and across a PDF column wrap', () => {
+    expect(matched('• Performed data analysis of churn reduced cost by 12%')).toBe(true)
+    expect(matched('• Built dashboards for the finance team and led end to end data\nanalysis of churn that reduced cost by 12%')).toBe(true)
+  })
+})

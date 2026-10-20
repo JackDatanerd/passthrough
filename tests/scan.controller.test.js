@@ -170,9 +170,10 @@ describe('redeemCredit', () => {
     expect(ctx.__queueSent).toEqual([{ type: 'generateFix', scanId: 's1' }])
   })
 
-  it('lost claim (concurrent purchase): fails the $0 payment row, refunds the credit, still throws', async () => {
+  it('lost claim (concurrent purchase): fails the $0 payment row, refunds the credit, answers 409 (not a 500)', async () => {
     t = setup({ claimed: [] })   // the atomic claim UPDATE won nothing
-    await expect(t.mod.redeemCredit(baseCtx())).rejects.toThrow()
+    const res = await t.mod.redeemCredit(baseCtx())
+    expect(res.status).toBe(409)
     expect(t.state.paymentFailUpdates).toEqual([{ status: 'FAILED' }])
     expect(t.state.refundCalls).toEqual([{ p_user_id: 'u1' }])
   })
@@ -203,7 +204,7 @@ describe('redeemCredit', () => {
   })
   it('G2: it happens only AFTER the claim is won — a lost claim leaves the other checkout untouched', async () => {
     t = setup({ claimed: [] })
-    await expect(t.mod.redeemCredit(baseCtx())).rejects.toThrow()
+    expect((await t.mod.redeemCredit(baseCtx())).status).toBe(409)
     expect(t.state.abandoned).toHaveLength(0)
   })
   it('G2: a failure while closing the other checkout never undoes the redemption', async () => {
