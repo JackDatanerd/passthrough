@@ -45,6 +45,7 @@ router.patch('/:id/resume-data',   rl.resumeEdit, validateUuidParam(), c.updateR
 router.get( '/:id/download-draft', rl.draftDownload, validateUuidParam(), c.downloadDraft)
 router.get( '/:id/download-draft-pdf', rl.draftPdf, validateUuidParam(), c.downloadDraftPdf)
 // Build (and store) the structure of an uploaded file so it can be reviewed/corrected before paying.
+router.post('/:id/rescore-ai',    rl.resumeEdit, validateUuidParam(), c.rescoreAi)
 router.post('/:id/structure',      rl.resumeStructure, validateUuidParam(), c.structureResume)
 // G1 (round 3): re-run a free scan that failed on our side, in place. rl.anonScan spends the anonymous
 // visitor's hourly slot (and hands it back on a 4xx/5xx); logged-in users are metered by the account quota.

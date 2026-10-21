@@ -130,6 +130,7 @@ function candidateFirstNameFrom(resumeData) {
 // Hoisted to module scope — was previously declared locally inside
 // generateFix only; runAtsScan's WYSIWYG scoring fix below (see
 // renderStructuredResumeText) needs the same constant.
+const JD_URL_FETCHES_PER_HOUR = 30
 const DOCX_MIME = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
 
 // AUDIT FIX (bug — section audit "generate a resume from scratch"): brain-dump
@@ -334,6 +335,10 @@ async function createScan(ctx) {
   // fetched page silently REPLACED it, and a URL the fetcher refused rejected a
   // submission that already carried a perfectly good pasted description.
   if (fields.jobDescriptionUrl && jdText.length < 50) {
+    // Round 14: a signed-in account is not covered by the anonymous limiter, and a failed lookup spends no scan, so
+    // it could fire outbound page fetches at the general rate. Its own hourly budget.
+    if (user && !(await rateLimiter.hitQuota(ctx.env, `rl:jdfetch:${user.id}`, JD_URL_FETCHES_PER_HOUR, 3600)))
+      return ctx.json({ success: false, message: 'Too many job-link lookups this hour. Paste the job description text instead.' }, 429)
     const fetched = await jdParser.fetchJobDescriptionFromUrl(fields.jobDescriptionUrl)
     if (fetched.blocked) {
       return ctx.json({ success: false, blocked: true, code: 'JD_URL_FAILED', message: fetched.message }, 400)
@@ -736,6 +741,8 @@ function buildAtsDetail(fullAtsReport) {
     // Score of the ATS-formatted file a purchase would deliver (null until it has been built for an
     // uploaded file; equal to the scan score for typed / saved-profile scans).
     formattedScore: fullAtsReport.formattedScore ?? null,
+    // Round 14: the AI half of the score could not run, so this number is rule-only (and held under the credential bar).
+    scoredWithoutAi: fullAtsReport.aiScored === false,
     // How much each category counts, so the page can say where the missing points are. A job description with nothing
     // scoreable in it drops the keyword category entirely (scoreResume re-weights the other three), so it counts for 0.
     weights: categoryWeightsFor(fullAtsReport)
@@ -1569,9 +1576,11 @@ function safeTimeZone(tz) {
 async function loadCoverLetter(ctx) {
   const user = ctx.get('user')
   const supabase = getSupabase(ctx.env)
-  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data, job_description_text, role_category').eq('id', ctx.req.param('id')).maybeSingle()
+  const { data: row, error } = await supabase.from('scans').select('id, user_id, cover_letter_text, original_resume_data, rewritten_resume_data, job_description_text, role_category, doc_template_version, fix_payment_id').eq('id', ctx.req.param('id')).maybeSingle()
   if (error) throw error
   if (!row || row.user_id !== user.id) return { res: ctx.json({ success: false, message: 'Access denied.' }, 403) }
+  // Round 14: a refunded / disputed purchase keeps no downloads, like every other action on it.
+  if (!(await purchaseIsLive(supabase, { fixPaymentId: row.fix_payment_id }))) return { res: ctx.json(DOWNLOAD_REVERSED, 403) }
   if (!row.cover_letter_text) return { res: ctx.json({ success: false, message: 'No cover letter yet.' }, 404) }
   const data = row.rewritten_resume_data || row.original_resume_data
   // Letterhead (name + contact line, the same header the resume carries) and the date, in the form the posting's
@@ -2072,6 +2081,7 @@ async function downloadFile(ctx) {
     return ctx.json({ success: false, message: 'Access denied.' }, 403)
   if (!scan.fixPurchased)
     return ctx.json({ success: false, message: 'Fix not purchased.' }, 403)
+  if (!(await purchaseIsLive(supabase, scan))) return ctx.json(DOWNLOAD_REVERSED, 403)
   if (!user.emailVerified)
     return ctx.json({ success: false, message: 'Verify your email to download.', code: 'EMAIL_NOT_VERIFIED' }, 403)
 
@@ -2327,6 +2337,53 @@ async function reportProgress(supabase, scanId, patch, inFlightStatus) {
   } catch (_) { /* telemetry only */ }
 }
 
+async function notifyScanResult(env, supabase, scan, scanId, finalScore, ruleResult, rawAnonToken) {
+  if (scan.userId) {
+    const { data: userRow } = await supabase.from('users').select('*').eq('id', scan.userId).maybeSingle()
+    const user = userRowToCamel(userRow)
+    // notifyScanResults === false is an explicit opt-out (Settings); anything else — including a
+    // row from before migration 0052 — keeps the old behaviour. Only this "scan finished"
+    // message is governed: security and transactional mail is never optional.
+    if (user && user.notifyScanResults !== false) {
+      const fn = finalScore >= c.ATS_PASS_THRESHOLD ? emailService.sendScanPass : emailService.sendScanFail
+      // Awaited rather than fire-and-forget: this whole function already
+      // runs inside a background waitUntil() call from createScan (the
+      // HTTP response already returned), so there's no response to delay
+      // — but an un-awaited promise here can still get silently cancelled
+      // when runAtsScan itself resolves, since waitUntil only protects
+      // the promise passed to it, not promises nested further inside.
+      try {
+        await fn(env, supabase, user.email, user.name, finalScore, {
+          keywordScore:  ruleResult.keywordScore,
+          formatScore:   ruleResult.formatScore,
+          sectionsScore: ruleResult.sectionsScore,
+          contentScore:  ruleResult.contentScore
+        })
+      } catch (e) { console.error('Scan email:', e.message) }
+    }
+  } else if (scan.contactEmail && rawAnonToken) {
+    // AUDIT FIX (feature gap — section audit "generate a resume from
+    // scratch"): an anonymous brain-dump submitter has no account, so the
+    // logged-in branch above never fires for them — they previously got
+    // NO email at all, despite ScanForm.jsx explicitly collecting an email
+    // address from them for exactly this kind of recovery scenario ("so
+    // your resume header isn't blank" undersold what it should also be
+    // used for). Without this, closing the tab / losing the localStorage
+    // anon_token means losing access to a resume they just spent real
+    // effort typing out, with a validated email sitting right there on
+    // the row unused. Embeds the scan's own anon_token as a magic link —
+    // this is not a third-party address, it's the address the person
+    // themselves just typed into this exact form, so it's the same trust
+    // boundary as any "here's your link" confirmation email.
+    try {
+      await emailService.sendAnonScanResult(
+        env, supabase, scan.contactEmail, scan.contactName || 'there',
+        scanId, rawAnonToken, finalScore, finalScore >= c.ATS_PASS_THRESHOLD
+      )
+    } catch (e) { console.error('Anon scan email:', e.message) }
+  }
+}
+
 async function runAtsScan(env, supabase, scanId, rawAnonToken = null, opts = {}) {
   return claudeUsage.withUsage(supabase, env, scanId, tracked => runAtsScanInner(tracked, supabase, scanId, rawAnonToken, opts))
 }
@@ -2571,50 +2628,9 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
       return { success: true }
     }
 
-    if (scan.userId) {
-      const { data: userRow } = await supabase.from('users').select('*').eq('id', scan.userId).maybeSingle()
-      const user = userRowToCamel(userRow)
-      // notifyScanResults === false is an explicit opt-out (Settings); anything else — including a
-      // row from before migration 0052 — keeps the old behaviour. Only this "scan finished"
-      // message is governed: security and transactional mail is never optional.
-      if (user && user.notifyScanResults !== false) {
-        const fn = finalScore >= c.ATS_PASS_THRESHOLD ? emailService.sendScanPass : emailService.sendScanFail
-        // Awaited rather than fire-and-forget: this whole function already
-        // runs inside a background waitUntil() call from createScan (the
-        // HTTP response already returned), so there's no response to delay
-        // — but an un-awaited promise here can still get silently cancelled
-        // when runAtsScan itself resolves, since waitUntil only protects
-        // the promise passed to it, not promises nested further inside.
-        try {
-          await fn(env, supabase, user.email, user.name, finalScore, {
-            keywordScore:  ruleResult.keywordScore,
-            formatScore:   ruleResult.formatScore,
-            sectionsScore: ruleResult.sectionsScore,
-            contentScore:  ruleResult.contentScore
-          })
-        } catch (e) { console.error('Scan email:', e.message) }
-      }
-    } else if (scan.contactEmail && rawAnonToken) {
-      // AUDIT FIX (feature gap — section audit "generate a resume from
-      // scratch"): an anonymous brain-dump submitter has no account, so the
-      // logged-in branch above never fires for them — they previously got
-      // NO email at all, despite ScanForm.jsx explicitly collecting an email
-      // address from them for exactly this kind of recovery scenario ("so
-      // your resume header isn't blank" undersold what it should also be
-      // used for). Without this, closing the tab / losing the localStorage
-      // anon_token means losing access to a resume they just spent real
-      // effort typing out, with a validated email sitting right there on
-      // the row unused. Embeds the scan's own anon_token as a magic link —
-      // this is not a third-party address, it's the address the person
-      // themselves just typed into this exact form, so it's the same trust
-      // boundary as any "here's your link" confirmation email.
-      try {
-        await emailService.sendAnonScanResult(
-          env, supabase, scan.contactEmail, scan.contactName || 'there',
-          scanId, rawAnonToken, finalScore, finalScore >= c.ATS_PASS_THRESHOLD
-        )
-      } catch (e) { console.error('Anon scan email:', e.message) }
-    }
+    // Round 14: a rule-only (AI-less) score is provisional - it is not mailed as the result. The person re-checks it from the
+    // results page and the email goes out then, with the real number.
+    if (aiBlended) await notifyScanResult(env, supabase, scan, scanId, finalScore, ruleResult, rawAnonToken)
     return { success: true }
   } catch (err) {
     console.error('runAtsScan error:', err.message)
@@ -2646,6 +2662,75 @@ async function runAtsScanInner(env, supabase, scanId, rawAnonToken = null, opts 
     return { success: false, error: err.message }
   }
 }
+
+// Round 14: POST /api/scan/:id/rescore-ai. A scan whose AI half could not run was saved with a rule-only score held under the
+// credential bar (full_ats_report.aiScored === false) and nothing let the person fix that short of spending another daily
+// scan. This re-runs the same scoring on the same input at no cost to the quota, and only for such a scan.
+async function rescoreAi(ctx) {
+  const supabase = getSupabase(ctx.env)
+  const { data: row, error } = await supabase.from('scans').select('*').eq('id', ctx.req.param('id')).maybeSingle()
+  if (error) throw error
+  const scan = scanRowToCamel(row)
+  if (!scan) return ctx.json({ success: false, message: 'Not found.' }, 404)
+  const user = ctx.get('user')
+  const anonToken = ctx.req.query('token') || null
+  const isOwner = (scan.userId && scan.userId === user?.id) || (await anonTokenMatches(scan, anonToken))
+  if (!isOwner) return ctx.json({ success: false, message: 'Access denied.' }, 403)
+
+  if (!['COMPLETE_PASS', 'COMPLETE_FAIL'].includes(scan.status) || scan.fixPurchased)
+    return ctx.json({ success: false, message: 'Only a finished scan that has not been purchased can be re-checked.' }, 400)
+  const prior = scan.fullAtsReport
+  if (!prior || prior.error || prior.aiScored !== false)
+    return ctx.json({ success: true, data: { alreadyChecked: true, atsScore: scan.atsScore, atsDetail: buildAtsDetail(prior), status: scan.status } })
+  const openBadge = await openBadgeCheckout(supabase, scan.id)
+  if (openBadge)
+    return ctx.json({ success: false, code: 'CHECKOUT_OPEN',
+      message: 'A Credential-only checkout is open for this resume, priced on its current score. Finish or cancel it before re-checking.',
+      data: { reference: openBadge.paystack_ref } }, 409)
+
+  let text, structure = null
+  if (scan.inputMode === 'file') {
+    const obj = scan.resumePath ? await ctx.env.RESUMES_BUCKET.get(scan.resumePath) : null
+    if (!obj) return ctx.json({ success: false, message: 'The uploaded file is no longer stored. Run a new scan.' }, 410)
+    const up = await resumeParser.analyzeUpload(new Uint8Array(await obj.arrayBuffer()), scan.resumeMimeType, { env: ctx.env })
+    if (up.failure || !up.text) return ctx.json({ success: false, message: 'We couldn\'t read your file just now. Please try again in a minute.' }, 502)
+    text = up.text; structure = up.structure || null
+  } else {
+    if (!scan.originalResumeData) return ctx.json({ success: false, message: 'There is nothing stored to re-check.' }, 400)
+    text = await renderStructuredResumeText(scan.originalResumeData)
+  }
+  const resumeText = safeSlice(text, c.MAX_RESUME_TEXT_CHARS)
+  const jdText = safeSlice(scan.jobDescriptionText || '', c.MAX_JD_CHARS)
+  const ruleResult = atsService.scoreResume(resumeText, jdText, { structure })
+  const aiResult = await fetchAiScore(ctx.env, resumeText, jdText, 'rescoreAi', ruleResult.score)
+  const { finalScore, aiMissingKeywords, aiBlended } = blendAiScore(ruleResult.score, aiResult, 'rescoreAi')
+  if (!aiBlended)
+    return ctx.json({ success: false, message: 'The AI check is still unavailable. Your result is unchanged - please try again in a few minutes.' }, 503)
+
+  const status = finalScore >= c.ATS_PASS_THRESHOLD ? 'COMPLETE_PASS' : 'COMPLETE_FAIL'
+  const report = { ...ruleResult.detail, aiMissingKeywords,
+    ...(scan.inputMode !== 'file' ? { formattedScore: finalScore } : (prior.formattedScore != null ? { formattedScore: prior.formattedScore } : {})) }
+  const { data: updated, error: updErr } = await supabase.from('scans').update({
+    ats_score: finalScore, passed: finalScore >= c.ATS_PASS_THRESHOLD,
+    keyword_score: ruleResult.keywordScore, format_score: ruleResult.formatScore,
+    sections_score: ruleResult.sectionsScore, content_score: ruleResult.contentScore,
+    full_ats_report: report, status
+  }).eq('id', scan.id).eq('fix_purchased', false).eq('status', scan.status).select('id')
+  if (updErr) throw updErr
+  if (Array.isArray(updated) && updated.length === 0)
+    return ctx.json({ success: false, message: 'This scan changed while it was being re-checked. Refresh the page and try again.' }, 409)
+
+  try { await notifyScanResult(ctx.env, supabase, scan, scan.id, finalScore, ruleResult, scan.userId ? null : anonToken) }
+  catch (e) { console.error('rescoreAi: result email:', e.message) }
+
+  return ctx.json({ success: true, data: {
+    atsScore: finalScore, passed: finalScore >= c.ATS_PASS_THRESHOLD, badgeEligible: finalScore >= c.ATS_BADGE_THRESHOLD,
+    keywordScore: ruleResult.keywordScore, formatScore: ruleResult.formatScore,
+    sectionsScore: ruleResult.sectionsScore, contentScore: ruleResult.contentScore,
+    atsDetail: buildAtsDetail(report), status
+  } })
+}
+
 
 // POST /api/scan/:id/regenerate-pdf
 // FEATURE GAP CLOSED (Auth/Scan round): a failed PDF render is deliberately
@@ -2748,6 +2833,16 @@ async function claimFixJob(supabase, scanId) {
     return token
   }
 }
+// Round 14: the lease was fixed at 600s with no renewal, but one attempt can run two 90s rewrite calls plus scoring, so a slow
+// run outlived it and a redelivered job could start on top of it. Extend it while the run is alive (owner-scoped by token;
+// best-effort - a failed extension only means the old, shorter lease applies).
+async function renewFixJob(supabase, scanId, token) {
+  if (!token) return
+  try {
+    await supabase.from('scans').update({ fix_job_lock_until: new Date(Date.now() + FIX_JOB_LEASE_SECONDS * 1000).toISOString() })
+      .eq('id', scanId).eq('fix_job_lock_token', token)
+  } catch (_) { /* best-effort */ }
+}
 async function releaseFixJob(supabase, scanId, token) {
   try { await supabase.rpc('release_fix_job', { p_scan_id: scanId, p_token: token }) }
   catch (err) { console.error(`[WARN] release_fix_job ${scanId}:`, err.message) }
@@ -2770,6 +2865,7 @@ async function purchaseIsLive(supabase, scan) {
     return !['REFUNDED', 'DISPUTED'].includes(data.status)
   } catch (_) { return true }
 }
+const DOWNLOAD_REVERSED = { success: false, code: 'PURCHASE_REVERSED', message: 'This purchase was refunded or is under dispute, so its files are no longer available to download.' }
 const PURCHASE_REVERSED = { success: false, code: 'PURCHASE_REVERSED', message: 'This purchase was refunded or is under dispute, so it can no longer be changed or regenerated.' }
 
 async function grantFixCreditOnce(env, supabase, scan, round, why, { upgrade = false } = {}) {
@@ -2932,7 +3028,7 @@ async function renderDeliveredPdf(env, scanId, data, designTokens, verificationU
   return { pdfKey: null, pdfHash: null, error: lastErr ? lastErr.message : (htmlError || 'PDF generation failed') }
 }
 
-async function generateFixRun(env, supabase, scanId) {
+async function generateFixRun(env, supabase, scanId, leaseToken = null) {
   // True once this scan already HAS a delivered fix and this run is a retry on
   // top of it — a crash then must not take the delivered fix away (see catch).
   let priorDelivery = false
@@ -3126,6 +3222,7 @@ async function generateFixRun(env, supabase, scanId) {
     }
 
     for (let attempt = 1; attempt <= c.MAX_FIX_ATTEMPTS; attempt++) {
+      await renewFixJob(supabase, scanId, leaseToken)
       progress.phase = 'rewriting'; progress.attempt = attempt
       await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
       const rewriteResult = await claudeService.rewriteResumeContent(env, resumeData, jdText, lastFeedback, guardBaseline, writerContext)
@@ -3292,6 +3389,7 @@ async function generateFixRun(env, supabase, scanId) {
       await grantFixCreditOnce(env, supabase, scan, scan.fixRetryCount, 'retries exhausted below threshold')
     }
 
+    await renewFixJob(supabase, scanId, leaseToken)
     progress.phase = 'rendering'
     await reportProgress(supabase, scanId, { fix_progress: snapshot(progress) }, 'FIX_GENERATING')
     // Reuse the winning attempt's already-generated docx bytes instead of
@@ -3354,7 +3452,8 @@ async function generateFixRun(env, supabase, scanId) {
     const finalPdfKey  = pdfKey || (keepPriorPdf ? scan.resumePdfPath : null) || null
     const finalPdfHash = pdfKey ? pdfHash : (keepPriorPdf ? (scan.resumePdfHash || null) : null)
 
-    const { error: deliverErr } = await supabase.from('scans').update({
+    if (await standDownIfReversed(env, supabase, scanId, { priorDelivery, writtenKeys })) return { success: true, skipped: true, reversed: true }
+    const { data: delivered, error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      finalPdfKey,
@@ -3389,9 +3488,11 @@ async function generateFixRun(env, supabase, scanId) {
       // is not left behind to be mistaken for an edit of THIS delivery.
       ...(upgradeRound ? { badge_upgraded_at: null, user_edited_resume_data: null } : {}),
       status: 'FIX_DELIVERED'
-    }).eq('id', scanId)
+    }).eq('id', scanId).eq('status', 'FIX_GENERATING').select('id')
     // This write was never checked: a failed update used to fall straight
     // through to "delivered" emails for a scan still stuck at FIX_GENERATING.
+    // Round 14: not our run any more (a duplicate job delivered first) - drop our files, change nothing.
+    if (!deliverErr && Array.isArray(delivered) && delivered.length === 0) { await cleanupUndeliveredKeys(env, supabase, scanId, writtenKeys); return { success: true, skipped: true, superseded: true } }
     if (deliverErr) throw deliverErr
     // A Try Again round whose rewrites all scored no better than the delivery already held re-delivered that same
     // content (carriedForward) - say so. Best-effort and AFTER delivery: it must never block one, and it is a no-op
@@ -3597,7 +3698,8 @@ async function generateBadgeRun(env, supabase, scanId) {
     const finalPdfKey  = pdfKey || scan.resumePdfPath || null
     const finalPdfHash = pdfKey ? pdfHash : (scan.resumePdfHash || null)
 
-    const { error: deliverErr } = await supabase.from('scans').update({
+    if (await standDownIfReversed(env, supabase, scanId, { priorDelivery, writtenKeys })) return { success: true, skipped: true, reversed: true }
+    const { data: delivered, error: deliverErr } = await supabase.from('scans').update({
       candidate_first_name: candidateFirstName,
       resume_ats_path:      docxKey,
       resume_pdf_path:      finalPdfKey,
@@ -3623,8 +3725,13 @@ async function generateBadgeRun(env, supabase, scanId) {
       // rewritten/user_edited_resume_data and must not replace it).
       original_resume_data:  scan.userEditedResumeData ? (scan.originalResumeData || finalData) : finalData,
       status: 'FIX_DELIVERED'
-    }).eq('id', scanId)
+    }).eq('id', scanId).eq('status', 'FIX_GENERATING').select('id')
     if (deliverErr) throw deliverErr
+    if (Array.isArray(delivered) && delivered.length === 0) {
+      console.error(`[WARN] generateBadge ${scanId}: scan is no longer FIX_GENERATING at delivery - discarding this run's files`)
+      await cleanupUndeliveredKeys(env, supabase, scanId, writtenKeys)
+      return { success: true, skipped: true, superseded: true }
+    }
     await deleteSuperseded(env, [scan.resumeAtsPath, scan.resumePdfPath], [docxKey, finalPdfKey])
     // SECTION 7 AUDIT FIX (bug, fresh pass): same reasoning as generateFix — a
     // redelivery through this path can rewrite resume_hash/resume_pdf_hash on an
@@ -3688,6 +3795,20 @@ async function purchaseReversedForJob(supabase, scanId) {
   } catch (_) { return false }
 }
 
+// Round 14: purchaseReversedForJob only ran when a job STARTED. A refund or dispute that landed during the (multi-minute) run
+// still delivered, wrote the files and sent the "ready" email. Re-checked right before delivery; the run puts the scan back
+// where it found it and removes the files it just wrote.
+async function standDownIfReversed(env, supabase, scanId, { priorDelivery, writtenKeys }) {
+  if (!(await purchaseReversedForJob(supabase, scanId))) return false
+  console.log(`generate job for scan ${scanId}: purchase was refunded or disputed mid-run - not delivering`)
+  await cleanupUndeliveredKeys(env, supabase, scanId, writtenKeys)
+  try {
+    await supabase.from('scans').update({ status: priorDelivery ? 'FIX_DELIVERED' : 'FIX_PURCHASED', fix_progress: null })
+      .eq('id', scanId).eq('status', 'FIX_GENERATING')
+  } catch (_) { /* best-effort */ }
+  return true
+}
+
 // Public entry points: take the scan's lease, run, give it back (see claimFixJob).
 async function generateFix(env, supabase, scanId) {
   const lease = await claimFixJob(supabase, scanId)
@@ -3700,7 +3821,7 @@ async function generateFix(env, supabase, scanId) {
       console.log(`generateFix: purchase for scan ${scanId} was refunded or is disputed - not generating`)
       return { success: true, skipped: true, reversed: true }
     }
-    return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId)) }
+    return await claudeUsage.withUsage(supabase, env, scanId, tracked => generateFixRun(tracked, supabase, scanId, lease)) }
   finally { await releaseFixJob(supabase, scanId, lease) }
 }
 async function generateBadge(env, supabase, scanId) {
@@ -3739,7 +3860,7 @@ const __test = { blendAiScore, fetchAiScore, coverLetterFileStem, draftFileStem,
 module.exports = {
   __test,
   createScan, getScanStatus, getScan, initiateFix, redeemCredit, upgradeBadgeToFix, retryFix, regeneratePdf: ledgered(regeneratePdf), updateVerifyVisibility, downloadFile, getScanHistory, deleteScan,
-  updateResumeData: ledgered(updateResumeData), downloadDraft, downloadDraftPdf,
+  updateResumeData: ledgered(updateResumeData), rescoreAi: ledgered(rescoreAi), downloadDraft, downloadDraftPdf,
   structureResume: ledgered(structureResume), retryScan, updateDeliveredResume: ledgered(updateDeliveredResume), generateCoverLetter: ledgered(generateCoverLetter), saveCoverLetter, downloadCoverLetter, downloadCoverLetterPdf,  // section audit: "generate a resume from scratch"
   runAtsScan, generateFix, generateBadge, revertBadgeUpgrade  // exported for webhook + payments + cron
 }

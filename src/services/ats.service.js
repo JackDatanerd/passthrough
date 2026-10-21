@@ -889,10 +889,18 @@ function stripDateNoise(line) {
     .replace(/\b(?:19|20)\d{2}\s*[\-\u2013\u2014]\s*(?:19|20)\d{2}\b/g, ' ')
     .replace(/\bgpa\s*[:\-]?\s*\d+(?:\.\d+)?(?:\s*\/\s*\d+(?:\.\d+)?)?/gi, ' ')
     .replace(/\bv(?:ersion)?\s*\.?\s*\d+(?:\.\d+)+/gi, ' ')
+    // Round 14: a standard's number is a name, not a result ("ISO 9001", "RFC 7231", "SOC 2").
+    .replace(/\b(?:ISO|IEC|RFC|ANSI|IEEE|NIST|SOC|PCI|DSS|HIPAA|GDPR)[\s\-/:]*\d[\d.:\-]*/g, ' ')
 }
+// Round 14: a skills list ("Python 3, Java 17, Node 18") and a postal line ("Nairobi, Kenya 00100") are full of numbers
+// that are not results; they used to count and fed both the +10 content bonus and the "quantified results" figure.
+const SKILLS_SECTION_RE = /(?:^| )(?:skills?|technical|competencies|competency|expertise|technologies|technology|tools|tech|stack|languages?|proficiencies|proficiency)(?: |$)/
+const SKILLS_LABEL_LINE = /^\s*(?:[-*\u2022]\s*)?(?:(?:technical|key|core)\s+)?(?:skills?|technologies|tools|tech stack|stack|languages?|certifications?)\s*[:\u2013\u2014-]/i
+const POSTAL_LINE = /^[\p{L} .'\u2019-]+,\s*[\p{L} .'\u2019-]+\s+\d{4,6}(?:-\d{4})?$|^[\p{L} .'\u2019-]+,\s*[A-Z]{2}\s+\d{5}(?:-\d{4})?$/u
 function countQuantifiedFigures(text) {
   let n = 0
-  for (const rawLine of String(text || '').split('\n')) {
+  for (const rawLine of bulletLinesOutsideListSections(String(text || ''), SKILLS_SECTION_RE)) {
+    if (SKILLS_LABEL_LINE.test(rawLine) || POSTAL_LINE.test(rawLine.trim())) continue
     const line = stripDateNoise(rawLine)
     if (CONTACT_LINE_RE.test(line)) continue
     const l = line.replace(/^\s*\d+[.)]\s+/, '')
@@ -916,7 +924,7 @@ const EXPERIENCE_SECTION_RE = /(?:^| )(?:experience|work|employment|career|inter
 // The lines of the resume that are NOT inside a list-style section. A heading is a line made of heading vocabulary only
 // (isHeadingLine) - deliberately not the looser title-case test, because mistaking "Awards Committee Chair" inside a job
 // for a heading would silently stop counting real bullets.
-function bulletLinesOutsideListSections(text) {
+function bulletLinesOutsideListSections(text, listRe = LIST_SECTION_RE) {
   const out = []
   let inList = false
   for (const line of String(text || '').split('\n')) {
@@ -925,7 +933,7 @@ function bulletLinesOutsideListSections(text) {
     if (t.length <= 50 && !/[.!?]$/.test(t) && t.split(/\s+/).length <= 6) {
       const f = foldHeading(t)
       if (isHeadingLine(t, f)) {
-        inList = LIST_SECTION_RE.test(f) && !EXPERIENCE_SECTION_RE.test(f)
+        inList = listRe.test(f) && !EXPERIENCE_SECTION_RE.test(f)
         continue
       }
     }

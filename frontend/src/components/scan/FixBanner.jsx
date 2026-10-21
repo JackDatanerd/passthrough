@@ -60,6 +60,7 @@ function OfferCard({ title, price, note, points, featured = false, nudge = '', c
 }
 
 export default function FixBanner({
+  provisional = false,
   scan, onPay, onRedeemCredit, freeFixCredits = 0,
   referralCode = '', onApplyReferralCode = () => {},
   // Buttons disable as soon as ANY pay-related action starts (payLoading); the specific tier being
@@ -176,12 +177,15 @@ export default function FixBanner({
     return (
       <section className="rounded-xl border border-blue-200 bg-blue-50 p-5 sm:p-6">
         <p className="text-lg font-semibold text-blue-900">
-          {(scan.passed ?? score >= ATS_PASS_THRESHOLD) === false
+          {provisional
+            ? 'Your score is provisional'
+            : (scan.passed ?? score >= ATS_PASS_THRESHOLD) === false
             ? 'Your resume is being rejected by ATS filters'
             : 'Boost your score and unlock Verified status'}
         </p>
         <p className="mt-1 mb-3 text-sm text-blue-800">
-          {gap > 0 && <>You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. </>}
+          {provisional && <>The AI half of the check was unavailable, so this number may read lower than it should. Re-check it above before choosing. </>}
+          {!provisional && gap > 0 && <>You are {gap} point{gap === 1 ? '' : 's'} short of the {ATS_BADGE_THRESHOLD} a resume needs to earn the Verified credential. </>}
           A fix rewrites your own experience in the words the job post and the software look for.
         </p>
         {compare}

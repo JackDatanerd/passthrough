@@ -1,0 +1,30 @@
+Scan / ATS - round 14 (fresh independent pass over the whole section, then fixes)
+
+FIXED
+1. AI outage gave a permanent, lower, unflagged score (scan.controller.js, FixBanner.jsx, ScanResult.jsx, scan.routes.js)
+   A scan whose AI half could not run was saved rule-only and held under the credential bar (rule 84 -> 79 instead of 86); the
+   stored aiScored:false was read by nothing, the Badge was blocked, the pass/fail email carried the lower number, and the only
+   way out was another daily scan.
+   - buildAtsDetail now exposes scoredWithoutAi; ScanResult shows a "This score is provisional" notice with "Re-check my score".
+   - POST /api/scan/:id/rescore-ai re-runs the same scoring on the same input at no quota cost, only for such a scan (owner or
+     anon token, not purchased, no open Credential checkout, status-guarded write). 503 if the AI is still down.
+   - FixBanner no longer says "being rejected by ATS filters" / "N points short" over a provisional score.
+   - A provisional score is not mailed as the result; the email is sent after the re-check (notifyScanResult, extracted).
+2. Delivery write was unconditional (generateFixRun / generateBadgeRun)
+   - purchase reversal is re-checked right before delivery (standDownIfReversed): files removed, scan put back as found.
+   - delivery update is guarded by status = FIX_GENERATING with a row-count check; a superseded run drops its files.
+   - the 600s job lease is extended between attempts and before rendering (renewFixJob, owner-scoped by token).
+3. Cover letter docx/PDF rendered in look 1 (loadCoverLetter's column list omitted doc_template_version) - fixed.
+4. Downloads ignored a refunded / disputed purchase (downloadFile, cover letter docx + PDF) - now 403 PURCHASE_REVERSED.
+   NOTE: this is a behaviour decision; to keep downloads after a refund, remove the two purchaseIsLive lines marked "Round 14".
+5. Signed-in accounts had no budget for job-link lookups (createScan) - 30 per hour per account, 429 with a "paste the text" message.
+6. Operator-bypass retry stamped scan_slot_spent_at = epoch, which reached the waiting screen as scanStartedAt (57-year timer) -
+   mappers falls back to updated_at for the marker.
+7. countQuantifiedFigures counted skills lists, standards (ISO 9001, SOC 2, RFC 7231) and postal lines - no longer.
+
+REVIEWED, NOT A BUG (dropped from the list)
+- QuantificationPrompts replaceBullet with two identical bullets: the prompt stays visible after the first edit and the second
+  click edits the other copy.
+- Account deletion racing a fix run: deleteAccount refuses while work is in flight.
+
+TESTS  tests/scan.ats.round14.test.js (25 tests). Scan, ATS, mappers and every other suite touching the changed modules pass.

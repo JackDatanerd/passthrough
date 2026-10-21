@@ -284,6 +284,8 @@ export default function ScanResult() {
 
   // G1 (round 3): a scan that failed on our side kept its input (the file / a typed background) but the
   // only way forward was to re-enter it. This re-runs the same scan in place (spends a free-scan slot).
+  const [rescoring, setRescoring] = useState(false)
+  const [rescoreError, setRescoreError] = useState('')
   async function handleRetryScan() {
     setRetryScanError('')
     setRetryScanLoading(true)
@@ -317,6 +319,27 @@ export default function ScanResult() {
       setCheckFormattedError(getErrorMessage(err, "We couldn't build the formatted file just now — try again in a minute."))
     }
     setCheckingFormatted(false)
+  }
+
+  // Round 14: a scan whose AI check could not run is saved with a rule-only, provisional score. This re-runs the same
+  // scoring on the same input (no free-scan slot spent) and replaces the numbers in place.
+  async function handleRescoreAi() {
+    setRescoreError('')
+    setRescoring(true)
+    try {
+      const res = await api.post(`/scan/${id}/rescore-ai${anonToken ? `?token=${encodeURIComponent(anonToken)}` : ''}`)
+      const d = res.data?.data || {}
+      setScan(prev => prev ? ({
+        ...prev,
+        atsScore: d.atsScore ?? prev.atsScore, passed: d.passed ?? prev.passed, badgeEligible: d.badgeEligible ?? prev.badgeEligible,
+        keywordScore: d.keywordScore ?? prev.keywordScore, formatScore: d.formatScore ?? prev.formatScore,
+        sectionsScore: d.sectionsScore ?? prev.sectionsScore, contentScore: d.contentScore ?? prev.contentScore,
+        atsDetail: d.atsDetail ?? prev.atsDetail, status: d.status ?? prev.status
+      }) : prev)
+    } catch (err) {
+      setRescoreError(getErrorMessage(err, 'Could not re-check your score just now — try again in a few minutes.'))
+    }
+    setRescoring(false)
   }
 
   async function handleRetryFix() {
@@ -865,6 +888,18 @@ export default function ScanResult() {
                 the score card and before the resume editor below — explains
                 the number the person just saw before offering to let them
                 act on it. */}
+            {scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased && (
+              <div role="status" className="rounded-xl border border-amber-200 bg-amber-50 p-4 sm:p-5">
+                <p className="text-sm font-semibold text-amber-900">This score is provisional</p>
+                <p className="mt-1 text-sm text-amber-800">
+                  Our AI check was unavailable when your resume was scanned, so this number uses the rule-based checks only and may read lower than it should. Re-check it now — it does not use up a scan.
+                </p>
+                {rescoreError && <p role="alert" className="mt-2 text-sm text-red-700">{rescoreError}</p>}
+                <div className="mt-3">
+                  <Button variant="secondary" onClick={handleRescoreAi} loading={rescoring} disabled={rescoring}>Re-check my score</Button>
+                </div>
+              </div>
+            )}
             <PointsLost scan={scan} />
             <AtsDetailPanel scan={scan} />
 
@@ -1336,7 +1371,7 @@ export default function ScanResult() {
                     </a>
                   </div>
                 )}
-                <FixBanner scan={scan} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
+                <FixBanner scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
               </>
             )}
 

@@ -111,7 +111,9 @@ function scanRowToCamel(row) {
     upgradeCreditGrantedAt: row.upgrade_credit_granted_at ?? null,
     // When the CURRENT scan attempt began: a retry spends a new slot long after created_at, and the waiting
     // screen's clock / stalled warning must count from then, not from the original creation.
-    scanStartedAt:     row.scan_slot_spent_at ?? row.created_at ?? null,
+    // The epoch marks "no scan slot was spent" (refund bookkeeping); it is not a start time, so the waiting screen uses the last
+    // update instead of counting 57 years.
+    scanStartedAt:     (row.scan_slot_spent_at && Date.parse(row.scan_slot_spent_at) > 0) ? row.scan_slot_spent_at : (row.scan_slot_spent_at ? (row.updated_at ?? row.created_at ?? null) : (row.created_at ?? null)),
     passed:              row.passed,
     keywordScore:        row.keyword_score,
     formatScore:         row.format_score,
