@@ -273,6 +273,51 @@ describe('recordConversion', () => {
       expect(alerts).toHaveLength(0)   // the over-limit warning stays quiet on an admin retry
     } finally { emailSvc.sendPartnerConversionEarned = origC; emailSvc.sendOwnerAlert = origA }
   })
+  // Round 25 (bug): the first attempt stops at the failed counter bump (ok:false, no partner email), so the repair is the
+  // only run that can tell the partner. It used to return before every notice.
+  describe('a usage-counter REPAIR still announces the sale', () => {
+    const run = async ({ paymentStatus = 'SUCCESS', opts = {} } = {}) => {
+      const mails = [], alerts = [], limitMails = []
+      const emailSvc = require('../src/services/email.service.js')
+      const orig = [emailSvc.sendPartnerConversionEarned, emailSvc.sendOwnerAlert, emailSvc.sendPartnerCodeLimitReached]
+      emailSvc.sendPartnerConversionEarned = async (...a) => { mails.push(a); return true }
+      emailSvc.sendOwnerAlert = async (...a) => { alerts.push(a); return true }
+      emailSvc.sendPartnerCodeLimitReached = async (...a) => { limitMails.push(a); return true }
+      try {
+        const d = createFakeSupabase(q => {
+          if (q.table === 'referral_codes') return { data: { id: 'rc1', partner_id: 'p1', code: 'COACH', usage_limit: 1, uses_so_far: 1 }, error: null }
+          if (q.table === 'partners') return { data: { commission_rate: 0.2, name: 'K', email: 'k@x.co', dashboard_token: 'dt', notify_conversions: true }, error: null }
+          if (q.table === 'commission_ledger' && q.op === 'select') {
+            if (q.filters.some(f => f[0] === 'eq' && f[1] === 'reverses_ledger_id')) return { data: null, error: null }
+            return { data: { id: 'led9', usage_counted: false }, error: null }
+          }
+          if (q.table === 'commission_ledger') return { data: null, error: { code: '23505', message: 'dup' } }
+          if (q.table === 'payments') return { data: { status: paymentStatus }, error: null }
+          return { error: null }
+        })
+        const env = { FRONTEND_URL: 'https://x', RATE_LIMIT_KV: { get: async () => null, put: async () => {} } }
+        const r = await recordConversion(d, payment, env, opts)
+        return { r, mails, alerts, limitMails }
+      } finally { [emailSvc.sendPartnerConversionEarned, emailSvc.sendOwnerAlert, emailSvc.sendPartnerCodeLimitReached] = orig }
+    }
+    it('emails the partner and runs the code-limit notice', async () => {
+      const { r, mails, limitMails } = await run()
+      expect(r).toEqual({ ok: true, recorded: false, reason: 'duplicate', usageRepaired: true })
+      expect(mails).toHaveLength(1)
+      expect(limitMails).toHaveLength(1)
+    })
+    it('adminRetry: the partner is told, owner alerts stay quiet', async () => {
+      const { mails, alerts, limitMails } = await run({ opts: { adminRetry: true } })
+      expect(mails).toHaveLength(1)
+      expect(alerts).toHaveLength(0)
+      expect(limitMails).toHaveLength(0)
+    })
+    it('a sale refunded in the meantime is repaired but not announced', async () => {
+      const { r, mails } = await run({ paymentStatus: 'REFUNDED' })
+      expect(r.usageRepaired).toBe(true)
+      expect(mails).toHaveLength(0)
+    })
+  })
   it('a failed repair on a duplicate reports ok:false, recorded:false so reconcile can be retried again', async () => {
     const d = db({ ledgerError: { code: '23505', message: 'dup' }, existing: { id: 'led9', usage_counted: false }, rpcError: { message: 'still down' } })
     const r = await recordConversion(d, payment)

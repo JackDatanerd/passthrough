@@ -457,7 +457,23 @@ async function recordConversionInner(supabase, payment, env, opts = {}) {
       // Re-running (POST /api/payments/:ref/reconcile) now repairs exactly this.
       return { ok: false, recorded: !repairOnly, reason: 'usage-increment', error: rpcRes.error.message }
     }
-    if (repairOnly) return { ok: true, recorded: false, reason: 'duplicate', usageRepaired: true }
+    // Section 4 round 25 (bug): a repaired row used to return here, before every notice below. The first attempt had stopped at the
+    // failed counter bump (returning ok:false, so it never told the partner either), which made this the only run that could —
+    // the partner never heard about the sale, and the "code reached its limit" / over-limit notices were skipped. A repair now
+    // runs the same notices as a fresh record, unless the sale was refunded in the meantime (reverseCommission already
+    // settled that row, so there is nothing to announce).
+    if (repairOnly) {
+      try {
+        const cur = await supabase.from('payments').select('status').eq('id', payment.id).maybeSingle()
+        if (cur?.data?.status === 'REFUNDED') return { ok: true, recorded: false, reason: 'duplicate', usageRepaired: true }
+      } catch (err) {
+        console.error('recordConversion repair refunded-check:', err.message)
+      }
+      if (env && !opts.adminRetry) await warnIfOverLimit(supabase, env, codeRow.id)
+      if (env && !opts.adminRetry) await afterConversionNotices(supabase, env, codeRow, partner)
+      if (env) await notifyPartnerConversion(env, supabase, partner, codeRow, commissionAmountCents, payment.currency)
+      return { ok: true, recorded: false, reason: 'duplicate', usageRepaired: true }
+    }
 
     // Refund-before-commission race: a refund can land between the payment flip to
     // SUCCESS and this write. reversePayment found no original to reverse, so the

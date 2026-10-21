@@ -38,6 +38,12 @@ describe('B4 — a tier price above the payments column is refused before it rea
     expect(String(err.message || err)).toMatch(/allowed maximum/)
     expect(inserts).toHaveLength(0)
   })
+  it('the maximum int4 price is accepted, one above it is refused (create)', async () => {
+    expect((await run({ FIX: 2147483647 })).err).toBeNull()
+    const over = await run({ FIX: 2147483648 })
+    expect(String(over.err.message || over.err)).toMatch(/allowed maximum/)
+    expect(over.inserts).toHaveLength(0)
+  })
   it('a normal price still goes through', async () => {
     const { err, inserts } = await run({ FIX: 3900 })
     expect(err).toBeNull()

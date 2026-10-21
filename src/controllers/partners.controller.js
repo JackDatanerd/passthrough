@@ -993,10 +993,15 @@ async function adminGetPartnerLinks(ctx) {
   } })
 }
 
+// Section 4 round 25 (bug): no upper bound here, so a typo like 3,000,000,000 sailed past validation and hit the
+// referral_tier_prices_valid CHECK (migration 0100: payments.amount_cents is a 4-byte int) as a raw database error
+// instead of a clean 400. One bound on the shared schema covers create, update and approve-with-first-code.
+const MAX_TIER_PRICE_CENTS = 2147483647
+const tierPrice = z.number().int().positive().max(MAX_TIER_PRICE_CENTS, 'That price is larger than the allowed maximum.')
 const tierPricesSchema = z.object({
-  FIX:       z.number().int().positive().optional(),
-  BADGE:     z.number().int().positive().optional(),
-  FIX_PLAIN: z.number().int().positive().optional()
+  FIX:       tierPrice.optional(),
+  BADGE:     tierPrice.optional(),
+  FIX_PLAIN: tierPrice.optional()
 }).refine(obj => Object.keys(obj).length > 0, 'At least one tier price is required.')
 
 // Round 10 (feature gap): tier_prices were free-typed cents with no sense of the product's price. $49.00 typed as
