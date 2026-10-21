@@ -1137,12 +1137,11 @@ const SKILL_FILLER = new Set(['and', 'or', 'the', 'of', 'for', 'with', 'in', 'on
 // technology that appears nowhere in the person's own resume is not a skill of
 // theirs.
 function unsupportedSkills(orig, rewritten) {
-  const have = new Set(wordsOf(sourceText(orig)).map(foldWord))
-  for (const group of SKILL_ALIASES.map(g => g.map(foldWord))) if (group.some(g => have.has(g))) group.forEach(g => have.add(g))
+  const have = claimGuard.haveSet(sourceText(orig))
   return listOf(rewritten.skills).filter(sk => {
     if (typeof sk !== 'string' || !sk.trim()) return false
-    const ws = wordsOf(sk).filter(w => !SKILL_FILLER.has(w)).map(foldWord)
-    return ws.length > 0 && !ws.some(w => have.has(w))
+    const ws = wordsOf(sk).filter(w => !SKILL_FILLER.has(w))
+    return ws.length > 0 && !ws.some(w => claimGuard.knownWord(have, w))
   })
 }
 
@@ -1331,8 +1330,7 @@ function checkLetter(text, { resumeData, jdText, details, allowedNumbers, facts,
   const titles = listOf(resumeData?.experience).map(e => textOf(e?.title)).join(' ')
   const own = claimGuard.letterOwnershipProblem(text, source, titles)
   if (own) hard.push(`it claims \"${own}\", which the resume does not say - keep the person's own level and say only what they did`)
-  const techFolded = new Set(claimGuard.TECH_TERMS.map(claimGuard.foldWord))
-  const tech = claimGuard.unknownTerms(text, claimGuard.haveSet(corpus)).filter(w => techFolded.has(claimGuard.foldWord(w.toLowerCase())))
+  const tech = claimGuard.unknownTerms(text, claimGuard.haveSet(corpus)).filter(w => claimGuard.isTechTerm(w))
   if (tech.length) hard.push(`it names tools the resume and the posting never mention (${tech.slice(0, 4).join(', ')}) - remove them`)
   // A letter NEVER names a weakness (product decision): it majors on strengths. Any statement of what the candidate lacks,
   // has not done or is new to is rejected, whatever the scorer found missing - a missing requirement is bridged with the

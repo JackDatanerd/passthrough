@@ -1,0 +1,26 @@
+Scan / ATS - round 15 (independent pass: claude.service, claimGuard, letter checks, pdf.inspect, html sanitizer; review of round 14)
+
+FIXED
+1. HIGH - the claim guard failed the paid rewrite for resumes naming Node.js, Next.js or Vue.js (lib/claimGuard.js)
+   A name read out of a rewritten line comes back joined ("Nodejs") but the resume's words are split at the dot ("node", "js"),
+   so the tool the resume already used was reported as "never mentioned - never add a tool". That claim problem is a HARD gate
+   (rewriteResumeContent -> FABRICATION_DETECTED, the corrective pass hits the same wall), so any rewrite that kept the name
+   failed; the cover letter check had the same hole. Joined forms of dotted names are now in the guard's word set, and
+   "Node.js" where the resume says "Node" / "NodeJS" is the same tool.
+2. MEDIUM - tool names were matched on a 5-letter stem (lib/claimGuard.js, services/claude.service.js)
+   "excellent" / "excelled" folded to "excel", "sparked" to "spark", "expressed" to "express": an INVENTED Excel / Spark /
+   Express passed the guard (bullets, summary, the skills list and the letter), and the word "excellent" in a rewrite was
+   flagged as an invented tool. Tool names now match on the word itself (plural-folded); every other word keeps the stem.
+3. LOW (round 14 follow-up) - POST /:id/rescore-ai could be fired twice at once: two AI calls and two result emails. The write
+   is now also conditional on full_ats_report.aiScored still being false.
+
+REVIEWED, NO CHANGE
+- inventedNumbers (equivalent phrasings: 40% / 40 percent, $1.2M / $1,200,000, five / 5, 99.9%): sound. It is strict on unit
+  conversions ("18 months" vs "1.5 years") and "half" vs "50%" - the safe side, and the rewrite retries with the specifics.
+- pdf.inspect (hidden / off-page / tiny text, dark-fill exemption, page cap before reading): no defect found.
+- generateBeautifulResumeHTML + sanitizeGeneratedHtml: not called from anywhere outside claude.service (legacy); sanitizer is
+  thorough. No change.
+- Reconcile sweep vs the round-14 reversal stand-down: a refunded payment is not in the sweep's list, so restoring
+  FIX_PURCHASED cannot loop.
+
+TESTS  tests/scan.ats.round15.test.js (16 tests). Every suite touching claimGuard / claude.service / scan.controller passes.

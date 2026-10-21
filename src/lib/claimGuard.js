@@ -24,9 +24,28 @@ const wordsOf = t => String(t || '').toLowerCase()
   .replace(/[^\p{L}\p{N}]+/gu, ' ').split(' ').filter(Boolean)
 
 // The set of folded words a text contains, with the interchangeable tool names added.
+// Round 15: the stem above (5 letters from 7) is right for "manage/managed/management" and wrong for tool names: "excellent",
+// "excelled" and "excellence" all became "excel", so an invented Excel passed the guard (and "excellent" was flagged as an
+// invented tool); the same for Spark/"sparked" and Express/"expressed". Tool names are therefore matched on the word itself
+// (plural folded only), kept in the set under an "=" prefix next to the stems.
+const pluralFold = w => (w.length > 3 && w.endsWith('s') && !w.endsWith('ss') ? w.slice(0, -1) : w)
+// "Node.js" is one tool name; wordsOf splits it at the dot into "node" + "js", but a name read out of a rewritten line comes
+// back joined ("nodejs"). Joined forms of dotted names are therefore in the set too. Before this a resume that said "Node.js"
+// (or Next.js, Vue.js) failed the guard on every rewrite that kept the name.
+const DOTTED_NAME = /[\p{L}\p{N}]+(?:\.[\p{L}\p{N}]+)+/gu
 function haveSet(text) {
-  const have = new Set(wordsOf(text).map(foldWord))
-  for (const group of SKILL_ALIASES.map(g => g.map(foldWord))) if (group.some(g => have.has(g))) group.forEach(g => have.add(g))
+  const words = wordsOf(text)
+  const have = new Set(words.map(foldWord))
+  for (const w of words) have.add('=' + pluralFold(w))
+  for (const m of String(text || '').toLowerCase().matchAll(DOTTED_NAME)) {
+    const joined = m[0].replace(/\./g, '')
+    have.add(foldWord(joined)); have.add('=' + pluralFold(joined))
+  }
+  for (const g of SKILL_ALIASES) {
+    const stems = g.map(foldWord), exact = g.map(x => '=' + pluralFold(x))
+    if (stems.some(x => have.has(x))) stems.forEach(x => have.add(x))
+    if (exact.some(x => have.has(x))) exact.forEach(x => have.add(x))
+  }
   return have
 }
 
@@ -95,6 +114,16 @@ const TECH_TERMS = `dbt pandas numpy scipy sklearn pytorch tensorflow keras spar
   aws azure gcp salesforce hubspot marketo zendesk intercom sap netsuite quickbooks workday
   figma sketch photoshop illustrator indesign scrum agile kanban lean sixsigma six-sigma prince2 pmp`.split(/\s+/).filter(Boolean)
 const TECH_FOLDED = new Set(TECH_TERMS.map(foldWord))
+const TECH_EXACT = new Set(TECH_TERMS.map(pluralFold))
+const isTechTerm = w => TECH_EXACT.has(pluralFold(String(w || '').toLowerCase()))
+// Is `w` something the text already says? A tool name must be there as itself ("Node.js" where the resume says "Node" is the
+// same tool); any other word is compared on its stem.
+function knownWord(have, w) {
+  const l = String(w || '').toLowerCase()
+  const pf = pluralFold(l)
+  if (TECH_EXACT.has(pf)) return have.has('=' + pf) || (l.length > 4 && l.endsWith('js') && have.has('=' + pluralFold(l.slice(0, -2))))
+  return have.has(foldWord(l))
+}
 
 const NAME_OK = new Set(`i dear sincerely hiring manager team thank thanks best regards kind yours mr mrs ms mx dr prof
   january february march april may june july august september october november december monday tuesday wednesday thursday friday saturday sunday
@@ -112,12 +141,12 @@ function unknownTerms(text, have) {
         const w = piece.replace(/['’]s$/i, '').replace(/[^\p{L}\p{N}'’]+/gu, '')
         if (w.length < 2) continue
         const lower = w.toLowerCase()
-        const isTech = TECH_FOLDED.has(foldWord(lower))
+        const isTech = TECH_EXACT.has(pluralFold(lower))
         const isNameLike = idx > 0 && /^\p{Lu}/u.test(w)
         if (!isTech && !isNameLike) continue
-        if (NAME_OK.has(lower) || have.has(foldWord(lower))) continue
+        if (NAME_OK.has(lower) || knownWord(have, lower)) continue
         const parts = lower.split(/['’]/).filter(x => x.length >= 2)
-        if (/['’]/.test(lower) && parts.length && parts.every(x => NAME_OK.has(x) || have.has(foldWord(x)))) continue
+        if (/['’]/.test(lower) && parts.length && parts.every(x => NAME_OK.has(x) || knownWord(have, x))) continue
         found.add(w)
       }
     })
@@ -150,7 +179,7 @@ function findClaimProblems(original, rewritten, { source = '', renames = [] } = 
   const fresh = t => { const n = norm(t); return n && !mine.has(n) }
 
   const have = haveSet(source)
-  for (const r of listOf(renames)) if (r && typeof r.to === 'string') wordsOf(r.to).forEach(w => have.add(foldWord(w)))
+  for (const r of listOf(renames)) if (r && typeof r.to === 'string') wordsOf(r.to).forEach(w => { have.add(foldWord(w)); have.add('=' + pluralFold(w)) })
 
   const jobSourceFor = job => {
     const key = nk(job?.company)
@@ -204,7 +233,7 @@ function letterOwnershipProblem(text, source, titles = '') {
 }
 
 module.exports = {
-  SKILL_ALIASES, foldWord, wordsOf, haveSet,
+  SKILL_ALIASES, foldWord, pluralFold, wordsOf, haveSet, isTechTerm, knownWord,
   OWNERSHIP, RANK_TITLE, hasOwnership, ownershipHits, ownershipProblem, letterOwnershipProblem,
   outcomeProblems, unknownTerms, rankProblems, findClaimProblems,
   withoutHorizons, confessions, TECH_TERMS,

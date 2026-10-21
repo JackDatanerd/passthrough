@@ -2759,7 +2759,7 @@ async function rescoreAi(ctx) {
     keyword_score: ruleResult.keywordScore, format_score: ruleResult.formatScore,
     sections_score: ruleResult.sectionsScore, content_score: ruleResult.contentScore,
     full_ats_report: report, status
-  }).eq('id', scan.id).eq('fix_purchased', false).eq('status', scan.status).select('id')
+  }).eq('id', scan.id).eq('fix_purchased', false).eq('status', scan.status).eq('full_ats_report->>aiScored', 'false').select('id')
   if (updErr) throw updErr
   if (Array.isArray(updated) && updated.length === 0)
     return ctx.json({ success: false, message: 'This scan changed while it was being re-checked. Refresh the page and try again.' }, 409)
