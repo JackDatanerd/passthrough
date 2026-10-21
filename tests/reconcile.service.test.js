@@ -646,6 +646,20 @@ describe('sweepReversedPayments — Paystack refunded it, but we never heard', (
     expect(r.state.verified).toEqual(['ref1'])
     expect(r.world.t.payments[0].last_reconciled_at).toBeTruthy()
   })
+  it('asks the database to leave free-credit rows out, so they cannot fill the per-run limit (starvation)', async () => {
+    r = rig({ verify: { data: { status: 'success' } } })
+    const filters = []
+    const realFrom = r.world.db.from.bind(r.world.db)
+    r.world.db.from = table => {
+      const q = realFrom(table)
+      if (table !== 'payments' || !q.not) return q
+      const orig = q.not.bind(q)
+      q.not = (...a) => { filters.push(a); return orig(...a) }
+      return q
+    }
+    await r.run()
+    expect(filters).toContainEqual(['paystack_ref', 'like', 'credit:%'])
+  })
   it('a Paystack failure on one payment is recorded and does not stop the rest', async () => {
     r = rig({ verify: ref => { if (ref === 'ref1') throw new Error('timeout'); return { data: { status: 'success' } } } })
     r.world.t.payments.push({ id: 'p9', paystack_ref: 'ref9', status: 'SUCCESS', amount_cents: 2900, currency: 'USD', created_at: minsAgo(500), last_reconciled_at: null })

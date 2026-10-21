@@ -510,6 +510,10 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
   let tracked = true
   let { data: rows, error } = await supabase.from('payments').select(`${base}, last_reconciled_at`)
     .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
+    // WEBHOOKS ROUND 15 (B1): free-credit rows ('credit:<scan>:<ts>', SUCCESS, never sent to Paystack, so never stamped) sorted
+    // first forever under NULLS FIRST and, once perRun of them existed, filled every run's slots: real sales were never checked.
+    // Excluded in the query so the limit only counts payments this sweep can actually verify.
+    .not('paystack_ref', 'like', 'credit:%')
     .or(`last_reconciled_at.is.null,last_reconciled_at.lt.${stale}`)
     .order('last_reconciled_at', { ascending: true, nullsFirst: true }).limit(perRun)
   if (error && (error.code === '42703' || /last_reconciled_at|column/i.test(error.message || ''))) {
@@ -517,6 +521,7 @@ async function sweepReversedPayments(env, supabase, { now = Date.now(), alert = 
     tracked = false
     ;({ data: rows, error } = await supabase.from('payments').select(base)
       .in('status', ['SUCCESS', 'DISPUTED']).gt('created_at', since)
+      .not('paystack_ref', 'like', 'credit:%')
       .order('created_at', { ascending: false }).limit(perRun))
   }
   if (error) { result.error = error.message; return result }
