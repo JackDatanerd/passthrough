@@ -539,7 +539,7 @@ export default function AdminPartners() {
   const mixedCurrencyCount = partners.filter(p => p.mixedCurrency && (p.readyToPayCents || 0) > 0).length
   // Round 8: partners who have not accepted the current terms version (admin-created ones never did).
   // Round 23: ENDED partners are never sent the notice (the server skips them), so they are not counted here either.
-  const termsOutstanding = partners.filter(p => p.termsCurrent === false && p.status !== 'ENDED' && !String(p.email || '').endsWith('@removed.invalid')).length
+  const termsOutstanding = partners.filter(p => p.termsNoticePending !== false && p.termsCurrent === false && p.status !== 'ENDED' && !String(p.email || '').endsWith('@removed.invalid')).length
   const [confirmTerms, setConfirmTerms] = useState(false)
   const failedTermsIds = useRef(new Set())
   async function sendTermsNotice() {

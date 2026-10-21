@@ -38,7 +38,7 @@ async function lookupCode(supabase, rawCode) {
   const code = String(rawCode).trim().toUpperCase()
   if (!code) return null
   const { data, error } = await supabase
-    .from('referral_codes').select('*, partners(status, email)').eq('code', code).maybeSingle()
+    .from('referral_codes').select('*, partners(status, email, previous_emails)').eq('code', code).maybeSingle()
   if (error) throw error
   return data
 }
@@ -150,7 +150,12 @@ function canonicalEmail(email) {
 function isSelfReferral(codeRow, buyerEmail) {
   const partnerEmail = codeRow?.partners?.email
   if (!partnerEmail || !buyerEmail) return false
-  return canonicalEmail(partnerEmail) === canonicalEmail(buyerEmail)
+  const buyer = canonicalEmail(buyerEmail)
+  if (canonicalEmail(partnerEmail) === buyer) return true
+  // An address the partner used before an email change is still theirs: buying through their own code from it is the same
+  // self-referral (previous_emails is only present where the row was read with it).
+  const earlier = codeRow.partners.previous_emails
+  return Array.isArray(earlier) && earlier.some(e => e && canonicalEmail(e) === buyer)
 }
 
 // opts.buyerEmail (optional) enables the self-referral guard above.

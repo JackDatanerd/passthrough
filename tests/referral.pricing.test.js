@@ -41,7 +41,7 @@ describe('lookup — asserts WHAT was queried', () => {
   it('asks for the owning partner\'s status in the same query', async () => {
     const db = dbReturning(codeRow())
     await resolvePrice(db, 'FIX', {}, 'coach20')
-    expect(db.calls[0].cols).toContain('partners(status, email)')
+    expect(db.calls[0].cols).toContain('partners(status, email, previous_emails)')
   })
   it('surfaces a database error instead of silently charging the wrong price', async () => {
     const db = createFakeSupabase(() => ({ data: null, error: new Error('db down') }))

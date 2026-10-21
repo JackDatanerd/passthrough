@@ -520,6 +520,17 @@ describe('adminUpdatePartner', () => {
     return { mod, restore, state, c }
   }
 
+  it('section 4 round 26: the response never carries the full account number or tax ID', async () => {
+    t = setupUpdate({ updated: { id: 'p1', name: 'N', email: 'a@x.co', status: 'ACTIVE', commission_rate: 0.2, payout_method: 'BANK',
+      payout_details: { bankName: 'B', accountName: 'N', accountNumber: '0123456789' }, tax_id: 'A123456789' } })
+    const res = await t.mod.adminUpdatePartner(t.c({ body: { name: 'N' } }))
+    const txt = JSON.stringify(res.body)
+    expect(txt).not.toContain('0123456789')
+    expect(txt).not.toContain('A123456789')
+    expect(res.body.data.payoutDetails.accountNumber).toBe('\u20266789')
+    expect(res.body.data.detailsMasked).toBe(true)
+  })
+
   it('rejects an empty body', async () => {
     t = setupUpdate()
     await expect(t.mod.adminUpdatePartner(t.c({ body: {} }))).rejects.toThrow()

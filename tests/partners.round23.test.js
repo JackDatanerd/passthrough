@@ -20,7 +20,7 @@ describe('frontend wiring', () => {
   const admin = read('frontend/src/pages/admin/AdminPartners.jsx')
   const dash = read('frontend/src/pages/PartnerDashboard.jsx')
   it('terms-notice count and filter leave out ENDED partners (bug 2)', () => {
-    expect(admin).toMatch(/termsOutstanding = partners\.filter\(p => p\.termsCurrent === false && p\.status !== 'ENDED'/)
+    expect(admin).toMatch(/termsOutstanding = partners\.filter\(p => p\.termsNoticePending !== false && p\.termsCurrent === false && p\.status !== 'ENDED'/)
     expect(admin).toMatch(/terms:\s+\{[^}]*status !== 'ENDED'/)
   })
   it('the payout-run export reads full details from the step-up endpoint, not the list (G1)', () => {

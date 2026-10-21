@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { resolvePrice } from '../src/services/referral.service.js'
+import { resolvePrice, isSelfReferral } from '../src/services/referral.service.js'
 
 // Minimal fake Supabase client — just enough of the .from().select().eq().maybeSingle()
 // chain that referral.service.js actually calls. Returns whatever row the
@@ -84,5 +84,15 @@ describe('referral.service — resolvePrice', () => {
     const result = await resolvePrice(fakeSupabase(null), 'FIX', env, 'DOES-NOT-EXIST')
     expect(result.referralApplied).toBe(false)
     expect(result.amount).toBe(4900)
+  })
+})
+
+describe('isSelfReferral (section 4 round 26)', () => {
+  const row = { partners: { email: 'new.name@gmail.com', previous_emails: ['old@corp.co'] } }
+  it('matches the current address, canonicalised', () => { expect(isSelfReferral(row, 'newname+x@gmail.com')).toBe(true) })
+  it('matches an address the partner used before an email change', () => { expect(isSelfReferral(row, 'OLD@corp.co')).toBe(true) })
+  it('does not match a stranger, and tolerates rows without previous_emails', () => {
+    expect(isSelfReferral(row, 'someone@else.co')).toBe(false)
+    expect(isSelfReferral({ partners: { email: 'a@b.co' } }, 'c@d.co')).toBe(false)
   })
 })

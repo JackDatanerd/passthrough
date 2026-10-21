@@ -1,0 +1,6 @@
+Section 4 (Partners / Referral) round 26
+B1  adminUpdatePartner response no longer carries the full account number / tax ID (masked like the list).
+B2  sweepPayoutDue lowers its baseline when payouts are recorded, so later-ready commission still triggers the follow-up alert.
+B3  Terms-notice button counts only partners not yet notified (termsNoticePending), so it clears after a run.
+F1  isSelfReferral also matches a partner's previous emails (lookupCode now selects previous_emails).
+Not changed: adminGetPartner (detail) still returns full details - the admin needs them to pay manually. Say if you want it behind step-up.

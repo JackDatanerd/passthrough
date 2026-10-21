@@ -165,6 +165,23 @@ describe('G1 — owner is told once per closed cycle that payouts are ready', ()
     expect(t.st.alerts).toHaveLength(2)   // nothing new since the follow-up
   })
 
+  it('round 26: after payouts are recorded, commission that becomes ready later still triggers a follow-up', async () => {
+    const store = new Map()
+    const mkv = { get: async k => store.get(k) ?? null, put: async (k, v) => { store.set(k, v) } }
+    const clear = () => { for (const k of [...store.keys()]) if (k.startsWith('partner-payout-due-checked:')) store.delete(k) }
+    const unpaid = [ROW, { ...ROW, id: 'l2', commission_amount_cents: 7500 }]
+    t = setup({ partnersList: [ACTIVE], unpaid })
+    const env = { OWNER_ALERT_EMAIL: 'owner@x.co', PAYSTACK_CURRENCY: 'USD', RATE_LIMIT_KV: mkv }
+    await t.mod.sweepPayoutDue(env, t.db)                       // 100.00 ready
+    expect(t.st.alerts).toHaveLength(1)
+    unpaid.length = 0; unpaid.push({ ...ROW, id: 'l3', commission_amount_cents: 1000 })   // admin paid; only 10.00 left
+    clear(); await t.mod.sweepPayoutDue(env, t.db)
+    expect(t.st.alerts).toHaveLength(1)
+    unpaid.push({ ...ROW, id: 'l4', commission_amount_cents: 2000 })                       // a hold expires: 30.00 now
+    clear(); await t.mod.sweepPayoutDue(env, t.db)
+    expect(t.st.alerts).toHaveLength(2)
+  })
+
   it('a failed alert is not marked, so the next hourly sweep retries', async () => {
     t = setup({ partnersList: [ACTIVE], unpaid: [ROW], alertOk: false })
     const env = { OWNER_ALERT_EMAIL: 'owner@x.co', PAYSTACK_CURRENCY: 'USD', RATE_LIMIT_KV: kv() }

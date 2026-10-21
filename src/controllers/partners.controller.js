@@ -568,7 +568,13 @@ async function adminUpdatePartner(ctx) {
     })
   }
 
-  return ctx.json({ success: true, data: partnerRowToCamel(data),
+  // A name / status / profile edit needs no step-up, so its response must not carry what the step-up protects: the full
+  // account number and tax ID stay out, exactly as in the partner list.
+  const updatedCamel = partnerRowToCamel(data)
+  updatedCamel.payoutDetails = maskedPayoutDetailsForOwner(data.payout_method, data.payout_details)
+  updatedCamel.taxId = data.tax_id ? last4Of(data.tax_id) : null
+  updatedCamel.detailsMasked = true
+  return ctx.json({ success: true, data: updatedCamel,
     ...(rotatedToken ? { linksEmailed } : {}),
     ...(rotatedToken && !linksEmailed ? {
       payoutUrl: `${ctx.env.FRONTEND_URL}/partner/payout-details?token=${rotatedToken}`,
@@ -688,14 +694,19 @@ async function sweepPayoutDue(env, supabase) {
     if (prev) {
       if (readyCents > prev.readyCents) {
         const more = await emailService.sendOwnerAlert(env, `More partner payouts are now ready (${closed.label})`,
-          `Since the first alert for cycle ${closed.label}, more commission became payable (a hold expired or a partner added payout details).\n` +
-          `ready to pay now: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur} (was ${(prev.readyCents / 100).toFixed(2)} ${cur})\n` +
+          `Since the last alert for cycle ${closed.label}, more commission became payable (a hold expired or a partner added payout details).\n` +
+          `ready to pay now: ${ready} partner(s), ${(readyCents / 100).toFixed(2)} ${cur} (was ${(prev.readyCents / 100).toFixed(2)} ${cur} at the last check)\n` +
           (noDetails ? `ready but no payout details yet: ${noDetails} partner(s), ${(noDetailsCents / 100).toFixed(2)} ${cur}\n` : '') +
           `Open Admin -> Partners -> Run payouts.`, { dedupeKey: `${closed.key}:more:${readyCents}` })
         if (more !== false) {
           out.sent = true
           await referralService.keyMark(env, key, 20 * 24 * 3600, JSON.stringify({ ready, readyCents }))
         } else return out
+      }
+      else if (readyCents < prev.readyCents) {
+        // Payouts were recorded since the last alert: lower the baseline so commission that becomes payable AFTER that is
+        // compared against what is actually still ready, not against the first alert's larger figure.
+        await referralService.keyMark(env, key, 20 * 24 * 3600, JSON.stringify({ ready, readyCents }))
       }
       await referralService.keyMark(env, checkedKey, 6 * 3600)
     } else if (ready > 0 || noDetails > 0) {
@@ -787,6 +798,7 @@ async function adminListPartners(ctx) {
     // flagged mixed-currency ledgers; the list (and the payout run built from it) did not.
     camel.mixedCurrency            = new Set(ledger.map(l => String(l.currency || camel.currency).toUpperCase())).size > 1
     camel.termsCurrent             = row.terms_version === PARTNER_TERMS_VERSION
+    camel.termsNoticePending       = row.terms_version !== PARTNER_TERMS_VERSION && row.terms_notified_version !== PARTNER_TERMS_VERSION
     return camel
   })
   // Round 6: the payout-details hold the server enforces, so the "Record payout run" screen flags the same partners.
@@ -852,6 +864,7 @@ async function adminGetPartner(ctx) {
   camel.mixedCurrency = camel.unpaidCurrencies.length > 1
   camel.currentTermsVersion = PARTNER_TERMS_VERSION
   camel.termsCurrent = row.terms_version === PARTNER_TERMS_VERSION
+  camel.termsNoticePending = row.terms_version !== PARTNER_TERMS_VERSION && row.terms_notified_version !== PARTNER_TERMS_VERSION
 
   return ctx.json({ success: true, data: camel })
 }
