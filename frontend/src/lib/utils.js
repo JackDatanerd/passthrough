@@ -66,6 +66,8 @@ export function dateStamp(date = new Date()) {
 // handling is needed here.
 export function formatDateTime(dateStr) {
   if (!dateStr) return '—'
+  // Round 22: formatDate accepts a Date object; this one answered "—" for it (looksLikeDate only admits strings and numbers).
+  if (dateStr instanceof Date) return Number.isNaN(dateStr.getTime()) ? '—' : dateStr.toLocaleString('en-US', { dateStyle: 'medium', timeStyle: 'short' })
   // A date-only value carries no time of day; showing it as "12:00 AM" would invent one.
   if (typeof dateStr === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateStr.trim())) return formatDate(dateStr.trim())
   if (!looksLikeDate(dateStr)) return '—'
@@ -158,6 +160,10 @@ export function cn(...classes) {
 // embedded webviews. Callers previously fired `navigator.clipboard.writeText()`
 // with no catch and showed "Link copied." regardless. Returns whether it worked.
 export async function copyToClipboard(text) {
+  // Round 22: undefined / null / an object used to reach writeText() and put the literal string "undefined" (or "[object Object]") on the
+  // clipboard while the button said "Copied". Nothing to copy is a failure the caller can report; a number is copied as its text.
+  if (typeof text === 'number' && Number.isFinite(text)) text = String(text)
+  if (typeof text !== 'string' || text === '') return false
   try {
     if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
       await navigator.clipboard.writeText(text)

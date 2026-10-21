@@ -16,8 +16,14 @@ function isTabStop(el, dialog) {
   return !group.some(r => r.checked) && group[0] === el
 }
 
+// Round 22: FOCUSABLE only excluded tabindex="-1" in its generic clause, so a native input / button / select carrying tabindex="-1"
+// (SessionResumePrompt's password-manager email field, the inactive tabs of <Tabs>, the items of an open <Menu>) was counted as a tab
+// stop. With no close button, that field became the trap's FIRST stop: Shift+Tab from the real first field was not intercepted and left
+// the dialog, and Tab from the last button wrapped onto an invisible aria-hidden input. A tabindex of -1 means "not in the Tab order".
+const outOfTabOrder = el => el.getAttribute('tabindex') === '-1'
+
 function tabbables(dialog) {
-  const all = [...dialog.querySelectorAll(FOCUSABLE)].filter(el => isTabStop(el, dialog))
+  const all = [...dialog.querySelectorAll(FOCUSABLE)].filter(el => !outOfTabOrder(el) && isTabStop(el, dialog))
   if (dialog.getClientRects().length === 0) return all
   return all.filter(el => el.getClientRects().length > 0)
 }
@@ -150,8 +156,8 @@ export default function Modal({ open, onClose, title, children, dismissible = tr
       // Two queries on purpose: one selector list returns the first match in DOCUMENT order, so a
       // checkbox rendered above the buttons would beat `data-autofocus` (the safe default button).
       marked ||
-      dialog.querySelector('input:not([disabled]):not([type="hidden"]), textarea:not([disabled]), select:not([disabled])') ||
-      dialog.querySelector(FOCUSABLE) || dialog
+      dialog.querySelector('input:not([disabled]):not([type="hidden"]):not([tabindex="-1"]), textarea:not([disabled]):not([tabindex="-1"]), select:not([disabled]):not([tabindex="-1"])') ||
+      tabbables(dialog)[0] || dialog
     // Only the dialog on top takes focus: a parent whose effect runs after its child's must not pull focus out from under it.
     if (!alreadyInside && modalStack[modalStack.length - 1] === id) initial.focus()
 

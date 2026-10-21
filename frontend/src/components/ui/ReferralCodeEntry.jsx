@@ -25,6 +25,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, co
   // code is applied, the field when the box is back in editing mode. `actedAt` expires, so an unrelated later focus loss is never claimed.
   const inputRef = useRef(null)
   const changeRef = useRef(null)
+  const linkRef = useRef(null)
   const actedAt = useRef(0)
   const acted = () => { actedAt.current = Date.now() }
   useEffect(() => {
@@ -32,7 +33,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, co
     if (Date.now() - actedAt.current > 5000) { actedAt.current = 0; return }
     const a = document.activeElement
     if (a && a !== document.body && a !== document.documentElement) return   // focus is somewhere real; wait for the swap
-    const target = changeRef.current || inputRef.current
+    const target = changeRef.current || inputRef.current || linkRef.current
     if (target) { target.focus(); actedAt.current = 0 }
   })
 
@@ -60,6 +61,9 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, co
     setValue('')
     onApply('')
     setEditing(true)
+    // Round 22: in `collapsible` mode an empty code collapsed straight back to the "Have a code?" link, so "remove" no longer returned to
+    // the field the comment above promises and focus (round 21) had no control to land on. Removing is a request to edit: open the field.
+    setOpened(true)
   }
 
   if (referralCode && pricing?.referralApplied && !editing) {
@@ -108,7 +112,7 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, co
   if (collapsible && !referralCode && !opened) {
     return (
       <p className="mb-3 text-sm">
-        <button type="button" onClick={() => { acted(); setOpened(true) }} disabled={disabled}
+        <button ref={linkRef} type="button" onClick={() => { acted(); setOpened(true) }} disabled={disabled}
           className="text-blue-700 underline underline-offset-2 hover:text-blue-800 disabled:opacity-40 disabled:no-underline">
           Have a code?
         </button>

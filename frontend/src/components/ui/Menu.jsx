@@ -21,6 +21,7 @@ export default function Menu({
   const btn = useRef(null)
   const list = useRef(null)
   const menuId = useId()
+  const placeRef = useRef(null)
   const [pos, setPos] = useState(null)   // viewport coordinates once open (see below)
 
   const items = useCallback(() => (list.current ? Array.from(list.current.querySelectorAll(ITEM)) : []), [])
@@ -50,7 +51,15 @@ export default function Menu({
       const top = Math.max(MARGIN, Math.min(wanted, vh - h))
       // Clamped so the list never spills past either viewport edge (it is min-w-56 wide, anchored to one side of the trigger).
       const vw = document.documentElement.clientWidth
-      const w = list.current?.offsetWidth || 0
+      // Round 22 (bug): the first placement measured the list while it was still absolutely positioned inside the trigger's (often
+      // trigger-wide) wrapper, where it wraps to its min-w; once position: fixed applied it grew to its content width, so the
+      // right-alignment and the viewport clamp below were computed from a width the list no longer had. The width is now read in the
+      // fixed layout (from left: 0, so a previous placement near the edge cannot squeeze it), and placed again once that layout exists.
+      const el = list.current
+      const prevLeft = el ? el.style.left : ''
+      if (el && el.style.position === 'fixed') el.style.left = '0px'
+      const w = el?.offsetWidth || 0
+      if (el && el.style.position === 'fixed') el.style.left = prevLeft
       const maxLeft = Math.max(MARGIN, vw - w - MARGIN)
       if (align === 'left') setPos({ top, left: Math.min(Math.max(MARGIN, r.left), maxLeft), maxHeight: avail })
       else {
@@ -58,12 +67,17 @@ export default function Menu({
         setPos({ top, left, maxHeight: avail })
       }
     }
+    placeRef.current = place
     place()
     const onScroll = e => { if (!(e.target instanceof Node && list.current?.contains(e.target))) setOpen(false) }   // the target can be window/document
     window.addEventListener('scroll', onScroll, true)
     window.addEventListener('resize', place)
     return () => { window.removeEventListener('scroll', onScroll, true); window.removeEventListener('resize', place) }
   }, [open, align])
+
+  // Second pass: the first placement ran in the pre-fixed layout (see place); once `pos` exists, measure again in the real one.
+  const placed = pos !== null
+  useLayoutEffect(() => { if (open && placed) placeRef.current?.() }, [open, placed])
 
   // Focus the requested item as soon as the menu is in the page; items leave the Tab order (arrows move within the menu).
   useEffect(() => {
