@@ -1248,7 +1248,11 @@ async function structureResume(ctx) {
     patch.original_resume_data = data
     patch.candidate_first_name = candidateFirstNameFrom(data) ?? scan.candidateFirstName ?? null
   }
-  let q = supabase.from('scans').update(patch).eq('id', scan.id).eq('fix_purchased', false)
+  // The report written below was derived from the row read at the top. A rescore / structure edit that landed in between
+  // already replaced it, and this write would put the older numbers back - so it applies only while the scan is still
+  // in a finished free-scan state and untouched since it was read (updated_at is stamped by trigger on every write).
+  let q = supabase.from('scans').update(patch).eq('id', scan.id).eq('fix_purchased', false).in('status', ['COMPLETE_PASS', 'COMPLETE_FAIL'])
+  if (patch.full_ats_report && scan.updatedAt) q = q.eq('updated_at', scan.updatedAt)
   if (parsedFresh) q = q.is('original_resume_data', null)
   const { data: updated, error: updErr } = await q.select('id')
   if (updErr) throw updErr
@@ -3708,6 +3712,13 @@ async function generateBadgeRun(env, supabase, scanId) {
       const deliveredText = await resumeParser.extractText(docxBytes, DOCX_MIME)
       if (deliveredText && deliveredText.trim().length >= 100) {
         badgeScored = await scoreLikeScan(env, deliveredText, jdText, 'generateBadge')
+        // A Badge cannot be retried by the buyer, and a score with no AI half can never carry the credential. One
+        // transient model outage should not cost a paid credential: wait briefly and measure the same file once more.
+        if (!badgeScored.aiBlended) {
+          await new Promise(r => setTimeout(r, 3000))
+          const again = await scoreLikeScan(env, deliveredText, jdText, 'generateBadge (second try)')
+          if (again.aiBlended) badgeScored = again
+        }
         fixAtsScore = badgeScored.score
       }
     } catch (scoreErr) {

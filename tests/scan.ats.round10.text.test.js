@@ -71,3 +71,14 @@ describe('structured resume data from the client', () => {
     expect(r.data.name).toBe('Jane')
   })
 })
+
+// Scan/ATS round 16: the zone-by-zone fit sliced each zone by raw index and only the END of the joined result was
+// protected, so a cut inside a MIDDLE zone (the company-intro cap, or a zone that ranks above a later one in the page)
+// left half an emoji in the stored posting - and the insert then fails on Postgres.
+describe('fitJobDescription: a cut inside a middle zone cannot leave half an emoji', () => {
+  it('whatever the cap, a multi-zone posting is well-formed', () => {
+    const jd = n => `Senior Engineer\nAbout us\n${'We are a mission-driven team 🚀 shipping daily. '.repeat(n)}\nWhat you will do\n${'Build services 🐍 and APIs. '.repeat(n)}\nRequirements\n${'5+ years of Python 🐍 and SQL. '.repeat(n)}\nBenefits\n${'Great perks 🎉 and snacks. '.repeat(n)}\nEqual opportunity employer\n${'We celebrate diversity 🌍 always. '.repeat(n)}`
+    for (const n of [20, 60, 120]) for (let max = 300; max < 2500; max++)
+      expect(LONE.test(fitJobDescription(jd(n), max)), `n=${n} max=${max}`).toBe(false)
+  })
+})

@@ -429,11 +429,11 @@ function fitJobDescription(text, max) {
   for (const z of ranked) {
     const room = max - used
     if (room <= 0) break
-    let piece = z.text.length > room ? z.text.slice(0, room) : z.text
+    let piece = z.text.length > room ? safeSlice(z.text, room) : z.text
     if (z.type === 'boiler') {
       const allowed = boilerCap - boilerUsed
       if (allowed <= 0) continue
-      if (piece.length > allowed) piece = piece.slice(0, allowed)
+      if (piece.length > allowed) piece = safeSlice(piece, allowed)
       boilerUsed += piece.length
     }
     kept.push({ ...z, text: piece })
