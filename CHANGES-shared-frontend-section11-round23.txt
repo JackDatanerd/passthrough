@@ -1,0 +1,17 @@
+SHARED FRONTEND (section 11) — round 23
+
+BUG
+- lib/api.js: POST /scan/:id/rescore-ai was on the generic 30s client timeout, but the Worker runs the AI score (up to 4 x 20s calls, after a
+  possible 90s OCR re-parse of a stored file) INSIDE the request. The client gave up while the server finished and saved the new score, so the
+  person saw "timed out" and a retry only answered alreadyChecked. Added to LONG_RUNNING_POST (190s; worst case ~170s).
+
+HARDENING
+- components/ui/Alert.jsx, FieldError.jsx: a numeric 0 child is empty (`{count && <x/>}` drew a red box holding "0").
+- components/layout/Navbar.jsx: the Stories list no longer closes when focus leaves to nothing (Safari does not focus a clicked link, so the
+  list unmounted between mousedown and click). It still closes on Tab to another element and on a press outside.
+
+TEST
+- frontend/tests/sharedFrontend.round23.test.jsx: reads src/routes/scan.routes.js and asserts every in-request heavy controller route gets the
+  long timeout, so a new one cannot be forgotten; plus Alert/FieldError 0 and the Navbar blur cases. Verified failing without the fixes.
+
+No other files changed. No migration.

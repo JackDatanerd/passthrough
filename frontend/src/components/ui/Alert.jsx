@@ -24,7 +24,8 @@ const TEXT_SIZE = /(?:^|\s)text-(?:xs|sm|base|lg|xl|2xl)(?:\s|$)/
 // clear the message when the next attempt starts and a repeat of the same text is brought into view again.
 export default function Alert({ variant = 'error', className, children, focusOnShow = false, ...props }) {
   // Several children that are ALL empty ({a}{b} with both falsy) used to draw an empty bordered box.
-  const empty = !Children.toArray(children).some(c => c !== '')
+  // Round 23: a numeric 0 is empty too — `{count && <x/>}` with count = 0 drew a red box holding just "0".
+  const empty = !Children.toArray(children).some(c => c !== '' && c !== 0)
   const ref = useRef(null)
   useEffect(() => {
     if (focusOnShow && !empty) ref.current?.focus()

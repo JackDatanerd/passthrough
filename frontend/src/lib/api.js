@@ -28,7 +28,10 @@ const api = axios.create({
 // and finished anyway — the person saw "timed out / check your connection", and a retry repeated the work.
 // Round 21: /structure is two sequential Claude calls of up to 90s each (180s worst case); 150s cut the client off inside that window.
 export const LONG_REQUEST_TIMEOUT_MS = 190_000
-const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-pdf)(?:[?#]|$)/
+// Round 23: + rescore-ai. It re-parses a stored file (OCR can take 90s) and then runs up to four 20s AI-score calls inside the request
+// (two attempts, plus two more samples when the score is borderline), so it sat on the generic 30s cut-off: the person saw "timed out"
+// while the server finished and saved the new score, and a retry only answered alreadyChecked. Worst case ~170s, under the 190s below.
+const LONG_RUNNING_POST = /^\/scan\/[^/?#]+\/(structure|cover-letter|regenerate-pdf|rescore-ai)(?:[?#]|$)/
 // SCAN/ATS ROUND 4: the same applies to two PATCHes the POST-only rule above missed. Saving an edit to a DELIVERED resume
 // re-scores it (a Claude call), re-generates the designed-PDF HTML (a second Claude call, up to 90s) and renders the PDF in
 // a browser, all inside the one request — the heaviest call in the product, and the one most likely to be cut off at 30s

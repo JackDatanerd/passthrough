@@ -4,6 +4,6 @@
 //
 //   <FieldError id={`${inputId}-error`}>{error}</FieldError>
 export default function FieldError({ id, children, className = 'text-xs text-red-600' }) {
-  if (children === null || children === undefined || children === false || children === '') return null
+  if (children === null || children === undefined || children === false || children === '' || children === 0) return null
   return <p id={id} role="alert" className={className}>{children}</p>
 }

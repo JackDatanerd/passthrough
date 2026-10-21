@@ -84,7 +84,10 @@ export default function Navbar() {
           <div
             ref={storiesRef}
             className="relative"
-            onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) setStoriesOpen(false) }}
+            // Round 23: relatedTarget is null when focus goes to something that cannot take it — a link clicked with the mouse in Safari, which
+            // does not focus links — so closing on null unmounted the list between mousedown and click and the click never landed. A press
+            // outside is already closed by the pointerdown handler above; only a Tab to another element closes here.
+            onBlur={e => { if (e.relatedTarget && !e.currentTarget.contains(e.relatedTarget)) setStoriesOpen(false) }}
           >
             <button
               ref={storiesBtn}
