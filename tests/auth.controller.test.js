@@ -39,7 +39,7 @@ function baseUserRow(over = {}) {
 }
 
 async function setup(opts = {}) {
-  const state = { refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], trusted: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [], trustForgotten: [], abandoned: [], steps: [] }
+  const state = { welcome: [], refunds: [], turnstile: [], slots: [], updates: [], emails: [], lockoutChecks: [], failures: [], failureIps: [], failureOpts: [], successes: [], trusted: [], bucketDeletes: [], bucketCalls: [], rpcCalls: [], logPurges: [], callOrder: [], pwnedChecks: [], sessionQueries: [], trustForgotten: [], abandoned: [], steps: [] }
   const userRow = 'userRow' in opts ? opts.userRow : await (async () => baseUserRow({ password_hash: await bcrypt.hash('correct-password', 10) }))()
 
   const db = createFakeSupabase(q => {
@@ -142,7 +142,17 @@ async function setup(opts = {}) {
 
   const { mod, restore } = loadWithStubs('controllers/auth.controller.js', {
     'config/supabase.js': { getSupabase: () => db },
+    // Welcome codes (migration 0105): what the verification hook asks of the service. opts.welcomeThrows = the service blows up;
+    // opts.welcomeResult = what it reports (default: a code was issued).
+    'services/welcomeCode.service.js': {
+      issueWelcomeCode: async (supabase, env, user) => {
+        state.welcome.push({ userId: user.id, name: user.name })
+        if (opts.welcomeThrows) throw new Error('welcome exploded')
+        return opts.welcomeResult ?? { issued: true, offer: { code: 'AD-7K2QH', percentOff: 30, amountCents: 2030, listAmountCents: 2900, currency: 'USD', expiresAt: '2026-11-04T00:00:00.000Z' } }
+      },
+    },
     'services/email.service.js': {
+      sendWelcomeOffer:  async (...a) => { if (opts.welcomeEmailThrows) throw new Error('mail down'); state.emails.push({ type: 'welcome_offer', to: a[2], code: a[4]?.code }); return true },
       // AUDIT FIX (Auth/Scan round): per-recipient slot reserved BEFORE a
       // single-use link token is rotated; opts.slotDenied simulates the
       // throttle being exhausted. Every send* stub returns true (= "sent").
@@ -757,6 +767,51 @@ describe('verifyEmail', () => {
     const res = await t.mod.verifyEmail(t.c({ method: 'POST', body: { token: 'raw' } }))
     expect(res.status).toBe(200)
     expect(t.state.updates[0].patch).toEqual({ email_verified: true, email_verify_expiry: null })
+  })
+})
+
+describe('verifyEmail — welcome code', () => {
+  const unverified = () => baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: false })
+  const post = () => ({ method: 'POST', body: { token: 'raw' } })
+
+  it("gives a new account its welcome code and emails it, after verifying", async () => {
+    t = await setup({ userRow: unverified() })
+    const res = await t.mod.verifyEmail(t.c(post()))
+    expect(res.status).toBe(200)
+    expect(t.state.welcome).toEqual([{ userId: 'u1', name: 'Ada' }])
+    expect(t.state.emails.filter(e => e.type === 'welcome_offer')).toEqual([{ type: 'welcome_offer', to: 'user@example.com', code: 'AD-7K2QH' }])
+  })
+
+  it('does not issue a code when the address was already verified (an email change re-verifies)', async () => {
+    t = await setup({ userRow: baseUserRow({ email_verify_token: 'x', email_verify_expiry: FUTURE(), email_verified: true }) })
+    expect((await t.mod.verifyEmail(t.c(post()))).status).toBe(200)
+    expect(t.state.welcome).toEqual([])
+  })
+
+  it('does not email anything when no code was issued (already had one, promo ending, migration not applied)', async () => {
+    t = await setup({ userRow: unverified(), welcomeResult: { issued: false, reason: 'exists' } })
+    await t.mod.verifyEmail(t.c(post()))
+    expect(t.state.emails.some(e => e.type === 'welcome_offer')).toBe(false)
+  })
+
+  it('a failure issuing the code never fails the verification', async () => {
+    t = await setup({ userRow: unverified(), welcomeThrows: true })
+    const res = await t.mod.verifyEmail(t.c(post()))
+    expect(res.status).toBe(200)
+    expect(res.body.success).toBe(true)
+  })
+
+  it('a failure sending the email never fails the verification either', async () => {
+    t = await setup({ userRow: unverified(), welcomeEmailThrows: true })
+    const res = await t.mod.verifyEmail(t.c(post()))
+    expect(res.status).toBe(200)
+    expect(t.state.welcome).toHaveLength(1)
+  })
+
+  it('a replayed link (already used) issues nothing', async () => {
+    t = await setup({ userRow: null, replayRow: { id: 'u1' } })
+    expect((await t.mod.verifyEmail(t.c(post()))).body.message).toBe('Email already verified.')
+    expect(t.state.welcome).toEqual([])
   })
 })
 

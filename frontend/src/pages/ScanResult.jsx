@@ -15,6 +15,7 @@ import FixBanner from '../components/scan/FixBanner'
 import JobDescriptionPanel from '../components/scan/JobDescriptionPanel'
 import { getStoredReferralCode, setStoredReferralCode, getStoredReferralSource, getStoredReferralSub } from '../hooks/useReferralCapture'
 import { fmtPrice } from '../hooks/usePricing'
+import { useWelcomeOffer } from '../hooks/useWelcomeOffer'
 import DiffView from '../components/scan/DiffView'
 import ResumeDataEditor from '../components/scan/ResumeDataEditor'
 import QuantificationPrompts from '../components/scan/QuantificationPrompts'
@@ -161,6 +162,11 @@ export default function ScanResult() {
   // in FixBanner's entry field (see handleApplyReferralCode below) updates
   // the price shown immediately, not just on next page load.
   const [referralCode, setReferralCode] = useState(getStoredReferralCode())
+  // The account's personal welcome code. It applies only while nobody else's code is in play (a partner's link or a typed code is their
+  // attribution, not ours to replace), it is never stored as a referral code, and it is sent only with the full fix, the one tier it
+  // discounts: the server spends a single-use code on whatever purchase it is attached to.
+  const welcomeOffer = useWelcomeOffer(user)
+  const welcomeActive = welcomeOffer && !referralCode ? welcomeOffer : null
   const pollRef     = useRef(null)
   // Plain ref, not state — fetchScan is captured once by the poller
   // created in the mount effect below, so a `scan` state read inside it would
@@ -462,7 +468,7 @@ export default function ScanResult() {
     clearTimeout(popupFallbackTimerRef.current); setPopupFallbackUrl(null)
     try {
       const res = await api.post('/payments/initialize', {
-        scanId: id, fixTier, referralCode: referralCode || undefined,
+        scanId: id, fixTier, referralCode: referralCode || (fixTier === 'FIX' && welcomeActive ? welcomeActive.code : undefined),
         // Partners round 10: how the code reached this checkout (shared link / typed / restored from the account).
         referralSource: referralCode ? (getStoredReferralSource() || undefined) : undefined,
         referralSub: referralCode ? (getStoredReferralSub() || undefined) : undefined
@@ -961,7 +967,7 @@ export default function ScanResult() {
                     </a>
                   </div>
                 )}
-                <FixBanner scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
+                <FixBanner welcomeOffer={welcomeActive} scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
               </>
             )}
 

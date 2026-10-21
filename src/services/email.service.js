@@ -306,6 +306,18 @@ async function sendWelcome(env, supabase, email, name) {
   return send(env, supabase, email, 'Welcome to Passthrough', 'welcome', { NAME: name })
 }
 
+// The welcome offer (see services/welcomeCode.service.js): one personal code, sent once after the email is verified.
+async function sendWelcomeOffer(env, supabase, email, name, offer) {
+  return send(env, supabase, email, `Your ${offer.percentOff}% welcome code`, 'welcome_offer', {
+    NAME:       name,
+    CODE:       offer.code,
+    PERCENT:    String(offer.percentOff),
+    PRICE:      fmtMoney(offer.amountCents, offer.currency),
+    LIST_PRICE: fmtMoney(offer.listAmountCents, offer.currency),
+    EXPIRES:    new Date(offer.expiresAt).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric', timeZone: 'UTC' }),
+  })
+}
+
 async function sendVerification(env, supabase, email, name, rawToken, opts) {
   return send(env, supabase, email, 'Verify your Passthrough email', 'email_verification', {
     NAME:       name,
@@ -1037,7 +1049,7 @@ module.exports = {
   htmlToPlainText, fmtMoney, sendEmployerLeadAck, sendEmployerCandidatesAvailable, sendEmployerLeadRejoin,
   reserveRecipientSlot: recipientAllowed,
   refundReservedSlot: refundRecipientSlot,
-  sendWelcome, sendVerification, sendPasswordReset,
+  sendWelcome, sendWelcomeOffer, sendVerification, sendPasswordReset,
   sendPasswordChanged, sendEmailChangedOldAddress, sendEmailChangeCompleted, sendEmailChangeConfirmation, sendAccountDeleted, sendAccountLockoutAlert,
   sendNewSignInAlert,
   sendScanFail, sendScanPass, sendAnonScanResult, sendFixDelivered, sendFixDeliveredPlain, sendFixFailed, sendOutcomeFollowUp,

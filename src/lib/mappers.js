@@ -418,6 +418,8 @@ function referralCodeRowToCamel(row) {
     usesSoFar:   row.uses_so_far,
     clicks:      row.clicks,
     expiresAt:   row.expires_at,
+    // The account a personal (welcome) code belongs to (migration 0105); null for every ordinary partner code.
+    userId:      row.user_id ?? null,
     createdAt:   row.created_at
   }
 }

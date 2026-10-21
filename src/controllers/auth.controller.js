@@ -28,6 +28,7 @@ const { toClientUser } = require('../lib/authUser')
 const { isPwnedPassword } = require('../lib/pwned')
 const { nameSchema } = require('../lib/text')
 const emailService = require('../services/email.service')
+const welcomeCodeService = require('../services/welcomeCode.service')
 const constants     = require('../config/constants')
 const { recordTombstones } = require('../lib/verification')
 const { deleteObjects, listKeys } = require('../lib/r2')
@@ -871,6 +872,21 @@ async function checkResetToken(c) {
 }
 
 // GET|POST /api/auth/verify-email (token in the POST body — see linkToken)
+// Issues the welcome code and emails it. Never throws: every failure is logged and swallowed, because this runs behind a
+// verification that has already succeeded.
+async function grantWelcomeCode(env, supabase, user) {
+  try {
+    const res = await welcomeCodeService.issueWelcomeCode(supabase, env, user)
+    if (res.issued && res.offer) {
+      await emailService.sendWelcomeOffer(env, supabase, user.email, user.name, res.offer)
+    } else if (!res.issued && res.reason !== 'exists') {
+      console.warn(`grantWelcomeCode ${user.id}: not issued (${res.reason})`)
+    }
+  } catch (e) {
+    console.error(`grantWelcomeCode ${user.id}: ${e.message}`)
+  }
+}
+
 async function verifyEmail(c) {
   const token = await linkToken(c)
   if (!token) return c.json({ success: false, message: 'Token required.' }, 400)
@@ -906,6 +922,13 @@ async function verifyEmail(c) {
   must(await supabase.from('users').update({
     email_verified: true, email_verify_expiry: null
   }).eq('id', user.id), 'verify email')
+
+  // A NEW account's first verification earns it a personal welcome code. Best-effort and after the response: nothing in here can
+  // fail the verification, and a re-verification (an email change) or a replayed link finds the code already issued.
+  if (!user.emailVerified) {
+    const work = grantWelcomeCode(c.env, supabase, user)
+    try { c.executionCtx.waitUntil(work) } catch (_) { await work }
+  }
 
   return c.json({ success: true, message: 'Email verified.' })
 }

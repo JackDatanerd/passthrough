@@ -97,6 +97,16 @@ function priceForResolvedCode(fixTier, env, codeRow, opts = {}) {
   if (isSelfReferral(codeRow, opts.buyerEmail))
     return { amount: standard, currency, referralApplied: false, referralCode: null, selfReferral: true }
 
+  // A personal code (the welcome code, migration 0105) belongs to ONE account and prices for that account only. For anyone else - a
+  // guessed string, a leaked screenshot, a ?ref= link passed along, an anonymous visitor - it quietly falls back to the normal
+  // price, like any other code that does not apply. Checked after "usable" and the self-referral guard, before any price is read.
+  if (codeRow.user_id && codeRow.user_id !== opts.buyerUserId)
+    return { amount: standard, currency, referralApplied: false, referralCode: null }
+  // ...and only for a tier it actually prices. An ordinary partner code with no price for a tier still ATTRIBUTES the sale (the partner
+  // earns on it), but a single-use personal code attached to a purchase it does not discount would be spent for nothing.
+  if (codeRow.user_id && !Number.isInteger(tierPrice))
+    return { amount: standard, currency, referralApplied: false, referralCode: null }
+
   // Section 4 round 17 (gap): a code that prices only SOME tiers used to be inert on the others — no discount AND no
   // attribution, so a partner whose code priced just the Fix tier earned nothing on a Badge or Plain-fix sale although the
   // terms promise commission on every purchase in the window. The code now still applies to an unpriced tier: the buyer pays

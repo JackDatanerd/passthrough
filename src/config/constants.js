@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 104,
+  EXPECTED_SCHEMA_VERSION: 105,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -116,6 +116,13 @@ module.exports = {
     if (fixTier === 'FIX_PLAIN') return 'Fix only'
     return 'Full fix'
   },
+  // Welcome code (migration 0105): once a new account verifies its email it gets ONE personal, single-use code worth
+  // WELCOME_PERCENT_OFF off the full fix, valid for WELCOME_VALID_DAYS (and never longer than the launch promo it was priced
+  // against). The code belongs to the account (referral_codes.user_id), is owned by the 0%-commission system partner below, and
+  // is applied for the buyer automatically; nobody else can use it even if the string leaks.
+  WELCOME_PERCENT_OFF: 30,
+  WELCOME_VALID_DAYS: 14,
+  WELCOME_PARTNER_ID: '00000000-0000-4000-8000-00000000e1c0',
   // Cover letters the Worker will write for ONE scan, by tier. The first letter counts, so 2 means "write it, then one
   // rewrite". Editing a letter by hand costs nothing and is not counted - only a call to the model is. Each rewrite is a paid
   // model call, so the cap is what keeps a $9 purchase from becoming an unbounded one; the more a person paid, the more

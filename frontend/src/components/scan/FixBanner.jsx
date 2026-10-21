@@ -67,13 +67,16 @@ export default function FixBanner({
   provisional = false,
   scan, onPay, onRedeemCredit, freeFixCredits = 0,
   referralCode = '', onApplyReferralCode = () => {},
+  // The account's personal welcome code (hooks/useWelcomeOffer), passed only while no other code is in play. It prices the page like any
+  // code, but it is never shown as a code to type or remove: the buyer sees one line saying their welcome price is applied.
+  welcomeOffer = null,
   // Buttons disable as soon as ANY pay-related action starts (payLoading); the specific tier being
   // paid for (payingTier) gets the spinner via Button's own `loading` prop.
   payLoading = false, payingTier = null,
   // Builds + scores the ATS-formatted file a purchase would deliver (POST /structure).
   onCheckFormatted = null, checkingFormatted = false, checkFormattedError = ''
 }) {
-  const { byTier, pricing, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode, { scanId: scan?.id })
+  const { byTier, pricing, pricingFailed, refresh: refreshPricing, clockOffsetMs } = usePricing(referralCode || welcomeOffer?.code || '', { scanId: scan?.id })
   // Quote of the hardship code, used only to measure the real discount. With no code configured this is
   // the plain no-code quote, which the hook shares with the call above (no extra request).
   const hard = usePricing(HARDSHIP_CODE, { scanId: scan?.id })
@@ -153,6 +156,18 @@ export default function FixBanner({
   )
 
   const showCountdown = pricing?.promoActive && pricing.promoEndsAt
+  // Said only once the quote confirms the discount is real for THIS buyer (the code can be spent, expired or refused by the time the
+  // price loads), and only about the full fix, the one tier a welcome code prices.
+  const fixQuote = byTier('FIX')
+  const welcomeApplied = !!welcomeOffer && !referralCode && !!fixQuote?.referralApplied && !!fixQuote?.discountApplied
+  const welcomeLine = welcomeApplied ? (
+    <p role="status" className="mb-3 text-sm font-medium text-emerald-700" data-testid="welcome-applied">
+      ✓ Welcome price applied: {welcomeOffer.percentOff}% off the Full fix + Verified, {fmtPrice(fixQuote.amount, currency)} instead of {fmtPrice(welcomeOffer.listAmountCents, currency)}.{' '}
+      <span className="font-normal text-emerald-700/80">
+        Yours alone, and it works once, until {new Date(welcomeOffer.expiresAt).toLocaleDateString(undefined, { day: 'numeric', month: 'long' })}.
+      </span>
+    </p>
+  ) : null
   const shared = (
     <>
       {showCountdown && (
@@ -164,6 +179,7 @@ export default function FixBanner({
         </p>
       )}
       {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
+      {welcomeLine}
       <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} collapsible />
     </>
   )

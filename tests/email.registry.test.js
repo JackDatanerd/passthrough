@@ -25,7 +25,7 @@ function setup({ failSend, renderThrows } = {}) {
 }
 
 const CALLS = {
-  sendWelcome: ['u@x.y', 'Ann'], sendVerification: ['u@x.y', 'Ann', 'tok'], sendPasswordReset: ['u@x.y', 'Ann', 'tok'],
+  sendWelcome: ['u@x.y', 'Ann'], sendWelcomeOffer: ['u@x.y', 'Ann', { code: 'AN-7K2QH', percentOff: 30, amountCents: 2030, listAmountCents: 2900, currency: 'USD', expiresAt: '2026-11-04T00:00:00.000Z' }], sendVerification: ['u@x.y', 'Ann', 'tok'], sendPasswordReset: ['u@x.y', 'Ann', 'tok'],
   sendPasswordChanged: ['u@x.y', 'Ann'], sendEmailChangedOldAddress: ['u@x.y', 'Ann', 'n@x.y'], sendEmailChangeCompleted: ['u@x.y', 'Ann', 'n@x.y'],
   sendEmailChangeConfirmation: ['n@x.y', 'Ann', 'tok'], sendAccountDeleted: ['u@x.y', 'Ann'], sendAccountLockoutAlert: ['u@x.y', 'Ann', 15],
   sendNewSignInAlert: ['u@x.y', 'Ann', { ip: '1.2.3.4', when: Date.UTC(2026, 9, 5, 23, 30) }],

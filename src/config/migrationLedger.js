@@ -29,6 +29,7 @@ const LEDGER_NAMES = {
   102: '0102_doc_look_3',
   103: '0103_webhooks_round24',
   104: '0104_cover_letter_limit',
+  105: '0105_welcome_codes',
 }
 
 module.exports = { LEDGER_NAMES }

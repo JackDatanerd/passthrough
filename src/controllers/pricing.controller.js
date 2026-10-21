@@ -2,6 +2,7 @@ const c = require('../config/constants')
 const { getSupabase } = require('../config/supabase')
 const referralService = require('../services/referral.service')
 const refundService = require('../services/refund.service')
+const welcomeCode = require('../services/welcomeCode.service')
 const { UUID_RE } = require('../middleware/validateUuidParam')
 
 // GET /api/pricing — public, unauthenticated. Marketing/landing pages and
@@ -113,4 +114,14 @@ async function getPricing(ctx) {
   } })
 }
 
-module.exports = { getPricing }
+// GET /api/pricing/welcome-offer (signed in). The account's personal welcome code, if it has one that can still be used, so the
+// offer can show it and apply it for the buyer. { offer: null } is the ordinary answer (no code, spent, expired, or migration
+// 0105 not applied yet) and never an error: the page just shows normal prices.
+async function getWelcomeOffer(ctx) {
+  const user = ctx.get('user')
+  const supabase = getSupabase(ctx.env)
+  const offer = await welcomeCode.getWelcomeOffer(supabase, ctx.env, user.id)
+  return ctx.json({ success: true, data: { offer } })
+}
+
+module.exports = { getPricing, getWelcomeOffer }
