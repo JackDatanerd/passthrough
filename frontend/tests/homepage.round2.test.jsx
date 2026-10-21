@@ -13,7 +13,7 @@ import PricingSection from '../src/components/home/PricingSection'
 import { _resetHomeDataCache } from '../src/hooks/useHomeData'
 import { setStoredReferralCode } from '../src/hooks/useReferralCapture'
 import { sha256Text } from '../src/lib/sha256'
-import { TAMPER_DEMO, PULL_QUOTES, SAMPLE_STORIES } from '../src/lib/homeContent'
+import { TAMPER_DEMO, PULL_QUOTES, QUOTES_ARE_SAMPLE, SAMPLE_STORIES } from '../src/lib/homeContent'
 
 vi.mock('../src/lib/api', () => ({ default: { get: vi.fn(), post: vi.fn(), defaults: { baseURL: '/api' } }, getErrorMessage: (e, f) => f }))
 vi.mock('../src/components/layout/Footer', () => ({ default: () => <footer /> }))
@@ -268,12 +268,16 @@ describe('stories and pull-quotes', () => {
     expect(within(dana).getByText(/You don.t need a better history/)).toBeInTheDocument()
     expect(SAMPLE_STORIES.map(s => s.displayName)).toEqual(['Amara O.', 'Daniel M.', 'Dana R.'])
   })
-  it('renders all six pull-quotes, labelled as placeholders while they are samples', async () => {
+  it('renders all six pull-quotes, and labels them as placeholders only while QUOTES_ARE_SAMPLE is true', async () => {
     renderHome(); await ready()
     const stories = document.getElementById('stories')
     expect(PULL_QUOTES).toHaveLength(6)
     expect(within(stories).getAllByRole('figure')).toHaveLength(6)
-    expect(within(stories).getByText(/The short quotes above are illustrative placeholders/)).toBeInTheDocument()
+    // The flag is the operator's statement of whether the quotes are real: while it is true the block must say it is illustrative,
+    // and once it is false (every quote is real and permitted) the label must be gone rather than left on real quotes.
+    const label = within(stories).queryByText(/The short quotes above are illustrative placeholders/)
+    if (QUOTES_ARE_SAMPLE) expect(label).toBeInTheDocument()
+    else expect(label).toBeNull()
   })
   it('live stories never carry a sample "closing line"', async () => {
     renderHome()

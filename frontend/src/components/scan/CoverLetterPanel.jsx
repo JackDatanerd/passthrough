@@ -34,6 +34,13 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   const [saving, setSaving] = useState(false)
   const [confirmNew, setConfirmNew] = useState(false)
   const letter = scan.coverLetterText
+  // How many letters this purchase includes, and how many are used (the server counts them; see constants.COVER_LETTER_LIMITS).
+  // Both are absent on a response that predates the limit, in which case no allowance is shown and nothing is disabled.
+  const limit = Number.isFinite(scan.coverLetterLimit) ? scan.coverLetterLimit : null
+  const used = Number.isFinite(scan.coverLetterCount) ? scan.coverLetterCount : null
+  const left = limit !== null && used !== null ? Math.max(0, limit - used) : null
+  const atLimit = left === 0
+  const letters = n => `${n} letter${n === 1 ? '' : 's'}`
 
   async function save() {
     setSaving(true); setError('')
@@ -58,8 +65,12 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
       const res = Object.keys(body).length
         ? await api.post(`/scan/${scan.id}/cover-letter`, body)
         : await api.post(`/scan/${scan.id}/cover-letter`)
-      onUpdated({ coverLetterText: res.data.data.coverLetterText })
+      const d = res.data.data
+      onUpdated({ coverLetterText: d.coverLetterText, ...(Number.isFinite(d.coverLetterCount) ? { coverLetterCount: d.coverLetterCount } : {}), ...(Number.isFinite(d.coverLetterLimit) ? { coverLetterLimit: d.coverLetterLimit } : {}) })
     } catch (err) {
+      // Another tab (or an earlier request) used the last letter: show the allowance as spent instead of leaving a live button.
+      const body = err?.response?.data
+      if (body?.code === 'COVER_LETTER_LIMIT' && Number.isFinite(body.coverLetterLimit)) onUpdated({ coverLetterCount: body.coverLetterLimit, coverLetterLimit: body.coverLetterLimit })
       setError(getErrorMessage(err, 'We couldn\'t write the letter just now — try again in a minute.'))
     }
     setBusy(false)
@@ -88,17 +99,27 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
   }
 
   return (
-    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6" data-testid="cover-letter">
+    <div className="bg-white rounded-xl border border-blue-200 shadow-sm p-6" data-testid="cover-letter">
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <h3 className="font-semibold text-gray-900">Cover letter for this job</h3>
-          <p className="text-sm text-gray-500 mt-0.5">
-            Written from your delivered resume and this job description only — it won't claim anything your resume doesn't.
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="rounded-full bg-blue-700 px-2.5 py-0.5 text-xs font-semibold text-white">Bonus</span>
+            <h3 className="font-semibold text-gray-900">Your cover letter for this job</h3>
+          </div>
+          <p className="text-sm text-gray-500 mt-1">
+            Included with your purchase. Written from your delivered resume and this job description only — it won't claim anything your resume doesn't.
             Read it through and edit it until it sounds like you before you send it.
           </p>
+          {left !== null && (
+            <p className={`text-xs mt-1.5 ${atLimit ? 'text-amber-800' : 'text-gray-600'}`} data-testid="cover-letter-allowance">
+              {atLimit
+                ? `You've used all ${letters(limit)} that come with this resume. Editing the one you have is still free.`
+                : `${left} of ${limit} letters left. Editing a letter by hand doesn't use one.`}
+            </p>
+          )}
         </div>
-        {!confirmNew && (
-          <Button variant={letter ? 'secondary' : 'primary'} size="sm" loading={busy}
+        {!confirmNew && !(atLimit && letter) && (
+          <Button variant={letter ? 'secondary' : 'primary'} size="sm" loading={busy} disabled={atLimit}
             onClick={() => (letter ? setConfirmNew(true) : generate())}>
             {letter ? 'Write a new one' : 'Write my cover letter'}
           </Button>
@@ -126,7 +147,10 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
       <Alert className="mt-3">{error}</Alert>
       {confirmNew && (
         <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" data-testid="cover-letter-confirm">
-          <p>A new letter replaces the one below, including any changes you made to it. Copy it first if you want to keep it.</p>
+          <p>
+            A new letter replaces the one below, including any changes you made to it. Copy it first if you want to keep it.
+            {left !== null && <> It uses 1 of your {letters(limit)}; {left - 1} will be left.</>}
+          </p>
           <div className="flex gap-2 mt-2">
             <Button size="sm" onClick={generate} loading={busy}>Replace it</Button>
             <Button variant="secondary" size="sm" onClick={() => setConfirmNew(false)}>Keep this one</Button>
@@ -147,6 +171,7 @@ export default function CoverLetterPanel({ scan, onUpdated }) {
           ) : (
             <>
               <pre className="whitespace-pre-wrap font-sans text-sm text-gray-800 bg-gray-50 border border-gray-200 rounded-md p-4">{letter}</pre>
+              <p className="text-xs text-gray-500 mt-2">If you edit your resume after this, the letter is cleared (it was written from the earlier version) and a new one uses another of your letters. Copy or download it first if you want to keep it.</p>
               <div className="flex gap-2 mt-3 flex-wrap">
                 <CopyButton text={letter} label="Copy text" />
                 <Button variant="secondary" size="sm" onClick={() => { setDraft(letter); setEditing(true); setError('') }}>Edit</Button>

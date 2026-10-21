@@ -117,11 +117,12 @@ OWNER_ALERT_EMAIL       = "passthrough672@gmail.com"
 # deadline, not a fake one ticking down to a date that was never going to
 # matter. Set PROMO_ACTIVE = "false" to kill the promo immediately regardless
 # of the date.
-# The launch promo ended on PROMO_ENDS_AT (2026-08-11): it is switched off here so a
-# lapsed date no longer logs a config warning on every cold start. To run a new promo, set
-# PROMO_ACTIVE = "true" and PROMO_ENDS_AT to the new deadline, then redeploy.
-PROMO_ACTIVE            = "false"
-PROMO_ENDS_AT           = "2026-08-11T23:59:59Z"
+# Launch promo (second run): $29 full fix / $19 fix only / $9 credential, shown against the struck-through
+# standard prices ($49 / $39 / $39). It is a REAL deadline: at PROMO_ENDS_AT checkout reverts to standard
+# prices on its own. Decide deliberately whether to extend it (change the date and redeploy) or let it lapse;
+# if it lapses, set PROMO_ACTIVE = "false" afterwards so a stale date does not log a warning on every cold start.
+PROMO_ACTIVE            = "true"
+PROMO_ENDS_AT           = "2026-11-22T23:59:59Z"
 
 # ── Local dev overrides ──────────────────────────────────────────────
 # `wrangler dev` reads [vars] above + .dev.vars (gitignored) for secrets.

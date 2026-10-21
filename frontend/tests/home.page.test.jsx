@@ -175,7 +175,9 @@ describe('placeholders never pass as real', () => {
     statsData = new Error('down')
     renderHome()
     expect(await screen.findByText(/25,000\+ resumes scanned/)).toBeInTheDocument()
-    expect(screen.getAllByText('Sample').length).toBeGreaterThanOrEqual(4)   // 3 stories + the hot list
+    // The 3 sample stories carry a per-card tag. The hot-categories list no longer does (its tag is commented out in HotCategories.jsx);
+    // it is labelled by the footnote asserted just below instead.
+    expect(screen.getAllByText('Sample').length).toBeGreaterThanOrEqual(3)
     expect(screen.getByText(/Sample numbers shown until enough real reports come in/)).toBeInTheDocument()
     expect(screen.getByText(/Stories are shared by customers with their permission/)).toBeInTheDocument()
     expect(screen.queryByText(/if the badge doesn't open, the story doesn't run/)).toBeNull()

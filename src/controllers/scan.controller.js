@@ -1474,6 +1474,32 @@ async function updateDeliveredResume(ctx) {
   } })
 }
 
+// Cover-letter slots (migration 0104). A letter is a paid model call, so each scan may have only so many written (constants.
+// COVER_LETTER_LIMITS, by tier). The slot is claimed in one statement BEFORE the call and released if no letter results, so a
+// failed call never costs the buyer one and two concurrent requests cannot both take the last slot.
+// `held:false` + `ok:true` means "the database predates the migration": the letter is allowed (an unenforced limit for a few
+// minutes of a deploy is better than refusing every letter), and nothing is released afterwards.
+function isMissingFunctionError(err) {
+  const code = String(err?.code || '')
+  return code === 'PGRST202' || code === '42883' || /could not find the function|does not exist/i.test(String(err?.message || ''))
+}
+async function claimCoverLetterSlot(supabase, scan, userId, limit) {
+  const { data, error } = await supabase.rpc('claim_cover_letter_slot', { p_scan_id: scan.id, p_user_id: userId, p_max: limit })
+  if (error) {
+    if (isMissingFunctionError(error)) { console.warn(`claimCoverLetterSlot ${scan.id}: migration 0104 not applied - letter limit not enforced`); return { ok: true, held: false, count: null } }
+    throw error
+  }
+  const count = Number(data)
+  if (!Number.isFinite(count) || count < 0) return { ok: false, held: false, count: null }
+  return { ok: true, held: true, count }
+}
+async function releaseCoverLetterSlot(supabase, scanId) {
+  try {
+    const { error } = await supabase.rpc('release_cover_letter_slot', { p_scan_id: scanId })
+    if (error) console.error(`releaseCoverLetterSlot ${scanId}: ${error.message}`)
+  } catch (e) { console.error(`releaseCoverLetterSlot ${scanId}: ${e.message}`) }
+}
+
 // POST /api/scan/:id/cover-letter  — and GET for the .docx
 // FEATURE GAP CLOSED (Scan/ATS pass): scans.cover_letter_text has existed since the first
 // migration and nothing ever wrote it. The delivered resume is already tailored to one job; the
@@ -1506,18 +1532,30 @@ async function generateCoverLetter(ctx) {
     tone:      z.enum(['warm', 'direct', 'formal']).optional(),
   }).safeParse(rawBody && typeof rawBody === 'object' && !Array.isArray(rawBody) ? rawBody : {})
   if (!steer.success) return ctx.json({ success: false, message: 'Those letter options are not valid.' }, 400)
+  // The limit is checked last among the refusals (a bad request should not use a slot) and first among the costs.
+  const letterLimit = c.coverLetterLimitFor(scan.fixTier)
+  const slot = await claimCoverLetterSlot(supabase, scan, user.id, letterLimit)
+  if (!slot.ok) {
+    return ctx.json({ success: false, code: 'COVER_LETTER_LIMIT', coverLetterLimit: letterLimit,
+      message: `You've used all ${letterLimit} cover letters that come with this resume. You can still edit and download the one you have.` }, 409)
+  }
+  const giveBack = async () => { if (slot.held) await releaseCoverLetterSlot(supabase, scan.id) }
   // A letter never names a weakness, so a missing requirement is not "a gap to confess" - it is a need to bridge with the
   // closest real strength, and the requirements the delivered resume DOES show are what the letter is built on. Only the
   // ESSENTIAL ones (priority "must") are passed, from the DELIVERED resume's own report (never the original upload's: gaps the
   // fix already closed used to be handed over). A report written before these fields existed carries none: the safe default.
   const report = scan.fixAtsReport || {}
   const names = v => (Array.isArray(v) ? v.filter(g => typeof g === 'string') : [])
-  const result = await claudeService.generateCoverLetter(ctx.env, data, jdText, {
-    ...steer.data, company: steer.data.company || companyFromPosting(jdText) || undefined,
-    jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel,
-    strongMatches: names(report.aiMetMust).slice(0, 3), unprovenNeeds: names(report.aiMissingMust).slice(0, 1),
-  })
+  let result
+  try {
+    result = await claudeService.generateCoverLetter(ctx.env, data, jdText, {
+      ...steer.data, company: steer.data.company || companyFromPosting(jdText) || undefined,
+      jobTitle: scan.jobTitle || deriveJobTitle(jdText), seniority: scan.seniorityLevel,
+      strongMatches: names(report.aiMetMust).slice(0, 3), unprovenNeeds: names(report.aiMissingMust).slice(0, 1),
+    })
+  } catch (e) { await giveBack(); throw e }
   if (!result.success) {
+    await giveBack()
     console.error(`generateCoverLetter ${scan.id}: ${result.error}`)
     return ctx.json({ success: false, message: 'We couldn\'t write the cover letter just now. Please try again in a minute.' }, 502)
   }
@@ -1528,13 +1566,19 @@ async function generateCoverLetter(ctx) {
     .eq('id', scan.id).eq('status', 'FIX_DELIVERED').eq('fix_retry_count', scan.fixRetryCount ?? 0)
   letterQuery = scan.resumeAtsPath ? letterQuery.eq('resume_ats_path', scan.resumeAtsPath) : letterQuery.is('resume_ats_path', null)
   const { data: updated, error: updErr } = await letterQuery.select('id')
-  if (updErr) throw updErr
-  if (Array.isArray(updated) && updated.length === 0)
+  if (updErr) { await giveBack(); throw updErr }
+  if (Array.isArray(updated) && updated.length === 0) {
+    await giveBack()
     return ctx.json({ success: false, message: 'Your resume changed while the letter was being written. Please try again.' }, 409)
+  }
   // Which prompt generation wrote it (migration 0094) - best-effort and AFTER the letter is stored, so a worker deployed
   // before the migration still delivers the letter.
   try { await supabase.from('scans').update({ letter_prompt_version: claudeService.LETTER_PROMPT_VERSION }).eq('id', scan.id) } catch (_) {}
-  return ctx.json({ success: true, data: { coverLetterText: result.data } })
+  return ctx.json({ success: true, data: {
+    coverLetterText: result.data,
+    // What the panel shows as "N left". null count = the limit is not being enforced yet (migration 0104 not applied).
+    coverLetterCount: slot.held ? slot.count : null, coverLetterLimit: letterLimit,
+  } })
 }
 
 // PATCH /api/scan/:id/cover-letter - the person's own edit of the letter. The panel tells them to "make it yours", but the

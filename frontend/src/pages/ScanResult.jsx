@@ -884,8 +884,8 @@ export default function ScanResult() {
             </div>
 
             {/* FEATURE (feature gap — Scan/ATS section audit): see
-                AtsDetailPanel.jsx for the full reasoning. Placed right after
-                the score card and before the resume editor below — explains
+                AtsDetailPanel.jsx for the full reasoning. Placed after
+                the score card and the offer, and before the resume editor below — explains
                 the number the person just saw before offering to let them
                 act on it. */}
             {scan.atsDetail?.scoredWithoutAi && !scan.fixPurchased && (
@@ -900,6 +900,71 @@ export default function ScanResult() {
                 </div>
               </div>
             )}
+            {/* THE OFFER. It comes straight after the score (and the provisional-score notice, which the banner's own
+                copy points back to): the score is the moment a person most wants to act on, so what they can do about it
+                is the next thing they see. The explanation of the number (points lost, the detail panel, the job
+                description) is the "why" and follows below. */}
+            {/* Fix banner — only when not yet purchased */}
+            {!scan.fixPurchased && (
+              <>
+                {pendingPayment && !payLoading && !confirmingPayment && (
+                  <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <p>
+                      You have a payment in progress for the {PENDING_TIER_LABEL[pendingPayment.fixTier] || 'fix'}. If you already paid,
+                      check its status; otherwise continue it from the button below, or cancel it and choose again.
+                    </p>
+                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                      <button type="button" onClick={handleCheckPendingPayment} className="underline underline-offset-2 hover:text-amber-950">
+                        Check payment status
+                      </button>
+                      <button type="button" onClick={() => cancelCheckout(pendingPayment.reference)} className="underline underline-offset-2 hover:text-amber-950">
+                        Cancel that payment
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {payNotice && !payError && (
+                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payNotice}</p>
+                )}
+                {payError && (
+                  <div className="text-sm text-red-600">
+                    <p>{payError}</p>
+                    {needsVerify && (
+                      <div className="mt-1">
+                        <button type="button" onClick={handleResendVerification}
+                          className="underline underline-offset-2 hover:text-red-800">
+                          Resend verification email
+                        </button>
+                        {verifyResent && <p className="mt-1 text-gray-600">{verifyResent}</p>}
+                      </div>
+                    )}
+                    {stuckPayment && (
+                      <button
+                        type="button"
+                        onClick={handleCancelStuckPayment}
+                        disabled={payLoading}
+                        className="mt-1 underline underline-offset-2 hover:text-red-800 disabled:opacity-50"
+                      >
+                        Cancel that payment and choose again
+                      </button>
+                    )}
+                  </div>
+                )}
+                {/* AUDIT FIX (feature gap): only appears if the inline popup
+                    hasn't opened after a generous wait, or failed outright to
+                    set up — see popupFallbackUrl's comment above. */}
+                {popupFallbackUrl && (
+                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                    <p>Payment window not opening? This can happen with ad blockers or restrictive networks.</p>
+                    <a href={popupFallbackUrl} className="mt-1 inline-block underline underline-offset-2 hover:text-amber-900">
+                      Continue to payment on Paystack's page →
+                    </a>
+                  </div>
+                )}
+                <FixBanner scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
+              </>
+            )}
+
             <PointsLost scan={scan} />
             <AtsDetailPanel scan={scan} />
 
@@ -1225,6 +1290,15 @@ export default function ScanResult() {
               </div>
             )}
 
+            {/* The cover letter is the BONUS that comes with the purchase, so it is the next thing under the delivered files
+                rather than something found after the before/after view and the editor. Same gate as before: the signed-in
+                owner of a delivered, unrevoked scan that has a job description to write against (the endpoints enforce it too). */}
+            {scan.status === 'FIX_DELIVERED' && user && scan.userId && user.id === scan.userId &&
+              !(scan.verificationStatus === 'REVOKED' && scan.verificationRevokedReason !== 'OWNER') &&
+              (scan.jobDescriptionText || '').trim().length >= 50 && (
+              <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
+            )}
+
             {/* Diff view — only meaningful once a fix/badge has been delivered */}
             {/* G3 (round 3): why the DELIVERED file scored what it did. The panel above is the free scan
                 of the original upload and is stale once a fix has landed - without this, a result
@@ -1266,9 +1340,6 @@ export default function ScanResult() {
                   scan={scan}
                   onSaved={async updated => { setScan(prev => ({ ...prev, ...updated })); await fetchScan() }}
                 />
-                {(scan.jobDescriptionText || '').trim().length >= 50 && (
-                  <CoverLetterPanel scan={scan} onUpdated={updated => setScan(prev => ({ ...prev, ...updated }))} />
-                )}
               </>
             )}
 
@@ -1312,67 +1383,6 @@ export default function ScanResult() {
                   onCancel={() => setConfirmDelete(false)}
                 />
               </div>
-            )}
-
-            {/* Fix banner — only when not yet purchased */}
-            {!scan.fixPurchased && (
-              <>
-                {pendingPayment && !payLoading && !confirmingPayment && (
-                  <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                    <p>
-                      You have a payment in progress for the {PENDING_TIER_LABEL[pendingPayment.fixTier] || 'fix'}. If you already paid,
-                      check its status; otherwise continue it from the button below, or cancel it and choose again.
-                    </p>
-                    <div className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                      <button type="button" onClick={handleCheckPendingPayment} className="underline underline-offset-2 hover:text-amber-950">
-                        Check payment status
-                      </button>
-                      <button type="button" onClick={() => cancelCheckout(pendingPayment.reference)} className="underline underline-offset-2 hover:text-amber-950">
-                        Cancel that payment
-                      </button>
-                    </div>
-                  </div>
-                )}
-                {payNotice && !payError && (
-                  <p className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">{payNotice}</p>
-                )}
-                {payError && (
-                  <div className="text-sm text-red-600">
-                    <p>{payError}</p>
-                    {needsVerify && (
-                      <div className="mt-1">
-                        <button type="button" onClick={handleResendVerification}
-                          className="underline underline-offset-2 hover:text-red-800">
-                          Resend verification email
-                        </button>
-                        {verifyResent && <p className="mt-1 text-gray-600">{verifyResent}</p>}
-                      </div>
-                    )}
-                    {stuckPayment && (
-                      <button
-                        type="button"
-                        onClick={handleCancelStuckPayment}
-                        disabled={payLoading}
-                        className="mt-1 underline underline-offset-2 hover:text-red-800 disabled:opacity-50"
-                      >
-                        Cancel that payment and choose again
-                      </button>
-                    )}
-                  </div>
-                )}
-                {/* AUDIT FIX (feature gap): only appears if the inline popup
-                    hasn't opened after a generous wait, or failed outright to
-                    set up — see popupFallbackUrl's comment above. */}
-                {popupFallbackUrl && (
-                  <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
-                    <p>Payment window not opening? This can happen with ad blockers or restrictive networks.</p>
-                    <a href={popupFallbackUrl} className="mt-1 inline-block underline underline-offset-2 hover:text-amber-900">
-                      Continue to payment on Paystack's page →
-                    </a>
-                  </div>
-                )}
-                <FixBanner scan={scan} provisional={!!scan.atsDetail?.scoredWithoutAi} onPay={handlePay} onRedeemCredit={handleRedeemCredit} freeFixCredits={user?.freeFixCredits || 0} referralCode={referralCode} onApplyReferralCode={handleApplyReferralCode} payLoading={payLoading} payingTier={payingTier} onCheckFormatted={handleCheckFormatted} checkingFormatted={checkingFormatted} checkFormattedError={checkFormattedError} />
-              </>
             )}
 
             {/* Register nudge for anon users */}

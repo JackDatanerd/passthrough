@@ -30,16 +30,18 @@ function PriceTag({ tier, byTier, currency }) {
 
 // One option on the offer. `featured` raises the card and adds the "best for most people" flag;
 // `children` is the checkout button(s), so each tier keeps its own label, loading and disabled state.
-function OfferCard({ title, price, note, points, featured = false, nudge = '', children }) {
+function OfferCard({ title, price, note, points, featured = false, flag = 'Best for most people', nudge = '', assurance = '', children }) {
   return (
     <div
+      // The recommended card leads when the cards stack on a phone (it used to come second there); from `sm` up the
+      // columns keep their price order.
       className={`relative flex flex-col rounded-xl bg-white p-5 ${
-        featured ? 'border-2 border-blue-700 shadow-md sm:-translate-y-1' : 'border border-gray-200'
+        featured ? 'order-first sm:order-none border-2 border-blue-700 shadow-md sm:-translate-y-1' : 'border border-gray-200'
       }`}
     >
       {featured && (
         <span className="absolute -top-3 left-4 rounded-full bg-blue-700 px-3 py-0.5 text-xs font-semibold text-white">
-          Best for most people
+          {flag}
         </span>
       )}
       <h3 className="text-base font-semibold text-gray-900">{title}</h3>
@@ -55,6 +57,8 @@ function OfferCard({ title, price, note, points, featured = false, nudge = '', c
       </ul>
       {nudge && <p className="mb-2 text-sm font-medium text-blue-700">{nudge}</p>}
       <div className="flex flex-col gap-2">{children}</div>
+      {/* The risk-reversal sits against the button it answers, not only in the paragraph under the cards. */}
+      {assurance && <p className="mt-2 text-xs text-gray-600" data-testid="offer-assurance">{assurance}</p>}
     </div>
   )
 }
@@ -160,7 +164,7 @@ export default function FixBanner({
         </p>
       )}
       {pricingFailed && <PricingFailedNotice referralCode={referralCode} onRetry={refreshPricing} />}
-      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} />
+      <ReferralCodeEntry referralCode={referralCode} pricing={pricing} onApply={onApplyReferralCode} disabled={payLoading} collapsible />
     </>
   )
 
@@ -170,6 +174,9 @@ export default function FixBanner({
       Every fix includes {MAX_FIX_RETRIES} free retries. If it still misses, you get a free fix credit. This is a credit, not a refund.
     </p>
   )
+
+  // Short form of the guarantee below, shown on the two cards that include a rewrite (the credential-only card has none).
+  const assurance = `${MAX_FIX_RETRIES} free retries. Still short? You get a free fix credit.`
 
   // <80: the plain rewrite, or the full fix with the Verified credential. The credential-only option
   // is not offered here — it needs a score of at least ATS_BADGE_THRESHOLD.
@@ -195,6 +202,7 @@ export default function FixBanner({
             title="Fix only"
             price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
             points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
+            assurance={assurance}
           >
             <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
               Fix My Resume — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />
@@ -206,6 +214,7 @@ export default function FixBanner({
             price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
             points={[[true, 'Everything in Fix only'], [true, 'Passthrough Verified credential employers can check'], [true, 'Shareable link and badge']]}
             nudge={nudge}
+            assurance={assurance}
           >
             {hasCredit && (
               <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
@@ -262,7 +271,6 @@ export default function FixBanner({
       <div className={`grid gap-4 pt-2 ${badgeSafe ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>
         {badgeSafe && (
           <OfferCard
-            featured
             title="Verified credential"
             price={<PriceTag tier="BADGE" byTier={byTier} currency={currency} />}
             points={[[true, 'Verified link and badge'], [true, 'Employers see your score and an unchanged-file check'], [true, 'Bonus: tailored cover letter'], [false, 'No rewrite']]}
@@ -276,24 +284,30 @@ export default function FixBanner({
           title="Fix only"
           price={<PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />}
           points={[[true, 'AI rewrite using your real experience'], [true, 'ATS-optimised .docx and PDF'], [true, 'Bonus: tailored cover letter'], [false, 'No Verified credential']]}
+          assurance={assurance}
         >
           <Button onClick={() => onPay('FIX_PLAIN')} variant="secondary" disabled={payLoading} loading={payingTier === 'FIX_PLAIN'}>
             Fix My Resume, No Credential — <PriceTag tier="FIX_PLAIN" byTier={byTier} currency={currency} />
           </Button>
         </OfferCard>
+        {/* The most complete option is the recommended one at every score. The flag says "Most complete", not
+            "Best for most people": a resume that already passes may genuinely not need the rewrite, and the heading
+            above says so. */}
         <OfferCard
-          featured={!badgeSafe}
+          featured
+          flag="Most complete"
           title="Full fix + Verified"
           price={<PriceTag tier="FIX" byTier={byTier} currency={currency} />}
-          points={[[true, 'Everything in Fix only'], [true, 'Passthrough Verified credential']]}
+          points={[[true, 'Everything in Fix only'], [true, 'Passthrough Verified credential'], [true, 'Verified link and badge']]}
           nudge={nudge}
+          assurance={assurance}
         >
           {hasCredit && (
             <Button onClick={onRedeemCredit} variant="secondary" disabled={payLoading} loading={payLoading && !payingTier}>
               Full AI Fix — Free Credit
             </Button>
           )}
-          <Button onClick={() => onPay('FIX')} variant={badgeSafe ? 'secondary' : 'primary'} disabled={payLoading} loading={payingTier === 'FIX'}>
+          <Button onClick={() => onPay('FIX')} disabled={payLoading} loading={payingTier === 'FIX'}>
             Full AI Fix + Credential — <PriceTag tier="FIX" byTier={byTier} currency={currency} />
           </Button>
         </OfferCard>

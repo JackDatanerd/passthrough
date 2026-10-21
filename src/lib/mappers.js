@@ -5,6 +5,8 @@
 // frontend code, every DB row is mapped to camelCase at the boundary —
 // immediately after a Supabase read, before the row reaches a controller.
 
+const constants = require('../config/constants')
+
 function userRowToCamel(row) {
   if (!row) return row
   return {
@@ -141,6 +143,10 @@ function scanRowToCamel(row) {
     resumePdfPath:       row.resume_pdf_path,
     fixGeneratedAt:      row.fix_generated_at,
     coverLetterText:     row.cover_letter_text,
+    // Letters written so far / allowed for this scan's tier (migration 0104). The limit is derived, never stored, so changing
+    // constants.COVER_LETTER_LIMITS applies to every scan at once.
+    coverLetterCount:    row.cover_letter_count ?? 0,
+    coverLetterLimit:    constants.coverLetterLimitFor(row.fix_tier),
     verificationCode:    row.verification_code,
     verificationUrl:     row.verification_url,
     verifyExposeDocx:    row.verify_expose_docx,
@@ -200,7 +206,7 @@ const CLIENT_SCAN_FIELDS = [
   'id', 'status', 'resumeOriginalName', 'resumeMimeType', 'jobDescriptionText', 'jobDescriptionUrl', 'atsScore',
   'fixAtsScore', 'rewriteFailed', 'retryNoGain', 'paperSize', 'fixRetryCount', 'passed', 'keywordScore', 'formatScore', 'sectionsScore',
   'contentScore', 'scanCompletedAt', 'candidateFirstName', 'jobTitle', 'fixPurchased', 'fixTier', 'fixGeneratedAt',
-  'coverLetterText', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
+  'coverLetterText', 'coverLetterCount', 'coverLetterLimit', 'verificationCode', 'verificationUrl', 'verifyExposeDocx', 'verifyExposePdf', 'verifyHideName',
   'verificationStatus', 'verificationRevokedAt', 'verificationRevokedReason', 'resumePdfHash', 'verificationViews',
   'verificationDownloads', 'resumeHash', 'verifiedAt', 'roleCategory', 'seniorityLevel', 'userId',
   'anonExpiresAt', 'contactName', 'contactEmail', 'inputMode', 'rawBrainDumpText', 'originalResumeData',

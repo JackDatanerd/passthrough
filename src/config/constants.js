@@ -15,7 +15,7 @@ module.exports = {
   // migration ends by writing its number to system_state.schema_version (see 0059); the Worker
   // compares the two (lib/health.js). Bump it in the same commit as the migration —
   // the schema-version test in tests/crossCutting.round1.test.js fails when the newest migration and this value disagree.
-  EXPECTED_SCHEMA_VERSION: 103,
+  EXPECTED_SCHEMA_VERSION: 104,
 
   // Standard (post-promo) prices — these are what priceForTier() falls back
   // to once PROMO_ENDS_AT passes, and what the frontend shows crossed-out as
@@ -115,6 +115,15 @@ module.exports = {
     if (fixTier === 'BADGE')     return 'Credential only'
     if (fixTier === 'FIX_PLAIN') return 'Fix only'
     return 'Full fix'
+  },
+  // Cover letters the Worker will write for ONE scan, by tier. The first letter counts, so 2 means "write it, then one
+  // rewrite". Editing a letter by hand costs nothing and is not counted - only a call to the model is. Each rewrite is a paid
+  // model call, so the cap is what keeps a $9 purchase from becoming an unbounded one; the more a person paid, the more
+  // rewrites they get. A re-written resume (an owner edit) clears the letter but NOT the count, or editing would be a way
+  // to get unlimited letters. scans.cover_letter_count (migration 0104) holds the number used.
+  COVER_LETTER_LIMITS: { BADGE: 2, FIX_PLAIN: 3, FIX: 5 },
+  coverLetterLimitFor(fixTier) {
+    return this.COVER_LETTER_LIMITS[fixTier] ?? this.COVER_LETTER_LIMITS.FIX_PLAIN
   },
   CURRENCY:    'USD',
   ATS_PASS_THRESHOLD:  75,

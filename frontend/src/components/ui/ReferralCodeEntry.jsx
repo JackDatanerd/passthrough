@@ -13,9 +13,13 @@ import Button from './Button'
 //
 // Two states: a code is already applied (show the confirmation + a way to
 // change it), or no code is applied yet (show the entry field).
-export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) {
+export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled, collapsible = false }) {
   const [value, setValue] = useState(referralCode || '')
   const [editing, setEditing] = useState(!referralCode)
+  // `collapsible` (the checkout offer): an empty coupon box sitting above the buy buttons invites people to leave and
+  // hunt for a code, so with no code applied it starts as a quiet "Have a code?" link and opens on click. A code that is
+  // already applied (or pre-filled from a ?ref= link) still shows its confirmation, and the Pricing page keeps the open field.
+  const [opened, setOpened] = useState(false)
   // Round 21: Apply / change / remove / Cancel swap the whole control for another one, which unmounts the button that held focus and
   // dropped a keyboard user on <body>. After one of those actions, focus goes to the control that replaces it: the "change" button once a
   // code is applied, the field when the box is back in editing mode. `actedAt` expires, so an unrelated later focus loss is never claimed.
@@ -100,6 +104,17 @@ export function ReferralCodeEntry({ referralCode, pricing, onApply, disabled }) 
   const invalidMessage = !invalid ? undefined : selfReferral
     ? "Partner codes can't be used on your own purchases — clear it to continue at the regular price."
     : "That code doesn't look right — check it and try again, or leave it blank."
+
+  if (collapsible && !referralCode && !opened) {
+    return (
+      <p className="mb-3 text-sm">
+        <button type="button" onClick={() => { acted(); setOpened(true) }} disabled={disabled}
+          className="text-blue-700 underline underline-offset-2 hover:text-blue-800 disabled:opacity-40 disabled:no-underline">
+          Have a code?
+        </button>
+      </p>
+    )
+  }
 
   return (
     <div className="mb-3 flex items-start gap-2 flex-wrap">
