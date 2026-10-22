@@ -1,0 +1,7 @@
+Health / owner alert: "migration NNNN was never recorded as applied"
+B1  The alert said "expects schema version 106; the database reports 106" under the subject "Database schema is behind the deployed code" and then told the owner to run every file ABOVE the
+    reported number - but the gap is BELOW it (a skipped file), so there was nothing to run and the alert kept coming. A ledger gap now has its own subject and body, and the message names
+    the file (e.g. 0085 (supabase/migrations/0085_partners_section4_round14.sql)) and says re-running it is safe.
+B2  The same alert was emailed every hourly cron tick (the throttle is 10 minutes). sendOwnerAlert takes opts.dedupeSeconds (default 10 minutes, never shorter, at most a week); the schema alert
+    uses one day. The dedupe key now includes the missing versions, so fixing one gap and hitting another is not silenced by the first. /healthz and the admin health view still report it every time.
+Database action for the 0085 case: run supabase/migrations/0085_partners_section4_round14.sql (idempotent: index if not exists + ledger row + monotonic schema_version).

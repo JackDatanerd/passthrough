@@ -93,7 +93,7 @@ async function checkSchema(supabase) {
         return { expected, actual, ok: false, ahead: false, detail: `could not read applied_migrations (${missing.error}) — apply migration 0082 and every one after it, in order` }
       if (missing.versions.length)
         return { expected, actual, ok: false, ahead: false, missing: missing.versions,
-          detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — it was skipped; apply it, then every migration after it, in order (the files from 0082 on can be re-run as a range; each one only ever moves schema_version forward)` }
+          detail: `the database reports migration ${actual} but migration${missing.versions.length > 1 ? 's' : ''} ${missing.versions.map(v => LEDGER_NAMES[v] ? `${String(v).padStart(4, '0')} (supabase/migrations/${LEDGER_NAMES[v]}.sql)` : String(v).padStart(4, '0')).join(', ')} ${missing.versions.length > 1 ? 'were' : 'was'} never recorded as applied — skipped, or run only partly; run ${missing.versions.length > 1 ? 'those files' : 'that file'} again (then every migration after ${missing.versions.length > 1 ? 'the first of them' : 'it'}, in order; the files from 0082 on can be re-run as a range, each one only ever moves schema_version forward)` }
     }
     const renamedNote = renamedDetail(renamed)
     if (actual > expected)

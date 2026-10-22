@@ -858,9 +858,9 @@ const ALERT_EMAIL_DEDUPE_SECONDS = 600
 const recentAlertEmails = new Map()   // digest -> ms of the last email this isolate sent
 const RECENT_ALERTS_MAX = 500
 
-async function emailedRecently(env, subject, message) {
+async function emailedRecently(env, subject, message, windowSeconds = ALERT_EMAIL_DEDUPE_SECONDS) {
   try {
-    const since = new Date(Date.now() - ALERT_EMAIL_DEDUPE_SECONDS * 1000).toISOString()
+    const since = new Date(Date.now() - windowSeconds * 1000).toISOString()
     const { data, error } = await getSupabase(env).from('alert_logs').select('created_at')
       .eq('subject', subject).eq('message', message).eq('emailed', true).gte('created_at', since).limit(1)
     if (error) throw error
@@ -871,13 +871,13 @@ async function emailedRecently(env, subject, message) {
   }
 }
 
-async function alertEmailAllowed(env, digest, subject, message) {
+async function alertEmailAllowed(env, digest, subject, message, windowSeconds = ALERT_EMAIL_DEDUPE_SECONDS) {
   const last = recentAlertEmails.get(digest)
-  if (last && Date.now() - last < ALERT_EMAIL_DEDUPE_SECONDS * 1000) return false
+  if (last && Date.now() - last < windowSeconds * 1000) return false
   const tryHit = typeof rateLimiter.tryHitQuota === 'function' ? rateLimiter.tryHitQuota : hitQuota
-  const slot = await tryHit(env, `rl:alert:${digest}`, 1, ALERT_EMAIL_DEDUPE_SECONDS)
+  const slot = await tryHit(env, `rl:alert:${digest}`, 1, windowSeconds)
   if (slot === false) return false
-  if (slot === null && await emailedRecently(env, subject, message)) return false
+  if (slot === null && await emailedRecently(env, subject, message, windowSeconds)) return false
   return true
 }
 
@@ -887,7 +887,11 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
   const dedupeKey = opts && opts.dedupeKey ? `|${String(opts.dedupeKey)}` : ''
   const subjectDigest = (await sha256(`${String(subject)}${dedupeKey}`)).slice(0, 32)
   const hasWebhook = !!webhookUrl(env)
-  const shouldNotify = (!!to || hasWebhook) && await alertEmailAllowed(env, subjectDigest, String(subject), String(message))
+  // A CONDITION that stays true until a person fixes it (a skipped migration) must not email every cron tick: the caller can stretch
+  // the throttle (default 10 minutes, at most a week). Everything else keeps the 10-minute window.
+  const windowSeconds = opts && Number(opts.dedupeSeconds) > 0
+    ? Math.min(Math.max(Math.floor(Number(opts.dedupeSeconds)), ALERT_EMAIL_DEDUPE_SECONDS), 7 * 86400) : ALERT_EMAIL_DEDUPE_SECONDS
+  const shouldNotify = (!!to || hasWebhook) && await alertEmailAllowed(env, subjectDigest, String(subject), String(message), windowSeconds)
   const shouldEmail = shouldNotify && !!to
   // Out-of-band copy (ALERT_WEBHOOK_URL) — independent of the email path, so a Resend outage cannot hide it.
   const webhookSent = shouldNotify && hasWebhook ? await postAlertWebhook(env, String(subject), String(message)) : false
@@ -907,10 +911,10 @@ async function sendOwnerAlert(env, subject, message, opts = {}) {
       // The dedupe slot was spent BEFORE the send. A send that failed reached nobody, so it must not
       // silence this alert for the next 10 minutes — exactly when the mail provider is the thing that
       // is down. Bounded, so a provider that keeps failing can't turn this into unlimited retries.
-      if (!webhookSent) await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)
+      if (!webhookSent) await refundQuota(env, `rl:alert:${subjectDigest}`, windowSeconds, 3)
     }
   } else if (shouldNotify && hasWebhook && !webhookSent) {
-    await refundQuota(env, `rl:alert:${subjectDigest}`, ALERT_EMAIL_DEDUPE_SECONDS, 3)   // nobody was told
+    await refundQuota(env, `rl:alert:${subjectDigest}`, windowSeconds, 3)   // nobody was told
   }
   try {
     const supabase = getSupabase(env)

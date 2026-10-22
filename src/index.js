@@ -545,10 +545,25 @@ async function healthSweep(event, env, ctx) {
         const schema = await checkSchema(supabase)
         if (!schema.ok) {
           console.error(`Schema check: expected ${schema.expected}, found ${schema.actual} — ${schema.detail}`)
-          await emailService.sendOwnerAlert(env, 'Database schema is behind the deployed code',
-            `This Worker expects schema version ${schema.expected}; the database reports ${schema.actual === null ? 'nothing' : schema.actual}.\n\n` +
-            `${schema.detail || ''}\n\nRun every file in supabase/migrations/ above the reported number, in order (DEPLOYMENT.md, section 2). ` +
-            'Features that need the missing migrations fail until then.', { dedupeKey: `schema:${schema.expected}:${schema.actual}` })
+          // Two different problems used to share one subject and one body. (1) The database is BEHIND the code: apply the files above
+          // the reported number. (2) The version numbers match but the ledger shows a migration BELOW them was never recorded - a
+          // skipped file: telling the owner to "run every file above the reported number" sent them to run nothing (there are none)
+          // while the alert kept coming. The text now says which case it is, and the alert repeats once a day, not every hourly tick
+          // (it stays true until a person acts; the cron heartbeat and /healthz still report it every time).
+          const gap = Array.isArray(schema.missing) && schema.missing.length > 0
+          const subject = gap ? 'A database migration was never recorded as applied' : 'Database schema is behind the deployed code'
+          const body = gap
+            ? `This Worker expects schema version ${schema.expected} and the database reports ${schema.actual}, so the version numbers match - ` +
+              'but the migration ledger has a gap, which means a migration in the middle was skipped.\n\n' +
+              `${schema.detail || ''}\n\nRe-running a skipped file is safe (each one is written to be re-runnable and only ever moves schema_version forward). ` +
+              'The alert stops as soon as the ledger shows it (DEPLOYMENT.md, section 2). Features that need the skipped migration fail until then.'
+            : `This Worker expects schema version ${schema.expected}; the database reports ${schema.actual === null ? 'nothing' : schema.actual}.\n\n` +
+              `${schema.detail || ''}\n\nRun every file in supabase/migrations/ above the reported number, in order (DEPLOYMENT.md, section 2). ` +
+              'Features that need the missing migrations fail until then.'
+          await emailService.sendOwnerAlert(env, subject, body, {
+            dedupeKey: `schema:${schema.expected}:${schema.actual}:${gap ? schema.missing.join(',') : ''}`,
+            dedupeSeconds: 24 * 3600
+          })
         }
       } catch (err) {
         console.error('Health sweep error:', err.message)
