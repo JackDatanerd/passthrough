@@ -17,6 +17,13 @@ const str = v => (typeof v === 'string' ? v.trim() : '')
 const BUZZ = wordsRegex(BUZZ_WORDS)
 const BAD_OPEN = new RegExp(`^(?:${BAD_OPENER_PHRASES.map(p => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})\\b`, 'i')
 
+// A whole-word match: the skill "R" is not "report" and "Go" is not "going".
+const mentions = (haystack, skill) => {
+  const t = String(skill || '').trim()
+  if (!t) return false
+  return new RegExp(`(?<![\\p{L}\\p{N}])${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\p{L}\\p{N}])`, 'iu').test(haystack)
+}
+
 function bulletsOf(r) {
   const out = []
   for (const e of listOf(r?.experience)) for (const b of listOf(e?.bullets)) if (str(b)) out.push(str(b))
@@ -44,7 +51,7 @@ function readerQuality(resume) {
   const skills = listOf(resume?.skills).map(str).filter(Boolean)
   if (skills.length) {
     const work = (bullets.join(' ') + ' ' + listOf(resume?.projects).map(p => `${str(p?.description)} ${listOf(p?.technologies).join(' ')}`).join(' ')).toLowerCase()
-    const shown = skills.filter(s => work.includes(s.toLowerCase())).length / skills.length
+    const shown = skills.filter(s => mentions(work, s)).length / skills.length
     score += 6 * shown                                                                   // skills shown in the work, not only listed
     if (skills.length > 28) score -= Math.min(8, (skills.length - 28) * 0.8)             // a wall of keywords
   }

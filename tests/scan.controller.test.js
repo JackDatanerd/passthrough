@@ -436,6 +436,35 @@ describe('downloadFile', () => {
   })
 })
 
+describe('downloadFile ?type=txt (plain text for portals that want a pasted resume)', () => {
+  const data = { name: 'Wanjiru Mwangi', experience: [{ title: 'Analyst', company: 'Acme', dates: '01/2020 to now', bullets: ['Built dashboards.'] }], skills: ['SQL', 'Python'] }
+  function setup(scan) {
+    const db = createFakeSupabase(q => (q.table === 'scans' ? { data: scan, error: null } : undefined))
+    return loadWithStubs('controllers/scan.controller.js', { 'config/supabase.js': { getSupabase: () => db } })
+  }
+  it('builds the text from the delivered data, with no stored file read', async () => {
+    t = setup({ id: 's1', user_id: 'u1', fix_purchased: true, resume_ats_path: 'ats-key', rewritten_resume_data: data })
+    const headers = {}
+    const ctx = { ...baseCtx({ query: { type: 'txt' }, env: { RESUMES_BUCKET: { get: async () => { throw new Error('no R2 read for txt') } } } }), header: (k, v) => { headers[k] = v } }
+    const res = await t.mod.downloadFile(ctx)
+    expect(res.rawBody).toContain('EXPERIENCE\nAnalyst - Acme | Jan 2020 – Present\n- Built dashboards.')
+    expect(res.rawBody).toContain('SKILLS\nSQL, Python')
+    expect(headers['Content-Type']).toMatch(/^text\/plain/)
+    expect(headers['Content-Disposition']).toMatch(/\.txt/)
+  })
+  it('is behind the same ownership and purchase checks as the other files', async () => {
+    t = setup({ id: 's1', user_id: 'someone-else', rewritten_resume_data: data })
+    expect((await t.mod.downloadFile(baseCtx({ query: { type: 'txt' } }))).status).toBe(403)
+    t.restore()
+    t = setup({ id: 's1', user_id: 'u1', fix_purchased: false, rewritten_resume_data: data })
+    expect((await t.mod.downloadFile(baseCtx({ query: { type: 'txt' } }))).status).toBe(403)
+  })
+  it('404s before delivery', async () => {
+    t = setup({ id: 's1', user_id: 'u1', fix_purchased: true, resume_ats_path: null, rewritten_resume_data: null })
+    expect((await t.mod.downloadFile(baseCtx({ query: { type: 'txt' } }))).status).toBe(404)
+  })
+})
+
 describe('getScanHistory', () => {
   function setup(rows, count = 0, over = {}) {
     const db = createFakeSupabase(q => {

@@ -63,4 +63,42 @@ function isAllowedRename(from, to, resumeText) {
   return ga !== undefined && ga === gb
 }
 
-module.exports = { isAllowedRename, squash, noSpace, versionsOf }
+
+// ── Acronym + expansion pairs ───────────────────────────────────────────────────────────────────────────────────────
+// An employer's ATS search matches the string a recruiter types - "SEO" or "Search Engine Optimization" - and a resume that carries
+// only one form is invisible to the other search. When the person's skills list holds one form of a pair below and the posting uses
+// either form, the skill is written as "Search Engine Optimization (SEO)". Nothing is added: both spellings name the same skill the
+// person already listed. A pair is written out only for terms with one unambiguous expansion (no "PM", "CMS", "AI").
+const ACRONYM_PAIRS = [
+  ['SEO', 'Search Engine Optimization'], ['SEM', 'Search Engine Marketing'], ['CRM', 'Customer Relationship Management'],
+  ['ML', 'Machine Learning'], ['NLP', 'Natural Language Processing'], ['UX', 'User Experience'], ['UI', 'User Interface'],
+  ['QA', 'Quality Assurance'], ['HR', 'Human Resources'], ['AWS', 'Amazon Web Services'], ['GCP', 'Google Cloud Platform'],
+  ['K8s', 'Kubernetes'], ['ERP', 'Enterprise Resource Planning'], ['KPI', 'Key Performance Indicators'],
+  ['ETL', 'Extract, Transform, Load'], ['OKR', 'Objectives and Key Results'], ['SaaS', 'Software as a Service'],
+]
+const pairKey = s => String(s || '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '')
+const wholeWord = (hay, term) => new RegExp(`(?<![\\p{L}\\p{N}])${String(term).replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+')}(?![\\p{L}\\p{N}])`, 'iu').test(hay)
+
+// skills: the person's skills list; jdText: the posting. Returns a new list (same order, one entry per pair, no duplicates).
+function pairAcronyms(skills, jdText) {
+  if (!Array.isArray(skills)) return skills
+  const jd = String(jdText || '')
+  const out = []
+  const done = new Set()
+  for (const sk of skills) {
+    if (typeof sk !== 'string') { out.push(sk); continue }
+    const k = pairKey(sk)
+    const pair = ACRONYM_PAIRS.find(([a, b]) => pairKey(a) === k || pairKey(b) === k)
+    if (!pair) { out.push(sk); continue }
+    const [short, long] = pair
+    if (done.has(short)) continue                                   // the other form was already merged into the first
+    // The posting must use one of the two forms; a skill the posting never mentions is left exactly as written.
+    if (!wholeWord(jd, short) && !wholeWord(jd, long)) { out.push(sk); continue }
+    done.add(short)
+    out.push(`${long} (${short})`)
+  }
+  // An entry that already reads "Long (SHORT)" in the input is kept as is by the loop above (its key matches neither form).
+  return out
+}
+
+module.exports = { pairAcronyms, ACRONYM_PAIRS, isAllowedRename, squash, noSpace, versionsOf }

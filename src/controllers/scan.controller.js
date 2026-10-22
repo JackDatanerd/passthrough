@@ -80,6 +80,7 @@ const pdfQa              = require('../lib/pdfQa')
 const { isSerifHeading } = require('../lib/typeface')
 const pdfService        = require('../services/pdf.service')
 const pdfTemplate        = require('../services/pdfTemplate.service')
+const { resumeToPlainText } = require('../lib/plainText')
 const docxService        = require('../services/docx.service')
 const emailService        = require('../services/email.service')
 const referralService      = require('../services/referral.service')
@@ -2135,8 +2136,16 @@ async function downloadFile(ctx) {
 
   const type     = ctx.req.query('type')
   // ROUND-2 AUDIT: any other value used to fall through to the PDF branch.
-  if (type !== 'ats' && type !== 'pdf')
-    return ctx.json({ success: false, message: 'type must be "ats" or "pdf".' }, 400)
+  if (type !== 'ats' && type !== 'pdf' && type !== 'txt')
+    return ctx.json({ success: false, message: 'type must be "ats", "pdf" or "txt".' }, 400)
+  // Plain text for portals that want a pasted resume: built from the delivered data, nothing stored (lib/plainText.js).
+  if (type === 'txt') {
+    const data = scan.rewrittenResumeData || scan.originalResumeData
+    if (!scan.resumeAtsPath || !data) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)
+    ctx.header('Content-Disposition', fileStems.disposition('resume', data.name, 'txt'))
+    ctx.header('Content-Type', 'text/plain; charset=utf-8')
+    return ctx.body(resumeToPlainText(data))
+  }
   const fileKey  = type === 'ats' ? scan.resumeAtsPath : scan.resumePdfPath
   const disposition = fileStems.disposition('resume', (scan.rewrittenResumeData || scan.originalResumeData)?.name, type === 'ats' ? 'docx' : 'pdf')
   if (!fileKey) return ctx.json({ success: false, message: 'File not ready yet.' }, 404)

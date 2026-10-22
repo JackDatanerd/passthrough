@@ -318,8 +318,8 @@ describe('skills and languages are not doubled either', () => {
   const rd = { name: 'A', skills: ['• SQL', '- Python', '* R', 'Excel'], languages: ['• English', '– Swahili'], experience: [{ title: 'E', company: 'X', bullets: ['b'] }] }
   it('strips a pasted glyph from every entry in the DOCX and the PDF template', async () => {
     const text = await extractText(await generateAtsDocx(rd, null), DOCX)
-    expect(text).toContain('SQL · Python · R · Excel')
-    expect(text).toContain('English · Swahili')
+    expect(text).toContain('SQL, Python, R, Excel')
+    expect(text).toContain('English, Swahili')
     const html = buildResumeHTML(rd, {}, null)
     expect(html).toContain('SQL &middot; Python &middot; R &middot; Excel')
     expect(html).toContain('English &middot; Swahili')
@@ -479,7 +479,9 @@ describe('the Word body copy takes the PDF\'s text colour', () => {
   it('headings, links and the muted dates keep their own colours', async () => {
     const { doc, styles } = await parts(await generateAtsDocx(FULL, null, { accent: '#B45309', text: '#451A03' }))
     expect(styles.match(/w:styleId="Heading2"[\s\S]*?<\/w:style>/)[0]).toMatch(/w:color w:val="B45309"/)
-    expect(doc).toMatch(/w:color w:val="0563C1"/)
+    // Links are set in the document's own ink (like the PDF's), not a fixed Word blue beside a palette accent.
+    expect(doc).not.toMatch(/0563C1/)
+    expect(doc).toMatch(/<w:hyperlink[\s\S]*?w:color w:val="451A03"/)
     expect(doc).toMatch(/w:color w:val="5B6470"/)
   })
 })

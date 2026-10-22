@@ -20,6 +20,61 @@ function yearsIn(text) {
 
 const isOngoing = text => ONGOING.test(String(text || '')) || /(?:19|20)\d{2}\s*[-–—]\s*$/.test(String(text || '').trim())
 
+
+// ── Month precision ──────────────────────────────────────────────────────────────────────────────────────────────
+// Years used to be counted as last year - first year, so "Jan 2020 - Dec 2022" read as 2 years (it is three) and "Jan 2022 -
+// Dec 2022" as 0. When a range names its months on both ends (or on its start and runs to Present) it is now measured in
+// months, end month included, and the total is floored to whole years - still never an overstatement. A range that names only
+// years keeps the year arithmetic it always had. Numeric months (06/2019, 2019-06) are read as the month names they stand for.
+const MONTH_RE = '(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\\.?'
+const monthOf = s => ['jan', 'feb', 'mar', 'apr', 'may', 'jun', 'jul', 'aug', 'sep', 'oct', 'nov', 'dec'].indexOf(String(s || '').slice(0, 3).toLowerCase())
+const MONTH_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+// 06/2019 and 2019-06 -> "Jun 2019" (only a real month 1-12, only beside a four-digit year).
+const numericMonthsToNames = t => String(t || '')
+  .replace(/\b(0?[1-9]|1[0-2])\s*[/.]\s*((?:19|20)\d{2})\b/g, (_, mm, y) => `${MONTH_ABBR[+mm - 1]} ${y}`)
+  .replace(/\b((?:19|20)\d{2})\s*[/-]\s*(0[1-9]|1[0-2])(?!\d)/g, (_, y, mm) => `${MONTH_ABBR[+mm - 1]} ${y}`)
+const POINT = `(?:${MONTH_RE}\\s+)?((?:19|20)\\d{2})`
+const SPAN_RE = new RegExp(`\\b${POINT}\\s*(?:-|–|—|to|until|till)\\s*(?:(?:${MONTH_RE})\\s+)?((?:19|20)\\d{2}(?!\\d)|\\d{2}(?!\\d)|present|current|currently|now|today|ongoing|date)`, 'gi')
+
+// Every range in a text as { startYear, endYear, months: [from, to) | null }. `months` is set only when it is month-precise.
+function spansIn(text, now = new Date()) {
+  const thisYear = now.getUTCFullYear(), thisMonth = now.getUTCMonth()
+  const out = []
+  const t = numericMonthsToNames(text)
+  SPAN_RE.lastIndex = 0
+  for (const m of t.matchAll(SPAN_RE)) {
+    const sm = m[1] ? monthOf(m[1]) : null, sy = +m[2]
+    const em = m[3] ? monthOf(m[3]) : null
+    const tail = String(m[4]).toLowerCase()
+    const open = !/^\d/.test(tail)
+    let ey
+    if (/^\d{4}$/.test(tail)) ey = +tail
+    else if (/^\d{2}$/.test(tail)) ey = +(m[2].slice(0, 2) + tail)
+    else ey = thisYear
+    if (sy > thisYear || ey < sy) continue
+    ey = Math.min(ey, thisYear)
+    let months = null
+    if (sm !== null && sm >= 0 && ((em !== null && em >= 0) || open)) {
+      const from = sy * 12 + sm
+      // End month included; an open range runs to the current month; a month in the future is capped at now.
+      const to = open ? thisYear * 12 + thisMonth + 1 : Math.min(ey * 12 + em + 1, thisYear * 12 + thisMonth + 1)
+      if (to > from) months = [from, to]
+    }
+    out.push({ startYear: sy, endYear: ey, months })
+  }
+  return out
+}
+
+// Union of spans (overlaps counted once, gaps not at all), in months, floored to whole years.
+function workedYears(spans) {
+  const iv = spans.map(s => (s.months ? s.months : [s.startYear * 12, s.endYear * 12])).filter(([a, b]) => b >= a).sort((x, y) => x[0] - y[0])
+  if (!iv.length) return null
+  let total = 0, [cs, ce] = iv[0]
+  for (const [a, b] of iv.slice(1)) { if (a <= ce) ce = Math.max(ce, b); else { total += ce - cs; cs = a; ce = b } }
+  total += ce - cs
+  return Math.floor(total / 12)
+}
+
 // -> { years, firstYear, lastYear, ongoing, roleYears, span } ; years is null when the jobs carry no usable dates.
 // `years` is the time actually WORKED: the job periods are merged (overlapping or touching periods count once, a gap
 // counts for nothing). It used to be last end - first start, so 2005-2007 plus 2020-Present read as 21 years of
@@ -30,7 +85,7 @@ function careerFacts(resumeData, now = new Date()) {
   const jobs = Array.isArray(resumeData?.experience) ? resumeData.experience : []
   let first = null, last = null, ongoing = false
   const roleYears = []
-  const periods = []
+  const spans = []
   for (const job of jobs) {
     const ys = yearsIn(job?.dates).filter(y => y <= thisYear)
     const open = isOngoing(job?.dates)
@@ -40,17 +95,15 @@ function careerFacts(resumeData, now = new Date()) {
     const end = open ? thisYear : Math.max(...ys)
     if (first === null || start < first) first = start
     if (last === null || end > last) last = end
-    if (end >= start) { roleYears.push(end - start); periods.push([start, end]) }
+    if (end >= start) {
+      roleYears.push(end - start)
+      // A month-precise range is measured in months; anything else keeps the year arithmetic.
+      const precise = spansIn(job?.dates, now).find(sp => sp.months)
+      spans.push(precise || { startYear: start, endYear: end, months: null })
+    }
   }
   if (first === null) return { years: null, firstYear: null, lastYear: null, ongoing, roleYears, span: null }
-  periods.sort((a, b) => a[0] - b[0] || a[1] - b[1])
-  let worked = 0, curStart = null, curEnd = null
-  for (const [a, b] of periods) {
-    if (curEnd === null || a > curEnd) { if (curEnd !== null) worked += curEnd - curStart; curStart = a; curEnd = b }
-    else if (b > curEnd) curEnd = b
-  }
-  if (curEnd !== null) worked += curEnd - curStart
-  return { years: Math.max(0, worked), firstYear: first, lastYear: last, ongoing, roleYears, span: Math.max(0, last - first) }
+  return { years: Math.max(0, workedYears(spans) ?? 0), firstYear: first, lastYear: last, ongoing, roleYears, span: Math.max(0, last - first) }
 }
 
 const WORD_NUM = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, twenty: 20, thirty: 30 }
@@ -96,39 +149,15 @@ function tenureClaimOk(n, facts, sourceNumbers) {
 // empty quote was accepted as proof. This counts it instead: every date range in the text that is not on an
 // education line, merged into a union of year intervals (overlapping jobs count once, gaps are not counted), with an
 // open range ending at the current year. Year granularity only; null when the text carries no usable range.
-const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?'
-const RANGE_RE = new RegExp(
-  `\\b(?:${MONTH}\\s+)?((?:19|20)\\d{2})\\s*(?:-|–|—|to|until|till)\\s*(?:${MONTH}\\s+)?((?:19|20)\\d{2}(?!\\d)|\\d{2}(?!\\d)|present|current|currently|now|today|ongoing|date)`,
-  'gi'
-)
 const EDU_LINE = /\b(?:universit(?:y|é|à)|college|school|academy|institute|bachelor|master|msc|bsc|b\.?sc|m\.?sc|mba|phd|ph\.d|diploma|degree|gpa|graduat\w*|a-levels?|gcses?|high school|coursework|dissertation|thesis)\b/i
 
 function yearsFromText(text, now = new Date()) {
-  const thisYear = now.getUTCFullYear()
   const spans = []
   for (const line of String(text || '').split(/\r?\n/)) {
     if (EDU_LINE.test(line)) continue
-    RANGE_RE.lastIndex = 0
-    for (const m of line.matchAll(RANGE_RE)) {
-      const start = +m[1]
-      let end
-      const tail = m[2].toLowerCase()
-      if (/^\d{4}$/.test(tail)) end = +tail
-      else if (/^\d{2}$/.test(tail)) end = +(m[1].slice(0, 2) + tail)
-      else end = thisYear
-      if (start > thisYear || end < start) continue
-      spans.push([start, Math.min(end, thisYear)])
-    }
+    spans.push(...spansIn(line, now))
   }
-  if (!spans.length) return null
-  spans.sort((a, b) => a[0] - b[0])
-  let total = 0, [curStart, curEnd] = spans[0]
-  for (const [s, e] of spans.slice(1)) {
-    if (s <= curEnd) curEnd = Math.max(curEnd, e)
-    else { total += curEnd - curStart; curStart = s; curEnd = e }
-  }
-  total += curEnd - curStart
-  return total
+  return workedYears(spans)
 }
 
 module.exports = { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk, yearsIn, yearsFromText }

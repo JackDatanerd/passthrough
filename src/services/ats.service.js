@@ -947,7 +947,9 @@ function bulletLinesOutsideListSections(text, listRe = LIST_SECTION_RE) {
 // rewrite as feedback by describeWeakAreas, so the model is told about weak openers, repeated verbs, filler words and
 // run-on bullets instead of only about missing keywords.
 const WEAK_OPENER = /^(?:responsible for|responsibilities included|helped|assisted with|assisted in|worked on|worked with|tasked with|duties (?:included|include)|in charge of|participated in|involved in|was responsible|exposure to)\b/i
-const BUZZWORDS = /\b(?:team player|hard[- ]?working|results[- ]driven|self[- ]starter|go[- ]getter|detail[- ]oriented|passionate|dynamic|synergy|proven track record|think outside the box|utiliz(?:e|ed|ing)|leverag(?:e|ed|ing))\b/gi
+// The same list the rewrite guard enforces (prompts/constants.js), so the feedback the writer hears and the rule it is held to agree.
+const { BUZZ_WORDS, BULLET_WORDS, wordsRegex } = require('../prompts/constants')
+const BUZZWORDS = wordsRegex(BUZZ_WORDS, 'gi')
 const { FIRST_PERSON } = require('../lib/firstPerson')
 function craftSignals(bullets, bulletText, fullText) {
   const texts = bullets.map(bulletText)
@@ -958,7 +960,7 @@ function craftSignals(bullets, bulletText, fullText) {
   return {
     weakOpeners: texts.filter(t => WEAK_OPENER.test(t)).length,
     repeatedOpeners: repeated.slice(0, 4),
-    longBullets: texts.filter(t => t.split(/\s+/).length > 35).length,
+    longBullets: texts.filter(t => t.split(/\s+/).length > BULLET_WORDS.guard).length,
     buzzwords: [...new Set((String(fullText || '').match(BUZZWORDS) || []).map(w => w.toLowerCase()))].slice(0, 6),
     firstPerson: texts.filter(t => FIRST_PERSON.test(t)).length
   }
@@ -1258,7 +1260,7 @@ function describeWeakAreas(scoreResult) {
   if (craft) {
     if (craft.weakOpeners > 0) notes.push(`${craft.weakOpeners} bullet(s) open with a weak phrase ("Responsible for", "Helped", "Worked on") — rewrite each to open with a specific action verb`)
     if (craft.repeatedOpeners?.length) notes.push(`too many bullets start with the same word (${craft.repeatedOpeners.join(', ')}) — vary the verbs`)
-    if (craft.longBullets > 0) notes.push(`${craft.longBullets} bullet(s) run over 35 words — tighten each to one clear sentence`)
+    if (craft.longBullets > 0) notes.push(`${craft.longBullets} bullet(s) run over ${BULLET_WORDS.prompt} words — tighten each to one clear sentence`)
     if (craft.buzzwords?.length) notes.push(`filler words a reader skips: ${craft.buzzwords.join(', ')} — replace with something specific the person did`)
     if (craft.firstPerson > 0) notes.push('some bullets use "I" / "my" — resumes are written without first person')
   }

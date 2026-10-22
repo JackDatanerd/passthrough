@@ -5,6 +5,7 @@ const { stripBullet } = require('../lib/bulletText')
 const { unligature } = require('../lib/textClean')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { letterDensityFor } = require('../lib/docFit')
+const { canonDates } = require('../lib/dateFormat')
 
 // PARAMETER: verificationUrl (full URL from badgeService.buildVerificationUrl)
 // NOT verificationCode — avoids hardcoded domain
@@ -63,7 +64,10 @@ const BULLET_INDENT = { left: 400, hanging: 260 }   // the glyph sits at 140, th
 // name, LinkedIn handle, portfolio URL, employer names and skills (jargon) all came out marked as errors. `noProof` exempts a run from
 // spelling and grammar checking; it is set on names, addresses, links, title lines, skills and the like - never on prose (summary, bullets,
 // details), so the applicant still gets real typo help where it matters.
-const linkRun = (text, size = 18) => new TextRun({ text, size, color: '0563C1', underline: {}, noProof: true })
+// Links are set in the document's ink (underlined, so they still read as links), like the PDF's: a hard-coded Word blue beside a wine or
+// teal accent looked like two designs in one file. A document with no usable ink keeps the conventional blue.
+const LINK_BLUE = '0563C1'
+const linkRun = (text, size = 18, color = LINK_BLUE) => new TextRun({ text, size, color, underline: {}, noProof: true })
 const plainRun = (text, size) => new TextRun({ text, size, noProof: true })
 
 // The document language, so Word does not judge British spelling ("optimise", "honours") by US rules or the reverse: the same paper
@@ -73,14 +77,14 @@ const langOf = paper => (paper === 'a4' ? 'en-GB' : 'en-US')
 // A contact detail run: a real link where it plainly is one (an address, a profile URL, a phone number). Word does not
 // turn typed URLs into links when it opens a file, so plain text meant the profile links on a delivered resume could not
 // be clicked.
-function contactRuns(parts, size) {
+function contactRuns(parts, size, linkInk) {
   const runs = []
   parts.forEach((part, i) => {
     const p = typeof part === 'string' ? part : part.text
     if (i > 0) runs.push(plainRun(' | ', size))
     // The location is never a link: "St.Louis" is a place, not a host (it came out as https://St.Louis).
     const href = part && part.link === false ? null : hrefFor(p, { phone: true })
-    runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p, size)] }) : plainRun(p, size))
+    runs.push(href ? new ExternalHyperlink({ link: href, children: [linkRun(p, size, linkInk)] }) : plainRun(p, size))
   })
   return runs
 }
@@ -106,6 +110,7 @@ function buildStyles(d, color, headFont = 'Calibri', bodyColor, lang = 'en-US') 
 async function generateAtsDocx(resumeData, verificationUrl, { verified = true, paper, accent, serif = false, text: bodyText } = {}) {
   const color = accentHex(accent)
   const bodyColor = textHex(bodyText)
+  const linkInk = bodyColor || LINK_BLUE
   const headFont = headingFontOf(serif)
   resumeData = xmlSafe(resumeData) || {}
   verificationUrl = xmlSafe(verificationUrl)
@@ -142,14 +147,14 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   // wrap awkwardly). Omitted entirely (not just left blank) when there's no verification link for this tier — see
   // FIX_PLAIN in scan.controller.js's generateFix. The label stays plain text so it extracts as before.
   rows.forEach((row, ri) => children.push(new Paragraph({
-    spacing: { after: ri < rows.length - 1 || verificationUrl ? 20 : 60 }, children: contactRuns(row, d.small),
+    spacing: { after: ri < rows.length - 1 || verificationUrl ? 20 : 60 }, children: contactRuns(row, d.small, linkInk),
   })))
   if (verificationUrl) {
     const label = `${verified ? 'Passthrough Verified' : 'Passthrough Scan Report'}: `
     const href = hrefFor(verificationUrl)
     children.push(new Paragraph({
       spacing: { after: 60 },
-      children: [plainRun(label, d.small), href ? new ExternalHyperlink({ link: href, children: [linkRun(verificationUrl, d.small)] }) : plainRun(verificationUrl, d.small)],
+      children: [plainRun(label, d.small), href ? new ExternalHyperlink({ link: href, children: [linkRun(verificationUrl, d.small, linkInk)] }) : plainRun(verificationUrl, d.small)],
     }))
   }
 
@@ -167,7 +172,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
       // job.company/job.dates may legitimately be null — Claude is instructed (see claude.service.js) to leave ambiguous
       // fields null rather than guess. Build from filtered, joined parts so the literal text "null" can never reach a
       // paying customer's resume (same pattern resume.parser.js's serializeResumeData uses).
-      out.push(titleRow([job.title, job.company, job.location].filter(Boolean).join(' — '), job.dates, d.jobGap))
+      out.push(titleRow([job.title, job.company, job.location].filter(Boolean).join(' — '), canonDates(job.dates), d.jobGap))
       for (const b of (job.bullets || [])) out.push(bullet(b))
     }
   }
@@ -176,14 +181,14 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     const out = sec.education
     out.push(heading('EDUCATION'))
     for (const e of resumeData.education) {
-      out.push(titleRow([e.degree, e.institution].filter(Boolean).join(' — '), e.dates, d.entryGap))
+      out.push(titleRow([e.degree, e.institution].filter(Boolean).join(' — '), canonDates(e.dates), d.entryGap))
       if (e.details) out.push(plain(e.details))
     }
   }
 
   if (resumeData.skills?.length) {
     sec.skills.push(heading('SKILLS'))
-    sec.skills.push(plain(resumeData.skills.map(stripBullet).filter(x => String(x).trim()).join(' · '), {}, { noProof: true }))
+    sec.skills.push(plain(resumeData.skills.map(stripBullet).filter(x => String(x).trim()).join(', '), {}, { noProof: true }))
   }
 
   if (resumeData.certifications?.length) {
@@ -203,7 +208,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
         const href = hrefFor(p.link)
         out.push(new Paragraph({
           indent: { left: BULLET_INDENT.left },
-          children: [href ? new ExternalHyperlink({ link: href, children: [linkRun(p.link, d.body - 1)] }) : new TextRun({ text: p.link, size: d.body - 1, color: MUTED, noProof: true })],
+          children: [href ? new ExternalHyperlink({ link: href, children: [linkRun(p.link, d.body - 1, linkInk)] }) : new TextRun({ text: p.link, size: d.body - 1, color: MUTED, noProof: true })],
         }))
       }
     }
@@ -215,7 +220,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     const out = sec.volunteer
     out.push(heading('VOLUNTEER EXPERIENCE'))
     for (const v of resumeData.volunteer) {
-      out.push(titleRow([v.role, v.organization].filter(Boolean).join(' — '), v.dates, d.jobGap))
+      out.push(titleRow([v.role, v.organization].filter(Boolean).join(' — '), canonDates(v.dates), d.jobGap))
       for (const b of (v.bullets || [])) out.push(bullet(b))
     }
   }
@@ -226,7 +231,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
   }
   if (resumeData.languages?.length) {
     sec.languages.push(heading('LANGUAGES'))
-    sec.languages.push(plain(resumeData.languages.map(stripBullet).filter(x => String(x).trim()).join(' · '), {}, { noProof: true }))
+    sec.languages.push(plain(resumeData.languages.map(stripBullet).filter(x => String(x).trim()).join(', '), {}, { noProof: true }))
   }
 
   // Section order. With job history: Experience > Projects > Education (the usual US/UK order). Without any (a student,
@@ -249,8 +254,8 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
     // / document inspector / ATS import.
     title:   resumeData.name ? `${resumeData.name} — Resume` : 'Resume',
     creator: resumeData.name || 'Passthrough',
-    lastModifiedBy: 'Passthrough',
-    description: 'ATS-friendly resume',
+    // What a recruiter sees in the file's properties: the applicant, not a tool name or a marketing line.
+    lastModifiedBy: resumeData.name || 'Passthrough',
     styles: buildStyles(d, color, headFont, bodyColor, langOf(paper)),
     sections: [{
       // A running footer on every page AFTER the first ("Jane Doe · Page 2 of 2"): printed pages of a two-page resume can
@@ -279,6 +284,7 @@ async function generateAtsDocx(resumeData, verificationUrl, { verified = true, p
 async function generateCoverLetterDocx(text, name, { contact = null, date = null, paper, accent, serif = false, text: bodyText, density } = {}) {
   const color = accentHex(accent)
   const bodyColor = textHex(bodyText)
+  const linkInk = bodyColor || LINK_BLUE
   const headFont = headingFontOf(serif)
   const body = xmlSafe(String(text || ''))
   const blocks = body.split(/\n\s*\n/).map(b => b.trim()).filter(Boolean)
@@ -293,7 +299,7 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   if (who) head.push(new Paragraph({ spacing: { after: rows.length ? 40 : 280 }, border: rows.length ? undefined : rule, children: [new TextRun({ text: who, bold: true, size: d.name, color, font: headFont, noProof: true })] }))
   rows.forEach((row, ri) => {
     const last = ri === rows.length - 1
-    head.push(new Paragraph({ spacing: { after: last ? 280 : 20 }, border: last ? rule : undefined, children: contactRuns(row, d.small) }))
+    head.push(new Paragraph({ spacing: { after: last ? 280 : 20 }, border: last ? rule : undefined, children: contactRuns(row, d.small, linkInk) }))
   })
   if (date) head.push(new Paragraph({ spacing: { after: 240 }, children: [new TextRun({ text: xmlSafe(String(date)) })] }))
   // Just over a page -> a little tighter (lib/docFit.js); a clearly longer letter is left alone.
@@ -306,7 +312,7 @@ async function generateCoverLetterDocx(text, name, { contact = null, date = null
   const doc = new Document({
     title: who ? `${who} — Cover letter` : 'Cover letter',
     creator: who || 'Passthrough',
-    lastModifiedBy: 'Passthrough',
+    lastModifiedBy: who || 'Passthrough',
     styles: buildStyles({ ...d, body: compact ? 21 : 22 }, color, headFont, bodyColor, langOf(paper)),
     sections: [{ properties: { page: { size, margin: compact ? { top: 1000, bottom: 1000, left: 1150, right: 1150 } : { top: 1200, bottom: 1200, left: 1300, right: 1300 } } }, children }],
   })

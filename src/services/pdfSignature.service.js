@@ -21,6 +21,7 @@ const { densityFor, letterDensityFor, estimateLoad, capacityFor, airinessFor } =
 const { stripBullet } = require('../lib/bulletText')
 const { contactRows, contactItems } = require('../lib/contactLayout')
 const { FONT_FACE_CSS } = require('../lib/embeddedFonts')
+const { canonDates } = require('../lib/dateFormat')
 
 // The credential's check is DRAWN (U+2713 is in neither Arial nor Liberation Sans and printed as an empty box, and it keeps a stray
 // symbol out of the text layer).
@@ -73,7 +74,7 @@ h1 { line-height: 1.05; letter-spacing: -.3pt }
 h1::after { content: ""; display: block; width: 38pt; height: 3.5pt; background: ${P}; margin-top: 7pt; border-radius: 2pt }
 .seal { background: ${c.tint}; border: 0; border-radius: 99pt; padding: 5pt 11pt }
 h2 { font-size: ${c.h2 + 3}pt; letter-spacing: .1pt; text-transform: none; padding-bottom: 0 }
-.entry .org { font-style: italic }`
+`
     default: return `
 .top { padding-bottom: 8pt; border-bottom: .75pt solid ${rule} }
 .seal { border-radius: 4pt }
@@ -114,7 +115,7 @@ h1 { order: 1; flex: 1 1 auto; min-width: 0; font-family: ${stack.heading}; font
 .seal { order: 2; flex: none; display: flex; flex-direction: column; gap: 1.5pt; text-align: right; padding: 5pt 9pt 5pt; border: .9pt solid ${P}; color: ${P}; max-width: 62mm; margin-bottom: ${sp(4)}pt }
 .contact { order: 3; flex: 0 0 100%; display: flex; flex-wrap: wrap; font-size: ${Math.max(round(bPt - 1.2, 1), 8.5)}pt; color: ${palette.text}; margin: 0 0 1.5pt }
 .seal .t { font-size: 8.5pt; font-weight: 700; letter-spacing: .7pt; text-transform: uppercase; white-space: nowrap }
-.seal .u { font-size: 7pt; color: #4B5563; letter-spacing: .1pt; white-space: nowrap }
+.seal .u { font-size: 7.5pt; color: #4B5563; letter-spacing: .1pt; white-space: nowrap }
 .seal.plain { border-color: #9CA3AF; color: #4B5563; background: none }
 .ck { width: 9pt; height: 9pt; vertical-align: -1pt; margin-right: 3pt }
 
@@ -177,7 +178,7 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
   // role (bold) / organisation (ink colour) · location (muted) / dates (right). DOM order is role, organisation, dates - the order
   // a parser reads "Title, Company, dates" in - and CSS moves the dates up beside the role.
   const entryHead = (role, org, loc, dates) => {
-    const a = str(role), b = str(org), l = str(loc), t = str(dates)
+    const a = str(role), b = str(org), l = str(loc), t = canonDates(str(dates))
     const lead = a || b, sub = a ? b : ''
     const second = [sub && esc(sub), l && `<span class="loc">${sub ? ' &middot; ' : ''}${esc(l)}</span>`].filter(Boolean).join('')
     if (!lead && !t) return ''
@@ -199,7 +200,7 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
   }).join('')
 
   const skills = list(d.skills).map(str).map(stripBullet).map(str).filter(Boolean)
-  const skillsHtml = skills.length ? `<p class="skills">${skills.map(esc).join('<span class="dot"> &middot; </span>')}</p>` : ''
+  const skillsHtml = skills.length ? `<p class="skills">${skills.map(esc).join(', ')}</p>` : ''
 
   const projects = list(d.projects).map(p => {
     const name = str(p?.name), desc = str(p?.description), link = str(p?.link)
@@ -218,7 +219,7 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
   }).join('')
 
   const languages = list(d.languages).map(str).map(stripBullet).map(str).filter(Boolean)
-  const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join('<span class="dot"> &middot; </span>')}</p>` : ''
+  const languagesHtml = languages.length ? `<p class="skills">${languages.map(esc).join(', ')}</p>` : ''
   const certs = bullets(list(d.certifications).map(c => stripBullet(str(c))))
 
   // No job history (a student, a career changer, a from-scratch resume): Education then Projects lead. Same rule as the DOCX.
@@ -232,7 +233,7 @@ function buildSignatureResumeHTML(data, designTokens, verificationUrl, { verifie
 
   const css = styles({ palette, fonts, stack, paper, preset, bPt, f, compact, margin: '17mm', lineHeight, foot: footerOf(h, d.name) })
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>
+<html lang="${paper.key === 'a4' ? 'en-GB' : 'en-US'}"><head><meta charset="utf-8"><title>${esc(d.name || 'Resume')}</title>
 <style>
 ${css}
 </style></head><body><div class="page">
@@ -257,7 +258,7 @@ function buildSignatureCoverLetterHTML(text, data, designTokens, { date = null }
   const body = blocks.map(b => `<p class="block">${b.split('\n').map(l => esc(l.trim())).join('<br>')}</p>`).join('')
   const css = styles({ palette, fonts, stack, paper, preset, bPt, f: 1, compact, margin: '22mm', lineHeight: compact ? 1.45 : 1.58, foot: footerOf(h, '') })
   return `<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8"><title>${esc(d.name ? `${d.name} - Cover letter` : 'Cover letter')}</title>
+<html lang="${paper.key === 'a4' ? 'en-GB' : 'en-US'}"><head><meta charset="utf-8"><title>${esc(d.name ? `${d.name} - Cover letter` : 'Cover letter')}</title>
 <style>
 ${css}
 @page :first { @bottom-center { content: none } }

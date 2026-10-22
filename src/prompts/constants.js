@@ -24,12 +24,22 @@ const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // like are technical terms and correct resume wording (Scan/ATS round 12). Every place that checks the buzzword list goes
 // through here, so the exception applies to the rewrite guard and the letter guard alike.
 const DYNAMIC_TECHNICAL = 'pricing|programming|content|range|routing|typing|allocation|analysis|web|dns|memory|data|dashboards?|forms?|pages?|reports?|schema|systems?|scaling|sql|languages?|libraries|linking|simulation|modeling|modelling|ads?|creative|signage|rendering|provisioning|queries|query|tables?|views?|workflows?'
-const buzzAlternation = list => list.map(w => (w === 'dynamic' ? `dynamic(?!\\s+(?:${DYNAMIC_TECHNICAL}))` : esc(w))).join('|')
+// "leverage" is a buzzword as a verb for "use" ("leveraged my skills"), and a core term of art in finance ("leveraged buyout",
+// "leveraged finance", "leverage ratio", "financial leverage"): a banned-word rule must not strip the keyword a finance posting
+// asks for. The family is exempt only when a finance noun follows it or a finance adjective precedes it.
+const LEVERAGE_TERM_AFTER = 'buyouts?|finance|financing|loans?|lending|ratios?|facilit(?:y|ies)|recapitali[sz]ations?|positions?|funds?|etfs?|credit|debt|transactions?|deals?|structures?|returns?|multiples?|covenants?|lbos?'
+const LEVERAGE_TERM_BEFORE = 'financial|operating|debt|net|high|low|negative|positive'
+const isLeverage = w => /^leverag(?:e|ed|es|ing)$/.test(w)
+const buzzAlternation = list => list.map(w => {
+  if (w === 'dynamic') return `dynamic(?!\\s+(?:${DYNAMIC_TECHNICAL}))`
+  if (isLeverage(w)) return `(?<!\\b(?:${LEVERAGE_TERM_BEFORE})\\s)${esc(w)}(?!\\s+(?:${LEVERAGE_TERM_AFTER})\\b)`
+  return esc(w)
+}).join('|')
 const wordsRegex = (list, flags = 'i') => new RegExp(`\\b(?:${buzzAlternation(list)})\\b`, flags)
 
 // Per-prompt versions, so a change in one prompt can be told apart from a change in another in the interview-outcome
 // numbers (scans.prompt_version / scans.letter_prompt_version, migration 0094). Bump the one you changed.
-const PROMPT_VERSIONS = { score: 4, rewrite: 5, extract: 4, letter: 5 }
+const PROMPT_VERSIONS = { score: 4, rewrite: 6, extract: 4, letter: 5 }
 const FIX_PROMPT_VERSION = `docgen-rewrite${PROMPT_VERSIONS.rewrite}.score${PROMPT_VERSIONS.score}.extract${PROMPT_VERSIONS.extract}`
 const LETTER_PROMPT_VERSION = `docgen-letter${PROMPT_VERSIONS.letter}`
 

@@ -2,6 +2,7 @@
 // function takes `env` (the Worker's bindings object) as its first parameter
 // instead of reading ANTHROPIC_API_KEY/ANTHROPIC_MODEL from a global.
 
+const { pairAcronyms } = require('../lib/skillAliases')
 const { careerFacts, tenureClaims, withoutTenureClaims, tenureClaimOk } = require('../lib/careerFacts')
 const { isUkSpelling } = require('./design.service')
 const { SCORE_SYSTEM, REQUIREMENTS_SYSTEM, buildScoreUser, buildRequirementsUser } = require('../prompts/score')
@@ -70,6 +71,11 @@ const LONG_CALL_TIMEOUT_MS = 90000
 // that keeps a waitUntil() job under its 30s cap, the 90s queue budget), it only
 // uses what is left of it. Our own timeout is NOT retried — a call that already
 // burned its whole budget has nothing left to retry with.
+// Sampling temperature per job. Scoring was already 0. Extraction and OCR are verbatim copying (nothing to be creative about), the rewrite
+// is held to guards that reject invented facts (low, but not 0: a retry must be able to word a bullet differently), the letter needs a
+// natural voice. Left unset these ran at the API default of 1.0, which only adds guard trips and paid retries.
+const REWRITE_TEMPERATURE = 0.3
+const LETTER_TEMPERATURE = 0.5
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504, 529])
 const MAX_RETRY_DELAY_MS = 3000
 const sleep = ms => new Promise(r => setTimeout(r, ms))
@@ -437,7 +443,7 @@ async function parseResumeStructure(env, rawText) {
     // for a full 7,000+ character resume, so long resumes came back
     // RESPONSE_TRUNCATED and the paid fix (or credential) failed outright.
     6000,
-    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'structure' }
+    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'structure', temperature: 0 }
   )
   const parsed = parseJsonResult(result, 'parseResumeStructure')
   if (!parsed.success) return parsed
@@ -467,7 +473,7 @@ async function extractTextFromPdf(env, bytes) {
       { type: 'text', text: 'Transcribe this resume.' }
     ],
     6000,
-    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'ocr' }
+    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'ocr', temperature: 0 }
   )
   if (!result.success) return { success: false, text: '', error: result.error }
   // Round 5: a transcription cut off by the token cap used to be scored, structured and (paid) delivered as if it were the
@@ -511,7 +517,7 @@ async function structureFreeformText(env, rawText, opts = {}) {
     // (no 30s waitUntil cap), so it passes a longer one.
     // 9000: every bullet now also carries a source span, which adds roughly a third to the JSON.
     9000,
-    { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'structure_freetext' }
+    { ...(opts.timeoutMs ? { timeoutMs: opts.timeoutMs } : {}), label: 'structure_freetext', temperature: 0 }
   )
   const parsed = parseJsonResult(result, 'structureFreeformText')
   if (!parsed.success) return parsed
@@ -666,7 +672,7 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
     // Full resume JSON + quantification prompts. Raised from 4500 with the
     // timeout above — see LONG_CALL_TIMEOUT_MS.
     7000,
-    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'rewrite', stableSystemChars: REWRITE_SYSTEM.length }
+    { timeoutMs: LONG_CALL_TIMEOUT_MS, label: 'rewrite', stableSystemChars: REWRITE_SYSTEM.length, temperature: REWRITE_TEMPERATURE }
   )
   if (!result.success) return result
   // CRITICAL: result.data is a raw string — must parse before use as object
@@ -730,6 +736,8 @@ async function rewriteResumeContent(env, resumeData, jdText, scoreFeedback = nul
     return { success: false, data: null, error: 'FABRICATION_DETECTED', detail: claimProblems.slice(0, 6) }
   }
 
+  // Last step, after every guard: skills the posting names in the other spelling are written as "Long (SHORT)" (lib/skillAliases.js).
+  if (Array.isArray(rewritten.skills)) rewritten.skills = pairAcronyms(rewritten.skills, jdText)
   return { success: true, data: rewritten, quantificationOpportunities, error: null }
 }
 
@@ -1459,7 +1467,7 @@ async function generateCoverLetter(env, resumeData, jdText, opts = {}) {
       `<target>${targetBits.join(' | ')}</target>\n<application_details>\n${detailLines.join('\n') || '(none given)'}\n</application_details>\n<strongest_matches>\n${strongMatches.join('\n') || '(none)'}\n</strongest_matches>\n<unproven_needs>\n${unprovenNeeds.join('\n') || '(none)'}\n</unproven_needs>\n` +
       `<resume_data>\n${jsonForPrompt(resumeData)}\n</resume_data>\n\n<job_description>\n${stripPromptTags(jdText)}\n</job_description>${feedback}`,
       1400,
-      { timeoutMs: Math.max(20000, Math.min(LONG_CALL_TIMEOUT_MS, left)), label: 'cover_letter', stableSystemChars: letterBase.length }
+      { timeoutMs: Math.max(20000, Math.min(LONG_CALL_TIMEOUT_MS, left)), label: 'cover_letter', stableSystemChars: letterBase.length, temperature: LETTER_TEMPERATURE }
     )
     if (!result.success) return result
     if (result.stopReason === 'max_tokens') return { success: false, data: null, error: 'RESPONSE_TRUNCATED' }

@@ -699,7 +699,7 @@ export default function ScanResult() {
     try {
       const res = await api.get(`/scan/${id}/download?type=${type}`, { responseType: 'blob' })
       // The candidate's own name ("Jane-Doe-Resume.docx"), not a name every candidate's attachment shares.
-      downloadBlob(res.data, `${scan.downloadStem || 'Resume'}.${type === 'ats' ? 'docx' : 'pdf'}`)
+      downloadBlob(res.data, `${scan.downloadStem || 'Resume'}.${type === 'ats' ? 'docx' : type === 'txt' ? 'txt' : 'pdf'}`)
     } catch (err) {
       // With responseType: 'blob', axios would normally hand back error bodies
       // as an unparsed Blob (see normalizeBlobError in lib/errors.js) instead
@@ -1185,6 +1185,9 @@ export default function ScanResult() {
                       Generate PDF (beautiful)
                     </Button>
                   )}
+                  <Button onClick={() => handleDownload('txt')} variant="secondary">
+                    Download plain text (.txt)
+                  </Button>
                 </div>
                 {!scan.hasPdf && (
                   <p className="text-xs text-gray-500 mt-2">
